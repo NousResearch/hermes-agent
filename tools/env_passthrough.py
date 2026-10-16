@@ -7,29 +7,40 @@ forwarded values resolve through the profile's secret scope, not the process env
 from __future__ import annotations
 
 import logging
-from contextvars import ContextVar
 from typing import Iterable
 from hermes_cli.config import cfg_get, read_raw_config
 
 logger = logging.getLogger(__name__)
 
-# Session-scoped allowlist; ContextVar-backed to prevent cross-session bleed
-# in the gateway pipeline.
-_allowed_env_vars_var: ContextVar[set[str]] = ContextVar("_allowed_env_vars")
+# Process-wide set of env var names registered by skills for sandbox
+# passthrough. Deliberately NOT a ContextVar: tool dispatch fans each tool
+# call onto a worker whose context is a copy_context() snapshot taken at
+# submit time (tools.thread_context.propagate_context_to_thread), so a
+# registration made inside one tool's worker (skill_view calling
+# register_env_passthrough) never reaches the submitting thread's context —
+# every subsequent tool (execute_code, terminal) re-snapshots the original
+# context and sees an empty allowlist, and the skill's declared env vars
+# never pass through (#90004). The config-based allowlist below is already
+# a module-level global with exactly the process-wide visibility the skill
+# path needs to match.
+#
+# Cross-session exposure is limited to the NAMES: the values still resolve
+# per profile through resolve_passthrough_value's secret_scope, so a name
+# registered by one session cannot read another profile's secret. The
+# previous ContextVar also never actually isolated anything within one
+# process running a single profile (the common deployment).
+_allowed_env_vars: set[str] = set()
 
 
 def _get_allowed() -> set[str]:
-    """Get or create the allowed env vars set for the current context/session."""
-    try:
-        return _allowed_env_vars_var.get()
-    except LookupError:
-        val: set[str] = set()
-        _allowed_env_vars_var.set(val)
-        return val
+    """Get the process-wide skill passthrough allowlist."""
+    return _allowed_env_vars
 
 
-# Cache for the config-based allowlist (loaded once per process).
-_config_passthrough: frozenset[str] | None = None
+# Config-based allowlist, keyed by Hermes home: under gateway.multiplex_profiles one process serves
+# many profiles, and a single slot would let the first profile's operator allowlist decide which env
+# vars tunnel into every other profile's sandbox children.
+_config_passthrough: dict[str, frozenset[str]] = {}
 
 
 def _is_hermes_provider_credential(name: str) -> bool:
@@ -42,13 +53,16 @@ def _is_hermes_provider_credential(name: str) -> bool:
     registerable. Fails closed when the blocklist cannot be imported."""
     try:
         from tools.environments.local_env_policy import (
-            _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret)
+            _is_hermes_internal_secret, _is_provider_env_blocklisted)
     except Exception as e:
         logger.warning(
             "env passthrough: provider credential blocklist import failed; "
             "failing closed and refusing passthrough registration for %r: %s", name, e)
         return True
-    return _is_hermes_internal_secret(name) or name in _HERMES_PROVIDER_ENV_BLOCKLIST
+    # Case-folded membership too: the remote-exec env builder resolves each
+    # registered name via os.getenv(), which is case-insensitive on Windows, so
+    # ``openai_api_key`` would tunnel the real OPENAI_API_KEY into children.
+    return _is_hermes_internal_secret(name) or _is_provider_env_blocklisted(name)
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -82,9 +96,16 @@ def _load_config_passthrough() -> frozenset[str]:
     """Load ``tools.env_passthrough`` from config.yaml (cached). Same credential
     filter as register_env_passthrough: operator config must not tunnel provider
     credentials into sandbox children either (GHSA-rhgp-j443-p4rf)."""
-    global _config_passthrough
-    if _config_passthrough is not None:
-        return _config_passthrough
+    from hermes_constants import hermes_home_key
+
+    try:
+        home_key = hermes_home_key()
+    except (RuntimeError, OSError):
+        # No resolvable home (stripped environ in a sandbox child): nothing to scope by.
+        home_key = ""
+    cached = _config_passthrough.get(home_key)
+    if cached is not None:
+        return cached
     result: set[str] = set()
     try:
         passthrough = cfg_get(read_raw_config(), "terminal", "env_passthrough")
@@ -99,18 +120,24 @@ def _load_config_passthrough() -> frozenset[str]:
         )))
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
-    _config_passthrough = frozenset(result)
-    return _config_passthrough
+    _config_passthrough[home_key] = frozenset(result)
+    return _config_passthrough[home_key]
 
 
 def is_env_passthrough(var_name: str) -> bool:
-    """True if *var_name* was registered by a skill or listed in config."""
-    return var_name in _get_allowed() or var_name in _load_config_passthrough()
+    """True if *var_name* was registered by a skill or listed in config and is not a
+    Hermes-managed credential NOW. Ownership changes after acceptance (a platform plugin
+    registered later declares the name in its ``required_env`` or manifest), so the refusal applied at registration
+    is re-applied here, where every child builder consumes the allowlist."""
+    return ((var_name in _get_allowed() or var_name in _load_config_passthrough())
+            and not _is_hermes_provider_credential(var_name))
 
 
 def get_all_passthrough() -> frozenset[str]:
-    """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_get_allowed()) | _load_config_passthrough()
+    """Return the union of skill-registered and config-based passthrough vars, minus names
+    that have become Hermes-managed credentials since they were accepted."""
+    return frozenset(name for name in frozenset(_get_allowed()) | _load_config_passthrough()
+                     if not _is_hermes_provider_credential(name))
 
 
 def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | None:
@@ -132,6 +159,32 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
     return get_secret(name, None if multiplex_active else fallback)
 
 
+def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:
+    """Declared passthrough names the bound profile secret scope supplies but the env being
+    filtered (*present*) lacks. A routed profile's ``.env`` and hydrated sources never enter
+    ``os.environ`` (``load_hermes_dotenv`` skips the process-global load for a routed home), so a
+    name-by-name filter over the process env can only forward a declared name the LAUNCH profile
+    also happens to define — the served profile's own value has no way in (#114209). Reads the
+    bound scope alone: never ``os.environ``, never another profile. Empty without a scope, so
+    single-profile spawns are byte-identical."""
+    from agent.secret_scope import _is_global_env, current_secret_scope
+    scope = current_secret_scope()
+    if not scope:
+        return {}
+    present = set(present)
+    additions: dict[str, str] = {}
+    for name in get_all_passthrough():
+        if name in present or _is_global_env(name):
+            continue
+        value = scope.get(name)
+        if value is not None:
+            additions[name] = value
+    return additions
+
+
 def clear_env_passthrough() -> None:
-    """Reset the skill-scoped allowlist (e.g. on session reset)."""
+    """Reset the skill-registered allowlist (e.g. on session reset).
+
+    Clears the process-wide set; a later ``skill_view`` re-registers its
+    vars on demand, so recovery is a single skill load."""
     _get_allowed().clear()

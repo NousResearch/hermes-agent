@@ -1,123 +1,86 @@
-"""Engine-update contracts (Rollout 4 follow-up):
-
-- default tag flows from DEFAULT_CONFIG unless the user pinned;
-- boot serves what is INSTALLED, never downloads (the ladder);
-- update_available only when the local engine is enabled AND installed
-  AND the configured tag is missing on disk;
-- the update itself is a button-driven job, and prune keeps N-1.
-"""
+"""Engine updates read PM pins; boot retains installed bytes without downloading."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
+
+import pm
+from pm import paths
+from pm.lock import Facts, Lockfile
+from pm.store import tree_digest
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
+def runtime_env(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    store = home / "tools"
+    lock_path = tmp_path / "lock.json"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    return home
+    monkeypatch.setattr(paths, "store_root", lambda: store)
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
+    lock = Lockfile(lock_path)
+    lock.set_pin("llamacpp-cpu", "10412", {pm.current_target(): {
+        "url": "https://example.invalid/cpu.zip", "sha256": "a" * 64,
+    }})
+    lock.save()
+    return store, lock
 
 
-def _install_fake_tag(home, tag: str, backend: str = "cuda") -> None:
-    d = home / "runtimes" / "llamacpp" / tag / backend
-    d.mkdir(parents=True)
-    (d / "manifest.json").write_text(json.dumps({
-        "tag": tag, "backend": backend, "assets": {},
-        "verified_version": f"version: {tag.lstrip('b')}",
-    }), encoding="utf-8")
-    # server_binary() looks for the executable name per-OS; give it both.
-    (d / "llama-server.exe").write_bytes(b"MZ fake")
-    (d / "llama-server").write_bytes(b"\x7fELF fake")
+def record_engine(store, version, digest="b" * 64):
+    package = pm.get_package("llamacpp-cpu")
+    target = pm.current_target()
+    entry = store / package.store_entry(version, target)
+    entry.mkdir(parents=True, exist_ok=True)
+    binary = package.binary(entry, target)
+    binary.write_bytes(b"installed engine fixture")
+    Facts(store / "facts.json").record(package.name, version, entry.name, {}, store,
+                                       target=target, artifacts=[digest], digest=tree_digest(entry))
+    return binary
 
 
-def test_installed_tags_newest_first(hermes_home):
-    from hermes_cli.local_runtime.binaries import installed_tags
+def test_status_uses_pm_pin_and_ignores_legacy_tag(runtime_env, monkeypatch):
+    from hermes_cli.web_routers import local_models as lm
 
-    assert installed_tags() == []
-    _install_fake_tag(hermes_home, "b10290")
-    _install_fake_tag(hermes_home, "b10412")
-    assert installed_tags() == ["b10412", "b10290"]
-
-
-def test_default_tag_flows_from_default_config(hermes_home):
-    """Unpinned users inherit the Hermes-release default (deep-merge);
-    the shipped default must be a plausible rolling tag."""
-    from hermes_cli.config import load_config
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-
-    default_tag = DEFAULT_CONFIG["local_runtime"]["tag"]
-    assert default_tag.startswith("b") and default_tag.lstrip("b").isdigit()
-    assert load_config()["local_runtime"]["tag"] == default_tag
-
-
-def test_update_available_requires_enabled_and_installed(hermes_home, monkeypatch):
-    """The flag's truth table: enabled+installed+configured-missing only."""
-    from fastapi.testclient import TestClient
-
-    from hermes_cli import web_server
-
-    client = TestClient(web_server.app)
-    # Same auth pattern as the other local-models route tests.
-    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
-
-    def status():
-        r = client.get("/api/local-models/status")
-        assert r.status_code == 200, r.text
-        return r.json()
-
-    import hermes_cli.web_routers.local_models as lm
-
-    # Case 1: enabled, configured newer than installed -> update available.
-    monkeypatch.setattr(lm, "_runtime_section",
-                        lambda: {"enabled": True, "tag": "b10412"})
-    _install_fake_tag(hermes_home, "b10290")
-    s = status()
-    assert s["update_available"] is True
-    assert s["configured_tag"] == "b10412"
-    assert s["tag"] == "b10290"          # serving what's installed
-
-    # Case 2: configured tag installed -> no update.
-    _install_fake_tag(hermes_home, "b10412")
-    s = status()
-    assert s["update_available"] is False
-    assert s["tag"] == "b10412"
-
-    # Case 3: disabled -> never flagged, even with a mismatch.
-    monkeypatch.setattr(lm, "_runtime_section",
-                        lambda: {"enabled": False, "tag": "b10999"})
-    assert status()["update_available"] is False
+    store, lock = runtime_env
+    section = {"enabled": True, "backend": "cpu", "tag": "b99999"}
+    monkeypatch.setattr(lm, "_runtime_section", lambda: section)
+    monkeypatch.setattr(lm, "_state_endpoint", lambda: None)
+    record_engine(store, "10362")
+    status = lm.local_models_status()
+    assert status["tag"] == "b10362"
+    assert status["configured_tag"] == "b" + lock.version("llamacpp-cpu")
+    assert status["runtime_installed"] and status["update_available"]
+    section["enabled"] = False
+    assert not lm.local_models_status()["update_available"]
+    section["enabled"] = True
+    record_engine(store, lock.version("llamacpp-cpu"), "a" * 64)
+    assert not lm.local_models_status()["update_available"]
 
 
-def test_boot_never_downloads_missing_tag(hermes_home, monkeypatch):
-    """The ladder: configured-but-not-installed serves the newest installed
-    tag; nothing installed means no boot (and NO download either way)."""
-    from hermes_cli.local_runtime import bootstrap
+def test_boot_uses_previous_pm_engine_without_installing(runtime_env, monkeypatch):
+    from hermes_cli.local_runtime import bootstrap, endpoint, supervisor
 
-    calls = []
-    monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-        lambda tag, backend, **kw: calls.append(tag) or (_ for _ in ()).throw(
-            AssertionError("boot must not reach install for missing tags")))
+    store, _ = runtime_env
+    binary = record_engine(store, "10362")
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(endpoint, "_state_endpoint", lambda: None)
+    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *args: None)
+    monkeypatch.setattr(bootstrap, "_start_idle_sweeper", lambda *args: None)
 
-    # Nothing installed: returns None before any install attempt.
-    cfg = {"local_runtime": {"enabled": True, "tag": "b10412"}}
-    assert bootstrap.ensure_local_runtime(cfg) is None
-    assert calls == []
+    def forbidden(*args, **kwargs):
+        raise AssertionError("boot attempted a PM install")
 
+    monkeypatch.setattr(pm, "ensure", forbidden)
+    spawned = []
 
-def test_prune_keeps_n_minus_one(hermes_home):
-    from hermes_cli.local_runtime.binaries import installed_tags, prune_old_tags
+    def start(self):
+        spawned.append(self.binary)
 
-    for tag in ("b10100", "b10200", "b10290"):
-        _install_fake_tag(hermes_home, tag)
-    prune_old_tags(["b10290", "b10200"])
-    assert installed_tags() == ["b10290", "b10200"]
-    # downloads/ cache dir must survive pruning when present.
-    downloads = hermes_home / "runtimes" / "llamacpp" / "downloads"
-    downloads.mkdir(exist_ok=True)
-    prune_old_tags(["b10290"])
-    assert downloads.exists()
+    monkeypatch.setattr(supervisor.LlamaServerSupervisor, "start", start)
+    config = {"local_runtime": {"enabled": True, "backend": "cpu", "tag": "b99999"}}
+    assert bootstrap.ensure_local_runtime(config, force=True) is not None
+    assert spawned == [binary]
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    binary.unlink()
+    assert bootstrap.ensure_local_runtime(config, force=True) is None
+    assert spawned == [binary]

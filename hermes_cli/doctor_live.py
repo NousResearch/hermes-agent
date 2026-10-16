@@ -10,8 +10,10 @@ import os
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
+from utils import normalize_proxy_env_vars
 
 DEFAULT_PROBE_TIMEOUT = 10.0
 
@@ -40,43 +42,23 @@ class ProbeResult:
 
 # ── Small seams (monkeypatchable in tests, and single points of control) ──
 
-def _load_config() -> dict:
-    try:
-        from hermes_cli.config import load_config
-        return load_config() or {}
-    except Exception:
-        return {}
-
-
 def _http_get(url: str, headers: Optional[dict] = None, timeout: Optional[float] = None):
     """Single HTTP GET seam for all metadata probes."""
     import httpx
+    # Sanitize at the seam (idempotent, no-op on a clean env): a bracketed-IPv6 NO_PROXY entry
+    # ([::1], Clash Verge/mihomo) makes this bare trust_env client raise InvalidURL at
+    # construction (#118159), which _run_one's catch-all would dress up as backend downtime.
+    normalize_proxy_env_vars()
     return httpx.get(url, headers=headers or {}, timeout=timeout)
 
 
 def _browser_available() -> bool:
     """Is the local browser automation backend (agent-browser) installed?"""
-    import shutil
-    if shutil.which("agent-browser"):
-        return True
     try:
-        from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT
-        if (PROJECT_ROOT / "node_modules" / "agent-browser").exists():
-            return True
-        for candidate in (HERMES_HOME / "node" / "bin", HERMES_HOME / "node", HERMES_HOME / "node_modules" / ".bin"):
-            if shutil.which("agent-browser", path=str(candidate)):
-                return True
-    except Exception:
-        pass
-    # agent-browser resolves lazily via npx on the default install, invisible to the PATH/node_modules
-    # probes above. Mirror the rung hermes_cli.doctor uses so this probe can't diverge from it, including
-    # the Termux carve-out (bare npx is too fragile to advertise as ready there).
-    try:
-        from tools.browser_tool_install import _find_agent_browser, _is_npx_agent_browser_sentinel, _requires_real_termux_browser_install
-        browser_cmd = _find_agent_browser(validate=False)
+        from tools.browser_tool_install import _find_agent_browser
+        return bool(_find_agent_browser(validate=False))
     except Exception:
         return False
-    return _is_npx_agent_browser_sentinel(browser_cmd) and not _requires_real_termux_browser_install(browser_cmd)
 
 
 def _launch_browser_probe(timeout: float) -> tuple:
@@ -87,7 +69,10 @@ def _launch_browser_probe(timeout: float) -> tuple:
     except ImportError:
         return (False, "playwright not installed")
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, timeout=timeout * 1000)
+        browser = p.chromium.launch(
+            channel="chromium", executable_path=chromium_executable(),
+            headless=True, timeout=timeout * 1000,
+        )
         try:
             browser.new_page().goto("about:blank", timeout=timeout * 1000)
         finally:
@@ -149,7 +134,7 @@ def _probe_audio(kind: str, config: dict, timeout: float) -> ProbeResult:
 _REPORTERS = {"pass": check_ok, "warn": check_warn, "fail": check_fail}
 
 
-def _report(result: ProbeResult, issues: List[str]) -> None:
+def _report(result: ProbeResult, issues: list[str]) -> None:
     reporter = _REPORTERS.get(result.status)
     if reporter is None:  # skip
         check_info(f"{result.name} {result.detail} — skipped")
@@ -159,7 +144,7 @@ def _report(result: ProbeResult, issues: List[str]) -> None:
         issues.append(f"Live probe failed: {result.name} {result.detail}")
 
 
-def _run_one(name: str, fn: Callable[[], ProbeResult], issues: List[str]) -> ProbeResult:
+def _run_one(name: str, fn: Callable[[], ProbeResult], issues: list[str]) -> ProbeResult:
     """Run one probe with a catch-all so a crash never kills doctor."""
     try:
         result = fn()
@@ -172,17 +157,18 @@ def _run_one(name: str, fn: Callable[[], ProbeResult], issues: List[str]) -> Pro
     return result
 
 
-def run_live_checks(issues: List[str]) -> List[ProbeResult]:
+def run_live_checks(issues: list[str]) -> list[ProbeResult]:
     """Run one bounded, read-only probe per configured tool backend — sequential by design (predictable output
     ordering). Appends a remediation line to ``issues`` per failed probe; skipped backends never append."""
-    config = _load_config()
+    from hermes_cli.config import load_config_readonly
+    config = load_config_readonly()
     try:
         timeout = float((config.get("doctor") or {}).get("live_probe_timeout", DEFAULT_PROBE_TIMEOUT))
     except (TypeError, ValueError):
         timeout = DEFAULT_PROBE_TIMEOUT
     timeout = max(1.0, timeout)
     _section("Live Backend Probes (opt-in, real calls)")
-    results: List[ProbeResult] = [
+    results: list[ProbeResult] = [
         _run_one(name, lambda n=name, spec=spec: _keyed_probe(n, *spec, timeout), issues)
         for name, spec in _KEYED_PROBES.items()
     ]
@@ -203,7 +189,7 @@ def run_live_checks(issues: List[str]) -> List[ProbeResult]:
     return results
 
 
-def maybe_run_live_checks(args, issues: List[str]):
+def maybe_run_live_checks(args, issues: list[str]):
     """Called from ``run_doctor`` after the static checks; no-op (None) unless ``--live`` was passed.
     A crash anywhere in the live subsystem must never break doctor."""
     if not getattr(args, "live", False):
@@ -213,20 +199,3 @@ def maybe_run_live_checks(args, issues: List[str]):
     except Exception as exc:  # catch-all: doctor must survive
         check_warn("Live backend probes crashed", f"({exc})")
         return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-ELEVENLABS_VOICES_URL = "https://api.elevenlabs.io/v1/voices"
-
-FAL_MODELS_URL = "https://fal.ai/api/models?page=1"
-
-FIRECRAWL_HEALTH_URL = "https://api.firecrawl.dev/v2/team/credit-usage"
-
-GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
-
-OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
-# ---- END PLUGIN-COMPAT ----

@@ -19,7 +19,7 @@ Examples:
     hermes debug share              Upload debug report (asks for confirmation)
     hermes debug share --yes        Skip confirmation (for scripts/CI)
     hermes debug share --lines 500  Include more log lines
-    hermes debug share --expire 30  Keep paste for 30 days
+    hermes debug share --expire 30  Keep dpaste.com fallback pastes for 30 days
     hermes debug share --local      Print report locally (no upload)
     hermes debug share --no-redact  Disable upload-time secret redaction
     hermes debug share --nous       Upload to Nous-internal storage (private)
@@ -32,7 +32,11 @@ Examples:
         "--lines", type=int, default=200,
         help="Number of log lines to include per log file (default: 200)")
     share_parser.add_argument(
-        "--expire", type=int, default=7, help="Paste expiry in days (default: 7)")
+        "--expire", type=int, default=1,
+        help="dpaste.com fallback retention in days (minimum 1; default: 1). "
+            "paste.rs pastes are always deleted after 6 hours, but if the "
+            "upload falls back to dpaste.com the pastes live for this many "
+            "days and cannot be deleted.")
     share_parser.add_argument(
         "--local", action="store_true", help="Print the report locally instead of uploading")
     share_parser.add_argument(

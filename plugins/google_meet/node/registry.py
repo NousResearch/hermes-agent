@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 
-from plugins.google_meet._jsonfile import read_json, write_json_atomic
+from plugins.google_meet._jsonfile import read_json
+from utils import atomic_json_write
 
 
 def _default_path() -> Path:
@@ -26,16 +27,16 @@ class NodeRegistry:
     def __init__(self, path: Optional[Path] = None) -> None:
         self.path = Path(path) if path is not None else _default_path()
 
-    def _load(self) -> Dict[str, Dict[str, Any]]:
+    def _load(self) -> dict[str, dict[str, Any]]:
         """The ``nodes`` map (name → entry); empty when the file is missing or malformed."""
         data = read_json(self.path)
         nodes = data.get("nodes") if isinstance(data, dict) else None
         return nodes if isinstance(nodes, dict) else {}
 
-    def _save(self, nodes: Dict[str, Dict[str, Any]]) -> None:
-        write_json_atomic(self.path, {"nodes": nodes})
+    def _save(self, nodes: dict[str, dict[str, Any]]) -> None:
+        atomic_json_write(self.path, {"nodes": nodes})
 
-    def get(self, name: str) -> Optional[Dict[str, Any]]:
+    def get(self, name: str) -> Optional[dict[str, Any]]:
         entry = self._load().get(name)
         return None if entry is None else {"name": name, **entry}
 
@@ -55,21 +56,13 @@ class NodeRegistry:
         self._save(nodes)
         return True
 
-    def list_all(self) -> List[Dict[str, Any]]:
+    def list_all(self) -> list[dict[str, Any]]:
         return [{"name": name, **entry} for name, entry in sorted(self._load().items())]
 
-    def resolve(self, chrome_node: Optional[str]) -> Optional[Dict[str, Any]]:
+    def resolve(self, chrome_node: Optional[str]) -> Optional[dict[str, Any]]:
         """Named node's entry, or (``chrome_node`` falsy) the sole registered node; None if unknown
         or when zero / several nodes are registered (ambiguous)."""
         if chrome_node:
             return self.get(chrome_node)
         nodes = self.list_all()
         return nodes[0] if len(nodes) == 1 else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -1,0 +1,30 @@
+name: davinci-resolve
+repo: https://github.com/wassermanproductions/hermes-davinci-resolve-plugin
+sha: bbd5b207f823f16a20e756bfa80f44ad34790a3f
+description: Control DaVinci Resolve Studio live, or generate importable interchange files for free DaVinci
+  Resolve.
+maintainer: wassermanproductions
+tier: community
+category: tools
+docs_url: https://github.com/wassermanproductions/hermes-davinci-resolve-plugin#readme
+capabilities:
+  provides_tools:
+  - resolve_add_timeline_marker
+  - resolve_append_to_current_timeline
+  - resolve_capabilities
+  - resolve_create_scripted_timeline
+  - resolve_create_timeline
+  - resolve_generate_fcpxml_timeline
+  - resolve_generate_marker_csv
+  - resolve_import_media
+  - resolve_launch
+  - resolve_probe
+  - resolve_project_summary
+  - resolve_render_status
+  - resolve_render_timeline
+  - resolve_scan_media_folder
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+platforms:
+- macos

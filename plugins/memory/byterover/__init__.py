@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, spawn_context_thread
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
     return _BOOL_WORDS.get(value.strip().lower(), default) if isinstance(value, str) else default
 
 
-def _load_plugin_config() -> Dict[str, Any]:
+def _load_plugin_config() -> dict[str, Any]:
     """Read ``memory.byterover``; fall back to legacy ``memory.provider_config`` (early docs used it)."""
     try:
         from hermes_cli.config import load_config
@@ -76,7 +76,32 @@ def _resolve_brv_path() -> Optional[str]:
         return _cached_brv_path or None
 
 
-def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) -> dict:
+def _brv_child_env(brv_path: str) -> dict[str, str]:
+    """Env for the ``brv`` child. Under gateway.multiplex_profiles ``os.environ`` holds the
+    LAUNCH profile's ``.env``; the served profile's ``BRV_*`` (cloud identity) live only in its
+    secret scope, so they are resolved through the scope — a miss means no cloud key, never
+    another profile's — and the launch profile's ``.env`` residue is stripped. Outside multiplex
+    the process env IS this profile's own and is passed through unchanged."""
+    from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
+    from hermes_constants import get_hermes_home_override
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+
+    env = build_subprocess_env(scrub_secrets=False)
+    if is_multiplex_active():
+        env = strip_launch_profile_env(env, get_hermes_home_override())
+        for key in [k for k in env if k.startswith("BRV_")]:
+            env.pop(key, None)
+        try:
+            api_key = get_secret("BRV_API_KEY", "")
+        except UnscopedSecretError:
+            api_key = ""
+        if api_key:
+            env["BRV_API_KEY"] = api_key
+    env["PATH"] = str(Path(brv_path).parent) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str | None = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     global _cached_brv_path
     brv_path = _resolve_brv_path()
@@ -84,11 +109,12 @@ def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT, cwd: str = None) ->
         return {"success": False, "error": "brv CLI not found. Install: npm install -g byterover-cli"}
     effective_cwd = cwd or str(_get_brv_cwd())
     Path(effective_cwd).mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "PATH": str(Path(brv_path).parent) + os.pathsep + os.environ.get("PATH", "")}
+    env = _brv_child_env(brv_path)
     try:
         result = subprocess.run(
             [brv_path] + args, capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=timeout, cwd=effective_cwd, env=env, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"brv timed out after {timeout}s"}
@@ -123,7 +149,7 @@ STATUS_SCHEMA = _schema("brv_status", "Check ByteRover status — CLI version, c
 class ByteRoverMemoryProvider(MemoryProvider):
     """ByteRover persistent memory via the brv CLI."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[dict[str, Any]] = None):
         self._config = dict(config) if config is not None else _load_plugin_config()
         self._auto_extract = _coerce_bool(self._config.get("auto_extract"), True)
         self._cwd, self._session_id, self._turn_count = "", "", 0
@@ -171,7 +197,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("ByteRover %s failed: %s", what, e)
 
-        t = threading.Thread(target=_work, daemon=True, name=name)
+        t = spawn_context_thread(_work, name=name)
         t.start()
         return t
 
@@ -207,7 +233,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
             label = "User profile" if target == "user" else "Agent memory"
             self._curate_in_background(f"[{label}] {content}", name="brv-memwrite", what="memory mirror")
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """Extract insights from the last 10 user/assistant messages before compression discards them."""
         if not self._auto_extract_enabled("pre-compression flush") or not messages:
             return ""
@@ -218,7 +244,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
                                        on_done=f"ByteRover pre-compression flush: {len(parts)} messages")
         return ""
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [QUERY_SCHEMA, CURATE_SCHEMA, STATUS_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:

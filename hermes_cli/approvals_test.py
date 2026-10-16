@@ -32,7 +32,7 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     carries ``verdict``, ``exit_code``, ``rule``, ``detail`` and ``normalized_variants`` (the
     de-obfuscated forms the detectors actually evaluated).
     """
-    import tools.approval as approval
+    from tools import approval
     from tools import approval_context, approval_detection, approval_floors
     # Sync config-persisted "always" patterns so the allowlist check below sees what the runtime
     # would see (load is read-only).
@@ -50,12 +50,20 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
             "normalized_variants": variants,
         }
 
-    # 1. Isolated container backends skip every guard (fires BEFORE the hardline floor at runtime).
+    # 1. Isolated container backends skip every guard except the operator's approvals.deny
+    #    (fires BEFORE the hardline floor at runtime).
     if approval._should_skip_container_guards(env_type):
+        deny_pattern = approval_floors._match_user_deny_rule(command)
+        if deny_pattern is not None:
+            return result(
+                "user-deny", rule=deny_pattern,
+                detail="matches a user-defined approvals.deny rule in config.yaml "
+                       "(blocked even in an isolated container, under --yolo / mode=off)",
+            )
         return result(
             "allow",
             detail=(f"env_type '{env_type}' is an isolated container backend; "
-                    "the runtime skips all command guards for it"),
+                    "the runtime skips all command guards for it except approvals.deny"),
         )
 
     # 2. Hardline blocklist — never bypassable, even under yolo.

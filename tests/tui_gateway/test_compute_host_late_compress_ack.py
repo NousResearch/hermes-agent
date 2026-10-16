@@ -221,7 +221,17 @@ def test_slash_compress_route_reports_pending_and_adopts_late_ack(compute_host_g
 # ── wait budget follows compression.context_total_ceiling_seconds ───────────
 
 
-def test_compress_wait_budget_follows_config_ceiling():
+def test_compress_wait_budget_follows_config_ceiling(monkeypatch):
+    import agent.auxiliary_client as aux
+
+    # The aux compression request budget floors the idle window and, with it, the ceiling (#114594): the
+    # RPC waiter must outlast a compaction the host is still allowed to run.
+    monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 300.0)
+    assert server._compute_host_compress_wait_seconds(
+        {"compression": {"context_total_ceiling_seconds": 200}}
+    ) == 330.0
+    # Legacy clamps, judged with the aux floor pinned off.
+    monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 0.0)
     assert server._compute_host_compress_wait_seconds({"compression": {}}) == 630.0
     assert server._compute_host_compress_wait_seconds(
         {"compression": {"context_total_ceiling_seconds": 200}}

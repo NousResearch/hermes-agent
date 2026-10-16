@@ -1,0 +1,39 @@
+# Community catalog entry, hermes-worker-monitor
+#
+# Owner-submitted: the fork is maintained by djmango, and the entry is opened by
+# its owner. Worker-only fork of mr-3mm3/hermes-monitor v0.2.2 (MIT).
+#
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as a
+# static `desktop/plugin.js` and never fetches, downloads, or replaces itself.
+#
+# Disclosure, what this fork removed and what is left. Removed: upstream's
+# provider quota item and everything that supported it (the credential-pool
+# fan-out, the DEEPSEEK_API_KEY lookup in the environment and in .env files, the
+# DeepSeek balance call, the Anthropic OAuth refresh path that can rewrite
+# auth.json, and the clone of a private Hermes fetcher). There is therefore no
+# network egress and no credential is read. Left: one route, GET /summary, which
+# opens HERMES_HOME/kanban.db, and each profile's state.db for worker activity,
+# read-only, with a fallback to the root HERMES_HOME/state.db for a
+# default-profile card that has no profile directory. The payload is counts
+# only: board group counts (blocked, waiting, running, queued, scheduled,
+# review, done today) plus the count of active, stalled, and looping workers.
+# Card identifiers, titles, assignees, and tool arguments never leave the
+# backend, and arguments stay hashed inside it for stall and loop detection. No
+# writes anywhere.
+name: hermes-worker-monitor
+repo: https://github.com/djmango/hermes-worker-monitor
+sha: "6edb2d6e55133f57a3a7768ca4897c84e8adc00b"   # tag v0.2.0-fork
+version: "0.2.0"
+description: "Kanban board groups and worker health in the Hermes Desktop footer: blocked cards first and red, live running state as a coloured dot, hover for the breakdown, one click to open the board. Worker-only fork of hermes-monitor. No credentials are read and there is no network egress; it opens kanban.db and each profile's state.db read-only and returns counts only. Zero model tokens."
+maintainer: djmango
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+platforms: [linux, macos]
+docs_url: https://github.com/djmango/hermes-worker-monitor
+screenshots: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

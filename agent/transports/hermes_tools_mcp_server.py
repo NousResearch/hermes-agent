@@ -7,6 +7,15 @@ exposed over stdio MCP; codex registers it via ``~/.codex/config.toml
 
 from __future__ import annotations
 
+# First, like every entry point: stdio, import-path and environ-lifetime fixes (hermes_bootstrap).
+# Only as ``python -m``: codex_runtime & co. import this module for a constant, and the
+# bootstrap's scratch/TMPDIR exports must not fire in those library importers.
+if __name__ == "__main__":
+    try:
+        import hermes_bootstrap
+    except ModuleNotFoundError:
+        pass  # a partial ``hermes update`` can leave the bootstrap unregistered
+
 import inspect
 import json
 import logging
@@ -15,6 +24,12 @@ import sys
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# The ``[mcp_servers.<name>]`` key under which the runtime migration registers this server. Every
+# codex-side reference to it (worker ``-c mcp_servers.<name>.env.*`` overrides, elicitation
+# auto-accept, display-name stripping) must use this constant: a drifted name materialises a
+# second env-only entry that codex rejects at bootstrap ("invalid transport").
+HERMES_TOOLS_MCP_SERVER_NAME = "hermes-tools"
 
 # JSON Schema type -> Python type mapping for signature generation
 _JSON_TO_PY = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
@@ -45,7 +60,8 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "vision_analyze", "image_generate", "skill_view", "skills_list", "text_to_speech",
     # Kanban handoff tools: stateless (read HERMES_KANBAN_TASK, write kanban.db).
     # Without them a codex-runtime worker can't report completion and hangs.
-    "kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes", "kanban_comment",
+    "kanban_complete", "kanban_block", "kanban_schedule", "kanban_request_review",
+    "kanban_request_changes", "kanban_comment",
     "kanban_heartbeat", "kanban_show", "kanban_list",
     # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
     "kanban_create", "kanban_unblock", "kanban_link",
@@ -63,7 +79,7 @@ def _build_server() -> Any:
     from model_tools import get_tool_definitions, handle_function_call
 
     mcp = MCPServer(
-        "hermes-tools",
+        HERMES_TOOLS_MCP_SERVER_NAME,
         instructions=(
             "Hermes Agent's tool surface, exposed for use inside a Codex "
             "session. Use these for capabilities Codex's built-in toolset "

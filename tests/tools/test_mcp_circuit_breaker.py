@@ -18,7 +18,7 @@ import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2")
-from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
+from tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +487,7 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())
@@ -535,7 +535,6 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
                 self.session = object()
                 self._ready.set()
                 await self._wait_for_lifecycle_event()
-                return
 
         task = _Task("srv")
         run_task = asyncio.ensure_future(task.run({"command": "x"}))
@@ -568,7 +567,44 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())
+
+
+def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch, tmp_path):
+    """Three completed calls whose payload is an error still open the breaker (#10447), but the
+    open-breaker message must not claim the server is unreachable — it answered every time
+    (#11113); a single transport strike in the streak makes it "unreachable" again."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    async def _call_tool_rejects(*a, **kw):
+        result = MagicMock()
+        result.is_error = True
+        block = MagicMock()
+        block.text = "DNS lookup failed for https://nope.invalid"
+        result.content = [block]
+        result.structured_content = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_rejects)
+    _mcp_loop._ensure_mcp_loop()
+    try:
+        handler = _make_tool_handler("srv", "fetch", 10.0)
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            assert "DNS lookup failed" in json.loads(handler({}))["error"]
+        tripped = json.loads(handler({}))["error"].lower()
+        assert "rejected" in tripped and "unreachable" not in tripped, tripped
+
+        mcp_tool._reset_server_error("srv")
+        mcp_tool._bump_server_error("srv")                      # transport strike
+        mcp_tool._bump_server_error("srv", application=True)
+        mcp_tool._bump_server_error("srv", application=True)
+        assert "unreachable" in json.loads(handler({}))["error"].lower()
+    finally:
+        _cleanup(mcp_tool, "srv")
+        mcp_tool._server_errors_all_application.pop("srv", None)

@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Optional
-from hermes_cli import __version__
 from hermes_cli.config import OPTIONAL_ENV_VARS, write_platform_config_field
 from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
+from hermes_cli.version_info import get_version_info
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -70,12 +70,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
             "WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_DM_POLICY", "WHATSAPP_ALLOWED_USERS",
         ),
         "required_env": (),
-    },
-    "homeassistant": {
-        "name": "Home Assistant",
-        "description": "Control your smart home from Hermes via Home Assistant.",
-        "docs_url": "https://www.home-assistant.io/docs/authentication/",
-        "env_vars": ("HASS_URL", "HASS_TOKEN"), "required_env": ("HASS_URL", "HASS_TOKEN"),
     },
     "email": {
         "name": "Email", "description": "Talk to Hermes through an IMAP/SMTP mailbox.",
@@ -221,7 +215,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
 # the end alphabetically.
 _PLATFORM_ORDER: tuple[str, ...] = (
     "telegram", "discord", "slack", "mattermost", "matrix", "whatsapp", "signal", "bluebubbles",
-    "homeassistant", "email", "sms", "dingtalk", "feishu", "google_chat", "wecom", "wecom_callback",
+    "email", "sms", "dingtalk", "feishu", "google_chat", "wecom", "wecom_callback",
     "weixin", "qqbot", "yuanbao", "api_server", "webhook",
 )
 
@@ -281,18 +275,11 @@ _MESSAGING_KEYS_PAGE_KEYS = frozenset({
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_PROXY_KEY", "GATEWAY_PROXY_URL"})
 
 
-_PLATFORM_ENV_PREFIX_ALIASES: dict[str, tuple[str, ...]] = {
-    "email": ("EMAIL_",),
-    "homeassistant": ("HASS_",),
-    "qqbot": ("QQ_", "QQBOT_"),
-    "sms": ("TWILIO_",),
-    "wecom": ("WECOM_BOT_", "WECOM_SECRET"),
-    "wecom_callback": ("WECOM_CALLBACK_",)}
-
-
 def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
-    """Env-var prefixes owned by a messaging platform card."""
-    return _PLATFORM_ENV_PREFIX_ALIASES.get(platform_id, (platform_id.upper().replace("-", "_") + "_",))
+    """Env-var prefixes owned by a messaging platform card (shared with the profile-clone
+    channel stripper so a card and a clone agree on which keys belong to a platform)."""
+    from hermes_cli.profile_channels import platform_env_prefixes
+    return platform_env_prefixes(platform_id)
 
 
 def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
@@ -381,7 +368,7 @@ def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) ->
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
-_TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{__version__}"
+_TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{get_version_info().base_version}"
 
 
 @dataclass

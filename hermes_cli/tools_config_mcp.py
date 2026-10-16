@@ -24,19 +24,19 @@ def _mcp_match_filter():
         return lambda tool_name, patterns: tool_name in patterns
 
 
-def _mcp_preselected(tool_names: List[str], include_set, exclude_set, match) -> Set[int]:
+def _mcp_preselected(tool_names: list[str], include_set, exclude_set, match) -> set[int]:
     """Indices of tools currently enabled: include mode, exclude mode, or all when unfiltered."""
-    if include_set:
+    if include_set is not None:
         return {i for i, tn in enumerate(tool_names) if match(tn, include_set)}
     if exclude_set:
         return {i for i, tn in enumerate(tool_names) if not match(tn, exclude_set)}
     return set(range(len(tool_names)))
 
 
-def _apply_mcp_checklist(server_name: str, tools_cfg: dict, tool_names: List[str], chosen: Set[int],
+def _apply_mcp_checklist(server_name: str, tools_cfg: dict, tool_names: list[str], chosen: set[int],
                          include_set, exclude_set, match) -> None:
     """Write a checklist result back as ``tools.include`` / ``tools.exclude``."""
-    exclude_mode = bool(exclude_set) and not include_set
+    exclude_mode = bool(exclude_set) and include_set is None
 
     if len(chosen) == len(tool_names) and not exclude_mode:
         # All tools enabled — clear filters so tools the server adds later are auto-enabled.
@@ -83,7 +83,9 @@ def _configure_mcp_tools_interactive(config: dict):
         _print_info("No MCP servers configured.")
         return
 
-    enabled_names = [k for k, v in mcp_servers.items() if v.get("enabled", True) not in {False, "false", "0", "no", "off"}]
+    from tools.mcp_tool_common import mcp_server_enabled
+
+    enabled_names = [k for k, v in mcp_servers.items() if isinstance(v, dict) and mcp_server_enabled(v)]
     if not enabled_names:
         _print_info("All MCP servers are disabled.")
         return
@@ -118,8 +120,10 @@ def _configure_mcp_tools_interactive(config: dict):
             continue
 
         tools_cfg = mcp_servers.get(server_name, {}).get("tools") or {}
-        include_set = {str(p) for p in tools_cfg.get("include") or []} or None
-        exclude_set = {str(p) for p in tools_cfg.get("exclude") or []} or None
+        # ``include: []`` is an explicit block-all whitelist, not "unfiltered" (#12865).
+        include_raw, exclude_raw = tools_cfg.get("include"), tools_cfg.get("exclude")
+        include_set = {str(p) for p in include_raw} if isinstance(include_raw, list) else None
+        exclude_set = {str(p) for p in exclude_raw or []} or None
 
         labels = []
         for tool_name, description in tools:
@@ -150,7 +154,7 @@ def _configure_mcp_tools_interactive(config: dict):
         print(color("  No changes to MCP tools", Colors.DIM))
 
 
-def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
+def _apply_toolset_change(config: dict, platform: str, toolset_names: list[str], action: str):
     """Add or remove built-in toolsets for a platform."""
     from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
 
@@ -159,9 +163,9 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
     _save_platform_tools(config, platform, updated)
 
 
-def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]:
+def _apply_mcp_change(config: dict, targets: list[str], action: str) -> set[str]:
     """Add or remove specific MCP tools from a server's exclude list."""
-    failed_servers: Set[str] = set()
+    failed_servers: set[str] = set()
     mcp_servers = config.get("mcp_servers") or {}
 
     for target in targets:
@@ -207,9 +211,9 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print("MCP servers:")
         for srv_name, srv_cfg in mcp_servers.items():
             tools_cfg = srv_cfg.get("tools") or {}
-            exclude, include = tools_cfg.get("exclude") or [], tools_cfg.get("include") or []
-            if include:
-                _print_info(f"{srv_name}  [include only: {', '.join(include)}]")
+            exclude, include = tools_cfg.get("exclude") or [], tools_cfg.get("include")
+            if isinstance(include, list):
+                _print_info(f"{srv_name}  [include only: {', '.join(include) or '(none)'}]")
             elif exclude:
                 _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
             else:
@@ -252,7 +256,7 @@ def tools_disable_enable_command(args):
                           config.get("mcp_servers") or {}, platform)
         return
 
-    targets: List[str] = args.names
+    targets: list[str] = args.names
     toolset_targets = [t for t in targets if ":" not in t]
     mcp_targets = [t for t in targets if ":" in t]
 
@@ -271,7 +275,7 @@ def tools_disable_enable_command(args):
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)
 
-    failed_servers: Set[str] = set()
+    failed_servers: set[str] = set()
     if mcp_targets:
         failed_servers = _apply_mcp_change(config, mcp_targets, action)
         for srv in failed_servers:

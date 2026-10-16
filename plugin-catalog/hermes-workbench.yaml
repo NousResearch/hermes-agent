@@ -1,0 +1,20 @@
+name: hermes-workbench
+repo: https://github.com/sxuff/hermes-workbench
+sha: f07fb5c90e24c1a396604758feb0fd4ae077760b
+description: The Hermes desktop app in your browser. `hermes workbench` serves the desktop interface through the Hermes dashboard, for headless servers, VPSes and tablets. Disclosure — community plugin, not a Nous product. On the first `hermes workbench` run and again after each Hermes update it runs `npm install --ignore-scripts` (guided by Hermes's lockfile) and Vite against your Hermes checkout's desktop sources, writing only under ~/.hermes/hermes-workbench and its own plugin dir (the checkout is only read), and starts `hermes dashboard` on loopback when none is running.
+maintainer: sxuff
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/sxuff/hermes-workbench#readme
+version: "0.2.1"
+image: https://raw.githubusercontent.com/sxuff/hermes-workbench/f07fb5c90e24c1a396604758feb0fd4ae077760b/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/sxuff/hermes-workbench/f07fb5c90e24c1a396604758feb0fd4ae077760b/docs/media/session.png
+  - https://raw.githubusercontent.com/sxuff/hermes-workbench/f07fb5c90e24c1a396604758feb0fd4ae077760b/docs/media/slash-commands.png
+  - https://raw.githubusercontent.com/sxuff/hermes-workbench/f07fb5c90e24c1a396604758feb0fd4ae077760b/docs/media/model-picker.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

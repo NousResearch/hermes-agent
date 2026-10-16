@@ -185,7 +185,7 @@ located at ~/code/api. I discovered it uses Go version 1.22 and...
 hermes sessions list    # 浏览过去的会话
 ```
 
-有关三种调用形式（发现 / 滚动 / 浏览）和响应格式，请参阅[会话搜索工具](/user-guide/sessions#session-search-tool)。
+有关三种调用形式（发现 / 滚动 / 浏览）和响应格式，请参阅[会话搜索工具](../sessions.md#session-search-tool)。
 
 ### session_search 与 memory 的对比
 
@@ -199,6 +199,14 @@ hermes sessions list    # 浏览过去的会话
 | **Token 开销** | 每次会话固定（约 1,300 tokens） | 按需（仅在搜索时产生） |
 
 **记忆**用于应始终在上下文中的关键事实。**会话搜索**用于"我们上周讨论过 X 吗？"这类需要 Agent 从过去对话中回忆具体内容的查询。
+
+## 同模型审查的推理强度 {#same-model-review-reasoning}
+
+后台审查与主会话使用同一模型时，**始终继承主会话的推理强度**。`auxiliary.background_review.reasoning_effort` 不会覆盖该设置；`auto` 路由和显式指定主会话的 provider/model 都遵循此规则。
+
+分支创建时，推理设置、系统 prompt、完整会话快照和工具定义保持与主会话逐字节一致，以复用 prompt 缓存前缀。只改变审查的推理强度会破坏这种一致性。没有用于同模型审查的独立推理强度开关。
+
+若要减少审查工作而不改变主会话的推理强度，可以调整 `memory.nudge_interval` / `skills.creation_nudge_interval`，通过 `auxiliary.background_review.enabled: false` 禁用自动审查，或将审查路由到其他模型。其他模型使用会话摘要，不共享主会话的预热缓存前缀；其任务推理强度的独立问题见 [#94825](https://github.com/NousResearch/hermes-agent/issues/94825)。频率和路由控制并不会分离同模型审查的推理强度。
 
 ## 配置
 

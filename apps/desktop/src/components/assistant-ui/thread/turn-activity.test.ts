@@ -53,6 +53,15 @@ describe('toolNarratesWait', () => {
     expect(toolNarratesWait([call('react_to_message', false)])).toBe(false)
   })
 
+  it('does not defer to a call sealed without a result', () => {
+    const sealed = { completedAt: 5, toolName: 'terminal', type: 'tool-call' }
+
+    expect(toolNarratesWait([text('working'), sealed])).toBe(false)
+    expect(activitySignature([text('working'), sealed])).not.toBe(
+      activitySignature([text('working'), call('terminal', false)])
+    )
+  })
+
   it('defers to a call in flight even when a later part follows it', () => {
     // Tail-part-only detection missed this: a turn that starts prose while a
     // call is still running showed the row under the tool's own timer.

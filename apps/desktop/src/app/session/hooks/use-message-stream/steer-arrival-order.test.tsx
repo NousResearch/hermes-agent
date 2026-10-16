@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 // Repro for "when I steer it often sends out of order — a user bubble way
 // above" (#73793 / #83151 class). Drives the REAL stream reducer
 // (useMessageStream.handleGatewayEvent) and the REAL steer entry point
@@ -15,15 +16,19 @@
 // Both hooks share one state map, exactly as the desktop wires them: steering
 // mutates the same ClientSessionState the gateway events reduce into.
 import { QueryClient } from '@tanstack/react-query'
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
+import { useRuntimeMessageRepository } from '@/app/chat/runtime-repository'
+import { useSessionTileActions } from '@/app/chat/session-tile-actions'
 import { usePromptActions } from '@/app/session/hooks/use-prompt-actions'
 import type { ClientSessionState } from '@/app/types'
-import { chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import type { RpcEvent } from '@/types/hermes'
+import { IncrementalExternalStoreRuntimeCore } from '@/lib/incremental-external-store-runtime'
+import { setSessionTileDelegate } from '@/store/session-states'
 
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -31,11 +36,11 @@ import { useMessageStream } from './index'
 
 const SID = 'steer-order-session'
 
-let handleEvent: ((event: RpcEvent) => void) | null = null
+let handleEvent: ((event: GatewayEvent) => void) | null = null
 let redirect: ((text: string) => Promise<boolean>) | null = null
 let states: Map<string, ClientSessionState>
 
-/** The gateway accepts every redirect — these suites pin CLIENT ordering. */
+/** Stub only the RPC boundary; both action handlers and streaming reducers are real. */
 const requestGatewayMock = vi.fn(async (method: string): Promise<unknown> =>
   method === 'session.redirect' ? { status: 'redirected' } : {}
 )
@@ -46,7 +51,7 @@ const requestGateway = requestGatewayMock as unknown as <T>(
   timeoutMs?: number
 ) => Promise<T>
 
-function Harness() {
+function Harness({ tile = false }: { tile?: boolean }) {
   const activeSessionIdRef = useRef<null | string>(SID)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const queryClientRef = useRef(new QueryClient())
@@ -93,18 +98,36 @@ function Harness() {
     updateSessionState
   })
 
+  const tileActions = useSessionTileActions({
+    requestGateway,
+    runtimeId: SID,
+    storedSessionId: SID,
+    scope: MAIN_COMPOSER_SCOPE
+  })
+
   useEffect(() => {
+    setSessionTileDelegate({
+      archiveSession: async () => undefined,
+      branchSession: async () => undefined,
+      branchSessionAtMessage: async () => false,
+      deleteSession: async () => undefined,
+      executeSlash: async () => undefined,
+      interruptSession: async () => undefined,
+      resumeTile: async () => SID,
+      submitToSession: async () => ({ runtimeSessionId: SID, storedSessionId: SID }),
+      updateSession: updateSessionState
+    })
     handleEvent = stream.handleGatewayEvent
-    redirect = actions.redirectPrompt
+    redirect = tile ? tileActions.steerPrompt : actions.redirectPrompt
     states = sessionStateByRuntimeIdRef.current
-  }, [stream.handleGatewayEvent, actions.redirectPrompt])
+  }, [stream.handleGatewayEvent, actions.redirectPrompt, tileActions.steerPrompt, tile])
 
   return null
 }
 
-async function mountHarness() {
+async function mountHarness(tile = false) {
   vi.useFakeTimers()
-  render(<Harness />)
+  render(<Harness tile={tile} />)
   await act(async () => {
     await Promise.resolve()
   })
@@ -116,7 +139,7 @@ const flushDeltas = async () => {
   })
 }
 
-const emit = (event: RpcEvent) => act(() => handleEvent?.(event))
+const emit = (event: GatewayEvent) => act(() => handleEvent?.(event))
 
 /** A real steer: redirectPrompt's optimistic insert + the gateway round-trip. */
 const steer = async (text: string) => {
@@ -255,6 +278,69 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     ])
   })
 
+  it.each([false, true])('a refused redirect preserves the continuing stream (tile=%s)', async tile => {
+    await mountHarness(tile)
+
+    for (const refusal of ['not_running', 'error'] as const) {
+      emit({ payload: {}, session_id: SID, type: 'message.start' })
+      emit({ payload: { text: 'before' }, session_id: SID, type: 'message.delta' })
+      await flushDeltas()
+      const originalId = states.get(SID)!.streamId
+      const priorCount = states.get(SID)!.messages.length
+      let refuse!: () => void
+      requestGatewayMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            refuse = () =>
+              refusal === 'error' ? reject(new Error('correction refused')) : resolve({ status: refusal })
+          })
+      )
+      let pending!: Promise<unknown>
+      act(() => {
+        pending = redirect!('not accepted').catch(error => error)
+      })
+      emit({ payload: { text: ' during' }, session_id: SID, type: 'message.delta' })
+      await flushDeltas()
+      await act(async () => {
+        refuse()
+        const outcome = await pending
+
+        if (refusal === 'error') {expect(outcome).toBeInstanceOf(Error)}
+        else {expect(outcome).toBe(false)}
+      })
+      emit({ payload: { text: ' after' }, session_id: SID, type: 'message.delta' })
+      await flushDeltas()
+      const current = states.get(SID)!
+      expect(current.messages).toHaveLength(priorCount)
+      expect(current.streamId).toBe(originalId)
+      expect(current.interimBoundaryPending).toBe(false)
+      expect(current.messages.at(-1)).toMatchObject({ id: originalId, pending: true })
+      expect(chatMessageText(current.messages.at(-1)!)).toBe('before during after')
+      emit({ payload: { text: 'before during after done' }, session_id: SID, type: 'message.complete' })
+      expect(states.get(SID)!.messages).toHaveLength(priorCount)
+      expect(chatMessageText(states.get(SID)!.messages.at(-1)!)).toBe('before during after done')
+    }
+  })
+
+  it.each([false, true])('a delayed accepted redirect does not move its correction past a new reply (tile=%s)', async tile => {
+    await mountHarness(tile)
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'old reply' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    let accept!: () => void
+    requestGatewayMock.mockImplementationOnce(() => new Promise(resolve => { accept = () => resolve({ status: 'redirected' }) }))
+    let pending!: Promise<unknown>
+    act(() => { pending = redirect!('correction') })
+    emit({ payload: { text: 'old reply' }, session_id: SID, type: 'message.complete' })
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'new reply' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    const newStreamId = states.get(SID)!.streamId
+    await act(async () => { accept(); await pending })
+    expect(states.get(SID)!.streamId).toBe(newStreamId)
+    expect(states.get(SID)!.messages.map(message => chatMessageText(message))).toEqual(['old reply', 'correction', 'new reply'])
+  })
+
   it('a redirect the gateway rejects discards the optimistic bubble instead of stranding it', async () => {
     await mountHarness()
 
@@ -274,5 +360,79 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
 
     emit({ payload: { text: 'streaming along — done' }, session_id: SID, type: 'message.complete' })
     expect(chatMessageText(states.get(SID)!.messages.at(-1)!)).toContain('done')
+  })
+
+  it('a redirect inside a regenerated turn keeps the partial reply and the correction on screen', async () => {
+    await mountHarness()
+
+    // Regenerate armed the turn: the old reply is a hidden branch variant and
+    // the live stream joins its branch group.
+    act(() => {
+      states.set(SID, {
+        ...createClientSessionState(),
+        busy: true,
+        messages: [
+          { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'the question' }] },
+          {
+            id: 'a-old',
+            role: 'assistant',
+            parts: [{ type: 'text', text: 'old answer' }],
+            branchGroupId: 'g1',
+            hidden: true
+          }
+        ],
+        pendingBranchGroup: 'g1'
+      })
+    })
+
+    // What the chat surface renders: the store projected through the runtime
+    // repository and the incremental external-store runtime.
+    const repository = renderHook(
+      ({ messages }: { messages: ChatMessage[] }) => useRuntimeMessageRepository(messages),
+      {
+        initialProps: { messages: [] as ChatMessage[] }
+      }
+    )
+
+    const runtime = new IncrementalExternalStoreRuntimeCore({ messages: [], onNew: async () => undefined })
+
+    const onScreen = () => {
+      const state = states.get(SID)!
+
+      repository.rerender({ messages: state.messages })
+      runtime.setAdapter({
+        isRunning: state.busy,
+        messageRepository: repository.result.current,
+        onNew: async () => undefined
+      })
+
+      return runtime.threads
+        .getMainThreadRuntimeCore()
+        .messages.map(
+          message => `${message.role}:${message.content.map(part => ('text' in part ? part.text : '')).join('')}`
+        )
+        .filter(row => row !== 'assistant:')
+    }
+
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'partial regenerated reply' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    expect(onScreen()).toEqual(['user:the question', 'assistant:partial regenerated reply'])
+
+    await steer('actually, shorter')
+    emit({ payload: { text: 'short answer' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+
+    const expected = [
+      'user:the question',
+      'assistant:partial regenerated reply',
+      'user:actually, shorter',
+      'assistant:short answer'
+    ]
+
+    expect(onScreen()).toEqual(expected)
+
+    emit({ payload: { text: 'short answer' }, session_id: SID, type: 'message.complete' })
+    expect(onScreen()).toEqual(expected)
   })
 })

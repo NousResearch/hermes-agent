@@ -1,11 +1,9 @@
 """Tests for --yolo (HERMES_YOLO_MODE) approval bypass."""
 
-import os
 import pytest
 
 import tools.approval as approval_module
 from tools import approval_context
-import tools.tirith_security
 
 from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, disable_session_yolo, enable_session_yolo, is_approval_bypass_active_for_session, is_session_yolo_enabled
 from tools.approval_context import reset_current_session_key, set_current_session_key
@@ -86,25 +84,11 @@ class TestYoloMode:
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
 
-        called = {"value": False}
-
-        def fake_check(command):
-            called["value"] = True
-            return {"action": "block", "findings": [], "summary": "should never run"}
-
-        monkeypatch.setattr(tools.tirith_security, "check_command_security", fake_check)
-
-        # Non-hardline dangerous command — yolo should bypass tirith+dangerous.
+        # Non-hardline dangerous command — yolo bypasses the dangerous-pattern prompt.
         result = check_all_command_guards("rm -rf /tmp/stuff", "local")
         assert result["approved"]
         assert result["message"] is None
-        assert called["value"] is False
 
-    def test_yolo_mode_not_set_by_default(self):
-        """HERMES_YOLO_MODE should not be set by default."""
-        # Clean env check — if it happens to be set in test env, that's fine,
-        # we just verify the mechanism exists
-        assert os.getenv("HERMES_YOLO_MODE") is None or True  # no-op, documents intent
 
 
     @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])

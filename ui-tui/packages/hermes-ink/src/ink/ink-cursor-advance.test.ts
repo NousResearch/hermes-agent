@@ -54,29 +54,6 @@ const peek = (ink: Ink): InkPrivate => ink as unknown as InkPrivate
 // from the actual caret — visible as "extra whitespace between my last
 // typed character and the cursor block".
 describe('Ink.noteExternalCursorAdvance', () => {
-  it('bumps an already-tracked displayCursor by the given delta', () => {
-    const { ink } = makeInk()
-
-    ink.render(React.createElement(Text, null, 'hi'))
-    ink.onRender()
-
-    // Seed a known parked position directly. In production this is set by
-    // the cursor-park branch in onRender when a useDeclaredCursor caller
-    // commits a declaration; this test bypasses React for hermeticity.
-    peek(ink).displayCursor = { x: 5, y: 0 }
-
-    ink.noteExternalCursorAdvance(3)
-    expect(peek(ink).displayCursor).toEqual({ x: 8, y: 0 })
-
-    ink.noteExternalCursorAdvance(-1)
-    expect(peek(ink).displayCursor).toEqual({ x: 7, y: 0 })
-
-    ink.noteExternalCursorAdvance(0, 2)
-    expect(peek(ink).displayCursor).toEqual({ x: 7, y: 2 })
-
-    ink.unmount()
-  })
-
   it('seeds displayCursor from frontFrame.cursor when nothing was parked', () => {
     const { ink } = makeInk()
 

@@ -32,10 +32,9 @@ import faulthandler
 import json
 import logging
 import os
-import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -95,19 +94,14 @@ _FIRING = "firing"
 # gateway.run.main / cli.py --gateway) and the disarm site (GatewayRunner)
 # share no object, and only one gateway startup ever runs per process.
 _handle_lock = threading.Lock()
-_handle: Optional["StartupWatchdogHandle"] = None
+_handle: Optional[StartupWatchdogHandle] = None
 
 
 def _process_hermes_home() -> Path:
-    """HERMES_HOME for diagnostic files — stdlib-only replica of the hermes_constants default."""
-    val = os.environ.get("HERMES_HOME", "").strip()
-    if val:
-        return Path(val)
-    if sys.platform == "win32":
-        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-        return base / "hermes"
-    return Path.home() / ".hermes"
+    """Use the stdlib-only process resolver before application startup."""
+    from hermes_constants import get_process_hermes_home
+
+    return get_process_hermes_home()
 
 
 def get_startup_watchdog_dump_path(home: Optional[Path] = None) -> Path:
@@ -150,7 +144,7 @@ def _append_dump(write, failure_msg: str) -> None:
         logger.debug(failure_msg, exc_info=True)
 
 
-def _write_dump_record(record: Dict[str, Any]) -> None:
+def _write_dump_record(record: dict[str, Any]) -> None:
     """Append a one-line JSON metadata record beside the faulthandler dump."""
     _append_dump(
         lambda fh: fh.write(json.dumps(record, default=str) + "\n"),
@@ -293,7 +287,7 @@ class StartupWatchdogHandle:
         )
         _write_dump_record(
             {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "tag": "startup_watchdog.fired",
                 "pid": os.getpid(),
                 "timeout_s": self.timeout_s,
@@ -304,16 +298,16 @@ class StartupWatchdogHandle:
                 "exit_code": self.exit_code,
             }
         )
-        try:
-            faulthandler.dump_traceback(all_threads=True)
-        except Exception:
-            logger.debug("Startup watchdog faulthandler dump failed", exc_info=True)
-        # Also dump into the log file: detached/windowless runs (pythonw, some
-        # service managers) may have no stderr, and forensics are the point.
+        # Write the durable copy first. A detached service can have a blocked
+        # stderr, and the exit escort bounds the whole forensic path to 10s.
         _append_dump(
             lambda fh: faulthandler.dump_traceback(file=fh, all_threads=True),
             "Startup watchdog file-based faulthandler dump failed",
         )
+        try:
+            faulthandler.dump_traceback(all_threads=True)
+        except Exception:
+            logger.debug("Startup watchdog faulthandler dump failed", exc_info=True)
         # Ledger write on a helper thread (it imports application code; the
         # wedged main thread may hold the import lock). Bounded join, then exit
         # regardless — NS-608 classification is best-effort; the respawn is not.

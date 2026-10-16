@@ -15,13 +15,13 @@ Import an OpenClaw setup (memories, skills) into Hermes.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/migration/openclaw-migration` |
-| Path | `optional-skills/migration\openclaw-migration` |
+| Path | `optional-skills/migration/openclaw-migration` |
 | Version | `1.0.0` |
 | Author | Hermes Agent (Nous Research) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Migration`, `OpenClaw`, `Hermes`, `Memory`, `Persona`, `Import` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| Related skills | [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 
@@ -120,7 +120,7 @@ For every `clarify` call:
 - never include fake form fields in the question such as `enter directory here`, blank lines to fill in, or underscores like `_____`
 - for open-ended path questions, ask only the plain sentence; the user types in the normal CLI prompt below the panel
 
-If a `clarify` call returns an error, inspect the error text, correct the payload, and retry once with a valid `question` and clean choices.
+If a `clarify` call returns an error, inspect the error text, correct the payload, and retry once with a valid `questions` array and clean choices.
 
 When `clarify` is available and the dry run reveals any required user decision, your **next action must be a `clarify` tool call**.
 Do not end the turn with a normal assistant message such as:
@@ -243,6 +243,9 @@ Prefer these two presets in normal use:
 The helper script still supports category-level `--include` / `--exclude`, but treat that as an advanced fallback rather than the default UX.
 
 ## Commands
+
+Run the helper with Hermes' Python environment, which includes `ruamel.yaml`.
+For a standalone Python environment, install `ruamel.yaml==0.18.17` first.
 
 Dry run with full discovery:
 

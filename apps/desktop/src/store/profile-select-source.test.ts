@@ -20,6 +20,8 @@ const resetStarmapGraph = vi.fn()
 vi.mock('@/store/gateway', () => ({
   $gateway,
   activeGatewayConnectionId,
+  // Activation now verifies the socket's route before publishing the profile.
+  activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForProfile
@@ -29,7 +31,7 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph }))
 
 const { $activeGatewayProfile, newSessionInProfile, selectProfile } = await import('./profile')
 

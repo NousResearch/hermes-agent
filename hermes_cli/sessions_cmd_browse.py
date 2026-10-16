@@ -4,6 +4,7 @@ delete-with-confirmation; numbered-list fallback when curses is unavailable (Win
 from typing import Optional
 
 from hermes_cli.timefmt import relative_time as _relative_time
+from hermes_state_errors import SessionActiveWriteGuardError
 
 
 def _session_status_tag(status: Optional[str]) -> str:
@@ -58,7 +59,7 @@ def _format_row(s: dict, max_x: int) -> str:
     name = ((s.get("title") or "").strip() or (s.get("preview") or "").strip())[:name_width] or sid
     return (
         f"{name:<{name_width}}  {_session_status_tag(s.get('_status')):<5}  "
-        f"{_msgs_str(s):>5}  {_relative_time(s.get('last_active')):<10}  "
+        f"{_msgs_str(s):>5}  {_relative_time(s.get('last_active'), session_id=s['id']):<10}  "
         f"{s.get('source', '')[:6]:<5} {sid}"
     )
 
@@ -152,7 +153,12 @@ class _CursesBrowser:
             target, self.confirm_delete = self.confirm_delete, None
             if key not in {ord("y"), ord("Y")}:
                 return False
-            if not self.delete_fn(target["id"]):
+            try:
+                ok = self.delete_fn(target["id"])
+            except SessionActiveWriteGuardError:
+                self.flash = "Session is active (a live turn owns it); try again when it finishes."
+                return False
+            if not ok:
                 self.flash = "Delete failed."
                 return False
             self.sessions[:] = [s for s in self.sessions if s["id"] != target["id"]]
@@ -218,7 +224,7 @@ def _fallback_picker(sessions: list) -> Optional[str]:
     for i, s in enumerate(sessions):
         print(
             f"  {i + 1:>3}. {_clip(_label(s), 50):<50}  {_session_status_tag(s.get('_status')):<5}  "
-            f"{_msgs_str(s):>5}  {_relative_time(s.get('last_active')):<10}  {s.get('source', '')[:6]}"
+            f"{_msgs_str(s):>5}  {_relative_time(s.get('last_active'), session_id=s['id']):<10}  {s.get('source', '')[:6]}"
         )
     while True:
         try:
@@ -254,7 +260,9 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
         except Exception:
             sessions_dir = None
         try:
-            return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir))
+            return bool(session_db.delete_session(session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True))
+        except SessionActiveWriteGuardError:
+            raise  # the browser tells the user the session is busy instead of a generic failure
         except Exception:
             return False
     try:  # curses first; any failure (no curses module, odd terminal) falls back

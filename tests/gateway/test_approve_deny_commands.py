@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -324,45 +324,35 @@ class TestBlockingApprovalE2E:
     def test_blocking_approval_uses_canonical_timeout(self, approval_config, monkeypatch):
         """Gateway waits use approvals.timeout, without a second timeout knob."""
         from tools import approval as approval_module
-        from tools.approval import check_all_command_guards, register_gateway_notify, resolve_gateway_approval, unregister_gateway_notify
+        from tools.approval import check_all_command_guards, register_gateway_notify, unregister_gateway_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
 
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         session_key = "e2e-timeout"
-        register_gateway_notify(session_key, lambda d: None)
+        notified = []
+        register_gateway_notify(session_key, notified.append)
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        token = set_current_session_key(session_key)
+        try:
+            # Zero expires in the real poll loop. A timed join followed by /deny
+            # races pre-approval hooks and changes the outcome being tested.
+            with patch(
+                "tools.approval_context._get_approval_config",
+                return_value=approval_config,
+            ):
+                result = check_all_command_guards("rm -rf /important", "local")
 
-        result_holder = [None]
-
-        def agent_thread():
-            token = set_current_session_key(session_key)
-            os.environ["HERMES_GATEWAY_SESSION"] = "1"
-            os.environ["HERMES_EXEC_ASK"] = "1"
-            os.environ["HERMES_SESSION_KEY"] = session_key
-            try:
-                with patch(
-                    "tools.approval_context._get_approval_config",
-                    return_value=approval_config,
-                ):
-                    result_holder[0] = check_all_command_guards(
-                        "rm -rf /important", "local"
-                    )
-            finally:
-                os.environ.pop("HERMES_GATEWAY_SESSION", None)
-                os.environ.pop("HERMES_EXEC_ASK", None)
-                os.environ.pop("HERMES_SESSION_KEY", None)
-                reset_current_session_key(token)
-
-        t = threading.Thread(target=agent_thread)
-        t.start()
-        t.join(timeout=1)
-        if t.is_alive():
-            resolve_gateway_approval(session_key, "deny")
-            t.join(timeout=5)
-
-        assert result_holder[0]["approved"] is False
-        assert result_holder[0]["outcome"] == "timeout"
-        assert "timed out" in result_holder[0]["message"]
-        unregister_gateway_notify(session_key)
+            assert len(notified) == 1
+            assert result["approved"] is False
+            assert result["user_consent"] is False
+            assert result["outcome"] == "timeout"
+            assert "timed out" in result["message"]
+            assert approval_module.list_gateway_approvals(session_key) == []
+        finally:
+            reset_current_session_key(token)
+            unregister_gateway_notify(session_key)
 
     def test_parallel_subagent_approvals(self):
         """Multiple threads can block concurrently and be resolved independently."""
@@ -468,7 +458,7 @@ class TestCrossSessionApprovalIsolation:
     a concurrent gateway session (e.g. a second Discord thread) clobbered
     the value, and a tool worker thread whose approval contextvar was unset
     fell back to ``os.environ`` and read the *wrong* session key — routing
-    the "Command Approval Required" prompt to the wrong thread.
+    the approval prompt to the wrong thread.
 
     The fix removes that ``os.environ`` write; routing is driven solely by
     the ``_approval_session_key`` contextvar. These tests assert that a

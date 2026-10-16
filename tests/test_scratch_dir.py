@@ -11,7 +11,9 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
+from hermes_constants import (apply_scratch_tmp_env, get_scratch_dir, is_scratch_path,
+                              prune_scratch_dir, session_scratch_dir, _scratch_session_component,
+                              _SCRATCH_SESSION_COMPONENT_MAX, SCRATCH_SESSION_PREFIX)
 
 
 def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
@@ -35,8 +37,13 @@ def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
 
 
 def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
-    """``import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""
-    env = {k: v for k, v in os.environ.items() if k not in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")}
+    """``import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch.
+
+    Unscoped on purpose (no session in the child env): a bound session gets its own lane, which
+    ``test_bootstrap_export_follows_the_bound_session`` covers.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR", "HERMES_SESSION_ID")}
     env["HERMES_HOME"] = str(tmp_path)
     code = ("import tempfile, os, subprocess, sys; import hermes_bootstrap; "
             "print(tempfile.gettempdir()); "
@@ -46,6 +53,23 @@ def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), check=True)
     expected = str(tmp_path / "cache" / "scratch")
     assert out.stdout.split() == [expected, expected]
+
+
+def test_bootstrap_export_follows_the_bound_session(tmp_path):
+    """With a session bound, the bootstrap exports the session lane -- in this process and in a
+    child that inherits the env -- so ``tempfile`` writes land where the session can claim them."""
+    env = {k: v for k, v in os.environ.items() if k not in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")}
+    env["HERMES_HOME"] = str(tmp_path)
+    env["HERMES_SESSION_ID"] = "api_1_abc"
+    code = ("import tempfile, os, subprocess, sys; import hermes_bootstrap; "
+            "print(tempfile.gettempdir()); "
+            "print(subprocess.run([sys.executable, '-c', 'import tempfile;print(tempfile.gettempdir())'],"
+            " capture_output=True, text=True).stdout.strip())")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, encoding="utf-8",
+                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), check=True)
+    expected = str(_lane_dir(tmp_path, "api_1_abc"))
+    assert out.stdout.split() == [expected, expected]
+    assert os.path.isdir(expected)
 
 
 def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path):
@@ -387,3 +411,171 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     listing = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True,
                              text=True, stdin=subprocess.DEVNULL, check=True).stdout
     assert str(tree) not in listing and not tree.exists()
+
+
+# ── Session-scoped lanes ─────────────────────────────────────────────────────
+
+def _lane_dir(home, session_id: str):
+    """A session lane under *home*: ``<scratch>/session-<component>`` with the current
+    sanitizer (readable prefix + stable hash), so assertions stay in sync with the
+    component contract instead of hard-coding the hash value."""
+    return get_scratch_dir(home, prune=False) / (SCRATCH_SESSION_PREFIX + _scratch_session_component(session_id))
+
+
+def test_session_scratch_lane_is_per_session(tmp_path, monkeypatch):
+    """A bound session gets its own lane, so a concurrent session's temp files never share one
+    tree (and nothing has to guess which session left a file behind)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SESSION_ID", "api_1_abc")
+    lane_a = session_scratch_dir()
+    assert lane_a == _lane_dir(tmp_path, "api_1_abc")
+    assert lane_a.is_dir()
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "cli_2_def")
+    lane_b = session_scratch_dir()
+    assert lane_b == _lane_dir(tmp_path, "cli_2_def")
+    assert lane_a != lane_b and lane_a.is_dir() and lane_b.is_dir()
+
+
+def test_session_scratch_env_points_tmpdir_at_the_lane(tmp_path):
+    """TMPDIR follows the session lane, and a Hermes-set value is re-derived per session, while a
+    user/OS-set TMPDIR still wins."""
+    env = {"HERMES_HOME": str(tmp_path), "HERMES_SESSION_ID": "api_1_abc"}
+    assert apply_scratch_tmp_env(env) is True
+    lane = str(_lane_dir(tmp_path, "api_1_abc"))
+    assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == env["HERMES_SCRATCH_DIR"] == lane
+    assert os.path.isdir(lane)
+
+    env["HERMES_SESSION_ID"] = "cli_2_def"
+    assert apply_scratch_tmp_env(env) is True
+    assert env["TMPDIR"] == str(_lane_dir(tmp_path, "cli_2_def"))
+
+    user_env = {"HERMES_HOME": str(tmp_path), "HERMES_SESSION_ID": "api_1_abc",
+                "TMPDIR": "/var/folders/zz"}
+    assert apply_scratch_tmp_env(user_env) is False
+    assert user_env["TMPDIR"] == "/var/folders/zz" and "HERMES_SCRATCH_DIR" not in user_env
+
+
+def test_no_session_bound_keeps_the_shared_scratch_dir(tmp_path, monkeypatch):
+    """CLI/cron without a bound session must not invent one: TMPDIR stays on the shared dir."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    assert session_scratch_dir() is None
+    env = {"HERMES_HOME": str(tmp_path)}
+    assert apply_scratch_tmp_env(env) is True
+    assert env["TMPDIR"] == str(tmp_path / "cache" / "scratch")
+
+
+def test_engaged_gateway_unset_context_never_borrows_foreign_env_mirror(tmp_path, monkeypatch):
+    """Blocker 1 regression: an engaged gateway host whose CURRENT task has no bound session
+    (ContextVar ``_UNSET``) must not borrow the process ``os.environ`` mirror -- it is
+    last-writer-wins and may belong to a CONCURRENT session.  Such a task falls back to the
+    shared scratch root; only a plain CLI/cron (never engaged) may trust the env mirror."""
+    import gateway.session_context as sc
+    saved_engaged = sc._session_context_engaged
+    sc._session_context_engaged = True  # a concurrent multi-session host is engaged
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SESSION_ID", "foreign-gateway-session")
+    try:
+        # The task context was never bound here: no lane is invented from the mirror.
+        assert session_scratch_dir() is None
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert apply_scratch_tmp_env(env) is True
+        assert env["TMPDIR"] == str(tmp_path / "cache" / "scratch")
+        assert "session-" not in env["TMPDIR"]
+        # Even a child env whose HERMES_SESSION_ID was copied from os.environ must stay on
+        # the shared root: the mirror may name another concurrent session.
+        child = {"HERMES_HOME": str(tmp_path), "HERMES_SESSION_ID": "foreign-gateway-session"}
+        assert apply_scratch_tmp_env(child) is True
+        assert child["TMPDIR"] == str(tmp_path / "cache" / "scratch")
+        # But a BOUND session in THIS task still gets its own lane (mirror stays ignored).
+        assert sc._SESSION_ID.get() is sc._UNSET
+        sc._SESSION_ID.set("bound-session-id")
+        try:
+            assert session_scratch_dir() == _lane_dir(tmp_path, "bound-session-id")
+        finally:
+            sc._SESSION_ID.set(sc._UNSET)
+    finally:
+        sc._session_context_engaged = saved_engaged
+
+
+def test_scratch_scope_can_be_pinned_to_shared(tmp_path, monkeypatch):
+    """HERMES_SCRATCH_SCOPE=shared restores the unscoped layout for operators who script against
+    one fixed temp dir."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SESSION_ID", "api_1_abc")
+    monkeypatch.setenv("HERMES_SCRATCH_SCOPE", "shared")
+    assert session_scratch_dir() is None
+    env = {"HERMES_HOME": str(tmp_path), "HERMES_SESSION_ID": "api_1_abc"}
+    assert apply_scratch_tmp_env(env) is True
+    assert env["TMPDIR"] == str(tmp_path / "cache" / "scratch")
+
+
+def test_session_lane_component_cannot_escape_the_scratch_root(tmp_path, monkeypatch):
+    """A custom/imported session id is sanitized: separators and ``..`` never relocate the lane."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    root = get_scratch_dir(prune=False)
+    lane = session_scratch_dir(session_id="../../etc/evil")
+    assert lane is not None
+    assert lane.parent == root and root in lane.parents
+    # An id that sanitizes to nothing still gets a lane (never the bare root).
+    assert session_scratch_dir(session_id="///").parent == root
+
+
+def test_lane_component_separator_collision_is_eliminated():
+    """``a/b`` and ``a_b`` sanitize to the same prefix but must not share one lane: the lossy
+    separator replacement used to fuse them onto ``session-a_b``, silently merging the scratch
+    trees of two different sessions."""
+    assert _scratch_session_component("a/b") != _scratch_session_component("a_b")
+    assert _scratch_session_component("api/1_abc") != _scratch_session_component("api_1_abc")
+
+
+def test_lane_component_truncation_collision_is_eliminated():
+    """Two distinct ids sharing their first 64 characters used to collapse onto one lane after
+    truncation (the old sanitizer kept ``cleaned[:64]``, so the tail never mattered); the
+    appended hash of the FULL id keeps them apart."""
+    long_id_a = "s" * 80 + "A"
+    long_id_b = "s" * 80 + "B"
+    # Both ids sanitize to a prefix > 64 chars, so the old code truncated both to the same
+    # 64-char string; today the hash suffix separates them.
+    assert _scratch_session_component(long_id_a) != _scratch_session_component(long_id_b)
+    # The readable prefix is still truncated to fit the component budget (64 = prefix + 1 + hash).
+    assert len(_scratch_session_component(long_id_a)) == _SCRATCH_SESSION_COMPONENT_MAX
+
+
+def test_lane_component_empty_sanitize_collision_is_eliminated():
+    """Ids that sanitize to nothing (``///``, ``___``) all used to fall back to the literal
+    ``session`` component, fusing every such id onto one lane; the hash now separates them."""
+    assert _scratch_session_component("///") != _scratch_session_component("___")
+    assert _scratch_session_component("///") != _scratch_session_component("!!!")
+
+
+def test_session_lanes_are_pruned_individually(tmp_path):
+    """Idle retention keeps working per lane: an old session's lane goes, a live one stays."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    old = scratch / "session-old_session"
+    live = scratch / "session-live_session"
+    old.mkdir(parents=True)
+    live.mkdir(parents=True)
+    (old / "helper.sh").write_text("x", encoding="utf-8")
+    (live / "helper.sh").write_text("x", encoding="utf-8")
+    stale = time.time() - 48 * 3600
+    os.utime(old / "helper.sh", (stale, stale))
+    os.utime(old, (stale, stale))
+    assert prune_scratch_dir(scratch, max_idle_hours=24) == 1
+    assert not old.exists() and live.is_dir()
+
+
+def test_is_scratch_path_covers_the_root_and_every_lane(tmp_path, monkeypatch):
+    """The predicate the checkpoint manager uses: the scratch root and anything inside it, never
+    a sibling directory that merely lives under the same cache dir."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    scratch = get_scratch_dir(prune=False)
+    lane = session_scratch_dir(session_id="api_1_abc")
+    assert is_scratch_path(scratch) is True
+    assert is_scratch_path(lane) is True
+    assert is_scratch_path(lane / "nested" / "deep.sh") is True
+    assert is_scratch_path(tmp_path / "cache" / "other") is False
+    assert is_scratch_path(tmp_path) is False
+    assert is_scratch_path("/tmp") is False
+    assert is_scratch_path(None) is False

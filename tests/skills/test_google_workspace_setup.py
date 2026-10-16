@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 from unittest.mock import Mock
+from urllib.parse import urlparse
 
 import pm
 import pytest
@@ -53,3 +54,14 @@ def test_auth_uses_pm_import_check(setup_module, monkeypatch):
     setup_module._ensure_deps()
 
     ensure.assert_called_once_with("google")
+
+
+def test_manual_oauth_redirect_uses_browser_safe_loopback_port(setup_module):
+    """Workspace's manual copy flow shares the safe no-listener redirect contract."""
+
+    redirect = urlparse(setup_module.REDIRECT_URI)
+    blocked_browser_ports = {1, 6000, 6667, 10080}
+    assert redirect.scheme == "http"
+    assert redirect.hostname == "localhost"
+    assert redirect.port not in blocked_browser_ports
+    assert redirect.port != 8765

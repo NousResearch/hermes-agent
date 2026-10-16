@@ -54,7 +54,10 @@ _REQUIRED_PACKAGES = [
 
 # Google deprecated the ``oob`` flow: use a localhost redirect that is expected
 # to FAIL; the user pastes the code from the failed browser URL back into chat.
-_REDIRECT_URI = "http://localhost:1"
+# Avoid port 1: browsers block it as unsafe before navigation, so the code never
+# appears in the address bar. Avoid 8765 too: Hermes already uses it for several
+# local webhook/OAuth listeners, so a live local service could receive the code.
+_REDIRECT_URI = "http://localhost:53135"
 
 
 def _sanitize_email(email: str) -> str:

@@ -1757,6 +1757,9 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        from tools.delegate_tool_config import cleanup_session_budget
+        for sid in removed_ids:
+            cleanup_session_budget(sid)
         return bool(deleted)
 
     def discard_unadmitted_session(self, session_id: str) -> bool:
@@ -1903,6 +1906,9 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        from tools.delegate_tool_config import cleanup_session_budget
+        for sid in removed_ids:
+            cleanup_session_budget(sid)
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count
@@ -1945,6 +1951,9 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
+        from tools.delegate_tool_config import cleanup_session_budget
+        for sid in removed_ids:
+            cleanup_session_budget(sid)
         return count
 
     def archive_sessions(

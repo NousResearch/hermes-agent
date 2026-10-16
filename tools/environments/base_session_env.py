@@ -28,7 +28,8 @@ from typing import Iterable
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
-    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_)")
+    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|HERMES_DELEGATED_CHILD_CONTEXT|"
+    "HERMES_RPC_|HERMES_KERNEL_DIR)")
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # mktemp template suffix + the shell variable holding the allocated temp path.
@@ -72,6 +73,14 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # by every wrapper with ${VAR:-default} semantics; persisting them would
         # let the FIRST command's value override a later outer-harness value.
         "AI_AGENT HERMES_AGENT "
+        # Scope markers stamped onto a delegate_task child's / cron run's subprocess
+        # env; a snapshot taken inside that window would re-assert them on every
+        # later ``source`` and fence the PARENT session's kanban CLI (#90782).
+        "HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION "
+        # Remote code-execution channel vars (RPC token, kernel/rpc dirs): a
+        # leaked token in the snapshot would re-export into every later command
+        # on the backend and outlive the private dir it protects.
+        "${!HERMES_RPC_*} HERMES_KERNEL_DIR "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; ) || true; } "
         f"> {tmp_path}")
@@ -122,8 +131,11 @@ def _passthrough_save_restore(names: Iterable[str]) -> tuple[list[str], list[str
 
 def _wrap_command_script(
     command: str, *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str,
-    passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str) -> str:
+    passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str,
+    persist_env: bool = True) -> str:
     """Per-command bash script: source snapshot, cd, run, re-dump env, emit CWD marker.
+    ``persist_env=False`` skips the re-dump, so every command starts from the login-time
+    snapshot and exports from one command never reach the next (the CWD marker still runs).
     ``source`` stdout goes to /dev/null because macOS bash 3.2 / some Homebrew builds echo
     ``declare -x`` lines when sourcing. AI_AGENT/HERMES_AGENT advertise the harness to remote
     backends (whose env is not inherited); ``${VAR:-default}`` never clobbers an outer harness.
@@ -147,7 +159,7 @@ def _wrap_command_script(
         f"eval '{escaped}'",
         "__hermes_ec=$?",
         "umask 077"]
-    if snapshot_ready:
+    if snapshot_ready and persist_env:
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
             f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, passthrough_names)} "

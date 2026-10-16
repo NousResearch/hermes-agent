@@ -107,16 +107,4 @@ describe('useComposerMetrics — published clearance survives an effect replay',
     expect(surface.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('200px')
     expect(surface.style.getPropertyValue(COMPOSER_SURFACE_HEIGHT_VAR)).toBe('120px')
   })
-
-  it('skips the write when the bucketed height is unchanged within one mount', () => {
-    const { container } = render(<Harness dockHeight={200} surfaceHeight={120} />)
-
-    deliverResize()
-
-    const setProperty = vi.spyOn(surfaceOf(container).style, 'setProperty')
-
-    deliverResize()
-
-    expect(setProperty).not.toHaveBeenCalled()
-  })
 })

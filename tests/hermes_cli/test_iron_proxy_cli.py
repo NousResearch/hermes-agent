@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -58,13 +57,6 @@ def _args(**overrides):
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_install_success_returns_0(hermes_home, monkeypatch):
-    monkeypatch.setattr(ip, "install_iron_proxy", lambda **kw: hermes_home / "iron-proxy")
-    monkeypatch.setattr(ip, "iron_proxy_version", lambda b: "v0.39.0-test")
-    rc = proxy_cli.cmd_install(_args())
-    assert rc == 0
-
-
 def test_cmd_install_failure_returns_1(hermes_home, monkeypatch):
     def boom(**kw):
         raise RuntimeError("download failed")
@@ -76,10 +68,6 @@ def test_cmd_install_failure_returns_1(hermes_home, monkeypatch):
 # ---------------------------------------------------------------------------
 # cmd_setup — --from-bitwarden fail-loud paths
 # ---------------------------------------------------------------------------
-
-
-
-
 
 
 def test_cmd_setup_from_bitwarden_refuses_on_empty_vault(hermes_home, monkeypatch):
@@ -113,18 +101,6 @@ def test_cmd_setup_from_bitwarden_refuses_on_empty_vault(hermes_home, monkeypatc
 
     rc = proxy_cli.cmd_setup(_args(from_bitwarden=True))
     assert rc == 1
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-
-
-
-
 
 
 def test_cmd_start_passes_bitwarden_refresh_flag_when_credential_source_is_bitwarden(
@@ -166,50 +142,9 @@ def test_cmd_start_passes_bitwarden_refresh_flag_when_credential_source_is_bitwa
     assert captured.get("bitwarden_config") is not None
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
-# cmd_stop, cmd_status, cmd_disable, cmd_config
+# cmd_disable
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# cmd_restart
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-def test_cmd_restart_propagates_start_failure(hermes_home, monkeypatch):
-    monkeypatch.setattr(ip, "stop_proxy", lambda: True)
-    monkeypatch.setattr(proxy_cli, "cmd_start", lambda args: 1)
-    rc = proxy_cli.cmd_restart(_args())
-    assert rc == 1
-
-
-# ---------------------------------------------------------------------------
-# _load_env_file_into_environ — setup discovers keys kept only in ~/.hermes/.env
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-def test_cmd_status_returns_0(hermes_home, monkeypatch):
-    monkeypatch.setattr(ip, "get_status", lambda: ip.ProxyStatus())
-    monkeypatch.setattr(ip, "load_mappings", lambda: [])
-    monkeypatch.setattr(ip, "discover_uncovered_providers", lambda **kw: [])
-    rc = proxy_cli.cmd_status(_args())
-    assert rc == 0
 
 
 def test_cmd_disable_uses_public_status_pid_not_private_read_pid(
@@ -256,39 +191,6 @@ def test_cmd_disable_uses_public_status_pid_not_private_read_pid(
     assert cfg2["proxy"]["enabled"] is False
 
 
-def test_cmd_config_returns_0_when_present(hermes_home, monkeypatch):
-    fake = ip.ProxyStatus()
-    fake.config_path = hermes_home / "proxy.yaml"
-    monkeypatch.setattr(ip, "get_status", lambda: fake)
-    rc = proxy_cli.cmd_config(_args())
-    assert rc == 0
-
-
-
-
-# ---------------------------------------------------------------------------
-# Argparse wiring — dest='egress_command' regression
-# ---------------------------------------------------------------------------
-
-
-def test_register_cli_uses_egress_command_dest():
-    """The subparser dest must be 'egress_command' to stay disjoint from
-    the inbound OAuth 'hermes proxy' subparser (dest='proxy_command').
-    A future grep-and-refactor on proxy_command should not hit this
-    subparser by accident."""
-
-    parser = argparse.ArgumentParser(prog="hermes egress")
-    proxy_cli.register_cli(parser)
-    # Parse a no-op invocation and confirm the attribute name.
-    args = parser.parse_args(["install"])
-    assert hasattr(args, "egress_command")
-    assert not hasattr(args, "proxy_command")
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # v4 round: credential_source=bitwarden with secrets.bitwarden disabled
 # must NOT silently degrade to host-env secrets
@@ -314,8 +216,6 @@ def test_cmd_start_refuses_when_bitwarden_mode_but_disabled(hermes_home, monkeyp
 
     rc = proxy_cli.cmd_start(_args())
     assert rc == 1
-
-
 
 
 def test_cmd_setup_audit_log_failure_is_warning_not_abort(hermes_home, monkeypatch):

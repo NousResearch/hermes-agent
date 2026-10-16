@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -45,6 +49,31 @@ function expectTimestampSeparated(container: HTMLElement, precedingText: string)
 }
 
 afterEach(cleanup)
+
+describe('background report inline code', () => {
+  // The report body is the same `aui-md prose` markdown renderer the
+  // assistant turn uses, rendered with no assistant/room slot ancestor. The
+  // real stylesheet's cascade must still reach its `<code>`, or Tailwind
+  // Typography's fixed near-black ink wins on every dark theme (#107486).
+  const stylesheet = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../styles.css'), 'utf8')
+
+  it('themes inline code in an opened report with the chat inline-code tokens', () => {
+    const { container, getByRole } = render(
+      <>
+        <style>{stylesheet}</style>
+        <Harness asyncResult="run `discover_models` first" text="1 background agent finished" />
+      </>
+    )
+
+    fireEvent.click(getByRole('button', { name: '1 background agent finished' }))
+    const code = container.querySelector('[data-role="system"] :not(pre) > code')
+    expect(code).toBeTruthy()
+    const style = getComputedStyle(code as Element)
+
+    expect(style.color).toBe('var(--ui-inline-code-foreground)')
+    expect(style.background).toBe('var(--ui-inline-code-background)')
+  })
+})
 
 describe('background report disclosure', () => {
   it('keeps result bodies out of the transcript until opened and removes them when collapsed', () => {

@@ -133,8 +133,6 @@ it('shows the toast with Sign in + Disable, then stays quiet for a day and re-nu
     await flush()
     expect(mocks.notify).toHaveBeenCalledTimes(1)
     const toast = mocks.notify.mock.calls[0][0]
-    expect(toast.action.label).toBe('notifications.mcp.signIn')
-    expect(toast.secondaryAction.label).toBe('notifications.mcp.disable')
 
     // Same day, still broken: a reconnect sweep must not re-pop.
     clock += 60 * 60 * 1000

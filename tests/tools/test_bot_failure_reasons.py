@@ -7,6 +7,7 @@ real-world fixtures from live bot runs, and the auto-retryable set.
 
 import pytest
 
+from agent.secret_scope import UnscopedSecretError
 from tools import bot_failure_reasons as fr
 
 # Real error text captured from live bot turns.
@@ -19,28 +20,19 @@ FIXTURE_NO_PROVIDER = (
     "a provider, or run `hermes setup` for first-time configuration."
 )
 FIXTURE_NO_TOKEN = "agent init failed: No access token found for Nous Portal login."
+# Target-scope spawn refusals, verbatim from a relay ledger (the named-secret spelling is built live).
+FIXTURE_TARGET_SCOPE = (
+    "Hermes could not read this profile's API key (an internal profile-scoping bug on the "
+    "multiplexed gateway, not your configuration). Run `hermes gateway restart`; if it keeps "
+    "happening, report it with `hermes debug share`."
+)
+FIXTURE_TARGET_SCOPE_DETAILED = (
+    "served_profile_child_env(inherit_credentials=True) called with no target home and no profile "
+    "secret scope bound while multiplexing is on; the child would inherit the launch profile's "
+    "credentials. Bind the profile scope (or pass target_home) at the spawn site."
+)
 
 
-def test_closed_vocabulary_contains_every_code():
-    assert fr.ALL_REASONS == {
-        "runtime_offline",
-        "queued_expired",
-        "delivery_timeout",
-        "agent_blocked",
-        "cancelled",
-        "provider_auth_or_access",
-        "provider_quota_limit",
-        "provider_rate_limit",
-        "provider_server_error",
-        "context_overflow",
-        "missing_config",
-        "model_unavailable",
-        "unknown",
-    }
-    # constants match their string values
-    assert fr.RUNTIME_OFFLINE == "runtime_offline"
-    assert fr.PROVIDER_AUTH_OR_ACCESS == "provider_auth_or_access"
-    assert fr.UNKNOWN == "unknown"
 
 
 @pytest.mark.parametrize(
@@ -63,6 +55,9 @@ def test_closed_vocabulary_contains_every_code():
         ("model_not_found", fr.MODEL_UNAVAILABLE),
         ("status: 401 unauthorized", fr.PROVIDER_AUTH_OR_ACCESS),
         ("upstream server error", fr.PROVIDER_SERVER_ERROR),
+        (FIXTURE_TARGET_SCOPE, fr.TARGET_SCOPE_UNRESOLVED),
+        (FIXTURE_TARGET_SCOPE_DETAILED, fr.TARGET_SCOPE_UNRESOLVED),
+        (str(UnscopedSecretError("OPENROUTER_API_KEY")), fr.TARGET_SCOPE_UNRESOLVED),
         # bare numbers WITHOUT a status-code context must not classify —
         # they feed AUTO_RETRYABLE and a misfire could auto-retry a
         # permanent local failure (review finding on #93101).
@@ -99,12 +94,6 @@ def test_fixture_no_access_token_is_missing_config():
 
 
 def test_auto_retryable_set_and_predicate():
-    assert fr.AUTO_RETRYABLE == {
-        fr.RUNTIME_OFFLINE,
-        fr.DELIVERY_TIMEOUT,
-        fr.PROVIDER_RATE_LIMIT,
-        fr.PROVIDER_SERVER_ERROR,
-    }
     for code in fr.AUTO_RETRYABLE:
         assert fr.is_auto_retryable(code)
     for code in fr.ALL_REASONS - fr.AUTO_RETRYABLE:

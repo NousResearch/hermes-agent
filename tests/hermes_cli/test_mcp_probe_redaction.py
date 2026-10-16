@@ -5,7 +5,7 @@ import itertools
 import json
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 SYNTHETIC = "SYNTHETIC_MCP_BEARER_NOT_A_SECRET_123456"
@@ -379,7 +379,7 @@ class TestDashboardMcpTestRedaction:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        import hermes_cli.mcp_config as mcp_config
+        from hermes_cli import mcp_config
 
         _seed_config(tmp_path, {
             "ink": {"url": "https://mcp.example/mcp"},
@@ -410,7 +410,7 @@ class TestDashboardMcpTestRedaction:
             pytest.skip("fastapi/starlette not installed")
 
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-        import hermes_cli.mcp_config as mcp_config
+        from hermes_cli import mcp_config
 
         _seed_config(tmp_path, {
             "ink": {"url": "https://mcp.example/mcp"},

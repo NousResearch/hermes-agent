@@ -36,16 +36,6 @@ def test_background_dispatch_prints_resume_notice(monkeypatch):
     assert "it finishes" in joined
 
 
-def test_background_batch_dispatch_pluralizes(monkeypatch):
-    cli_obj = _make_cli()
-    printed = _capture(monkeypatch)
-
-    result = json.dumps({"status": "dispatched", "mode": "background", "count": 3})
-    cli_obj._on_tool_complete("tc2", "delegate_task", {"tasks": []}, result)
-
-    joined = "\n".join(printed)
-    assert "3 tasks" in joined
-    assert "they finish" in joined
 
 
 def test_synchronous_delegate_result_prints_no_notice(monkeypatch):

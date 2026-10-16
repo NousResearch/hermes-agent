@@ -1,28 +1,64 @@
-"""Core boundary for connector search, descriptions, and remote execution.
-
-Search and description failures degrade to no remote results; exceptions cannot escape this bridge because core dispatch bypasses registry error wrapping.
-"""
-
 from __future__ import annotations
 
 import logging
-from dataclasses import replace as dataclass_replace
+from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Optional, Sequence
 
-from tools.connectors.gateway.config import connectors_available
-from tools.connectors.gateway.errors import GatewayUnavailable, ToolGatewayError
+from tools.connectors.gateway.config import connectors_available, guest_identity_pending
+from tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
+from tools.connectors.gateway.files import FileInputError, model_parameters, save_outputs, stage_inputs
 from tools.connectors.gateway.merge import fill_remote_failure, splice_remote_results
 from tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
+from tools.managed_gateway_identity import CallRef
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["connector_describe", "connector_search_hits", "run_remote"]
+SIGN_IN_EXPIRED = "sign_in_expired"
+UNREACHABLE = "unreachable"
+# No Nous identity yet: the first hosted manage_connections action creates one.
+NOT_SET_UP = "not_set_up"
+NOT_SET_UP_MESSAGE = ("Hosted connectors are not set up for this user yet. "
+                      "Call manage_connections to connect the app first; that sets them up.")
+
+__all__ = [
+    "NOT_SET_UP",
+    "NOT_SET_UP_MESSAGE",
+    "SIGN_IN_EXPIRED",
+    "UNREACHABLE",
+    "ConnectorLeg",
+    "connector_describe",
+    "connector_search_hits",
+    "run_remote",
+]
 
 
-def _default_client_factory():
+@dataclass(frozen=True)
+class ConnectorLeg:
+
+    payload: dict[str, Any] = field(default_factory=dict)
+    failure: Optional[str] = None
+
+
+_TOKEN_REJECTED_CODES = frozenset({"UNAUTHORIZED", "INVALID_TOKEN", "TOKEN_EXPIRED"})
+
+
+def _leg_failure(exc: Exception) -> Optional[str]:
+    if isinstance(exc, GatewayAuthError) and exc.code == NOT_SET_UP:
+        return NOT_SET_UP
+    if isinstance(exc, GatewayAuthError):
+        if exc.status == 401 or str(exc.code).upper() in _TOKEN_REJECTED_CODES:
+            return SIGN_IN_EXPIRED
+        return None
+    return UNREACHABLE
+
+
+def _default_client_factory(call: Optional[CallRef] = None):
+    """The real client for the model's read and execute legs. These never create an identity."""
     from tools.connectors.gateway.client import ConnectorClient
 
-    return ConnectorClient()
+    if guest_identity_pending():
+        raise GatewayAuthError(NOT_SET_UP_MESSAGE, code=NOT_SET_UP)
+    return ConnectorClient(call=call)
 
 
 def connector_search_hits(
@@ -30,20 +66,20 @@ def connector_search_hits(
     *,
     availability: Optional[Callable[[], bool]] = None,
     client_factory: Optional[Callable[[], Any]] = None,
-) -> dict[str, Any]:
-    """Return no hits on failure so local search behavior is unchanged."""
+    call: Optional[CallRef] = None,
+) -> ConnectorLeg:
     try:
         available = (availability or connectors_available)()
         if not available or not queries:
-            return {}
-        client = (client_factory or _default_client_factory)()
-        return client.search(list(queries)) or {}
+            return ConnectorLeg()
+        client = client_factory() if client_factory else _default_client_factory(call)
+        return ConnectorLeg(payload=client.search(list(queries)) or {})
     except GatewayUnavailable:
         logger.debug("Connector search skipped: gateway dark")
-        return {}
+        return ConnectorLeg()
     except Exception as exc:
-        logger.debug("Connector search failed silently (D32): %s", exc)
-        return {}
+        logger.warning("Connector search failed (D32): %s", exc)
+        return ConnectorLeg(failure=_leg_failure(exc))
 
 
 def connector_describe(
@@ -51,12 +87,12 @@ def connector_describe(
     *,
     availability: Optional[Callable[[], bool]] = None,
     client_factory: Optional[Callable[[], Any]] = None,
-) -> dict[str, Any]:
-    """Return no schemas on failure so local descriptions are unchanged."""
+    call: Optional[CallRef] = None,
+) -> ConnectorLeg:
     try:
         available = (availability or connectors_available)()
         if not available:
-            return {}
+            return ConnectorLeg()
         # Resolve each name independently: candidates can overlap across composed names.
         wanted: dict[str, tuple[str, ...]] = {}
         request_slugs: list[str] = []
@@ -70,8 +106,8 @@ def connector_describe(
                 if slug not in request_slugs:
                     request_slugs.append(slug)
         if not wanted:
-            return {}
-        client = (client_factory or _default_client_factory)()
+            return ConnectorLeg()
+        client = client_factory() if client_factory else _default_client_factory(call)
         response = client.schemas(request_slugs) or {}
         schemas = response.get("schemas") if isinstance(response.get("schemas"), dict) else {}
         tools: dict[str, Any] = {}
@@ -85,15 +121,15 @@ def connector_describe(
                 continue
             tools[composed] = {
                 "description": str(schema.get("description") or ""),
-                "parameters": schema.get("input_schema") or {},
+                "parameters": model_parameters(composed, schema.get("input_schema") or {}),
             }
-        return {"tools": tools}
+        return ConnectorLeg(payload={"tools": tools})
     except GatewayUnavailable:
         logger.debug("Connector describe skipped: gateway dark")
-        return {}
+        return ConnectorLeg()
     except Exception as exc:
-        logger.debug("Connector describe failed silently (D32): %s", exc)
-        return {}
+        logger.warning("Connector describe failed (D32): %s", exc)
+        return ConnectorLeg(failure=_leg_failure(exc))
 
 
 def run_remote(
@@ -102,6 +138,8 @@ def run_remote(
     *,
     availability: Optional[Callable[[], bool]],
     client_factory: Optional[Callable[[], Any]],
+    turn_id: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     try:
         available = (availability or connectors_available)()
@@ -123,11 +161,11 @@ def run_remote(
         for plan in planned
     ]
     try:
-        client = (client_factory or _default_client_factory)()
-        remote_results = client.execute(wire_planned)
-        entries = splice_remote_results(planned, remote_results)
+        client = client_factory() if client_factory else _default_client_factory(
+            CallRef(turn_id=turn_id, tool_call_id=dispatch_id))
+        entries = splice_remote_results(planned, _execute_with_files(client, wire_planned, task_id))
     except ToolGatewayError as exc:
-        logger.debug(
+        logger.warning(
             "Connector execute for dispatch %s failed (%s): %s",
             dispatch_id,
             exc.code,
@@ -163,10 +201,10 @@ def run_remote(
 
     # Retry confirmed misses once without disturbing successful sibling slots.
     try:
-        fallback_results = client.execute(fallback_planned)
-        fallback_entries = splice_remote_results(fallback_planned, fallback_results)
+        fallback_entries = splice_remote_results(
+            fallback_planned, _execute_with_files(client, fallback_planned, task_id))
     except ToolGatewayError as exc:
-        logger.debug(
+        logger.warning(
             "Connector execute fallback for dispatch %s failed (%s): %s",
             dispatch_id,
             exc.code,
@@ -187,3 +225,28 @@ def run_remote(
     for slot, fallback_entry in zip(fallback_slots, fallback_entries):
         entries[slot] = fallback_entry
     return entries
+
+
+
+def _execute_with_files(client: Any, planned: Sequence[Any], task_id: Optional[str]) -> list[dict[str, Any]]:
+    """Execute ``planned`` with every file input staged first and every returned file saved.
+
+    A call whose file input is refused or fails to stage gets that error as its result and is never
+    executed; its siblings still run."""
+    from tools.connectors.gateway.client import return_to_args
+
+    results: list[Optional[dict[str, Any]]] = [None] * len(planned)
+    runnable: list[tuple[int, Any]] = []
+    for slot, plan in enumerate(planned):
+        try:
+            runnable.append((slot, stage_inputs(client, plan, task_id=task_id)))
+        except FileInputError as exc:
+            logger.warning("Connector %s file input refused (%s): %s", plan.name, exc.code, exc)
+            results[slot] = exc.result()
+    if runnable:
+        # A CONNECTION_REQUIRED link minted by this call is the user's next click, so the call names
+        # the surface that browser should come back to.
+        remote = client.execute([plan for _, plan in runnable], **return_to_args())
+        for (slot, _), result in zip(runnable, remote or ()):
+            results[slot] = save_outputs(client, result)
+    return results

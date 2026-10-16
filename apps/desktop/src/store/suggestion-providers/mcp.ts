@@ -6,6 +6,7 @@ import { prettyName } from '@/lib/text'
 import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import type { McpCatalogEntry } from '@/types/hermes'
 
 /**
  * The MCP draft provider — the suggestion bus's founding member (PR #85036).
@@ -69,9 +70,27 @@ async function loadSuggestible(): Promise<SuggestibleServer[]> {
 
   const { entries } = await getMcpCatalog()
 
-  const fromCatalog: SuggestibleServer[] = entries
+  const fromCatalog = buildMcpSuggestionIndex(entries)
+
+  suggestible = fromCatalog
+  suggestibleAt = Date.now()
+
+  return suggestible
+}
+
+/** This older composer path runs hosted OAuth. Local/setup-dependent tasks use manage_connections instead. */
+export function buildMcpSuggestionIndex(
+  entries: readonly Pick<McpCatalogEntry, 'name' | 'url' | 'suggest' | 'auth_type' | 'transport'>[]
+): SuggestibleServer[] {
+  return entries
     .filter(
-      entry => entry.suggest && entry.url && (entry.suggest.keywords.length > 0 || entry.suggest.hosts.length > 0)
+      entry =>
+        entry.transport === 'http' &&
+        entry.auth_type === 'oauth' &&
+        !entry.suggest?.requires_app &&
+        entry.suggest &&
+        entry.url &&
+        (entry.suggest.keywords.length > 0 || entry.suggest.hosts.length > 0)
     )
     .map(entry => ({
       hosts: entry.suggest!.hosts,
@@ -79,11 +98,6 @@ async function loadSuggestible(): Promise<SuggestibleServer[]> {
       server: entry.name,
       url: entry.url!
     }))
-
-  suggestible = fromCatalog
-  suggestibleAt = Date.now()
-
-  return suggestible
 }
 
 interface KeywordEntry {

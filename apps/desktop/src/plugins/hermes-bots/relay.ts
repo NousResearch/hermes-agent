@@ -10,6 +10,8 @@
 import { host, LruCache } from '@hermes/plugin-sdk'
 
 import { botHandle, clearBotAttention, noteBotAttention } from './data'
+import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
+import { ID } from './shared'
 import type { ProfileRoute, RosterRow } from './types'
 
 // ── cross-connection bot relay ────────────────────────────────────────────
@@ -28,40 +30,13 @@ import type { ProfileRoute, RosterRow } from './types'
 // relay degrades to whatever subset of connections supports it.
 const RELAY_ROSTER_INTERVAL_MS = 60_000
 // Backstop cadence only (#93594): the push path below carries envelope latency,
-// so the interval poll exists for older backends and missed events — 30s
-// matches LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS. It was 4s back when the
+// so the interval poll exists for older backends that cannot signal
+// `bot_relay.outbox.pending`. On a shell with that door, the tick must not
+// open a gateway socket for a route that has not signaled outbox work — that
+// dial/teardown is the idle ~30s cost (#118856). It was 4s back when the
 // poll WAS the delivery path, which (before route retention) also meant a
 // fresh WebSocket dial + teardown per registered connection every 4s.
 const RELAY_DRAIN_INTERVAL_MS = 30_000
-// #93911: a delivered turn runs on the target gateway, so the client must
-// outlive the backend's own bound. Without this the call fell to the pool's
-// generic 30s deadline and every long turn (Computer Use, deep research) came
-// back as an unclassified failure.
-//
-// The backend's MAXIMUM WORK budget is spelled out below. The client deadline
-// must be strictly GREATER than it: after those bounded waits the handler still
-// has to classify the failure, build and run the retry, classify/serialize the
-// terminal result, unwind the temp-file and lock scopes, and get the JSON-RPC
-// response back through the event loop. A call that consumes nearly all of the
-// work budget would otherwise lose the race to this timer by milliseconds and
-// reproduce #93911 at the upper boundary — the backend knowing a typed reason
-// while Desktop reports its generic timeout first.
-//
-// These three are mirrors of backend values, so a change there must not
-// silently invalidate this constant: relay-deliver-budget.test.ts reads
-// hermes_cli/config_defaults.py and tools/bot_relay.py and fails if the
-// mirrors drift or the margin stops being positive.
-const RELAY_TURN_LOCK_WAIT_MS = 120_000 // bot_mode.turn_wait_seconds default
-const RELAY_TURN_ATTEMPT_MS = 600_000 // tools/bot_relay.py TURN_ATTEMPT_TIMEOUT_SECONDS
-const RELAY_TURN_MAX_ATTEMPTS = 2 // first attempt + the policy-gated re-run
-
-const RELAY_DELIVER_BACKEND_CEILING_MS = RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_ATTEMPT_MS * RELAY_TURN_MAX_ATTEMPTS
-
-// Settlement + transport headroom on top of the ceiling, so a backend that
-// answers at its own limit still wins the race against this timer.
-const RELAY_DELIVER_SETTLEMENT_MARGIN_MS = 180_000
-// tools/bot_relay.py REPLY_WAIT_SECONDS rebuilds this sum and waits past it for the timeout reply below.
-const RELAY_DELIVER_TIMEOUT_MS = RELAY_DELIVER_BACKEND_CEILING_MS + RELAY_DELIVER_SETTLEMENT_MARGIN_MS
 // Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
 // an envelope lands on disk; a burst of signals inside this window collapses
 // to ONE drain. The interval poll above stays as the backstop for older
@@ -80,6 +55,8 @@ interface RelayLifecycle {
   pushDebounceTimer: null | ReturnType<typeof setTimeout>
   pushUnsub: (() => void) | null
   rosterBusy: boolean
+  /** Invalidates pending roster reads when the relay stops or restarts. */
+  rosterGeneration: number
   /** Id of the sole connection whose roster clear went out; null once the peer set relays again. */
   rosterClearedFor: null | string
   rosterTimer: null | ReturnType<typeof setInterval>
@@ -93,6 +70,7 @@ const relay: RelayLifecycle = {
   pushDebounceTimer: null,
   pushUnsub: null,
   rosterBusy: false,
+  rosterGeneration: 0,
   rosterClearedFor: null,
   rosterTimer: null
 }
@@ -105,13 +83,56 @@ const relay: RelayLifecycle = {
 // leases. Local routes get a no-op release inside the host (idle-reaper
 // exemption). stopBotRelay releases everything.
 const relayRouteRetentions = new Map<string, () => void>()
+// Claimed envelopes remain pinned to their sender until terminal reply ACK.
+// The sender's durable claimed directory restores these after renderer restart.
+const pendingRelays = new Map<string, Map<string, RelayEnvelope>>()
 
-/** One reachable gateway plus a representative route onto it. The route comes
- *  from `host.profileRoutes()`, which carries identity only — the optional
- *  label fields are read defensively in relayAgentsOn and never arrive. */
+function pendingRelaysFor(sender: RelayConnection): Map<string, RelayEnvelope> {
+  const senderKey = JSON.stringify(sender.route)
+  const pending = pendingRelays.get(senderKey) || new Map<string, RelayEnvelope>()
+  pendingRelays.set(senderKey, pending)
+
+  return pending
+}
+
+// Routes whose gateway has signaled `bot_relay.outbox.pending` since the last
+// drain pass. `*` means the event carried no connection id (local/legacy
+// primary, or an older payload) — every route may hold that envelope, so the
+// pass still visits them. A route absent from this set has no outbox work;
+// opening a socket to drain it is the idle dial.
+const RELAY_OUTBOX_ANY = '*'
+const routesWithOutboxWork = new Set<string>()
+
+function relayBotModeOn(): boolean {
+  const decisions = host.pluginDecisions?.get() ?? {}
+
+  return ID in decisions ? Boolean(decisions[ID]) : true
+}
+
+function noteRelayOutboxWork(event?: { connectionId?: string }) {
+  const id = String(event?.connectionId || '').trim()
+
+  routesWithOutboxWork.add(id || RELAY_OUTBOX_ANY)
+}
+
+function takeRelayOutboxWork(): { any: boolean; ids: Set<string> } {
+  const any = routesWithOutboxWork.has(RELAY_OUTBOX_ANY)
+  const ids = new Set(routesWithOutboxWork)
+
+  routesWithOutboxWork.clear()
+
+  return { any, ids }
+}
+
+function routeSignaledOutboxWork(connectionId: string, work: { any: boolean; ids: Set<string> }): boolean {
+  return work.any || work.ids.has(connectionId)
+}
+
+/** One reachable gateway plus a representative route onto it. The route carries
+ *  identity only, so the human label comes from the registry (connectionLabels). */
 interface RelayConnection {
   id: string
-  route: ProfileRoute & { connectionLabel?: string; label?: string }
+  route: ProfileRoute
 }
 
 /** One agent as pushed to a peer gateway's relay roster. */
@@ -122,6 +143,60 @@ interface RelayAgentRow {
   handle: string
   profile: string
   title: string
+}
+
+/** Remove the mandatory local registry source only when Electron identifies
+ * one unambiguous REMOTE primary. Older or inconsistent route inventories
+ * fail open to the prior peer set. Distinct remote peers always remain. */
+function relayEligibleRoutes(routes: ProfileRoute[]): ProfileRoute[] {
+  const routesByConnection = new Map<string, ProfileRoute[]>()
+
+  for (const route of routes) {
+    if (
+      !route ||
+      typeof route.connectionId !== 'string' ||
+      !route.connectionId ||
+      (route.mode !== 'local' && route.mode !== 'remote') ||
+      (route.primary !== undefined && route.primary !== true)
+    ) {
+      return routes
+    }
+
+    const grouped = routesByConnection.get(route.connectionId) || []
+
+    grouped.push(route)
+    routesByConnection.set(route.connectionId, grouped)
+  }
+
+  const primaryGroups = [...routesByConnection.entries()].filter(([, grouped]) =>
+    grouped.some(route => route.primary === true)
+  )
+
+  if (primaryGroups.length !== 1) {
+    return routes
+  }
+
+  const [primaryId, primaryRoutes] = primaryGroups[0]
+
+  if (primaryRoutes.some(route => route.mode !== 'remote' || route.primary !== true)) {
+    return routes
+  }
+
+  const localGroups = [...routesByConnection.entries()].filter(([, grouped]) =>
+    grouped.some(route => route.mode === 'local')
+  )
+
+  if (
+    localGroups.length !== 1 ||
+    localGroups[0][1].some(route => route.mode !== 'local') ||
+    localGroups[0][0] === primaryId
+  ) {
+    return routes
+  }
+
+  const localId = localGroups[0][0]
+
+  return routes.filter(route => route.connectionId !== localId)
 }
 
 /** A queued cross-connection message drained from a gateway's outbox. */
@@ -141,7 +216,7 @@ function syncRelayRetention(connections: RelayConnection[]) {
     return
   }
 
-  const live = new Set(connections.map(connection => connection.id))
+  const live = new Set(connections.map(connection => JSON.stringify(connection.route)))
 
   for (const [id, release] of [...relayRouteRetentions]) {
     if (!live.has(id)) {
@@ -160,8 +235,8 @@ function syncRelayRetention(connections: RelayConnection[]) {
   }
 
   for (const connection of connections) {
-    if (!relayRouteRetentions.has(connection.id)) {
-      relayRouteRetentions.set(connection.id, host.retainProfileSocket(connection.route))
+    if (!relayRouteRetentions.has(JSON.stringify(connection.route))) {
+      relayRouteRetentions.set(JSON.stringify(connection.route), host.retainProfileSocket(connection.route))
     }
   }
 }
@@ -179,30 +254,63 @@ function releaseRelayRetention() {
   relayRouteRetentions.clear()
 }
 
-/** One representative route per reachable connection id. */
+/** Every relay-eligible profile route, once each. The canonical gateway keeps a
+ *  roster and an outbox per profile home, so drain/roster/pins are per ROUTE;
+ *  the peer set (is there anything to relay between?) is per connection id. */
 async function relayConnections(): Promise<RelayConnection[]> {
   if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
     return []
   }
 
   try {
-    const routes = await host.profileRoutes()
+    const rawRoutes = await host.profileRoutes()
+    const routes = relayEligibleRoutes(Array.isArray(rawRoutes) ? rawRoutes : [])
     const byConnection = new Map<string, ProfileRoute>()
 
-    for (const route of Array.isArray(routes) ? routes : []) {
+    for (const route of routes) {
       const id = String(route?.connectionId || '')
 
-      if (id && !byConnection.has(id)) {
-        byConnection.set(id, route)
+      const key = JSON.stringify(route)
+
+      if (id && !byConnection.has(key)) {
+        byConnection.set(key, route)
       }
     }
 
-    return [...byConnection.entries()].map(([id, route]) => ({
-      id,
+    return [...byConnection.values()].map(route => ({
+      id: route.connectionId,
       route
     }))
   } catch {
     return []
+  }
+}
+
+/** Distinct connections among the relay routes: profiles of one connection are not peers. */
+function peerCount(connections: RelayConnection[]): number {
+  return new Set(connections.map(connection => connection.id)).size
+}
+
+/** Human label per connection id, from the registry — the only place that has one.
+ *  A `host.profileRoutes()` route carries identity alone, so without this the roster a
+ *  peer gateway shows its bots ("@chii on 127-0-0-1-9119", tools/bot_mode_probe.py) and
+ *  its refusal text name machines by raw connection id. A build with no registry rejects
+ *  the call, and ids stay. */
+async function connectionLabels(): Promise<Map<string, string>> {
+  if (typeof host.connections !== 'function') {
+    return new Map()
+  }
+
+  try {
+    const rows = await host.connections()
+
+    return new Map(
+      (Array.isArray(rows) ? rows : [])
+        .map(row => [String(row?.id || ''), String(row?.label || '').trim()] as const)
+        .filter(([id, label]) => Boolean(id && label))
+    )
+  } catch {
+    return new Map()
   }
 }
 
@@ -212,20 +320,23 @@ async function relayConnections(): Promise<RelayConnection[]> {
  *  roster missing a LIVE connection's agents, and the gateway-side liveness
  *  check (bot_relay._target_liveness) reads "absent from a fresh roster" as
  *  definitively offline → false runtime_offline refusals (#93091 item 2). */
-async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow[] | null> {
+async function relayAgentsOn(
+  connection: RelayConnection,
+  labels: Map<string, string>
+): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
-      include_sessions: false
-    })
+    const res = await host.requestProfile<{ install_id?: string; profiles?: RosterRow[] }>(
+      connection.route,
+      'profiles.list',
+      {
+        include_sessions: false
+      }
+    )
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
-    // TODO(bot-mode-types): neither `connectionLabel` nor `label` can exist on
-    // a `host.profileRoutes()` route (connectionId / mode / profile /
-    // targetProfile only), so this always falls through to the raw connection
-    // id and peer gateways list agents by id instead of the human label.
-    const label = String(connection.route?.connectionLabel || connection.route?.label || connection.id)
+    const label = labels.get(connection.id) || connection.id
 
-    return profiles
+    const rows = profiles
       .map(profile => ({
         profile: String(profile?.name || ''),
         handle: botHandle(profile?.name, profile),
@@ -235,9 +346,30 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
         description: String(profile?.description || '')
       }))
       .filter(row => row.profile)
+
+    host.traceIdentityChange?.('bot-relay', `rows ${connection.id}`, rosterTrace(rows, String(res?.install_id || '')))
+
+    return rows
   } catch {
     return null
   }
+}
+
+/** Which connection last answered from each install: a second connection
+ *  answering from the same machine is a misrouted request (or one machine
+ *  registered twice) and is flagged in the trace. */
+const answeringInstall = new Map<string, string>()
+
+function rosterTrace(rows: RelayAgentRow[], installId: string): string {
+  const connectionId = rows[0]?.connection_id ?? ''
+  const other = installId ? answeringInstall.get(installId) : undefined
+  const flag = other && other !== connectionId ? `MISROUTED (same install as ${other}) ` : ''
+
+  if (installId && connectionId && !flag) {
+    answeringInstall.set(installId, connectionId)
+  }
+
+  return `${flag}install=${installId.slice(0, 8) || '-'} n=${rows.length} [${rows.map(row => `${row.connection_id}/${row.profile}=${JSON.stringify(row.title)}`).join(' ')}]`
 }
 
 /** Last good agent rows per connection id — reused when a fetch blips so a
@@ -251,33 +383,68 @@ const relayAgentsCache = new LruCache<string, RelayAgentRow[]>(RELAY_AGENTS_CACH
 
 /** Push every gateway the union roster of agents on the OTHER connections. */
 async function syncRelayRosters() {
-  if (relay.disposed || relay.rosterBusy) {
+  if (relay.disposed || relay.rosterBusy || !relayBotModeOn()) {
     return
   }
 
   relay.rosterBusy = true
+  const generation = relay.rosterGeneration
+  const isCurrent = () => !relay.disposed && relay.rosterGeneration === generation && relayBotModeOn()
 
   try {
     const connections = await relayConnections()
 
-    if (connections.length < 2) {
+    if (!isCurrent()) {
+      return
+    }
+
+    // A connection removed and re-added under a new id answers from the same
+    // install; remembering the departed id flagged the replacement MISROUTED.
+    const live = new Set(connections.map(connection => connection.id))
+
+    for (const [install, connectionId] of answeringInstall) {
+      if (!live.has(connectionId)) {
+        answeringInstall.delete(install)
+      }
+    }
+
+    const labels = await connectionLabels()
+
+    if (!isCurrent()) {
+      return
+    }
+
+    if (peerCount(connections) < 2) {
       // Nothing to relay — but the gateways that remain still hold the last
       // pushed roster, so a departed machine's agents would stay in every
       // bot's prompt (and as message_agent targets) until a second connection
       // reappears. Push the now-empty roster once per sole connection so it
       // forgets it — a replacement sole connection has never been told. An
       // empty route list (registry not loaded yet) must not spend the clear.
-      if (connections.length === 1 && connections[0].id !== relay.rosterClearedFor) {
-        relay.rosterClearedFor = connections[0].id
-        await Promise.all(
+      if (peerCount(connections) === 1 && connections[0].id !== relay.rosterClearedFor) {
+        const cleared = await Promise.all(
           connections.map(async connection => {
+            if (!isCurrent()) {
+              return false
+            }
+
             try {
               await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: [] })
+
+              return true
             } catch {
-              // Older backend without the relay RPCs — skip this connection.
+              // An older backend without the relay RPCs, but also a socket that is not up yet —
+              // requestProfile throws for both. Either way this gateway still holds the departed
+              // machine's agents, so the clear is NOT spent and the next tick tries again.
+              return false
             }
           })
         )
+
+        // Spend it only once every gateway has actually forgotten.
+        if (isCurrent() && cleared.every(Boolean)) {
+          relay.rosterClearedFor = connections[0].id
+        }
       }
 
       return
@@ -286,9 +453,15 @@ async function syncRelayRosters() {
     relay.rosterClearedFor = null
 
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
+    // One profiles.list per connection: its routes share a socket and answer one profile set.
+    const firstRoutes = connections.filter((connection, index) => connections.findIndex(other => other.id === connection.id) === index)
     await Promise.all(
-      connections.map(async connection => {
-        const agents = await relayAgentsOn(connection)
+      firstRoutes.map(async connection => {
+        const agents = await relayAgentsOn(connection, labels)
+
+        if (!isCurrent()) {
+          return
+        }
 
         if (agents === null) {
           // Transient fetch failure: reuse the last good rows for this
@@ -303,6 +476,10 @@ async function syncRelayRosters() {
       })
     )
 
+    if (!isCurrent()) {
+      return
+    }
+
     // Connections gone from profileRoutes are genuinely disconnected — drop
     // their cache so a later reconnect starts from live data.
     const liveIds = new Set(connections.map(connection => connection.id))
@@ -315,6 +492,10 @@ async function syncRelayRosters() {
 
     await Promise.all(
       connections.map(async connection => {
+        if (!isCurrent()) {
+          return
+        }
+
         const others: RelayAgentRow[] = []
 
         for (const [id, agents] of agentsByConnection) {
@@ -333,7 +514,9 @@ async function syncRelayRosters() {
       })
     )
   } finally {
-    relay.rosterBusy = false
+    if (relay.rosterGeneration === generation) {
+      relay.rosterBusy = false
+    }
   }
 }
 
@@ -341,7 +524,7 @@ async function syncRelayRosters() {
  *  connection's own socket; the reply (or error) is posted back to the
  *  sender gateway for its waiter. */
 async function drainRelayOutboxes() {
-  if (relay.disposed) {
+  if (relay.disposed || !relayBotModeOn()) {
     return
   }
 
@@ -361,11 +544,18 @@ async function drainRelayOutboxes() {
 
     // Retention follows the relay-eligible set: with fewer than two
     // connections there is nothing to relay, so nothing stays pinned.
-    syncRelayRetention(connections.length >= 2 ? connections : [])
+    syncRelayRetention(peerCount(connections) >= 2 ? connections : [])
 
-    if (connections.length < 2) {
+    if (peerCount(connections) < 2) {
       return
     }
+
+    // A shell with the push door already knows which routes have mail. Do not
+    // open a throwaway socket to ask a route that has not signaled — Bot Mode
+    // off is the early return above; no outbox work is this skip (#118856).
+    // Older shells have no event, so the interval remains their only drain.
+    const pushDoor = typeof host.onEvent === 'function'
+    const work = pushDoor ? takeRelayOutboxWork() : { any: true, ids: new Set<string>() }
 
     const byId = new Map(connections.map(connection => [connection.id, connection]))
 
@@ -379,6 +569,10 @@ async function drainRelayOutboxes() {
     const queued: RelayQueuedEnvelope[] = []
 
     for (const sender of connections) {
+      if (pushDoor && !routeSignaledOutboxWork(sender.id, work)) {
+        continue
+      }
+
       try {
         const res = await host.requestProfile<{ envelopes?: RelayEnvelope[] }>(
           sender.route,
@@ -386,7 +580,16 @@ async function drainRelayOutboxes() {
           {}
         )
 
+        const pending = pendingRelaysFor(sender)
+
         for (const envelope of Array.isArray(res?.envelopes) ? res.envelopes : []) {
+          if (envelope.id && !pending.has(envelope.id)) {pending.set(envelope.id, structuredClone(envelope))}
+        }
+
+        // Every claimed-but-unACKed envelope rides again: a delivery that
+        // settled without an exact identity, or whose ACK was lost, retries
+        // from the sender's pin instead of being silently dropped.
+        for (const envelope of pending.values()) {
           queued.push({ envelope, sender })
         }
       } catch {
@@ -445,6 +648,63 @@ function enqueueRelayDelivery(sender: RelayConnection, envelope: RelayEnvelope, 
   })
 }
 
+function relayDeliverParams(sender: RelayConnection, envelope: RelayEnvelope, envelopeId: string) {
+  return {
+    id: envelopeId,
+    profile: String(envelope?.target_profile || ''),
+    message: String(envelope?.message || ''),
+    from_profile: String(envelope?.from_profile || ''),
+    from_handle: String(envelope?.from_handle || ''),
+    from_connection: String(sender.id)
+  }
+}
+
+type RelayDeliverResult = {
+  status?: string
+  delivery_id?: string
+  admission_id?: string | null
+  refused?: true | null
+  reply?: string
+  error?: string
+  reason?: string
+}
+
+/** Act on a `bot_relay.deliver` answer: only a settled/failed receipt for THIS
+ *  envelope posts back; anything else stays retained for recovery. A receipt
+ *  names its admission, or is `refused` (terminal `failed`, nothing admitted). */
+async function settleRelayDelivery(
+  res: RelayDeliverResult,
+  envelopeId: string,
+  attentionKey: string,
+  postReply: (payload: { error?: string; reason?: string; reply?: string }) => Promise<void>
+) {
+  const refused = res.refused === true && res.status === 'failed'
+
+  if (res.delivery_id !== envelopeId || !(res.admission_id || refused)) {
+    noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
+
+    return
+  }
+
+  if (res.status !== 'settled' && res.status !== 'failed') {
+    if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
+
+    return
+  }
+
+  if (res.status === 'failed') {
+    noteBotAttention(attentionKey, res.reason || res.error || 'delivery failed')
+    await postReply({ error: res.error || res.reply || 'delivery failed', reason: res.reason })
+
+    return
+  }
+
+  clearBotAttention(attentionKey)
+  await postReply({
+    reply: String(res?.reply || '')
+  })
+}
+
 /** Deliver one claimed envelope on the target connection's own socket and post
  *  the reply (or the error) back to the sender gateway for its waiter. */
 async function deliverRelayEnvelope(
@@ -454,6 +714,13 @@ async function deliverRelayEnvelope(
 ) {
   const envelopeId = String(envelope?.id || '')
   const target = byId.get(String(envelope?.target_connection || ''))
+  const pending = pendingRelaysFor(sender)
+
+  // A later drain re-queues every pinned envelope; the lane serialises them, so
+  // one already ACKed by an earlier delivery in this lane must not ride twice.
+  if (!envelopeId || !pending.has(envelopeId)) {
+    return
+  }
 
   const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
     try {
@@ -461,13 +728,10 @@ async function deliverRelayEnvelope(
         id: envelopeId,
         ...payload
       })
+      pending.delete(envelopeId)
     } catch {
       // Sender gateway unreachable — its waiter times out with guidance.
     }
-  }
-
-  if (!envelopeId) {
-    return
   }
 
   if (!target) {
@@ -483,23 +747,14 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
-    const res = await host.requestProfile<{ reply?: string }>(
-      target.route,
+    const res = await host.requestProfile<RelayDeliverResult>(
+      { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) },
       'bot_relay.deliver',
-      {
-        profile: String(envelope?.target_profile || ''),
-        message: String(envelope?.message || ''),
-        from_profile: String(envelope?.from_profile || ''),
-        from_handle: String(envelope?.from_handle || ''),
-        from_connection: String(sender.id)
-      },
+      relayDeliverParams(sender, envelope, envelopeId),
       RELAY_DELIVER_TIMEOUT_MS
     )
 
-    clearBotAttention(attentionKey)
-    await postReply({
-      reply: String(res?.reply || '')
-    })
+    await settleRelayDelivery(res, envelopeId, attentionKey, postReply)
   } catch (error: any) {
     // #93091: bot_relay.deliver classifies the failed turn and ships the
     // typed code in the JSON-RPC error's `data.reason`; forward it into
@@ -508,6 +763,9 @@ async function deliverRelayEnvelope(
     // classified codes beat free-text re-parsing.
     const reason = String(error?.data?.reason || '').trim()
     noteBotAttention(attentionKey, reason || error?.message || error)
+
+    // A transport exception can follow a committed admission; never settle it as failure.
+    if (!reason || reason === 'runtime_unavailable') {return}
     await postReply({
       error: String(error?.message || error || 'delivery failed'),
       ...(reason
@@ -557,18 +815,26 @@ export function startBotRelay() {
 
   // Push path: the gateway change watcher broadcasts when an envelope hits
   // the outbox; drain immediately (debounced) instead of waiting the poll
-  // out. Feature-detected — older shells have no host.onEvent — and the 4s
-  // poll above stays untouched as the backstop either way.
+  // out. Feature-detected — older shells have no host.onEvent — and only
+  // those shells still open a socket from the interval. A signaled event
+  // names its connection when the renderer stamped one; an untagged event
+  // (local/legacy primary) may belong to any route.
   if (relay.pushUnsub === null && typeof host.onEvent === 'function') {
-    relay.pushUnsub = host.onEvent('bot_relay.outbox.pending', () => scheduleRelayPushDrain())
+    relay.pushUnsub = host.onEvent('bot_relay.outbox.pending', event => {
+      noteRelayOutboxWork(event)
+      scheduleRelayPushDrain()
+    })
   }
 }
 
 export function stopBotRelay() {
   relay.disposed = true
+  relay.rosterGeneration += 1
+  relay.rosterBusy = false
   // A rerun remembered mid-drain must not leak into the next start —
   // it would fire one stale drain after restart.
   relay.drainRerun = false
+  routesWithOutboxWork.clear()
   // Queued deliveries check `disposed` before they run; forget the lane tails
   // so a restart starts every target fresh instead of behind stale chains.
   relayLanes.clear()

@@ -61,7 +61,9 @@ async def _discover(client, provider):
 
 async def _device_metadata(client, server_url, auth_server_url):
     """Issuer-bound device metadata of one authorization server; raises when it is unusable."""
-    from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls, validate_metadata_issuer
+    from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls
+
+    from tools.mcp_oauth_provider import metadata_issued_by_origin
 
     for url in build_oauth_authorization_server_metadata_discovery_urls(auth_server_url, server_url):
         response = await client.get(url)
@@ -71,8 +73,17 @@ async def _device_metadata(client, server_url, auth_server_url):
         if not data.get("device_authorization_endpoint"):
             raise RuntimeError("Server does not advertise device authorization; use --flow browser if supported")
         metadata = DeviceOAuthMetadata.model_validate(data)
-        if auth_server_url:
-            validate_metadata_issuer(metadata, auth_server_url)
+        # The advertised identifier reaches here as str(AnyHttpUrl) with a trailing "/" (pydantic
+        # normalizes a host-only URL to its root path) while the document issuer keeps the advertised
+        # form, so the SDK's exact-string check (RFC 8414 §3.3) would reject Google's issuer
+        # ("https://accounts.google.com" != "https://accounts.google.com/"). Compare both sides
+        # root-slash-normalized, the same convention _metadata_issuer and the refresh-token issuer
+        # binding already use; any other mismatch is still rejected.
+        expected = auth_server_url.rstrip("/") if auth_server_url else auth_server_url
+        if expected and not metadata_issued_by_origin(metadata, expected, response):
+            if str(metadata.issuer).rstrip("/") != expected:
+                from mcp.client.auth.exceptions import OAuthFlowError
+                raise OAuthFlowError(f"Authorization server metadata issuer mismatch: {metadata.issuer} != {expected}")
         grants = metadata.grant_types_supported
         if grants is not None and DEVICE_GRANT not in grants:
             raise RuntimeError("Server does not advertise the device_code grant")
@@ -110,7 +121,11 @@ async def _register(client, provider, cfg):
             raise RuntimeError("Server has no registration endpoint; configure oauth.client_id (and client_secret if required)")
         response = await client.post(str(endpoint), json=metadata)
         data = _payload(response, "Client registration")
-    data["issuer"] = str(context.oauth_metadata.issuer)
+    # SEP-2352: bind the credentials to the identifier the SDK's runtime flow compares them against — the
+    # advertised authorization server when the resource advertised one, else the metadata issuer (its Step 4
+    # rule). For a path-scoped server whose document names its origin (#116233) the two differ, and a
+    # binding to the document issuer would make the next 401 discard this client and its tokens.
+    data["issuer"] = str(context.auth_server_url or context.oauth_metadata.issuer)
     context.client_info = OAuthClientInformationFull.model_validate(data)
     provider._coerce_client_secret_post()
     try:
@@ -127,6 +142,7 @@ def _positive_seconds(value, label):
 
 
 async def _authorize(client, provider, cfg):
+    from tools.mcp_oauth_provider import google_offline_access_params
     from tools.mcp_tool import sdk_httpx
 
     context = provider.context
@@ -134,6 +150,7 @@ async def _authorize(client, provider, cfg):
     data = {"client_id": context.client_info.client_id, "resource": resource}
     if context.client_metadata.scope:
         data["scope"] = context.client_metadata.scope
+    data.update(google_offline_access_params(context))
     data, headers = context.prepare_token_auth(data, {})
     response = await client.post(str(context.oauth_metadata.device_authorization_endpoint), data=data, headers=headers)
     authorization = _payload(response, "Device authorization")

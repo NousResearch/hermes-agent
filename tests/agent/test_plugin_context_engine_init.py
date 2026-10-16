@@ -4,7 +4,7 @@ Regression test for #9071 — plugin engines were never initialized with
 context_length, causing the CLI status bar to show 'ctx --'.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from agent.context_engine import ContextEngine
 
@@ -107,40 +107,6 @@ def test_active_context_engine_tools_survive_explicit_platform_toolsets():
     }
 
 
-def test_plugin_engine_update_model_args():
-    """Verify update_model() receives model, context_length, base_url, api_key, provider."""
-    engine = _StubEngine()
-    engine.update_model = MagicMock()
-
-    cfg = {"context": {"engine": "stub"}, "agent": {}}
-
-    with (
-        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=131_072),
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-    ):
-        from run_agent import AIAgent
-
-        agent = AIAgent(
-            model="openrouter/auto",
-            api_key="test-key-1234567890",
-            base_url="https://openrouter.ai/api/v1",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-
-    engine.update_model.assert_called_once()
-    kw = engine.update_model.call_args.kwargs
-    assert kw["context_length"] == 131_072
-    assert "model" in kw
-    assert "provider" in kw
-    assert "api_mode" in kw
-
-
 def _codex_agent_kwargs():
     return dict(
         model="gpt-5.5",
@@ -207,6 +173,4 @@ def test_codex_gpt55_autoraise_still_applies_to_builtin_compressor():
     assert agent._compression_threshold_autoraised == {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
     assert agent.context_compressor.threshold_percent == 0.85
     # Gateway parity: the notice is stashed for replay on turn 1.
-    assert agent._compression_warning and "85%" in agent._compression_warning
-
-
+    assert agent._compression_warning

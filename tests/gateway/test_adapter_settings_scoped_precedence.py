@@ -69,13 +69,13 @@ def test_secondary_reads_own_yaml_and_never_the_launch_env(homes, monkeypatch):
         "matrix:\n  process_notices: true\n  session_scope: room\n"
         "discord:\n  reactions: false\n  allow_mentions:\n    everyone: true\n"
         "slack:\n  reactions: false\n  ignored_channels: [C_LAUNCH]\n"
-        "telegram:\n  reactions: true\n")
+        "telegram:\n  reactions: true\n", encoding="utf-8")
     load_gateway_config()  # launch profile bridges its YAML into os.environ (single-profile contract)
     (secondary / "config.yaml").write_text(
         "matrix:\n  enabled: true\n  user_id: '@bot:example.org'\n"
         "  allowed_users: ['@owner:example.org']\n  ignore_user_patterns: ['^@ignored:']\n"
         "discord:\n  enabled: true\nslack:\n  enabled: true\n"
-        "telegram:\n  enabled: true\n  proxy_url: http://127.0.0.1:18080\n")
+        "telegram:\n  enabled: true\n  proxy_url: http://127.0.0.1:18080\n", encoding="utf-8")
     from plugins.platforms.discord.adapter import DiscordAdapter
     from plugins.platforms.matrix.adapter import MatrixAdapter
     from plugins.platforms.slack.adapter import SlackAdapter
@@ -107,7 +107,7 @@ def test_explicit_env_beats_yaml_for_the_owning_profile(homes, monkeypatch):
     ``everyone: true`` and TELEGRAM_REACTIONS=true beats the stock ``reactions: false`` (#109032)."""
     launch, _ = homes
     (launch / "config.yaml").write_text(
-        "discord:\n  allow_mentions:\n    everyone: true\ntelegram:\n  reactions: false\n")
+        "discord:\n  allow_mentions:\n    everyone: true\ntelegram:\n  reactions: false\n", encoding="utf-8")
     monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "false")
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -123,7 +123,7 @@ def test_central_allow_bots_gate_honours_a_secondary_yaml_policy(homes):
     from plugins.platforms.slack.adapter import SlackAdapter
     _, secondary = homes
     (secondary / "config.yaml").write_text(
-        "discord:\n  enabled: true\n  allow_bots: all\nslack:\n  enabled: true\n  allow_bots: all\n")
+        "discord:\n  enabled: true\n  allow_bots: all\nslack:\n  enabled: true\n  allow_bots: all\n", encoding="utf-8")
     with _secondary_scope(secondary):
         cfg = load_gateway_config()
         d, s = DiscordAdapter(cfg.platforms[Platform.DISCORD]), SlackAdapter(cfg.platforms[Platform.SLACK])
@@ -141,7 +141,7 @@ def test_matrix_yaml_lists_gate_intake_and_approval(homes):
     _, secondary = homes
     (secondary / "config.yaml").write_text(
         "matrix:\n  enabled: true\n  user_id: '@bot:example.org'\n"
-        "  allowed_users: ['@owner:example.org']\n  ignore_user_patterns: ['^@ignored:']\n")
+        "  allowed_users: ['@owner:example.org']\n  ignore_user_patterns: ['^@ignored:']\n", encoding="utf-8")
     with _secondary_scope(secondary):
         a = MatrixAdapter(load_gateway_config().platforms[Platform.MATRIX])
         a._user_id = "@bot:example.org"
@@ -164,7 +164,7 @@ def test_yuanbao_secondary_home_channel_is_live_and_reloadable(homes):
     from gateway.platforms.yuanbao import AutoSetHomeMiddleware
     _, secondary = homes
     (secondary / "config.yaml").write_text(
-        "platforms:\n  yuanbao:\n    enabled: true\n    extra:\n      app_id: a\n      app_secret: b\n")
+        "platforms:\n  yuanbao:\n    enabled: true\n    extra:\n      app_id: a\n      app_secret: b\n", encoding="utf-8")
     adapter = types.SimpleNamespace(name="yuanbao-b2")
     ctx = types.SimpleNamespace(chat_id="dm:tenant-b2", chat_name="b2")
     with _secondary_scope(secondary):
@@ -177,15 +177,56 @@ def test_yuanbao_secondary_home_channel_is_live_and_reloadable(homes):
 
 
 def test_whatsapp_bridge_env_carries_the_secondary_effective_policy(homes, monkeypatch):
-    """bridge.js gates DMs before Python: it must receive the adapter's resolved dm_policy/allow_from, not the
-    launch process's WHATSAPP_* values."""
+    """bridge.js gates DMs and group intake before Python: it must receive the adapter's resolved
+    dm_policy/allow_from/group_policy, not the launch process's WHATSAPP_* values."""
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     _, secondary = homes
     monkeypatch.setenv("WHATSAPP_DM_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "disabled")
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550001111")
-    (secondary / "config.yaml").write_text("whatsapp:\n  enabled: true\n  dm_policy: pairing\n")
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "120363000000000000@g.us")
+    (secondary / "config.yaml").write_text(
+        "whatsapp:\n  enabled: true\n  dm_policy: pairing\n  group_policy: allowlist\n"
+        "  group_allow_from: [120363001234567890@g.us]\n", encoding="utf-8")
     with _secondary_scope(secondary):
         a = WhatsAppAdapter(load_gateway_config().platforms[Platform.WHATSAPP])
         env = a._bridge_env()
     assert a._dm_policy == "pairing" == env["WHATSAPP_DM_POLICY"]
+    assert a._group_policy == "allowlist" == env["WHATSAPP_GROUP_POLICY"]
+    assert env["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
     assert "WHATSAPP_ALLOWED_USERS" not in env
+
+
+@pytest.mark.parametrize("secondary_prefix", [None, "Secondary Bot: ", ""])
+def test_whatsapp_reply_prefix_isolated_across_profile_scopes(
+    homes, monkeypatch, secondary_prefix
+):
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    launch, secondary = homes
+    monkeypatch.setenv("WHATSAPP_REPLY_PREFIX", "Launch Bot: ")
+    (launch / "config.yaml").write_text(
+        'whatsapp:\n  enabled: true\n  reply_prefix: "Launch YAML: "\n'
+    )
+    launch_before = WhatsAppAdapter(
+        load_gateway_config().platforms[Platform.WHATSAPP]
+    )
+    assert launch_before._bridge_env()["WHATSAPP_REPLY_PREFIX"] == "Launch Bot: "
+
+    secondary_yaml = "whatsapp:\n  enabled: true\n"
+    if secondary_prefix is not None:
+        secondary_yaml += f'  reply_prefix: "{secondary_prefix}"\n'
+    (secondary / "config.yaml").write_text(secondary_yaml)
+    with _secondary_scope(secondary):
+        secondary_adapter = WhatsAppAdapter(
+            load_gateway_config().platforms[Platform.WHATSAPP]
+        )
+        assert (
+            secondary_adapter._bridge_env().get("WHATSAPP_REPLY_PREFIX")
+            == secondary_prefix
+        )
+
+    launch_after = WhatsAppAdapter(
+        load_gateway_config().platforms[Platform.WHATSAPP]
+    )
+    assert launch_after._bridge_env()["WHATSAPP_REPLY_PREFIX"] == "Launch Bot: "

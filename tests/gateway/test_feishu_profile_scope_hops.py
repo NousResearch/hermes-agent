@@ -90,6 +90,7 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
     client_mod = types.ModuleType("lark_oapi.ws.client")
     client_mod.loop = SimpleNamespace(name="sdk-default-loop")
     client_mod.websockets = SimpleNamespace(connect=lambda *a, **k: None)
+    client_mod.Client = type("Client", (), {"_receive_message_loop": lambda self: None})
     lark_ws = types.ModuleType("lark_oapi.ws")
     lark_ws.client = client_mod
     lark = types.ModuleType("lark_oapi")

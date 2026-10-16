@@ -97,9 +97,9 @@ Save result and handle accordingly:
 - Language (detected or user-specified)
 - **Recommended style**: [art] + [tone] (based on content signals)
 
-**Use `clarify` one question at a time**, in priority order:
+**Use `clarify` with the independent questions in one `questions` array**, in priority order:
 
-> **Timeout handling (CRITICAL)**: if `clarify` returns `"The user did not provide a response within the time limit. Use your best judgement..."`, that is a per-question default, NOT blanket consent. Continue to the next question in the sequence — do not bail out of Step 2. Then, in your next user-visible message, explicitly surface every default that was taken (e.g. `"Defaulted style → ohmsha, narrative focus → concept explanation, audience → developers (clarify timed out on all three). Say the word to redirect."`). An unreported default is indistinguishable to the user from "the agent never asked."
+> **Timeout handling (CRITICAL)**: if `clarify` returns `"outcome": "timed_out"`, every response marked `"status": "unanswered"` is a per-question default, NOT blanket consent — do not bail out of Step 2. Then, in your next user-visible message, explicitly surface every default that was taken (e.g. `"Defaulted style → ohmsha, narrative focus → concept explanation, audience → developers (clarify timed out on all three). Say the word to redirect."`). An unreported default is indistinguishable to the user from "the agent never asked."
 
 ### Question 1: Visual Style
 

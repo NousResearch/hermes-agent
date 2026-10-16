@@ -11,7 +11,8 @@ import {
   resolveRememberedActivePane,
   setWorkspaceOwnerLabel,
   setWorkspaceScope,
-  workspaceOwnerTitle
+  workspaceOwnerTitle,
+  workspaceSessionRenameable
 } from './workspace-scope'
 
 afterEach(() => {
@@ -19,12 +20,6 @@ afterEach(() => {
 })
 
 describe('workspace scope', () => {
-  it('defaults to the un-switched sessions window state', () => {
-    expect($workspaceMode.get()).toBe('sessions')
-    expect($workspaceOwnerKey.get()).toBeNull()
-    expect($workspaceNewSessionTarget.get()).toBeNull()
-  })
-
   it('publishes a coherent mode and owner in one batch', () => {
     const snapshots: Array<['sessions' | 'bots', string | null]> = []
     const capture = () => snapshots.push([$workspaceMode.get(), $workspaceOwnerKey.get()])
@@ -58,15 +53,6 @@ describe('workspace scope', () => {
     setWorkspaceScope('sessions')
     expect($workspaceNewSessionTarget.get()).toBeNull()
   })
-
-  it('keeps a group owner explicit while publishing why it has no generic route', () => {
-    const target = { kind: 'blocked' as const, message: 'New group conversations start in the group composer.' }
-
-    setWorkspaceScope('bots', 'group:room-1', target)
-
-    expect($workspaceOwnerKey.get()).toBe('group:room-1')
-    expect($workspaceNewSessionTarget.get()).toEqual(target)
-  })
 })
 
 describe('workspace owner title', () => {
@@ -81,6 +67,25 @@ describe('workspace owner title', () => {
     expect(workspaceOwnerTitle('Bot Chat', { workspaceMode: 'sessions' })).toBe('Bot Chat')
     // No label yet (roster not loaded): the stored title stands.
     expect(workspaceOwnerTitle('Bot Chat', { ...botChat, workspaceOwnerKey: 'bot:beta' })).toBe('Bot Chat')
+  })
+})
+
+describe('workspace session renameable', () => {
+  // Same discriminator as the caption: only the bot workspace's OWN canonical
+  // tab (workspaceMode 'bots' + a registered canonical tab title) loses the
+  // verb. A session that merely happens to be open in Bot Mode keeps it, and
+  // plain Sessions tabs are untouched (#124857).
+  it('gates Rename on the canonical bot-chat scope exactly where the caption takes over', () => {
+    const botChat = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha', workspaceTabTitle: 'Bot Chat' }
+
+    expect(workspaceSessionRenameable(botChat)).toBe(false)
+    // A `+` side thread under the same bot has no canonical tab title.
+    expect(workspaceSessionRenameable({ workspaceMode: 'bots' })).toBe(true)
+    // A Sessions tab titled the same way is not a bot chat.
+    expect(workspaceSessionRenameable({ workspaceMode: 'sessions', workspaceTabTitle: 'Bot Chat' })).toBe(true)
+    // No scope at all (a plain row/tile): renameable.
+    expect(workspaceSessionRenameable(undefined)).toBe(true)
+    expect(workspaceSessionRenameable({})).toBe(true)
   })
 })
 

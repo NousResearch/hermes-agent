@@ -11,8 +11,16 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["CommandContext", "CommandReply", "EXECUTORS", "execute_command", "resolve_executor",
-           "run_execute"]
+from agent.i18n import t
+
+__all__ = [
+    "EXECUTORS",
+    "CommandContext",
+    "CommandReply",
+    "execute_command",
+    "resolve_executor",
+    "run_execute",
+]
 
 
 @dataclass(frozen=True)
@@ -64,7 +72,7 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
         label = format_profile_label(profile_name, display)
     except Exception:
         pass
-    return CommandReply(f"Profile: {label}\nHome: {home_display}",
+    return CommandReply(t("gateway.profile.plain", profile=label, home=home_display),
                         data={"profile": profile_name, "home": home_display})
 
 
@@ -73,22 +81,18 @@ def _exec_bundles(ctx: CommandContext) -> CommandReply:
     try:
         from agent.skill_bundles import _bundles_dir, list_bundles
     except Exception as exc:  # pragma: no cover - env-specific
-        return CommandReply(f"Bundles subsystem unavailable: {exc}", data={"error": str(exc)})
+        return CommandReply(t("gateway.bundles.unavailable", error=exc), data={"error": str(exc)})
     bundles = list_bundles()
     bundles_dir = str(_bundles_dir())
     if not bundles:
-        return CommandReply(
-            "No skill bundles installed.\n"
-            "Create one with: hermes bundles create <name> --skill <s1> --skill <s2>\n"
-            f"Directory: {bundles_dir}",
-            data={"bundles": [], "dir": bundles_dir})
-    lines = [f"Skill Bundles ({len(bundles)} installed):"]
+        return CommandReply(t("gateway.bundles.none_plain", dir=bundles_dir), data={"bundles": [], "dir": bundles_dir})
+    lines = [t("gateway.bundles.header_plain", count=len(bundles))]
     for info in bundles:
         skills = info.get("skills", [])
-        desc = info.get("description") or f"Load {len(skills)} skills"
-        lines.append(f"/{info['slug']} — {desc} ({len(skills)} skills)")
+        desc = info.get("description") or t("gateway.bundles.default_desc", count=len(skills))
+        lines.append(t("gateway.bundles.item_plain", slug=info["slug"], desc=desc, count=len(skills)))
         lines.extend(f"    · {s}" for s in skills)
-    lines.append("Invoke a bundle with /<slug> to load all its skills.")
+    lines.append(t("gateway.bundles.invoke_hint_plain"))
     return CommandReply("\n".join(lines), data={"bundles": bundles, "dir": bundles_dir})
 
 
@@ -103,10 +107,12 @@ def _skill_commands() -> dict:
 
 def _exec_help(ctx: CommandContext) -> CommandReply:
     """Core gateway /help body (pre platform mention decoration)."""
-    from agent.i18n import t
     from hermes_cli.commands import gateway_help_lines
-    lines = [t("gateway.help.header"), *gateway_help_lines()]
-    skill_cmds = _skill_commands()
+    # ``allowed_commands`` (gateway, non-admin caller): only the commands the slash-access
+    # policy lets this user run; skill commands are hidden too since the gate refuses them.
+    allowed = ctx.options.get("allowed_commands")
+    lines = [t("gateway.help.header"), *gateway_help_lines(allowed)]
+    skill_cmds = _skill_commands() if allowed is None else {}
     try:
         if skill_cmds:
             lines.append(t("gateway.help.skill_header", count=len(skill_cmds)))
@@ -125,21 +131,26 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
 
     ``ctx.options["page_size"]`` is a surface parameter (Telegram uses 15, everything else 20).
     """
-    from agent.i18n import t
     from hermes_cli.commands import gateway_help_lines
     try:
         requested_page = int((ctx.args or "").strip() or 1)
     except ValueError:
         return CommandReply(t("gateway.commands.usage"), format="markdown")
 
-    entries = list(gateway_help_lines())
-    skill_cmds = _skill_commands()
+    allowed = ctx.options.get("allowed_commands")
+    entries = list(gateway_help_lines(allowed))
+    skill_cmds = _skill_commands() if allowed is None else {}
     try:
         if skill_cmds:
             entries.extend(["", t("gateway.commands.skill_header")])
             for cmd in sorted(skill_cmds):
                 desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                 entries.append(f"`{cmd}` — {desc}")
+        # Skills kept off the menu because a built-in owns the name (agent.skill_commands guard).
+        from agent.skill_commands import skill_command_collision_note
+        from tools.skills_tool import _find_all_skills
+        entries.extend(f"⚠ {note}" for note in filter(None, map(
+            skill_command_collision_note, sorted(s["name"] for s in _find_all_skills()))))
     except Exception:
         pass
 

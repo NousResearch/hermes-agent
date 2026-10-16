@@ -52,7 +52,11 @@ export function TerminalOutput({ className, text }: TerminalOutputProps) {
   }, [text])
 
   return (
-    <div className={cn('max-h-16 overflow-auto overscroll-contain', className)} data-selectable-text="true" ref={ref}>
+    <div
+      className={cn('max-h-16 overflow-auto overscroll-x-contain overscroll-y-auto', className)}
+      data-selectable-text="true"
+      ref={ref}
+    >
       <pre className="w-max min-w-full font-mono text-[0.5625rem] leading-[0.85rem] whitespace-pre text-muted-foreground/70">
         {text}
       </pre>

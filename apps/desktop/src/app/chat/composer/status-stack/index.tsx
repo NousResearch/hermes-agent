@@ -34,7 +34,7 @@ import {
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
-import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
+import { $sessionControlBySession, refreshSessionControl, type SessionControlEntry } from '@/store/session-control'
 import { $sharedMetricsConsent, sharedMetricsOfferPending } from '@/store/shared-metrics'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $retainedTodosBySession } from '@/store/todos'
@@ -97,6 +97,11 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
 const hasRunningTodo = (group: StatusGroup) =>
   group.type === 'todo' && group.items.some(item => item.todoStatus === 'in_progress' && item.state === 'running')
 
+// Structured controls replace the legacy goal only once there is a snapshot to show; a read
+// refused inside a mid-turn compression window marks the entry supported with none yet.
+const showsStructuredControls = (entry: SessionControlEntry | undefined) =>
+  entry?.capability === 'supported' && entry.snapshot !== null
+
 interface ComposerStatusStackProps {
   onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   /** The queue, built by the composer (it owns the queue's callbacks). */
@@ -148,7 +153,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const sharedMetricsConsent = useStore($sharedMetricsConsent)
   const sharedMetricsOffer = ownsFreeTierNotice && !freeTierNotice && sharedMetricsOfferPending(sharedMetricsConsent)
 
-  const isStructuredSupported = controlEntry?.capability === 'supported'
+  const isStructuredSupported = showsStructuredControls(controlEntry)
 
   // Every group, before the shelf decides what to SHOW: whether a dev server is
   // running is a fact about the session (it keeps its localhost preview chip

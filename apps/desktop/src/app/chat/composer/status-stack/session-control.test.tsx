@@ -193,6 +193,20 @@ describe('ComposerStatusStack session-control UI', () => {
     expect(screen.queryByText('Legacy Goal Title')).toBeNull()
   })
 
+  // A first open inside a mid-turn compression window: supported, but no snapshot yet.
+  it('keeps the legacy goal while a supported entry has no snapshot yet', () => {
+    $goalsBySession.set({
+      [SID]: { status: 'active', title: 'Legacy Goal Title', updatedAt: Date.now() }
+    })
+    $sessionControlBySession.set({ [SID]: mockEntry({ capability: 'supported', snapshot: null }) })
+
+    renderStack()
+
+    fireEvent.click(screen.getByRole('button', { name: /Goal active/ }))
+    expect(screen.getByText('Legacy Goal Title')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   // 11. loop pause/resume/stop calls exact action
   it('calls loop.pause when pause loop is clicked', async () => {
     mockRunSessionControlAction.mockResolvedValue({

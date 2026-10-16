@@ -652,7 +652,9 @@ class PluginDispatchMixin:
 
         Request middleware passes ``_payload_key``: a dict returned under it becomes the payload the
         next callback sees, so rewrites compose, and each callback gets its own copy of the payload and
-        of ``original_<key>`` so an in-place edit cannot leak.
+        of ``original_<key>`` so an in-place edit cannot leak. An ``async def`` callback is resolved
+        the way hook callbacks are (loop-safe), so its body runs instead of collecting a bare
+        coroutine (#140140).
         """
         from agent.safe_worker_policy import safe_worker_enabled
         from hermes_cli.middleware import _safe_copy
@@ -667,7 +669,7 @@ class PluginDispatchMixin:
                 call_kwargs = {**kwargs, _payload_key: _safe_copy(kwargs[_payload_key]),
                                original_key: _safe_copy(kwargs[original_key])}
             try:
-                ret = cb(**call_kwargs)
+                ret = resolve_plugin_command_result(cb(**call_kwargs))
                 if ret is not None:
                     results.append(ret)
                     if _payload_key and isinstance(ret, dict) and isinstance(ret.get(_payload_key), dict):

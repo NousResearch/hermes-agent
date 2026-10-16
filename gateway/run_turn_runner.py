@@ -1216,7 +1216,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # 'custom' resolved without credentials ...") is the diagnosis; /login is not.
                 return _unresolved(f"⚠️ {exc}")
             return _unresolved(t("gateway.errors.no_credentials"))
-        pr = runner._provider_routing
+        from gateway.session_authorities import active_authority
+        from gateway.session_worker_construct import session_routing
+        pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
         reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
         runner._service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else

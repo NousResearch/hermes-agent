@@ -1,0 +1,41 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: 0xarchive
+description: Hyperliquid and Lighter market data and webhook management from 0xArchive.
+source: https://docs.0xarchive.io/mcp-server
+
+# Official vendor-hosted remote MCP. Hermes connects over streamable HTTP.
+# OAuth discovery exposes dynamic client registration, PKCE S256, token
+# exchange, and refresh. No local process or 0xArchive API key is required.
+transport:
+  type: http
+  url: https://mcp.0xarchive.io/mcp
+
+auth:
+  type: oauth
+  oauth:
+    scope: mcp:market.read mcp:webhooks.read mcp:webhooks.write
+
+# Composer-suggestion triggers.
+suggest:
+  keywords:
+    - 0xarchive
+    - hyperliquid market data
+    - lighter market data
+  hosts:
+    - 0xarchive.io
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  0xArchive (or run `hermes mcp login 0xarchive`). Review and approve
+  the market-data read, webhook read and webhook write scopes, then
+  restart the session so tools load.
+
+  CAUTION: webhook write tools can create, change and delete webhook
+  endpoints, subscriptions and watched wallet addresses; send test and
+  repeat deliveries; and rotate an endpoint signing secret. Review every
+  state-changing tool call before approving it.
+
+  No 0xArchive API key or local server installation is required.

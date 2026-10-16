@@ -42,60 +42,104 @@ import {
 
 import type { GatewayEventContext } from './types'
 
+function finiteCount(value: number | null | undefined): number | undefined {
+  return value !== null && value !== undefined && Number.isFinite(value) ? value : undefined
+}
+
+function firstPositiveOrDefined(
+  primary: number | null | undefined,
+  fallback: number | null | undefined
+): number | undefined {
+  const first = finiteCount(primary)
+  const second = finiteCount(fallback)
+
+  return (first || second) ?? first
+}
+
+function canonicalContextUsage(payload: NonNullable<GatewayEventContext['payload']>): Partial<UsageStats> {
+  const contextMax = finiteCount(payload.context_length)
+
+  if (contextMax === undefined) {
+    return {}
+  }
+
+  const compressionCount = finiteCount(payload.compression_count)
+  const fields: Partial<UsageStats> = compressionCount === undefined ? {} : { compressions: compressionCount }
+  const contextUsed = finiteCount(payload.last_prompt_tokens)
+
+  if (!contextUsed || contextUsed <= 0 || contextMax <= 0) {
+    return fields
+  }
+
+  const clamped = Math.min(contextUsed, contextMax)
+  const source = payload.context_source || 'provider_usage'
+
+  return {
+    ...fields,
+    context_estimated: source !== 'provider_usage',
+    context_max: contextMax,
+    context_percent: Math.max(0, Math.min(100, Math.round((clamped / contextMax) * 100))),
+    context_source: source,
+    context_used: clamped
+  }
+}
+
+function canonicalRateUsage(payload: NonNullable<GatewayEventContext['payload']>): Partial<UsageStats> {
+  const fields: Partial<UsageStats> = {}
+  const prompt = finiteCount(payload.prompt_tokens)
+  const cacheRead = finiteCount(payload.cache_read_tokens)
+  const tokensPerSecond = finiteCount(payload.tokens_per_s)
+
+  if (prompt !== undefined && prompt > 0 && cacheRead !== undefined && cacheRead > 0) {
+    fields.cache_hit_pct = Math.max(0, Math.min(100, Math.round((cacheRead / prompt) * 100)))
+  }
+
+  if (tokensPerSecond !== undefined) {
+    fields.avg_tps = Math.round(tokensPerSecond * 10) / 10
+  }
+
+  return fields
+}
+
+function canonicalCounterUsage(payload: NonNullable<GatewayEventContext['payload']>): Partial<UsageStats> {
+  const usage: Partial<UsageStats> = {}
+  const input = firstPositiveOrDefined(payload.input_tokens, payload.prompt_tokens)
+  const output = firstPositiveOrDefined(payload.output_tokens, payload.completion_tokens)
+  const total = finiteCount(payload.total_tokens)
+  const calls = finiteCount(payload.api_calls)
+
+  if (input !== undefined) {
+    usage.input = input
+  }
+
+  if (output !== undefined) {
+    usage.output = output
+  }
+
+  if (total !== undefined) {
+    usage.total = total
+  }
+
+  if (calls !== undefined) {
+    usage.calls = calls
+  }
+
+  return usage
+}
+
 /** Normalize canonical top-level counters; legacy ticker frames stay nested. */
 function canonicalUsage(payload: GatewayEventContext['payload']): Partial<UsageStats> | undefined {
   if (!payload || payload.usage) {
     return payload?.usage
   }
 
-  const number = (value: unknown): number | undefined =>
-    typeof value === 'number' && Number.isFinite(value) ? value : undefined
-  const input = number(payload.input_tokens) ?? number(payload.prompt_tokens)
-  const output = number(payload.output_tokens)
-  const total = number(payload.total_tokens)
-  const calls = number(payload.api_calls)
-  const prompt = number(payload.prompt_tokens)
-  const cacheRead = number(payload.cache_read_tokens)
-  const contextMax = number(payload.context_length)
-  const contextUsed = number(payload.last_prompt_tokens)
-  const tokensPerSecond = number(payload.tokens_per_s)
-  const compressionCount = number(payload.compression_count)
-
-  if ([input, output, total, calls, prompt, cacheRead, contextMax, contextUsed, tokensPerSecond].every(value => value === undefined)) {
-    return undefined
+  const usage: Partial<UsageStats> = {
+    ...canonicalCounterUsage(payload),
+    ...canonicalContextUsage(payload),
+    ...canonicalRateUsage(payload)
   }
 
-  const usage: Partial<UsageStats> = {}
-  if (input !== undefined) {
-    usage.input = input
-  }
-  if (output !== undefined) {
-    usage.output = output
-  }
-  if (total !== undefined) {
-    usage.total = total
-  }
-  if (calls !== undefined) {
-    usage.calls = calls
-  }
-  if (contextMax !== undefined && contextUsed !== undefined && contextUsed > 0) {
-    usage.context_used = Math.min(contextUsed, contextMax)
-    usage.context_max = contextMax
-    usage.context_percent = Math.max(0, Math.min(100, Math.round((contextUsed / contextMax) * 100)))
-    usage.context_source = payload.context_source ?? 'provider_usage'
-    usage.context_estimated = usage.context_source !== 'provider_usage'
-  }
-  if (compressionCount !== undefined && contextMax !== undefined) {
-    usage.compressions = compressionCount
-  }
-  if (prompt !== undefined && prompt > 0 && cacheRead !== undefined && cacheRead > 0) {
-    usage.cache_hit_pct = Math.max(0, Math.min(100, Math.round((cacheRead / prompt) * 100)))
-  }
-  if (tokensPerSecond !== undefined) {
-    usage.avg_tps = Math.round(tokensPerSecond * 10) / 10
-  }
-
-  return usage
+  return Object.keys(usage).length > 0 ? usage : undefined
 }
 
 /**
@@ -200,8 +244,11 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
       payload?.stored_session_id ?? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
 
     // A canonical frame's own place in the session's event order fences absence-based retirement.
-    reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions,
-      pendingSnapshotFence(event.replay_epoch, event.seq))
+    reconcilePendingSubmissions(
+      storedId,
+      (payload as Record<string, unknown>)?.pending_submissions,
+      pendingSnapshotFence(event.replay_epoch, event.seq)
+    )
   }
 }
 

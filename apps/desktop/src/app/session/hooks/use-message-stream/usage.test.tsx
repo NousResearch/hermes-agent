@@ -83,6 +83,33 @@ describe('useMessageStream status-bar usage scoping', () => {
     expect(sessionStates.get(SID)?.usage).toEqual($currentUsage.get())
   })
 
+  it('falls back to prompt_tokens and completion_tokens when input_tokens and output_tokens are zero', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          api_calls: 3,
+          completion_tokens: 80,
+          input_tokens: 0,
+          output_tokens: 0,
+          prompt_tokens: 1_000,
+          total_tokens: 1_080
+        },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toEqual({
+      ...BASELINE,
+      calls: 3,
+      input: 1_000,
+      output: 80,
+      total: 1_080
+    })
+  })
+
   it('caches a background session.usage tick without overwriting the primary status bar', () => {
     mountStream()
 

@@ -402,6 +402,7 @@ async def host_header_middleware(request: Request, call_next):
 from hermes_cli.web_server_dashboard import (
     PluginApiWebSocketGate, _plugin_api_name, _plugin_api_request_refused,
 )
+from hermes_cli.web_server_plugin_profiles import forward_secondary_plugin_request, plugin_request_scope
 
 
 @app.middleware("http")
@@ -424,8 +425,13 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         or getattr(request.app.state, "auth_required", False)
         or _has_valid_session_token(request)
         or _has_valid_query_token(request, path)
-    ) and _plugin_api_request_refused(plugin_name):
-        return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
+    ):
+        with plugin_request_scope(request.scope):  # a secondary profile's plugins run in its host
+            if _plugin_api_request_refused(plugin_name):
+                return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
+            hosted = await forward_secondary_plugin_request(request, plugin_name)
+        if hosted is not None:
+            return hosted
     return await call_next(request)
 
 
@@ -741,7 +747,12 @@ _dashboard_plugins_cache: Optional[list] = None
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
+    """The active scope's dashboard plugins: a secondary profile's are its own (PLG-3)."""
     global _dashboard_plugins_cache
+    from hermes_cli.web_server_plugin_profiles import profile_dashboard_plugins, secondary_profile_home
+    home = secondary_profile_home()
+    if home is not None:
+        return profile_dashboard_plugins(home, force_rescan)
     stale = _dashboard_plugins_cache is None or force_rescan or any(
         not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache
     )

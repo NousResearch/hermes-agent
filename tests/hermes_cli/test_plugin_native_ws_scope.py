@@ -4,10 +4,13 @@ The one-use ``native-http`` grant names the profile the socket acts for. The han
 redeem it, after the runtime gate had checked consent in the launch profile's ambient scope and
 the route dependency had bound the launch profile's secrets: a secondary profile's socket ran a
 plugin that profile never enabled (or had disabled), with its home but the launch profile's
-secrets. The grant is now redeemed once, ahead of routing; both profiles' consent holds before
+secrets. The grant is now redeemed once, ahead of routing; the grant profile's consent holds before
 accept, and the handler resolves home and secrets in the grant's profile.
 
-Driven through the real app on the multiplexed daemon stand-in of the consent-gate tests.
+The probe is a bundled plugin: since PLG-3 a secondary profile reaches user plugins only through its
+own plugin host (``test_plugin_secondary_profile_host``), so bundled plugins (kanban's socket) are
+the in-process sockets a secondary grant still opens. Driven through the real app on the
+multiplexed daemon stand-in of the consent-gate tests.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from starlette.status import WS_1008_POLICY_VIOLATION
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from hermes_cli import plugins as plugins_mod
 from hermes_cli import web_server
 from hermes_cli.web_server_dashboard import PluginApiWebSocketGate
 from hermes_cli.web_server_profiles import _config_profile_scope
@@ -63,22 +67,29 @@ NAME = "scope-probe"
 EVENTS = f"/api/plugins/{NAME}/events"
 
 
-def _setup(daemon, *, beta_enabled=True, beta_disabled=False):
-    dashboard = daemon.launch / "plugins" / NAME / "dashboard"
+@pytest.fixture(autouse=True)
+def _bundled_root(tmp_path, monkeypatch):
+    root = tmp_path / "bundled"
+    root.mkdir()
+    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: root)
+
+
+def _setup(daemon, *, beta_disabled=False):
+    dashboard = plugins_mod.get_bundled_plugins_dir() / NAME / "dashboard"
     dashboard.mkdir(parents=True)
     (dashboard / "manifest.json").write_text(json.dumps({"name": NAME, "api": "plugin_api.py"}))
     (dashboard / "plugin_api.py").write_text(_PROBE_API)
     (dashboard / "index.js").write_text("export {}\n")
     (daemon.launch / ".env").write_text("PLG_WS_SENTINEL=launch-sentinel\n")
     (daemon.beta / ".env").write_text("PLG_WS_SENTINEL=beta-sentinel\n")
-    _plugins(daemon.launch, enabled=[NAME])
-    _beta(daemon, enabled=beta_enabled, disabled=beta_disabled)
+    _plugins(daemon.launch)
+    _beta(daemon, disabled=beta_disabled)
     assert daemon.client.get(f"/api/plugins/{NAME}/ping", headers=daemon.owner).status_code == 200  # mounts it
     return dashboard / "ENTERED"
 
 
-def _beta(daemon, *, enabled=True, disabled=False):
-    _plugins(daemon.beta, enabled=[NAME] if enabled else [], disabled=[NAME] if disabled else [])
+def _beta(daemon, *, disabled=False):
+    _plugins(daemon.beta, disabled=[NAME] if disabled else [])
 
 
 def _store():
@@ -112,18 +123,17 @@ SELECTORS = ["", "?profile=current", "?profile=beta"]
 
 
 @pytest.mark.parametrize("selector", SELECTORS)
-@pytest.mark.parametrize("beta_consent", ["absent", "disabled"])
-def test_secondary_grant_needs_its_own_profiles_consent(daemon, selector, beta_consent):
-    """Enabled in the launch profile only: the secondary profile's grant is refused before any
-    plugin code runs, with the profile selector omitted (the Desktop's shape), current or explicit."""
-    entered = _setup(daemon, beta_enabled=beta_consent == "disabled", beta_disabled=beta_consent == "disabled")
+def test_secondary_grant_needs_its_own_profiles_consent(daemon, selector):
+    """Disabled in the secondary profile only: its grant is refused before any plugin code runs,
+    with the profile selector omitted (the Desktop's shape), current or explicit."""
+    entered = _setup(daemon, beta_disabled=True)
 
     assert _refused(daemon.client, EVENTS + selector, _grant(daemon.beta))
     assert not entered.exists()
     assert not _refused(daemon.client, EVENTS, _grant(daemon.launch))  # the launch profile's own socket opens
 
 
-def test_runtime_disable_in_either_profile_refuses_new_grant_sockets(daemon):
+def test_runtime_disable_refuses_new_grant_sockets_in_that_profile_only(daemon):
     _setup(daemon)
     assert not _refused(daemon.client, EVENTS, _grant(daemon.beta))
 
@@ -132,8 +142,8 @@ def test_runtime_disable_in_either_profile_refuses_new_grant_sockets(daemon):
     assert not _refused(daemon.client, EVENTS, _grant(daemon.launch))
 
     _beta(daemon)
-    _plugins(daemon.launch, enabled=[NAME], disabled=[NAME])
-    assert _refused(daemon.client, EVENTS, _grant(daemon.beta))
+    _plugins(daemon.launch, disabled=[NAME])  # PLG-3: the launch profile's lists no longer gate beta
+    assert not _refused(daemon.client, EVENTS, _grant(daemon.beta))
     assert _refused(daemon.client, EVENTS, _grant(daemon.launch))
 
 

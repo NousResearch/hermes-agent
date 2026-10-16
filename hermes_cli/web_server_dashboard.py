@@ -562,12 +562,12 @@ def _dashboard_plugin_entry(data: dict[str, Any], name: str, dashboard_dir: Path
     }
 
 
-def _discover_dashboard_plugins() -> list:
+def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
     """Scan ``<plugins root>/*/dashboard/manifest.json`` across user, bundled and (opt-in)
-    project plugin sources — same three sources as ``hermes_cli.plugins``."""
+    project plugin sources — same three sources as ``hermes_cli.plugins`` — or ``search_dirs``."""
     plugins = []
     seen_names: set = set()
-    for plugins_root, source in _dashboard_plugin_search_dirs():
+    for plugins_root, source in (_dashboard_plugin_search_dirs() if search_dirs is None else search_dirs):
         try:
             if not plugins_root.is_dir():
                 continue
@@ -842,19 +842,12 @@ def _plugin_enable_sets_here() -> tuple[set, set]:
 def _plugin_consent_withheld(plugin: dict[str, Any]) -> bool:
     """Whether a request must not reach ``plugin``'s backend or assets (#46435, GHSA-mcfc-hp25-cjv7).
 
-    Discovery scans only the launch home and the root, so every copy this process imports, hands to
-    a plugin host or serves files from is the launch profile's: the launch profile must have it
-    enabled. So must the profile the request acts for, the active scope: a native ticket's profile,
-    a ``?profile=`` selection once :func:`_plugin_route_secret_scope` binds it, else the launch
-    profile (#134889).
+    ``plugin`` is the active scope's own copy (a secondary profile's plugins are discovered under
+    its home and run in its plugin host, :mod:`hermes_cli.web_server_plugin_profiles`), so the
+    profile the request acts for decides alone: a native ticket's profile, a ``?profile=``
+    selection, else the launch profile (#134889, PLG-3).
     """
-    from hermes_constants import get_hermes_home, hermes_home_key
-    if _plugin_api_mount_skip_reason(plugin, *_plugin_enable_sets_here()):
-        return True
-    if hermes_home_key(get_hermes_home()) == hermes_home_key(get_process_hermes_home()):
-        return False
-    with _launch_profile_scope():
-        return _plugin_api_mount_skip_reason(plugin, *_plugin_enable_sets_here()) is not None
+    return _plugin_api_mount_skip_reason(plugin, *_plugin_enable_sets_here()) is not None
 
 
 def _plugin_api_name(scope) -> str:
@@ -872,8 +865,11 @@ def _plugin_api_request_refused(name: str) -> bool:
     counts as a user plugin (safe default: refused).
     """
     from hermes_cli.web_server import _get_dashboard_plugins
-    plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == name), {"name": name, "source": "user"})
-    return _plugin_consent_withheld(plugin)
+    from hermes_cli.web_server_plugin_profiles import secondary_profile_home
+    plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == name), None)
+    if plugin is None and secondary_profile_home() is not None:  # installed since the last scan
+        plugin = next((p for p in _get_dashboard_plugins(force_rescan=True) if p.get("name") == name), None)
+    return _plugin_consent_withheld(plugin or {"name": name, "source": "user"})
 
 
 class PluginApiWebSocketGate:
@@ -887,20 +883,23 @@ class PluginApiWebSocketGate:
     answer whether the plugin is disabled, unknown, or the credential was refused.
 
     A Desktop's native grant is the exception: it names the profile the socket acts for, so it is
-    redeemed here, once (:func:`_native_ws_scope`), and consent is checked in that profile.
+    redeemed here, once (:func:`_native_ws_scope`), and consent is checked in that profile. A
+    secondary profile's socket to a plugin its own host serves is answered here too (PLG-3).
     """
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
+        from hermes_cli.web_server_plugin_profiles import plugin_request_scope, refuse_secondary_plugin_socket
         name = _plugin_api_name(scope) if scope["type"] == "websocket" else ""
         if not name:
             await self.app(scope, receive, send)
             return
-        with _native_ws_scope(scope) as admitted:
+        with _native_ws_scope(scope) as admitted, plugin_request_scope(scope):
             if admitted and not _plugin_api_request_refused(name):
-                await self.app(scope, receive, send)
+                if not await refuse_secondary_plugin_socket(scope, receive, send, name):
+                    await self.app(scope, receive, send)
                 return
         await send({"type": "websocket.close", "code": status.WS_1008_POLICY_VIOLATION})
 
@@ -943,11 +942,13 @@ async def _plugin_route_secret_scope(conn: HTTPConnection, profile: Optional[str
     a sync yield-dependency's setup and teardown run on different threadpool threads, so the
     scope token would be reset in a foreign context; sync handlers still see the scope because
     ``run_in_threadpool`` copies the request context into the worker."""
+    from hermes_cli.web_server_plugin_profiles import in_process_router_refused
     from hermes_cli.web_server_profiles import _config_profile_scope, _is_current_profile
+    name = _plugin_api_name(conn.scope)
     with _config_profile_scope(profile):
-        # The gates checked the request's own scope; a ``?profile=`` selection binds another one
-        # only here, and the plugin must not run on a profile that disabled it (#134889).
-        if not _is_current_profile(profile) and _plugin_api_request_refused(_plugin_api_name(conn.scope)):
+        # The plugin must not run on a profile that disabled it (#134889), and this router is the
+        # launch profile's copy: a secondary profile reaches it only for bundled plugins (PLG-3).
+        if (not _is_current_profile(profile) and _plugin_api_request_refused(name)) or in_process_router_refused(name):
             if conn.scope["type"] == "websocket":
                 raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
             raise HTTPException(status_code=404, detail="Plugin not found")
@@ -968,15 +969,11 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
         if target is None:
             return JSONResponse({"detail": f"plugin {name!r} is not enabled in this profile"}, status_code=404)
         host, dashboard_dir, api_file = target
-        result = await asyncio.to_thread(
+        from hermes_cli.web_server_plugin_profiles import hosted_response
+        return hosted_response(await asyncio.to_thread(
             host.asgi_request, name, dashboard_dir, api_file, request.method, "/" + path,
             request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"],
-            await request.body())
-        response = Response(content=result["body"], status_code=int(result["status"]))
-        for key, value in result["headers"]:  # a list, so repeated headers (Set-Cookie) all survive
-            if key.lower() not in {"content-length", "transfer-encoding", "connection"}:
-                response.headers.append(key, value)
-        return response
+            await request.body()))
 
     app.add_api_route(f"/api/plugins/{name}/{{path:path}}", forward, include_in_schema=False,
                       methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
@@ -1033,22 +1030,31 @@ def _try_hot_mount_plugin_api(name: str) -> bool:
 
     A plugin installed or enabled after server start had no route until restart: the startup
     sweep is the only other caller of ``_mount_one_plugin_api``. Discovery is re-run (the plugin
-    dir may not have existed at startup) and the whole decision is the launch profile's, exactly
-    as at startup (its enable sets and its ``plugins.isolation``), whichever profile's request
-    triggered it, so a plugin the launch profile did not enable is never imported or forwarded
-    (#134889). New routes are spliced in just ahead of the hot-mount fallback, which sits before
-    the SPA catch-all: appended at the end they would land behind ``/{full_path:path}`` and every
-    GET would keep missing them.
+    dir may not have existed at startup) and the decision is the launch profile's, exactly as at
+    startup (its enable sets and its ``plugins.isolation``), so a plugin the launch profile did not
+    enable is never imported or forwarded (#134889); a secondary profile's request (its grant or a
+    ``?profile=`` selection) may mount only its own bundled copy, by its own lists (PLG-3). New
+    routes are spliced in just ahead of the hot-mount fallback, which sits before the SPA
+    catch-all: appended at the end they would land behind ``/{full_path:path}`` and every GET
+    would keep missing them.
     """
     if not name or any(c in name for c in "/\\{}") or name == "..":
         return False
     from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
     from hermes_cli.web_server import _get_dashboard_plugins, app
+    from hermes_cli.web_server_plugin_profiles import plugin_api_path, secondary_plugin, secondary_profile_home
+    # A secondary profile reaches this router only for its own bundled copy (Hermes code), and its
+    # own lists decide that one (PLG-3).
+    secondary, own, requester_sets = secondary_profile_home() is not None, secondary_plugin(name), _plugin_enable_sets_here()
     with _launch_profile_scope(), _plugin_api_mount_lock:
         enabled_set, disabled_set = _get_enabled_set(), _get_disabled_set()
         if _plugin_api_mounted(app, name):  # a mounted plugin's unknown subpath: no disk rescan
             return False
         plugin = next((p for p in _get_dashboard_plugins(force_rescan=True) if p.get("name") == name), None)
+        if secondary:
+            if own is None or own.get("source") != "bundled" or plugin_api_path(plugin) != plugin_api_path(own):
+                return False
+            enabled_set, disabled_set = requester_sets
         routes = app.router.routes
         before = len(routes)
         if plugin is None or not _mount_one_plugin_api(app, plugin, enabled_set, disabled_set):
@@ -1086,8 +1092,11 @@ class _PluginApiHotMount:
 
     async def __call__(self, scope, receive, send) -> None:
         from hermes_cli.web_server import app
+        from hermes_cli.web_server_plugin_profiles import plugin_request_scope
         name = str(scope.get("path_params", {}).get("name", ""))
-        if await asyncio.to_thread(_try_hot_mount_plugin_api, name):
+        with plugin_request_scope(scope):  # a ``?profile=`` selection decides its own cold mount (PLG-3)
+            mounted = await asyncio.to_thread(_try_hot_mount_plugin_api, name)
+        if mounted:
             _log.info("Hot-mounted plugin API routes on first request: /api/plugins/%s/", name)
             await app.router(dict(scope, path_params={}), receive, send)
             return

@@ -122,9 +122,9 @@ async def get_dashboard_plugins(profile: Optional[str] = None):
 
 
 @router.get("/api/dashboard/plugins/rescan")
-async def rescan_dashboard_plugins():
-    """Force re-scan of dashboard plugins."""
-    plugins = _get_dashboard_plugins(force_rescan=True)
+async def rescan_dashboard_plugins(profile: Optional[str] = None):
+    """Force re-scan of the selected profile's dashboard plugins (its own cache, PLG-3)."""
+    plugins = await config_scoped_to_thread(profile, lambda: _get_dashboard_plugins(force_rescan=True))
     return {"ok": True, "count": len(plugins)}
 
 
@@ -357,8 +357,15 @@ _PLUGIN_ASSET_CONTENT_TYPES = {
 }
 
 
+@router.get("/dashboard-plugins/@{profile}/{plugin_name}/{file_path:path}")  # before the unscoped route
+async def serve_profile_plugin_asset(profile: str, plugin_name: str, file_path: str):
+    """``serve_plugin_asset`` with the profile as a path segment (PLG-3): URLs relative to a stylesheet
+    or bundle (``url("./icon.svg")``, chunk imports) drop a query string but keep this prefix."""
+    return await serve_plugin_asset(plugin_name, file_path, profile)
+
+
 @router.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
-async def serve_plugin_asset(plugin_name: str, file_path: str):
+async def serve_plugin_asset(plugin_name: str, file_path: str, profile: Optional[str] = None):
     """Serve static assets from a dashboard plugin's ``dashboard/`` directory.
 
     Unauthenticated on purpose: the SPA loads plugin JS via ``<script src>`` and CSS
@@ -366,14 +373,21 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     allowlist — user plugins ship a ``plugin_api.py`` backend the browser never
     fetches, and without it anyone on the loopback port could curl a private
     plugin's source. Path traversal is blocked via ``resolve().is_relative_to()``;
-    user plugins must be enabled (bundled ones not disabled) (GHSA-mcfc-hp25-cjv7), in the
-    launch profile whose copy these files are as well as in a native ticket's profile.
+    user plugins must be enabled (bundled ones not disabled) (GHSA-mcfc-hp25-cjv7) in the profile
+    whose copy these files are: a native ticket's, the ``?profile=`` the browser's plugin list used
+    (PLG-3), else the launch profile. An unknown profile answers as an unknown plugin.
 
     See #46435.
     """
-    plugins = _get_dashboard_plugins()
-    plugin = next((p for p in plugins if p["name"] == plugin_name), None)
-    if not plugin or _plugin_consent_withheld(plugin):
+    def _consented() -> Optional[dict]:
+        plugin = next((p for p in _get_dashboard_plugins() if p["name"] == plugin_name), None)
+        return None if not plugin or _plugin_consent_withheld(plugin) else plugin
+
+    try:
+        plugin = await config_scoped_to_thread(profile, _consented)
+    except HTTPException:
+        plugin = None
+    if plugin is None:
         raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])

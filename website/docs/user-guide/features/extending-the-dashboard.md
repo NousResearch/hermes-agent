@@ -813,6 +813,13 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 | 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
 
+On a gateway serving several profiles, a request for a profile other than the one the gateway started
+with sees that profile's own `plugins/<name>/dashboard/`, then the root `~/.hermes/plugins/<name>/dashboard/`
+(as a standalone `hermes --profile <name> dashboard` did; the profile's own copy wins a same-name
+conflict), then the bundled ones, gated by that profile's `plugins.enabled` / `plugins.disabled`. Its
+plugin API, a root plugin's included, runs in that profile's [plugin host](plugins.md#running-plugins-out-of-process-pluginsisolation),
+never inside the gateway.
+
 Discovery results are cached per dashboard process. After adding a new plugin, either:
 
 ```bash

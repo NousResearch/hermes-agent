@@ -819,6 +819,13 @@ provider objects (image/video generation, web search, browser, TTS/STT, memory, 
 model-provider profiles) exactly as before; Hermes registers matching entries on its side that call into
 the host. Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
 
+On a gateway serving several profiles, every profile other than the one the gateway started with runs
+its own dashboard plugins (installed under its own `plugins/` folder or the root `~/.hermes/plugins/`,
+the profile's own copy winning a same-name conflict, and enabled in its own config) in its own plugin
+host, whatever its `plugins.isolation` says: another profile's plugin code never runs inside the
+gateway. The host does not carry websockets yet, so such a plugin's websocket routes are refused
+(HTTP 501) for that profile; its HTTP routes work.
+
 What changes in `host` mode:
 
 - **No shared interpreter.** A plugin's module never enters the Hermes process, so it cannot read
@@ -828,8 +835,8 @@ What changes in `host` mode:
   flight returns a tool error and Hermes restarts the host and reloads its plugins (bounded retries).
 - **A few surfaces need in-process code** and fail that plugin with a clear reason instead of loading:
   gateway platform adapters (`register_platform`), approval transports, Telegram/platform handlers,
-  model-provider profiles that build their own SDK client (`create_client`), streaming dashboard
-  endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
+  model-provider profiles that build their own SDK client (`create_client`), streaming and websocket
+  dashboard endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
 
 **Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can
 edit a profile's `config.yaml` can turn it off. When the profiles belong to people you are isolating from

@@ -1,7 +1,7 @@
 """Single resolver for every media source (data:/http(s)/file/local/container) -> bytes + mime.
 
 Everything funnels through :func:`resolve_image_source` so size and magic-byte checks run
-exactly once. Images are the default; video callers opt in via ``permitted=("video",)``.
+exactly once. Images are the default; audio/video callers opt in via ``permitted``.
 Security (GHSA-gpxw-6wxv-w3qq): under a non-local backend vision is confined like the file
 tools — host-read only inside a media cache (bind-mounted into the sandbox), anything else is
 exec-read *inside the sandbox*, so ``vision_analyze('/etc/passwd')`` never reads the host. In a
@@ -357,11 +357,19 @@ def _finalize(
     sniffed = _detect_image_mime_type_from_bytes(data)
     if sniffed is not None:
         if "image" not in permitted:
-            raise NotAnImage("source is an image, but this argument takes a video", src=src, origin=origin)
+            raise NotAnImage("source is an image, but this argument requires other media", src=src, origin=origin)
         return ResolvedImage(data=data, mime=sniffed, origin=origin)
     if "image" in permitted and b"<svg" in data[:4096].lower():
         # Pass SVG through — call sites rasterize it to PNG before embedding.
         return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
+    if "audio" in permitted:
+        from tools.audio_container import sniff_container
+        container = sniff_container(data)
+        if container is not None:
+            mime = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "mp4": "audio/mp4"}.get(
+                container, f"audio/{container}")
+            return ResolvedImage(data=data, mime=mime, origin=origin)
+        raise NotAnImage("source is not a recognized audio container", src=src, origin=origin)
     if "video" in permitted:
         video_mime = _detect_video_mime(data, src)
         if video_mime is not None:

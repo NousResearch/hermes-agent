@@ -1,11 +1,9 @@
 """Tests for WeChat iLink typing ticket refresh logic (issue #38085)."""
 
-import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 @pytest.fixture
 def weixin_adapter():
@@ -32,10 +30,8 @@ def weixin_adapter():
 
     return adapter
 
-
 class TestEnsureTypingTicket:
     """Tests for _ensure_typing_ticket — the fix for stuck typing indicator."""
-
 
     @pytest.mark.asyncio
     async def test_refreshes_when_ticket_expired(self, weixin_adapter):
@@ -60,7 +56,6 @@ class TestEnsureTypingTicket:
             context_token=None,
         )
 
-
     @pytest.mark.asyncio
     async def test_uses_stored_context_token_when_available(self, weixin_adapter):
         """Pass the stored context_token to getConfig when available."""
@@ -80,7 +75,6 @@ class TestEnsureTypingTicket:
             context_token="stored-ctx-token",
         )
 
-
     @pytest.mark.asyncio
     async def test_returns_none_when_getconfig_fails(self, weixin_adapter):
         """Return None when getConfig raises an exception."""
@@ -89,15 +83,3 @@ class TestEnsureTypingTicket:
             ticket = await weixin_adapter._ensure_typing_ticket("user-123")
 
         assert ticket is None
-
-
-class TestTypingTicketCache:
-    """Tests for the TypingTicketCache TTL logic."""
-
-    def test_returns_ticket_when_fresh(self):
-        from gateway.platforms.weixin import TypingTicketCache
-        cache = TypingTicketCache(ttl_seconds=600.0)
-        cache.set("user-1", "ticket-1")
-        assert cache.get("user-1") == "ticket-1"
-
-

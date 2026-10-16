@@ -1,12 +1,6 @@
 ---
 name: drug-discovery
-description: >
-  Pharmaceutical research assistant for drug discovery workflows. Search
-  bioactive compounds on ChEMBL, calculate drug-likeness (Lipinski Ro5, QED,
-  TPSA, synthetic accessibility), look up drug-drug interactions via
-  OpenFDA, interpret ADMET profiles, and assist with lead optimization.
-  Use for medicinal chemistry questions, molecule property analysis, clinical
-  pharmacology, and open-science drug research.
+description: "Drug discovery: ChEMBL search, drug-likeness, interactions."
 platforms: [linux, macos, windows]
 version: 1.0.0
 author: bennytimz
@@ -15,7 +9,7 @@ metadata:
   hermes:
     tags: [science, chemistry, pharmacology, research, health]
 prerequisites:
-  commands: [curl, python3]
+  commands: [curl, python]
 ---
 
 # Drug Discovery & Pharmaceutical Research
@@ -34,9 +28,9 @@ by target, activity, or molecule name. No API key required.
 ```bash
 # Search compounds by target name (e.g. "EGFR", "COX-2", "ACE")
 TARGET="$1"
-ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$TARGET")
+ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$TARGET")
 curl -s "https://www.ebi.ac.uk/chembl/api/data/target/search?q=${ENCODED}&format=json" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 targets=data.get('targets',[])[:5]
@@ -52,7 +46,7 @@ for t in targets:
 # Get bioactivity data for a ChEMBL target ID
 TARGET_ID="$1"   # e.g. CHEMBL203
 curl -s "https://www.ebi.ac.uk/chembl/api/data/activity?target_chembl_id=${TARGET_ID}&pchembl_value__gte=6&limit=10&format=json" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 acts=data.get('activities',[])
@@ -66,7 +60,7 @@ for a in acts:
 # Look up a specific molecule by ChEMBL ID
 MOL_ID="$1"   # e.g. CHEMBL25 (aspirin)
 curl -s "https://www.ebi.ac.uk/chembl/api/data/molecule/${MOL_ID}?format=json" \
-  | python3 -c "
+  | python -c "
 import json,sys
 m=json.load(sys.stdin)
 props=m.get('molecule_properties',{}) or {}
@@ -89,9 +83,9 @@ PubChem's free property API — no RDKit install needed.
 
 ```bash
 COMPOUND="$1"
-ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$COMPOUND")
+ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$COMPOUND")
 curl -s "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${ENCODED}/property/MolecularWeight,XLogP,HBondDonorCount,HBondAcceptorCount,RotatableBondCount,TPSA,InChIKey/JSON" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 props=data['PropertyTable']['Properties'][0]
@@ -120,9 +114,9 @@ print(f'  Both rules met: {\"Yes → good oral absorption predicted\" if tpsa<=1
 
 ```bash
 DRUG="$1"
-ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$DRUG")
+ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$DRUG")
 curl -s "https://api.fda.gov/drug/label.json?search=drug_interactions:\"${ENCODED}\"&limit=3" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 results=data.get('results',[])
@@ -141,9 +135,9 @@ for r in results[:2]:
 
 ```bash
 DRUG="$1"
-ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$DRUG")
+ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$DRUG")
 curl -s "https://api.fda.gov/drug/event.json?search=patient.drug.medicinalproduct:\"${ENCODED}\"&count=patient.reaction.reactionmeddrapt.exact&limit=10" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 results=data.get('results',[])
@@ -160,11 +154,11 @@ for r in results[:10]:
 
 ```bash
 COMPOUND="$1"
-ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$COMPOUND")
+ENCODED=$(python -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$COMPOUND")
 CID=$(curl -s "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${ENCODED}/cids/TXT" | head -1 | tr -d '[:space:]')
 echo "PubChem CID: $CID"
 curl -s "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${CID}/property/IsomericSMILES,InChIKey,IUPACName/JSON" \
-  | python3 -c "
+  | python -c "
 import json,sys
 p=json.load(sys.stdin)['PropertyTable']['Properties'][0]
 print(f\"IUPAC Name : {p.get('IUPACName','N/A')}\")
@@ -180,7 +174,7 @@ GENE="$1"
 curl -s -X POST "https://api.platform.opentargets.org/api/v4/graphql" \
   -H "Content-Type: application/json" \
   -d "{\"query\":\"{ search(queryString: \\\"${GENE}\\\", entityNames: [\\\"target\\\"], page: {index: 0, size: 1}) { hits { id score object { ... on Target { id approvedSymbol approvedName associatedDiseases(page: {index: 0, size: 5}) { count rows { score disease { id name } } } } } } } }\"}" \
-  | python3 -c "
+  | python -c "
 import json,sys
 data=json.load(sys.stdin)
 hits=data.get('data',{}).get('search',{}).get('hits',[])

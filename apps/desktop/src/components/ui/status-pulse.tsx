@@ -34,6 +34,7 @@ const beat = () => {
   for (const subscriber of pulseSubscribers) {
     subscriber.play()
   }
+
   sharedTimer = window.setTimeout(beat, PULSE_PERIOD_MS)
 }
 
@@ -46,6 +47,7 @@ const handleSharedPauseChange = () => {
     for (const subscriber of pulseSubscribers) {
       subscriber.cancel()
     }
+
     return
   }
 

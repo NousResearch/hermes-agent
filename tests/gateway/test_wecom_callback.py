@@ -6,8 +6,19 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.wecom import callback_adapter as _callback_mod
 from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
+
+# ``_build_event`` parses inbound XML with defusedxml, which ships with the
+# ``wecom`` extra (and transitively with ``youtube``, hence ``[all]`` in CI). A
+# dev venv without either extra cannot exercise the parser; the crypto,
+# routing, token-refresh and body-size tests below do not touch it and run
+# regardless. This is a dependency gate, not a host-OS gate.
+requires_defusedxml = pytest.mark.skipif(
+    not _callback_mod.DEFUSEDXML_AVAILABLE,
+    reason="defusedxml not installed (uv sync --extra wecom)",
+)
 
 
 def _app(name="test-app", corp_id="ww1234567890", agent_id="1000002"):
@@ -46,6 +57,7 @@ class TestWecomCrypto:
 
 
 class TestWecomCallbackEventConstruction:
+    @requires_defusedxml
     def test_build_event_extracts_text_message(self):
         adapter = WecomCallbackAdapter(_config())
         xml_text = """
@@ -140,6 +152,7 @@ class TestWecomCallbackSendTokenRefresh:
 
 
 class TestWecomCallbackPollLoop:
+    @requires_defusedxml
     @pytest.mark.asyncio
     async def test_poll_loop_dispatches_handle_message(self, monkeypatch):
         adapter = WecomCallbackAdapter(_config())
@@ -198,4 +211,28 @@ class TestWecomCallbackBodySizeLimit:
         response = await adapter._handle_callback(self._request(oversized))
         assert response.status == 413
 
+@pytest.mark.asyncio
+async def test_oversized_cron_output_is_split_under_the_2048_byte_text_limit():
+    """message/send keeps only the first 2048 BYTES of text.content; CJK output used to lose
+    everything past ~680 characters. The router now hands over the full payload and send()
+    splits it by UTF-8 bytes."""
+    from gateway.config import GatewayConfig
+    from gateway.delivery import DeliveryRouter
 
+    adapter = WecomCallbackAdapter(_config())
+    adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}
+    sent = []
+
+    class _Client:
+        async def post(self, url, json):
+            sent.append(json["text"]["content"])
+            return type("R", (), {"json": lambda self: {"errcode": 0, "msgid": "m"}})()
+
+    adapter._http_client = _Client()
+    content = "\n\n".join(f"第{i}段 " + "数据" * 100 for i in range(40))
+    payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")
+    result = await adapter.send("test-app:user1", payload)
+
+    assert result.success
+    assert len(sent) > 1 and max(len(s.encode()) for s in sent) <= 2048
+    assert "第39段" in sent[-1]

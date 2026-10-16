@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect } from 'react'
 
-import { WorktreeDialog } from '@/app/chat/sidebar/projects/worktree-dialog'
+import { PrTag } from '@/app/chat/pr-tag'
 import { StatusRow } from '@/components/chat/status-row'
 import {
   type ActionItemSpec,
@@ -17,9 +17,9 @@ import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
-import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
+import { openWorktreeDialog, registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
-import { $newWorktreeRequest } from '@/store/projects'
+import { $pullRequestsByBranch, branchPrKey, refreshPullRequests } from '@/store/pull-requests'
 
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
@@ -79,10 +79,19 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   // only refreshed when the MAIN cwd probe happened to cover them).
   useEffect(() => registerRepoStatusCwd(resolvedRepoPath), [resolvedRepoPath])
 
-  // Shared worktree dialog — replaces the old inline dialog. Opened by the
-  // dropdown menu's "branch off" items and the global ⌘⇧B hotkey.
-  const [worktreeOpen, setWorktreeOpen] = useState(false)
-  const [worktreeBase, setWorktreeBase] = useState<string | undefined>(undefined)
+  // The branch's PR, so the rail links to it instead of leaving you to go find
+  // it. One `gh` lookup for this one branch, TTL-cached in the store and shared
+  // with the sidebar's badges.
+  const prBranch = status?.detached ? null : status?.branch || null
+
+  useEffect(() => {
+    if (resolvedRepoPath && prBranch) {
+      void refreshPullRequests({ [resolvedRepoPath]: [prBranch] })
+    }
+  }, [resolvedRepoPath, prBranch])
+
+  const pr =
+    useStore($pullRequestsByBranch)[resolvedRepoPath && prBranch ? branchPrKey(resolvedRepoPath, prBranch) : '']
 
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {
@@ -96,33 +105,13 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     }
   }
 
-  // Global ⌘⇧B (workspace.newWorktree): open the shared worktree dialog. The
-  // coding row only renders inside a repo, so the hotkey naturally no-ops
-  // elsewhere. Guarded by a token ref so it fires on the keypress, not on
-  // mount or unrelated re-renders.
-  const worktreeReq = useStore($newWorktreeRequest)
-  const lastWorktreeReqRef = useRef(worktreeReq)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (worktreeReq === lastWorktreeReqRef.current) {
-      return
-    }
-
-    lastWorktreeReqRef.current = worktreeReq
-
-    if (!resolvedRepoPath || !onOpenWorktree) {
-      return
-    }
-
-    setWorktreeBase(undefined)
-    setWorktreeOpen(true)
-  }, [onOpenWorktree, resolvedRepoPath, worktreeReq])
-
-  // Open the worktree dialog from the dropdown menu with a pre-selected base.
+  // useKeybinds now handles the ⌘⇧B hotkey globally, through
+  // openWorktreeDialog. One dialog is mounted in the sidebar, so N mounted
+  // rails can no longer each open their own copy. The menu items below only
+  // publish the intent. They pin the repo of THIS rail, so the kebab of a tile
+  // targets the worktree of that tile.
   const startBranch = (base: string | undefined) => {
-    setWorktreeBase(base)
-    setTimeout(() => setWorktreeOpen(true), 0)
+    void openWorktreeDialog({ base, repoPath: resolvedRepoPath })
   }
 
   if (!status) {
@@ -231,6 +220,11 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           }
         >
           <div className="flex min-w-0 flex-1 items-center gap-1">
+            {/* PR number first, right against the leading git glyph — the chip
+                borrows that icon instead of carrying a second one of its own
+                (`showIcon={false}`), so the row reads glyph → #number → branch. */}
+            {pr && <PrTag pr={pr} showIcon={false} />}
+
             {/* Branch name — the other half of the review-pane target. `contents`
                 so the button lays out nothing of its own: the label stays the
                 same flex child it always was, and the hit area is the text. */}
@@ -333,16 +327,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           )}
         </StatusRow>
       </ActionsContextMenu>
-
-      {resolvedRepoPath && onOpenWorktree && (
-        <WorktreeDialog
-          initialBase={worktreeBase}
-          onOpenChange={setWorktreeOpen}
-          onStarted={onOpenWorktree}
-          open={worktreeOpen}
-          repoPath={resolvedRepoPath}
-        />
-      )}
     </>
   )
 })

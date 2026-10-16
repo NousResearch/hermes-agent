@@ -1,5 +1,28 @@
+import { extractToolErrorMessage } from '@/lib/tool-result-summary'
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+/**
+ * User-friendly step label from browser_exec code's leading `# …` comment.
+ * Mirrors agent/display.py:_browser_exec_step_label (CLI/TUI) so every
+ * surface derives the same label from the same convention.
+ */
+export function browserExecStepLabel(code: string, maxChars = 80): null | string {
+  const first = code.trim().split('\n', 1)[0]?.trim() ?? ''
+
+  if (!first.startsWith('#')) {
+    return null
+  }
+
+  const label = first.replace(/^#+/, '').trim()
+
+  if (!label) {
+    return null
+  }
+
+  return label.length > maxChars ? `${label.slice(0, maxChars - 1)}…` : label
 }
 
 export function compactPreview(value: unknown, max = 72): string {
@@ -80,6 +103,18 @@ export function parseMaybeObject(value: unknown): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+/** A call that reported failure, from the part's flag or its result body.
+ *  Explicit success beats stale envelope errors, as in individual rows. */
+export function toolCallFailed(part: { isError?: boolean; result?: unknown }): boolean {
+  const result = parseMaybeObject(part.result)
+
+  return (
+    result.success !== true &&
+    result.ok !== true &&
+    Boolean(part.isError || result.success === false || result.ok === false || extractToolErrorMessage(part.result))
+  )
 }
 
 export function unwrapToolPayload(value: unknown): unknown {

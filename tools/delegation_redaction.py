@@ -112,8 +112,8 @@ def _redact_summary(summary: Any, structured: bool, force: bool) -> Any:
         try:
             parsed = json.loads(summary)
         except ValueError:
-            parsed = None
-        if isinstance(parsed, (dict, list)):
+            pass
+        else:
             cleaned = redact_child_value(parsed, force=force)
             return summary if cleaned == parsed else json.dumps(cleaned, ensure_ascii=False)
     return redact_child_value(summary, force=force)

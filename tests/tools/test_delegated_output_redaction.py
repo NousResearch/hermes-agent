@@ -148,6 +148,34 @@ def test_structured_summary_is_redacted_per_value_and_stays_valid_json():
     assert entry["schema_valid"] is True
 
 
+@pytest.mark.parametrize(
+    "answer,schema",
+    [
+        ("OPENAI_API_KEY=opaqueSyntheticValueXYZ1234", {"type": "string"}),
+        ("ordinary scalar answer", {"type": "string"}),
+        (None, {"type": "null"}),
+        (True, {"type": "boolean"}),
+        (17, {"type": "integer"}),
+        (1.5, {"type": "number"}),
+    ],
+)
+def test_structured_scalar_summary_stays_valid_json(answer, schema):
+    summary = json.dumps(answer)
+    child = _StubChild([summary])
+    child._delegate_output_schema = schema
+
+    entry = delegate._run_single_child(0, "produce structured output", child, _Parent())
+
+    delivered = json.loads(entry["summary"])
+    assert entry["schema_valid"] is True
+    assert len(child.calls) == 1
+    if isinstance(answer, str) and answer.startswith("OPENAI_API_KEY="):
+        assert "opaqueSyntheticValueXYZ1234" not in delivered
+        assert delivered.startswith("OPENAI_API_KEY=")
+    else:
+        assert entry["summary"] == summary
+
+
 def test_parent_copy_honours_opt_out_while_persisted_copies_stay_forced(
     tmp_path, monkeypatch
 ):

@@ -2754,7 +2754,34 @@ web:
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
-**Exa:** Set `EXA_API_KEY` in `~/.hermes/.env`. Supports `category` filtering (`company`, `research paper`, `news`, `people`, `personal site`, `pdf`) and domain/date filters.
+**Exa:** Set `EXA_API_KEY` in the active profile's `.env`. Supports `category` filtering (`company`, `research paper`, `news`, `people`, `personal site`, `pdf`) and domain/date filters.
+
+**Exa free-first with an authenticated rate-limit retry (opt-in):**
+
+```yaml
+web:
+  search_backend: exa
+  extract_backend: exa
+  provider_tier:
+    exa: free
+  exa_paid_fallback: true
+```
+
+`web.exa_paid_fallback` defaults to `false`; a free-tier selection alone never
+permits spending. When explicitly enabled, an anonymous **HTTP 429** from Exa's
+hosted MCP endpoint permits one retry of that search or page fetch with the active
+profile's `EXA_API_KEY` in the `x-api-key` header. The next request starts anonymous
+again. Each URL in an extraction batch has its own bounded retry; successful URLs
+are not fetched twice. A warning records each authenticated attempt without
+including the key, query, or fetched URL.
+
+No key, non-429 statuses, connection failures, malformed responses, and rate-limit
+words inside an HTTP-200 MCP error do **not** trigger paid fallback. Authenticated
+requests cannot follow redirects and are never retried by this policy. Failures
+then return to the existing anonymous-provider failover logic. This is not a
+fleet-wide budget cap: many independent 429s can each incur a charge. Set the flag
+to `false` for strict never-spend behavior on the anonymous Exa path. Explicit
+`paid` or `auto`-with-key selections retain their existing keyed behavior.
 
 ## Browser
 

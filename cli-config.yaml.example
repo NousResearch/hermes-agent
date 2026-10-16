@@ -584,6 +584,20 @@ terminal:
 #     - ~/code/my-app
 
 # =============================================================================
+# Web search / extraction
+# =============================================================================
+web:
+  # Opt in only if authenticated Exa requests (and their charges) are approved.
+  # On Exa's anonymous HTTP 429, retry once with the active EXA_API_KEY.
+  # Other errors never trigger this retry; the next call starts anonymous again.
+  exa_paid_fallback: false
+  # For free-first Exa, also select Exa for the desired capability and pin free:
+  # search_backend: exa
+  # extract_backend: exa
+  # provider_tier:
+  #   exa: free
+
+# =============================================================================
 # Browser Tool Configuration
 # =============================================================================
 browser:

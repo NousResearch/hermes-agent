@@ -74,7 +74,7 @@ describe('isRemoteReauthFailure', () => {
         for (const error of [
           'Timed out minting the gateway WebSocket URL',
           'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.',
-          'Error invoking remote method \'hermes:remoteGatewayWsUrl\': Error: IPC channel closed'
+          "Error invoking remote method 'hermes:remoteGatewayWsUrl': Error: IPC channel closed"
         ]) {
           expect.soft(isRemoteReauthFailure(config({ mode, remoteOauthConnected }), error), error).toBe(false)
         }

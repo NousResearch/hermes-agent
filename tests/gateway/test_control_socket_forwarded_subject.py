@@ -70,6 +70,20 @@ def test_a_malformed_forwarded_subject_fails_closed(tmp_path):
         assert "invalid bootstrap subject" in response["error"]
 
 
+def test_a_bare_forwarded_label_fails_closed(tmp_path):
+    """Only a structured login subject is nameable: a bare label like ``admin`` (or a UID label)
+    could collide with another stored owner representation, the invariant
+    test_private_control_peer_mints_profile_bound_ticket guards."""
+    for bad in ("admin", "basic:wweic", "uid:501", 'auth:v1:"basic"', "auth:v1:[1,2,3]"):
+        response = json.loads(
+            _server(tmp_path).handle_request_line(
+                _mint_line(tmp_path, bad), peer_subject="uid:501"
+            )
+        )
+        assert response["ok"] is False, bad
+        assert "invalid bootstrap subject" in response["error"]
+
+
 def test_a_forwarded_subject_matching_the_row_owner_takes_the_mutation(tmp_path):
     """The reviewer-repro shape: a stored ``desktop`` row owned by a dashboard account is
     deletable by a forwarded actor acting as that account, and refused for any other."""

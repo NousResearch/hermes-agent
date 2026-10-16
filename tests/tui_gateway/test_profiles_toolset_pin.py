@@ -46,3 +46,40 @@ def test_empty_pin_clears_the_pin_and_falls_back_to_the_platform_default():
     _toolsets, pinned = _describe_toolsets(cfg)
     assert pinned is None
     assert set(_get_platform_tools(cfg, "cli", include_default_mcp_servers=False)) != {"web"}
+
+
+@pytest.mark.parametrize("wanted", [["discord"], ["discord_admin"], ["web", "discord"]])
+def test_profile_configure_rejects_restricted_replacement_without_losing_pin(
+        tmp_path, monkeypatch, wanted):
+    from pathlib import Path
+
+    import hermes_yaml as yaml
+    import tui_gateway.server as server
+
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    homes = {name: root / "profiles" / name for name in ("a", "b")}
+    for home in homes.values():
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"platform_toolsets": {"cli": ["web"]}}), encoding="utf-8")
+
+    observed = []
+    for name in ("a", "b", "a"):
+        result = server._methods["profiles.configure"](
+            1, {"name": name, "enabled_toolsets": wanted, "description": "updated"})["result"]
+        cfg = yaml.safe_load((homes[name] / "config.yaml").read_text(encoding="utf-8"))
+        described = server._methods["profiles.describe"](2, {"name": name})["result"]
+        observed.append({
+            "result": result,
+            "pin": cfg["platform_toolsets"]["cli"],
+            "editor_has_restricted": any(row["name"] in {"discord", "discord_admin"}
+                                         for row in described["toolsets"]),
+        })
+
+    assert observed == [{
+        "result": {"ok": False, "applied": {"description": True, "toolsets": False}},
+        "pin": ["web"], "editor_has_restricted": False,
+    }] * 3

@@ -2316,6 +2316,7 @@ def init_agent(
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    reasoning_event_callback: Callable[..., Any] | None = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 

@@ -7,11 +7,11 @@ _muted_surface: ContextVar[str | None] = ContextVar("muted_notification_surface"
 # These are text/media UI events, not approval/clarify/connection requests or outcomes.
 _FREEFORM_EVENTS = frozenset({
     "message.start", "message.delta", "message.interim", "message.complete",
-    "reasoning.delta", "thinking.delta", "status.update", "notification.show",
+    "reasoning.start", "reasoning.delta", "reasoning.end", "thinking.delta", "status.update", "notification.show",
     "tool.start", "tool.complete", "tool.generating", "error", "reaction",
 })
 _PRESENTATION_CALLBACKS = (
-    "stream_delta_callback", "interim_assistant_callback", "reasoning_callback",
+    "stream_delta_callback", "interim_assistant_callback", "reasoning_callback", "reasoning_event_callback",
     "tool_progress_callback",
     "tool_start_callback", "tool_complete_callback", "tool_gen_callback", "reaction_callback",
 )

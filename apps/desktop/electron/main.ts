@@ -400,6 +400,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
+import { SilentLoginCoalescer } from './oauth-login-coalescer'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
@@ -7294,25 +7295,17 @@ async function clearOauthSession(baseUrl) {
   }
 }
 
-// Open a gateway login window in the OAuth session partition, resolving once
-// the access-token cookie appears (login done) or rejecting if the user closes
-// the window first. The window navigates through the IDP and back to
-// /auth/callback, which sets the session cookies on the partition; we poll the
-// cookie jar rather than try to read the HttpOnly value.
-//
-// `silent` selects the URL the window loads, which decides interactive-vs-silent:
-//   - silent=false (default): load ``/login`` — the public interstitial that
-//     renders the "Log in with X" provider chooser. This is the interactive
-//     remote-gateway login the settings UI drives.
-//   - silent=true: load the PROTECTED root ``/`` instead. ``/login`` is a public
-//     route, so loading it NEVER triggers the gate's auto-SSO and always shows
-//     the chooser. Loading a protected page with no session cookie makes the
-//     gate run ``_auto_sso_response``: single registered provider + a live
-//     portal session in this partition → a silent 302 through
-//     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
-//     → ``/auth/callback``, which sets the gateway cookie with NO interactive
-//     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(
+// One silent login per gateway origin. The opener is a closure so baseUrl and
+// options reach the window; passing the function itself calls it with none.
+const silentOauthLogins = new SilentLoginCoalescer()
+
+function openOauthLoginWindow(baseUrl, options = {}) {
+  return silentOauthLogins.runFor(baseUrl, options, (url, loginOptions) =>
+    openOauthLoginWindowUnshared(url, loginOptions)
+  )
+}
+
+function openOauthLoginWindowUnshared(
   baseUrl,
   { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
 ) {
@@ -7600,11 +7593,13 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     })
 
   return attempt().catch(async error => {
-    return retryCookie401WithLogin(error, options, {
+    const origin = new URL(url).origin
+
+    return retryCookie401WithLogin(error, { ...options, loginKey: origin }, {
       clearCookies: () => remoteSessionCookies.clear(partition, url),
       login: async () => {
         try {
-          await openOauthLoginWindow(new URL(url).origin, { silent: true })
+          await openOauthLoginWindow(origin, { silent: true })
         } catch (reloginError) {
           rememberLog(
             `Remote session re-login after 401 failed for ${new URL(url).host}: ${reloginError?.message || reloginError}`

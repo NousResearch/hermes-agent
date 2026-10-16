@@ -197,6 +197,14 @@ class AuthorityConnection:
             # Every handler indexes params as a mapping; refuse the frame before ``.get``.
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
+        from gateway.drain_control import ws_method_refused_while_draining
+        if self._operator is True and ws_method_refused_while_draining(getattr(self.authority, 'runner', None), method):
+            # An interactive socket reaches a draining owner only in a restart's after-turn wait:
+            # it may answer the parked turn and queue input, never change this owner's state.
+            exc = RuntimeStoreError('runtime_draining')
+            _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
+            return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
         profile = params.get('profile')
         if isinstance(profile, str) and profile:
             try:
@@ -573,7 +581,9 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'))
+        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
+        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'),
+                                              queue_while_restarting=self._operator is True)
         return asdict(receipt)
 
     async def mutate(self, ref, params):

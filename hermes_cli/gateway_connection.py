@@ -140,6 +140,10 @@ class GatewayConnection:
                         raise self._error
                     return
                 thread = self._thread
+                if thread is not None and thread.is_alive() and self.closed and self._ready.is_set():
+                    # Its loop already ended (``_run`` sets ``closed`` then ``_ready``) and the thread is
+                    # only unwinding: wait it out, or this call re-raises the last dial's stale error.
+                    thread.join(max(deadline - time.monotonic(), 0))
                 if thread is None or not thread.is_alive():
                     from agent.memory_provider import spawn_context_thread
 

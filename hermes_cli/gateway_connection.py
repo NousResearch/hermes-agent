@@ -73,6 +73,8 @@ class SessionState:
         self.subscription_id = None
         self.execution_generation = None
         self.messages: list = []
+        # The session FIFO's non-terminal admissions (snapshot, then every ``session.info``).
+        self.pending: list = []
         self.usage: dict = {}
         # Called (loop thread) with each ``session.usage`` payload; GatewayAgent maps it onto main's
         # agent attributes, so a frame landing between turns is never dropped with the turn queue.

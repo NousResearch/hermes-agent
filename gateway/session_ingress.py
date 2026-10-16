@@ -211,6 +211,13 @@ def pause_notice(authority, ref, reason):
             'Send /reset to start a fresh conversation, or ask the operator to resume this one.')
 
 
+def discard_command(authority, session_id):
+    """The operator command that acknowledges this session's lost turn (``prompt.resolve_unknown``)."""
+    from hermes_constants import profile_name_for_home
+    profile = profile_name_for_home(authority.profile_id)
+    return 'hermes ' + (f'-p {profile} ' if profile not in (None, 'default') else '') + f'sessions discard {session_id}'
+
+
 def row_turn_author(policy, row):
     """Who wrote the admitted input, for memory attribution only: the producer's stamp when it
     left one, else the forwarded peer bound into the session policy; never grants anything."""

@@ -2923,7 +2923,13 @@ export function useSessionActions({
         // (the #69750 focus-stealing bug, reintroduced if this fires
         // unconditionally). resumeSession reuses the runtime warm-cached above
         // (ensureSessionState/updateSessionState) instead of an extra resume RPC.
-        if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
+        const routedStoredSessionId = getRoutedStoredSessionId()
+        const routedParent = parentStoredId !== null && routedStoredSessionId === parentStoredId
+
+        if (
+          parentStoredId !== null &&
+          (selectedStoredSessionIdRef.current === parentStoredId || routedParent)
+        ) {
           navigate(sessionRoute(routedSessionId), { replace: true })
           await resumeSession(routedSessionId)
         } else {
@@ -2984,7 +2990,9 @@ export function useSessionActions({
       copy,
       creatingSessionRef,
       ensureSessionState,
+      getRoutedStoredSessionId,
       navigate,
+      releaseCreatingSessionGuard,
       requestGateway,
       resumeSession,
       selectedStoredSessionIdRef,

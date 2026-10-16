@@ -27,21 +27,34 @@ export function useLongRunToolCharms() {
       return
     }
 
+    const liveIds = new Set(tools.map(t => t.id))
+
+    for (const key of slots.current.keys()) {
+      if (!liveIds.has(key)) {
+        slots.current.delete(key)
+      }
+    }
+
+    const firstStartedAt = tools.reduce(
+      (earliest, tool) => (tool.startedAt ? Math.min(earliest, tool.startedAt) : earliest),
+      Infinity
+    )
+
+    if (firstStartedAt === Infinity) {
+      return
+    }
+
+    let interval: ReturnType<typeof setInterval> | undefined
+
     const tick = () => {
       if (!getUiState().busy) {
         slots.current.clear()
+        clearInterval(interval)
 
         return
       }
 
       const now = Date.now()
-      const liveIds = new Set(tools.map(t => t.id))
-
-      for (const key of Array.from(slots.current.keys())) {
-        if (!liveIds.has(key)) {
-          slots.current.delete(key)
-        }
-      }
 
       for (const tool of tools) {
         if (!tool.startedAt || now - tool.startedAt < DELAY_MS) {
@@ -61,9 +74,26 @@ export function useLongRunToolCharms() {
       }
     }
 
-    tick()
-    const id = setInterval(tick, 1000)
+    const start = () => {
+      tick()
 
-    return () => clearInterval(id)
+      if (getUiState().busy) {
+        interval = setInterval(tick, 1000)
+      }
+    }
+
+    const waitMs = firstStartedAt + DELAY_MS - Date.now()
+    let timeout: ReturnType<typeof setTimeout> | undefined
+
+    if (waitMs > 0) {
+      timeout = setTimeout(start, waitMs)
+    } else {
+      start()
+    }
+
+    return () => {
+      clearTimeout(timeout)
+      clearInterval(interval)
+    }
   }, [tools])
 }

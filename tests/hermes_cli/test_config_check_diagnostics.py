@@ -76,3 +76,17 @@ def test_config_check_reports_disabled_platform_only_when_runtime_disables_it(tm
         if reported:
             assert "hermes plugins enable platforms/fakechat" in output
         assert "synthetic-test-token" not in output
+
+
+def test_config_check_reports_config_yaml_structure_issues(tmp_path, monkeypatch, capsys):
+    home = _write_home(
+        tmp_path / "malformed",
+        "custom_providers:\n"
+        "  fallback_model: misplaced\n",
+    )
+
+    output = _check(home, monkeypatch, capsys)
+
+    assert "config.yaml:" in output
+    assert "fallback_model appears inside custom_providers" in output
+    assert "custom_providers is a dict" in output

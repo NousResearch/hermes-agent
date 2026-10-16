@@ -150,6 +150,55 @@ _HOST_RE = re.compile(
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9]))+)")
 
 
+def _preflight(args) -> None:
+    """Fail fast on prerequisites BEFORE the operator types anything.
+
+    Two checks, both blocking (a config the box can't serve is noise):
+    1. config.yaml must be readable — save_config fails closed later, but
+       that is after twenty keystrokes; say it here instead.
+    2. fido2 (the `webauthn` extra) must be importable — the pairing check
+       and the provider both need it. Interactive runs get a one-prompt
+       install (PM unions the extra into the recorded graph); non-interactive
+       runs print the remedy and stop. --skip-preflight stages the config
+       without either check (for provisioning a config for ANOTHER box).
+    """
+    from hermes_cli.config import load_config_readonly
+
+    try:
+        load_config_readonly()
+    except Exception as exc:  # noqa: BLE001 — same failure save_config would hit later
+        print(f"✗ config.yaml is unreadable — fix it before setup; nothing was written: {exc}")
+        sys.exit(1)
+    if getattr(args, "skip_preflight", False):
+        return
+    import importlib.util
+
+    if importlib.util.find_spec("fido2") is not None:
+        return
+    print("✗ fido2 (the 'webauthn' extra) is not installed — passkeys cannot be "
+          "provisioned or served on this box without it.")
+    remedy = "pip install 'hermes-agent[webauthn]' (or: hermes pm install --extra webauthn)"
+    installed = False
+    if sys.stdin.isatty():
+        try:
+            import pm
+        except Exception:  # noqa: BLE001 — not a PM-managed install here
+            pm = None
+        if pm is not None and _confirm("Install the 'webauthn' extra now?", True):
+            try:
+                pm.sync_venv(["webauthn"], explicit=True)
+                print("  ✓ webauthn extra installed")
+                installed = True
+            except Exception as exc:  # noqa: BLE001 — fall through to the manual remedy
+                print(f"  ✗ {exc}")
+    if not installed:
+        print(f"→ {remedy}")
+        print("  Run setup again after installing; --skip-preflight stages the "
+              "config on THIS box without the check (use only when the "
+              "dashboard runs elsewhere).")
+        sys.exit(1)
+
+
 class _OriginRejected(Exception):
     """A candidate origin fails a validation rule; message = operator hint."""
 
@@ -352,6 +401,8 @@ def cmd_webauthn_setup(args) -> None:
     from plugins.dashboard_auth._shared import SkipRegistration, load_config_section
 
     log = logging.getLogger("hermes_cli.dashboard_webauthn")
+
+    _preflight(args)
     section = load_config_section(log, "dashboard-webauthn-setup", "dashboard", "webauthn")
     existing_rp_id = str(section.get("rp_id", "")).strip().strip(".")
 

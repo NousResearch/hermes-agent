@@ -770,7 +770,8 @@ class TestCliEnrolAndForget:
 class TestCliSetup:
     @staticmethod
     def _args(**overrides):
-        base = {"rp_id": "", "rp_name": "", "origin": None, "force": False}
+        base = {"rp_id": "", "rp_name": "", "origin": None, "force": False,
+                "skip_preflight": False}
         base.update(overrides)
         return type("A", (), base)()
 
@@ -886,3 +887,105 @@ class TestCliSetup:
         with pytest.raises(SystemExit):
             dashboard_webauthn.cmd_webauthn_enrol(args)
         assert "webauthn setup" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# setup preflight — fail fast BEFORE the operator types anything
+# ---------------------------------------------------------------------------
+
+
+class TestSetupPreflight:
+    @staticmethod
+    def _args(**overrides):
+        base = {"rp_id": "", "rp_name": "", "origin": None, "force": False,
+                "skip_preflight": False}
+        base.update(overrides)
+        return type("A", (), base)()
+
+    def test_missing_fido2_stops_before_any_input(self, hermes_home, capsys, monkeypatch):
+        """The ask: check fido2/other prerequisites BEFORE entering details.
+        Non-interactive: prints the remedy and exits; config untouched."""
+        import importlib.util
+
+        from hermes_cli import dashboard_webauthn
+
+        _write_webauthn_config(hermes_home)  # a readable config, so check 1 passes
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda name: None if name == "fido2" else importlib.util.find_spec(name))
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://dash.example.com"])
+        with pytest.raises(SystemExit):
+            dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "fido2" in out and "hermes pm install --extra webauthn" in out
+        # nothing asked, nothing written:
+        import hermes_yaml as yaml
+
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["dashboard"]["webauthn"]["rp_id"] == RP_ID  # the OLD value intact
+
+    def test_missing_fido2_interactively_installs_the_extra(
+            self, hermes_home, capsys, monkeypatch):
+        """Interactive: one prompt -> PM unions the extra -> setup proceeds."""
+        import importlib.util
+
+        from hermes_cli import dashboard_webauthn
+
+        class _FakeTty:
+            @staticmethod
+            def isatty():
+                return True
+
+        monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
+        _write_webauthn_config(hermes_home)
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda name: None if name == "fido2" else None)  # always None here
+        import pm
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(pm, "sync_venv", lambda extras, **k: calls.append(list(extras)))
+        # prompts: preflight-confirm Y, rp_name (blank = default), include-origin Y,
+        # www N, extras blank, final write confirm Y
+        answers = iter(["y", "", "y", "n", "", "y"])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+        args = self._args(rp_id="dash.example.com", rp_name="")  # rp_name asked after preflight
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert calls == [["webauthn"]]
+        assert "✓ webauthn extra installed" in out
+        assert "✓ dashboard.webauthn written" in out
+
+    def test_skip_preflight_stages_without_the_check(self, hermes_home, capsys, monkeypatch):
+        """--skip-preflight = provisioning a config for another box; writes despite fido2 missing."""
+        import importlib.util
+
+        import hermes_yaml as yaml
+
+        from hermes_cli import dashboard_webauthn
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        args = self._args(rp_id="other.example.com", rp_name="Other",
+                          origin=["https://other.example.com"], skip_preflight=True)
+        # no config on disk at all (check 1 must ALSO be skippable):
+        cfg_path = hermes_home / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+        dashboard_webauthn.cmd_webauthn_setup(args)
+
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        assert cfg["dashboard"]["webauthn"]["rp_id"] == "other.example.com"
+
+    def test_unreadable_config_stops_before_input(self, hermes_home, capsys, monkeypatch):
+        import hermes_cli.config as config
+
+        from hermes_cli import dashboard_webauthn
+
+        def _raise():
+            raise RuntimeError("bad yaml")
+
+        monkeypatch.setattr(config, "load_config_readonly", _raise)
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://dash.example.com"])
+        with pytest.raises(SystemExit):
+            dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "unreadable" in out and "nothing was written" in out

@@ -190,4 +190,8 @@ def build_dashboard_parser(
         webauthn_setup_parser.add_argument(
             "--force", action="store_true",
             help="Allow switching rp_id even though the credential store is not empty")
+        webauthn_setup_parser.add_argument(
+            "--skip-preflight", action="store_true",
+            help="Stage the dashboard.webauthn block without the fido2/config "
+                "preflight (for writing a config for a different box)")
         webauthn_setup_parser.set_defaults(func=cmd_webauthn_setup)

@@ -869,8 +869,8 @@ class TestCliSetup:
 
         monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
         # rp_id, rp_name (blank -> default), confirm origin, decline www, no extras,
-        # confirm the write
-        answers = iter(["dash.example.com", "", "y", "n", "", "y", ""])
+        # decline the password offer (fixtures carry no basic_auth), confirm the write
+        answers = iter(["dash.example.com", "", "y", "n", "", "n", "y", ""])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
         args = self._args()
         dashboard_webauthn.cmd_webauthn_setup(args)
@@ -955,8 +955,8 @@ class TestSetupPreflight:
                             lambda extras, **k: (calls.append(list(extras)),
                                                  state.__setitem__("installed", True)))
         # prompts: preflight-confirm Y, rp_name (blank = default), include-origin Y,
-        # www N, extras blank, final write confirm Y, proxy ask (blank = skip)
-        answers = iter(["y", "", "y", "n", "", "y", ""])
+        # www N, extras blank, password offer N, final write confirm Y, proxy ask skip
+        answers = iter(["y", "", "y", "n", "", "n", "y", ""])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
         args = self._args(rp_id="dash.example.com", rp_name="")  # rp_name asked after preflight
         dashboard_webauthn.cmd_webauthn_setup(args)
@@ -1065,6 +1065,107 @@ class TestSetupTopologyAdvisory:
         dashboard_webauthn.cmd_webauthn_setup(args)
         assert "Deployment note" not in capsys.readouterr().out
 
+
+class TestSetupPasswordOffer:
+    """The passkey is a second factor: when no password login exists (and the
+    first-boot prompt can't fire because a provider is registered), the wizard
+    offers to seed dashboard.basic_auth in the same save."""
+
+    @staticmethod
+    def _args(**overrides):
+        base = {"rp_id": "", "rp_name": "", "origin": None, "force": False,
+                "skip_preflight": False, "trusted_proxy": ""}
+        base.update(overrides)
+        return type("A", (), base)()
+
+    def test_interactive_yes_seeds_basic_auth(self, hermes_home, capsys, monkeypatch):
+        import getpass
+
+        import hermes_yaml as yaml
+
+        from hermes_cli import dashboard_webauthn
+
+        class _FakeTty:
+            @staticmethod
+            def isatty():
+                return True
+
+        monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
+        _write_webauthn_config(hermes_home)
+        answers = iter(["y", "rich"])  # password offer Y, username
+
+        def fake_input(prompt="", *a, **k):
+            return next(answers)
+
+        monkeypatch.setattr("builtins.input", fake_input)
+        monkeypatch.setattr(getpass, "getpass", lambda *a, **k: "s3cret-pw")
+        args = self._args(rp_id="d.example.com", rp_name="D",
+                          origin=["https://d.example.com"], trusted_proxy="192.0.2.10")
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "✓ dashboard.basic_auth written" in out
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        basic = cfg["dashboard"]["basic_auth"]
+        assert basic["username"] == "rich"
+        assert basic["password_hash"].startswith("scrypt$")
+        assert basic["password"] == ""  # plaintext never persisted
+        assert basic["secret"]
+
+    def test_interactive_no_leaves_it_unset_with_advisory(self, hermes_home, capsys, monkeypatch):
+        import hermes_yaml as yaml
+
+        from hermes_cli import dashboard_webauthn
+
+        class _FakeTty:
+            @staticmethod
+            def isatty():
+                return True
+
+        monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
+        _write_webauthn_config(hermes_home)
+        answers = iter(["n", ""])  # password offer declined, proxy ask skipped
+
+        def fake_input(prompt="", *a, **k):
+            return next(answers)
+
+        monkeypatch.setattr("builtins.input", fake_input)
+        args = self._args(rp_id="d.example.com", rp_name="D",
+                          origin=["https://d.example.com"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert "basic_auth" not in cfg["dashboard"]
+        assert "SECOND factor" in capsys.readouterr().out
+
+    def test_noninteractive_missing_prints_advisory_only(self, hermes_home, capsys):
+        import hermes_yaml as yaml
+
+        from hermes_cli import dashboard_webauthn
+
+        _write_webauthn_config(hermes_home)
+        args = self._args(rp_id="d.example.com", rp_name="D",
+                          origin=["https://d.example.com"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "No password login is configured" in out
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert "basic_auth" not in cfg["dashboard"]  # never written without a tty
+
+    def test_existing_password_no_ask(self, hermes_home, capsys, monkeypatch):
+        import hermes_yaml as yaml
+
+        from hermes_cli import dashboard_webauthn
+
+        _write_webauthn_config(hermes_home)
+        cfg_path = hermes_home / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        cfg["dashboard"]["basic_auth"] = {"username": "rich",
+                                          "password_hash": "scrypt$x$y"}
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        args = self._args(rp_id="d.example.com", rp_name="D",
+                          origin=["https://d.example.com"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        assert "No password login is configured" not in capsys.readouterr().out
+
     def test_trusted_proxy_flag_writes_the_config(self, hermes_home, capsys):
         """--trusted-proxy: non-interactive write of dashboard.trusted_proxies."""
         import hermes_yaml as yaml
@@ -1111,10 +1212,11 @@ class TestSetupTopologyAdvisory:
         _write_webauthn_config(hermes_home)
         monkeypatch.setattr(dashboard_webauthn, "_proxy_candidates",
                             lambda port=9119: ["192.0.2.10"])
-        # all three flags set → the write-confirm is skipped; the only prompt
-        # is the one-candidate trust ask, where Enter accepts the detection:
+        # all three flags set → the write-confirm is skipped; prompts are the
+        # password offer (decline — fixtures carry no basic_auth) then the
+        # one-candidate trust ask, where Enter accepts the detection:
         prompts: list[str] = []
-        answers = iter([""])
+        answers = iter(["n", ""])
 
         def fake_input(prompt="", *a, **k):
             prompts.append(str(prompt))
@@ -1142,7 +1244,8 @@ class TestSetupTopologyAdvisory:
         monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
         _write_webauthn_config(hermes_home)
         monkeypatch.setattr(dashboard_webauthn, "_proxy_candidates", lambda port=9119: [])
-        answers = iter([""])  # the proxy ask: Enter skips (write-confirm skipped: flags set)
+        # password offer declined, then the proxy ask skipped:
+        answers = iter(["n", ""])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
         args = self._args(rp_id="dash.example.com", rp_name="Dash",
                           origin=["https://dash.example.com"])

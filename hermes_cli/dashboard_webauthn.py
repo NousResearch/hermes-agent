@@ -391,7 +391,56 @@ def _store_has_credentials(section: dict) -> bool:
     return bool((doc.get("credentials") or []) or (doc.get("pending_enrolments") or {}))
 
 
-def _write_webauthn_block(rp_id: str, rp_name: str, origins: list, args) -> tuple:
+def _basic_auth_configured() -> bool:
+    """True when a usable password login exists (the passkey's first factor)."""
+    from hermes_cli.config import load_config_readonly
+
+    basic = ((load_config_readonly().get("dashboard") or {}).get("basic_auth")) or {}
+    return bool(
+        str(basic.get("username") or "").strip()
+        and (str(basic.get("password_hash") or "").strip()
+             or str(basic.get("password") or "").strip()))
+
+
+def _acquire_basic_auth(args) -> dict | None:
+    """Offer to seed ``dashboard.basic_auth`` when no password login exists.
+
+    The passkey is a SECOND factor: without the password step beneath it the
+    enrolment serves nothing. The dashboard's first-boot prompt covers the
+    happy order, but it never fires once ANY provider is registered (Portal
+    OAuth, or this very block on the second setup run) — and there is no
+    password CLI — so the wizard closes that gap here. Interactive only;
+    default N; returns the block to write or None.
+    """
+    if _basic_auth_configured():
+        return None
+    if not sys.stdin.isatty():
+        print("⚠ No password login is configured (dashboard.basic_auth) — the passkey is a")
+        print("  SECOND factor and needs the password step beneath it. Set one via the")
+        print("  dashboard's first-boot prompt (choice 1) or the dashboard.basic_auth config.")
+        return None
+    print()
+    print("  The passkey is a SECOND factor on the password login, and no password")
+    print("  provider is configured yet (the first-boot prompt won't offer one once a")
+    print("  provider — e.g. Portal OAuth — is registered).")
+    if not _confirm("Configure the password login now (dashboard.basic_auth)?", False):
+        return None
+    import getpass
+    import secrets
+
+    username = input("  Username [admin]: ").strip() or "admin"
+    pw = getpass.getpass("  Password: ")
+    if not pw or pw != getpass.getpass("  Confirm password: "):
+        print("  ✗ empty or mismatched password — skipping (see the deployment note below).")
+        return None
+    from plugins.dashboard_auth.basic import hash_password
+
+    return {"username": username, "password_hash": hash_password(pw),
+            "password": "", "secret": secrets.token_urlsafe(32)}
+
+
+def _write_webauthn_block(rp_id: str, rp_name: str, origins: list, args,
+                          basic_auth: dict | None = None) -> tuple:
     """Timestamped-backup + partial save of the decided keys (webauthn trio,
     plus dashboard.trusted_proxies when the operator confirmed a proxy);
     returns ``(config_path, backup_path_or_None)``."""
@@ -407,9 +456,13 @@ def _write_webauthn_block(rp_id: str, rp_name: str, origins: list, args) -> tupl
         "rp_id": rp_id, "rp_name": rp_name, "origins": origins}}}
     if trusted:
         partial["dashboard"]["trusted_proxies"] = trusted
+    if basic_auth:
+        partial["dashboard"]["basic_auth"] = basic_auth
     preserve = {("dashboard", "webauthn", key) for key in ("rp_id", "rp_name", "origins")}
     if trusted:
         preserve.add(("dashboard", "trusted_proxies"))
+    if basic_auth:
+        preserve.add(("dashboard", "basic_auth"))
     try:
         config_mod.save_config(partial, preserve_keys=preserve, merge_existing=True)
     except Exception as exc:  # noqa: BLE001 — the fail-closed reader refuses damaged files
@@ -417,6 +470,20 @@ def _write_webauthn_block(rp_id: str, rp_name: str, origins: list, args) -> tupl
         sys.exit(1)
     if trusted:
         print(f"✓ dashboard.trusted_proxies: {', '.join(trusted)} written")
+    if basic_auth:
+        print(f"✓ dashboard.basic_auth written (username: {basic_auth['username']}; "
+              "scrypt hash — the plaintext was never stored)")
+        try:
+            from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
+
+            cfg = config_mod.load_config()
+            if ensure_basic_auth_plugin_enabled_in_config(cfg):
+                config_mod.save_config({"plugins": cfg.get("plugins") or {}},
+                                       preserve_keys={("plugins", "disabled")},
+                                       merge_existing=True)
+                print("  ✓ re-enabled the bundled basic plugin (it was in plugins.disabled)")
+        except Exception as exc:  # noqa: BLE001 — informational; the boot gate re-checks
+            print(f"  (plugin-enable re-check skipped: {exc})")
     return str(config_path), str(backup) if backup else None
 
 
@@ -578,6 +645,7 @@ def cmd_webauthn_setup(args) -> None:
             sys.exit(1)
     rp_name = _acquire_rp_name(args, rp_id, section)
     origins = _acquire_origins(args, rp_id, section)
+    basic_auth = _acquire_basic_auth(args)
 
     if sys.stdin.isatty() and not (
             str(getattr(args, "rp_id", "") or "").strip()
@@ -593,7 +661,8 @@ def cmd_webauthn_setup(args) -> None:
             print("Cancelled — nothing written.")
             return
 
-    config_path, backup = _write_webauthn_block(rp_id, rp_name, origins, args)
+    config_path, backup = _write_webauthn_block(rp_id, rp_name, origins, args,
+                                                basic_auth=basic_auth)
 
     resolution = "the server re-validates it at boot"
     try:

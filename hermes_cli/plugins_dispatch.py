@@ -53,8 +53,13 @@ _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
-# Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
+# Live workers a hung callback may accumulate PER SESSION before it is skipped outright for that
+# session (#105223 / #98382). Calls without a session identity share one bucket.
 _HOOK_MAX_ABANDONED_WORKERS = 3
+# Backstop across ALL sessions of one callback: bounds the thread leak when many sessions hang
+# at once. Deliberately well above the per-session cap so one hung session can never reach it
+# and fail every other session's calls closed.
+_HOOK_MAX_ABANDONED_WORKERS_PER_CALLBACK = 4 * _HOOK_MAX_ABANDONED_WORKERS
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
 
@@ -173,6 +178,31 @@ def _hook_call_identity(kwargs: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _hook_session_identity(kwargs: dict[str, Any]) -> Optional[str]:
+    """Session the call belongs to, or ``None`` when the event carries none.
+
+    Timeout suppression and the abandoned-worker cap are scoped by this: one session's hung
+    hook must not fail-close every other gateway session's tool calls through a callback they
+    share. ``task_id`` is the fallback for payloads (subagents, batch) without ``session_id``.
+    """
+    for field in ("session_id", "task_id"):
+        value = kwargs.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _hook_callback_declines(cb: Callable, kwargs: dict[str, Any]) -> bool:
+    """Whether *cb* declares (via ``hermes_tool_matcher``) that it does not handle this tool.
+
+    Evaluated BEFORE the bounded dispatch so a callback suppressed after a timeout cannot block
+    or skip tools it never matches (shell hooks with a ``matcher``). Callbacks without the
+    attribute — every ordinary plugin callback — are always dispatched.
+    """
+    matcher = getattr(cb, "hermes_tool_matcher", None)
+    return callable(matcher) and not matcher(kwargs.get("tool_name"))
+
+
 def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     """Whether *hook_name* should run under the non-blocking timeout path."""
     if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
@@ -268,6 +298,8 @@ class PluginDispatchMixin:
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             try:
+                if _hook_callback_declines(cb, kwargs):
+                    continue
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
@@ -316,9 +348,13 @@ class PluginDispatchMixin:
         (worker abandoned, never joined), or the worker could not be started. Exceptions
         propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
-        # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
-        # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
-        suppression_key = (hook_name, id(cb))
+        # Suppression is a fact about the CALLBACK IN ONE SESSION — a hung one must keep its
+        # back-off there — but a callback is shared by every gateway session, so a hang in
+        # session A must not fail-close session B's calls. Calls without a session identity
+        # keep the coarse per-callback key. The gate must instead tell CONCURRENT CALLS apart.
+        callback_key = (hook_name, id(cb))
+        session = _hook_session_identity(kwargs)
+        suppression_key = callback_key if session is None else (*callback_key, session)
         gate_key = (*suppression_key, _hook_call_identity(kwargs))
         token = object()
         with self._hook_timeout_lock:
@@ -332,15 +368,19 @@ class PluginDispatchMixin:
             # Workers abandoned on timeout still hold threads. Once the suppression window has
             # passed, a fresh call id may start a new worker (a hung guard must not fail every
             # later tool call closed until restart, #105223), but only up to a small cap per
-            # callback — expiring the bookkeeping while the hung worker lives must not leak a
-            # thread per call (#98382). At the cap the callback keeps being skipped (fail-closed
-            # for pre_tool_call) until one of its workers finishes and releases its slot.
+            # session — expiring the bookkeeping while the hung worker lives must not leak a
+            # thread per call (#98382) — plus a larger backstop across all sessions of the
+            # callback. At a cap the callback keeps being skipped (fail-closed for
+            # pre_tool_call) until one of its workers finishes and releases its slot.
             abandoned = self._hook_abandoned.get(suppression_key)
-            if abandoned and len(abandoned) >= _HOOK_MAX_ABANDONED_WORKERS:
+            total_abandoned = sum(len(v) for k, v in self._hook_abandoned.items() if k[:2] == callback_key)
+            if ((abandoned and len(abandoned) >= _HOOK_MAX_ABANDONED_WORKERS)
+                    or total_abandoned >= _HOOK_MAX_ABANDONED_WORKERS_PER_CALLBACK):
                 logger.warning(
-                    "Hook '%s' callback %s (%s) skipped: %d abandoned worker(s) still running — "
-                    "the plugin is hung; fix or disable it (retried when a worker finishes)",
-                    hook_name, callback_name, getattr(cb, "__module__", "unknown plugin"), len(abandoned))
+                    "Hook '%s' callback %s (%s) skipped: %d abandoned worker(s) still running "
+                    "(%d across sessions) — the plugin is hung; fix or disable it (retried when a "
+                    "worker finishes)", hook_name, callback_name, getattr(cb, "__module__", "unknown plugin"),
+                    len(abandoned or ()), total_abandoned)
                 return _HOOK_SKIPPED
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(suppression_key, None)
@@ -381,9 +421,14 @@ class PluginDispatchMixin:
             return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
             with self._hook_timeout_lock:
-                # See #6622.
+                # See #6622. Keys are per session now; prune this callback's lapsed windows so
+                # sessions that never call again do not accumulate entries.
+                now = time.monotonic()
+                for key in [k for k, until in self._hook_timeout_suppressed_until.items()
+                            if k[:2] == callback_key and until <= now]:
+                    self._hook_timeout_suppressed_until.pop(key, None)
                 self._hook_timeout_suppressed_until[suppression_key] = (
-                    time.monotonic() + self._hook_timeout_suppression_seconds)
+                    now + self._hook_timeout_suppression_seconds)
                 # The worker may have finished (and released its token) between the wait
                 # expiring and this lock; recording it as abandoned then would block the
                 # callback for that call id until reload with no thread behind it.
@@ -546,6 +591,8 @@ class PluginDispatchMixin:
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
+                if _hook_callback_declines(cb, kwargs):
+                    continue
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)

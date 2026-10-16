@@ -4998,12 +4998,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return snap[name] or default
         return _scoped_gate_env(name, default)
 
-    def _gate_raw(self, extra_key: str, env_key: str):
-        """Resolve one gate value: env/snapshot first (legacy precedence), then extra."""
-        val = self._gate_env(env_key)
+    def _gate_raw(self, extra_key: str, env_key: str, config=None):
+        """Resolve one gate value: env/snapshot first (legacy precedence), then extra; *config* = re-read extra."""
+        val = self._gate_env(env_key) if config is None else _scoped_gate_env(env_key)
         if val:
             return val
-        extra = getattr(getattr(self, "config", None), "extra", None)
+        extra = getattr(getattr(self, "config", None) if config is None else config, "extra", None)
         if isinstance(extra, dict):
             return extra.get(extra_key)
         return None

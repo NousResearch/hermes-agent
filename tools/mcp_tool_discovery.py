@@ -716,10 +716,32 @@ def _enabled_config_names() -> set[str]:
     return {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
 
 
+def _not_connected(wanted: set[str], scope) -> set[str]:
+    with _core._lock:
+        # A parked task stays registered (it self-probes) but serves nothing, as does one whose connect
+        # recorded an error since its last success.
+        serving_nothing = {name for name in wanted
+                           if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                           and (key in _core._server_connect_errors
+                                or getattr(_core._servers[key], "_park_reason", None) is not None)}
+    return _unregistered(wanted, scope) | serving_nothing
+
+
 def mcp_servers_not_connected() -> list[str]:
     """Enabled ``mcp_servers`` entries the current registry scope has no live, connecting or lazy
-    registration for, in connect cooldown or not: after a reload, the servers that did not connect."""
-    return sorted(_unregistered(_enabled_config_names(), _core._mcp_registry_scope()))
+    registration for, in connect cooldown or not, or whose registration is parked or failed its
+    connect: after a reload, the servers that did not connect."""
+    return sorted(_not_connected(_enabled_config_names(), _core._mcp_registry_scope()))
+
+
+def mcp_servers_ready() -> list[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope serves now: live or lazily registered."""
+    wanted, scope = _enabled_config_names(), _core._mcp_registry_scope()
+    with _core._lock:
+        registered = {name for name in wanted
+                      if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                      or key in _core._lazy_server_configs}
+    return sorted(registered - _not_connected(wanted, scope))
 
 
 def mcp_servers_awaiting_connect() -> list[str]:

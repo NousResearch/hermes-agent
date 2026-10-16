@@ -38,6 +38,7 @@ def _reloadable(authority, monkeypatch):
     monkeypatch.setattr('tools.mcp_tool_discovery.reconcile_mcp_servers_with_config',
                         lambda: {'removed': [], 'added': ['fixt'], 'pending': []})
     monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_not_connected', list)
+    monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['fixt', 'old'])
 
 
 def _worker_frame(authority, sid, monkeypatch):
@@ -206,6 +207,42 @@ async def test_an_admission_queued_during_a_reload_commit_keeps_the_old_servers(
         store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+async def test_a_server_that_fails_to_start_is_unavailable_on_every_reload(tmp_path, monkeypatch):
+    """A stdio server whose ``command`` is missing parks after its first connect: discovery keeps the parked
+    task registered (it self-probes), yet it serves nothing. ``reload.mcp`` names it unavailable, never as
+    added or among the chat's ``session_servers``, on the first reload and on the next."""
+    from tools import mcp_tool
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp_tool_scope import _server_key
+    home = _home(monkeypatch)
+    (home / 'config.yaml').write_text(CONFIG.replace('mcp_servers: {old: {command: old-mcp}}\n', ''))
+    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    store, authority = await _owner_authority(home)
+    authority.runner.config = SimpleNamespace(multiplex_profiles=False)
+    authority.runner._mcp_reload_refresh_cached_agents = lambda multiplex, profile: None
+    monkeypatch.setattr('gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
+    owner = _connect(authority)
+    try:
+        sid = (await _call(owner, 'session.create', request_id='p', source='cli', cwd=str(tmp_path)))['session_id']
+        (home / 'config.yaml').write_text(CONFIG.replace(
+            '{old: {command: old-mcp}}', f'{{brokensrv: {{command: {tmp_path / "no-such-mcp"}}}}}'))
+        first = await _call(owner, 'reload.mcp', session_id=sid, confirm=True)
+        assert _server_key('brokensrv') in mcp_tool._servers  # parked, still registered
+        assert first.get('unavailable') == ['brokensrv'] and first['session_servers'] == [], first
+        assert 'added: brokensrv' not in first['message'], first
+        second = await owner.dispatch({'id': 2, 'method': 'reload.mcp',
+                                       'params': {'session_id': sid, 'confirm': True}})
+        assert 'result' not in second and 'brokensrv' in json.dumps(second['error']), second
+    finally:
+        await asyncio.to_thread(shutdown_mcp_servers)
+        for state in (mcp_tool._server_connect_errors, mcp_tool._server_connect_failures,
+                      mcp_tool._server_connect_retry_after):
+            state.pop(_server_key('brokensrv'), None)
+        await owner.close()
+        store.close_all_db_handles()
+
+
 def test_not_connected_names_a_configured_server_in_cooldown(monkeypatch):
     from tools import mcp_tool, mcp_tool_discovery as discovery
     from tools.mcp_tool_scope import _server_key
@@ -231,6 +268,7 @@ def test_reload_counts_only_changes_that_took_effect(monkeypatch):
     reconciled, not_connected = {}, ['broken']
     monkeypatch.setattr('tools.mcp_tool_discovery.reconcile_mcp_servers_with_config', lambda: dict(reconciled))
     monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_not_connected', lambda: list(not_connected))
+    monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['fixt'])
     monkeypatch.setattr('gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
 
     def reload(**outcome):

@@ -267,8 +267,9 @@ async def reload_mcp(connection, ref, params):
 
     def reconcile():
         with suppress_interactive_oauth():
-            return discovery.reconcile_mcp_servers_with_config(), discovery.mcp_servers_not_connected()
-    result, failed = await asyncio.to_thread(reconcile)
+            return (discovery.reconcile_mcp_servers_with_config(), discovery.mcp_servers_not_connected(),
+                    discovery.mcp_servers_ready())
+    result, failed, ready = await asyncio.to_thread(reconcile)
     # ``added`` is what reconcile attempted: only those now registered (live or lazy) changed anything.
     result = {**result, 'added': [name for name in result.get('added', []) if name not in failed]}
     from gateway.session_authorities import served_profile_name
@@ -284,21 +285,22 @@ async def reload_mcp(connection, ref, params):
             'busy': '; this chat is busy: its new tools apply once the turn finishes and reload runs again '
                     'or the chat is reopened'}.get(session or '', '')
     unavailable = f'; did not connect: {", ".join(failed)}' if failed else ''
-    selected = {'session_servers': await asyncio.to_thread(_session_servers, connection.authority, ref.session_id)
-                } if session else {}
+    selected = {'session_servers': await asyncio.to_thread(_session_servers, connection.authority, ref.session_id,
+                                                           ready)} if session else {}
     return {'status': 'reloaded', 'message': f'MCP servers reconciled ({changed}){note}{unavailable}',
             **({'session': session} if session else {}), **({'unavailable': failed} if failed else {}), **selected}
 
 
-def _session_servers(authority, sid):
-    """The profile MCP servers the session's committed policy runs (its toolsets name them): a server connected
-    for the profile is not one a chat with ``no_mcp``, an explicit pick or a platform allowlist enabled."""
+def _session_servers(authority, sid, ready):
+    """The profile MCP servers the session's committed policy runs (its toolsets name them) that are *ready*
+    (live or lazy): a server connected for the profile is not one a chat with ``no_mcp``, an explicit pick or
+    a platform allowlist enabled, and one the policy names but that parked serves the chat nothing."""
     import json
     from gateway.session_policy import restore_policy
     from hermes_cli.tools_config import enabled_mcp_server_names
     from hermes_state_local import local_receipt
     policy = restore_policy(local_receipt(authority.db, sid)['policy'])
-    return sorted(set(policy.toolsets) & enabled_mcp_server_names(json.loads(policy.config_json)))
+    return sorted(set(policy.toolsets) & enabled_mcp_server_names(json.loads(policy.config_json)) & set(ready))
 
 
 async def _commit_session_mcp(connection, ref, params):

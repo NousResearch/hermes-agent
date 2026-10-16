@@ -217,10 +217,22 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            lineage_tips_only: bool = False, **filters) -> tuple[str, list]:
+                            lineage_tips_only: bool = False, include_open: bool = False,
+                            **filters) -> tuple[str, list]:
         """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
-        AND together, only ended sessions are ever candidates, ``archived`` is tri-state
-        (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
+        AND together, ``archived`` is tri-state (None = both), ``*_like`` are case-insensitive
+        substrings, the rest exact.
+
+        By default only *ended* sessions are candidates: that is what makes a prune safe, since a
+        session still being written must never be deleted. ``include_open`` drops that guard for
+        callers that are selecting, not deleting — `hermes sessions export` was the first, and it
+        needs the live sessions: 109 of 122 telegram rows are unended, so the guard silently
+        exported 13.
+
+        ``include_pinned`` keeps rows flagged pinned, which is a durable "do not prune me" marker.
+        Selecting for export is not pruning, so export opts in; a caller that passes neither flag
+        gets the original prune semantics.
+
         ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
         their tip, never on their own age — matching an old ancestor would fan out over the lineage
         and hide its OPEN, recently active tip (#115489)."""
@@ -228,7 +240,7 @@ class SessionMaintenanceMixin:
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
                             f"keyword argument {min(unknown)!r}")
-        clauses = ["s.ended_at IS NOT NULL"]
+        clauses = [] if include_open else ["s.ended_at IS NOT NULL"]
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
         params: list = []
@@ -243,12 +255,18 @@ class SessionMaintenanceMixin:
         # Pinned is a durable "keep" flag: bulk prune/delete/archive exclude pinned rows unless opted in.
         if not include_pinned:
             clauses.append(_not_pinned_sql())
-        return " AND ".join(clauses), params
+        # An unfiltered selection has no clause to AND, and `WHERE ` alone is a syntax error.
+        return " AND ".join(clauses) if clauses else "1 = 1", params
 
     def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> tuple[str, list]:
         """Translate the legacy age window into the shared activity filter, then build WHERE.
-        ``whole_lineages`` (prune) keeps a compression ancestor while any continuation after it
-        is unmatched."""
+
+        ``include_open`` is carried in ``filters`` by the callers that select rather than delete
+        (`hermes sessions export`); it is not one of ``_PRUNE_FILTER_NAMES``, so it is popped here
+        and passed down as an explicit keyword.  ``whole_lineages`` (prune) keeps a compression
+        ancestor while any continuation after it is unmatched.
+        """
+        include_open = bool(filters.pop("include_open", False))
         if (older_than_days is not None and filters.get("last_active_before") is None
                 and filters.get("started_before") is None):
             if older_than_days < 0:
@@ -256,7 +274,7 @@ class SessionMaintenanceMixin:
                     f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
                     "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_filter_where(source=source, include_open=include_open, **filters)
         if not whole_lineages:
             return where, params
         # A compressed-away segment ages with its conversation, not on its own: while any later
@@ -266,7 +284,11 @@ class SessionMaintenanceMixin:
     def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str | None = None, *,
                               whole_lineages: bool = False, **filters) -> list[dict[str, Any]]:
         """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
-        = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
+        = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``).
+
+        Pass ``include_open=True`` (in ``filters``) to also select sessions with no ``ended_at``:
+        correct for a caller that exports, wrong for one that deletes.
+        """
         where, params = self._prune_where(older_than_days, source, filters, whole_lineages=whole_lineages)
         return [dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
@@ -288,7 +310,16 @@ class SessionMaintenanceMixin:
 
     def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str | None = None,
                                  **filters) -> int:
-        """Count open sessions a matching prune skips (``ended_at`` guard inverted); visibility-only."""
+        """Count open sessions a matching prune skips (``ended_at`` guard inverted); visibility-only.
+
+        Meaningless when the caller asked to include open sessions (``include_open``): there is then
+        no guard to invert, and every open row is already a match. It is rejected rather than
+        silently counted, so a pruner can never be told "0 were skipped" for a selection that would
+        in fact have pruned them.
+        """
+        if filters.get("include_open"):
+            raise ValueError("count_open_prune_matches() cannot be combined with include_open: "
+                             "a selection that already includes open sessions skips none.")
         where, params = self._prune_where(older_than_days, source, filters)
         ended_guard = "s.ended_at IS NOT NULL"
         if not where.startswith(ended_guard):

@@ -739,7 +739,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return None
         snippet = (
             "import sys, json, os\n"
-            f"p = {json.dumps(path)}\n"
+            f"p = {path!a}\n"
             f"offset = {int(offset)}\n"
             f"limit = {int(limit)}\n"
             f"MAX = {self._UTF16_MAX_BYTES}\n"
@@ -1304,7 +1304,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # ``unlink(missing_ok=True)`` (a 3.7 remote interpreter lacks it).
         snippet = (
             "import shutil, pathlib, sys\n"
-            f"p = pathlib.Path({json.dumps(path)})\n"
+            f"p = pathlib.Path({path!a})\n"
             "recursive = False\n"
             "try:\n"
             "    if p.is_dir() and not p.is_symlink():\n"

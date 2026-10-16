@@ -252,7 +252,7 @@ conflating (`gateway/authz_mixin.py`):
 | Shared credential → satellite via `profile_routes` | Routed profile | Receiving (shared) adapter | Receiving adapter; after a restart the satellite still drains through the primary |
 | Shared bot → a profile that owns its own bot | Routed profile | Receiving adapter | Receiving adapter — the conversation stays with the bot the user wrote to |
 | Secondary-owned bot → `default` (`bot_profile: <secondary>`) | `default` (`agent:main`, default home) | Receiving (secondary) adapter | Receiving adapter |
-| Restored / synthetic source, no live provenance | Stored `source.profile` | **None** (fail closed) | Unique owner of `(platform, runtime)`, else `None` |
+| Restored / synthetic source, no live provenance | Stored `source.profile` | **None** (fail closed) | Unique owner of `(platform, runtime)`, else the Relay in that profile's map when it fronts the platform, else `None` |
 
 Outside multiplexing there is one adapter per platform, so both seams return
 it. `tests/gateway/test_multiplex_transport_matrix.py` asserts every row.
@@ -267,6 +267,14 @@ delivers through that bot's adapter or fails closed — a satellite routed
 through the default bot keeps answering from the default bot, a lane owned by
 a secondary never falls back to the default bot's credential. Entries written
 before the column existed carry `null` and keep the shared-bot heuristics.
+The relay-delivery marker is never persisted, so a restored lane that arrived
+over the relay finds no native adapter for its logical platform; delivery then
+falls back to the Relay registered in that profile's map when its transport
+advertises the platform (the same rule as `resolve_delivery_transport`). Only
+the primary serves the Relay, so a secondary's lane still fails closed.
+Auto-resume, heartbeats and plugin injection warm the Relay's per-chat egress
+routing from the restored source before dispatch, and a reconnecting Relay
+resumes the sessions of every platform it fronts.
 Over the relay, every outbound frame's `metadata.profile` (and `follow_up`'s
 key namespace) tells the connector which profile to stamp on the next
 `passthrough_forward`, so a button press after a routed slash command stays in

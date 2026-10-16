@@ -83,6 +83,18 @@ def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
     return None
 
 
+def prime_revived_egress(adapter: Any, event: Any) -> None:
+    """Warm *adapter*'s per-chat egress routing (Relay) before an event revived from durable state
+    reaches it. Those caches fill only on live inbound, so after a restart the revived turn's replies
+    would leave without the tenant discriminators the connector requires and be declined."""
+    # A live relayed source was captured on arrival; re-priming would only roll its anchors back.
+    if getattr(event.source, "delivered_via_upstream_relay", False) is True:
+        return
+    prime = getattr(adapter, "prime_routing_cache", None)
+    if callable(prime):
+        prime(event)
+
+
 def looks_like_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
     """True when ``chat_id`` is a positive int — Telegram's private-chat shape (groups/channels are negative).
     Single source of truth, reused by the handoff seed path in ``gateway/run.py`` so handoff-created DM

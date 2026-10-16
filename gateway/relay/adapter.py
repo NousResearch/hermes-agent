@@ -27,7 +27,6 @@ from gateway.platforms.event import ProcessingOutcome
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
-from hermes_state_runtime import RuntimeStoreError
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
     decline_error,
@@ -36,12 +35,8 @@ from gateway.relay.egress import (
 )
 from gateway.relay.media import RelayMediaClient
 from gateway.relay.transport import RelayTransport
-from datetime import UTC
 
 logger = logging.getLogger(__name__)
-# Native admission refusals a redelivery cannot change (sender, route or payload).
-_PERMANENT_REFUSALS = frozenset({'permission_denied', 'invalid_params', 'admission_conflict',
-                                 'profile_mismatch', 'not_found'})
 
 # The drain-path going-idle ACK budget must stay strictly under the runner's
 # default adapter disconnect timeout (5s) or cancellation fires before
@@ -896,31 +891,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             return
         await self._localize_inbound_media(event)
         if native:
-            from datetime import datetime, timezone
-            from gateway.platforms.webhook_ingress import admit_producer
-            # The connector does not transmit a provider timestamp. Local arrival
-            # time must not change the fingerprint of a retried provider identity.
-            event.timestamp = datetime.fromtimestamp(0, UTC)
-            # Wait only for the SQLite receipt, never inference or outbound ACKs
-            # (those need this same WS reader). A permanent refusal returns, so the
-            # transport ACKs it (a replay would be refused again: main's runner dropped
-            # it too); any other failure withholds the ACK so the connector redelivers.
-            try:
-                receipt = await admit_producer(self, event)
-            except RuntimeStoreError as exc:
-                if exc.reason not in _PERMANENT_REFUSALS:
-                    raise
-                logger.warning("relay inbound refused (%s) for %s chat=%s; acknowledged, not replayed",
-                               exc.reason, event.source.platform.value, event.source.chat_id)
-                return
-            if receipt is None and getattr(event, '_consumer_reply', None):
-                # A post_gateway_admission plugin consumed it (never committed); its reply is
-                # sent off this reader, like an executed admission's.
-                from gateway.session_ingress import deliver_response
-                task = asyncio.create_task(deliver_response(
-                    self, event, runner._session_key_for_source(event.source), event._consumer_reply))
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+            from gateway.relay.adapter_native import admit_native_inbound
+            await admit_native_inbound(self, runner, event)
         else:
             await self.handle_message(event)
 
@@ -1065,15 +1037,16 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             logger.debug("relay inbound media localization failed", exc_info=True)
 
     def prime_routing_cache(self, event) -> None:
-        """Warm the per-chat egress routing caches from a SYNTHETIC event: a completion
-        turn injected right after a restart (durable async-delegation replay) reaches
-        handle_message with the caches COLD, so its replies egress without
-        scope_id/user_id and the connector's fail-closed tenant guard declines them."""
+        """Warm the per-chat egress routing caches from a SYNTHETIC or restored event: a turn
+        revived after a restart reaches the adapter with the caches COLD, so its replies egress
+        without scope_id/user_id and the connector's fail-closed tenant guard declines them.
+        Fill-only: an entry a live inbound already captured is newer and is never replaced."""
         if event is None or getattr(event, "source", None) is None:
             return
-        self._capture_scope(event)
+        self._capture_scope(event, fill_only=True)
 
-    def _capture_scope(self, event) -> None:
+
+    def _capture_scope(self, event, fill_only: bool = False) -> None:
         """Remember a chat's egress discriminators from an inbound event. Never raises.
 
         scope_id: scoped (guild/channel) message → routing-table resolution. user_id:
@@ -1088,12 +1061,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             if not chat:
                 return
             chat = str(chat)
+            put = dict.setdefault if fill_only else dict.__setitem__
             # Underlying platform's string VALUE, skipping the generic RELAY
             # fallback (the connector's session default handles egress then).
             platform = getattr(src, "platform", None)
             platform_value = getattr(platform, "value", platform)
             if platform_value and platform_value != "relay":
-                self._platform_by_chat[chat] = str(platform_value)
+                put(self._platform_by_chat, chat, str(platform_value))
             for attr, cache in (
                 ("user_id", self._dm_user_by_chat), ("scope_id", self._scope_by_chat),
                 ("chat_type", self._chat_type_by_chat),
@@ -1101,11 +1075,11 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             ):
                 value = getattr(src, attr, None)
                 if value:
-                    cache[chat] = str(value)
+                    put(cache, chat, str(value))
             # Triggering message ts for the typing/status lane's synthetic thread anchor.
             message_id, _chat = _event_ids(event)
             if message_id:
-                self._last_inbound_ts_by_chat[chat] = str(message_id)
+                put(self._last_inbound_ts_by_chat, chat, str(message_id))
         except Exception:
             pass
 
@@ -1163,7 +1137,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                     # A prompt-token component press is consumed (same gate as _on_inbound).
                     if await self._consume_prompt_response(event):
                         return
-                    await self.handle_message(event)
+                    from gateway.relay.adapter_native import dispatch_passthrough_event
+                    await dispatch_passthrough_event(self, event)
                     return
             logger.info(
                 "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",

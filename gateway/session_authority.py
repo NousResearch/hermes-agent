@@ -358,6 +358,8 @@ class SessionAuthority:
         payload = await prepare_native(self.runner, event)
         self._require_admission_open()
         source = restore_native_source(payload)  # no re-hash of the just-captured media on the loop
+        from gateway.session_identity import pin_admitted_transport
+        pin_admitted_transport(source, runner=self.runner, provenance=payload['native_text_v1'].get('provenance'))
         from gateway.session_runtime_workers import tracked_write
         ref = self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,

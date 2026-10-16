@@ -48,6 +48,7 @@ Themes and plugins are independent but synergistic. A theme can stand alone (jus
   - [Augmenting built-in pages (page-scoped slots)](#augmenting-built-in-pages-page-scoped-slots)
   - [Slot-only plugins (`tab.hidden`)](#slot-only-plugins-tabhidden)
   - [Backend API routes](#backend-api-routes)
+  - [Persistent custom pages](#persistent-custom-pages)
   - [Custom CSS per plugin](#custom-css-per-plugin)
   - [Plugin discovery & reload](#plugin-discovery--reload)
 - [Combined theme + plugin demo](#combined-theme--plugin-demo)
@@ -774,6 +775,130 @@ async def config_snapshot():
     cfg = load_config()
     return {"model": cfg.get("model", {})}
 ```
+
+### Persistent custom pages
+
+Keep custom pages in the installed plugin, not in `hermes_cli/web_dist/`.
+That directory is generated Dashboard output: a build or update can replace it,
+and adding files there can invalidate the recorded build fingerprint. Patching
+its `index.html` or copying a custom app into a subdirectory is not an installation
+mechanism. Use the existing plugin loader and backend route namespace instead.
+
+![Conceptual diagram: generated Dashboard output and an installed user plugin occupy separate directories and are loaded by the same Dashboard host.](/img/dashboard-plugins/persistent-layout.png)
+
+*Architecture illustration, not a running Dashboard screenshot. Editable source:
+[persistent-layout.svg](/img/dashboard-plugins/persistent-layout.svg).*
+
+#### Example: one read-only HTML page
+
+This extends an **already installed, explicitly enabled, trusted user plugin**
+from the [plugin quick start](#quick-start--your-first-plugin). The install-directory
+name, `plugin.yaml` name and Dashboard manifest name should all be `my-plugin`.
+Run `hermes plugins enable my-plugin` in the same profile home as the Dashboard;
+if the command cannot discover it, complete the [plugin manifest setup](./plugins)
+first. Do not replace the entire `plugins.enabled` list to enable one plugin.
+
+Here, `$HERMES_HOME` means that Dashboard instance's profile home, kept outside the
+Hermes source checkout. There is no requirement to use the default profile or a
+particular hostname, port, proxy or service manager.
+
+```text
+$HERMES_HOME/plugins/my-plugin/
+├── plugin.yaml
+├── __init__.py
+├── pages/
+│   └── page.html           # API-only content, outside the public asset directory
+└── dashboard/
+    ├── manifest.json       # Existing manifest: entry plus "api": "plugin_api.py"
+    ├── dist/index.js       # Existing SDK-based IIFE, not the Dashboard's bundle
+    └── plugin_api.py
+```
+
+Add this route to the existing `router` from [Backend API routes](#backend-api-routes).
+It serves **one fixed plugin-owned file**, not a caller-supplied path or an entire
+profile directory:
+
+```python title="persistent-example/dashboard/plugin_api.py"
+from pathlib import Path
+from fastapi.responses import FileResponse
+
+@router.get("/page", response_class=FileResponse)
+async def plugin_page():
+    return FileResponse(
+        Path(__file__).resolve().parent.parent / "pages" / "page.html",
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
+```
+
+Place this file in the plugin's sibling `pages/` directory, **outside `dashboard/`**.
+HTML inside `dashboard/` is also reachable through the public asset route, even
+if an authenticated API route serves the same file.
+
+```html title="persistent-example/pages/page.html"
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Plugin Notes</title>
+  </head>
+  <body>
+    <main>
+      <h1>Plugin Notes</h1>
+      <p>This read-only page belongs to the installed plugin.</p>
+    </main>
+  </body>
+</html>
+```
+
+The endpoint is `GET /api/plugins/my-plugin/page` on your existing Dashboard
+origin (with its existing deployment prefix, if any). On a **cookie-authenticated
+Dashboard**, sign in normally, then open that URL in the same browser. An
+unauthenticated API request receives `401`, not a standalone page-login redirect.
+A plain navigation does not carry the local Dashboard's injected auth header:
+for a token-only loopback setup, prefer the existing SDK-rendered tab rather than
+putting tokens in links or disabling authentication to make this example work.
+
+![Conceptual diagram: plugin JS and CSS are public-code assets, while the HTML API response passes the existing authentication and plugin-enabled gates.](/img/dashboard-plugins/request-boundaries.png)
+
+*Architecture illustration, not a login or deployment test. Editable source:
+[request-boundaries.svg](/img/dashboard-plugins/request-boundaries.svg).*
+
+**Keep the two serving paths distinct:**
+
+- `/dashboard-plugins/<name>/<path>` serves allowlisted UI assets including JS,
+  CSS, JSON and HTML from `dashboard/`. Treat those bytes as public code; never
+  put credentials, configuration snapshots or private user data there. API-only
+  files belong outside this asset directory, as `pages/page.html` does here.
+- `/api/plugins/<name>/...` runs behind the existing API authentication and
+  enabled-plugin gates. The fixed HTML response uses this path without adding a
+  second server, custom credentials, a public-route exemption or a new mount API.
+- This example reads no session or profile data and grants no cross-profile
+  access. Adding live data is a separate feature that must respect the host's
+  request-scoped profile and authorization contracts.
+
+#### Verify without changing a live installation
+
+Use a disposable profile and an isolated copy of the Dashboard build output:
+
+1. Confirm an unauthenticated API request gets `401`; an authenticated request
+   with the plugin not enabled gets `404`.
+2. Enable the plugin and confirm the page returns the expected HTML, `text/html`
+   and `Cache-Control: no-store`. Confirm another filename is not a route and
+   the page is unavailable through `/dashboard-plugins/my-plugin/page.html` and
+   `/dashboard-plugins/my-plugin/pages/page.html`, including without a session.
+3. Replace **only the isolated generated-output directory**, then read the page
+   again. Its bytes should still come from the separately installed plugin.
+   This checks directory separation; it is not a real `hermes update` test.
+4. Disable the plugin and confirm the already-mounted endpoint now returns
+   `404` to the authenticated caller. Re-enabling must remain an explicit action.
+
+Keep the plugin's source and build outputs under its own release/backup process.
+Directory separation protects against replacement of the Dashboard build, not
+future SDK/API incompatibilities or deletion of the plugin itself. Keep trusted
+HTML free of interpolated untrusted content, and do not expand this example into
+an unrestricted filesystem server.
 
 ### Custom CSS per plugin
 

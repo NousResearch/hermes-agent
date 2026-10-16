@@ -27,6 +27,14 @@ test('re-fires once the window elapses', () => {
   assert.equal(isDup('turnDone:s1', 1000), false, 'window elapsed → fires again')
 })
 
+test('clock rollback starts a fresh window instead of suppressing events until catch-up', () => {
+  const isDup = createEventDeduper(1000)
+
+  assert.equal(isDup('turnDone:s1', 10_000), false)
+  assert.equal(isDup('turnDone:s1', 5_000), false, 'older wall clock cannot make a claim live for 5 seconds')
+  assert.equal(isDup('turnDone:s1', 5_100), true, 'dedupe resumes from the rollback observation')
+})
+
 // #99717: the hidden app window under an open HUD claims the same reply late.
 test('a spoken reply stays claimed long after the tick window, a beep does not', () => {
   const owns = createAmbientClaimArbiter(1000)

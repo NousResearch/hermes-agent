@@ -705,7 +705,7 @@ def resolve_runner_session_isolation(
             if isinstance(resolved, tuple) and len(resolved) == 2:
                 return bool(resolved[0]), bool(resolved[1])
         except Exception:
-            pass
+            logger.debug("Session isolation resolver failed; using config defaults", exc_info=True)
     return resolve_session_isolation(getattr(runner, "config", None), source)
 
 

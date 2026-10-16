@@ -320,3 +320,32 @@ def test_null_create_time_record_on_a_recycled_pid_starts_instead_of_refusing_fo
     finally:
         child.kill()
         child.wait(timeout=10)
+
+
+def test_discard_dead_record_retracts_a_live_looking_pid_only_once_the_host_lock_is_free(host_dir):
+    """`gateway restart --all` retracts a corpse's record; a recycled pid can still match its incarnation.
+
+    Lock held: the recorded owner may be alive, keep the record. Lock free: the owner is gone.
+    """
+    from gateway.status import get_process_start_time
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        record = _gateway_record(
+            pid=child.pid,
+            create_time=hr.process_create_time(child.pid),
+            start_time=get_process_start_time(child.pid),
+            home=str(host_dir),
+        )
+        hr.ensure_host_state_dir()
+        hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps(record.to_json()), encoding="utf-8")
+        assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
+        assert hr.discard_dead_record(hr.ROLE_GATEWAY) is False
+        assert hr.record_path(hr.ROLE_GATEWAY).exists()
+
+        hr.release_host_lock(hr.ROLE_GATEWAY)
+        assert hr.discard_dead_record(hr.ROLE_GATEWAY) is True
+        assert not hr.record_path(hr.ROLE_GATEWAY).exists()
+    finally:
+        child.kill()
+        child.wait(timeout=10)

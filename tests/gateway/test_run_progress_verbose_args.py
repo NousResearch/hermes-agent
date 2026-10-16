@@ -49,11 +49,11 @@ async def test_verbose_args_render_in_a_code_block_on_markdown_platforms(monkeyp
     assert '{"code": "x = a_b\\nprint(**kw)"}' in plain_text and "```" not in plain_text, plain_text
 
 
-def test_streamed_verbose_args_share_the_code_block_and_keep_nested_fences_inside():
-    """format_tool_event (streamed tool chrome) renders the same block, and args holding a
-    line-leading ``` stay JSON-escaped so they cannot close the block early."""
+def test_streamed_verbose_args_share_the_code_block_and_skip_it_for_embedded_fences():
+    """format_tool_event (streamed tool chrome) renders the same block; args holding ``` anywhere
+    stay plain JSON, since Slack/Discord would end the block there and render the rest as markup."""
     adapter = object.__new__(_CodeBlockAdapter)
     out = adapter.format_tool_event(ToolCallChunk("execute_code", args={"code": "a\nb"}), mode="verbose")
     assert out.endswith('```\n{"code": "a\nb"}\n```'), out
-    nested = adapter.format_tool_event(ToolCallChunk("execute_code", args={"code": "a\n```\nb"}), mode="verbose")
-    assert nested.endswith('```\n{"code": "a\\n```\\nb"}\n```'), nested
+    nested = adapter.format_tool_event(ToolCallChunk("execute_code", args={"code": "see ```**k**``` x"}), mode="verbose")
+    assert nested.endswith('\n{"code": "see ```**k**``` x"}'), nested

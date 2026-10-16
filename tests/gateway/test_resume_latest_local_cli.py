@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.session_policy import SURFACES
+
 
 def _owner(home, monkeypatch):
     from gateway import run
@@ -52,14 +54,15 @@ async def test_resume_latest_matches_the_owners_local_rows_by_creating_surface(t
             result = await _call(owner, 'session.create', request_id=surface, source=surface,
                                  cwd=str(tmp_path), toolsets=[], model='m')
             created[surface] = sid = result['session_id']
-            # The first turn's two writers: the agent's lazy create stamps ``created_source``
-            # (run_agent), then the peer refresh relabels the row ``local`` (session_a2a.storage_source).
-            authority.db.create_session(sid, source=surface)
+            # The first turn's two writers: the agent's lazy create stamps ``created_source`` with
+            # the agent surface (run_agent; gui runs as ``desktop``), then the peer refresh relabels
+            # the row ``local`` (session_a2a.storage_source).
+            authority.db.create_session(sid, source=SURFACES[surface])
             live = authority.sessions[sid]
             store._record_gateway_session_peer(sid, live.route, live.source)
         rows = {sid: authority.db.get_session(sid) for sid in created.values()}
         assert {(row['source'], row['created_source']) for row in rows.values()} == {
-            ('local', 'cli'), ('local', 'tui'), ('local', 'gui')}
+            ('local', 'cli'), ('local', 'tui'), ('local', 'desktop')}
         authority.sessions.clear()
 
         for family in ('cli', 'tui'):

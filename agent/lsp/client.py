@@ -401,7 +401,7 @@ class LSPClient:
             if self.is_running:
                 try:
                     await asyncio.wait_for(self._send_request("shutdown", None), timeout=2.0)
-                except (asyncio.TimeoutError, LSPRequestError, LSPProtocolError):
+                except (TimeoutError, LSPRequestError, LSPProtocolError):
                     pass
                 try:
                     await self._send_notification("exit", None)
@@ -657,7 +657,7 @@ class LSPClient:
                 "textDocument/diagnostic", {"textDocument": {"uri": file_uri(abs_path)}},
                 timeout=DIAGNOSTICS_REQUEST_TIMEOUT,
             )
-        except (LSPRequestError, LSPProtocolError, asyncio.TimeoutError) as e:
+        except (TimeoutError, LSPRequestError, LSPProtocolError) as e:
             logger.debug("[%s] document diagnostic pull failed: %s", self.server_id, e)
             return
         if not isinstance(result, dict):
@@ -711,7 +711,7 @@ class LSPClient:
         self._push_event.clear()
         try:
             await asyncio.wait_for(self._push_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         return True
 

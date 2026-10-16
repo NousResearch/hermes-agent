@@ -514,7 +514,7 @@ def eth_call_erc20(chain: str, contract: str, fn: str, arg_addr: Optional[str] =
 def decode_string(hex_data: str) -> str:
     """Decode ABI-encoded string from eth_call result."""
     try:
-        raw = hex_data[2:] if hex_data.startswith("0x") else hex_data
+        raw = hex_data.removeprefix("0x")
         if len(raw) < 128:
             # Try decoding as raw bytes (some tokens return non-ABI strings)
             b = bytes.fromhex(raw)
@@ -528,7 +528,7 @@ def decode_string(hex_data: str) -> str:
 
 def decode_uint256(hex_data: str) -> int:
     try:
-        raw = hex_data[2:] if hex_data.startswith("0x") else hex_data
+        raw = hex_data.removeprefix("0x")
         if not raw:
             return 0
         return int(raw, 16)

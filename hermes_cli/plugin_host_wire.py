@@ -211,7 +211,7 @@ class Channel:
         self._closed_reason: Optional[str] = None
         self._thread = threading.Thread(target=self._read_loop, name=f"{name}-reader", daemon=True)
 
-    def start(self) -> "Channel":
+    def start(self) -> Channel:
         self._thread.start()
         return self
 

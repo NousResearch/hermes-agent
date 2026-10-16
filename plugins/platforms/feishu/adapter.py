@@ -892,7 +892,7 @@ def _first_text_field(payload: dict[str, Any], *keys: str, deep: tuple[str, ...]
 # --- General text utilities ---
 
 def _normalize_feishu_text(text: str, mentions_map: Optional[dict[str, FeishuMentionRef]] = None) -> str:
-    def _sub(match: "re.Match[str]") -> str:
+    def _sub(match: re.Match[str]) -> str:
         ref = (mentions_map or {}).get(match.group(0))
         return " " if ref is None else f"@{ref.name or ref.open_id or 'user'}"
 
@@ -1326,9 +1326,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
-        self._chat_locks: "collections.OrderedDict[str, asyncio.Lock]" = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
+        self._chat_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._chat_info_cache: dict[str, dict[str, Any]] = {}
-        self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._message_text_cache: OrderedDict[str, Optional[str]] = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -1343,7 +1343,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
-        self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1582,7 +1582,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 # A CLOSE frame is one control frame; if 5s isn't enough the link is already wedged.
                 await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
                 logger.debug("[Feishu] Sent WebSocket CLOSE frame to Feishu")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "[Feishu] CLOSE frame not acknowledged within 5s — "
                     "Feishu may briefly route messages to the stale "
@@ -1609,7 +1609,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 logger.debug("[Feishu] Waiting for websocket thread to exit (timeout=10s)")
                 await asyncio.wait_for(asyncio.shield(ws_future), timeout=10.0)
                 logger.debug("[Feishu] Websocket thread exited cleanly")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[Feishu] Websocket thread did not exit within 10s - may be stuck")
             except asyncio.CancelledError:
                 logger.debug("[Feishu] Websocket thread cancelled during disconnect")
@@ -1917,8 +1917,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         try:
             import io as _io
-            with open(image_path, "rb") as f:
-                image_file = _io.BytesIO(f.read())  # lark's MultipartEncoder needs .name and .tell()
+            image_file = _io.BytesIO(await asyncio.to_thread(Path(image_path).read_bytes))  # lark's MultipartEncoder needs .name and .tell()
             image_file.name = os.path.basename(image_path)
             body = self._build_image_upload_body(image_type=_FEISHU_IMAGE_UPLOAD_TYPE, image=image_file)
             request = self._build_image_upload_request(body)
@@ -2826,7 +2825,7 @@ class FeishuAdapter(BasePlatformAdapter):
         except ValueError:
             logger.warning("[Feishu] Webhook body exceeds limit from %s", remote_ip)
             return self._webhook_reject(remote_ip, "413", 413, "Request body too large")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("[Feishu] Webhook body read timed out after %ds from %s", _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS, remote_ip)
             return self._webhook_reject(remote_ip, "408", 408, "Request Timeout")
         except Exception:
@@ -3668,7 +3667,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         try:
             duration_ms = self._get_audio_duration_ms(file_path) if upload_file_type == "opus" else 0
-            with open(file_path, "rb") as file_obj:
+            with open(file_path, "rb") as file_obj:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 body = self._build_file_upload_body(
                     file_type=upload_file_type, file_name=display_name, file=file_obj, duration=duration_ms,
                 )

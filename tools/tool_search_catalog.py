@@ -83,8 +83,7 @@ def _entry_search_text(td: dict[str, Any], source_label: str = "") -> str:
     ("linear") reach a tool whose own name omits the vendor."""
     fn = _fn(td)
     name = fn.get("name", "")
-    if name.startswith("mcp__"):
-        name = name[len("mcp__"):]
+    name = name.removeprefix("mcp__")
     name_words = re.sub(r"[_.:-]", " ", name)
     extra = source_label if source_label and source_label not in name_words.split() else ""
     param_names = " ".join(((fn.get("parameters") or {}).get("properties") or {}).keys())
@@ -230,7 +229,7 @@ def _short_desc(description: str, max_chars: int = 60) -> str:
 def _listing_group_label(source_name: str) -> str:
     """Human-facing group heading for a toolset, e.g. ``mcp-github`` -> ``github``."""
     label = source_name or "other"
-    return label[4:] if label.startswith("mcp-") else label
+    return label.removeprefix("mcp-")
 
 
 def hidden_declared_sources() -> list[dict[str, Any]]:

@@ -158,50 +158,6 @@ def _post_setup_python(spec: dict) -> None:
     _info_lines(*spec["on_install"], *spec["always"])
 
 
-def _post_setup_spotify() -> None:
-    # Full `hermes auth spotify` flow: no client_id yet → interactive wizard (persists to ~/.hermes/.env)
-    # then PKCE; existing app → OAuth only.
-    from types import SimpleNamespace
-    try:
-        from hermes_cli.auth import login_spotify_command
-    except Exception as exc:
-        _print_warning(f"    Could not load Spotify auth: {exc}")
-        _info_lines("Run manually: hermes auth spotify")
-        return
-    _print_info("    Starting Spotify login...")
-    try:
-        login_spotify_command(SimpleNamespace(
-            client_id=None, redirect_uri=None, scope=None, no_browser=False, timeout=None))
-        _print_success("    Spotify authenticated")
-    except SystemExit as exc:
-        # User aborted the wizard or OAuth failed — don't fail the toolset enable.
-        _print_warning(f"    Spotify login did not complete: {exc}")
-        _info_lines("Run later: hermes auth spotify")
-    except Exception as exc:
-        _print_warning(f"    Spotify login failed: {exc}")
-        _info_lines("Run manually: hermes auth spotify")
-
-
-def _post_setup_langfuse() -> None:
-    import pm
-
-    # The bundled plugin has no dependency member; its SDK is an application extra.
-    _print_info("    Preparing langfuse SDK...")
-    try:
-        pm.sync_venv(["langfuse"], explicit=True)
-    except (pm.InstallError, OSError, ValueError) as exc:
-        _print_warning(f"    langfuse SDK install failed: {exc}")
-        _info_lines("Retry with: hermes tools")
-        return
-    try:
-        from hermes_cli.plugins_cmd import cmd_enable
-        cmd_enable("observability/langfuse")
-    except (Exception, SystemExit) as exc:
-        _print_warning(f"    Could not enable plugin automatically: {exc}")
-        _info_lines("Run manually: hermes plugins enable observability/langfuse")
-        return
-    _info_lines("Restart Hermes for tracing to take effect.", "Verify: hermes plugins list")
-
 
 def _post_setup_xai_grok() -> None:
     """Shared xAI credential bootstrap for any picker row that talks to xAI (TTS, STT, Video Gen, x_search
@@ -319,8 +275,6 @@ _POST_SETUP_HOOKS: dict = {
     "browser_use_cli": lambda: _ensure_browser_use_cli(verbose_hints=True),
     "camofox": _post_setup_camofox,
     "cua_driver": lambda: install_cua_driver(upgrade=False),
-    "spotify": _post_setup_spotify,
-    "langfuse": _post_setup_langfuse,
     "xai_grok": _post_setup_xai_grok,
     "openai_codex": _post_setup_openai_codex,
     **{key: (lambda spec=spec: _post_setup_python(spec)) for key, spec in _PYTHON_POST_SETUP_HOOKS.items()},
@@ -436,7 +390,6 @@ def _cloud_agent_browser_installed() -> bool:
 # they live in ``_POST_SETUP_AUTH_READY`` as auth checks. Late-bound lambdas so tests can monkeypatch the underlying predicates.
 _POST_SETUP_READY: dict = {
     **{key: (lambda m=spec["module"]: _module_installed(m)) for key, spec in _PYTHON_POST_SETUP_HOOKS.items()},
-    "langfuse": lambda: _module_installed("langfuse"),
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),
     "camofox": lambda: _camofox_installed(),

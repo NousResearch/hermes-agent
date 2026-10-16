@@ -58,7 +58,7 @@ class SummaryDispatchMixin:
                 call_kwargs[key] = value
 
     def _summarize_window(
-        self, messages: list[dict[str, Any]], turns_to_summarize: list[dict[str, Any]], scan: "_HandoffScan",
+        self, messages: list[dict[str, Any]], turns_to_summarize: list[dict[str, Any]], scan: _HandoffScan,
         focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,
     ) -> Optional[str]:
         """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first.

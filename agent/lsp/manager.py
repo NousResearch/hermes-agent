@@ -189,7 +189,7 @@ class LSPService:
             self._loop.run(self._start_idle_reaper(), timeout=2.0)
 
     @classmethod
-    def create_from_config(cls) -> Optional["LSPService"]:
+    def create_from_config(cls) -> Optional[LSPService]:
         """Build a service from ``hermes_cli.config``; ``None`` if config can't load."""
         try:
             from hermes_cli.config import load_config_readonly

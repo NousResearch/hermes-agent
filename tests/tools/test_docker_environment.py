@@ -1361,7 +1361,6 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     from tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
-    container_id = env._container_id
     terminal_tool._active_environments["session-close-test"] = env
 
     cleanup_calls = []
@@ -1453,7 +1452,7 @@ def test_cleanup_on_env_with_no_container_id_does_not_raise(monkeypatch):
 def _now_iso(offset_seconds: int = 0) -> str:
     """Return an RFC3339 timestamp ``offset_seconds`` in the past."""
     import datetime
-    t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=offset_seconds)
+    t = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=offset_seconds)
     # Format like Docker emits — with nanoseconds-style trailing digits.
     return t.isoformat().replace("+00:00", ".123456789Z")
 
@@ -1559,7 +1558,7 @@ def test_container_finished_at_parses_nanosecond_timestamp(monkeypatch):
     result = docker_env._container_finished_at("/usr/bin/docker", "test-cid")
     assert result is not None, "must parse RFC3339 with nanoseconds"
     import datetime
-    assert result.tzinfo == datetime.timezone.utc
+    assert result.tzinfo == datetime.UTC
     assert result.year == 2026 and result.month == 5 and result.day == 28
 
 

@@ -221,6 +221,7 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
             capture_output=True,
             input=(stdin_data.encode("utf-8", "surrogateescape")
                    if is_windows and stdin_data is not None else stdin_data),
+                   check=False,
         )
         output = (
             completed.stdout.decode("utf-8", "replace")
@@ -577,9 +578,9 @@ class TestPatchReplacePostWriteVerification:
         def side_effect(command, **kwargs):
             # the byte-exact read (base64 over the transport) — both the initial read and the verify read
             if "base64 < " in command:
-                for path in file_contents:
+                for path, contents in file_contents.items():
                     if path in command:
-                        return {"output": _fenced_base64_reply(command, file_contents[path].encode()),
+                        return {"output": _fenced_base64_reply(command, contents.encode()),
                                 "returncode": 0}
                 return {"output": "", "returncode": 1}
             # mkdir for parent dir
@@ -587,9 +588,9 @@ class TestPatchReplacePostWriteVerification:
                 return {"output": "", "returncode": 0}
             # wc -c for byte count after write
             if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                for path in file_contents:
+                for path, contents in file_contents.items():
                     if path in command:
-                        return {"output": str(len(file_contents[path].encode())), "returncode": 0}
+                        return {"output": str(len(contents.encode())), "returncode": 0}
                 return {"output": "0", "returncode": 0}
             # Everything else (including the write itself) pretends to succeed
             # but DOESN'T update file_contents — simulates silent failure

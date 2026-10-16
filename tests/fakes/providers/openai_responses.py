@@ -82,7 +82,7 @@ class FunctionCall:
     args: dict[str, Any] | str = field(default_factory=dict)
 
 
-Item = Union[Reasoning, Message, FunctionCall]
+Item = Reasoning | Message | FunctionCall
 
 
 @dataclass
@@ -115,7 +115,7 @@ class HttpError:
     retry_after: float | None = None
 
 
-Step = Union[Turn, SoftFail, HttpError]
+Step = Turn | SoftFail | HttpError
 Responder = Callable[[dict[str, Any]], Step]
 
 _REQUEST_ADAPTER = TypeAdapter(ResponseCreateParamsStreaming)
@@ -299,7 +299,7 @@ class FakeResponsesServer:
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
 
-    def __enter__(self) -> "FakeResponsesServer":
+    def __enter__(self) -> FakeResponsesServer:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         server.daemon_threads = True
         self._server = server

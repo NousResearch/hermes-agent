@@ -24,7 +24,7 @@ import threading
 import uuid
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
@@ -358,7 +358,7 @@ class VaultStore:
             "kind": kind,
             "label": label,
             "origin": norm_origin,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "identifier_type": identifier_type,
             "identifier": identifier,
             "secret": dict(secret),

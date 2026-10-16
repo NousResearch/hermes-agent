@@ -53,6 +53,7 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
         completed = subprocess.run(
             command, stdin=subprocess.DEVNULL, shell=True, capture_output=True, text=True, errors="replace", timeout=_MINT_TIMEOUT_SECONDS,
             env=served_profile_child_env(inherit_credentials=True),
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise CommandTokenError(

@@ -5859,7 +5859,7 @@ class TestAnthropicBaseUrlPassthrough:
             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
-            a = AIAgent(
+            AIAgent(
                 api_key="sk-ant-api03-test1234567890",
                 base_url="https://llm-proxy.company.com/v1",
                 api_mode="anthropic_messages",

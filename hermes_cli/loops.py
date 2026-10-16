@@ -202,7 +202,7 @@ class LoopState:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "LoopState":
+    def from_json(cls, raw: str) -> LoopState:
         data = json.loads(raw)
         route = data.get("route")
         kwargs: dict[str, Any] = {
@@ -638,12 +638,12 @@ LOOP_HELP = (
 )
 
 
-def _pause_output(mgr: "LoopManager") -> str:
+def _pause_output(mgr: LoopManager) -> str:
     state = mgr.pause(reason="user-paused")
     return "No loop set." if state is None else f"⏸ Loop paused: {state.prompt}\nUse /loop resume to continue."
 
 
-def _resume_output(mgr: "LoopManager") -> str:
+def _resume_output(mgr: LoopManager) -> str:
     state = mgr.resume()
     return "No loop to resume." if state is None else f"▶ Loop resumed ({state.cadence_label()}): {state.prompt}"
 
@@ -659,7 +659,7 @@ _CONTROL_COMMANDS = {
 
 
 def dispatch_loop_command(
-    mgr: "LoopManager",
+    mgr: LoopManager,
     args: str,
     *,
     route: Optional[dict[str, str]] = None,

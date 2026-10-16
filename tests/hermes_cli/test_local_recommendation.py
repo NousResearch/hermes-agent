@@ -35,16 +35,16 @@ from hermes_cli.local_runtime.estimator import HardwareBudget
 _GIB = 1 << 30
 
 
-def _discrete(size_gb: int) -> HardwareBudget:
-    total = size_gb * _GIB
+def _discrete(size_gb: float) -> HardwareBudget:
+    total = int(size_gb * _GIB)
     margin = max(2 * _GIB, int(total * 0.09))
     return HardwareBudget(usable_vram_bytes=max(0, total - margin),
                           total_device_bytes=total,
                           ram_available_bytes=64 * _GIB, uma=False)
 
 
-def _unified(size_gb: int) -> HardwareBudget:
-    total = size_gb * _GIB
+def _unified(size_gb: float) -> HardwareBudget:
+    total = int(size_gb * _GIB)
     return HardwareBudget(usable_vram_bytes=int(total * 0.80),
                           total_device_bytes=total,
                           ram_available_bytes=0, uma=True)
@@ -220,6 +220,22 @@ def test_unified_never_recommends_a_below_floor_dense_model():
     ]
     if clears:
         assert predicted_decode_tok_s(entry, choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
+
+
+@pytest.mark.parametrize("budget", [
+    *(_unified(gb) for gb in (16, 24, 31.5, 32, 48, 64, 96, 128, 256)),
+    *(_discrete(gb) for gb in (8, 12, 16, 24, 32, 48, 96)),
+], ids=lambda b: f"{'unified' if b.uma else 'discrete'}-{b.total_device_bytes / _GIB:g}")
+def test_a_derived_recommendation_always_clears_the_floor(budget):
+    """A machine where nothing resident reaches the floor gets no recommendation. A "32 GB" laptop
+    reads 31.5 GB, where only the 27B fits and runs well under the floor on an iGPU or the CPU;
+    it stays one click away in Browse."""
+    picked = recommended_entry(budget)
+    if picked is None or picked[1] == "product-default":
+        return
+    choice = select_variant(picked[0], budget)
+    assert choice is not None and choice.zero_spill
+    assert predicted_decode_tok_s(picked[0], choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
 
 
 def test_quality_decides_where_speed_permits():

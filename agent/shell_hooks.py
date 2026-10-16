@@ -534,6 +534,11 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
+    if spec.event in _TOOL_EVENTS and spec.matcher:
+        # Lets the dispatcher skip non-matching tools BEFORE its timeout/suppression gate, so a
+        # suppressed hook can never block tools it does not cover (the in-callback check above
+        # stays for direct callers).
+        _callback.hermes_tool_matcher = spec.matches_tool  # type: ignore[attr-defined]
     return _callback
 
 

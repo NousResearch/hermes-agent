@@ -82,6 +82,15 @@ class TestSerializePayload:
 class TestMatcher:
 
 
+    def test_matcher_exposed_only_for_tool_events_with_matcher(self):
+        with_matcher = shell_hooks._make_callback(shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command="/bin/true", matcher="terminal|patch"))
+        assert with_matcher.hermes_tool_matcher("terminal") is True
+        assert with_matcher.hermes_tool_matcher("read_file") is False
+        no_matcher = shell_hooks._make_callback(shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command="/bin/true"))
+        assert not hasattr(no_matcher, "hermes_tool_matcher")
+
     def test_alternation_matcher(self):
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command="echo", matcher="terminal|file",
@@ -108,6 +117,33 @@ class TestMatcher:
         )
         assert spec.matcher is None
         assert spec.matches_tool("anything")
+
+
+@pytest.mark.platforms("linux", "macos")
+class TestMatcherBeforeSuppression:
+    """The dispatcher evaluates a shell hook's matcher before its timeout gate."""
+
+    def test_suppressed_slow_hook_does_not_block_non_matching_tools(self, tmp_path, monkeypatch):
+        """A slow matcher='terminal' hook that timed out (and is now suppressed, fail-closed)
+        must not block read_file / skill_view: the matcher is evaluated before the bounded
+        dispatch, so tools it never covers bypass its suppression entirely."""
+        from hermes_cli import plugins
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.2)
+        script = _write_script(tmp_path, "slow.sh", "#!/usr/bin/env bash\nsleep 3\nprintf '{}\\n'\n")
+        spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script), matcher="terminal")
+        mgr = plugins.PluginManager()
+        mgr._hooks["pre_tool_call"] = [shell_hooks._make_callback(spec)]
+        blocked = [{"action": "block", "message": plugins._PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}]
+
+        def fire(tool_name, call_id):
+            return mgr.invoke_hook("pre_tool_call", tool_name=tool_name, args={},
+                                   session_id="sess-1", tool_call_id=call_id)
+
+        assert fire("terminal", "c-1") == blocked  # slow hook times out
+        assert fire("terminal", "c-2") == blocked  # suppressed: still fail-closed for its tool
+        assert fire("read_file", "c-3") == []  # not covered by the matcher: never blocked
+        assert fire("skill_view", "c-4") == []
 
 
 # ── End-to-end subprocess behaviour ───────────────────────────────────────

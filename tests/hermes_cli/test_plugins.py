@@ -1392,6 +1392,46 @@ class TestForceReloadSymmetry:
 
         assert len(starts) == 2
 
+    def test_concurrent_session_starts_for_distinct_sessions_all_run(self, monkeypatch):
+        """Parallel subagents each start a session; session hooks carry no tool_call_id or
+        turn_id, so session_id must tell them apart — otherwise every start but the first is
+        skipped as "still running" and plugins never learn the other sessions exist. The same
+        same session_id twice stays a duplicate."""
+        import time
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        hold = threading.Event()
+        seen = []
+        seen_lock = threading.Lock()
+
+        def recorder(session_id, **_kwargs):
+            with seen_lock:
+                seen.append(session_id)
+            hold.wait(timeout=10.0)
+
+        mgr = PluginManager()
+        mgr._hooks["on_session_start"] = [recorder]
+
+        def fire(session_id):
+            mgr.invoke_hook("on_session_start", session_id=session_id, model="m", platform="cli")
+
+        threads = [threading.Thread(target=fire, args=(sid,), daemon=True)
+                   for sid in ("child-a", "child-b", "child-c", "child-a")]
+        for t in threads[:3]:
+            t.start()
+        deadline = time.monotonic() + 5.0
+        while len(seen) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        threads[3].start()  # duplicate of a session whose hook is still running
+        threads[3].join(5.0)
+        hold.set()
+        for t in threads[:3]:
+            t.join(5.0)
+
+        assert sorted(seen) == ["child-a", "child-b", "child-c"]
+
     def test_repeated_same_call_identity_still_deduplicated(self, monkeypatch):
         """Negative control: the same call identity stays a duplicate while its worker
         is still running, so the running gate (not timeout suppression) dedupes it."""

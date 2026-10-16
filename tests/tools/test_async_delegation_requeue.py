@@ -41,6 +41,8 @@ def test_requeue_returns_an_acknowledged_completion_to_pending_and_offers_it():
     _persisted("requeue-ok")
     offered: queue.Queue = queue.Queue()
 
+    # Requeue is also used after a prior replay already marked this row offered.
+    ad._offered.add((hermes_home_key(get_hermes_home()), "requeue-ok"))
     assert ad.requeue_admitted_completion("requeue-ok", offered) is True
 
     assert _column("requeue-ok", "delivery_state") == "pending"
@@ -72,4 +74,29 @@ def test_requeue_leaves_rows_it_cannot_offer(case):
     assert ad.requeue_admitted_completion(case, offered) is False
 
     assert _column(case, "delivery_state") == before
+    assert offered.empty()
+
+
+def test_requeue_reopens_a_row_whose_admission_ack_is_still_pending():
+    """The admitted turn can requeue before the acknowledgement commits; the late ack must lose."""
+    _persisted("requeue-unacked", delivered=False)
+    assert ad.claim_completion_delivery("requeue-unacked", "admission")
+    offered: queue.Queue = queue.Queue()
+
+    assert ad.requeue_admitted_completion("requeue-unacked", offered, "admission") is True
+    assert ad.complete_completion_delivery("requeue-unacked", "admission") is False
+
+    assert _column("requeue-unacked", "delivery_state") == "pending"
+    assert _column("requeue-unacked", "delivery_claim") is None
+    assert offered.get_nowait()["delegation_id"] == "requeue-unacked"
+
+
+def test_requeue_leaves_a_row_held_by_another_claim():
+    _persisted("requeue-foreign", delivered=False)
+    assert ad.claim_completion_delivery("requeue-foreign", "other-consumer")
+    offered: queue.Queue = queue.Queue()
+
+    assert ad.requeue_admitted_completion("requeue-foreign", offered, "admission") is False
+
+    assert _column("requeue-foreign", "delivery_claim") == "other-consumer"
     assert offered.empty()

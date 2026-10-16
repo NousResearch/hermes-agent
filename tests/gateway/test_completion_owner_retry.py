@@ -351,3 +351,210 @@ async def test_unconfirmed_owner_after_admission_offers_the_completion_again(
         finally:
             store.close_all_db_handles()
             runner.close_all_session_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_owner_while_admission_ack_is_pending_offers_the_completion_again(
+    tmp_path, monkeypatch, private_db_probe_cleanup,
+):
+    """The admitted turn can resolve ownership before the off-loop acknowledgement commits.
+
+    The adapter schedules the turn before returning its receipt, so the turn may find the row still
+    pending under the admission claim. An unconfirmed owner must reopen it and win over the late
+    acknowledgement: the row stays pending and queued, never delivered for a discarded injection.
+    Real ledger, ownership walk and resolver; only the owner read and the ack timing are controlled.
+    """
+    import asyncio
+    import threading
+
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        offered: queue.Queue = queue.Queue()
+        monkeypatch.setattr(process_registry, "completion_queue", offered)
+        ack_entered, ack_proceed = threading.Event(), threading.Event()
+        real_complete = ad.complete_completion_delivery
+        acks = []
+
+        def gated_complete(delegation_id, claim_id):
+            if not acks:  # hold only the first admission's acknowledgement
+                ack_entered.set()
+                assert ack_proceed.wait(10), "turn never released the acknowledgement"
+            acks.append(real_complete(delegation_id, claim_id))
+            return acks[-1]
+
+        monkeypatch.setattr(ad, "complete_completion_delivery", gated_complete)
+        try:
+            entry = store.get_or_create_session(SessionSource(
+                platform=Platform.TELEGRAM, chat_id="ownership-ack-race", chat_type="dm",
+            ))
+            db = cast(Any, store._db)
+            owner = entry.session_id
+            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
+            get_session = runner._session_db.get_session
+            owner_read_fails = False
+
+            async def lookup_session(sid):
+                if owner_read_fails and sid == owner:
+                    raise RuntimeError("transient read failure")
+                return await get_session(sid)
+
+            monkeypatch.setattr(runner._session_db, "get_session", lookup_session)
+            admitted, turns, resolutions = [], [], []
+
+            async def admitted_turn(event):
+                nonlocal owner_read_fails
+                if len(turns) > 1:  # the retry turn runs unraced
+                    resolutions.append(await runner._hmwa_resolve_session(event, event.source))
+                    return
+                try:
+                    # Resolve while the acknowledgement is held in its worker thread.
+                    assert await asyncio.to_thread(ack_entered.wait, 10)
+                    row = ad.get_durable_delegation("ack-race")
+                    assert row is not None and row["delivery_state"] == "pending"
+                    db.create_session("owner-tip", source="telegram", parent_session_id=owner)
+                    db.end_session(owner, end_reason="compression")
+                    assert store.advance_compression_session(entry.session_key, owner, "owner-tip") is not None
+                    owner_read_fails = True
+                    resolutions.append(await runner._hmwa_resolve_session(event, event.source))
+                    owner_read_fails = False
+                finally:
+                    ack_proceed.set()
+
+            async def accept(event):
+                admitted.append(event)
+                # Like BasePlatformAdapter: processing is scheduled before the receipt returns.
+                turns.append(asyncio.ensure_future(admitted_turn(event)))
+                event._gateway_accepted = True
+
+            runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
+            event = {
+                "type": "async_delegation", "delegation_id": "ack-race",
+                "session_key": entry.session_key, "parent_session_id": "worker",
+                "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
+            }
+            ad._persist_dispatch(event)
+            ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
+
+            assert await runner._deliver_completion_notification("completed result", event) is True
+            await asyncio.wait_for(turns[0], 10)
+            assert resolutions == [None]
+            assert acks == [False]  # the late acknowledgement lost its claim to the retry
+            row = ad.get_durable_delegation("ack-race")
+            assert row is not None and row["delivery_state"] == "pending"
+            again = offered.get_nowait()
+            assert again["delegation_id"] == "ack-race" and again["restored"] is True
+
+            # The retry proves the compressed tip and is delivered exactly once.
+            assert await runner._deliver_completion_notification("completed result", again) is True
+            await asyncio.wait_for(turns[1], 10)
+            assert resolutions[1] is not None and resolutions[1][1].session_id == "owner-tip"
+            row = ad.get_durable_delegation("ack-race")
+            assert row is not None and row["delivery_state"] == "delivered"
+            assert acks == [False, True] and len(admitted) == 2 and offered.empty()
+        finally:
+            ack_proceed.set()
+            store.close_all_db_handles()
+            runner.close_all_session_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_delivery_keeps_admission_claim_until_its_ack_finishes(
+    tmp_path, monkeypatch, private_db_probe_cleanup,
+):
+    """Cancelling delivery mid-acknowledgement must not forget the admission claim early.
+
+    The settle worker is shielded, so the acknowledgement keeps running after the awaiting task is
+    cancelled. Until it finishes, an admitted turn that cannot confirm its owner still needs the
+    claim to reopen the pending row; otherwise the late acknowledgement marks a discarded injection
+    delivered. Real ledger, ownership walk and resolver; only the owner read, the transport and the
+    acknowledgement timing are controlled.
+    """
+    import asyncio
+    import threading
+
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        offered: queue.Queue = queue.Queue()
+        monkeypatch.setattr(process_registry, "completion_queue", offered)
+        ack_entered, ack_proceed, ack_done = threading.Event(), threading.Event(), threading.Event()
+        real_complete = ad.complete_completion_delivery
+        acks = []
+
+        def gated_complete(delegation_id, claim_id):
+            if not acks:  # hold only the first admission's acknowledgement, before its update
+                ack_entered.set()
+                assert ack_proceed.wait(10), "test never released the acknowledgement"
+            acks.append(real_complete(delegation_id, claim_id))
+            if len(acks) == 1:
+                ack_done.set()
+            return acks[-1]
+
+        monkeypatch.setattr(ad, "complete_completion_delivery", gated_complete)
+        try:
+            entry = store.get_or_create_session(SessionSource(
+                platform=Platform.TELEGRAM, chat_id="ownership-ack-cancel", chat_type="dm",
+            ))
+            db = cast(Any, store._db)
+            owner = entry.session_id
+            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
+            get_session = runner._session_db.get_session
+            owner_read_fails = False
+
+            async def lookup_session(sid):
+                if owner_read_fails and sid == owner:
+                    raise RuntimeError("transient read failure")
+                return await get_session(sid)
+
+            monkeypatch.setattr(runner._session_db, "get_session", lookup_session)
+            admitted = []
+
+            async def accept(event):
+                admitted.append(event)
+                event._gateway_accepted = True
+
+            runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
+            event = {
+                "type": "async_delegation", "delegation_id": "ack-cancel",
+                "session_key": entry.session_key, "parent_session_id": "worker",
+                "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
+            }
+            ad._persist_dispatch(event)
+            ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
+
+            delivery = asyncio.create_task(runner._deliver_completion_notification("completed result", event))
+            assert await asyncio.to_thread(ack_entered.wait, 10)
+            delivery.cancel()  # shutdown lands while the acknowledgement is held in its worker
+            with pytest.raises(asyncio.CancelledError):
+                await delivery
+            with runner._completion_delivery_lock:
+                assert "ack-cancel" in runner._pending_completion_acks(), "claim forgotten before its ack ran"
+
+            # The admitted turn now cannot confirm its owner (compression plus a transient read error).
+            db.create_session("owner-tip", source="telegram", parent_session_id=owner)
+            db.end_session(owner, end_reason="compression")
+            assert store.advance_compression_session(entry.session_key, owner, "owner-tip") is not None
+            owner_read_fails = True
+            assert await runner._hmwa_resolve_session(admitted[0], admitted[0].source) is None
+            owner_read_fails = False
+
+            ack_proceed.set()
+            assert await asyncio.to_thread(ack_done.wait, 10)
+            for _ in range(100):  # the worker unpublishes the claim right after its settle
+                with runner._completion_delivery_lock:
+                    if not runner._pending_completion_acks():
+                        break
+                await asyncio.sleep(0.01)
+            with runner._completion_delivery_lock:
+                assert runner._pending_completion_acks() == {}
+            assert acks == [False]  # the late acknowledgement lost its claim to the retry
+            row = ad.get_durable_delegation("ack-cancel")
+            assert row is not None and row["delivery_state"] == "pending"
+            again = offered.get_nowait()
+            assert again["delegation_id"] == "ack-cancel" and again["restored"] is True
+            assert offered.empty()
+        finally:
+            ack_proceed.set()
+            store.close_all_db_handles()
+            runner.close_all_session_db_handles()

@@ -556,30 +556,39 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
              AND delivery_claim=?""", (now, now, delegation_id, claim_id))
 
 
-def requeue_admitted_completion(delegation_id: str, target_queue) -> bool:
+def requeue_admitted_completion(delegation_id: str, target_queue, claim_id: str = "") -> bool:
     """Offer an acknowledged completion again when its receiving turn could not confirm the owner.
 
     The row returns to pending and its event goes back on ``target_queue``, so the next delivery
     re-runs the pre-flight. A row past the delivery budget converges to ``dropped`` instead, which
-    bounds the loop; a row without a stored event is left as it is."""
+    bounds the loop; a row without a stored event is left as it is.
+
+    ``claim_id`` is the admission claim whose acknowledgement may still be in flight: a row still
+    pending under that claim is reopened too, and clearing the claim makes the late
+    ``complete_completion_delivery`` a no-op, so the acknowledgement cannot overwrite the retry."""
     now = time.time()
+    admitted = """delegation_id=? AND (delivery_state='delivered'
+                  OR (?<>'' AND delivery_state='pending' AND delivery_claim=?))"""
     with _DB_LOCK, _transaction() as conn:
-        exhausted = conn.execute("""UPDATE async_delegations SET delivery_state='dropped', updated_at=?
-               WHERE delegation_id=? AND delivery_state='delivered' AND delivery_attempts>=?""",
-            (now, delegation_id, _MAX_DELIVERY_ATTEMPTS))
+        exhausted = conn.execute(f"""UPDATE async_delegations SET delivery_state='dropped', updated_at=?,
+                      delivery_claim=NULL, delivery_claimed_at=NULL
+               WHERE {admitted} AND delivery_attempts>=?""",
+            (now, delegation_id, claim_id, claim_id, _MAX_DELIVERY_ATTEMPTS))
         if exhausted.rowcount == 1:
             logger.warning("Async delegation %s exhausted its %d delivery attempts; "
                            "marking terminally dropped (result remains queryable).",
                            delegation_id, _MAX_DELIVERY_ATTEMPTS)
             return False
-        reopened = conn.execute("""UPDATE async_delegations SET delivery_state='pending',
-                      delivered_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='delivered' AND event_json IS NOT NULL""",
-            (now, delegation_id))
+        reopened = conn.execute(f"""UPDATE async_delegations SET delivery_state='pending',
+                      delivered_at=NULL, delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
+               WHERE {admitted} AND event_json IS NOT NULL""",
+            (now, delegation_id, claim_id, claim_id))
         if reopened.rowcount != 1:
             return False
         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
                FROM async_delegations WHERE delegation_id=?""", (delegation_id,)).fetchall()
+        with _orphan_lock:
+            _offered.difference_update({key for key in _offered if key[1] == delegation_id})
         return _replay_pending(conn, rows, target_queue, now) == 1
 
 

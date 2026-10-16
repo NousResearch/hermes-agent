@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -73,6 +74,9 @@ const queuedTexts = () =>
     .map(entry => entry.text)
 
 const canonical = () => $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as never)
+
+// The shared owner's typed refusal of a rewind while a turn runs, as the wire delivers it.
+const BUSY = new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
 
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
@@ -158,6 +162,31 @@ describe('/undo on a canonical session', () => {
     expect(callsOf(requestGateway, 'session.rewind')).toEqual([])
     expect(renderedText(handle)).toContain(copy.undoNothing)
   })
+
+  it('refuses during a running turn with main’s stop-first guidance, leaving the composer alone', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        throw BUSY
+      }
+    })
+
+    publishSessionState(RUNTIME_SESSION_ID, { ...createClientSessionState(RUNTIME_SESSION_ID), busy: true })
+    setComposerDraft('half-typed follow-up')
+    const handle = await mount(requestGateway)
+    await handle.submitText('/undo')
+
+    expect(renderedText(handle)).toContain('Stop the current reply first')
+    expect(renderedText(handle)).toContain('then run /undo')
+    expect(renderedText(handle)).not.toContain('error: session_busy')
+    expect($composerDraft.get()).toBe('half-typed follow-up')
+    expect(callsOf(requestGateway, 'session.interrupt')).toEqual([])
+    expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
+    expect(queuedTexts()).toEqual([])
+  })
 })
 
 describe('/retry on a canonical session', () => {
@@ -199,6 +228,28 @@ describe('/retry on a canonical session', () => {
     expect(callsOf(requestGateway, 'session.rewind')).toEqual([])
     expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
     expect(renderedText(handle)).toContain(copy.retryUnsupported)
+  })
+
+  it('refuses during a running turn with main’s stop-first guidance and resubmits nothing', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        throw BUSY
+      }
+    })
+
+    publishSessionState(RUNTIME_SESSION_ID, { ...createClientSessionState(RUNTIME_SESSION_ID), busy: true })
+    const handle = await mount(requestGateway)
+    await handle.submitText('/retry')
+
+    expect(renderedText(handle)).toContain('Stop the current reply first')
+    expect(renderedText(handle)).toContain('then run /retry')
+    expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
+    expect(callsOf(requestGateway, 'session.interrupt')).toEqual([])
+    expect(queuedTexts()).toEqual([])
   })
 })
 

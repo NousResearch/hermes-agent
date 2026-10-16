@@ -1,0 +1,29 @@
+name: scalekit
+repo: https://github.com/scalekit-inc/hermes-tools
+sha: a159b482ba5ef326eda74a997a3f2e1a121f9fa6
+description: >-
+  Tools layer for Hermes. Call any Scalekit connector already created in the
+  dashboard. Install asks for the Scalekit client id, client secret, and
+  environment URL. The plugin creates the person id.
+  Disclosure — tool calls go to that Scalekit environment. Provider tokens stay
+  in Scalekit and are not written into Hermes. The plugin stores the person id
+  under Hermes plugin-data.
+maintainer: scalekit-inc
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+version: "0.1.0"
+docs_url: https://docs.scalekit.com/agentkit/hermes/
+readme: true
+capabilities:
+  provides_tools:
+    - scalekit_list_connections
+    - scalekit_authorize
+    - scalekit_execute_tool
+    - scalekit_proxy
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SCALEKIT_CLIENT_ID
+    - SCALEKIT_CLIENT_SECRET
+    - SCALEKIT_ENVIRONMENT_URL

@@ -9,7 +9,9 @@ Catalogs are flat dotted-key mappings resolved through layers, top first:
 5. the bare key
 
 Every layer may be partial. Language resolution: explicit ``lang=`` > ``HERMES_LANGUAGE`` >
-``display.language`` > ``en``; any id that some layer supplies is accepted, so a pack-only language
+``display.language`` > the control host's locale (``agent.i18n_locale``; an absent or empty
+``display.language`` auto-detects) > ``en``; any id that some layer supplies is accepted, so a
+pack-only language
 (``pl``) works the moment its plugin loads. ``t()`` is a hot path: one cached merged dict per
 ``(home, lang)``, invalidated by :func:`reset_language_cache` (which every pack registration calls).
 """
@@ -23,7 +25,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from agent import i18n_layers
+from agent import i18n_layers, i18n_locale
 from agent.i18n_languages import language_options
 
 logger = logging.getLogger(__name__)
@@ -198,6 +200,7 @@ def reset_language_cache() -> None:
     ``save_config`` changes ``display.language``, after a pack registers/unregisters, or after editing
     an overlay file)."""
     _config_language_cached.cache_clear()
+    i18n_locale.reset_detection_cache()
     with _catalog_lock:
         _catalog_cache.clear()
         _supported_cache.clear()
@@ -210,7 +213,13 @@ def _resolve_language(home: str) -> str:
         env_lang = get_secret("HERMES_LANGUAGE")
     except UnscopedSecretError:
         env_lang = os.environ.get("HERMES_LANGUAGE")  # unscoped default-profile path: environ IS its own value
-    return _normalize_lang(env_lang, home) if env_lang else _config_language_cached(home) or DEFAULT_LANGUAGE
+    if env_lang:
+        return _normalize_lang(env_lang, home)
+    configured = _config_language_cached(home)
+    if configured:
+        return configured
+    # Nothing explicit anywhere: the control host's own locale picks the startup language.
+    return i18n_locale.detect_language(home) or DEFAULT_LANGUAGE
 
 
 def get_language() -> str:

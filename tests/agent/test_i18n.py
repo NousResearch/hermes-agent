@@ -93,10 +93,11 @@ def test_catalog_values_have_no_escaped_newlines(lang: str):
 
 
 def test_default_when_nothing_set(monkeypatch):
-    """With no env var and no config override, falls back to English."""
+    """No env var, no config override and no usable host locale -> English."""
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
-    # Force config lookup to return None -- patch the cached reader.
+    monkeypatch.setattr("agent.i18n_locale.os_locale", lambda: None)
     i18n.reset_language_cache()
+    # Force config lookup to return None -- patch the cached reader.
     monkeypatch.setattr(i18n, "_config_language", lambda: None)
     assert i18n.get_language() == "en"
 

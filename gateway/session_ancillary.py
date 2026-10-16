@@ -205,7 +205,7 @@ async def read(connection, ref, params, *, kind):
         _require_current_route(authority, ref)
         if kind == 'control':
             return {'control': control_snapshot(authority, ref)}
-        agent, records = _owner_objects(authority, ref)
+        agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
         if kind == 'subagents':
             return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
                                   for record in records], 'delegations': []}
@@ -312,7 +312,7 @@ def _require_current_route(authority, ref):
             raise RuntimeStoreError('stale_generation')
 
 
-def _owner_objects(authority, ref):
+def _owner_objects(authority, ref, *, include_fallback_evicted=False):
     """``(agent, subagent records)`` of this in-process session. Process-local registries cannot
     describe (or stop) another interpreter's live objects: a managed worker is refused rather than
     answered with an empty success."""
@@ -320,7 +320,12 @@ def _owner_objects(authority, ref):
     if managed_policy(authority, ref) is not None:
         raise RuntimeStoreError('unsupported_projection')
     agent = authority.agent(ref)
-    return agent, subagent_records(agent)
+    session_id = physical_target(authority, ref) if include_fallback_evicted else None
+    route = authority.sessions[ref.session_id].route if include_fallback_evicted else None
+    session_db = getattr(authority, 'db', None) if include_fallback_evicted else None
+    return agent, subagent_records(
+        agent, session_id=session_id, session_db=session_db, route=route,
+        include_fallback_evicted=include_fallback_evicted)
 
 
 def physical_target(authority, ref):
@@ -362,15 +367,62 @@ def control_snapshot(authority, ref):
             'updated_at': _snapshot_updated_at(*states)}
 
 
-def subagent_records(parent):
+def _has_fallback_evicted_ancestor(agent, target_sids, expected_db, route, registry):
+    if not target_sids:
+        return False
+    current = agent
+    for _ in range(getattr(registry, '_MAX_ANCESTOR_HOPS', 8)):
+        ref = getattr(current, '_delegate_parent_ref', None) if current is not None else None
+        current = ref() if callable(ref) else None
+        if current is None:
+            return False
+        marker = getattr(current, '_evicted_on_fallback', False)
+        if not (marker is True or (isinstance(marker, str) and bool(marker))):
+            continue
+        if getattr(current, 'session_id', None) not in target_sids:
+            continue
+        if (expected_db is not None or getattr(current, '_session_db', None) is not None) and getattr(current, '_session_db', None) is not expected_db:
+            continue
+        if route is not None and marker != route:
+            continue
+        if route is None and isinstance(marker, str) and getattr(current, 'gateway_session_key', None) not in (None, marker):
+            continue
+        return True
+    return False
+
+
+def subagent_records(parent, session_id=None, *, session_db=None, route=None, include_fallback_evicted=True):
     registry = sys.modules.get('tools.delegate_tool_registry')
-    if parent is None or registry is None:
+    target_sid = (session_id or getattr(parent, 'session_id', None)) if include_fallback_evicted else None
+    if registry is None or (parent is None and not target_sid):
         return []
+    expected_db = session_db if session_db is not None else getattr(parent, '_session_db', None)
+    effective_route = route if route is not None else getattr(parent, 'gateway_session_key', None)
+    # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
+    target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
-        # Deliberately no durable-ID fallback: equal IDs cannot transfer a live
-        # old parent's transcript to a replacement execution object.
+        # Deliberately no unconditional durable-ID fallback: only a parent evicted by this session's own fallback keeps its children visible in the read-only roster.
         return [dict(record) for record in registry._active_subagents.values()
-                if registry._is_descendant_of(record.get('agent'), parent)]
+                if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
+                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)]
+
+
+def _compression_lineage(db, session_id):
+    """*session_id* plus the sessions it continues by compression, walked backward so a closed sibling under a compressed parent cannot divert the walk."""
+    if not session_id:
+        return frozenset()
+    ids, current = {session_id}, session_id
+    is_child, get = getattr(db, '_is_compression_child_row', None), getattr(db, 'get_session', None)
+    if callable(is_child) and callable(get):
+        row = get(current)
+        while row and is_child(row) and row['parent_session_id'] not in ids and len(ids) < 200:
+            current = row['parent_session_id']
+            ids.add(current)
+            row = get(current)
+        return frozenset(ids)
+    lineage = getattr(db, 'get_compression_lineage', None)
+    found = lineage(session_id) if callable(lineage) else None
+    return frozenset(found if isinstance(found, (list, tuple)) else ()) | ids
 
 
 def subagent_tail(records, subagent_id):

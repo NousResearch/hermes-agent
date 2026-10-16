@@ -254,6 +254,18 @@ def _cfg_get_mtime(params):
     return {"mtime": mtime, "mcp_rev": _compute_mcp_rev()}
 
 
+# Server-side mirror for plugin decisions and keybind overrides that a
+# localStorage origin change could otherwise orphan.
+# Absence (key never set) reads back as {} — the desktop treats that identically to "no
+# saved choice yet", never a fabricated default.
+def _cfg_get_desktop_plugin_decisions(params):
+    return {"value": (_load_cfg().get("desktop") or {}).get("pluginDecisions") or {}}
+
+
+def _cfg_get_desktop_keybinds(params):
+    return {"value": (_load_cfg().get("desktop") or {}).get("keybinds") or {}}
+
+
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
 _CONFIG_GETTERS = {
     "provider": _cfg_get_provider,
@@ -279,7 +291,9 @@ _CONFIG_GETTERS = {
     "focus": lambda params: {"value": "on" if bool(_display_cfg().get("focus_view", False)) else "off",
                              "tool_progress": _load_tool_progress_mode()},
     "mouse": lambda params: {"value": _display_mouse_tracking(_load_cfg().get("display"))},
-    "mtime": _cfg_get_mtime}
+    "mtime": _cfg_get_mtime,
+    "desktop.pluginDecisions": _cfg_get_desktop_plugin_decisions,
+    "desktop.keybinds": _cfg_get_desktop_keybinds}
 # Getters whose failure is a JSON-RPC error of this code (others propagate to dispatch).
 _CONFIG_GET_ERR = {"provider": 5013, "approval_mode": 5001, "approvals.mode": 5001}
 

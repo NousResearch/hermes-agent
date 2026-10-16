@@ -465,9 +465,9 @@ export interface ConfigGetParams {
   cwd?: string | null
   session_id?: string | null
 }
-/** Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``, ``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``, ``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``. */
+/** Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``, ``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``, ``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``. ``value`` is also a ``{id: bool}`` / ``{id: [combo, ...]}`` object for ``desktop.pluginDecisions`` / ``desktop.keybinds`` (desktop settings server mirror). */
 export interface ConfigGetResult {
-  value?: string | null
+  value?: string | Record<string, unknown> | null
   display?: string | null
   tool_progress?: string | null
   model?: string | null
@@ -498,10 +498,10 @@ export interface ConfigSetParams {
   scope?: string | null
   confirm_expensive_model?: boolean
 }
-/** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` / ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles. */
+/** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` / ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles, or a ``{id: bool}`` / ``{id: [combo, ...]}`` object for ``desktop.pluginDecisions`` / ``desktop.keybinds`` (desktop settings server mirror). */
 export interface ConfigSetResult {
   key: string
-  value?: string | boolean | null
+  value?: string | boolean | Record<string, unknown> | null
   warning?: string | null
   confirm_required?: boolean | null
   confirm_message?: string | null

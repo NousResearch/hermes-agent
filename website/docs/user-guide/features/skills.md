@@ -724,6 +724,8 @@ hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mi
 hermes skills install https://sharethis.chat/SKILL.md              # Direct URL (+ referenced support files)
 hermes skills install https://example.com/SKILL.md --name my-skill # Override name when frontmatter has none
 hermes skills list --source hub                   # List hub-installed skills
+hermes skills list --json                         # Machine-readable installed-skill inventory
+hermes -p work skills list --json --enabled-only  # Enabled inventory for one profile
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
@@ -734,6 +736,15 @@ hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 ```
+
+`hermes skills list --json` writes a JSON array to stdout instead of the table
+and summary. It uses the same resolved catalog, ordering and `--source` /
+`--enabled-only` filters as the table; an empty result is `[]`. Each entry contains
+`name` (the full catalog load name), `category` (an empty string when uncategorized),
+`source`, `trust` and a boolean `enabled`. The source is the table's label, such as
+`github`, `builtin` or `local`; `--source hub` selects all hub-installed sources.
+It does not export skill bodies, internal lock metadata or absolute installation paths.
+The `/skills list --json` slash command supports the same output mode.
 
 ### Supported hub sources
 

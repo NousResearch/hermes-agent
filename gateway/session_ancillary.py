@@ -367,8 +367,8 @@ def control_snapshot(authority, ref):
             'updated_at': _snapshot_updated_at(*states)}
 
 
-def _has_fallback_evicted_ancestor(agent, target_sid, expected_db, route, registry):
-    if not target_sid:
+def _has_fallback_evicted_ancestor(agent, target_sids, expected_db, route, registry):
+    if not target_sids:
         return False
     current = agent
     for _ in range(getattr(registry, '_MAX_ANCESTOR_HOPS', 8)):
@@ -379,7 +379,7 @@ def _has_fallback_evicted_ancestor(agent, target_sid, expected_db, route, regist
         marker = getattr(current, '_evicted_on_fallback', False)
         if not (marker is True or (isinstance(marker, str) and bool(marker))):
             continue
-        if getattr(current, 'session_id', None) != target_sid:
+        if getattr(current, 'session_id', None) not in target_sids:
             continue
         if (expected_db is not None or getattr(current, '_session_db', None) is not None) and getattr(current, '_session_db', None) is not expected_db:
             continue
@@ -398,11 +398,31 @@ def subagent_records(parent, session_id=None, *, session_db=None, route=None, in
         return []
     expected_db = session_db if session_db is not None else getattr(parent, '_session_db', None)
     effective_route = route if route is not None else getattr(parent, 'gateway_session_key', None)
+    # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
+    target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
         # Deliberately no unconditional durable-ID fallback: only a parent evicted by this session's own fallback keeps its children visible in the read-only roster.
         return [dict(record) for record in registry._active_subagents.values()
                 if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
-                or _has_fallback_evicted_ancestor(record.get('agent'), target_sid, expected_db, effective_route, registry)]
+                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)]
+
+
+def _compression_lineage(db, session_id):
+    """*session_id* plus the sessions it continues by compression, walked backward so a closed sibling under a compressed parent cannot divert the walk."""
+    if not session_id:
+        return frozenset()
+    ids, current = {session_id}, session_id
+    is_child, get = getattr(db, '_is_compression_child_row', None), getattr(db, 'get_session', None)
+    if callable(is_child) and callable(get):
+        row = get(current)
+        while row and is_child(row) and row['parent_session_id'] not in ids and len(ids) < 200:
+            current = row['parent_session_id']
+            ids.add(current)
+            row = get(current)
+        return frozenset(ids)
+    lineage = getattr(db, 'get_compression_lineage', None)
+    found = lineage(session_id) if callable(lineage) else None
+    return frozenset(found if isinstance(found, (list, tuple)) else ()) | ids
 
 
 def subagent_tail(records, subagent_id):

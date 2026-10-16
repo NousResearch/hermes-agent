@@ -205,7 +205,9 @@ async def connect_gateway(endpoint=None):
         # A client's own start: the daemon it may launch ends itself once idle (no client, adapter,
         # cron/kanban work or admission), and the next client starts a fresh one.
         result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
-        if result.state != "ready" or result.endpoint is None:
+        # A restart's after-turn wait still owns its turns (#139041): attach to answer a parked prompt.
+        attachable = result.state == "ready" or (result.state == "draining" and result.reason_code == "restart_wait")
+        if not attachable or result.endpoint is None:
             detail = getattr(result, "detail", None)
             if result.reason_code == "runtime_exited" and detail:
                 # A multi-line startup report (redacted traceback tail + where the full log is).

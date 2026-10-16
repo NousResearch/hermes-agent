@@ -150,6 +150,16 @@ test('ensure consumes structured readiness without acquiring a child owner', asy
   await expect(ensureLocalGateway(async () => ({ code: 5, stdout: JSON.stringify({ state: 'starting', reason_code: 'deadline' }) }))).rejects.toThrow('starting')
 })
 
+test('a restart-wait owner is attached to answer a parked prompt; a plain drain stays refused (#139041)', async () => {
+  const endpoint = { profile_id: '/private/profile', instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none', code_sha: 'old' }
+  const restartStale = vi.fn(async () => true)
+  const wait = { code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'restart_wait', endpoint, client_code_sha: 'new' }) }
+  const connection = await ensureLocalGateway(async () => wait, undefined, restartStale)
+  expect(connection.gatewayEndpoint).toEqual(endpoint)
+  expect(restartStale).not.toHaveBeenCalled() // already restarting: never a second restart
+  await expect(ensureLocalGateway(async () => ({ code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'update_paused', endpoint: null }) }))).rejects.toThrow('Gateway draining (update_paused)')
+})
+
 test('an ensure child that never reached the protocol boundary is diagnosed from stderr, not as a JSON parse error', async () => {
   // `main`'s hermes has no `gateway ensure` subcommand: argparse usage on stderr, nothing on stdout.
   const legacy = { code: 2, stdout: '', stderr: "usage: hermes gateway [-h] ...\nhermes gateway: 'ensure' is not a `hermes gateway` command.\nRun `hermes gateway --help` to see all commands.\n" }

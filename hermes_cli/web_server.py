@@ -427,7 +427,7 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         or _has_valid_query_token(request, path)
     ):
         with plugin_request_scope(request.scope):  # a secondary profile's plugins run in its host
-            if _plugin_api_request_refused(plugin_name):
+            if await _plugin_api_request_refused(plugin_name):
                 return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
             hosted = await forward_secondary_plugin_request(request, plugin_name)
         if hosted is not None:

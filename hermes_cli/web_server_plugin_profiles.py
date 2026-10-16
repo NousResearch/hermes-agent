@@ -39,6 +39,9 @@ _GATEWAY_CREDENTIAL_HEADERS = frozenset({
 _GATEWAY_QUERY_KEYS = frozenset({"token", "ticket", "internal", "display_ticket", "attach", "profile"})
 
 _profile_plugins: dict[str, list] = {}
+# Bumped by each explicit rescan of a profile: a scan begun before it publishes neither its list nor a miss.
+_profile_rescans: dict[str, int] = {}
+# Guards these module dicts only; disk scans run without it, so a scan never blocks another caller.
 _profile_plugins_lock = threading.Lock()
 
 # Requests forwarded to a profile's plugin host wait on that profile's own threads, not the gateway's
@@ -62,28 +65,42 @@ def secondary_profile_home() -> Optional[Path]:
     return None if hermes_home_key(home) == hermes_home_key(get_process_hermes_home()) else Path(home)
 
 
-def profile_dashboard_plugins(home: Path, force_rescan: bool = False, keep_misses: bool = False) -> list:
-    """Dashboard plugins of the profile at ``home``, cached per home like the launch profile's list:
-    its own ``plugins/``, then the root's (as a standalone ``hermes --profile <name> serve`` scanned
-    them; the profile's own copy wins a same-name conflict), then the bundled ones. An explicit
-    rescan also forgets the profile's cached misses; ``keep_misses`` (a miss-driven rescan) keeps them."""
+def _scan_profile_plugins(home: Path) -> list:
+    """The profile at ``home``'s dashboard plugins, read from disk: its own ``plugins/``, then the
+    root's (as a standalone ``hermes --profile <name> serve`` scanned them; the profile's own copy
+    wins a same-name conflict), then the bundled ones."""
     from hermes_cli.plugins import get_bundled_plugins_dir
     from hermes_cli.profiles import _get_default_hermes_home
     from hermes_cli.web_server_dashboard import _discover_dashboard_plugins
+    bundled, own = get_bundled_plugins_dir(), Path(home) / "plugins"
+    dirs = [own] + [r for r in [_get_default_hermes_home() / "plugins"]
+                    if r.resolve(strict=False) != own.resolve(strict=False)]
+    return _discover_dashboard_plugins(
+        [(d, "user") for d in dirs] + [(bundled / "memory", "bundled"), (bundled, "bundled")])
+
+
+def _published(key: str, rescans: int, plugins: list) -> list:
+    """Cache ``plugins`` for ``key`` unless an explicit rescan began after this scan did; return them."""
+    with _profile_plugins_lock:
+        if _profile_rescans.get(key, 0) == rescans:
+            _profile_plugins[key] = plugins
+    return plugins
+
+
+def profile_dashboard_plugins(home: Path, force_rescan: bool = False) -> list:
+    """Dashboard plugins of the profile at ``home`` (:func:`_scan_profile_plugins`), cached per home
+    like the launch profile's list. An explicit rescan also forgets the profile's cached misses."""
     from hermes_constants import hermes_home_key
     key = hermes_home_key(home)
     with _profile_plugins_lock:
-        if force_rescan and not keep_misses:
+        if force_rescan:
+            _profile_rescans[key] = _profile_rescans.get(key, 0) + 1
             for unknown in [k for k in _unknown_plugins if k[0] == key]:
                 del _unknown_plugins[unknown]
-        cached = _profile_plugins.get(key)
-        if cached is None or force_rescan or any(not Path(p["_dir"]).is_dir() for p in cached):
-            bundled, own = get_bundled_plugins_dir(), Path(home) / "plugins"
-            dirs = [own] + [r for r in [_get_default_hermes_home() / "plugins"]
-                            if r.resolve(strict=False) != own.resolve(strict=False)]
-            cached = _profile_plugins[key] = _discover_dashboard_plugins(
-                [(d, "user") for d in dirs] + [(bundled / "memory", "bundled"), (bundled, "bundled")])
-        return cached
+        cached, rescans = _profile_plugins.get(key), _profile_rescans.get(key, 0)
+    if cached is None or force_rescan or any(not Path(p["_dir"]).is_dir() for p in cached):
+        cached = _published(key, rescans, _scan_profile_plugins(home))
+    return cached
 
 
 def _named(plugins: list, name: str) -> Optional[dict]:
@@ -92,21 +109,25 @@ def _named(plugins: list, name: str) -> Optional[dict]:
 
 def rescanned_plugin(home: Path, name: str) -> Optional[dict]:
     """The profile at ``home``'s entry for ``name`` after a rescan, or None; a name found missing
-    within the last :data:`_UNKNOWN_PLUGIN_RESCAN_SECS` is answered without one."""
+    within the last :data:`_UNKNOWN_PLUGIN_RESCAN_SECS` is answered without one. Blocking: the
+    request gate runs it on a worker thread."""
     from hermes_constants import hermes_home_key
-    key, now = (hermes_home_key(home), name), time.monotonic()
+    home_key, now = hermes_home_key(home), time.monotonic()
+    key = (home_key, name)
     with _profile_plugins_lock:
         if _unknown_plugins.get(key, now) > now:
             return None
-    # Other names' unexpired misses survive this rescan, so probes alternating names can't defeat them.
-    plugin = _named(profile_dashboard_plugins(home, force_rescan=True, keep_misses=True), name)
+        rescans = _profile_rescans.get(home_key, 0)
+    # Not an explicit rescan: other names' unexpired misses survive it, so probes alternating names
+    # can't defeat them.
+    plugin = _named(_published(home_key, rescans, _scan_profile_plugins(home)), name)
     with _profile_plugins_lock:
         for expired in [k for k, until in _unknown_plugins.items() if until <= now]:
             del _unknown_plugins[expired]
-        if plugin is None:
-            _unknown_plugins[key] = now + _UNKNOWN_PLUGIN_RESCAN_SECS
-        else:
+        if plugin is not None:
             _unknown_plugins.pop(key, None)
+        elif _profile_rescans.get(home_key, 0) == rescans:  # an explicit rescan since may have found it
+            _unknown_plugins[key] = now + _UNKNOWN_PLUGIN_RESCAN_SECS
     return plugin
 
 

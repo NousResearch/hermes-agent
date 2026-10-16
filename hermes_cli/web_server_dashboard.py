@@ -857,7 +857,7 @@ def _plugin_api_name(scope) -> str:
     return parts[3] if path.startswith("/api/plugins/") and len(parts) >= 4 else ""
 
 
-def _plugin_api_request_refused(name: str) -> bool:
+async def _plugin_api_request_refused(name: str) -> bool:
     """The runtime gate for one ``/api/plugins/<name>/`` request, HTTP and WebSocket alike.
 
     :func:`_mount_plugin_api_routes` gates at import time; a plugin disabled while the server runs
@@ -869,7 +869,7 @@ def _plugin_api_request_refused(name: str) -> bool:
     plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == name), None)
     home = secondary_profile_home()
     if plugin is None and home is not None:  # installed since the last scan (rate-limited per name)
-        plugin = rescanned_plugin(home, name)
+        plugin = await asyncio.to_thread(rescanned_plugin, home, name)  # a disk scan: off the event loop
     return _plugin_consent_withheld(plugin or {"name": name, "source": "user"})
 
 
@@ -898,7 +898,7 @@ class PluginApiWebSocketGate:
             await self.app(scope, receive, send)
             return
         with _native_ws_scope(scope) as admitted, plugin_request_scope(scope):
-            if admitted and not _plugin_api_request_refused(name):
+            if admitted and not await _plugin_api_request_refused(name):
                 if not await refuse_secondary_plugin_socket(scope, receive, send, name):
                     await self.app(scope, receive, send)
                 return
@@ -949,7 +949,7 @@ async def _plugin_route_secret_scope(conn: HTTPConnection, profile: Optional[str
     with _config_profile_scope(profile):
         # The plugin must not run on a profile that disabled it (#134889), and this router is the
         # launch profile's copy: a secondary profile reaches it only for bundled plugins (PLG-3).
-        if (not _is_current_profile(profile) and _plugin_api_request_refused(name)) or in_process_router_refused(name):
+        if (not _is_current_profile(profile) and await _plugin_api_request_refused(name)) or in_process_router_refused(name):
             if conn.scope["type"] == "websocket":
                 raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
             raise HTTPException(status_code=404, detail="Plugin not found")

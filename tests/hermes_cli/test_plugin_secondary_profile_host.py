@@ -649,3 +649,54 @@ def test_alternating_unknown_names_each_rescan_once_per_window(daemon, monkeypat
     assert status("absent-a") == 404  # cached until the window ends
     clock[0] += 60
     assert status("absent-a") == 200
+
+
+def test_a_miss_rescan_reads_the_disk_off_the_event_loop_and_unlocked(daemon, monkeypatch):
+    """The rescan a missed name triggers runs on a worker thread, without the lock every plugin lookup
+    takes, so it stalls neither the gateway's event loop nor other requests' plugin lookups."""
+    from hermes_cli import web_server_dashboard, web_server_plugin_profiles
+    _beta_plugin(daemon)
+    selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
+    assert daemon.client.get(PING, **selected).status_code == 200
+    scans, discover = [], web_server_dashboard._discover_dashboard_plugins
+
+    def observed(*args, **kwargs):
+        try:
+            on_loop = asyncio.get_running_loop() is not None
+        except RuntimeError:
+            on_loop = False
+        scans.append({"on_loop": on_loop, "locked": web_server_plugin_profiles._profile_plugins_lock.locked()})
+        return discover(*args, **kwargs)
+
+    monkeypatch.setattr(web_server_dashboard, "_discover_dashboard_plugins", observed)
+
+    assert daemon.client.get("/api/plugins/absent/ping", **selected).status_code == 404
+    assert scans == [{"on_loop": False, "locked": False}]
+
+
+def test_a_miss_rescan_overtaken_by_an_explicit_rescan_caches_nothing_stale(daemon, monkeypatch):
+    """Scans no longer hold the lock, so an explicit rescan can finish inside a miss rescan's scan:
+    the miss rescan's older list and its miss are then dropped, and the plugin answers at once."""
+    from hermes_cli import web_server_dashboard, web_server_plugin_profiles
+    _beta_plugin(daemon)
+    _plugins(daemon.beta, enabled=[NAME, "late"])
+    overtook = []
+    selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
+    status = lambda name: daemon.client.get(f"/api/plugins/{name}/ping", **selected).status_code
+    assert status(NAME) == 200
+    discover = web_server_dashboard._discover_dashboard_plugins
+
+    def overtaken(*args, **kwargs):  # the miss rescan's view predates the install
+        found = discover(*args, **kwargs)
+        monkeypatch.setattr(web_server_dashboard, "_discover_dashboard_plugins", discover)
+        _install(daemon.beta, "late")
+        web_server_plugin_profiles.profile_dashboard_plugins(daemon.beta, force_rescan=True)
+        overtook.append(1)
+        return found
+
+    monkeypatch.setattr(web_server_dashboard, "_discover_dashboard_plugins", overtaken)
+
+    # The forward reads the explicit rescan's list, not the miss rescan's older one.
+    assert status("late") == 200 and overtook == [1]
+    assert not [k for k in web_server_plugin_profiles._unknown_plugins if k[1] == "late"]
+    assert status("late") == 200

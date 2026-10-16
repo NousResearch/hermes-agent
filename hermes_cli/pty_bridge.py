@@ -298,7 +298,7 @@ class PtyBridge:
         # No group signal is safe for a shared-group child, so its descendants must be
         # snapshotted BEFORE the parent is signalled: once the parent exits they reparent
         # and psutil can no longer find them (browser_tool_lifecycle._legacy_kill_process_tree,
-        # process_registry._terminate_host_pid). The sweep below then kills them individually
+        # process_registry.terminate_host_pid). The sweep below then kills them individually
         # so a SIGHUP-ignoring helper cannot keep the PTY slave open (#76759).
         non_leader_descendants: list = []
         if pgid is not None and pgid != self._proc.pid:

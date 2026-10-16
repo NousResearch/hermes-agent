@@ -180,7 +180,7 @@ def test_kill_process_never_killpgs_the_callers_own_group(monkeypatch):
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
 class TestReapUntrackedGroupGuard:
-    """ProcessRegistry._reap_untracked terminates through _terminate_host_pid,
+    """ProcessRegistry._reap_untracked terminates through terminate_host_pid,
     which revalidates the kernel start time captured at spawn before signalling.
     pgid == pid only proves group leadership, not identity: a reaped child can
     be recycled onto an unrelated process that leads its own group, and the old
@@ -199,7 +199,7 @@ class TestReapUntrackedGroupGuard:
         session = SimpleNamespace(systemd_unit="", host_start_time=4242)
         calls, forbidden = [], []
         monkeypatch.setattr(
-            ProcessRegistry, "_terminate_host_pid",
+            ProcessRegistry, "terminate_host_pid",
             classmethod(
                 lambda cls, pid, expected_start=None: calls.append((pid, expected_start))))
         monkeypatch.setattr(os, "getpgid", lambda pid: forbidden.append(("getpgid", pid)))

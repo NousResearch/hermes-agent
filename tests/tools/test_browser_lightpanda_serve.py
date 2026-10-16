@@ -245,7 +245,7 @@ class TestStop:
         server = self._seed(_isolate)
         killed = []
         with patch(
-            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            "tools.process_registry.ProcessRegistry.terminate_host_pid",
             side_effect=lambda pid, expected_start=None: killed.append((pid, expected_start)),
         ):
             lp.stop_lightpanda("lp_test")
@@ -257,7 +257,7 @@ class TestStop:
     def test_stop_falls_back_to_terminate_when_tree_kill_fails(self, _isolate):
         server = self._seed(_isolate)
         with patch(
-            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            "tools.process_registry.ProcessRegistry.terminate_host_pid",
             side_effect=RuntimeError("psutil missing"),
         ):
             lp.stop_lightpanda("lp_test")
@@ -265,7 +265,7 @@ class TestStop:
 
     def test_stop_dead_server_just_drops_record(self, _isolate):
         self._seed(_isolate, alive=False)
-        with patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+        with patch("tools.process_registry.ProcessRegistry.terminate_host_pid") as kill:
             lp.stop_lightpanda("lp_test")
         kill.assert_not_called()
         assert not (_isolate / "lp_test.json").exists()
@@ -276,7 +276,7 @@ class TestStop:
     def test_stop_all(self, _isolate):
         self._seed(_isolate, "lp_a")
         self._seed(_isolate, "lp_b")
-        with patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+        with patch("tools.process_registry.ProcessRegistry.terminate_host_pid") as kill:
             lp.stop_all_lightpanda()
         assert kill.call_count == 2
         assert lp.get_server("lp_a") is None and lp.get_server("lp_b") is None
@@ -294,7 +294,7 @@ class TestReapOrphans:
     def test_live_other_owner_is_skipped(self, _isolate):
         rec = self._record(_isolate, "lp_x", owner_pid=12345)
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 0
         kill.assert_not_called()
         assert rec.exists()
@@ -303,7 +303,7 @@ class TestReapOrphans:
         rec = self._record(_isolate, "lp_x", owner_pid=os.getpid())
         with lp._servers_lock:
             lp._servers["lp_x"] = lp.LightpandaServer("lp_x", 43111, FakeProc(), "", 111)
-        with patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+        with patch("tools.process_registry.ProcessRegistry.terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 0
         kill.assert_not_called()
         assert rec.exists()
@@ -312,7 +312,7 @@ class TestReapOrphans:
         rec = self._record(_isolate, "lp_x", owner_pid=12345, pid=999)
         with patch("gateway.status._pid_exists", return_value=False), \
              patch.object(lp, "_is_lightpanda_process", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 1
         kill.assert_called_once_with(999, expected_start=111)
         assert not rec.exists()
@@ -321,7 +321,7 @@ class TestReapOrphans:
         """Owner alive but lost its in-memory tracking: reap, don't leak."""
         self._record(_isolate, "lp_x", owner_pid=os.getpid(), pid=999)
         with patch.object(lp, "_is_lightpanda_process", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 1
         kill.assert_called_once()
 
@@ -329,7 +329,7 @@ class TestReapOrphans:
         rec = self._record(_isolate, "lp_x", owner_pid=12345, pid=999)
         with patch("gateway.status._pid_exists", return_value=False), \
              patch.object(lp, "_is_lightpanda_process", return_value=False), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as kill:
+             patch("tools.process_registry.ProcessRegistry.terminate_host_pid") as kill:
             assert lp.reap_orphaned_lightpanda() == 0
         kill.assert_not_called()
         assert not rec.exists()

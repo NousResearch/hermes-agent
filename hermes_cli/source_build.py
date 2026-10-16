@@ -79,6 +79,17 @@ def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...],
     )
 
 
+def refresh_installed_whatsapp_bridge(project_root: Path) -> None:
+    """Refresh an existing WhatsApp bridge during source install/update completion."""
+    bridge_dir = project_root / "scripts" / "whatsapp-bridge"
+    if not (bridge_dir / "node_modules").is_dir():
+        return
+    from hermes_cli.main_platform_setup import _whatsapp_install_bridge
+
+    if not _whatsapp_install_bridge(bridge_dir):
+        raise RuntimeError("WhatsApp bridge dependency refresh failed")
+
+
 def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
     """A launch rebuild must not prune another installed source frontend."""
     from hermes_cli.main_desktop import _desktop_dist_exists, _desktop_packaged_executable
@@ -154,6 +165,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
             return False
 
     attempt("feature dependencies", lambda: _install_configured_features_missing_deps(project_root))
+    attempt("WhatsApp bridge dependencies", lambda: refresh_installed_whatsapp_bridge(project_root))
     frontends = source_frontends(project_root)
     if frontends:
         desktop_built = False

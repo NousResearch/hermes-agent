@@ -179,6 +179,39 @@ def _mutate_offline_store(profile, actor, params):
     return _with_session_maintenance(profile, run)
 
 
+async def _mutate_via_owner_gateway(profile, params):
+    """A ready gateway owner applies the mutation itself; None when there is none.
+
+    Standalone ``serve`` never opens a second writer beside a live owner: when discovery
+    finds one, the same fenced mutation rides ``session.mutate`` over the owner's control
+    socket — the transport every CLI control already uses — instead of the offline
+    maintenance lock a live owner always refuses (#140118). Discovery only (this path
+    never starts a gateway); any verdict but ``ready`` falls back to the offline writer.
+    """
+    from fastapi import HTTPException
+
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_state import _default_db_path
+
+    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
+    found = await asyncio.to_thread(discover_gateway_endpoint, home)
+    if found.state != "ready":
+        return None
+    try:
+        async with connect_gateway(found.endpoint) as client:
+            return await client.rpc("session.mutate", **params)
+    except GatewayRPCError as exc:
+        status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
+                  'invalid_params': 400, 'runtime_draining': 503}.get(str(exc), 409)
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except (GatewayClientError, OSError, TimeoutError) as exc:
+        # A ready owner that cannot be dialed may still hold the store; the offline
+        # writer it would refuse is not a fallback, so surface the owner as unreachable.
+        raise HTTPException(status_code=503, detail='owner_unavailable') from exc
+
+
 async def _mutate_session_request(request, profile, session_id, *, request_id,
                                   expected_revision, operation, payload, expected_generation=None):
     """Resolve the authenticated principal and owner; never open a second writer."""
@@ -202,7 +235,9 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         params['expected_generation'] = expected_generation
     try:
         if authority is None:
-            result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
+            result = await _mutate_via_owner_gateway(profile, params)
+            if result is None:
+                result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:
             with _native_history_transport(request, authority, actor):
                 result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)

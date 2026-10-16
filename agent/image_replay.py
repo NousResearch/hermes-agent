@@ -10,7 +10,9 @@ and name that path in the same row (``[Image attached at: <path>]``,
 written by ``image_routing.build_native_content_parts`` / ``session_api_media.restore_api_images``).
 
 On the WIRE COPY only, when this turn sends images natively, the ``vision.replay_recent_images``
-newest images (default 3, 0 = off) go back as ``image_url`` parts. The data URL comes from the same
+newest images (default 3, 0 = off) go back as ``image_url`` parts; older ones drop in whole
+batches of that size (``replay_frontier``), so the cached prefix is rewritten at most once per
+batch rather than on every new photo. The data URL comes from the same
 ``_file_to_data_url`` the live turn used, so the rebuilt row is byte-identical to the request that
 first sent it and the prompt-cache prefix holds. Only retained bytes under this profile's
 ``native-inputs`` whose digest still matches are replayed; remote URLs (they can expire and 400
@@ -88,43 +90,54 @@ def _retained_data_url(ref: str) -> Optional[str]:
     return _file_to_data_url(path)
 
 
+def replay_frontier(total: int, keep: int) -> int:
+    """Oldest image slot still replayed when the request holds ``total`` images.
+
+    The frontier moves forward only in whole batches of ``keep``: the newest ``keep`` to
+    ``2 * keep - 1`` images replay, and an image that drops out stays dropped as the session
+    grows. A strict newest-``keep`` window would turn one early row back into ``[screenshot]``
+    text on every new photo, rewriting the cached prefix each time; this rewrites it at most once
+    per ``keep`` new images. Counted by slot position (missing or changed files hold their slot),
+    so a swept file never moves the frontier."""
+    return (total - keep) // keep * keep if total > keep else 0
+
+
 def replay_recent_images(api_messages: list[dict[str, Any]], keep: int) -> int:
-    """Rebuild the newest ``keep`` images in place on ``api_messages`` (wire copies); images still
-    live in the conversation count toward the window. Returns the number re-attached."""
-    budget, plan = keep, []
-    for msg in reversed(api_messages):
-        if budget <= 0:
-            break
+    """Rebuild retained images at or after ``replay_frontier`` in place on ``api_messages`` (wire
+    copies); images still live in the conversation hold slots too. Returns the number re-attached."""
+    slots = 0
+    rows: list[tuple[dict[str, Any], list[tuple[str, Any]], int]] = []
+    for msg in api_messages:
         if msg.get("role") != "user":
             continue
         content = msg.get("content")
         if isinstance(content, list):
-            budget -= sum(1 for p in content if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)
+            slots += sum(1 for p in content if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)
             continue
         parts = _split_rebuilt_row(content) if isinstance(content, str) else None
         if parts is None:
             continue
-        images = [i for i, (kind, _) in enumerate(parts) if kind == "image"]
-        urls: dict[int, str] = {}
-        for i in reversed(images):  # a row's latest image first
-            if budget > 0 and (url := _retained_data_url(parts[i][1][0])):
-                urls[i] = url
-                budget -= 1
-        if urls:
-            plan.append((msg, parts, urls))
+        rows.append((msg, parts, slots))
+        slots += sum(1 for kind, _ in parts if kind == "image")
+    frontier = replay_frontier(slots, keep)
     attached = 0
-    for msg, parts, urls in plan:
+    for msg, parts, slot in rows:
         rebuilt: list[dict[str, Any]] = []
-        for i, (kind, value) in enumerate(parts):
+        urls = 0
+        for kind, value in parts:
             if kind == "text":
                 rebuilt.append({"type": "text", "text": value})
-            elif i in urls:
-                image = {"url": urls[i], **({"detail": value[1]} if value[1] else {})}
-                rebuilt.append({"type": "image_url", "image_url": image})
+                continue
+            url = _retained_data_url(value[0]) if slot >= frontier else None
+            slot += 1
+            if url:
+                rebuilt.append({"type": "image_url", "image_url": {"url": url, **({"detail": value[1]} if value[1] else {})}})
+                urls += 1
             else:
                 rebuilt.append({"type": "text", "text": value[2]})
-        msg["content"] = rebuilt
-        attached += len(urls)
+        if urls:
+            msg["content"] = rebuilt
+            attached += urls
     return attached
 
 

@@ -117,7 +117,9 @@ def test_replay_window_skips_untrusted_bytes_and_typed_markers(tmp_path):
     assert users[4]["content"] == newest["content"]
     assert users[3]["content"].endswith("\n[screenshot]")  # tampered bytes are never replayed
     assert users[2]["content"] == "I literally typed\n[screenshot]"
-    assert users[1]["content"] == older["content"]
+    # The tampered image still holds its window slot: a swept or changed file never pulls an
+    # older image back in (that would rewrite an earlier row of the cached prefix).
+    assert users[1]["content"].endswith("\n[screenshot]")
     assert users[0]["content"].endswith("\n[screenshot]")  # outside the 2-image window
 
 
@@ -153,3 +155,28 @@ def test_api_server_image_replays_with_its_position_and_detail(tmp_path, parts):
     live = {"role": "user", "content": restore_api_images(parts, commit_api_images(parts))}
 
     assert _rebuilt_request(tmp_path, [live])[0]["content"] == live["content"]
+
+
+def test_growing_session_drops_replayed_images_in_sticky_batches(tmp_path):
+    """Ten single-image turns, keep=3, one request per turn through ``build_api_messages``: earlier
+    rows change at most once per batch of ``keep`` new images, and a dropped image never returns."""
+    _config(replay_recent_images=3)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s", source="api_server")
+    previous, dropped, rewrites = [], set(), 0
+    for n in range(10):
+        live, _ = _live_turn(tmp_path, f"p{n}.png", f"photo {n}", data=_PNG + bytes([n]))
+        db.append_message("s", role="user", content=_durable_content(live["content"]), timestamp=1000.0 + 2 * n)
+        db.append_message("s", role="assistant", content=f"reply {n}", timestamp=1001.0 + 2 * n)
+        history = db.get_messages_as_conversation("s") + [{"role": "user", "content": "and now?"}]
+        request, _ = build_api_messages(
+            _Agent(), history, current_turn_user_idx=len(history) - 1,
+            ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")
+        rows = [m["content"] for m in request if m["role"] == "user"][:-1]
+        rewrites += any(old != new for old, new in zip(previous, rows))
+        replayed = {i for i, row in enumerate(rows) if isinstance(row, list)}
+        assert not dropped & replayed
+        dropped |= set(range(len(rows))) - replayed
+        assert len(replayed) >= min(3, len(rows))
+        previous = rows
+    assert rewrites <= -(-10 // 3)

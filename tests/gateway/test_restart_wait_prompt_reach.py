@@ -64,7 +64,8 @@ async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_pat
     authority.sessions["s"] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="human"), "route")
     actor = Principal("human", "p", frozenset({"session:submit"}), "t")
     try:
-        receipt = await authority.submit(actor, Submission("r1", SessionRef("p", "s"), {"text": "next"}, "queue"))
+        receipt = await authority.submit(actor, Submission("r1", SessionRef("p", "s"), {"text": "next"}, "queue"),
+                                         queue_while_restarting=True)
         task = authority.sessions["s"].task
         if task is not None:
             await asyncio.wait_for(task, 10)
@@ -74,7 +75,8 @@ async def test_restart_wait_commits_new_input_queued_and_never_claims_it(tmp_pat
         # stop() withdraws the window: input is refused, as before.
         del runner.session_runtime_descriptor["drain_reason"]
         with pytest.raises(RuntimeStoreError, match="runtime_draining"):
-            await authority.submit(actor, Submission("r2", SessionRef("p", "s"), {"text": "late"}, "queue"))
+            await authority.submit(actor, Submission("r2", SessionRef("p", "s"), {"text": "late"}, "queue"),
+                                   queue_while_restarting=True)
     finally:
         db.close()
 
@@ -153,3 +155,30 @@ async def test_restart_wait_ws_serves_the_parked_turn_and_refuses_every_other_ve
         await viewer.close()
         db.close()
 
+
+@pytest.mark.asyncio
+async def test_restart_wait_queues_only_interactive_input(tmp_path, monkeypatch):
+    """Only the interactive WS submit commits queued input during the wait; a2a, kanban and hosted
+    rooms call ``authority.submit`` directly and keep the plain refusal, so none of them can read a
+    released waiter as failure and resubmit the same input under a new request id."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal, SessionRef, Submission
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s", source="telegram")
+    runner = SimpleNamespace(_draining=True, _running=True, config=SimpleNamespace(multiplex_profiles=False),
+                             session_runtime_descriptor={"state": "draining", "drain_reason": "restart_wait"},
+                             _adapter_for_source=lambda source: None, _handle_message=None)
+    authority = SessionAuthority(runner, profile_id="p", instance_id="owner", db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id="owner"))
+    authority.sessions["s"] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="peer"), "route")
+    peer = Principal("peer", "p", frozenset({"session:submit"}), "t")
+    try:
+        with pytest.raises(RuntimeStoreError, match="runtime_draining"):
+            await authority.submit(peer, Submission("a2a:1", SessionRef("p", "s"), {"text": "hi"}, "queue"))
+        assert list_session_admissions(db, session_id="s") == []
+    finally:
+        db.close()

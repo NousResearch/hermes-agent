@@ -581,7 +581,9 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'))
+        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
+        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'),
+                                              queue_while_restarting=self._operator is True)
         return asdict(receipt)
 
     async def mutate(self, ref, params):

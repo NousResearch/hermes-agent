@@ -431,17 +431,22 @@ class SessionAuthority:
                 results[sid] = exc.reason
         return results
 
-    async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None):
+    async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None, queue_while_restarting=False):
+        """``queue_while_restarting``: the caller is an interactive client attached to a restart's
+        after-turn wait, which commits the input queued for the next owner. Machine callers (a2a,
+        kanban, hosted rooms) keep the plain ``runtime_draining`` refusal and retry against the next
+        owner with their own stable request id; none of them reads a released waiter as queued."""
         self.authorize(actor, request.ref, 'session:submit')
         async with self.sessions[request.ref.session_id].mutation_lock:
             # Deletion can retire this session while the caller waits on its writer.
             self.authorize(actor, request.ref, 'session:submit')
             from gateway.session_ingress_media import capture_lease
             with capture_lease():  # captured bytes are held from capture until commit or refusal
-                return await self._submit(actor, request, _authorize_write=_authorize_write)
+                return await self._submit(actor, request, _authorize_write=_authorize_write,
+                                          queue_only=queue_while_restarting is True)
 
-    async def _submit(self, actor, request, *, _authorize_write=None):
-        self._require_admission_open(queue_only=True)
+    async def _submit(self, actor, request, *, _authorize_write=None, queue_only=False):
+        self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
                 'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
@@ -476,7 +481,7 @@ class SessionAuthority:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                            session_id=request.ref.session_id, request_id=request.request_id,
                                            payload=payload, intent=request.intent,
-                                           _authorize_write=self._admission_gate(_authorize_write, queue_only=True))
+                                           _authorize_write=self._admission_gate(_authorize_write, queue_only=queue_only))
             except Exception:
                 self._release_refused_capture(request, payload)
                 raise

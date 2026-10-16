@@ -1721,6 +1721,7 @@ describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
     setResumeFailedSessionId(null)
     setSessionStartedAt(null)
     setMessages([])

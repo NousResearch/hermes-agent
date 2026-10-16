@@ -657,7 +657,7 @@ def _apply_tool_selection(
         elif prior_exclude is not None:
             mode, values = "exclude", prior_exclude
             msg = f"Kept your existing exclude list ({len(prior_exclude)} entries)."
-        elif manifest_default:
+        elif manifest_default is not None:
             mode, values = "include", manifest_default
             msg = f"Applied manifest default ({len(manifest_default)} tools). {refine_hint}"
         else:
@@ -674,7 +674,8 @@ def _apply_tool_selection(
     if not probed:
         # Keep a prior explicit selection: "no tools today" must not widen ``include: []`` to
         # "all tools" the next time the server does advertise some.
-        _write_tools_filter(name, "include", prior_selection)
+        preferred = prior_selection if prior_selection is not None else entry.tools.default_enabled
+        _write_tools_filter(name, "include", preferred)
         _say("  Server reported no tools.", Colors.YELLOW)
         return
 
@@ -683,14 +684,16 @@ def _apply_tool_selection(
     # Non-TTY: skip the checklist; same priority as the interactive pre-check.
     import sys as _sys
     if not _sys.stdin.isatty():
-        preferred = prior_selection if prior_selection is not None else (entry.tools.default_enabled or None)
+        preferred = prior_selection if prior_selection is not None else entry.tools.default_enabled
         _write_tools_filter(
             name, "include", None if preferred is None else [n for n in preferred if n in tool_names]
         )
         return
 
     # A prior ``include: []`` (user chose zero tools) outranks manifest defaults, like the non-TTY path.
-    preferred = prior_selection if prior_selection is not None else (entry.tools.default_enabled or tool_names)
+    preferred = prior_selection if prior_selection is not None else entry.tools.default_enabled
+    if preferred is None:
+        preferred = tool_names
     pre_set = {n for n in preferred if n in tool_names}
     pre_indices = {i for i, n in enumerate(tool_names) if n in pre_set}
     _say(f"  Found {len(probed)} tool(s). Pre-checked: {len(pre_indices)}.")

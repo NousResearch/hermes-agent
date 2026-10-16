@@ -704,6 +704,33 @@ class TestToolSelection:
         """Return a list of (tool_name, description) tuples for mocking."""
         return [(n, f"description of {n}") for n in names]
 
+    @pytest.mark.parametrize("probed", [None, [], [("tool_a", "Available tool")]])
+    @pytest.mark.parametrize("interactive", [False, True])
+    @pytest.mark.parametrize("default_enabled", [None, []])
+    def test_empty_default_is_distinct_from_unset(
+        self, catalog_dir, monkeypatch, probed, interactive, default_enabled
+    ):
+        """An explicit empty default must not become an unrestricted tool surface."""
+        import sys
+        import hermes_cli.curses_ui as ui
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config
+
+        _write_manifest(catalog_dir, "demo", _basic_manifest(
+            tools={"default_enabled": default_enabled},
+        ))
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: interactive)
+        monkeypatch.setattr(ui, "curses_checklist", lambda title, labels, selected: selected)
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        if default_enabled is None:
+            assert "tools" not in server
+        else:
+            assert server["tools"] == {"include": []}
+
 
     def test_probe_fail_with_default_applies_directly(self, catalog_dir):
         body = _basic_manifest(

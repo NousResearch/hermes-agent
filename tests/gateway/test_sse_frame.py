@@ -50,7 +50,7 @@ def test_sse_frame_ensure_ascii_false_reproduces_session_event_stream():
 
     def old_session(name, payload):
         data = json.dumps(payload, ensure_ascii=False)
-        return f"event: {name}\ndata: {data}\n\n".encode("utf-8")
+        return f"event: {name}\ndata: {data}\n\n".encode()
 
     for name, payload in (
         ("session.update", {"text": "café — Münchner 🏔", "id": 1}),

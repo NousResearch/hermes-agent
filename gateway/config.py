@@ -317,12 +317,38 @@ SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
 SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
 
-def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
-    """True when *platform_value* actually binds a port for *extra* config."""
-    if platform_value not in PORT_BINDING_PLATFORM_VALUES:
+def platform_binds_port(
+    platform_value: str,
+    extra: Optional[dict] = None,
+    *,
+    platform_config: Optional["PlatformConfig"] = None,
+) -> bool:
+    """True when *platform_value* binds a port for the loaded profile config."""
+    if platform_value in PORT_BINDING_PLATFORM_VALUES:
+        expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
+        return expected_mode is None or str(
+            (extra or {}).get("connection_mode", "websocket")
+        ).strip().lower() == expected_mode
+
+    # Plugin adapters declare conditional listeners through their registry
+    # metadata. Resolve lazily so config.py stays dependency-light and plugin
+    # discovery remains the owner of adapter imports.
+    from gateway.platform_registry import platform_registry
+
+    entry = platform_registry.get(platform_value)
+    predicate = entry.is_port_binding_fn if entry else None
+    if predicate is None:
         return False
-    expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
-    return expected_mode is None or str((extra or {}).get("connection_mode", "websocket")).strip().lower() == expected_mode
+    config = platform_config or PlatformConfig(extra=dict(extra or {}))
+    try:
+        return bool(predicate(config))
+    except Exception:
+        logger.warning(
+            "Platform %r port-binding predicate failed; treating it as binding",
+            platform_value,
+            exc_info=True,
+        )
+        return True
 
 _DISCORD_CHANNEL_LINK_RE = re.compile(
     r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/(?:[0-9]+|@me)/([0-9]+)/?")

@@ -565,15 +565,27 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
         if result.success:
             return {"success": True, "message_id": result.message_id}
         return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
-    try:
-        from gateway.platform_registry import platform_registry
-        sender = platform_registry.get(platform_name).standalone_sender_fn
-    except Exception:
-        sender = None
+    return await _send_standalone_fallback(
+        platform_name, pconfig, chat_id, chunk, thread_id=thread_id,
+        media_files=media_files, force_document=force_document)
+
+
+async def _send_standalone_fallback(platform_name, pconfig, chat_id, chunk, *, thread_id=None,
+                                     media_files=None, force_document=False):
+    """Opt-in protects attachment-only sends; captioned legacy senders retain
+    their descriptor contract and report completion through media_delivered."""
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_name)
+    sender = entry.standalone_sender_fn if entry else None
     if sender is None:
         return {"error": (f"No live adapter for platform '{platform_name}'. Is the gateway running with this platform "
                           f"connected? For out-of-process delivery (e.g. cron in a separate process), the platform "
                           f"plugin must register a standalone_sender_fn on its PlatformEntry.")}
+    warning = None
+    if media_files and not entry.standalone_sender_supports_media:
+        if not chunk.strip():
+            return {"error": f"Standalone {platform_name} delivery had only media attachments, which its sender cannot upload"}
+        warning = f"MEDIA attachments were omitted for {platform_name}; its standalone sender did not confirm upload"
     try:
         result = await sender(pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files,
                               force_document=force_document)
@@ -583,6 +595,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
         logger.debug("Plugin standalone send for %s raised", platform_name, exc_info=True)
         return {"error": f"Plugin standalone send failed: {_bounded_send_error(e)}"}
     if isinstance(result, dict) and (result.get("success") or result.get("error")):
+        if warning and result.get("success") and not result.get("media_delivered"):
+            result["warnings"] = [*result.get("warnings", []), warning]
         return {**result, "error": _bounded_send_error(result["error"])} if result.get("error") else result
     return {"error": (f"Plugin standalone send for '{platform_name}' returned an invalid result: "
                       f"expected a dict with 'success' or 'error' keys, got {type(result).__name__}")}
@@ -733,15 +747,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # Generic path: text only. Buzz delivers media natively via _send_via_adapter, so no warning.
+    # Only the legacy text senders omit media. Generic plugin delivery uses the
+    # live adapter's media APIs or the registered standalone sender below.
+    text_sender = _TEXT_SENDERS.get(platform_name)
     warning = None
-    if media_files and platform_name != "buzz":
+    if media_files and text_sender is not None:
         if not message.strip():
             return {"error": (f"send_message MEDIA delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}; "
                               f"target {platform_name} had only media attachments")}
         warning = (f"MEDIA attachments were omitted for {platform_name}; "
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
-    text_sender = _TEXT_SENDERS.get(platform_name)
     if text_sender is not None:
         send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)
     else:

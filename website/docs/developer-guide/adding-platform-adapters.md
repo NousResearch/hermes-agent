@@ -212,7 +212,8 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Gateway adapter creation | Registry checked before the built-in `_BUILTIN_ADAPTERS` table |
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
-| User authorization | `allowed_users_env` / `allow_all_env` checked |
+| Listener ownership | `is_port_binding_fn(config)` selects shared ingress for listener modes under profile multiplexing |
+| User authorization | `allowed_users_env` / `allow_all_env` checked; `allowlist_user_id_alt` accepts a verified immutable sender alias |
 | Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
@@ -232,6 +233,14 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Service-event authorization | `trusted_inbound=True` skips user allowlists/pairing (see below) |
 | Display defaults | `display_tier` picks the built-in tool-progress/streaming tier |
 | Profile clone credential strip | `shared_env_prefixes` keeps tool-shared keys when the adapter is not in use |
+
+An adapter may set `allowlist_user_id_alt=True` only when it fills
+`SessionSource.user_id_alt` with a service-verified immutable identifier for the
+same principal as `user_id`. The gateway then accepts either identifier in env
+sender allowlists and YAML `allow_from`, `group_allow_from`, or `allowed_users`.
+Webex uses this for its immutable person ID alongside the sender's email.
+The default is `False`; never opt in for display names or other sender-controlled
+aliases. Explicit env allowlists retain precedence over YAML allowlists.
 
 ### Service adapters: `trusted_inbound`, `display_tier`, `shared_env_prefixes`
 
@@ -460,6 +469,17 @@ ctx.register_platform(
 Why this hook is necessary: built-in platforms (Telegram, Discord, Slack, etc.) ship direct REST helpers in `tools/send_message_tool.py` so cron can deliver without holding the gateway in the same process. Plugin platforms historically depended on `_gateway_runner_ref()`, which returns `None` outside the gateway process, so without `standalone_sender_fn` the cron-side send fails with `No live adapter for platform '<name>'`.
 
 The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `plugins/platforms/{irc,teams,google_chat}/adapter.py`.
+
+`media_files` contains `(local_path, is_voice)` pairs. A sender that uploads these
+files must register `standalone_sender_supports_media=True` and return
+`media_delivered=True` only after all requested attachments succeed. The flag
+defaults to false: accepting `media_files` for signature compatibility alone
+does not promise attachment delivery. Without the flag, attachment-only sends
+are refused before invoking the sender. Captioned sends retain the existing
+descriptor contract for older plugins: descriptors are forwarded, and a success
+without `media_delivered=True` receives an omission warning.
+Live adapters continue to use their native media methods independently of this
+standalone capability. Webex, Buzz and Photon provide media-capable examples.
 
 ## Surfacing Env Vars in `hermes config`
 

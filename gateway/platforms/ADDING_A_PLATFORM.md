@@ -45,6 +45,13 @@ status display, gateway setup, and more.
   `deliver=<name>` job fires correctly but the actual send returns
   `No live adapter for platform '<name>'`.  Pair with `cron_deliver_env_var`
   for end-to-end cron support.  See the docsite for the signature.
+- `standalone_sender_supports_media: bool` — opt in only when the standalone
+  sender uploads the `(path, is_voice)` descriptors in `media_files` and returns
+  `media_delivered=True` after all uploads succeed. It defaults to false because
+  text-only senders also accept `media_files` for signature compatibility.
+  Captioned legacy sends still forward descriptors and use `media_delivered`
+  to distinguish completed uploads from omissions. Live adapter media delivery
+  is checked through its native media methods.
 - `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.

@@ -1645,6 +1645,7 @@ async def _standalone_send(
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
+    uploaded_files = 0
     try:
         async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             async def _post(path: str, body: dict[str, Any]) -> tuple[Any, Optional[dict[str, Any]]]:
@@ -1677,15 +1678,20 @@ async def _standalone_send(
                 if not safe_path:
                     logger.warning("[photon] standalone send skipping unsafe path")
                     continue
+                kind = "voice" if is_voice else "attachment"
                 att_body = _attachment_body(
-                    chat_id, safe_path, kind="voice" if is_voice else "attachment", mime_type=_guess_mime(safe_path))
+                    chat_id, safe_path, kind=kind, mime_type=_guess_mime(safe_path))
                 resp, data = await _post("/send-attachment", att_body)
                 if not data:
                     return _standalone_error(resp)
+                uploaded_files += 1
                 last_message_id = data.get("messageId") or last_message_id
                 await _record_sent_text_async(chat_id, data.get("messageId"), _attachment_label(
-                    "voice" if is_voice else "attachment", os.path.basename(safe_path)))
-        return {"success": True, "message_id": last_message_id}
+                    kind, os.path.basename(safe_path)))
+        result = {"success": True, "message_id": last_message_id}
+        if media_files and uploaded_files == len(media_files):
+            result["media_delivered"] = True
+        return result
     except Exception as e:
         return send_error(f"Photon standalone send failed: {e}")
 
@@ -1705,7 +1711,7 @@ def register(ctx) -> None:
             "spectrum-ts sidecar)."),
         setup_fn=_cli.gateway_setup,  # surfaces Photon in the unified `hermes gateway setup` wizard
         env_enablement_fn=_env_enablement, cron_deliver_env_var="PHOTON_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send, allowed_users_env="PHOTON_ALLOWED_USERS",
+        standalone_sender_fn=_standalone_send, standalone_sender_supports_media=True, allowed_users_env="PHOTON_ALLOWED_USERS",
         allow_all_env="PHOTON_ALLOW_ALL_USERS", max_message_length=_MAX_MESSAGE_LENGTH, emoji="📱",
         pii_safe=True,  # E.164 phone numbers: redact session descriptions before they reach the LLM
         allow_update_command=True,

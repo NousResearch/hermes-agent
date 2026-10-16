@@ -1323,7 +1323,8 @@ class GatewayAdapterLifecycleMixin:
                 owner_origin=owner_origin, incoming_origin=incoming_origin,
             ) or self._refuse_duplicate_claim(listener_claim, claimed, profile_name, platform, "listener"):
                 continue
-            self._configure_profile_adapter(adapter, profile_name, platform)
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                self._configure_profile_adapter(adapter, profile_name, platform)
             try:
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)
@@ -1412,8 +1413,11 @@ class GatewayAdapterLifecycleMixin:
         adapter._hermes_profile_name = profile_name
         # A secondary's port-binding adapter never binds: the default profile owns the one shared
         # listener, which forwards /p/<profile>/<path> to this adapter's app (shared_ingress.py).
+        adapter_config = getattr(adapter, "config", None)
         if self._multiplex_on() and platform.value not in SHARED_LISTENER_MIRROR_PLATFORMS \
-                and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None)):
+                and _platform_binds_port(
+                    platform.value, getattr(adapter_config, "extra", None),
+                    platform_config=adapter_config):
             adapter._shared_listener_profile = profile_name
 
     async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform, predecessor=None):

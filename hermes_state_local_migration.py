@@ -18,10 +18,23 @@ LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
 
 
 def legacy_account_label(row):
-    # main's Desktop stamped the signed-in Nous account on its chats. That is a label, not a route or
-    # an authenticated owner, so it does not block adoption of an otherwise unrouted Desktop row.
+    # main's Desktop stamped the signed-in Nous account on its chats, and a served remote backend
+    # stamps the WS-upgrade login the same way ("<provider>:<user id>"; tui_gateway/session_transports).
+    # Either is a creation-time label, not a route or an authenticated owner, so neither blocks
+    # adoption of an otherwise unrouted Desktop row. A prefix naming a messaging platform is
+    # different: it is that platform's real foreign identity, so only that stays an owner.
     user_id = row.get('user_id')
-    return row['source'] == 'desktop' and isinstance(user_id, str) and user_id.startswith('nous:')
+    if row['source'] != 'desktop' or not isinstance(user_id, str) or ':' not in user_id:
+        return False
+    provider, _ = user_id.split(':', 1)
+    if provider == 'nous':
+        return True
+    from gateway.config import Platform
+    try:
+        platform = Platform(provider)
+    except ValueError:
+        return True  # a login provider (basic auth, OIDC, ...) labels its user; no platform identity
+    return platform in (Platform.LOCAL, Platform.API_SERVER)
 
 
 def validate_legacy_row(db, row):

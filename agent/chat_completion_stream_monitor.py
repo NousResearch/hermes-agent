@@ -25,7 +25,7 @@ class StreamingWaitMonitor:
             m.wait_notice_started_ts = None  # The local loader now owns the display.
             m.wait_notice.reset()
             self.agent._emit_wait_notice(_load_notice)
-            self.agent._touch_activity("local model loading")
+            self.agent._touch_activity("local model loading", progress=True)
             m.load_notice_shown, m.load_notice_misses, m.last_heartbeat = True, 0, now  # loading IS liveness
             return True
         if m.load_notice_shown:
@@ -87,4 +87,3 @@ class StreamingWaitMonitor:
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return
-

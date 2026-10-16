@@ -21,7 +21,10 @@ packages from workflow-relevant tools.
 ## Privacy model
 
 Raw history/session payloads are never printed to stdout. The generated
-`analysis.md` contains aggregate counts and redacted short summaries only.
+`analysis.md` contains aggregate counts and redacted short summaries only. Failed
+commands are split into actionable non-zero exits versus common interactive abort
+statuses (`-1`, `130`, `143`, `146`) so closing a long-running agent session does
+not look like a tool failure.
 Obvious token/API-key/password patterns are replaced before rows are written to
 `events_redacted.jsonl` and `workflow.duckdb`.
 

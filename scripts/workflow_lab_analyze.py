@@ -211,7 +211,12 @@ def summarize_content(content: Any) -> str:
 
 
 def ingest_sessions(rows: list[dict[str, Any]], roots: list[tuple[pathlib.Path, str]]) -> None:
+    seen_roots: set[str] = set()
     for root, agent in roots:
+        key = str(root.resolve())
+        if key in seen_roots:
+            continue
+        seen_roots.add(key)
         for file in iter_jsonl(root):
             first_ts = ""
             model = ""
@@ -306,6 +311,21 @@ def ingest_git_repos(rows: list[dict[str, Any]], root: pathlib.Path) -> None:
         )
 
 
+def discover_project_agent_roots(root: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
+    """Find project-local agent state without re-ingesting the home roots."""
+    skip = {"node_modules", "vendor", "build", "dist", ".cache", ".tmp", ".git"}
+    names = {".codex": "codex-local", ".claude": "claude-local", ".hermes": "hermes-local"}
+    found: list[tuple[pathlib.Path, str]] = []
+    for dirpath, dirnames, _ in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in skip and not name.startswith(".") or name in names]
+        for name, agent in names.items():
+            candidate = pathlib.Path(dirpath) / name
+            if candidate.is_dir():
+                found.append((candidate, agent))
+                dirnames[:] = [child for child in dirnames if child != name]
+    return found
+
+
 def write_rows_jsonl(rows: list[dict[str, Any]], output: pathlib.Path) -> pathlib.Path:
     path = output / "events_redacted.jsonl"
     with path.open("w") as handle:
@@ -385,6 +405,16 @@ def build_report(con: duckdb.DuckDBPyConnection, rows: list[dict[str, Any]], dis
                 "where status <> '' and try_cast(status as bigint) <> 0 "
                 "group by 1 having count(*) > 1 order by n desc limit 20",
             ),
+            "## Failed-command status classes\n"
+            + markdown_table(
+                con,
+                "select case "
+                "when try_cast(status as bigint) in (-1, 130, 143, 146) then 'interactive abort/closed session' "
+                "when try_cast(status as bigint) is not null then 'actionable non-zero exit' "
+                "else 'unclassified' end as class, count(*) as n "
+                "from events where kind='command' and status <> '' and try_cast(status as bigint) <> 0 "
+                "group by 1 order by n desc",
+            ),
             "## Agent/session sources\n"
             + markdown_table(
                 con,
@@ -448,17 +478,16 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     ingest_shell_history(rows)
     ingest_atuin(rows)
-    ingest_sessions(
-        rows,
-        [
-            (HOME / ".codex", "codex"),
-            (HOME / ".claude", "claude"),
-            (HOME / ".hermes/sessions", "hermes"),
-            (pathlib.Path.cwd() / ".codex", "codex-local"),
-            (pathlib.Path.cwd() / ".claude", "claude-local"),
-            (pathlib.Path.cwd() / ".hermes", "hermes-local"),
-        ],
-    )
+    session_roots = [
+        (HOME / ".codex", "codex"),
+        (HOME / ".claude", "claude"),
+        (HOME / ".hermes/sessions", "hermes"),
+        (pathlib.Path.cwd() / ".codex", "codex-local"),
+        (pathlib.Path.cwd() / ".claude", "claude-local"),
+        (pathlib.Path.cwd() / ".hermes", "hermes-local"),
+    ]
+    session_roots.extend(discover_project_agent_roots(args.repo_root.expanduser()))
+    ingest_sessions(rows, session_roots)
     if not args.no_git_scan:
         ingest_git_repos(rows, args.repo_root.expanduser())
     rows_path = write_rows_jsonl(rows, output)

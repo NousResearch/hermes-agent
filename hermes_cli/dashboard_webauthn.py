@@ -38,6 +38,9 @@ def _resolve_provider_settings() -> dict:
 
 def cmd_webauthn_enrol(args) -> None:
     """Issue a one-shot enrolment URL: ``hermes dashboard webauthn enrol``."""
+    import time
+
+    from plugins.dashboard_auth.webauthn import store as webauthn_store
     from plugins.dashboard_auth.webauthn import WebauthnDashboardAuthProvider
 
     kwargs = _resolve_provider_settings()
@@ -70,9 +73,16 @@ def cmd_webauthn_enrol(args) -> None:
     print("Open this URL in a browser on the configured origin (secure context):")
     print(f"  {url}")
     print("")
-    print("The token is single-use and expires in 10 minutes. After enrolling,")
-    print("enrol a SECOND passkey (another device or a hardware key) so a lost")
-    print("authenticator cannot lock you out.")
+    expires_at = int(time.time()) + webauthn_store.ENROLMENT_TOKEN_TTL_SECONDS
+    store_path = getattr(provider, "_store_path", "")
+    print(f"Token {token[:8]}… pending in {store_path or 'the dashboard_webauthn.json store'};")
+    print(f"single-use, expires {time.strftime('%H:%M:%S', time.gmtime(expires_at))}Z "
+          f"({int(webauthn_store.ENROLMENT_TOKEN_TTL_SECONDS / 60)} minutes) — open it before then.")
+    print("")
+    print("After enrolling, enrol a SECOND passkey (another device or a hardware")
+    print("key) so a lost authenticator cannot lock you out. Re-running enrol does")
+    print("NOT invalidate earlier tokens, but a link whose token was already")
+    print("consumed (successful enrolment) shows 'unknown, already used' forever.")
 
 
 def cmd_webauthn_forget(args) -> None:

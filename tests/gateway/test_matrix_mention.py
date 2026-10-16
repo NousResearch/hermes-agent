@@ -225,6 +225,45 @@ class TestPeerAgentBudgetGating:
         assert adapter._peer_reply_budget_remaining["!room1:example.org"] == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorization", [False, None, True])
+    async def test_peer_budget_requires_live_room_authorization(self, monkeypatch, authorization):
+        adapter = self._adapter(monkeypatch)
+        room_id = "!room1:example.org"
+        adapter._peer_reply_budget_remaining[room_id] = 2
+        calls = []
+
+        def authorize(user_id, chat_type, chat_id):
+            calls.append((user_id, chat_type, chat_id))
+            return authorization
+
+        adapter.set_authorization_check(authorize)
+        await adapter._on_room_message(
+            _make_event("@hermes:example.org continue", sender="@yomi:example.org")
+        )
+
+        assert adapter._peer_reply_budget_remaining[room_id] == (1 if authorization is True else 2)
+        assert adapter.handle_message.await_count == (1 if authorization is True else 0)
+        assert calls == [("@yomi:example.org", "group", room_id)]
+
+    @pytest.mark.asyncio
+    async def test_disallowed_peer_cannot_spend_another_receivers_room_budget(self, monkeypatch):
+        receiver = self._adapter(monkeypatch)
+        other_receiver = self._adapter(monkeypatch)
+        room_id = "!room1:example.org"
+        receiver._allowed_user_ids = {"@alice:example.org"}
+        for adapter in (receiver, other_receiver):
+            adapter._peer_reply_budget_remaining.update({room_id: 2, "!other:example.org": 1})
+
+        event = _make_event("@hermes:example.org continue", sender="@yomi:example.org")
+        await receiver._on_room_message(event)
+        await other_receiver._on_room_message(event)
+
+        receiver.handle_message.assert_not_awaited()
+        other_receiver.handle_message.assert_awaited_once()
+        assert receiver._peer_reply_budget_remaining == {room_id: 2, "!other:example.org": 1}
+        assert other_receiver._peer_reply_budget_remaining == {room_id: 1, "!other:example.org": 1}
+
+    @pytest.mark.asyncio
     async def test_untagged_peer_is_dropped_without_consuming_budget(self, monkeypatch):
         adapter = self._adapter(monkeypatch)
         adapter._peer_reply_budget_remaining["!room1:example.org"] = 2

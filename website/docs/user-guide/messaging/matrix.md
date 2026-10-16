@@ -156,7 +156,9 @@ matrix:
 
 With peer-agent gating enabled:
 
-- authorized non-peer messages open a new per-room round and reset the peer-call
+- `peer_agent_ids` selects the peer policy; peers must also pass the receiver's
+  normal user authorization (listing a peer does not authorize it);
+- authorized non-peer messages open a new per-receiver, per-room round and reset the peer-call
   allowance;
 - peer messages require a direct mention of the current bot even though ordinary
   human messages do not;

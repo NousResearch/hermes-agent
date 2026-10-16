@@ -66,6 +66,14 @@ class GatewayInboundHooksMixin:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
         ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
+        # The hook runs at real ingress only, like ``post_gateway_admission`` below: an admission's
+        # execution rebuilds the event and re-enters ``_handle_message``, so without this guard a
+        # messaging turn's skip/rewrite applied twice and a local turn (CLI/Ink/Desktop/ACP, whose
+        # only path is admission execution — ``main`` never fired this hook there) could be dropped
+        # or rewritten by a plugin the user never sees (#139523 PLG-5).
+        from gateway.session_ingress import executing_admission
+        if executing_admission.get():
+            return event
         try:
             from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
             _hook_results = await _ainvoke_hook(

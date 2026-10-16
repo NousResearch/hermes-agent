@@ -204,3 +204,58 @@ def test_register_locale_accepts_dicts_and_rejects_bad_ids(home):
         ctx.register_locale("pl", {"a": "b"}, surface="web")
     with pytest.raises(FileNotFoundError):
         ctx.register_locale("pl", home / "missing.yaml")
+
+
+# ── cyclic YAML anchors (issue #132006) ───────────────────────────────────────────────────────
+
+# 14 bytes: a legal YAML anchor+alias that parses into a self-referential dict.
+_CYCLE_DOC = "a: &x\n  b: *x\n"
+
+
+def test_flatten_and_non_text_leaves_reject_a_cycle_with_valueerror():
+    document = yaml.safe_load(_CYCLE_DOC)
+    assert document["a"]["b"] is document["a"]  # ruamel keeps the shared object
+    with pytest.raises(ValueError, match="cyclic"):
+        i18n_layers.flatten(document)
+    with pytest.raises(ValueError, match="cyclic"):
+        i18n_layers.non_text_leaves(document)
+
+
+def test_flatten_rejects_a_two_node_cycle():
+    """``first: &a {second: &b {back: *a}}`` — the cycle passes through two distinct mappings."""
+    document = yaml.safe_load("first: &a\n  second: &b\n    back: *a\n")
+    assert document["first"]["second"]["back"] is document["first"]
+    with pytest.raises(ValueError, match="cyclic"):
+        i18n_layers.flatten(document)
+    with pytest.raises(ValueError, match="cyclic"):
+        i18n_layers.non_text_leaves(document)
+
+
+def test_deep_acyclic_mapping_still_flattens():
+    """Deep but acyclic nesting (a hostile locale file shape) flattens normally well past real catalogs."""
+    document: dict = {"leaf": "v"}
+    for i in reversed(range(300)):
+        document = {f"l{i}": document}
+    expected = ".".join(f"l{i}" for i in range(300)) + ".leaf"
+    assert i18n_layers.flatten(document) == {expected: "v"}
+    assert i18n_layers.non_text_leaves(document) == []
+
+
+def test_flatten_keeps_a_shared_anchor_reused_by_sibling_keys():
+    shared = {"k": "v"}
+    document = {"a": shared, "b": shared}  # what `a: &x {k: v}` / `b: *x` parses into
+    assert i18n_layers.flatten(document) == {"a.k": "v", "b.k": "v"}
+    assert i18n_layers.non_text_leaves(document) == []
+
+
+def test_parse_locale_file_rejects_a_cycle(tmp_path):
+    path = tmp_path / "pl.yaml"
+    path.write_text(_CYCLE_DOC, encoding="utf-8")
+    with pytest.raises(ValueError, match="cyclic"):
+        i18n_layers.parse_locale_file(path)
+
+
+def test_cyclic_overlay_degrades_to_empty_without_raising(home):
+    (home / "locales" / "pl.yaml").write_text(_CYCLE_DOC, encoding="utf-8")
+    assert i18n_layers.overlay_layer(home, "pl", i18n_layers.CORE_SURFACE) == {}
+    assert i18n.t(_KEY, lang="pl") == _en()  # falls back to the bundled catalog

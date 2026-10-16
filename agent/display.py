@@ -3,6 +3,7 @@
 Pure display functions with no AIAgent dependency; used for CLI feedback.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -413,6 +414,20 @@ def _preview_shell(key: str):
     return _build
 
 
+def _preview_execute_code(args: dict, max_len: int) -> str | None:
+    code = args.get("code")
+    if code is None:
+        return None
+    code = str(code)
+    text = _oneline(code)
+    if not text:
+        return None
+    # Prefix survives both this cap and prepare_tool_preview's later UI cap;
+    # identical long opening paths no longer hide differences elsewhere in a script.
+    fingerprint = hashlib.sha256(code.encode("utf-8", errors="surrogatepass")).hexdigest()[:8]
+    return _tail_trunc(f"[{fingerprint}] {text}", max_len)
+
+
 def _preview_read_file(args: dict, max_len: int) -> str | None:
     path = args.get("path") or args.get("file") or args.get("filepath")
     label = (Path(str(path).replace("\\", "/")).name or str(path)) if path is not None else None
@@ -464,7 +479,7 @@ def _preview_bridge_call(tool_name: str):
 _PREVIEW_BUILDERS = {
     "browser_exec": _preview_browser_exec, "delegate_task": _preview_delegate_task,
     "process_manage": _preview_process_manage, "todo_list": _preview_todo_list,
-    "terminal": _preview_shell("command"), "execute_code": _preview_shell("code"),
+    "terminal": _preview_shell("command"), "execute_code": _preview_execute_code,
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
     "skill_view": _preview_skill_view, "clarify": _preview_clarify,
     "session_search": lambda args, _m: t("display.preview.session_search_recall", query=_clip(_oneline(args.get("query", "")), 25)),

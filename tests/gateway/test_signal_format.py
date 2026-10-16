@@ -247,3 +247,57 @@ class TestTableRealignment:
         assert self._u16_slice(text, mono[0]) == "| Name  | Age |\n|-------|-----|\n| Alice | 30  |"
         assert self._u16_slice(text, mono[1]) == "| a | b |\n|---|---|\n| 1 | 22 |"
         assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]
+
+
+class TestHeadingCodeBlockInteraction:
+    """Verify coordinate sync when headings, inline styles, and code blocks mix."""
+
+    @staticmethod
+    def _u16_slice(text: str, style: str) -> str:
+        start, length = (int(p) for p in style.split(":")[:2])
+        u16 = text.encode("utf-16-le")
+        return u16[start * 2 : (start + length) * 2].decode("utf-16-le")
+
+    def test_heading_preceding_code_block(self):
+        """headings strip `# ` markers; following code blocks must have exact monospace offsets."""
+        md = "# Setup Guide\n\n```python\nprint('hello world')\n```"
+        text, styles = _m2s(md)
+        assert text == "Setup Guide\n\nprint('hello world')"
+        bold_styles = _find_style(styles, "BOLD")
+        mono_styles = _find_style(styles, "MONOSPACE")
+        assert len(bold_styles) == 1
+        assert len(mono_styles) == 1
+        assert self._u16_slice(text, bold_styles[0]) == "Setup Guide"
+        assert self._u16_slice(text, mono_styles[0]) == "print('hello world')"
+
+    def test_multiple_headings_and_inline_with_code_block(self):
+        """multiple headings with inline formatting before and after code block."""
+        md = "## Title with **bold**\n\nsome *italic* text\n\n```sh\necho test\n```\n\n### Next Section\n\n`inline_code` here"
+        text, styles = _m2s(md)
+        mono_styles = _find_style(styles, "MONOSPACE")
+        bold_styles = _find_style(styles, "BOLD")
+        italic_styles = _find_style(styles, "ITALIC")
+
+        # heading 1
+        assert "Title with bold" in text
+        # heading 2
+        assert "Next Section" in text
+        # code block
+        assert "echo test" in text
+
+        # verify code block monospace slice
+        block_mono = [s for s in mono_styles if self._u16_slice(text, s) == "echo test"]
+        assert len(block_mono) == 1
+
+        # verify inline code monospace slice
+        inline_mono = [s for s in mono_styles if self._u16_slice(text, s) == "inline_code"]
+        assert len(inline_mono) == 1
+
+        # verify bold in heading
+        bold_words = [self._u16_slice(text, s) for s in bold_styles]
+        assert "Title with bold" in bold_words
+        assert "bold" in bold_words
+
+        # verify italic
+        assert any(self._u16_slice(text, s) == "italic" for s in italic_styles)
+

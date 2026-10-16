@@ -72,14 +72,19 @@ _PROVIDERS: dict[str, tuple[frozenset, Callable[[str], tuple[dict[str, str], str
 }
 
 
-def _calling_plugin_dir() -> Optional[Path]:
-    """Directory of the plugin whose code is nearest on the calling stack, or None."""
+def _plugin_roots() -> set[Path]:
+    """Every plugins directory an installed plugin can live under, as given and resolved."""
     from hermes_cli.plugins import get_bundled_plugins_dir
     from hermes_constants import get_default_hermes_root, get_hermes_home, get_process_hermes_home
 
     bases = (get_hermes_home() / "plugins", get_process_hermes_home() / "plugins",
              get_default_hermes_root() / "plugins", get_bundled_plugins_dir())
-    roots = {r for base in bases for r in (base.absolute(), base.resolve())}
+    return {r for base in bases for r in (base.absolute(), base.resolve())}
+
+
+def _calling_plugin_dir() -> Optional[Path]:
+    """Directory of the plugin whose code is nearest on the calling stack, or None."""
+    roots = _plugin_roots()
     frame = sys._getframe(2)
     while frame is not None:
         raw = Path(frame.f_code.co_filename)
@@ -105,9 +110,12 @@ def declared_auth_providers(manifest: Mapping[str, Any]) -> list[str]:
 
 def requires_auth_notice(manifest: Mapping[str, Any]) -> str:
     """One line for install/show surfaces; empty when the plugin declares no sign-in use."""
+    from hermes_cli.plugin_oauth import oauth_notice
+
     providers = declared_auth_providers(manifest)
-    return (f"Uses your sign-in for: {', '.join(providers)} (Hermes sends the requests; "
-            "the plugin never receives the token)") if providers else ""
+    sign_in = (f"Uses your sign-in for: {', '.join(providers)} (Hermes sends the requests; "
+               "the plugin never receives the token)") if providers else ""
+    return "; ".join(part for part in (sign_in, oauth_notice(manifest)) if part)
 
 
 def _declared_providers(plugin_dir: Path) -> list[str]:
@@ -123,21 +131,29 @@ def credentialed_provider_request(
 ) -> ProviderResponse:
     """Send ``method url`` with the user's *provider* sign-in attached by Hermes.
 
+    *provider* is a Hermes sign-in (listed under ``requires_auth``) or an ``id`` the calling plugin
+    declares under ``oauth:`` (:mod:`hermes_cli.plugin_oauth`); the plugin's own entry wins.
     Refuses (``PermissionError``) a caller outside an installed plugin, a plugin whose ``plugin.yaml``
     does not list *provider* under ``requires_auth``, and any origin outside the provider's
     allowlist; raises :class:`ProviderNotSignedIn` when this profile has no sign-in. Redirects are
     returned as-is, never followed. The result carries no credential.
     """
-    spec = _PROVIDERS.get(provider)
-    if spec is None:
-        raise ValueError(f"No signed-in requests for provider {provider!r} (supported: {', '.join(_PROVIDERS)})")
-    origins, resolve = spec
+    from hermes_cli.plugin_oauth import plugin_oauth_spec
+
     plugin_dir = _calling_plugin_dir()
     if plugin_dir is None:
         raise PermissionError("credentialed_provider_request must be called from an installed plugin's code")
-    if provider not in _declared_providers(plugin_dir):
-        raise PermissionError(
-            f"Plugin '{plugin_dir.name}' must declare `requires_auth: [{provider}]` in plugin.yaml")
+    # The plugin's own oauth: entry first, so a core provider added later under the same id cannot take it over.
+    spec = plugin_oauth_spec(plugin_dir, provider)
+    if spec is None:
+        spec = _PROVIDERS.get(provider)
+        if spec is None:
+            raise ValueError(f"No signed-in requests for provider {provider!r} (supported: {', '.join(_PROVIDERS)}, "
+                             "or an id the plugin declares under oauth: in plugin.yaml)")
+        if provider not in _declared_providers(plugin_dir):
+            raise PermissionError(
+                f"Plugin '{plugin_dir.name}' must declare `requires_auth: [{provider}]` in plugin.yaml")
+    origins, resolve = spec
     if url_origin(url) not in origins:
         raise PermissionError(f"Refusing to send the {provider} sign-in to {url_origin(url)[1] or url!r}")
     auth_headers, credential_base = resolve(url)

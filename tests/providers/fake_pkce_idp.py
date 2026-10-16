@@ -46,6 +46,8 @@ class FakeIdP:
                 body = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
                 form = {k: v[0] for k, v in body.items()}
                 idp.token_requests.append(form)
+                if idp.token_error is not None:
+                    return self._json(*idp.token_error)
                 grant = form.get("grant_type")
                 if grant == "authorization_code":
                     challenge = idp.codes.pop(form.get("code", ""), None)
@@ -61,8 +63,11 @@ class FakeIdP:
                 idp.issued += 1
                 refresh = f"rt-{idp.issued}-{secrets.token_hex(4)}"
                 idp.refresh_tokens.add(refresh)
-                self._json(200, {"access_token": f"at-{idp.issued}-{secrets.token_hex(4)}",
-                                 "refresh_token": refresh, "expires_in": 3600, "token_type": "Bearer"})
+                payload = {"access_token": f"at-{idp.issued}-{secrets.token_hex(4)}",
+                           "refresh_token": refresh, "expires_in": 3600, "token_type": "Bearer"}
+                if idp.granted_scope is not None:
+                    payload["scope"] = idp.granted_scope
+                self._json(200, payload)
 
             def _json(self, status, payload):
                 data = json.dumps(payload).encode()
@@ -73,6 +78,8 @@ class FakeIdP:
                 self.wfile.write(data)
 
         self.override_state: str | None = None
+        self.granted_scope: str | None = None  # ``scope`` echoed in token responses (None = omitted)
+        self.token_error: tuple[int, dict] | None = None  # (status, JSON) answered to every token POST
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self._thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)

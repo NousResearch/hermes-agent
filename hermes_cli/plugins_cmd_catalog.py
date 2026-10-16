@@ -497,11 +497,12 @@ class RepinResult(NamedTuple):
 # new manifest adds (``desktop`` = a Desktop half appeared). Compared as sets — removals are not consent events.
 _SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks": "hooks",
                    "python_dependencies": "Python dependencies", "desktop": "Desktop UI half",
-                   "requires_auth": "your sign-in for"}
+                   "requires_auth": "your sign-in for", "oauth": "your OAuth sign-in for"}
 
 
 def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
     """What an installed tree exposes: declared host capabilities, tools, hooks, Python deps, Desktop half."""
+    from hermes_cli.plugin_oauth import oauth_surface
     from hermes_cli.plugins_cmd import _declared_capabilities_from_manifest
     manifest = manifest or {}
 
@@ -516,6 +517,7 @@ def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
         "capabilities": set(_declared_capabilities_from_manifest(manifest, str(manifest.get("name") or "?"))),
         "tools": _list("provides_tools"), "hooks": _list("provides_hooks", "hooks"),
         "python_dependencies": _list("python_dependencies"), "requires_auth": _list("requires_auth"),
+        "oauth": oauth_surface(manifest),
         "desktop": {"desktop/plugin.js"} if (tree / "desktop" / "plugin.js").is_file() else set(),
     }
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
@@ -510,3 +512,53 @@ def test_install_deps_probe_imports_from_the_synced_environment(tmp_path: Path, 
         pass
     checks = {c["name"]: c for c in json.loads(capsys.readouterr().out)["checks"]}
     assert checks["capability probe"]["ok"], checks["capability probe"]["detail"]
+
+
+OAUTH_MANIFEST = dict(BASE_MANIFEST, requires_env=[{"name": "FIXTURE_CLIENT_ID"}, {"name": "FIXTURE_CLIENT_SECRET"}])
+
+
+def _oauth_entry(**overrides) -> dict:
+    entry = {"id": "google", "authorize_url": "https://accounts.example.com/o/oauth2/auth",
+             "token_url": "https://oauth2.example.com/token", "scopes": ["https://api.example.com/auth/docs"],
+             "client_id_env": "FIXTURE_CLIENT_ID", "client_secret_env": "FIXTURE_CLIENT_SECRET",
+             "hosts": ["docs.example.com"]}
+    return {**entry, **overrides}
+
+
+def test_oauth_block_passes_and_a_token_url_in_code_is_only_a_warning(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth=[_oauth_entry()]))
+    (plugin / "client.py").write_text('TOKEN_URL = "https://oauth2.example.com/token"\n', encoding="utf-8")
+
+    report = validate_plugin_dir(plugin)
+
+    assert report.ok, report.failures
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [True]
+    assert any("oauth2.example.com/token" in warning for warning in report.warnings)
+
+
+@pytest.mark.parametrize("change, problem", [
+    ({"id": "Google"}, "id"),
+    ({"authorize_url": "http://accounts.example.com/o/oauth2/auth"}, "authorize_url"),
+    ({"scopes": []}, "scopes"),
+    ({"hosts": ["https://docs.example.com"]}, "hosts"),
+    ({"hosts": ["docs.example.com:8443"]}, "hosts"),
+    ({"hosts": ["10.0.0.1"]}, "hosts"),
+    ({"client_id_env": "fixture_client_id"}, "client_id_env"),
+    ({"client_secret_env": "UNDECLARED_SECRET"}, "UNDECLARED_SECRET"),
+    ({"id": "openai-codex"}, "openai-codex"),
+])
+def test_oauth_form_errors_fail_admission(tmp_path, change, problem):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth=[_oauth_entry(**change)]))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]
+    assert any(problem in failure for failure in report.failures), report.failures
+
+
+def test_oauth_in_a_plugin_keyed_custom_fails_admission(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, name="custom", oauth=[_oauth_entry()]))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]

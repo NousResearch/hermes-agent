@@ -145,8 +145,11 @@ the gallery. There is no separate listing to maintain.
    which honours the active profile (a bare `os.environ` read can pick up another
    profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT
    today) is used only through `credentialed_provider_request` with
-   `requires_auth`, so Hermes attaches the token and the plugin never holds it. A
-   plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
+   `requires_auth`, so Hermes attaches the token and the plugin never holds it. An
+   OAuth client for a third-party API (the user's own Google, Microsoft or Notion
+   app) is declared under `oauth:` in `plugin.yaml`, signed in with
+   `hermes auth add <plugin>:<id>` and used through the same helper; Hermes
+   stores and refreshes that token too. A plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
    vendor CLI's token file, a browser profile, a keychain) or any other
    credential store directly, and never refreshes, rotates or writes OAuth tokens
    or presents itself as another vendor's client. If Hermes has no route for a

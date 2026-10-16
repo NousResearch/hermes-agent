@@ -12,6 +12,20 @@ from unittest.mock import patch
 from tools.browser_tool import browser_type
 
 
+def _native_steps(fill_result):
+    def run(task, command, args, **kwargs):
+        if command == "eval":
+            return {"success": True, "data": {"result": json.dumps({"editable": False})}}
+        return fill_result if command == "fill" else {"success": True}
+    return run
+
+
+def _fill_call(mock_run):
+    calls = [call for call in mock_run.call_args_list if call.args[1] == "fill"]
+    assert len(calls) == 1
+    return calls[0]
+
+
 def test_browser_type_redacts_api_key_in_output(monkeypatch):
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
@@ -20,7 +34,7 @@ def test_browser_type_redacts_api_key_in_output(monkeypatch):
 
     with patch(
         "tools.browser_tool_session._run_browser_command",
-        return_value={"success": True},
+        side_effect=_native_steps({"success": True}),
     ) as mock_run:
         result = json.loads(browser_type("@apikey", secret, task_id="redaction-test"))
 
@@ -28,8 +42,7 @@ def test_browser_type_redacts_api_key_in_output(monkeypatch):
     assert secret not in json.dumps(result)
     assert result["typed"].startswith("sk-pro")
     # Raw secret still typed into the page.
-    mock_run.assert_called_once()
-    assert mock_run.call_args.args[2] == ["@apikey", secret]
+    assert _fill_call(mock_run).args[2] == ["@apikey", secret]
 
 
 def test_browser_type_keeps_normal_text_in_output(monkeypatch):
@@ -40,14 +53,13 @@ def test_browser_type_keeps_normal_text_in_output(monkeypatch):
 
     with patch(
         "tools.browser_tool_session._run_browser_command",
-        return_value={"success": True},
+        side_effect=_native_steps({"success": True}),
     ) as mock_run:
         result = json.loads(browser_type("@search", text, task_id="redaction-test"))
 
     assert result["success"] is True
     assert result["typed"] == text
-    mock_run.assert_called_once()
-    assert mock_run.call_args.args[2] == ["@search", text]
+    assert _fill_call(mock_run).args[2] == ["@search", text]
 
 
 def test_browser_type_failure_redacts_api_key_in_error(monkeypatch):
@@ -58,11 +70,11 @@ def test_browser_type_failure_redacts_api_key_in_error(monkeypatch):
 
     with patch(
         "tools.browser_tool_session._run_browser_command",
-        return_value={
+        side_effect=_native_steps({
             "success": False,
             "error": f"backend failed while typing {secret}",
             "fallback_warning": f"chrome fallback also saw {secret}",
-        },
+        }),
     ) as mock_run:
         raw_result = browser_type("@apikey", secret, task_id="redaction-test")
         result = json.loads(raw_result)
@@ -70,5 +82,4 @@ def test_browser_type_failure_redacts_api_key_in_error(monkeypatch):
     assert result["success"] is False
     assert secret not in raw_result
     assert "sk-pro" in raw_result
-    mock_run.assert_called_once()
-    assert mock_run.call_args.args[2] == ["@apikey", secret]
+    assert _fill_call(mock_run).args[2] == ["@apikey", secret]

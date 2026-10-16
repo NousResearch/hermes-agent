@@ -2,13 +2,26 @@
 import hashlib
 import hmac
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
 
 from agent.credential_persistence import fingerprint_secret_value
 from hermes_state_runtime import RuntimeStoreError
 
+logger = logging.getLogger(__name__)
 PREFIX = 'profile-config-v1:'
+_ABSENT = object()
+
+
+def _defined(root, path):
+    """The value *root* defines at *path*, else ``_ABSENT`` when the key is simply not there."""
+    value = root
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return _ABSENT
+        value = value[key]
+    return value
 
 
 def policy_identity(policy):
@@ -62,14 +75,25 @@ def recover_config_secrets(authority, policy, skip=None):
         config = _load_gateway_config(home / 'config.yaml') if any(path[0] is not None for path, _ in entries) else {}
         values = {}
         for path, fingerprint in entries:
-            value = config
-            lookup = path
+            value, lookup = config, path
             if path[0] is None:
                 from tools.terminal_scope import build_profile_terminal_scope
-                value = build_profile_terminal_scope(home)
-                lookup = path[1:]
-            for key in lookup:
-                value = value[key]
+                value, lookup = build_profile_terminal_scope(home), path[1:]
+            value = _defined(value, lookup)
+            if value is _ABSENT:
+                if len(path) > 1:
+                    raise ValueError('credential removed')
+                # One top-level key the profile no longer defines at all: an env-routed setting the
+                # user has since moved out of config.yaml (``API_SERVER_KEY`` belongs in .env, where
+                # ``hermes config set`` writes it) is not this session's route credential, and the
+                # profile has no value left to recover or to substitute. Refusing it used to wedge
+                # every read of the chat - its model options, its reasoning picker, its turns - not
+                # just the credential it named, so the session simply keeps what the frozen tree
+                # already holds (None). A nested path still refuses: it can carry the route's own
+                # credential, and a session must never silently take a different endpoint's key.
+                logger.warning('Session %s: frozen config secret %s is no longer defined by the '
+                               'profile config; skipping it', source.get('session'), path)
+                continue
             actual = _fingerprint(value)
             if actual is None or not hmac.compare_digest(actual, fingerprint):
                 raise ValueError('credential changed')

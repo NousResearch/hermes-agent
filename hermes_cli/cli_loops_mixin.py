@@ -274,6 +274,11 @@ class CLILoopsMixin:
         count = reload_env()
         print(f"  {t('cli.reload.env_reloaded', count=count)}")
 
+    def _cmd_discard(self, cmd_original: str):
+        # Reached only without a gateway session (hermes_cli/gateway_cli_commands.py answers it
+        # there): lost turns exist only in the gateway's durable queue.
+        print("  /discard: this chat is not attached to a gateway session; nothing to discard.")
+
     def _cmd_reload_skills(self, cmd_original: str):
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._reload_skills()

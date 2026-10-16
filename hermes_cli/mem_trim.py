@@ -140,12 +140,21 @@ def _probe_glibc_malloc_trim() -> Callable[[int], int] | None:
 
 
 def trim_memory(
-    *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None) -> bool:
+    *, force: bool = False, reason: str = "", cooldown_seconds: float | None = None,
+    collect: bool = True) -> bool:
     """Collect cycles and ask glibc to release free heap pages.
 
     Returns ``True`` only when ``malloc_trim(0)`` ran and reported success. Unsupported allocators,
     the config kill switch, cooldown suppression, and all runtime errors return ``False`` without
     affecting the caller.
+
+    ``collect=False`` drops the forced full ``gc.collect()`` and only asks the allocator to return
+    already-free arenas. Periodic timer lanes pass it: this runs on a fixed cooldown, and a gen2
+    collection over a long-lived gateway heap holds the GIL for 400-600ms, freezing every thread in
+    the process (adapters, SSE streams, API requests) once per cooldown — while the pages it unlocks
+    are re-grown before the next tick. Cycling garbage is left to CPython's own generational
+    collection; the pressure lanes (agent close, large tool result, post-compression) keep the
+    default, where a collection is what makes the trim return anything.
     """
     enabled, configured_cooldown, log_every_n, info_log_min_delta_mb = _config_settings()
     if not enabled:
@@ -167,7 +176,8 @@ def trim_memory(
         try:
             before = collect_memory_snapshot()
             started = time.perf_counter()
-            gc.collect()
+            if collect:
+                gc.collect()
             trim_result = trim(0)
             released = bool(trim_result)
             after = collect_memory_snapshot()
@@ -177,9 +187,9 @@ def trim_memory(
                 force=force, log_every_n=log_every_n, call_count=_trim_call_count,
                 before=before, after=after, info_log_min_delta_mb=info_log_min_delta_mb):
                 logger.info(
-                    "memory trim: reason=%s malloc_trim=%s rss_kib=%s->%s "
+                    "memory trim: reason=%s malloc_trim=%s collected=%s rss_kib=%s->%s "
                     "rss_anon_kib=%s->%s threads=%s duration_ms=%.1f",
-                    reason or "cleanup", trim_result,
+                    reason or "cleanup", trim_result, collect,
                     before.get("rss_kib"), after.get("rss_kib"),
                     before.get("rss_anon_kib"), after.get("rss_anon_kib"),
                     after.get("thread_count"), duration_ms)

@@ -453,6 +453,7 @@ def cmd_fanout(args) -> None:
     d = _require_subject(args.subject)
     dossier_mod.require_authorized(d)
     bl = brokers_mod.by_priority(*(args.priority or [])) if args.priority else brokers_mod.load_all()
+    bl = [b for b in bl if tiers.in_scope(b, d.get("residency_jurisdiction"))]
     grouping = tiers.fanout(bl, batch_size=args.size)
     mode = "scan AND opt-out (operator authorized submissions)" if args.optout \
         else "READ-ONLY scan (submit nothing; reconnaissance only)"

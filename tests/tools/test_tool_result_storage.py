@@ -512,25 +512,27 @@ class TestSpillover:
         assert not old.exists()
         assert new.exists()
 
-    def test_cleanup_default_age_is_session_retention_not_24h(self, monkeypatch):
-        """#126351: a 48h-old spill must survive the DEFAULT cleanup — the durable
-        transcript points at it, so files live for the session retention window."""
+    def test_gateway_housekeeping_keeps_spills_for_the_retention_window(self, monkeypatch):
+        """#126351: the hourly gateway sweep must not apply the 24h media age to spills — a
+        25h-old unreferenced spill survives, a 100-day orphan is still reclaimed."""
         import os
         import time as _time
 
         import tools.tool_result_storage as trs
+        from gateway.run import _housekeeping_media_caches
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
-        old = spill_dir / "old.txt"
-        old.write_text("old", encoding="utf-8")
-        stale = _time.time() - (48 * 3600)
-        os.utime(old, (stale, stale))
+        recent, orphan = spill_dir / "recent.txt", spill_dir / "orphan.txt"
+        for path, hours in ((recent, 25), (orphan, 100 * 24)):
+            path.write_text("spill", encoding="utf-8")
+            stale = _time.time() - hours * 3600
+            os.utime(path, (stale, stale))
 
         monkeypatch.setattr(trs, "_spillover_retention_hours", lambda: 90 * 24)
-        removed = cleanup_spillover_cache()
+        _housekeeping_media_caches()
 
-        assert removed == 0
-        assert old.exists()
+        assert recent.exists()
+        assert not orphan.exists()
 
     def test_retention_hours_reads_session_retention_days(self, monkeypatch):
         import hermes_cli.config
@@ -545,7 +547,7 @@ class TestSpillover:
         import hermes_cli.config
         import tools.tool_result_storage as trs
 
-        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", lambda: {})
+        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
         assert trs._spillover_retention_hours() == 90 * 24
 
         def _boom():

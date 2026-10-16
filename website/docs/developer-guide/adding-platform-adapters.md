@@ -499,6 +499,18 @@ optional_env:
 
 Bare-string entries (`- MY_PLATFORM_TOKEN`) still work — they get a generic description auto-derived from the plugin's `label`. If a hardcoded entry for the same var already exists in `OPTIONAL_ENV_VARS`, it wins (back-compat); the plugin.yaml form acts as the fallback.
 
+## Speech-to-Text Echoes
+
+When `stt.echo_transcripts` is on (the default), the gateway shows the sender what speech-to-text heard before the agent answers. It calls `send_transcript_echo(chat_id, transcript, metadata=None)` on the adapter, and the default sends the localized `🎙️ "…"` line through `send()`. An adapter with a better way to show the user's own words, such as a quoted caption or a device screen, overrides it and receives the raw transcript:
+
+```python
+class MyPlatformAdapter(BasePlatformAdapter):
+    async def send_transcript_echo(self, chat_id, transcript, metadata=None):
+        return await self._post_caption(chat_id, transcript)
+```
+
+Don't recognize the echo inside `send()` by its text: the line is translated, so the match breaks in other locales.
+
 ## Platform-Specific Slow-LLM UX
 
 Some platforms have constraints that change how a slow LLM response should be presented:

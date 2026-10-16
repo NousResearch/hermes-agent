@@ -426,3 +426,102 @@ async def test_a_branch_keeps_the_reasoning_and_workspace_its_parent_picked(tmp_
             await connection.close()
         store.close_all_db_handles()
 
+
+class _Sandbox:
+    cleaned = False
+
+    def cleanup(self):
+        self.cleaned = True
+
+
+@pytest.mark.asyncio
+async def test_a_refreshed_terminal_binding_drops_the_sessions_cached_environment(tmp_path, monkeypatch):
+    """The terminal tool reuses a cached environment by key, whatever backend made it: a refresh that moves
+    the session's terminal binding drops the session's own environment before it is reported, so the next
+    command builds one on the new backend. A refresh that leaves the binding alone, and environments
+    the profile's other sessions share, keep theirs."""
+    from tools import terminal_tool
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    owner, later, last = _connect(authority), _connect(authority), _connect(authority)
+    try:
+        sid = (await _call(owner, 'session.create', request_id='t', source='cli', cwd=str(tmp_path)))['session_id']
+        own, shared = _Sandbox(), _Sandbox()
+        key = f'session:{authority.sessions[sid].route}'
+        monkeypatch.setitem(terminal_tool._active_environments, key, own)
+        monkeypatch.setitem(terminal_tool._active_environments, 'default', shared)
+        (home / 'config.yaml').write_text(BEFORE.replace('max_turns: 30', 'max_turns: 9'))
+        await _call(later, 'session.resume', session_id=sid)
+        assert _policy(authority, sid).max_turns == 9 and terminal_tool._active_environments[key] is own
+        (home / 'config.yaml').write_text(AFTER)
+        await _call(last, 'session.resume', session_id=sid)
+        assert json.loads(_policy(authority, sid).terminal_json)['TERMINAL_ENV'] == 'docker'
+        assert key not in terminal_tool._active_environments and own.cleaned
+        assert terminal_tool._active_environments['default'] is shared and not shared.cleaned
+    finally:
+        for connection in (owner, later, last):
+            await connection.close()
+        store.close_all_db_handles()
+
+
+class _Backend:
+    """An environment the terminal tool built: its backend and the directory each command ran in."""
+    def __init__(self, env_type, cwd):
+        self.env_type, self.cwd, self.ran = env_type, cwd, []
+
+    def execute(self, command, *, cwd=None, **_):
+        self.ran.append(cwd)
+        after = command.split(' ', 1)[1] if command.startswith('cd ') else cwd
+        return {'output': '', 'returncode': 0, 'cwd': after, 'cwd_observed': True}
+
+    def cleanup(self):
+        pass
+
+
+def _terminal(authority, sid, command):
+    """One terminal call as the session's turn makes it: its route's session context, its policy's scope."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from gateway.session_policy import policy_scope
+    from tools.terminal_tool import terminal_tool
+    tokens = set_session_vars(platform='local', session_key=authority.sessions[sid].route, session_id=sid)
+    try:
+        with policy_scope(_policy(authority, sid), authority=authority):
+            return json.loads(terminal_tool(command, task_id=sid))
+    finally:
+        clear_session_vars(tokens)
+
+
+@pytest.mark.asyncio
+async def test_the_next_command_after_a_terminal_refresh_runs_on_the_new_backend_in_its_directory(tmp_path, monkeypatch):
+    """The directory a session's commands last recorded wins over its binding's default: a refresh that moves
+    the binding drops it with the environment, so the next command runs on the new backend in the new
+    binding's directory, not the old backend's. A refresh that leaves the binding alone keeps it."""
+    from tools import terminal_tool
+    built = []
+    monkeypatch.setattr(terminal_tool, '_active_environments', {})
+    monkeypatch.setattr(terminal_tool, '_session_cwd', {})
+    monkeypatch.setattr(terminal_tool, '_pre_exec_block', lambda *a, **k: None)
+    monkeypatch.setattr(terminal_tool, '_create_configured_env',
+                        lambda config, env_type, **k: built.append(_Backend(env_type, k['cwd'])) or built[-1])
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    owner, later, last = _connect(authority), _connect(authority), _connect(authority)
+    try:
+        sid = (await _call(owner, 'session.create', request_id='t', source='cli', cwd=str(tmp_path)))['session_id']
+        assert _terminal(authority, sid, 'cd /srv/old-backend')['exit_code'] == 0
+        (home / 'config.yaml').write_text(BEFORE.replace('max_turns: 30', 'max_turns: 9'))
+        await _call(later, 'session.resume', session_id=sid)
+        _terminal(authority, sid, 'pwd')
+        assert (built[-1].env_type, built[-1].ran[-1]) == ('local', '/srv/old-backend')
+        (home / 'config.yaml').write_text(AFTER)
+        await _call(last, 'session.resume', session_id=sid)
+        fresh = (await _call(owner, 'session.create', request_id='f', source='cli', cwd=str(tmp_path)))['session_id']
+        _terminal(authority, fresh, 'pwd')
+        _terminal(authority, sid, 'pwd')
+        # Both on docker (a persistent container is the profile's, one for both), in the new binding's directory.
+        ran = [cwd for backend in built if backend.env_type == 'docker' for cwd in backend.ran]
+        assert len(ran) == 2 and ran[1] == ran[0] != '/srv/old-backend', [(b.env_type, b.ran) for b in built]
+    finally:
+        for connection in (owner, later, last):
+            await connection.close()
+        store.close_all_db_handles()

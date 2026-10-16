@@ -151,6 +151,7 @@ async def commit_refresh(authority, ref, *, mcp_only=False):
     if prepared is None:
         return False
     stored, old, policy, secrets, replaced, generation = prepared
+    moved = json.loads(policy.terminal_json) != json.loads(old.terminal_json)
     policy = _rebind(authority, ref.session_id, old, policy, secrets, replaced)
     # Compare-and-swap against the receipt as stored (JSON lists), not its restored tuple form. The
     # publication is the commit's own shielded follow-up: a caller cancelled mid-commit cannot leave the
@@ -158,7 +159,7 @@ async def commit_refresh(authority, ref, *, mcp_only=False):
     await tracked_write(authority, partial(commit_refreshed_policy, authority.db, epoch=authority.epoch,
                                            session_id=ref.session_id, old=stored, new=asdict(policy),
                                            generation=generation),
-                        then=lambda _generation: _publish(authority, ref))
+                        then=lambda _generation: _publish(authority, ref, moved))
     return True
 
 
@@ -172,8 +173,28 @@ async def refresh_resumed_policy(authority, ref):
                     getattr(exc, 'reason', None) or type(exc).__name__)
 
 
-def _publish(authority, ref):
+def _drop_terminal(authority, ref):
+    """The session's own cached terminal environments (keyed by its route, or its ids under per-session
+    isolation): the terminal tool reuses one by key whatever backend built it. A profile-shared one stays.
+    Its recorded cwd (keyed by its route or task id) goes too: it wins over the new binding's directory."""
+    from gateway.session_authorities import owner_scope
+    from hermes_state_local import local_receipt
+    from tools.terminal_tool import _qualify_task_key, clear_session_cwd
+    from tools.terminal_tool_lifecycle import cleanup_vm
+    ids = {ref.session_id, local_receipt(authority.db, ref.session_id)['entry']['session_id']}
+    route = authority.sessions[ref.session_id].route
+    with owner_scope(authority):
+        keys = {_qualify_task_key(key) for key in (f'session:{route}', *ids)}
+        for key in (route, *ids):
+            clear_session_cwd(key)
+    for key in keys:
+        cleanup_vm(key)
+
+
+async def _publish(authority, ref, moved=False):
     from gateway.session_local import local_session_info, publish_local_policy
+    if moved:  # before the drain can run a turn on the new binding with the old environment
+        await asyncio.to_thread(_drop_terminal, authority, ref)
     publish_local_policy(authority, ref.session_id)
     # A drain that ran during the off-loop commit saw the new stored policy beside the old live one and
     # paused; with both equal again, anything admitted meanwhile runs.

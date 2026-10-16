@@ -39,7 +39,7 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
       for (const item of list) {
         ensureAgentTerminal(item.id, item.title)
         seedAgentTerminalCommand(item.id, item.title)
-        syncAgentTerminalSnapshot(item.id, item.output ?? '')
+        syncAgentTerminalSnapshot(item.id, item.output ?? '', item.pty)
       }
     }
   }, [background])

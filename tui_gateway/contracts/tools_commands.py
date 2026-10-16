@@ -112,6 +112,7 @@ class ProcessEntry(_Open):
     started_epoch: float | None = None
     completion_reason: str | None = None
     detached: bool | None = None
+    pty: bool | None = None
 
 
 class ProcessListResult(Result):

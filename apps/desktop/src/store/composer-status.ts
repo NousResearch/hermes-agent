@@ -38,6 +38,8 @@ export interface ComposerStatusItem {
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */
   output?: string
+  /** background process: runs under a pseudo-terminal (terminal line discipline). */
+  pty?: boolean
   /** subagent: its own stored session id — row click opens that session window
    *  (livestreamed by the gateway's child-session mirror). */
   sessionId?: string
@@ -292,6 +294,7 @@ interface GatewayProcessEntry {
   command?: string
   exit_code?: number
   output_tail?: string
+  pty?: boolean
   session_id?: string
   status?: string
 }
@@ -304,6 +307,7 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
     exitCode,
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
+    pty: proc.pty || undefined,
     state: exited ? (exitCode ? 'failed' : 'done') : 'running',
     title: (proc.command ?? '').split('\n')[0]!.trim() || 'background process',
     type: 'background'
@@ -311,7 +315,11 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
 }
 
 const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
-  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
+  a.state === b.state &&
+  a.title === b.title &&
+  a.output === b.output &&
+  a.exitCode === b.exitCode &&
+  a.pty === b.pty
 
 /**
  * Layout-stable sync of the registry snapshot into the store: existing rows

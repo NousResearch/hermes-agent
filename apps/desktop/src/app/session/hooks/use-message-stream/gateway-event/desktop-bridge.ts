@@ -10,7 +10,7 @@ import type { GatewayEventContext } from './types'
 const DESKTOP_BRIDGE_HANDLERS: Record<string, (ctx: GatewayEventContext) => void> = {
   'agent.terminal.output': ({ payload }) => {
     // Live chunk from a background process → its read-only agent terminal tab.
-    writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '')
+    writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '', payload?.pty === true)
   },
 
   'terminal.close': ({ payload }) => {

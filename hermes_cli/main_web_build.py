@@ -19,55 +19,10 @@ logger = logging.getLogger("hermes_cli.main")
 _BYTECODE_FINGERPRINT_FILE = ".bytecode-fingerprint"
 
 
-def _record_bytecode_fingerprint() -> None:
-    """Persist the current checkout fingerprint after a bytecode sweep. Never raises."""
-    from hermes_cli.main import PROJECT_ROOT, _read_git_revision_fingerprint
-    try:
-        fingerprint = _read_git_revision_fingerprint(PROJECT_ROOT)
-        if not fingerprint:
-            return
-        stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
-        tmp_path = stamp_path.with_name(stamp_path.name + ".tmp")
-        tmp_path.write_text(fingerprint, encoding="utf-8")
-        tmp_path.replace(stamp_path)
-    except OSError as exc:
-        logger.debug("Could not record bytecode fingerprint: %s", exc)
+from hermes_cli._bytecode_sweep import _record_bytecode_fingerprint
 
 
-def _sweep_stale_bytecode_if_checkout_changed() -> None:
-    """Clear ``__pycache__`` at launch when the checkout fingerprint changed since the last sweep.
-
-    Update-time clears can't close the stale-bytecode class: ``hermes update`` runs
-    the PRE-pull updater code and manual pulls never run it. Cheap file reads, no
-    git subprocess. Never raises.
-
-    The stale-bytecode bug class (issues #6207, #60242; Dhruv's WhatsApp ``cannot import name
-    'parse_model_flags_detailed'`` report) has one shared shape: the checkout's ``.py`` files change (git
-    pull inside ``hermes update``, a manual ``git pull``, a ZIP update, a file-sync restore) while
-    ``__pycache__`` retains bytecode from the previous revision, and a later process trusts the stale
-    ``.pyc`` instead of the fresh source.
-    """
-    from hermes_cli.main import PROJECT_ROOT, _clear_bytecode_cache, _read_git_revision_fingerprint
-    try:
-        fingerprint = _read_git_revision_fingerprint(PROJECT_ROOT)
-        if not fingerprint:
-            return  # non-git install — the ZIP update path clears explicitly
-        stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
-        try:
-            recorded = stamp_path.read_text(encoding="utf-8-sig").strip()
-        except OSError:
-            recorded = ""
-        if recorded == fingerprint:
-            return
-        removed = _clear_bytecode_cache(PROJECT_ROOT)
-        if removed:
-            logger.info(
-                "Checkout changed since last launch (%s -> %s): cleared %d stale __pycache__ director%s",
-                recorded or "unknown", fingerprint, removed, "y" if removed == 1 else "ies",
-            )
-        _record_bytecode_fingerprint()
-    except Exception as exc:
-        logger.debug("Stale-bytecode launch sweep failed: %s", exc)
+from hermes_cli._bytecode_sweep import _sweep_stale_bytecode_if_checkout_changed
 
 
 def _web_project_root(web_dir: Path) -> Path:

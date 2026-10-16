@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -15,9 +16,11 @@ def _clear_jwt_cache():
     import hermes_cli.copilot_auth as mod
     mod._jwt_cache.clear()
     mod._exchange_failure_cache.clear()
+    mod._exchange_locks.clear()
     yield
     mod._jwt_cache.clear()
     mod._exchange_failure_cache.clear()
+    mod._exchange_locks.clear()
 
 
 class TestExchangeCopilotToken:
@@ -230,3 +233,91 @@ class TestExchangeFailureFastPath:
         mod._exchange_failure_cache[fp] = time.time() + 999
         evict_cached_exchanged_token("gho_stale")
         assert fp not in mod._exchange_failure_cache
+
+
+class TestCopilotAuthCachePruning:
+    def test_purges_expired_entries_but_keeps_live_state(self):
+        import hermes_cli.copilot_auth as mod
+
+        now = time.time()
+        expired_fp = "expired"
+        live_fp = "live"
+        mod._jwt_cache[expired_fp] = ("old", now - 1, None)
+        mod._jwt_cache[live_fp] = ("current", now + 1800, None)
+        mod._exchange_failure_cache[expired_fp] = now - 1
+        mod._exchange_failure_cache[live_fp] = now + 60
+        mod._exchange_locks[expired_fp] = __import__("threading").Lock()
+        mod._exchange_locks[live_fp] = __import__("threading").Lock()
+
+        mod._purge_stale_copilot_auth_caches()
+
+        assert expired_fp not in mod._jwt_cache
+        assert expired_fp not in mod._exchange_failure_cache
+        assert expired_fp not in mod._exchange_locks
+        assert live_fp in mod._jwt_cache
+        assert live_fp in mod._exchange_failure_cache
+        assert live_fp in mod._exchange_locks
+
+    def test_purge_does_not_remove_in_flight_single_flight_lock(self, monkeypatch):
+        import hermes_cli.copilot_auth as mod
+
+        entered = threading.Event()
+        release = threading.Event()
+        second_purge = threading.Event()
+        call_count = 0
+        call_count_guard = threading.Lock()
+        purge_count = 0
+        purge_count_guard = threading.Lock()
+        lock_identity = []
+        original_purge = mod._purge_stale_copilot_auth_caches
+        fp = mod._token_fingerprint("gho_in_flight")
+        in_flight_lock = None
+
+        def fake_locked(raw_token, locked_fp, *, timeout):
+            nonlocal call_count
+            with call_count_guard:
+                call_count += 1
+            mod._jwt_cache[locked_fp] = ("exchanged", time.time() + 1800, None)
+            entered.set()
+            assert release.wait(2)
+            return mod._jwt_cache[locked_fp]
+
+        def tracked_purge():
+            nonlocal purge_count
+            original_purge()
+            with purge_count_guard:
+                purge_count += 1
+                if purge_count == 2:
+                    lock_identity.append(
+                        mod._exchange_locks.get(fp) is in_flight_lock
+                        and mod._exchange_locks[fp].locked()
+                    )
+                    second_purge.set()
+
+        monkeypatch.setattr(mod, "_exchange_copilot_token_locked", fake_locked)
+        monkeypatch.setattr(mod, "_purge_stale_copilot_auth_caches", tracked_purge)
+
+        results = []
+        errors = []
+
+        def run_exchange():
+            try:
+                results.append(mod.exchange_copilot_token("gho_in_flight"))
+            except Exception as exc:  # pragma: no cover - assertion below reports failures
+                errors.append(exc)
+
+        first = threading.Thread(target=run_exchange)
+        second = threading.Thread(target=run_exchange)
+        first.start()
+        assert entered.wait(2)
+        in_flight_lock = mod._exchange_locks[fp]
+        second.start()
+        assert second_purge.wait(2)
+        release.set()
+        first.join(2)
+        second.join(2)
+
+        assert not errors
+        assert lock_identity == [True]
+        assert call_count == 1
+        assert len(results) == 2

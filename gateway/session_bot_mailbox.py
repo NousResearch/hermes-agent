@@ -100,6 +100,23 @@ async def withdraw_pin(home, key):
     return await _mailbox_io(_withdraw_pin, home, key)
 
 
+def _refuse_pin(home, key):
+    from tools.bot_failure_reasons import AGENT_BLOCKED
+    with _locked(home) as root:
+        path = root / f'{key}.json'
+        current = _read(path)
+        if current is not None and current.get('status') == 'ambiguous' and not current.get('admission_id'):
+            current.update(status='failed', refused=True, reply='', error='Bot Chat delivery was refused',
+                           reason=AGENT_BLOCKED)
+            _write(path, current)
+
+
+async def refuse_pin(home, key):
+    """Settle a pre-admission pin the FIFO definitely refused for good (nothing committed) as a
+    terminal ``failed`` receipt, only while it is still that pin: never re-sent, nothing unknown."""
+    return await _mailbox_io(_refuse_pin, home, key)
+
+
 async def scan_receipts(home):
     return await _mailbox_io(_scan_receipts, home)
 

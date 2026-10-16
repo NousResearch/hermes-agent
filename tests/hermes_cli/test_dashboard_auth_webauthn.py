@@ -526,6 +526,37 @@ class TestOriginGating:
         assert "auth/webauthn/options" in page.text
         # no password provider registered -> the password script is NOT emitted
         assert "auth/password-login" not in page.text
+
+    def test_password_script_never_attaches_to_the_passkey_form(
+            self, gated_client, provider):
+        """The UAT bug: the password form's script matched `form.provider-form` —
+        which also matches the passkey form — so every passkey-button submit
+        ALSO posted /auth/password-login with provider=webauthn (404) and
+        painted 'Sign-in failed' on the passkey form while the real ceremony
+        succeeded. The selector must exclude the webauthn form."""
+        from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+
+        class _PW(StubAuthProvider):
+            name = "pwlan"
+            display_name = "PW LAN"
+            supports_password = True
+
+            def complete_password_login(self, *, username, password):
+                raise NotImplementedError
+
+        register_provider(_PW())
+        try:
+            page = gated_client.get("/login")
+            assert page.status_code == 200
+            html_text = page.text
+            # the password script IS emitted now (both forms render), and it
+            # must not attach to the passkey form
+            assert "auth/password-login" in html_text
+            assert "form.provider-form:not(.provider-webauthn)" in html_text
+            assert html_text.count("querySelectorAll('form.provider-form')") == 0
+        finally:
+            clear_providers()  # restore the fixture's registry state exactly
+            register_provider(provider)
         # LAN http: no button, no script, no webauthn HTML at all
         lan_page = _lan_client().get("/login")
         assert "provider-webauthn" not in lan_page.text

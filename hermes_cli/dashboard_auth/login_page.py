@@ -448,7 +448,7 @@ _PASSWORD_FORM_SCRIPT = """\
       });
     });
   }
-  var forms = document.querySelectorAll('form.provider-form');
+  var forms = document.querySelectorAll('form.provider-form:not(.provider-webauthn)');
   for (var i = 0; i < forms.length; i++) { handle(forms[i]); }
 })();
 </script>

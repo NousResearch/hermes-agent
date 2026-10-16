@@ -368,10 +368,12 @@ def _fetch_snapshot(session: dict[str, Any]) -> tuple[str, int]:
     """``(snapshot_text, refs_count)`` truncated like the main browser tool (line boundaries,
     full tree stored to cache/web, read_file pointer appended). Lazy import: ``browser_tool``
     imports this module."""
-    from tools.browser_tool_snapshot import _truncate_snapshot
+    from tools.browser_tool_snapshot import _redact_browser_output, _truncate_snapshot
     from tools.browser_tool import get_browser_snapshot_threshold
     data = _snapshot_data(session)
-    snapshot, threshold = data.get("snapshot", ""), get_browser_snapshot_threshold()
+    # Camoufox's ariaSnapshot prints a filled password input's value: same redaction boundary as
+    # the agent-browser path, so a vault fill can't be read back through browser_snapshot/navigate.
+    snapshot, threshold = _redact_browser_output(data.get("snapshot", "")), get_browser_snapshot_threshold()
     if len(snapshot) > threshold:
         snapshot = _truncate_snapshot(snapshot, max_chars=threshold)
     return snapshot, data.get("refsCount", 0)

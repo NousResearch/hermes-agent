@@ -350,7 +350,12 @@ class SessionManager:
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
         for key in ("provider", "base_url", "api_mode"):
-            value = getattr(state.agent, key, None)
+            # Prefer the route's named form (``custom:<name>``) for provider: the bare kind a
+            # named custom provider leaves on agent.provider cannot be re-resolved on resume (#139908).
+            if key == "provider":
+                value = getattr(state.agent, "provider_route", None) or getattr(state.agent, key, None)
+            else:
+                value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
 
@@ -577,6 +582,18 @@ class SessionManager:
             if resolve_error is not None:
                 raise resolve_error from exc
             raise
+        if resolve_error is not None and requested_provider:
+            # Fail closed on an explicit request (#139908): the bare build "succeeded" only by
+            # dropping the failed resolution, landing the agent on the config-default endpoint —
+            # a different endpoint the session never used, later sent this provider's key.
+            # The bare-fallback contract (#91090) stands for the config-default request.
+            raise resolve_error
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
+        # The named route the agent actually resolved (``custom:<name>``), which AIAgent keeps
+        # only as the bare kind (``custom``): _persist stores it so a resume re-resolves the
+        # same named entry instead of a credentialless bare kind (#139908).
+        route = (requested_provider or config_provider or "").strip()
+        if route:
+            agent.provider_route = route
         return agent

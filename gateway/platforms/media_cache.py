@@ -72,7 +72,7 @@ def cache_media_bytes(data: bytes, mime: str, *, filename_hint: str = "",
     """Cache downloaded media bytes and return the local file path.
 
     Picks the image / audio / document cache primitive by mime class (or explicit ``kind_hint``
-    ``"image"``/``"audio"``/``"document"``). ``filename_hint`` names document files (else a
+    ``"image"``/``"audio"``/``"document"``). ``filename_hint`` names image and document files (else a
     generated name with the resolved extension); ``ext_overrides`` feeds :func:`ext_for_mime`.
     """
     # Local import: base is heavyweight and some adapters import this module very early.
@@ -85,7 +85,7 @@ def cache_media_bytes(data: bytes, mime: str, *, filename_hint: str = "",
                 else "audio" if primary.startswith("audio/") else "document")
     if kind == "image":
         ext = ext_for_mime(primary, overrides=ext_overrides, fallback=".jpg") or ".jpg"
-        return cache_image_from_bytes(data, ext)
+        return cache_image_from_bytes(data, ext, filename=filename_hint)
     if kind == "audio":
         ext = ext_for_mime(primary, overrides=ext_overrides, fallback=".ogg") or ".ogg"
         return cache_audio_from_bytes(data, ext)

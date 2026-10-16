@@ -50,8 +50,9 @@ class TestWeComInboundImageExtension:
         async def _download(url, max_bytes):
             return encrypted, {"content-type": "application/octet-stream"}
 
-        async def _cache(raw, ext):
+        async def _cache(raw, ext, filename):
             stored["raw"] = raw
+            stored["filename"] = filename
             return f"/tmp/img{ext}"
 
         monkeypatch.setattr(adapter, "_download_remote_bytes", _download)
@@ -61,6 +62,7 @@ class TestWeComInboundImageExtension:
 
         assert result == ("/tmp/img.png", "image/png")
         assert stored["raw"] == png
+        assert stored["filename"] == "x.bin"
 
 
 class TestWeComAdapterAuthzScope:

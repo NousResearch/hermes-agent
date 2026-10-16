@@ -254,8 +254,9 @@ class TestBlueBubblesAttachmentDownload:
 
         cached_path = None
 
-        async def mock_cache_image(data, ext):
+        async def mock_cache_image(data, ext, filename=None):
             nonlocal cached_path
+            assert filename == "photo.png"
             cached_path = f"/tmp/test_image{ext}"
             return cached_path
 

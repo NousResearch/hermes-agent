@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from gateway.platforms import base_media_cache
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -617,43 +618,24 @@ def _secure_media_cache_dir(cache_dir: Path) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
-    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string.
-
-    The file is written owner-only (0600) — inbound media is private user
-    content and the cache dir is hardened to 0700 by ``_secure_media_cache_dir``;
-    one directory should not carry two file-mode conventions. Best-effort on
-    platforms where POSIX mode bits are advisory (Windows): falls back to a
-    plain write rather than failing the media write.
-    """
-    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
-    try:
-        fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    except OSError:
-        filepath.write_bytes(data)
-        return str(filepath)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
-    return str(filepath)
-
-
-def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
+def cache_image_from_bytes(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Save raw image bytes to the cache and return the absolute path; raises
     ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
     validate_inbound_media_size(len(data), media_type="image")
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(f"Refusing to cache non-image data as {ext} (starts with: {snippet!r})")
-    return _write_cache_file(get_image_cache_dir(), "img", ext, data)
+    return base_media_cache.write_cache_file(get_image_cache_dir(), "img", ext, data, filename)
 
 
-async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Cache image bytes without blocking the caller's event loop."""
-    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+    kwargs = {"filename": filename} if filename is not None else {}
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext, **kwargs)
 
 
 async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type: str, accept: str,
-                                cache_fn, log_label: str) -> str:
+                                cache_fn, log_label: str, filename: str | None = None) -> str:
     """Shared downloader behind ``cache_*_from_url``: SSRF-checked (pre-flight + per-redirect;
     raises ValueError), size-capped, linear-backoff retries on timeouts / 429 / 5xx."""
     from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
@@ -669,7 +651,8 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
                 async with client.stream("GET", url, headers=headers) as response:
                     response.raise_for_status()
                     content = await _read_httpx_body_with_limit(response, media_type=media_type)
-                return await asyncio.to_thread(cache_fn, content, ext)
+                kwargs = {"filename": filename} if filename is not None else {}
+                return await asyncio.to_thread(cache_fn, content, ext, **kwargs)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -682,11 +665,13 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
                 raise
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+async def cache_image_from_url(
+    url: str, ext: str = ".jpg", retries: int = 2, filename: str | None = None,
+) -> str:
     """Download an image URL into the image cache; return the absolute path."""
     return await _cache_media_from_url(
         url, ext, retries, media_type="image", accept="image/*,*/*;q=0.8",
-        cache_fn=cache_image_from_bytes, log_label="Media")
+        cache_fn=cache_image_from_bytes, log_label="Media", filename=filename)
 
 
 def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
@@ -712,7 +697,7 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     # tools.audio_container is the ONE owner of container detection (outbound TTS repair + here).
     from tools.audio_container import sniff_audio_ext
     validate_inbound_media_size(len(data), media_type="audio")
-    return _write_cache_file(get_audio_cache_dir(), "audio", sniff_audio_ext(data, ext), data)
+    return base_media_cache.write_cache_file(get_audio_cache_dir(), "audio", sniff_audio_ext(data, ext), data)
 
 
 async def cache_audio_from_bytes_async(data: bytes, ext: str = ".ogg") -> str:
@@ -740,7 +725,7 @@ SUPPORTED_VIDEO_TYPES = {
 def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     """Save raw video bytes to the cache and return the absolute file path."""
     validate_inbound_media_size(len(data), media_type="video")
-    return _write_cache_file(get_video_cache_dir(), "video", ext, data)
+    return base_media_cache.write_cache_file(get_video_cache_dir(), "video", ext, data)
 
 
 async def cache_video_from_bytes_async(data: bytes, ext: str = ".mp4") -> str:
@@ -1554,7 +1539,8 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
             continue
         kind_ext = ext if ext in table else default_ext
         try:
-            path = cache_fn(data, ext=kind_ext)
+            kwargs = {"filename": filename} if kind == "image" else {}
+            path = cache_fn(data, ext=kind_ext, **kwargs)
         except ValueError:
             if kind != "image":
                 raise

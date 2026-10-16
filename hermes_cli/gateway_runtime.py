@@ -57,7 +57,8 @@ def attachable(result: GatewayDiscovery) -> bool:
     Shared by every client bootstrap (``connect_gateway`` and Ink's ``gateway_bootstrap.py``)."""
     if result.endpoint is None:
         return False
-    return result.state == "ready" or (result.state == "draining" and result.reason_code == "restart_wait")
+    from gateway.drain_control import RESTART_WAIT_REASON
+    return result.state == "ready" or (result.state == "draining" and result.reason_code == RESTART_WAIT_REASON)
 
 
 def _canonical_home(home: str | Path) -> str:
@@ -81,7 +82,8 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
     # A graceful restart's after-turn wait still owns its in-flight turns (#139041): it stays
     # ``draining`` (exit 6, never a fresh-start target) but carries its endpoint, so an interactive
     # client can attach to answer a turn parked on approval/clarify. New input queues for the next owner.
-    restart_wait = state == "draining" and payload.get("drain_reason") == "restart_wait"
+    from gateway.drain_control import RESTART_WAIT_REASON
+    restart_wait = state == "draining" and payload.get("drain_reason") == RESTART_WAIT_REASON
     if state in {"starting", "draining", "conflict"} and not restart_wait:
         # An auto-started gateway ending through its idle exit names that, so its clients wait
         # for it to go and start a fresh one instead of reporting a refusal.
@@ -117,7 +119,7 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
         supervisor=supervisor, capabilities=frozenset(capabilities),
         control_home=str(control_home) if control_home is not None else None,
         code_sha=code_sha if isinstance(code_sha := payload.get("code_sha"), str) and code_sha else None,
-    ), reason_code="restart_wait" if restart_wait else None)
+    ), reason_code=RESTART_WAIT_REASON if restart_wait else None)
 
 
 def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:

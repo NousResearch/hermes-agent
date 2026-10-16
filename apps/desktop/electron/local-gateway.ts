@@ -165,6 +165,14 @@ function assertLocalGatewayEndpoint(endpoint: GatewayEndpoint): void {
 /** Poll interval while a requested stale-owner restart is in flight. */
 export const STALE_RESTART_POLL_MS = 1000
 
+/** `gateway ensure`'s drain_reason for a restart's after-turn wait (gateway/drain_control.py RESTART_WAIT_REASON). */
+const RESTART_WAIT_REASON = 'restart_wait'
+
+/** A restart's after-turn wait that still hands out its endpoint: attachable, like Python's `attachable()`. */
+function isRestartWait(payload: Record<string, any>): boolean {
+  return payload.state === 'draining' && payload.reason_code === RESTART_WAIT_REASON && Boolean(payload.endpoint)
+}
+
 /** Re-ensure while a stale-owner restart runs, without waiting for it to finish (#139041): the first
  *  answer that is no longer the stale owner wins — its restart wait (attach to answer a parked
  *  prompt), or a replacement. Once the restart client exits, whatever answers next is final. */
@@ -180,7 +188,7 @@ async function reensureDuringRestart(
     const last = finished
     const result = await run()
     const payload = parseGatewayEnsureOutput(result)
-    const restartWait = payload.state === 'draining' && payload.reason_code === 'restart_wait' && Boolean(payload.endpoint)
+    const restartWait = isRestartWait(payload)
     const replaced = payload.state === 'ready' && payload.endpoint?.instance_id !== staleInstance
 
     if (last || restartWait || replaced) {return { result, payload }}
@@ -211,7 +219,7 @@ export async function ensureLocalGateway(
   // A graceful restart's after-turn wait still owns its turns (#139041): attach to it so a turn parked
   // on approval/clarify can be answered; new input queues for the next owner, and the next dial after
   // the owner exits reaches its replacement.
-  const restartWait = payload.state === 'draining' && payload.reason_code === 'restart_wait' && Boolean(payload.endpoint)
+  const restartWait = isRestartWait(payload)
 
   if (!restartWait && (result.code !== 0 || payload.state !== 'ready')) {
     // A refused replacement (another install's or a newer Hermes's gateway) names its remedy in

@@ -1121,7 +1121,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 cli_fields = self.__dict__.pop("_cli_result_fields", None)
                 # A classic CLI viewer reads the run_conversation-shaped dict from the receipt; the
                 # delivered reply (message.complete text) keeps the gateway's own copy.
-                captured['result'] = {**result, **cli_fields} if cli_fields else result
+                captured['result'] = (
+                    {**result, **cli_fields, **({'response_previewed': True} if result.get('response_previewed') else {})}
+                    if cli_fields else result
+                )
             return result
 
     def _run_sync_scoped(self):
@@ -1321,6 +1324,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             was_delivered = getattr(agent, "_interim_text_was_delivered", None)
             previewed = bool(previewed or (callable(was_delivered) and bool(final_response) and was_delivered(final_response) is True))
             viewer_meta = {
+                "local_viewer": True,
                 **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
                 **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
             }

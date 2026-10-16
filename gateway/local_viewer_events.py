@@ -82,25 +82,27 @@ def _publish_subagent(turn, event_type, payload) -> None:
     if owner is not None:
         authority, session_id, generation = owner
         executing = getattr(authority, "executing", None)
-        if isinstance(executing, dict) and executing.get(session_id) != generation:
-            if not _is_active_session_subagent(turn, payload):
+        if not (isinstance(executing, dict) and executing.get(session_id) != generation):
+            if turn._publish_execution(event_type, payload) is not False:
                 return
-            # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
-            live = authority.sessions.get(session_id)
-            stream = getattr(live, "event_stream", None)
-            if stream is not None:
-                import contextlib
-                lock = getattr(stream, "lock", None)
-                with lock if lock is not None else contextlib.nullcontext():
-                    saved = getattr(stream, "execution", None)
-                    if isinstance(saved, dict):
-                        stream.execution = {}
-                    try:
-                        stream.publish(session_id, payload, event_type=event_type)
-                    finally:
-                        if isinstance(saved, dict):
-                            stream.execution = saved
+        if not _is_active_session_subagent(turn, payload):
             return
+        # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
+        live = authority.sessions.get(session_id)
+        stream = getattr(live, "event_stream", None)
+        if stream is not None:
+            import contextlib
+            lock = getattr(stream, "lock", None)
+            with lock if lock is not None else contextlib.nullcontext():
+                saved = getattr(stream, "execution", None)
+                if isinstance(saved, dict):
+                    stream.execution = {}
+                try:
+                    stream.publish(session_id, payload, event_type=event_type)
+                finally:
+                    if isinstance(saved, dict):
+                        stream.execution = saved
+        return
     turn._publish_execution(event_type, payload)
 
 

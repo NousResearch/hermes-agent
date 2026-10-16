@@ -353,7 +353,7 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     EVENTS['message.complete'].payload.model_validate(
         {k: v for k, v in complete.items() if k not in ('content', 'admission_id', 'outcome')})
 
-    # Non-viewer (messaging) turns do not probe _interim_text_was_delivered or attach viewer_meta.
+    # Non-viewer (messaging) turns do not probe _interim_text_was_delivered, attach viewer_meta, or emit TUI-6 completion fields.
     interim_probes.clear()
     msg_ctx = TurnContext(
         source=SessionSource(platform=Platform.TELEGRAM, chat_id='sid', user_id='u'),
@@ -363,12 +363,16 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     msg_captured = {}
     token = execution_result.set(msg_captured)
     try:
-        TurnRunner(_gateway_runner(), msg_ctx).run_sync()
+        msg_delivered = TurnRunner(_gateway_runner(), msg_ctx).run_sync()
     finally:
         execution_result.reset(token)
     assert interim_probes == []
     assert 'billing_block' not in msg_captured['result'] and 'warning' not in msg_captured['result']
     assert msg_captured['result']['response_previewed'] is False
+    msg_complete = completion_payload(
+        {'admission_id': 'a2', 'request_id': 'r2'}, {'outcome': 'failed'}, msg_delivered['final_response'], msg_captured)
+    for viewer_key in ('billing', 'failure_reason', 'warning', 'response_previewed', 'response_transformed'):
+        assert viewer_key not in msg_complete
 
 
 def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():

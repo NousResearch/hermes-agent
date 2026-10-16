@@ -371,7 +371,7 @@ def _has_fallback_evicted_ancestor(agent, target_sid, expected_db, route, regist
     if not target_sid:
         return False
     current = agent
-    for _ in range(getattr(registry, '_MAX_ANCESTOR_HOPS', 16)):
+    for _ in range(getattr(registry, '_MAX_ANCESTOR_HOPS', 8)):
         ref = getattr(current, '_delegate_parent_ref', None) if current is not None else None
         current = ref() if callable(ref) else None
         if current is None:

@@ -20,6 +20,7 @@ mcp_servers:
     command: "..."      # stdio servers
     args: []
     env: {}
+    cwd: "/abs/path"    # stdio only; working dir for the subprocess (default: the session cwd)
 
     # OR
     url: "..."          # HTTP servers
@@ -48,6 +49,7 @@ mcp_servers:
 | `command` | string | stdio | Executable to launch |
 | `args` | list | stdio | Arguments for the subprocess |
 | `env` | mapping | stdio | Environment passed to the subprocess |
+| `cwd` | string | stdio | Working directory for the subprocess. Default: the session working directory when one is pinned (ACP/gateway sessions, `terminal.cwd`), else the Hermes process directory. Resolved once at connect time and fixed for the connection's lifetime — with an SSH terminal backend the default may be a directory the gateway user cannot open (see [Troubleshooting](../user-guide/features/mcp.md#stdio-server-fails-to-start-with-permission-denied-on-a-directory)) |
 | `url` | string | HTTP | Remote MCP endpoint |
 | `headers` | mapping | HTTP | Headers for remote server requests |
 | `ssl_verify` | bool or string | HTTP | TLS verification. `true` (default) uses system CAs, `false` disables verification (insecure), or a string path to a custom CA bundle (PEM) |

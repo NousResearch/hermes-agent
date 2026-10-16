@@ -77,3 +77,33 @@ def test_pinned_backfill_obeys_the_same_source_filter_as_the_page(db, filters, p
     expected_pin = "tip-a" if project else "root-b"
     assert {row["id"] for row in rows} == {"foreground", expected_pin}
     assert all(row["source"] == "webui" for row in rows)
+
+
+@pytest.mark.parametrize("include_pinned", [False, True], ids=["page", "pinned"])
+@pytest.mark.parametrize("sources", [["local"], ["local", "webui"]], ids=["local", "mixed"])
+def test_projected_sources_preserve_local_creator_filters_before_pagination(db, sources, include_pinned):
+    families = (
+        ("cli", "local", "cli", "local"),
+        ("desktop", "local", "desktop", "local"),
+        ("webui", "telegram", "telegram", "webui"),
+        ("switched", "local", "cli", "telegram"),
+    )
+    for index, (suffix, root_source, creator, tip_source) in enumerate(families):
+        root, tip = f"root-{suffix}", f"tip-{suffix}"
+        db.create_session(root, root_source)
+        db.append_message(root, "user", "original conversation")
+        db.end_session(root, "compression")
+        db.create_session(tip, tip_source, parent_session_id=root)
+        db.append_message(tip, "user", "continued conversation")
+        db._conn.execute("UPDATE sessions SET created_source = ? WHERE id IN (?, ?)", (creator, root, tip))
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (1700000000 + index, root))
+        db.set_session_pinned(root, suffix in {"cli", "desktop", "switched"})
+    db._conn.commit()
+
+    rows = db.list_sessions_rich(
+        sources=sources, local_created_sources=["cli"], limit=1, include_pinned=include_pinned,
+    )
+    expected = {"tip-webui"} if "webui" in sources else {"tip-cli"}
+    if include_pinned:
+        expected.add("tip-cli")
+    assert {row["id"] for row in rows} == expected

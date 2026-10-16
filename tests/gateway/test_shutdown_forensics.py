@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -165,3 +167,53 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
+
+# A manager that does not have the unit still answers rc=0, with its own default timeout.
+_NOT_FOUND = "LoadState=not-found\nTimeoutStopUSec=1min 30s\n"
+_LOADED_210S = "LoadState=loaded\nTimeoutStopUSec=3min 30s\n"
+
+
+class TestSystemdTimingAlignment:
+    @staticmethod
+    def _fake_systemctl(monkeypatch, *, user: str, system: str) -> list:
+        """Answer ``systemctl [--user] show`` per manager; returns the managers queried, in order."""
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            scope = "user" if "--user" in argv else "system"
+            calls.append(scope)
+            return SimpleNamespace(returncode=0, stdout=user if scope == "user" else system, stderr="")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        return calls
+
+    def test_system_unit_ignores_user_manager_default(self, monkeypatch):
+        calls = self._fake_systemctl(monkeypatch, user=_NOT_FOUND, system=_LOADED_210S)
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+        assert calls == ["user", "system"]
+
+    def test_loaded_user_unit_wins_without_asking_system_manager(self, monkeypatch):
+        calls = self._fake_systemctl(monkeypatch, user=_LOADED_210S, system=_NOT_FOUND)
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+        assert calls == ["user"]
+
+    def test_unit_loaded_in_neither_manager_is_undeterminable(self, monkeypatch):
+        self._fake_systemctl(monkeypatch, user=_NOT_FOUND, system=_NOT_FOUND)
+
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") is None
+
+    def test_aligned_system_unit_reports_no_mismatch(self, monkeypatch):
+        expected = sf.resolve_systemd_timeout_stop_sec(180, 30)
+        monkeypatch.setenv("INVOCATION_ID", "system-service")
+        monkeypatch.setattr(sf, "open", lambda *a, **k: io.StringIO("0::/system.slice/hermes-gateway.service\n"),
+                            raising=False)
+        self._fake_systemctl(monkeypatch, user=_NOT_FOUND,
+                             system=f"LoadState=loaded\nTimeoutStopUSec={expected}s\n")
+
+        alignment = sf.check_systemd_timing_alignment(180, 30)
+
+        assert alignment["unit"] == "hermes-gateway.service"
+        assert alignment["timeout_stop_sec"] == expected
+        assert alignment["mismatch"] is False

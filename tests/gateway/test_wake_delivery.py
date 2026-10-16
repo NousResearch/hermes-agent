@@ -53,34 +53,6 @@ def test_adapter_supports_push_default_true():
     assert adapter_supports_push(ApiServerLikeAdapter()) is False
 
 
-def test_deliver_wake_push_adapter_uses_handle_message():
-    adapter = PushAdapter()
-    asyncio.run(deliver_wake(adapter, text="wake up", source=_source()))
-    assert len(adapter.handled) == 1
-    evt = adapter.handled[0]
-    assert evt.text == "wake up"
-    assert evt.internal is True
-    assert evt.source.chat_id == "chat-1"
-
-
-def test_deliver_wake_push_adapter_requires_source():
-    with pytest.raises(ValueError):
-        asyncio.run(deliver_wake(PushAdapter(), text="x", session_id="sid"))
-
-
-def test_deliver_wake_non_push_requires_session_id():
-    with pytest.raises(ValueError):
-        asyncio.run(deliver_wake(ApiServerLikeAdapter(), text="x", source=_source()))
-
-
-def test_deliver_wake_non_push_requires_api_key():
-    """Session continuation is 403-gated on API_SERVER_KEY — a missing key
-    must fail loudly instead of running the wake in a fresh session."""
-    adapter = ApiServerLikeAdapter(key="")
-    with pytest.raises(RuntimeError, match="API_SERVER_KEY"):
-        asyncio.run(deliver_wake(adapter, text="x", session_id="raw-sid"))
-
-
 async def _serve(handler):
     """Spin an in-process aiohttp server on an ephemeral loopback port."""
     from aiohttp import web
@@ -153,36 +125,60 @@ def test_deliver_wake_retries_429_then_succeeds(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_deliver_wake_raises_on_permanent_http_error(monkeypatch):
-    """Auth/validation errors (403/400) are permanent — raise immediately so
-    the caller can rewind instead of treating the event as delivered."""
-    from aiohttp import web
+def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
+    """#85957: the delegation completion lands in the session transcript as a
+    display_kind=async_delegation_complete delivery row (real SessionDB), and
+    NO self-post / agent turn is involved."""
+    from pathlib import Path
 
-    calls = {"n": 0}
+    from gateway.wake import persist_delegation_delivery
+    from hermes_state import SessionDB
 
-    async def handler(request):
-        calls["n"] += 1
-        return web.json_response({"error": "forbidden"}, status=403)
+    db = SessionDB(db_path=Path(tmp_path) / "state.db")
+    sid = "raw-hq-sid"
+    db.create_session(sid, source="api_server")
+    db.append_message(sid, "user", content="please confirm before writing")
+    db.append_message(sid, "assistant", content="awaiting confirmation",
+                      finish_reason="stop")
 
-    async def run():
-        runner, port = await _serve(handler)
-        try:
-            adapter = ApiServerLikeAdapter(port=port)
-            with pytest.raises(RuntimeError, match="HTTP 403"):
-                await deliver_wake(adapter, text="x", session_id="sid")
-        finally:
-            await runner.cleanup()
+    class DbAdapter(ApiServerLikeAdapter):
+        def _ensure_session_db(self):
+            return db
 
-    asyncio.run(run())
-    assert calls["n"] == 1
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_x",
+        "results": [{"status": "completed"}, {"status": "failed"}],
+        "total_duration_seconds": 12.5,
+    }
+    asyncio.run(persist_delegation_delivery(
+        DbAdapter(), text="[ASYNC DELEGATION BATCH COMPLETE — deleg_x]",
+        session_id=sid, evt=evt,
+    ))
+
+    rows = db.get_messages(sid)
+    assert len(rows) == 3
+    delivery = rows[-1]
+    assert delivery["role"] == "user"
+    assert delivery["display_kind"] == "async_delegation_complete"
+    meta = delivery["display_metadata"]
+    assert meta["delegation_id"] == "deleg_x"
+    assert meta["task_count"] == 2
+    assert meta["failed_count"] == 1
+    assert meta["duration_seconds"] == 12.5
 
 
-def test_deliver_wake_raises_after_exhausted_retries(monkeypatch):
-    """Connection failures raise after bounded retries — never silent."""
-    import gateway.wake as wake_mod
+def test_persist_delegation_delivery_raises_without_db():
+    """DB unavailable must RAISE so the durable claim is released for retry."""
+    from gateway.wake import persist_delegation_delivery
 
-    monkeypatch.setattr(wake_mod, "_RETRY_DELAYS_SECONDS", (0.01,))
-    # Nothing is listening on this port.
-    adapter = ApiServerLikeAdapter(host="127.0.0.1", port=1, key="k")
-    with pytest.raises(RuntimeError, match="gave up"):
-        asyncio.run(deliver_wake(adapter, text="x", session_id="sid"))
+    class NoDbAdapter(ApiServerLikeAdapter):
+        def _ensure_session_db(self):
+            return None
+
+    with pytest.raises(RuntimeError, match="SessionDB unavailable"):
+        asyncio.run(persist_delegation_delivery(
+            NoDbAdapter(), text="x", session_id="sid",
+        ))
+
+

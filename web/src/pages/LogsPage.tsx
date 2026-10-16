@@ -6,6 +6,7 @@ import {
   useRef,
 } from "react";
 import { FileText, RefreshCw } from "lucide-react";
+import { useSearchParams } from "react-router";
 import { api } from "@/lib/api";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -17,24 +18,16 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+// Level classification is unit-tested in @/lib/log-classify; it prefers the
+// structured level token and falls back to word-boundary matching so payload
+// text like "parse_errors=0" can't render an INFO line red.
+import { classifyLine } from "@/lib/log-classify";
+import { errorMessage } from "@/lib/api-error";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
 const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
 const LINE_COUNTS = [50, 100, 200, 500] as const;
-
-function classifyLine(line: string): "error" | "warning" | "info" | "debug" {
-  const upper = line.toUpperCase();
-  if (
-    upper.includes("ERROR") ||
-    upper.includes("CRITICAL") ||
-    upper.includes("FATAL")
-  )
-    return "error";
-  if (upper.includes("WARNING") || upper.includes("WARN")) return "warning";
-  if (upper.includes("DEBUG")) return "debug";
-  return "info";
-}
 
 const LINE_COLORS: Record<string, string> = {
   error: "text-destructive",
@@ -54,8 +47,19 @@ const filterGroupClass =
 const segmentedClass =
   "w-fit max-w-full flex-wrap justify-start self-start";
 
+type LogFile = (typeof FILES)[number];
+
+function isLogFile(value: string | null): value is LogFile {
+  return (FILES as readonly string[]).includes(value ?? "");
+}
+
 export default function LogsPage() {
-  const [file, setFile] = useState<(typeof FILES)[number]>("agent");
+  // `?file=gateway` deep link (System page "Open logs" next to a failed gateway).
+  const [searchParams] = useSearchParams();
+  const requestedFile = searchParams.get("file");
+  const [file, setFile] = useState<LogFile>(() =>
+    isLogFile(requestedFile) ? requestedFile : "agent",
+  );
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [component, setComponent] =
     useState<(typeof COMPONENTS)[number]>("all");
@@ -81,7 +85,7 @@ export default function LogsPage() {
           }
         }, 50);
       })
-      .catch((err) => setError(String(err)))
+      .catch((err) => setError(errorMessage(err)))
       .finally(() => setLoading(false));
   }, [file, lineCount, level, component]);
 

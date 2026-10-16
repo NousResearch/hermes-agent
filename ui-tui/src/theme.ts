@@ -1,6 +1,7 @@
+import { contrastRatio, ensureContrast, mix, parseColor, relativeLuminance, toHex } from '@hermes/shared/color'
 import type { SkinBranding, SkinColors } from '@hermes/shared/skin'
 
-import { desaturate, grayOf, liftForContrast, mix, parseColor, relativeLuminance, toHex } from './lib/color.js'
+import { desaturate, grayOf, liftForContrast } from './lib/color.js'
 
 export interface ThemeColors {
   primary: string
@@ -68,12 +69,13 @@ export interface Theme {
 
 // ── Color math ───────────────────────────────────────────────────────
 //
-// All generic color computation lives in lib/color.ts (the color primitive);
+// Generic color computation lives in @hermes/shared/color (the primitives,
+// shared with the desktop) and lib/color.ts (TUI-only lifts and re-toning);
 // this file keeps only the ANSI-256 remapping that is specific to the
 // limited-palette Apple Terminal path. contrastRatio/ensureContrast are
 // re-exported for existing consumers (tests, /theme-info).
 
-export { contrastRatio, ensureContrast } from './lib/color.js'
+export { contrastRatio, ensureContrast }
 
 const XTERM_6_LEVELS = [0, 95, 135, 175, 215, 255] as const
 const ANSI_LIGHT_MAX_LUMINANCE = 0.72
@@ -222,14 +224,39 @@ function normalizeAnsiForeground(color: string): string {
   return `ansi256(${ansi})`
 }
 
+const ANSI256_RE = /^ansi256\((\d{1,3})\)$/
+
+/**
+ * The literal `#rrggbb` a theme tone paints as, or '' when it has none.
+ *
+ * The inverse of `normalizeAnsiForeground`: tones are not uniformly hex, since
+ * a limited-palette terminal rewrites the foregrounds to `ansi256(N)`.
+ * Consumers needing a real color — OSC 10/11, which only speak `#rrggbb` —
+ * resolve through here rather than hex-testing the tone, which would silently
+ * skip exactly the terminals that did the quantizing.
+ */
+export function themeToneHex(tone: string): string {
+  const ansi = ANSI256_RE.exec(tone.trim())
+
+  if (ansi) {
+    const n = Number(ansi[1])
+
+    return n <= 255 ? toHex(xtermEightBitRgb(n)) : ''
+  }
+
+  const rgb = parseColor(tone)
+
+  return rgb ? toHex(rgb) : ''
+}
+
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {
   name: 'Hermes Agent',
-  icon: '⚕',
+  icon: '☤',
   prompt: '❯',
   welcome: 'Type your message or /help for commands.',
-  goodbye: 'Goodbye! ⚕',
+  goodbye: 'Goodbye! ☤',
   tool: '┊',
   helpHeader: '(^_^)? Commands'
 }

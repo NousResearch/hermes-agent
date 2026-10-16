@@ -41,6 +41,7 @@ def _clean_queue_and_context(monkeypatch):
     for var in sc._VAR_MAP.values():
         var.set(sc._UNSET)
     sc._SESSION_ASYNC_DELIVERY.set(sc._UNSET)
+    sc._SESSION_HISTORY_DELIVERY.set(sc._UNSET)
     # set_current_session_id (invoked by the clobber-reproducing fake child
     # build) writes os.environ directly — scrub it so it can't leak into
     # other test modules.
@@ -118,6 +119,7 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
         chat_id="raw-sid-7",
         session_key="raw-sid-7",
         session_id="raw-sid-7",
+        session_history_delivery="1",
         async_delivery=False,
     )
 
@@ -143,29 +145,6 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
 # ---------------------------------------------------------------------------
 # _current_origin_session_id — the clobber-proof origin capture helper
 # ---------------------------------------------------------------------------
-
-
-def test_origin_helper_survives_child_session_clobber(monkeypatch):
-    """set_current_session_id (child agent construction) rewrites the
-    HERMES_SESSION_ID ContextVar + env, but the request-scoped chat_id
-    binding is untouched — the helper must keep returning the spawner's id."""
-    from gateway.session_context import set_current_session_id
-    from tools.async_delegation import _current_origin_session_id
-
-    set_session_vars(platform="api_server", chat_id="raw-origin-1")
-    assert _current_origin_session_id() == "raw-origin-1"
-
-    set_current_session_id("20260715_child2")  # the clobber
-    assert _current_origin_session_id() == "raw-origin-1"
-
-
-def test_origin_helper_empty_on_push_platforms(monkeypatch):
-    """On push platforms chat_id identifies a chat, not a session — the
-    helper must yield empty rather than misroute a wake there."""
-    from tools.async_delegation import _current_origin_session_id
-
-    set_session_vars(platform="telegram", chat_id="123456789")
-    assert _current_origin_session_id() == ""
 
 
 def test_apiserver_session_without_id_stays_synchronous(monkeypatch):

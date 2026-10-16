@@ -25,7 +25,7 @@ Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 | alibaba (+coding-plan) | API key | `DASHSCOPE_API_KEY` / `ALIBABA_CODING_PLAN_API_KEY` |
 | xiaomi | API key | `XIAOMI_API_KEY` |
 | huggingface | Token | `HF_TOKEN` |
-| fireworks / novita / nvidia / deepinfra / gmi / arcee / stepfun / upstage / kilocode / opencode-zen / opencode-go / ollama-cloud | API key | `<NAME>_API_KEY` |
+| fireworks / novita / nvidia / deepinfra / gmi / arcee / stepfun / upstage / kilocode / ai-gateway / opencode-zen / opencode-go / ollama-cloud | API key | `<NAME>_API_KEY` |
 | bedrock / vertex / azure-foundry | Cloud SDK / key | AWS SDK creds / Vertex ADC / `AZURE_FOUNDRY_API_KEY` |
 | custom | Config | `model.base_url` + `model.api_key` in config.yaml |
 
@@ -48,6 +48,11 @@ model_aliases:
     model: qwen3.5:397b
     provider: custom
     base_url: "https://ollama.com/v1"
+  theta:
+    model: theta-1
+    provider: custom
+    base_url: "https://theta.example.com/v1"
+    key_env: THETA_API_KEY        # or: api_key: "${THETA_API_KEY}"
 
 # Short form ("provider/model"), also via CLI:
 #   hermes config set model.aliases.fav openrouter/anthropic/claude-sonnet-4.6
@@ -57,6 +62,11 @@ model:
 ```
 
 `/model fav` — session-scoped; add `--global` to persist as default.
+
+An alias with its own `base_url` authenticates with its own credential
+(`api_key`, which also accepts a `"${VAR}"` reference, or `key_env`). With
+neither set the key is resolved from the alias HOST, never carried over from
+the provider that was active before the switch.
 
 Built-in aliases (catalog-resolved against the active provider): `sonnet`,
 `opus`, `haiku`, `claude`, `gpt5`, `gpt`, `codex`, `o3`, `o4`, `gemini`,

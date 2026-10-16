@@ -1,68 +1,89 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { chatSurfaceRoot, clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } from './surface-vars'
+import { chatSurfaceRoot, clearSurfaceVar, COMPOSER_HEIGHT_VAR, setSurfaceVar } from './surface-vars'
 
 /**
- * Measured-height vars must be scoped per chat surface. Session tiles render a
- * full ChatView — thread, composer, and status stack — beside the workspace
- * pane, so a single global slot let a background tab's tall status stack
- * inflate the foreground thread's bottom clearance and shove its
- * jump-to-bottom button into mid-screen.
+ * Regression: the thread's bottom gap going randomly huge and staying huge.
+ *
+ * `--thread-last-message-clearance` is `composer + status-stack + 2rem`, and
+ * both inputs are published by JS onto the owning `[data-chat-surface]`. The
+ * helpers used to fall back to `document.documentElement` when they couldn't
+ * find a surface — which is exactly the state a publisher is in once React has
+ * detached it. `:root` is where every surface's DEFAULTS live, so one such
+ * write becomes a global floor under every thread's clearance, inherited by
+ * every tab, until reload. Observed in the wild as
+ * `calc(56px + 176px + 2rem)`: a 176px status stack that had been gone for
+ * minutes, on a session that never had one.
  */
-function surface(): { root: HTMLElement; stack: HTMLElement } {
-  const root = document.createElement('div')
-  root.setAttribute('data-chat-surface', '')
-
-  const stack = document.createElement('div')
-  root.append(stack)
-  document.body.append(root)
-
-  return { root, stack }
-}
-
-describe('per-surface measured-height vars', () => {
-  it('publishes onto the owning chat surface, not the document root', () => {
-    const { root, stack } = surface()
-
-    setSurfaceVar(stack, STATUS_STACK_VAR, '96px')
-
-    expect(root.style.getPropertyValue(STATUS_STACK_VAR)).toBe('96px')
-    expect(document.documentElement.style.getPropertyValue(STATUS_STACK_VAR)).toBe('')
+describe('surface measured-height vars', () => {
+  afterEach(() => {
+    document.documentElement.style.removeProperty(COMPOSER_HEIGHT_VAR)
+    document.body.replaceChildren()
   })
 
-  it('keeps two visible surfaces independent', () => {
-    const background = surface()
-    const foreground = surface()
+  function surface() {
+    const root = document.createElement('div')
+    root.setAttribute('data-chat-surface', '')
 
-    setSurfaceVar(background.stack, STATUS_STACK_VAR, '160px')
-    setSurfaceVar(foreground.stack, STATUS_STACK_VAR, '0px')
+    const publisher = document.createElement('div')
+    root.append(publisher)
+    document.body.append(root)
 
-    expect(background.root.style.getPropertyValue(STATUS_STACK_VAR)).toBe('160px')
-    expect(foreground.root.style.getPropertyValue(STATUS_STACK_VAR)).toBe('0px')
+    return { publisher, root }
+  }
+
+  it('publishes onto the owning surface, not the document root', () => {
+    const { publisher, root } = surface()
+
+    setSurfaceVar(publisher, COMPOSER_HEIGHT_VAR, '176px')
+
+    expect(root.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('176px')
+    expect(document.documentElement.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
   })
 
-  it('clearing one surface leaves the other intact', () => {
-    const a = surface()
-    const b = surface()
+  it('never poisons the document root from a detached publisher', () => {
+    const { publisher } = surface()
 
-    setSurfaceVar(a.stack, STATUS_STACK_VAR, '48px')
-    setSurfaceVar(b.stack, STATUS_STACK_VAR, '80px')
-    clearSurfaceVar(a.stack, STATUS_STACK_VAR)
+    // How the real leak happens: React removes the stack/composer div when it
+    // collapses, orphaning it from its surface, and a pending measurement
+    // publishes anyway. `closest()` from an orphan finds nothing.
+    publisher.remove()
+    setSurfaceVar(publisher, COMPOSER_HEIGHT_VAR, '176px')
 
-    expect(a.root.style.getPropertyValue(STATUS_STACK_VAR)).toBe('')
-    expect(b.root.style.getPropertyValue(STATUS_STACK_VAR)).toBe('80px')
+    expect(document.documentElement.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
   })
 
-  it('falls back to the document root outside a chat surface (popped-out composer)', () => {
+  it('never poisons the document root from a publisher outside any surface', () => {
     const orphan = document.createElement('div')
     document.body.append(orphan)
 
-    expect(chatSurfaceRoot(orphan)).toBe(document.documentElement)
+    setSurfaceVar(orphan, COMPOSER_HEIGHT_VAR, '176px')
 
-    setSurfaceVar(orphan, STATUS_STACK_VAR, '24px')
-    expect(document.documentElement.style.getPropertyValue(STATUS_STACK_VAR)).toBe('24px')
+    expect(document.documentElement.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
+  })
 
-    clearSurfaceVar(orphan, STATUS_STACK_VAR)
-    expect(document.documentElement.style.getPropertyValue(STATUS_STACK_VAR)).toBe('')
+  it('reports no owner for an orphaned or unowned node', () => {
+    const { publisher, root } = surface()
+    expect(chatSurfaceRoot(publisher)).toBe(root)
+
+    // A subtree detached whole still resolves — the surface is still an
+    // ancestor. Only losing the surface from the chain orphans the publisher.
+    root.remove()
+    expect(chatSurfaceRoot(publisher)).toBe(root)
+
+    publisher.remove()
+    expect(chatSurfaceRoot(publisher)).toBeNull()
+    expect(chatSurfaceRoot(null)).toBeNull()
+  })
+
+  it('clears from the captured surface and tolerates a missing one', () => {
+    const { publisher, root } = surface()
+    setSurfaceVar(publisher, COMPOSER_HEIGHT_VAR, '176px')
+
+    clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
+    expect(root.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
+
+    expect(() => clearSurfaceVar(null, COMPOSER_HEIGHT_VAR)).not.toThrow()
+    expect(document.documentElement.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
   })
 })

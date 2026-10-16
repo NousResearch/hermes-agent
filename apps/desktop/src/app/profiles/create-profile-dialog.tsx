@@ -11,12 +11,13 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Field, FieldHint } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
+import { SanitizedInput } from '@/components/ui/sanitized-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
+import { slug } from '@/lib/sanitize'
 import type { ProfileInfo } from '@/types/hermes'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -76,10 +77,11 @@ export function CreateProfileDialog({
     setError(null)
 
     try {
-      await createProfile({ name: trimmed, clone_from: cloneFrom })
+      const result = await createProfile({ name: trimmed, clone_from: cloneFrom, ...(soul.trim() ? { soul } : {}) })
 
-      if (soul.trim()) {
-        await updateProfileSoul(trimmed, soul)
+      // Older remote backends do not accept an initial persona in the create request.
+      if (soul.trim() && !result.soul_set) {
+        await updateProfileSoul(trimmed, soul, trimmed)
       }
 
       await onCreated?.(trimmed)
@@ -101,12 +103,13 @@ export function CreateProfileDialog({
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
           <Field htmlFor="new-profile-name" label={p.nameLabel}>
-            <Input
+            <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="new-profile-name"
-              onChange={event => setName(event.target.value)}
+              onValueChange={setName}
               placeholder="my-profile"
+              sanitize={slug}
               value={name}
             />
             <FieldHint error={invalid}>{p.nameHint}</FieldHint>

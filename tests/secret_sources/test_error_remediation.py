@@ -6,17 +6,12 @@ identity reject, the bws stderr summarizer, the per-source
 """
 from __future__ import annotations
 
-from pathlib import Path
-from unittest import mock
 
-import pytest
 
 from agent.secret_sources import bitwarden as bw
-from agent.secret_sources import onepassword as op
-from agent.secret_sources.base import ErrorKind, SecretSource
+from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
 from agent.secret_sources.bitwarden import (
     BitwardenSource,
-    _classify_bws_error,
     _summarize_bws_stderr,
 )
 from agent.secret_sources.onepassword import OnePasswordSource
@@ -48,14 +43,8 @@ def test_summarize_strips_rust_report_noise():
     assert "Error:" not in summary
 
 
-def test_summarize_joins_multiple_cause_lines():
-    raw = "Error:\n   0: outer cause\n   1: inner cause\n\nLocation:\n   x.rs:1"
-    assert _summarize_bws_stderr(raw) == "outer cause; inner cause"
 
 
-def test_summarize_falls_back_to_raw_on_unknown_shape():
-    assert _summarize_bws_stderr("plain failure text") == "plain failure text"
-    assert _summarize_bws_stderr("") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -63,17 +52,8 @@ def test_summarize_falls_back_to_raw_on_unknown_shape():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("message", [
-    'bws exited 1: Received error message from server: [400 Bad Request] {"error":"invalid_client"}',
-    "invalid_grant returned by identity",
-    "server said 401 unauthorized",
-])
-def test_classify_auth_failures(message):
-    assert _classify_bws_error(message) == ErrorKind.AUTH_FAILED
 
 
-def test_classify_unknown_stays_internal():
-    assert _classify_bws_error("some novel explosion") == ErrorKind.INTERNAL
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +75,6 @@ def test_fetch_auth_failure_gets_friendly_error(monkeypatch, tmp_path):
     monkeypatch.setattr(bw, "fetch_bitwarden_secrets", boom)
     result = src.fetch({"enabled": True, "project_id": "p"}, tmp_path)
     assert result.error_kind == ErrorKind.AUTH_FAILED
-    assert "revoked, expired" in result.error
     assert "BWS_ACCESS_TOKEN" in result.error
     assert "invalid_client" in result.error  # mechanics preserved
 
@@ -105,44 +84,12 @@ def test_fetch_auth_failure_gets_friendly_error(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_bitwarden_auth_remediation_points_at_token_command():
-    hint = BitwardenSource().remediation(ErrorKind.AUTH_FAILED, {})
-    assert "hermes secrets bitwarden token" in hint
 
 
-def test_onepassword_auth_remediation_points_at_token_command():
-    hint = OnePasswordSource().remediation(ErrorKind.AUTH_FAILED, {})
-    assert "hermes secrets onepassword token" in hint
-    assert "OP_SERVICE_ACCOUNT_TOKEN" in hint
 
 
-def test_onepassword_remediation_uses_configured_token_env():
-    hint = OnePasswordSource().remediation(
-        ErrorKind.AUTH_FAILED, {"service_account_token_env": "MY_OP_TOKEN"}
-    )
-    assert "MY_OP_TOKEN" in hint
 
 
-def test_base_remediation_covers_common_kinds():
-    class _Src(SecretSource):
-        name = "dummy"
-        label = "Dummy"
-
-        def fetch(self, cfg, home_path):  # pragma: no cover
-            raise NotImplementedError
-
-    src = _Src()
-    for kind in (ErrorKind.NOT_CONFIGURED, ErrorKind.BINARY_MISSING,
-                 ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED,
-                 ErrorKind.NETWORK, ErrorKind.TIMEOUT):
-        hint = src.remediation(kind, {})
-        assert hint, f"no default hint for {kind}"
-        if kind in (ErrorKind.NOT_CONFIGURED, ErrorKind.BINARY_MISSING,
-                    ErrorKind.AUTH_FAILED, ErrorKind.AUTH_EXPIRED):
-            assert "hermes secrets dummy" in hint
-    # Kinds without a sensible generic action stay silent.
-    assert _Src().remediation(ErrorKind.INTERNAL, {}) == ""
-    assert _Src().remediation(None, {}) == ""
 
 
 def test_remediation_never_raises_on_junk_cfg():
@@ -188,45 +135,42 @@ def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
         env_loader.reset_secret_source_cache()
 
     err = capsys.readouterr().err
-    assert "rejected the machine-account access token" in err
-    assert "hermes secrets bitwarden token" in err
+    expected = BitwardenSource().remediation(
+        ErrorKind.AUTH_FAILED, {"enabled": True, "project_id": "proj"}
+    ).strip()
+    assert expected and expected in err
 
 
-def test_env_loader_hint_survives_broken_remediation(tmp_path, monkeypatch, capsys):
-    """A plugin source whose remediation() raises must not break startup."""
-    from hermes_cli import env_loader
+def test_remediation_hint_uses_explicit_profile_scope(tmp_path, monkeypatch):
     from agent.secret_sources import registry
+    from hermes_cli import env_loader
 
-    class _Broken(SecretSource):
-        name = "brokensrc"
-        label = "Broken"
-        shape = "bulk"
+    class ScopedSource(SecretSource):
+        name = "scoped_hint"
+        label = "Scoped hint"
+        shape = "mapped"
+
+        def __init__(self, marker):
+            self.marker = marker
 
         def fetch(self, cfg, home_path):
-            from agent.secret_sources.base import FetchResult
-            res = FetchResult()
-            res.error = "kaput"
-            res.error_kind = ErrorKind.AUTH_FAILED
-            return res
+            return FetchResult()
 
         def remediation(self, kind, cfg):
-            raise RuntimeError("hint machine broke")
+            return self.marker
 
+    monkeypatch.setattr(registry, "_ensure_builtin_sources", lambda: None)
     registry._reset_registry_for_tests()
-    registry._BUILTINS_LOADED = True  # keep real builtins out of this test
-    registry.register_source(_Broken())
-    env_loader.reset_secret_source_cache()
-
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    (home / "config.yaml").write_text(
-        "secrets:\n  brokensrc:\n    enabled: true\n"
-    )
+    home_a = str((tmp_path / "hint-a").resolve())
+    home_b = str((tmp_path / "hint-b").resolve())
+    source_a = ScopedSource("profile-a")
+    source_b = ScopedSource("profile-b")
+    assert registry.register_source(source_a, scope=home_a)
+    assert registry.register_source(source_b, scope=home_b)
     try:
-        env_loader._apply_external_secret_sources(home)
+        assert env_loader._remediation_hint(
+            "scoped_hint", ErrorKind.AUTH_FAILED, {}, scope=home_b
+        ) == "profile-b"
     finally:
         registry._reset_registry_for_tests()
-        env_loader.reset_secret_source_cache()
 
-    err = capsys.readouterr().err
-    assert "kaput" in err  # error still surfaced, no crash

@@ -8,7 +8,7 @@ result objects::
 
     [
       {
-        "source": "review-label-gate",
+        "source": "supply chain",
         "results": [
           {"kind": "action_required", "title": "...", "summary": "...",
            "how_to_fix": "..."},
@@ -170,7 +170,7 @@ def collect_failed_jobs(
         return []
 
     # Pre-normalize exclude sources once: lowercase + hyphens→spaces, so
-    # "review-label-gate" matches "Review label gate / Review label gate".
+    # "supply-chain" matches "Supply-chain scan / ...".
     norm_sources = {
         src.lower().replace("-", " ") for src in (exclude_sources or set())
     }
@@ -258,7 +258,12 @@ def _render_pending_items(pending_jobs: list[str]) -> str:
     return f"\n\n---\n\n<sub>Still running {len(pending_jobs)} job{'s' if len(pending_jobs) != 1 else ''}: {job_list}</sub>\n"
 
 
-def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = None, commit_info: str = "") -> str:
+def render_comment(
+    items: list[ReviewItem],
+    pending_jobs: list[str] | None = None,
+    commit_info: str = "",
+    waiting: bool = False,
+) -> str:
     """Render the full comment body from a list of review items.
 
     Items are grouped by severity under ``##`` group headers, separated
@@ -270,6 +275,12 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
     When there are no errors, action_required, or warnings, an "all good!"
     banner is shown at the top. Info items remain visible and debug items
     follow in collapsible ``<details>`` blocks.
+
+    ``waiting`` means a workflow run is still queued or in progress even
+    though no individual job is visibly pending — GitHub has not spawned
+    the jobs yet. The comment must not look final in that state, so the
+    "all good!" banner is replaced by a waiting note and a dimmed footer
+    marks the comment as still live.
     """
     pending = pending_jobs or []
 
@@ -280,7 +291,6 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
 
     info = by_severity.get("info", [])
     debug = by_severity.get("debug", [])
-    has_blocking = any(by_severity.get(s) for s in _BLOCKING_SEVERITIES)
 
     body = f"{MARKER}\n# ૮ >ﻌ< ა ci review\n\n"
 
@@ -288,6 +298,8 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
         body += f"{commit_info}\n\n"
 
     if not items and not pending:
+        if waiting:
+            return f"{body}<sub>waiting for jobs to start…</sub>"
         return f"{body}all good!"
 
     sections: list[str] = []
@@ -306,6 +318,8 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
 
     if pending:
         body += _render_pending_items(pending)
+    elif waiting:
+        body += "\n\n---\n\n<sub>waiting for more jobs to start…</sub>\n"
 
     if sections:
         body += "\n\n---\n\n".join(sections)
@@ -358,11 +372,12 @@ def assemble(
     review_statuses_json: str = "",
     pending_jobs: list[str] | None = None,
     commit_info: str = "",
+    waiting: bool = False,
 ) -> str:
     """Assemble the full comment body from all available inputs."""
     items: list[ReviewItem] = []
 
-    # 1. Structured statuses from workflow_call jobs (review-labels, etc.)
+    # 1. Structured statuses from workflow_call jobs (supply-chain, etc.)
     status_items, sources = collect_from_statuses(review_statuses_json)
     items.extend(status_items)
 
@@ -372,7 +387,7 @@ def assemble(
     # 3. Attach per-job log links to all items (not just synthesized errors)
     _attach_job_urls(items, job_urls or {}, run_url)
 
-    return render_comment(items, pending_jobs, commit_info)
+    return render_comment(items, pending_jobs, commit_info, waiting=waiting)
 
 
 # ---------------------------------------------------------------------------

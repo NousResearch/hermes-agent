@@ -30,3 +30,21 @@ export function createEventDeduper(intervalMs = DEDUPE_INTERVAL_MS) {
     return false
   }
 }
+
+// A `speak:<messageId>` cue is seconds of audio keyed by a durable backend
+// message id, not an instant beep: the peer's claim can arrive well past the
+// 1 s window (the app window hidden under an open HUD is throttled by Chromium
+// and its transcript subscription fires late), and the reply was read twice
+// (#99717). One reply is one claim for as long as a reply can plausibly play.
+export const SPEECH_CLAIM_TTL_MS = 10 * 60_000
+
+// Cross-window arbiter for every ambient cue: `speak:*` keys hold for the
+// speech TTL, everything else keeps the tick-sized window.
+export function createAmbientClaimArbiter(intervalMs = DEDUPE_INTERVAL_MS, speechTtlMs = SPEECH_CLAIM_TTL_MS) {
+  const cues = createEventDeduper(intervalMs)
+  const speech = createEventDeduper(speechTtlMs)
+
+  return function owns(key: string, now = Date.now()): boolean {
+    return !(key.startsWith('speak:') ? speech(key, now) : cues(key, now))
+  }
+}

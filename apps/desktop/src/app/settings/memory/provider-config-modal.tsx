@@ -46,12 +46,14 @@ function groupFields(fields: MemoryProviderField[]): [string, MemoryProviderFiel
 
 export function ProviderConfigModal({
   config,
+  profile = null,
   provider,
   open,
   onOpenChange,
   onSaved
 }: {
   config: MemoryProviderConfig
+  profile?: null | string
   provider: string
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -78,7 +80,7 @@ export function ProviderConfigModal({
     setSaving(true)
 
     try {
-      await saveMemoryProviderConfig(provider, edited)
+      await saveMemoryProviderConfig(provider, edited, profile)
       notify({ kind: 'success', title: `${config.label} saved`, message: 'Memory provider configuration updated.' })
       await onSaved()
       onOpenChange(false)
@@ -91,12 +93,12 @@ export function ProviderConfigModal({
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-2xl dt-portal-scrollbar">
+      <DialogContent bodyClassName="dt-portal-scrollbar" className="max-w-2xl">
         <DialogHeader>
           <DialogTitle icon={SlidersHorizontal}>{config.label} — full configuration</DialogTitle>
           <DialogDescription>
-            Every {config.label} option for the <span className="font-medium">{activeProfile}</span> profile. Blank
-            fields fall back to the resolved host or built-in default.
+            Every {config.label} option for the <span className="font-medium">{profile ?? activeProfile}</span> profile.
+            Blank fields fall back to the resolved host or built-in default.
           </DialogDescription>
           {config.docs_url && (
             <a

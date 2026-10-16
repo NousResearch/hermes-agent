@@ -1,21 +1,16 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { SessionActionsMenu } from './session-actions-menu'
+import { refreshProjectTree } from '@/store/projects'
+
+import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
 
-// This file exists specifically to catch the regression flagged in #67500:
-// SessionActionsMenu used to be composed as
-//   <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-// with the caller wrapping ITS children in <Tip>. Radix's `asChild` clones
-// its single child and injects onClick/aria-haspopup/ref onto it — but Tip
-// doesn't forward those extra props to whatever it wraps, so they were
-// silently dropped and the menu could stop opening. Tip has since moved
-// inside this component (wrapping DropdownMenuTrigger itself, not the other
-// way around) — these tests exercise the REAL component end-to-end (no mock
-// of DropdownMenu/Tip) so a future regression of this composition fails here.
+// Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
+// a broken asChild composition on the kebab trigger fails here — the menu
+// must still open on click.
 
 vi.mock('@/components/pane-shell/tree/store', () => ({
   closeAllTreeTabs: vi.fn(),
@@ -23,27 +18,53 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
   closeTreeTabsToRight: vi.fn(),
   treeTabCloseTargets: vi.fn(() => null)
 }))
-vi.mock('@/hermes', () => ({ renameSession: vi.fn() }))
+vi.mock('@/hermes', () => ({
+  renameSession: vi.fn(),
+  setApiRequestProfile: vi.fn(),
+  setSessionUnreadRemote: vi.fn(() => Promise.resolve({ ok: true }))
+}))
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
-      common: { cancel: 'Cancel', close: 'Close', delete: 'Delete', save: 'Save' },
+      common: {
+        cancel: 'Cancel',
+        close: 'Close',
+        confirm: 'Confirm',
+        delete: 'Delete',
+        done: 'Done',
+        loading: 'Loading…',
+        save: 'Save'
+      },
+      errors: { genericFailure: 'Something went wrong' },
       sidebar: {
-        projects: { menuAppearance: 'Appearance', noColor: 'No color' },
+        projects: {
+          menuAppearance: 'Appearance',
+          moveFailed: 'Could not move session',
+          moveNoProjects: 'No other projects',
+          movedTo: (name: string) => `Moved to ${name}`,
+          moveToProject: 'Move to project',
+          noColor: 'No color'
+        },
         row: {
-          actionsFor: (title: string) => `Actions for ${title}`,
           archive: 'Archive',
           branchFrom: 'Branch from here',
           copyId: 'Copy ID',
           copyIdFailed: 'Failed to copy ID',
+          deleteDesc: (title: string) => `Delete ${title}?`,
+          deleteTitle: 'Delete session?',
+          deleting: 'Deleting…',
+          deleted: 'Session deleted',
           export: 'Export',
           hideTabBar: 'Hide tab bar',
+          markRead: 'Mark as read',
           pin: 'Pin',
           rename: 'Rename',
-          renameDesc: 'Rename this session',
+          renameDesc: 'Leave empty to clear.',
           renameFailed: 'Rename failed',
           renameTitle: 'Rename session',
           renamed: 'Renamed',
+          sessionActions: 'Session actions',
+          unarchive: 'Unarchive',
           unpin: 'Unpin',
           untitledPlaceholder: 'Untitled'
         }
@@ -57,10 +78,22 @@ vi.mock('@/lib/profile-color', () => ({ PROFILE_SWATCHES: [] }))
 vi.mock('@/lib/session-export', () => ({ exportSession: vi.fn() }))
 vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
+vi.mock('@/store/projects', () => ({
+  $projectTree: atom<unknown[]>([]),
+  moveSessionToProject: vi.fn(),
+  projectIdForCwd: vi.fn(() => null),
+  projectRootCwd: vi.fn(() => ''),
+  refreshProjectTree: vi.fn(() => Promise.resolve())
+}))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
+  $connection: atom<null | { mode: string }>(null),
+  $cronSessions: atom<unknown[]>([]),
+  $messagingSessions: atom<unknown[]>([]),
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),
+  $unreadFinishedSessionIds: atom<string[]>([]),
+  markSessionRead: vi.fn(),
   sessionMatchesStoredId: vi.fn(() => false),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
   setSessions: vi.fn()
@@ -70,18 +103,24 @@ vi.mock('@/store/session-color', () => ({
   setSessionColorOverride: vi.fn()
 }))
 vi.mock('@/store/session-states', () => ({
+  $sessionStates: atom<Record<string, unknown>>({}),
   $sessionTiles: atom<unknown[]>([]),
+  closeAllOpenSessionTiles: vi.fn(),
   openSessionTile: vi.fn()
 }))
 vi.mock('@/store/windows', () => ({
+  canOpenSessionInTerminal: () => false,
   canOpenSessionWindow: () => false,
-  openSessionInNewWindow: vi.fn()
+  isBrowserWindow: () => false,
+  isSecondaryWindow: () => false,
+  openSessionInNewWindow: vi.fn(),
+  openSessionInTerminal: vi.fn()
 }))
 
 function renderMenu() {
   return render(
-    <SessionActionsMenu sessionId="s1" title="My session" tooltip="Actions for My session">
-      <button aria-label="Actions for My session" type="button">
+    <SessionActionsMenu sessionId="s1" title="My session">
+      <button aria-label="Session actions" type="button">
         ⋮
       </button>
     </SessionActionsMenu>
@@ -89,18 +128,10 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
-  it('shows the tooltip label wired to the real trigger button', () => {
+  it('opens the dropdown on click', async () => {
     renderMenu()
 
-    const trigger = screen.getByRole('button', { name: 'Actions for My session' })
-
-    expect(trigger.closest('[data-slot="tooltip-trigger"]')).toBeTruthy()
-  })
-
-  it('still opens the dropdown on click with the trigger wrapped in a Tip (#67500)', async () => {
-    renderMenu()
-
-    const trigger = screen.getByRole('button', { name: 'Actions for My session' })
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
 
     // Radix's dropdown trigger opens on pointerdown (not on the synthetic
     // 'click' fireEvent alone would dispatch), so fire the full mouse
@@ -109,12 +140,260 @@ describe('SessionActionsMenu', () => {
     fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
     fireEvent.click(trigger)
 
-    // If Tip (now composed around DropdownMenuTrigger, not the other way
-    // round) ever stopped forwarding the asChild-injected props again, this
-    // menu would never open and these queries would throw instead of
-    // resolving.
     expect(await screen.findByRole('menu')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /archive/i })).toBeTruthy()
+  })
+
+  it('opens the rename dialog focused on its input, not the row trigger', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const rename = await screen.findByRole('menuitem', { name: /rename/i })
+    fireEvent.click(rename)
+
+    // The dialog opens and its textbox takes focus. If the menu's close restored
+    // focus to the row trigger instead, Space would activate the row and the
+    // arrow keys would move the list rather than the caret (the reported bug).
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(document.activeElement).toBe(input))
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    expect(document.activeElement).not.toBe(trigger)
+  })
+
+  it('passes profile to renameSession when submitting from RenameSessionDialog', async () => {
+    const { renameSession } = await import('@/hermes')
+    vi.mocked(renameSession).mockResolvedValue({ ok: true, title: 'Prep Butler' })
+
+    render(
+      <SessionActionsMenu profile="personal" sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const rename = await screen.findByRole('menuitem', { name: /rename/i })
+    fireEvent.click(rename)
+
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'Prep Butler' } })
+
+    const save = within(dialog).getByRole('button', { name: /save/i })
+    fireEvent.click(save)
+
+    await waitFor(() => {
+      expect(renameSession).toHaveBeenCalledWith('s1', 'Prep Butler', 'personal')
+    })
+  })
+
+  it('confirms before deleting — cancel keeps the session, confirm deletes it', async () => {
+    const onDelete = vi.fn()
+    render(
+      <SessionActionsMenu onDelete={onDelete} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const deleteItem = await screen.findByRole('menuitem', { name: /delete/i })
+    fireEvent.click(deleteItem)
+
+    // The confirm dialog is up and names the session being deleted.
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByText(/My session/)).toBeTruthy()
+
+    // Cancel: nothing is deleted.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onDelete).not.toHaveBeenCalled()
+
+    // Re-open the menu and confirm: only now does the delete call fire.
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    const deleteItemAgain = await screen.findByRole('menuitem', { name: /delete/i })
+    fireEvent.click(deleteItemAgain)
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    // ConfirmDialog shows a done beat before auto-closing (600ms); awaiting it
+    // also drains the async run() update inside act().
+    expect(await screen.findByText('Session deleted')).toBeTruthy()
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables the delete item when no onDelete is provided', async () => {
+    render(
+      <SessionActionsMenu sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const deleteItem = await screen.findByRole('menuitem', { name: /delete/i })
+    expect(deleteItem.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  // The sidebar's Archived view reuses this menu; its rows must offer the
+  // restore verb instead of a no-op re-archive (#98813). The item still fires
+  // the shared onArchive callback — the wiring dispatches it to the restore
+  // path based on the row's archived state.
+  it('labels the archive verb Unarchive for an already-archived row and fires the shared callback', async () => {
+    const onArchive = vi.fn()
+    render(
+      <SessionActionsMenu archived onArchive={onArchive} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const restoreItem = await screen.findByRole('menuitem', { name: /^unarchive$/i })
+    expect(screen.queryByRole('menuitem', { name: /^archive$/i })).toBeNull()
+
+    fireEvent.click(restoreItem)
+    await waitFor(() => expect(onArchive).toHaveBeenCalledTimes(1))
+  })
+
+  it('confirms with the Enter key and cancels with Escape', async () => {
+    const onDelete = vi.fn()
+    render(
+      <SessionActionsMenu onDelete={onDelete} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toBeTruthy()
+
+    // Escape cancels: dialog closes, nothing is deleted.
+    fireEvent.keyDown(window.document, { key: 'Escape' })
+    expect(await screen.queryByRole('dialog')).toBeNull()
+    expect(onDelete).not.toHaveBeenCalled()
+
+    // Re-open and confirm with Enter at wherever focus actually is. Firing on
+    // the dialog node would pass even when the menu leaves focus on the row
+    // trigger — where Enter re-activates the row instead of confirming.
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+
+    const reopened = await screen.findByRole('dialog')
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(reopened.contains(document.activeElement)).toBe(true))
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
+
+    expect(await screen.findByText('Session deleted')).toBeTruthy()
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('routes the same confirm guard through the context menu', async () => {
+    const onDelete = vi.fn()
+    render(
+      <SessionContextMenu onDelete={onDelete} sessionId="s1" title="My session">
+        <button aria-label="Session row" type="button">
+          Row
+        </button>
+      </SessionContextMenu>
+    )
+
+    const row = screen.getByRole('button', { name: 'Session row' })
+    fireEvent.contextMenu(row)
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(await screen.findByText('Session deleted')).toBeTruthy()
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  // A canonical Bot Chat tab must not offer Rename: the write can never reach
+  // the caption it names (the caption is the roster label) and the backend
+  // guard refuses it anyway — the old flow toasted success over a no-op
+  // (#124857). The item is omitted, not disabled, so the menu shows only
+  // verbs whose result the user can observe.
+  it('omits Rename (and never mounts its dialog) when renameable is false', async () => {
+    const { unmount } = render(
+      <SessionContextMenu onDelete={vi.fn()} renameable={false} sessionId="bot-chat" title="Bot Chat">
+        <button aria-label="Session row" type="button">
+          Row
+        </button>
+      </SessionContextMenu>
+    )
+
+    const row = screen.getByRole('button', { name: 'Session row' })
+    fireEvent.contextMenu(row)
+
+    await screen.findByRole('menu')
+    expect(screen.queryByRole('menuitem', { name: /rename/i })).toBeNull()
+    // The other identity verbs stay available — only Rename is gated.
+    expect(screen.getByRole('menuitem', { name: /^pin$/i })).toBeTruthy()
+
+    // No rename dialog is mounted anywhere (portals included): the verb is
+    // unreachable even programmatically, not just hidden from pointer users.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    unmount()
+  })
+
+  // $projectTree is only populated by a grouped-view visit or the flat view's
+  // background warm timer (PROJECT_TREE_WARM_MS). Opening this submenu before
+  // either fires must not silently show "No other projects" forever — it must
+  // pull the authoritative tree itself.
+  it('refreshes the project tree when the "Move to project" submenu opens', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+    expect(refreshProjectTree).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
+
+    await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
   })
 })

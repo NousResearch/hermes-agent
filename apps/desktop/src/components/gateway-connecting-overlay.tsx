@@ -1,11 +1,18 @@
+import type { ConnectionState } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { DecodeText } from '@/components/ui/decode-text'
+import { prefersReducedMotion } from '@/hooks/use-media-query'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $desktopBoot } from '@/store/boot'
+import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { $decideExit, $introStartExit, $introView } from '@/store/onboarding-intro'
+import { $onboardingDecided } from '@/store/onboarding-presence'
 import { $gatewayState } from '@/store/session'
+import { isMainWindow } from '@/store/windows'
 
 // Decode mechanics live in the shared <DecodeText> primitive
 // (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
@@ -35,8 +42,99 @@ function forcedPreview(): boolean {
   }
 }
 
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+// The full-screen connecting overlay is for initial boot only. After a
+// healthy boot, flaky networks / sleep-wake can drop the socket and flip the
+// gateway state back to closed/error while the app reconnects. Do not cover
+// the chat then — users should still be able to type drafts, open settings,
+// and recover instead of staring at a modal CONNECTING screen.
+function isInitialConnect(
+  boot: DesktopBootState,
+  gatewaySwitching: boolean,
+  gatewayState: ConnectionState,
+  coldBootDone: boolean
+): boolean {
+  const initialBootActive = boot.visible || boot.running || boot.progress < 100
+
+  return !coldBootDone && !gatewaySwitching && gatewayState !== 'open' && !boot.error && initialBootActive
+}
+
+interface ConnectingOverlayViewProps {
+  decoding: boolean
+  onExit: (() => void) | null
+  phase: Phase
+}
+
+/** The first-run start outlasted the boot budget: it keeps waiting, and the person may go on without setup. */
+function SlowSetupStart({ onExit }: { onExit: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="grid max-w-xs justify-items-center gap-3 text-center" role="status">
+      <div className="text-sm font-medium text-foreground">{t.onboarding.setupSlowTitle}</div>
+      <div className="text-xs text-muted-foreground">{t.onboarding.setupSlowBody}</div>
+      <Button onClick={onExit} size="sm" type="button" variant="secondary">
+        {t.onboarding.continueWithoutSetup}
+      </Button>
+    </div>
+  )
+}
+
+function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayViewProps) {
+  const leaving = phase !== 'live'
+  const overlayHidden = phase === 'overlay-out' || phase === 'gone'
+
+  return (
+    <div
+      className={cn(
+        'fixed inset-0 z-(--z-connecting) grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
+        overlayHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
+      )}
+      // Masks the whole app while booting — must stay filled under window
+      // glass or the shell shows through. Contract: `[data-glass-opaque]`
+      // in styles.css.
+      data-glass-opaque=""
+    >
+      {onExit ? (
+        <SlowSetupStart onExit={onExit} />
+      ) : (
+        <DecodeText
+          active={decoding}
+          className={cn(
+            'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
+            leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
+          )}
+          cursor
+          loop
+          prefix={4}
+          text={TEXT}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Held until the app knows whether onboarding runs, so the chat never flashes before it. The due check
+ * has no deadline: past its budget (`decideOnboarding`) this overlay offers Continue, which releases the
+ * app for this launch. Once onboarding runs, the first-run intro's `starting` screen is this overlay and
+ * stays up until its chat is open, offering a way out when the start is slow. A rerun from Settings
+ * brings that screen back after boot.
+ */
+function useOnboardingHold(previewing: boolean) {
+  const onboardingDecided = useStore($onboardingDecided)
+  const introView = useStore($introView)
+  const introStartExit = useStore($introStartExit)
+  const decideExit = useStore($decideExit)
+
+  const watching = !previewing && isMainWindow()
+  const introStarting = watching && introView === 'starting'
+  const deciding = watching && !onboardingDecided
+
+  return {
+    holds: introStarting || deciding,
+    introStarting,
+    onExit: introStarting ? introStartExit : deciding ? decideExit : null
+  }
 }
 
 export function GatewayConnectingOverlay() {
@@ -44,6 +142,7 @@ export function GatewayConnectingOverlay() {
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
   const [previewing] = useState(forcedPreview)
+  const { holds: onboardingHolds, introStarting, onExit } = useOnboardingHold(previewing)
   const reduce = prefersReducedMotion()
   // Under reduced motion, skip the multi-phase exit choreography (text-out →
   // hold → overlay fade) and jump straight to gone so the overlay unmounts
@@ -58,24 +157,23 @@ export function GatewayConnectingOverlay() {
     coldBootDoneRef.current = true
   }
 
-  // The full-screen connecting overlay is for initial boot only. After a
-  // healthy boot, flaky networks / sleep-wake can drop the socket and flip the
-  // gateway state back to closed/error while the app reconnects. Do not cover
-  // the chat then — users should still be able to type drafts, open settings,
-  // and recover instead of staring at a modal CONNECTING screen.
-  const initialBootActive = boot.visible || boot.running || boot.progress < 100
-
-  const connecting =
-    !coldBootDoneRef.current && !gatewaySwitching && gatewayState !== 'open' && !boot.error && initialBootActive
+  const connecting = isInitialConnect(boot, gatewaySwitching, gatewayState, coldBootDoneRef.current)
 
   // Latches once we've actually shown the overlay, so the brief frame where
   // gatewayState flips to "open" (connecting -> false) before the exit phase
   // kicks in doesn't unmount us and cause a flash.
   const shownRef = useRef(false)
 
-  if (previewing || connecting) {
+  // Run onboarding again (Settings) brings the starting screen back over an app that already booted.
+  if (previewing || connecting || introStarting) {
     shownRef.current = true
   }
+
+  useEffect(() => {
+    if (introStarting && phase !== 'live') {
+      setPhase('live')
+    }
+  }, [introStarting, phase])
 
   // Kick off the exit when connected: real connect, or a faked timer in preview.
   useEffect(() => {
@@ -89,14 +187,14 @@ export function GatewayConnectingOverlay() {
       return () => window.clearTimeout(id)
     }
 
-    if (gatewayState === 'open' && shownRef.current) {
+    if (gatewayState === 'open' && shownRef.current && !onboardingHolds) {
       // Under reduced motion, skip the multi-phase exit choreography
       // (text-out → hold → overlay fade) and jump straight to gone so the
       // overlay unmounts the instant the gateway opens. E2E screenshots
       // rely on this to avoid catching the overlay mid-fade.
       setPhase(reduce ? 'gone' : 'text-out')
     }
-  }, [phase, previewing, gatewayState, reduce])
+  }, [phase, previewing, gatewayState, onboardingHolds, reduce])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {
@@ -135,26 +233,7 @@ export function GatewayConnectingOverlay() {
     return null
   }
 
-  const leaving = phase !== 'live'
-  const overlayHidden = phase === 'overlay-out' || phase === 'gone'
-
   return (
-    <div
-      className={cn(
-        'fixed inset-0 z-[1200] grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
-        overlayHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
-      )}
-    >
-      <DecodeText
-        active={phase === 'live' && (previewing || connecting)}
-        className={cn(
-          'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
-          leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
-        )}
-        cursor
-        prefix={4}
-        text={TEXT}
-      />
-    </div>
+    <ConnectingOverlayView decoding={phase === 'live' && (previewing || connecting)} onExit={onExit} phase={phase} />
   )
 }

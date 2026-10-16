@@ -28,7 +28,7 @@ Three pieces fit together:
    `text_to_speech` for audio, and so on.
 
 2. **The gateway scans agent responses for file paths.** Any absolute path
-   (`/tmp/...`) or home-relative path (`~/...`) ending in a supported
+   (`~/.hermes/cache/scratch/...`) or home-relative path (`~/...`) ending in a supported
    extension gets extracted. Paths inside code blocks and inline code are
    ignored so code samples are never mutilated.
 
@@ -41,12 +41,13 @@ Three pieces fit together:
 | Category | Extensions | Delivery |
 |---|---|---|
 | Images | `.png .jpg .jpeg .gif .webp .bmp .tiff .svg` | Inline embed |
-| Video | `.mp4 .mov .avi .mkv .webm` | Inline embed (where supported) |
-| Audio | `.mp3 .wav .ogg .m4a .flac` | Voice / audio attachment |
-| Documents | `.pdf .docx .doc .odt .rtf .txt .md` | File upload |
-| Data | `.xlsx .xls .csv .tsv .json .xml .yaml .yml` | File upload |
-| Presentations | `.pptx .ppt .odp` | File upload |
-| Archives | `.zip .tar .gz .tgz .bz2 .7z` | File upload |
+| Video | `.mp4 .mov .avi .mkv .webm .3gp` | Inline embed (where supported) |
+| Audio | `.mp3 .m2a .wav .ogg .opus .m4a .flac` | Voice / audio attachment |
+| Documents | `.pdf .docx .doc .odt .rtf .txt .md .epub` | File upload |
+| Data | `.xlsx .xls .ods .csv .tsv .json .xml .yaml .yml` | File upload |
+| Geospatial | `.kmz .kml .geojson .gpx` | File upload |
+| Presentations | `.pptx .ppt .odp .key` | File upload |
+| Archives | `.zip .tar .gz .tgz .bz2 .xz .7z .rar .apk .ipa` | File upload |
 | Web | `.html .htm` | File upload |
 
 `.py`, `.log`, and other source-file extensions are intentionally excluded so
@@ -70,7 +71,7 @@ persona in `~/.hermes/SOUL.md`, or as a named preset under
 via `/personality`).
 
 The mechanic the agent has to use is simple: render the file to an
-absolute path (e.g. `/tmp/q3-revenue.png`) and mention that path as
+absolute path (e.g. `~/.hermes/cache/scratch/q3-revenue.png`) and mention that path as
 plain text in the reply. The gateway does the rest. Paths inside
 fenced code blocks or backticks are ignored so code samples are never
 mutilated.
@@ -84,8 +85,8 @@ deliverable files to their `kanban_complete` call:
 kanban_complete(
     summary="rendered Q3 revenue chart and report",
     artifacts=[
-        "/tmp/q3-revenue.png",
-        "/tmp/q3-report.pdf",
+        "~/.hermes/cache/scratch/q3-revenue.png",
+        "~/.hermes/cache/scratch/q3-report.pdf",
     ],
 )
 ```

@@ -55,7 +55,7 @@ uv run "$SCRIPT" servers
 If no servers found, start one:
 ```
 jupyter-lab --no-browser --port=8888 --notebook-dir=$HOME/notebooks \
-  --IdentityProvider.token='' --ServerApp.password='' > /tmp/jupyter.log 2>&1 &
+  --IdentityProvider.token='' --ServerApp.password='' > ~/.hermes/cache/scratch/jupyter.log 2>&1 &
 sleep 3
 ```
 
@@ -72,7 +72,7 @@ session via the Jupyter REST API:
 ```
 curl -s -X POST http://127.0.0.1:8888/api/sessions \
   -H "Content-Type: application/json" \
-  -d '{"path":"scratch.ipynb","type":"notebook","name":"scratch.ipynb","kernel":{"name":"python3"}}'
+  -d '{"path":"scratch.ipynb","type":"notebook","name":"scratch.ipynb","kernel":{"name":"python"}}'
 ```
 
 ## Core Workflow

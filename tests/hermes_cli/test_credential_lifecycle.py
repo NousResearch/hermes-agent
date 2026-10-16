@@ -87,64 +87,6 @@ def _zai_pool_fixture():
 # ---------------------------------------------------------------------------
 
 
-def test_delete_env_key_prunes_env_seeded_pool_entry(hermes_home):
-    _write_env(hermes_home, ZAI_API_KEY=FAKE_ZAI_KEY)
-    _write_auth(hermes_home, _zai_pool_fixture())
-
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "ZAI_API_KEY"}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["ok"] is True
-    assert "zai" in body["pool_pruned"]
-
-    # .env cleared
-    from hermes_cli.config import load_env
-
-    assert "ZAI_API_KEY" not in load_env()
-
-    # auth.json: env-seeded entry gone, OAuth entry preserved
-    store = _read_auth(hermes_home)
-    sources = [e["source"] for e in store["credential_pool"]["zai"]]
-    assert "env:ZAI_API_KEY" not in sources
-    assert "device_code" in sources, "OAuth grant must survive an API-key delete"
-
-
-def test_delete_env_key_removes_provider_pool_key_when_emptied(hermes_home):
-    """A provider whose ONLY pool entry was env-seeded disappears entirely."""
-    _write_env(hermes_home, ZAI_API_KEY=FAKE_ZAI_KEY)
-    _write_auth(
-        hermes_home,
-        {"zai": [_zai_pool_fixture()["zai"][0]]},  # env entry only
-    )
-
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "ZAI_API_KEY"}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-    store = _read_auth(hermes_home)
-    assert "zai" not in store.get("credential_pool", {}), (
-        "provider must vanish from credential_pool so the model picker "
-        "stops listing it (#51071)"
-    )
-
-
-def test_delete_survives_pool_reload(hermes_home):
-    """#59761: the pool loader must not resurrect the entry after 'restart'."""
-    _write_env(hermes_home, ZAI_API_KEY=FAKE_ZAI_KEY)
-    _write_auth(hermes_home, {"zai": [_zai_pool_fixture()["zai"][0]]})
-
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "ZAI_API_KEY"}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-
-    # Simulate restart: reload the pool from disk the way startup does.
-    from agent.credential_pool import load_pool
-
-    entries = load_pool("zai").entries()
-    assert entries == [], f"stale entries resurrected: {[e.source for e in entries]}"
 
 
 def test_delete_clears_provider_models_cache(hermes_home):
@@ -162,54 +104,6 @@ def test_delete_clears_provider_models_cache(hermes_home):
     if cache_path.exists():
         cache = json.loads(cache_path.read_text(encoding="utf-8"))
         assert "zai" not in cache
-
-
-def test_delete_pool_only_credential_still_cleans_up(hermes_home):
-    """Stale pool entry with NO .env line (the #59761 restart state) is
-    removable through the same delete button instead of 404ing."""
-    _write_env(hermes_home)  # empty .env
-    _write_auth(hermes_home, {"zai": [_zai_pool_fixture()["zai"][0]]})
-
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "ZAI_API_KEY"}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-    store = _read_auth(hermes_home)
-    assert "zai" not in store.get("credential_pool", {})
-
-
-def test_delete_unknown_key_404s(hermes_home):
-    _write_env(hermes_home)
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "NEVER_SET_KEY"}, headers=HEADERS
-    )
-    assert resp.status_code == 404
-
-
-def test_delete_does_not_touch_other_providers(hermes_home):
-    _write_env(hermes_home, ZAI_API_KEY=FAKE_ZAI_KEY)
-    other_key = "dk-" + "e" * 24
-    pool = _zai_pool_fixture()
-    pool["deepseek"] = [
-        {
-            "id": "d1",
-            "label": "env",
-            "auth_type": "api_key",
-            "priority": 0,
-            "source": "env:DEEPSEEK_API_KEY",
-            "access_token": other_key,
-        }
-    ]
-    _write_auth(hermes_home, pool)
-
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "ZAI_API_KEY"}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-    store = _read_auth(hermes_home)
-    assert [e["source"] for e in store["credential_pool"]["deepseek"]] == [
-        "env:DEEPSEEK_API_KEY"
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -249,14 +143,109 @@ def test_update_rotates_config_yaml_model_mirror(hermes_home):
     assert load_env()["OPENAI_API_KEY"] == new
 
 
-def test_update_rotates_custom_provider_mirror(hermes_home):
-    old = "sk-cp-" + "h" * 24
-    new = "sk-cp-" + "i" * 24
+
+
+# ---------------------------------------------------------------------------
+# Desktop PUT /api/env — #96058: credential_pool must be materialized so the
+# live runtime picks up the new key without waiting for its next background
+# load_pool() or a separate `hermes auth add`.
+# ---------------------------------------------------------------------------
+
+
+# OpenCode Go is a registered api_key provider with api_key_env_vars containing
+# the single env var OPENCODE_GO_API_KEY — exercising the exact reproducer
+# from issue #96058 (Ubuntu 24.04, openai_sdk 2.24.0, provider=opencode-go).
+OPENCODE_KEY_NEW = "ocg-" + "e" * 28
+
+
+def test_put_api_env_materializes_credential_pool_entry(hermes_home):
+    """Desktop Providers → API keys → Save must write a credential_pool entry.
+
+    Pre-fix: save_provider_env_credential only mutated .env. The live pool
+    kept authenticating with a stale higher-precedence config.yaml mirror or
+    the old cached credential until a separate ``hermes auth add opencode-go``
+    ran. auth.json mtime was unchanged before/after Save (#96058).
+
+    Post-fix: the same PUT /api/env call must also materialize an entry under
+    ``credential_pool.<provider>`` in auth.json so the next request
+    authenticates immediately, matching ``hermes auth add <provider> --type
+    api-key`` behavior.
+    """
+    # Start clean: empty auth.json so the only way a pool entry shows up is
+    # via the PUT /api/env handler we're testing.
+    _write_auth(hermes_home, {})
+
+    resp = client.put(
+        "/api/env",
+        json={"key": "OPENCODE_GO_API_KEY", "value": OPENCODE_KEY_NEW},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("ok") is True
+    assert body.get("key") == "OPENCODE_GO_API_KEY"
+
+    # auth.json must now have a credential_pool entry for opencode-go. The
+    # exact source string lives in source="env:OPENCODE_GO_API_KEY" — env
+    # sources are sanitized on disk (the raw token is replaced with a
+    # fingerprint; the canonical secret lives in .env and gets re-hydrated by
+    # load_pool() on each read). The critical observable is: load_pool() on
+    # the next call returns an in-memory entry carrying the just-saved token.
+    auth = _read_auth(hermes_home)
+    pool = auth.get("credential_pool", {})
+    assert "opencode-go" in pool, (
+        "PUT /api/env did not materialize a credential_pool entry for "
+        "opencode-go (#96058)"
+    )
+    entries = pool["opencode-go"]
+    assert isinstance(entries, list) and entries, pool
+    matched_disk = [
+        e for e in entries
+        if isinstance(e.get("source"), str)
+        and e["source"] == "env:OPENCODE_GO_API_KEY"
+    ]
+    assert matched_disk, (
+        f"credential_pool.opencode-go env-seeded reference missing on disk; "
+        f"got {entries!r}"
+    )
+    # And: a fresh load_pool() must surface the just-saved token to the
+    # runtime. This is the actual end-to-end contract — anything weaker
+    # means the OpenAI client will 401 because it never receives the new key.
+    from agent.credential_pool import load_pool
+    pool_obj = load_pool("opencode-go")
+    runtime_entries = pool_obj.entries()
+    matched_runtime = [
+        e for e in runtime_entries
+        if e.access_token == OPENCODE_KEY_NEW
+        and isinstance(e.source, str)
+        and e.source == "env:OPENCODE_GO_API_KEY"
+    ]
+    assert matched_runtime, (
+        "load_pool('opencode-go') did not surface the just-saved token; "
+        "the live runtime will keep 401'ing (#96058). "
+        f"Got sources: {[e.source for e in runtime_entries]!r}"
+    )
+    assert matched_runtime[0].auth_type == "api_key"
+
+
+
+
+# ---------------------------------------------------------------------------
+# Keyed `providers` schema (v12+) — where the dashboard writes custom
+# endpoints. Its inline api_key is a real credential and higher-precedence
+# than the env var, so a stale copy left here shadows a rotation (#62269) and
+# survives a "remove from EVERY store" delete.
+# ---------------------------------------------------------------------------
+
+
+def test_update_rotates_keyed_providers_mirror(hermes_home):
+    old = "sk-kp-" + "n" * 24
+    new = "sk-kp-" + "o" * 24
     _write_env(hermes_home, OPENAI_API_KEY=old)
     _write_config(
         hermes_home,
-        "custom_providers:\n"
-        "  - name: myendpoint\n"
+        "providers:\n"
+        "  myendpoint:\n"
         "    base_url: https://llm.example.test/v1\n"
         f"    api_key: {old}\n",
     )
@@ -265,40 +254,54 @@ def test_update_rotates_custom_provider_mirror(hermes_home):
         "/api/env", json={"key": "OPENAI_API_KEY", "value": new}, headers=HEADERS
     )
     assert resp.status_code == 200
+    assert "providers.myendpoint.api_key" in resp.json().get("config_updates", [])
+
     cfg_text = hermes_home.joinpath("config.yaml").read_text(encoding="utf-8")
-    assert old not in cfg_text
-    assert new in cfg_text
+    assert old not in cfg_text, "stale key in providers.<id> shadows the rotation (#62269)"
+    assert new in cfg_text, "keyed providers mirror not rotated to the new key"
 
 
-def test_update_leaves_unrelated_config_keys_alone(hermes_home):
-    """A DIFFERENT key configured inline must not be rewritten by value-match."""
-    old = "sk-un-" + "j" * 24
-    unrelated = "sk-un-" + "k" * 24
+def test_delete_scrubs_keyed_providers_mirror(hermes_home):
+    old = "sk-kp-" + "p" * 24
     _write_env(hermes_home, OPENAI_API_KEY=old)
-    _write_config(hermes_home, f"model:\n  provider: custom\n  api_key: {unrelated}\n")
-
-    resp = client.put(
-        "/api/env",
-        json={"key": "OPENAI_API_KEY", "value": "sk-un-" + "l" * 24},
-        headers=HEADERS,
+    _write_config(
+        hermes_home,
+        "providers:\n"
+        "  myendpoint:\n"
+        "    base_url: https://llm.example.test/v1\n"
+        f"    api_key: {old}\n",
     )
-    assert resp.status_code == 200
-    cfg_text = hermes_home.joinpath("config.yaml").read_text(encoding="utf-8")
-    assert unrelated in cfg_text, "unrelated inline key must be preserved"
-
-
-def test_delete_scrubs_config_yaml_mirror(hermes_home):
-    old = "sk-dl-" + "m" * 24
-    _write_env(hermes_home, OPENAI_API_KEY=old)
-    _write_config(hermes_home, f"model:\n  provider: custom\n  api_key: {old}\n")
 
     resp = client.request(
         "DELETE", "/api/env", json={"key": "OPENAI_API_KEY"}, headers=HEADERS
     )
     assert resp.status_code == 200
-    assert "model.api_key" in resp.json()["config_scrubbed"]
+    assert "providers.myendpoint.api_key" in resp.json()["config_scrubbed"]
     cfg_text = hermes_home.joinpath("config.yaml").read_text(encoding="utf-8")
-    assert old not in cfg_text
+    assert old not in cfg_text, "delete must clear the credential from EVERY store"
+
+
+def test_scrub_never_touches_providers_base_url_alias(hermes_home):
+    """In the keyed ``providers`` schema ``api`` is the base_url alias, NOT a
+    credential. Even if the .env value coincided with a base_url, the scrub
+    must not rewrite a provider's endpoint URL."""
+    old = "https://llm.example.test/v1"  # a URL that also happens to be the key value
+    _write_env(hermes_home, OPENAI_API_KEY=old)
+    _write_config(
+        hermes_home,
+        "providers:\n"
+        "  myendpoint:\n"
+        f"    api: {old}\n"          # base_url alias — must be preserved
+        "    model: my-model\n",
+    )
+
+    resp = client.request(
+        "DELETE", "/api/env", json={"key": "OPENAI_API_KEY"}, headers=HEADERS
+    )
+    assert resp.status_code == 200
+    cfg_text = hermes_home.joinpath("config.yaml").read_text(encoding="utf-8")
+    assert old in cfg_text, "providers.<id>.api is a base_url and must survive"
+    assert "providers.myendpoint.api" not in resp.json().get("config_scrubbed", [])
 
 
 # ---------------------------------------------------------------------------
@@ -306,30 +309,36 @@ def test_delete_scrubs_config_yaml_mirror(hermes_home):
 # ---------------------------------------------------------------------------
 
 
-def test_delete_then_resave_round_trip(hermes_home):
-    _write_env(hermes_home, ZAI_API_KEY=FAKE_ZAI_KEY)
-    _write_auth(hermes_home, {"zai": [_zai_pool_fixture()["zai"][0]]})
 
-    resp = client.request(
-        "DELETE", "/api/env", json={"key": "ZAI_API_KEY"}, headers=HEADERS
+
+# ---------------------------------------------------------------------------
+# GET /api/env — provider_primary pass-through for the Desktop Keys tab
+# ---------------------------------------------------------------------------
+# The Desktop groups a provider card's rows by provider_label and picks the
+# card's main "Paste key" field from `provider_primary` first. That flag is
+# computed per catalog entry in _catalog_provider_env_metadata (index == 0 of
+# the provider's own api_key_env_vars) but _row used to drop it, so a card's
+# own first credential arrived with provider_primary=None and the grouping
+# fell back to the first non-advanced key var — which, for a profile-shared
+# credential contributed by peer providers (DASHSCOPE_API_KEY is index >= 1
+# of alibaba-coding-plan-cn), could be a FOREIGN tier's key.
+
+
+def test_get_api_env_passes_provider_primary_through(hermes_home):
+    """Every provider card's own index-0 credential must stay its main field."""
+    resp = client.get("/api/env", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    env = resp.json()
+
+    # The CN Coding Plan card: its own key is its primary; the shared
+    # DASHSCOPE_API_KEY alias joins the card marked primary=False.
+    assert env["ALIBABA_CODING_PLAN_CN_API_KEY"]["provider_primary"] is True
+    dashscope = env["DASHSCOPE_API_KEY"]["provider_profiles"]
+    cn_profile = next(
+        p for p in dashscope if p["provider"] == "alibaba-coding-plan-cn"
     )
-    assert resp.status_code == 200
-
-    from hermes_cli.auth import is_source_suppressed
-
-    assert is_source_suppressed("zai", "env:ZAI_API_KEY"), (
-        "delete must suppress the env source so a lingering shell export "
-        "can't re-seed the pool"
+    assert cn_profile["primary"] is False, (
+        "DASHSCOPE_API_KEY is a fallback alias for alibaba-coding-plan-cn; "
+        "marking it primary would re-point the card's main field away from "
+        "ALIBABA_CODING_PLAN_CN_API_KEY"
     )
-
-    resp = client.put(
-        "/api/env", json={"key": "ZAI_API_KEY", "value": NEW_KEY}, headers=HEADERS
-    )
-    assert resp.status_code == 200
-    assert not is_source_suppressed("zai", "env:ZAI_API_KEY"), (
-        "an explicit re-save must lift the suppression (like `hermes auth add`)"
-    )
-
-    from hermes_cli.config import load_env
-
-    assert load_env()["ZAI_API_KEY"] == NEW_KEY

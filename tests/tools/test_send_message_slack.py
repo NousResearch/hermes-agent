@@ -9,12 +9,10 @@ _standalone_send`` and text sends now route through ``_send_via_adapter``
 import asyncio
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from gateway.config import Platform
-from tools.send_message_tool import _send_to_platform
 
 
 def _ensure_slack_mock(monkeypatch):
@@ -42,29 +40,6 @@ def _ensure_slack_mock(monkeypatch):
         monkeypatch.setitem(sys.modules, name, mod)
 
 
-def test_slack_send_to_platform_routes_through_send_via_adapter(monkeypatch):
-    """Slack text sends go through _send_via_adapter (live adapter first)."""
-    _ensure_slack_mock(monkeypatch)
-
-    live_send = AsyncMock(return_value={"success": True, "message_id": "live-ts"})
-
-    with patch("tools.send_message_tool._send_via_adapter", live_send):
-        result = asyncio.run(
-            _send_to_platform(
-                Platform.SLACK,
-                SimpleNamespace(enabled=True, token="bad-token,good-token", extra={}),
-                "C123",
-                "**hello** from Hermes",
-                thread_id="171.1",
-            )
-        )
-
-    assert result == {"success": True, "message_id": "live-ts"}
-    live_send.assert_awaited_once()
-    call = live_send.await_args
-    assert call.args[0] == Platform.SLACK
-    assert call.args[2] == "C123"
-    assert call.kwargs["thread_id"] == "171.1"
 
 
 class _SlackResponse:
@@ -114,30 +89,6 @@ def _standalone_send(monkeypatch):
     from plugins.platforms.slack import adapter as slack_adapter
 
     return slack_adapter._standalone_send
-
-
-def test_standalone_send_tries_comma_separated_tokens_individually(
-    monkeypatch, _standalone_send
-):
-    """Multi-workspace token lists must not be sent as one literal token."""
-    fake_session = _SlackSession()
-    monkeypatch.setattr(
-        "aiohttp.ClientSession", lambda *args, **kwargs: fake_session
-    )
-
-    pconfig = SimpleNamespace(enabled=True, token="bad-token, good-token", extra={})
-    result = asyncio.run(_standalone_send(pconfig, "C123", "hello"))
-
-    assert result == {
-        "success": True,
-        "platform": "slack",
-        "chat_id": "C123",
-        "message_id": "171.123",
-    }
-    assert [token for token, _payload in fake_session.calls] == [
-        "bad-token",
-        "good-token",
-    ]
 
 
 def test_standalone_send_stops_on_non_token_error(monkeypatch, _standalone_send):

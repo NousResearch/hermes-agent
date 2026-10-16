@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -61,97 +61,6 @@ def _make_runner(platform: Platform):
 
 
 @pytest.mark.asyncio
-async def test_hook_skip_short_circuits_dispatch(monkeypatch):
-    """A plugin returning {'action': 'skip'} drops the message before auth."""
-    _clear_auth_env(monkeypatch)
-
-    def _fake_hook(name, **kwargs):
-        if name == "pre_gateway_dispatch":
-            return [{"action": "skip", "reason": "plugin-handled"}]
-        return []
-
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
-
-    runner, adapter = _make_runner(Platform.WHATSAPP)
-
-    result = await runner._handle_message(_make_event("hi"))
-
-    assert result is None
-    adapter.send.assert_not_awaited()
-    runner.pairing_store.generate_code.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_hook_rewrite_replaces_event_text(monkeypatch):
-    """A plugin returning {'action': 'rewrite', 'text': ...} mutates event.text."""
-    _clear_auth_env(monkeypatch)
-    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
-
-    seen_text = {}
-
-    def _fake_hook(name, **kwargs):
-        if name == "pre_gateway_dispatch":
-            return [{"action": "rewrite", "text": "REWRITTEN"}]
-        return []
-
-    async def _capture(event, source, _quick_key, _run_generation):
-        seen_text["value"] = event.text
-        return "ok"
-
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
-
-    runner, _adapter = _make_runner(Platform.WHATSAPP)
-    runner._handle_message_with_agent = _capture  # noqa: SLF001
-
-    await runner._handle_message(_make_event("original"))
-
-    assert seen_text.get("value") == "REWRITTEN"
-
-
-@pytest.mark.asyncio
-async def test_hook_allow_falls_through_to_auth(monkeypatch):
-    """A plugin returning {'action': 'allow'} continues to normal dispatch."""
-    _clear_auth_env(monkeypatch)
-    # No allowed users set → auth fails → pairing flow triggers.
-    monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
-
-    def _fake_hook(name, **kwargs):
-        if name == "pre_gateway_dispatch":
-            return [{"action": "allow"}]
-        return []
-
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
-
-    runner, adapter = _make_runner(Platform.WHATSAPP)
-    runner.pairing_store.generate_code.return_value = "12345"
-
-    result = await runner._handle_message(_make_event("hi"))
-
-    # auth chain ran → pairing code was generated
-    assert result is None
-    runner.pairing_store.generate_code.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_hook_exception_does_not_break_dispatch(monkeypatch):
-    """A raising plugin hook does not break the gateway."""
-    _clear_auth_env(monkeypatch)
-    monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
-
-    def _fake_hook(name, **kwargs):
-        raise RuntimeError("plugin blew up")
-
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
-
-    runner, _adapter = _make_runner(Platform.WHATSAPP)
-    runner.pairing_store.generate_code.return_value = None
-
-    # Should not raise; falls through to auth chain.
-    result = await runner._handle_message(_make_event("hi"))
-    assert result is None
-
-
-@pytest.mark.asyncio
 async def test_internal_events_bypass_hook(monkeypatch):
     """Internal events (event.internal=True) skip the plugin hook entirely."""
     _clear_auth_env(monkeypatch)
@@ -169,7 +78,7 @@ async def test_internal_events_bypass_hook(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
-    runner._handle_message_with_agent = _capture  # noqa: SLF001
+    runner._handle_message_with_agent = _capture
 
     event = _make_event("hi")
     event.internal = True
@@ -177,3 +86,131 @@ async def test_internal_events_bypass_hook(monkeypatch):
     # Even though the hook would say skip, internal events bypass it.
     await runner._handle_message(event)
     assert called["count"] == 0
+
+@pytest.mark.asyncio
+async def test_hook_fires_without_session_store_attribute(monkeypatch):
+    """A runner missing session_store still delivers the event to plugins.
+
+    Regression: the hook kwargs read ``self.session_store`` directly, so a
+    partially-initialized runner raised AttributeError inside the dispatch
+    try-block — the hook never fired, and every message logged
+    "pre_gateway_dispatch invocation failed: 'GatewayRunner' object has no
+    attribute 'session_store'". Plugins must receive the event (with
+    session_store=None) instead.
+    """
+    _clear_auth_env(monkeypatch)
+
+    seen = {}
+
+    async def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            seen["session_store"] = kwargs.get("session_store", "MISSING")
+            return [{"action": "skip", "reason": "plugin-handled"}]
+        return []
+
+    # The inbound path awaits the hook, so the seam is the async entry point.
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", _fake_hook)
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    del runner.session_store
+
+    result = await runner._handle_message(_make_event("hi"))
+    assert result is None
+    # Hook actually fired (skip short-circuited before auth) with a None store.
+    assert seen == {"session_store": None}
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_hook_callback_is_awaited_on_the_gateway_loop(monkeypatch):
+    """An ``async def`` pre_gateway_dispatch callback is awaited on the gateway's own loop.
+
+    Regression: the inbound path called the sync ``invoke_hook``, which (since #109196) runs an
+    async callback on a helper thread while the calling loop blocks in ``done.wait()``. A
+    callback that awaits anything scheduled on the gateway loop could never complete, and every
+    message stalled the loop for the callback's whole duration. Here the callback waits for a
+    sibling task on the same loop to release it; that is only possible if the hook is awaited
+    in place.
+    """
+    import asyncio
+
+    _clear_auth_env(monkeypatch)
+    gate = asyncio.Event()
+
+    async def _hook(name, **kwargs):
+        assert name == "pre_gateway_dispatch"
+        await gate.wait()
+        return [{"action": "skip", "reason": "gated"}]
+
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", _hook)
+
+    async def _release():
+        await asyncio.sleep(0)
+        gate.set()
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    asyncio.create_task(_release())
+    result = await asyncio.wait_for(runner._handle_message(_make_event("hi")), timeout=5)
+    assert result is None
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rewritten_message_keeps_its_callback_provenance_and_is_admitted(monkeypatch):
+    """A rewrite builds a new event. Under ``gateway.multiplex_profiles`` an event without its
+    adapter callback's provenance is refused ``invalid_params`` (#139045: every message to a profile
+    with a rewriting plugin failed), so the rewritten event must carry the callback's provenance and
+    be admitted with the rewritten text."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from gateway.session_ingress_context import capture_provenance, native_callback, register_transport_home
+    from hermes_constants import get_hermes_home
+    from hermes_state_runtime import list_session_admissions
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    async def rewrite(name, **_kwargs):
+        return [{"action": "rewrite", "text": "rewritten"}] if name == "pre_gateway_dispatch" else []
+
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", rewrite)
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
+    runner = GatewayRunner(GatewayConfig())
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
+    runner.adapters = {Platform.DISCORD: adapter}
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner")
+    runner._wire_adapter_handlers(adapter)
+    # The multiplexed admission check that refused the reporter (thanks @unsupportedpastels).
+    runner.config.multiplex_profiles = True
+    runner.config._runtime_profile_homes = [("default", get_hermes_home())]
+    register_transport_home(runner, None, get_hermes_home())
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    human = MessageEvent(text="original", source=source, message_id="h")
+
+    with native_callback(runner, human, get_hermes_home()):
+        expected = capture_provenance(runner, human)
+        event = await runner._hm_pre_gateway_dispatch_hook(human, source)
+        receipt = await authority.admit_native(event)
+
+    payload = list_session_admissions(authority.db, session_id=receipt.ref.session_id, pending_only=False)[-1]["payload"]
+    assert expected is not None and event is not human
+    assert (payload["text"], payload["native_text_v1"].get("provenance")) == ("rewritten", expected)
+
+
+def test_relay_binding_moves_to_a_text_rewrite_but_never_to_a_new_source():
+    """The relay binding gets the same treatment as the native one, under the same guard: it follows
+    a text-only rewrite, and is never carried to an event whose source object was swapped."""
+    from copy import copy
+    from dataclasses import replace
+
+    from gateway.session_ingress_context import _relay_callback, carry_callback, relay_callback
+
+    transport, event = object(), _make_event("a")
+    with relay_callback(transport, event):
+        rewritten = replace(event, text="b")
+        carry_callback(event, rewritten)
+        assert _relay_callback.get() == (transport, rewritten)
+        carry_callback(rewritten, replace(rewritten, source=copy(rewritten.source), text="c"))
+        assert _relay_callback.get()[1] is rewritten
+    assert _relay_callback.get() is None

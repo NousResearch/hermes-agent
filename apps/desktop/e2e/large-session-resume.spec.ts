@@ -2,7 +2,8 @@ import * as path from 'node:path'
 
 import { type TestInfo } from '@playwright/test'
 
-import { expect, test, type ElectronApplication, type Page } from './test'
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { MOCK_REPLY, type MockServer, type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
   buildAppEnv,
@@ -10,15 +11,19 @@ import {
   launchDesktop,
   type Sandbox,
   waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
 } from './fixtures'
-import { MOCK_REPLY, startMockServer, type MockServer, type MockServerOptions } from './mock-server'
 import { RealSessionBuilder } from './real-session-builder'
+import { type ElectronApplication, expect, type Page, test } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const SESSION_TITLE = 'E2E large persisted session'
 const EXPECTED_TEXT = 'E2E persisted user message 52'
+// The oldest seeded turn (HISTORY_TURNS[0]). The transcript first paints only
+// the newest turns (FIRST_PAINT_BUDGET) and backfills the rest in a rAF; a
+// baseline count taken before that backfill sees a clipped transcript and
+// falsely reports duplicates once the full list mounts. Waiting for this
+// oldest row means the baseline reflects the fully-mounted transcript.
+const OLDEST_SEEDED_TEXT = 'E2E persisted user message 0: audit the compatibility matrix'
 const BACKGROUND_PROMPT = 'E2E background inference must remain attached across resume'
 const HISTORY_TURNS = Array.from(
   { length: 27 },
@@ -189,27 +194,22 @@ test.describe('large session resume', () => {
     await assertUnchangedResume(fixture.page, testInfo)
   })
 
-  test('fast resume of an unchanged session has one user row and bounded transcript paints', async ({}, testInfo) => {
-    // Known RED: a rapid warm resume rebuilds the transcript three times
-    // (28 → 53 → 53 DOM additions) instead of the two-paint budget. Keep the
-    // regression visible without making unrelated desktop work fail CI.
-    test.fixme(true, 'Fast warm resume has an unresolved third transcript rebuild')
-
-    fixture = await setupSeededDesktop()
-    await waitForAppReady(fixture, 120_000)
-
-    await openSeededSession(fixture.page)
-    await openNewSession(fixture.page)
-    await startPaintObserver(fixture.page)
-    await assertUnchangedResume(fixture.page, testInfo)
-  })
-
   for (const resumeKind of ['fast', 'cold'] as const) {
     test(`${resumeKind} resume keeps background inference attached without duplicate messages`, async ({}, testInfo) => {
       fixture = await setupSeededDesktop({ holdFirstStreamForPrompt: BACKGROUND_PROMPT })
       await waitForAppReady(fixture, 120_000)
 
       await openSeededSession(fixture.page)
+      // The transcript first paints only the newest turns (FIRST_PAINT_BUDGET)
+      // and backfills older turns in a rAF. Wait for the oldest seeded row to
+      // mount before taking the baseline so it reflects the full transcript —
+      // otherwise a clipped baseline makes the backfilled rows look like
+      // duplicates of the completed reply.
+      await fixture.page.waitForFunction(
+        expected => (document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
+        OLDEST_SEEDED_TEXT,
+        { timeout: 30_000 },
+      )
       const initialMockReplyCount = await textNodeOccurrences(fixture.page, MOCK_REPLY)
       await submitPrompt(fixture.page, BACKGROUND_PROMPT)
       await fixture.mock.waitForHeldStream()

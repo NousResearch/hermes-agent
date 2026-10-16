@@ -141,3 +141,40 @@ def test_render_turn_timestamps_structured_user_content_without_touching_image_p
     assert user_message[0]["text"] == "describe this"
     assert rendered_user[0]["text"] == "[Tue 2026-04-28 13:42:10 CEST] describe this"
     assert rendered_user[1] == image_part
+
+
+def test_persist_session_uses_clean_structured_override_for_timestamped_turn():
+    from unittest.mock import MagicMock
+    from agent.session_persistence import SessionPersistenceMixin
+
+    agent = object.__new__(SessionPersistenceMixin)
+    agent._session_db = MagicMock()
+    agent._session_db_created = True
+    agent._session_json_enabled = False
+    agent.session_id = "session-123"
+    agent._last_flushed_db_idx = 0
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_timestamp = 1777376530.0
+    clean_content = [
+        {"type": "text", "text": "What color is this?"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        },
+    ]
+    timestamped_content = [
+        {
+            "type": "text",
+            "text": "[Tue 2026-04-28 13:42:10 CEST] What color is this?",
+        },
+        clean_content[1],
+    ]
+    agent._persist_user_message_override = clean_content
+    messages = [{"role": "user", "content": timestamped_content}]
+
+    agent._flush_messages_to_session_db(messages, [])
+
+    assert messages[0]["content"] == timestamped_content
+    batch = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
+    assert batch[0]["content"] == "What color is this?\n[screenshot]"
+    assert batch[0]["timestamp"] == 1777376530.0

@@ -11,7 +11,7 @@ import re
 import sys
 import time
 from datetime import datetime, UTC
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_time import safe_strftime
 
@@ -41,18 +41,13 @@ def message_timestamps_enabled(config: Optional[dict]) -> bool:
     )
 
 
-def render_turn_with_message_timestamps(
-    history: Optional[List[Dict[str, Any]]],
-    user_message: Any,
-    *,
-    config: Optional[dict],
-    current_timestamp: Any = None,
-    tz=None,
-) -> Tuple[List[Dict[str, Any]], Any, Optional[float]]:
-    """Return model-only timestamp rendering without mutating caller data."""
+def render_model_history_with_timestamps(
+    history: Optional[list[dict[str, Any]]], *, config: Optional[dict], tz=None,
+) -> list[dict[str, Any]]:
+    """Render a disposable request view; durable content and sidecars stay clean."""
     rendered_history = [dict(message) for message in (history or [])]
     if not message_timestamps_enabled(config):
-        return rendered_history, user_message, None
+        return rendered_history
 
     for message in rendered_history:
         if message.get("role") == "user":
@@ -69,6 +64,22 @@ def render_turn_with_message_timestamps(
                 message["api_content"] = render_user_content_with_timestamp(
                     message["api_content"], timestamp, tz=tz
                 )
+
+    return rendered_history
+
+
+def render_turn_with_message_timestamps(
+    history: Optional[list[dict[str, Any]]],
+    user_message: Any,
+    *,
+    config: Optional[dict],
+    current_timestamp: Any = None,
+    tz=None,
+) -> tuple[list[dict[str, Any]], Any, Optional[float]]:
+    """Return model-only timestamp rendering without mutating caller data."""
+    rendered_history = render_model_history_with_timestamps(history, config=config, tz=tz)
+    if not message_timestamps_enabled(config):
+        return rendered_history, user_message, None
 
     effective_timestamp = coerce_message_timestamp(
         time.time() if current_timestamp is None else current_timestamp,

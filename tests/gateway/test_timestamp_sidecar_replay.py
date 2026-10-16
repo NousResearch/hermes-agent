@@ -140,3 +140,27 @@ def test_full_builder_to_responses_keeps_cross_turn_prefix(responses_agent, tmp_
     assert not any("api_content" in item or "timestamp" in item for item in next_input)
     assert any(item.get("encrypted_content") == "synthetic-reasoning" for item in next_input)
     assert any(item.get("phase") == "final_answer" for item in next_input)
+
+
+def test_global_timestamps_stay_on_wire_and_replay_from_clean_storage(responses_agent, monkeypatch):
+    make_agent, captured, _, db, sid = responses_agent
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"message_timestamps": {"enabled": True}},
+    )
+    agent = make_agent()
+    result = agent.run_conversation("first question", persist_user_timestamp=STAMP)
+    assert result["completed"]
+    rows = db.get_messages_as_conversation(sid)
+    user = next(row for row in rows if row["role"] == "user")
+    assert user["content"] == "first question"
+    assert user["timestamp"] == STAMP
+    assert not (user.get("api_content") or "").startswith("[")
+    assert result["messages"][0]["content"] == "first question"
+    first_input = deepcopy(captured[0]["input"])
+    assert any(_render("first question") in str(item) for item in first_input)
+    result = make_agent().run_conversation(
+        "second question", conversation_history=rows, persist_user_timestamp=STAMP + 30,
+    )
+    assert result["completed"]
+    assert captured[1]["input"][:len(first_input)] == first_input

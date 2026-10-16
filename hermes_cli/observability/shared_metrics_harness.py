@@ -319,6 +319,7 @@ _GUARD_DETECTORS = {
     "identical_call_streak_halt": "identical_call_streak", "identical_call_streak": "identical_call_streak",
     "identical_cycle_halt": "identical_cycle", "identical_cycle": "identical_cycle",
     "loop_web_search_cap": "web_search_cap", "loop_subagent_cap": "subagent_cap",
+    "loop_self_answering_cap": "self_answering_cap",
 }
 
 

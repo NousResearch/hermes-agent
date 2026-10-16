@@ -1282,6 +1282,74 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
+# ---------------------------------------------------------------------------
+# [LOCAL PATCH 2026-09-05] chat 级「通知倾倒」出站抑制。
+# 事故：M3 被唤醒后把上下文里的 supervisor 历史通知原样倒了 11K 字符进群
+# （一流式增量 edit 逐帧送达）。名单内 chat 的出站文本若被
+# gateway.response_filters.is_notification_dump 判中，则不送达原文：
+# 原文追加落 <hermes_home>/logs/notify_dump_suppressed.log，实际发出一行
+# 抑制提示。名单来源：env HERMES_NOTIFY_DUMP_SUPPRESS_CHATS（逗号分隔）或
+# config.yaml display.notification_dump_suppress_chats（list）。
+# 名单外会话零影响。需重启 gateway 生效。
+# ---------------------------------------------------------------------------
+
+_NOTIFY_DUMP_SUPPRESS_NOTICE = "🗑️ 抑制了一条通知刷屏回复（原文见 logs/notify_dump_suppressed.log）"
+_notify_dump_chats_cache: Optional[frozenset] = None
+
+
+def _notification_dump_suppress_chats() -> frozenset:
+    global _notify_dump_chats_cache
+    if _notify_dump_chats_cache is not None:
+        return _notify_dump_chats_cache
+    raw_env = os.getenv("HERMES_NOTIFY_DUMP_SUPPRESS_CHATS", "")
+    if raw_env:
+        _notify_dump_chats_cache = frozenset(
+            c.strip() for c in raw_env.split(",") if c.strip()
+        )
+        return _notify_dump_chats_cache
+    chats: frozenset = frozenset()
+    try:
+        import yaml
+
+        cfg = yaml.safe_load((get_hermes_home() / "config.yaml").read_text())
+        raw = (cfg or {}).get("display", {}).get("notification_dump_suppress_chats")
+        if isinstance(raw, (list, tuple, set)):
+            chats = frozenset(str(c) for c in raw)
+    except Exception:
+        pass
+    _notify_dump_chats_cache = chats
+    return chats
+
+
+def _apply_notification_dump_suppression(chat_id: Any, content: Any) -> Any:
+    """Replace ``content`` with a one-line notice when it is a notification dump."""
+    if not isinstance(content, str) or not content:
+        return content
+    if str(chat_id) not in _notification_dump_suppress_chats():
+        return content
+    try:
+        from gateway.response_filters import is_notification_dump
+    except Exception:
+        return content
+    if not is_notification_dump(content):
+        return content
+    try:
+        log_path = get_hermes_home() / "logs" / "notify_dump_suppressed.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] chat={chat_id} "
+                f"len={len(content)}\n{content}\n{'-' * 60}\n"
+            )
+    except Exception:
+        pass
+    logger.warning(
+        "[Feishu] Suppressed notification-dump outbound to chat=%s (%d chars)",
+        chat_id, len(content),
+    )
+    return _NOTIFY_DUMP_SUPPRESS_NOTICE
+
+
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
@@ -1656,6 +1724,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        content = _apply_notification_dump_suppression(chat_id, content)
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
@@ -1706,6 +1775,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        content = _apply_notification_dump_suppression(chat_id, content)
         content = self.format_message(content)
 
         async def _update(msg_type: str, payload: str) -> SendResult:
@@ -3884,8 +3954,10 @@ class FeishuAdapter(BasePlatformAdapter):
             log_level=lark.LogLevel.INFO,
             event_handler=self._event_handler,
             domain=domain,
-            # Without the "channel" UA tag Feishu won't push group @mention events over WS.
-            extra_ua_tags=["channel"],
+            # [LOCAL PATCH 2026-09-15] 移除 extra_ua_tags=["channel"]。
+            # 飞书服务端现把带 channel UA 的连接归为频道连接，普通群消息不再推送
+            # （私聊不受影响），lark-oapi 1.6.8 + 0.21.3 升级后变现。对照实验实锤：
+            # 同凭证无 tag 连接收群消息正常（含 @mention），带 tag 连接收不到。
         )
         # The lark SDK owns this thread and fires every event/card callback on it; those hop back
         # to the adapter loop via run_coroutine_threadsafe, which copies the CALLER's context — so

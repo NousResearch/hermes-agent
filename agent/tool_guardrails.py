@@ -79,6 +79,15 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+# Consecutive SELF-ANSWERING shell calls (result carries no information the model didn't already
+# have from its own arguments) before the turn hard-stops. The three detectors above all key on
+# REPETITION, so a model that varies its command every call — `true`, `echo ok`, `echo done`,
+# `echo stop` — resets every streak and runs to the iteration budget unflagged. This cap counts
+# calls instead of repetitions, which is the axis those detectors cannot see. Measured over this
+# repo's real sessions: the longest streak of genuinely productive consecutive calls is 7 (a
+# `hermes send` fan-out with empty stdout); a recorded idle-spin ran 144. 12 leaves headroom for
+# the legitimate tail without reaching the spin.
+_DEFAULT_MAX_SELF_ANSWERING_CALLS = 12
 
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
@@ -90,6 +99,61 @@ def is_stall_guard_repeatable(tool_name: str) -> bool:
     return tool_name in STALL_GUARD_REPEATABLE_TOOLS or tool_name.endswith(_STALL_GUARD_REPEATABLE_SUFFIXES)
 
 
+# Shell tools whose result is a stdout payload the model could have predicted from its own call.
+_SELF_ANSWERING_TOOL_NAMES = frozenset({"terminal", "execute_code"})
+# Args that carry the call's actual intent, as opposed to transport knobs (a `timeout` must never
+# be mistaken for output — `grep -c` printing "3" against a timeout of 3 is a real result).
+_SHELL_PAYLOAD_ARG_KEYS = ("command", "code")
+
+
+def _shell_stdout(result: Any) -> str | None:
+    """The stdout payload of a shell-style result, or None when the result isn't a shell payload."""
+    if not isinstance(result, str):
+        return None
+    data = safe_json_loads(result)
+    if isinstance(data, Mapping) and ("output" in data or "out" in data):
+        return str(data.get("output") or data.get("out") or "")
+    return None
+
+
+def _shell_payload_text(args: Mapping[str, Any] | None) -> str:
+    """The text the caller asked the shell to run — not the transport knobs around it."""
+    args = _coerce_args(args)
+    return "\n".join(str(args.get(key) or "") for key in _SHELL_PAYLOAD_ARG_KEYS)
+
+
+def is_self_answering_call(tool_name: str, args: Mapping[str, Any] | None, result: Any) -> bool:
+    """Whether a call returned no information the caller didn't already have.
+
+    Deliberately narrow — it must be provable, or legitimate work gets counted as spinning:
+
+    * only ``terminal``/``execute_code`` results qualify;
+    * a poll/wait tool is exempt (waiting is progress), as is a call handed off to a background
+      process, which is a real state change with output still to come;
+    * a FAILED call is exempt (the error is new information, and the failure detectors own it);
+    * a mutation that landed is exempt;
+    * the payload must be empty, or a verbatim fragment of the command/code that produced it.
+    """
+    if tool_name not in _SELF_ANSWERING_TOOL_NAMES or is_stall_guard_repeatable(tool_name):
+        return False
+    data = safe_json_loads(result) if isinstance(result, str) else None
+    if isinstance(data, Mapping) and (
+        data.get("notify_on_complete") or data.get("status") == "yielded_to_background"
+    ):
+        return False  # a background hand-off is progress, not a no-op
+    stdout = _shell_stdout(result)
+    if stdout is None or classify_tool_failure(tool_name, result)[0]:
+        return False
+    if file_mutation_result_landed(tool_name, result):
+        return False
+    stdout = stdout.strip()
+    if not stdout:
+        return True
+    # A verbatim fragment of the command/code that produced it is new information; anything else
+    # (including a single character that happens to appear in the command) is not.
+    return stdout in _shell_payload_text(args)
+
+
 def _is_non_interactive_platform(platform: str | None) -> bool:
     """True for gateway/cron sessions where tool loops are unattended."""
     if not isinstance(platform, str) or not platform.strip():
@@ -99,11 +163,13 @@ def _is_non_interactive_platform(platform: str | None) -> bool:
 
 @dataclass(frozen=True)
 class LoopCapConfig:
-    """Per-turn hard ceilings on web_search calls / subagent spawns; count total calls (not
-    repeats), fire regardless of ``hard_stop_enabled``; ``0`` disables a cap."""
+    """Per-turn hard ceilings on web_search calls / subagent spawns / consecutive self-answering
+    shell calls; count total calls (not repeats), fire regardless of ``hard_stop_enabled``;
+    ``0`` disables a cap."""
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    max_self_answering_calls: int = _DEFAULT_MAX_SELF_ANSWERING_CALLS
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> LoopCapConfig:
@@ -281,6 +347,12 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "loop_self_answering_cap": (
+        "Blocked {tool_name}: the last {count} calls in a row returned nothing this turn's own "
+        "command or code didn't already say — empty output, or just an echo of the command back. "
+        "Running more of these cannot produce new information. Either make a call that actually "
+        "reads or changes something, or stop and tell the user what you have."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -337,6 +409,10 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Consecutive self-answering shell calls this turn. Counts CALLS, not repeats, so varying
+        # the command every time cannot reset it; any call that returns real information resets it.
+        self._self_answering_streak: int = 0
+        self._self_answering_streak_tool: str = ""
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -361,8 +437,15 @@ class ToolCallGuardrailController:
 
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
-        if cap_block is not None or not self.config.hard_stop_enabled:
-            return cap_block or allow
+        if cap_block is not None:
+            return cap_block
+        # A streak long enough that another no-information call is the only predictable outcome:
+        # refuse the call itself rather than wait for its result to prove it.
+        self_answering_block = self._check_self_answering_cap(tool_name, signature)
+        if self_answering_block is not None:
+            return self_answering_block
+        if not self.config.hard_stop_enabled:
+            return allow
         # A mutation since this call last failed makes the retry a new experiment.
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
@@ -415,6 +498,10 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        # Self-answering cap counts calls, not repeats, so it is evaluated before the idempotent
+        # early-return below. Reset by any call that returns real information — including a
+        # successful mutation, which the progress bookkeeping above already tracks.
+        self._note_self_answering(tool_name, args, result)
         # A successful mutation is progress for every failing signature still counted
         # this turn. Pure loops never mutate between attempts, so the replay detector keeps its teeth.
         if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
@@ -434,6 +521,47 @@ class ToolCallGuardrailController:
 
     def _is_idempotent(self, tool_name: str) -> bool:
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+
+    def _note_self_answering(self, tool_name: str, args: Mapping[str, Any], result: str | None) -> None:
+        """Track the consecutive run of calls that told the model nothing it didn't already know.
+
+        The streak is a turn-level axis the repetition detectors can't see: they all reset when the
+        arguments change, so a model that emits a fresh trivial command every call (``true``,
+        ``echo ok``, ``echo done`` …) never forms a streak and runs to the iteration budget. Any call
+        returning real information — or a mutation landing — resets it, so a legitimate shell-heavy
+        turn interleaved with reads/writes never trips.
+        """
+        if is_self_answering_call(tool_name, args, result):
+            self._self_answering_streak += 1
+            self._self_answering_streak_tool = tool_name
+        else:
+            self._self_answering_streak = 0
+            self._self_answering_streak_tool = ""
+
+    @property
+    def self_answering_streak(self) -> int:
+        return self._self_answering_streak
+
+    def _check_self_answering_cap(
+        self, tool_name: str, signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision | None:
+        """Block the next shell call once the no-information streak hits the cap.
+
+        Gates the CALL, not the result: at the cap the streak has already proven the turn produces
+        nothing, so the (cap+1)-th shell call is refused before it runs. Fires regardless of
+        ``hard_stop_enabled`` like the other loop caps — an unattended gateway session has nobody to
+        press /stop, which is exactly how a spinning turn reaches its iteration budget.
+        """
+        cap = self.config.loop_caps.max_self_answering_calls
+        if not cap or self._self_answering_streak < cap:
+            return None
+        if tool_name not in _SELF_ANSWERING_TOOL_NAMES:
+            return None
+        return self._decide(
+            "block", "loop_self_answering_cap",
+            self._self_answering_streak_tool or tool_name, self._self_answering_streak, signature,
+            cap=cap,
+        )
 
     def observe_call(
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,

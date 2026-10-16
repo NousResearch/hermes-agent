@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
+from agent.i18n import t
 from hermes_cli import anon_auth
 from hermes_cli import cli_commands_mixin as commands
 
@@ -208,5 +209,5 @@ def test_the_live_tui_drain_prints_through_cprint_instead_of_the_captured_consol
     assert not threads[0].is_alive()
     assert old_buf.getvalue() == ""
     assert new_buf.getvalue() == ""
-    assert "  Sign-in" in output
+    assert f"  {t('cli.commands.login.label')}" in output
     assert any("Signed in as person@example.test." in line for line in output)

@@ -1,9 +1,13 @@
+import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
+import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { followActiveSessionCwd } from '@/store/projects'
+import { clearAllPrompts } from '@/store/prompts'
 import {
   $activeSessionId,
   $currentCwd,
@@ -11,6 +15,7 @@ import {
   $currentProvider,
   $selectedStoredSessionId,
   $sessions,
+  applySessionTitle,
   sessionMatchesStoredId,
   setActiveSessionId,
   setCurrentBranch,
@@ -21,14 +26,12 @@ import {
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
-  setSessions,
   setTerminalBackend,
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
 import { reportInstallMethodWarning } from '@/store/updates'
 
-import { finalizeInterruptedMessages } from '../../use-prompt-actions/rewind'
 import {
   applySessionInfoStatePatch,
   hasSessionInfoStatePatch,
@@ -130,6 +133,21 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
   return true
 }
 
+/** Project the runtime's pending-submission receipts onto the durable
+ *  session's composer queue (keyed by stored id when known). */
+function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void {
+  const { deps, event, payload, sessionId } = ctx
+
+  if (sessionId) {
+    const storedId =
+      payload?.stored_session_id ?? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
+
+    // A canonical frame's own place in the session's event order fences absence-based retirement.
+    reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions,
+      pendingSnapshotFence(event.replay_epoch, event.seq))
+  }
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -152,6 +170,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // conversation already on screen — if so, re-bind the pane so every
     // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
     const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
+
+    reconcileSessionInfoPendingSubmissions(ctx)
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.
@@ -267,10 +287,33 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       }
     }
 
-    if (sessionId && hasStatePatch) {
+    if (sessionId && (hasStatePatch || payload?.usage)) {
       updateSessionState(
         sessionId,
-        state => applySessionInfoStatePatch(state, statePatch),
+        state => {
+          const nextState = hasStatePatch ? applySessionInfoStatePatch(state, statePatch) : state
+
+          if (!payload?.usage) {
+            return nextState
+          }
+
+          const previousUsage = nextState.usage
+
+          return {
+            ...nextState,
+            usage: {
+              ...previousUsage,
+              ...payload.usage,
+              calls: payload.usage.calls ?? previousUsage?.calls ?? 0,
+              // session.info is authoritative: omission means unavailable, not
+              // "reuse the previous runtime's compression count".
+              compressions: payload.usage.compressions,
+              input: payload.usage.input ?? previousUsage?.input ?? 0,
+              output: payload.usage.output ?? previousUsage?.output ?? 0,
+              total: payload.usage.total ?? previousUsage?.total ?? 0
+            }
+          }
+        },
         payload?.stored_session_id || undefined
       )
     }
@@ -284,6 +327,23 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
     if (runningChanged && sessionId) {
+      // The agent loop's finally block emits running=false even when a
+      // reconnect gap or provider crash swallowed message.complete — and
+      // message.complete is where the turn-end prompt clear lives. An
+      // approval left parked by that miss re-mounts the floating "needs
+      // approval" bar on a session whose turn is already finished, so treat
+      // the end of a turn we knew was live as an authoritative clear edge
+      // too (#86577). Bystander sessions keep their prompts: the clear is
+      // scoped to this sessionId.
+      if (!payload!.running && (knownState?.busy || knownState?.awaitingResponse)) {
+        clearAllPrompts(sessionId)
+        // Same wipe class as the turn-end clears (#83319): a reconnect can
+        // replay a pre-clarify snapshot with running=false while the server
+        // bridge is still parked on the open clarify request — keep the card
+        // while that request is live; clear it when it truly settled.
+        clearSettledClarifyRequest(sessionId)
+      }
+
       // Set when THIS event releases a confirmed live turn whose terminal
       // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.
@@ -358,7 +418,17 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           const withinPreStartGrace =
             typeof armedAt === 'number' && Date.now() - armedAt < PRE_TURN_LIVE_SETTLE_GRACE_MS
 
-          if (state.awaitingResponse && !state.sawAssistantPayload && !state.turnLive && withinPreStartGrace) {
+          // The owner stamps its claimed execution on the event params, not the payload.
+          const authoritative =
+            typeof event.authority_epoch === 'number' && typeof event.execution_generation === 'number'
+
+          if (
+            !authoritative &&
+            state.awaitingResponse &&
+            !state.sawAssistantPayload &&
+            !state.turnLive &&
+            withinPreStartGrace
+          ) {
             return state
           }
 
@@ -433,7 +503,12 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     }
 
     if (payload?.usage && (!explicitSid || isActiveEvent)) {
-      setCurrentUsage(current => ({ ...current, ...payload.usage }))
+      const usage = payload.usage
+      setCurrentUsage(current => ({
+        ...current,
+        ...usage,
+        compressions: usage.compressions
+      }))
     }
 
     requestDesktopOnboardingForCredentialWarning(payload?.credential_warning)
@@ -482,7 +557,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''
 
     if (storedId && nextTitle) {
-      setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, storedId) ? { ...s, title: nextTitle } : s)))
+      // Lineage-aware across every slice — the same conversation can render
+      // from any of its ids (#123337); bare recents patching left project
+      // rows stale.
+      applySessionTitle(storedId, nextTitle)
     }
 
     return true

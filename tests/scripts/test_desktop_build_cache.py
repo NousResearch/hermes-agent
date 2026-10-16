@@ -43,6 +43,7 @@ def describe(source, cache, tmp_path, *extra):
         cwd=tmp_path, env={**os.environ, "GITHUB_OUTPUT": str(output),
                            "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_JOB": "desktop"},
         capture_output=True, text=True, encoding="utf-8", timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout), dict(line.split("=", 1) for line in output.read_text(encoding="utf-8-sig").splitlines())
@@ -165,6 +166,7 @@ def test_composite_transports_only_and_uses_the_restore_key_for_save(tmp_path):
             ["bash", "-e", "-c", describe_step["run"]], cwd=tmp_path,
             env={**os.environ, **env, "GITHUB_OUTPUT": str(output), "RUNNER_OS": "Linux"},
             capture_output=True, text=True, encoding="utf-8", timeout=30,
+            check=False,
         )
         return result
 
@@ -256,7 +258,7 @@ def test_direct_snapshot_preserves_node_receipt_and_excludes_job_secrets(tmp_pat
 
     def npm(*args):
         return subprocess.run([node, str(owner), *args], cwd=source, env=env,
-                              capture_output=True, text=True, encoding="utf-8", timeout=30)
+                              capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
 
     locked = npm("--npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund")
     assert locked.returncode == 0, locked.stdout + locked.stderr

@@ -46,7 +46,7 @@ save_env_value = late("save_env_value", "hermes_cli.config")
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 # Simple rate limiter for the reveal endpoint
-_reveal_timestamps: List[float] = []
+_reveal_timestamps: list[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
@@ -59,18 +59,17 @@ _CATEGORY_ORDER = [
 
 
 @contextlib.contextmanager
-def _env_write_errors(log_msg: str, *, http_passthrough: bool):
+def _env_write_errors(log_msg: str):
     """``ValueError`` -> 400 with its message (save/remove_env_value reject
-    invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, and
-    the SPA needs the reason, not an opaque 500); anything else is logged and
-    becomes 500 "Internal server error"."""
+    invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, the
+    credential lifecycle rejects keys a managed install or administrator pins,
+    and the SPA needs the reason, not an opaque 500); ``HTTPException`` (the
+    profile scope's 404 for an unknown ``?profile=``) passes through; anything
+    else is logged and becomes 500 "Internal server error"."""
     try:
         yield
     except HTTPException:
-        if http_passthrough:
-            raise
-        _log.exception(log_msg)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
@@ -178,8 +177,9 @@ def _catalog_provider_env_metadata() -> dict:
 
     Returns ``{env_var: {provider, provider_label, description, url, is_password,
     advanced}}`` for every API-key provider in the unified ``provider_catalog()``
-    (the ``hermes model`` universe), so the desktop Keys tab renders a card even
-    for providers never hand-added to ``OPTIONAL_ENV_VARS``. Hand
+    (the ``hermes model`` universe). When multiple providers intentionally share
+    one env var, ``provider_profiles`` preserves every provider identity while
+    the legacy singular fields keep describing the first provider. Hand
     ``OPTIONAL_ENV_VARS`` prose is layered on top in the endpoint; this only
     supplies membership + grouping + fallbacks.
     """
@@ -197,17 +197,44 @@ def _catalog_provider_env_metadata() -> dict:
     }
 
     meta: dict = {}
+
+    def _profile(entry: dict) -> dict:
+        """Return the provider-specific part of a shared credential row."""
+        return {
+            "provider": entry["provider"],
+            "provider_label": entry["provider_label"],
+            "description": entry["description"],
+            "url": entry["url"],
+            "primary": bool(entry.get("provider_primary")),
+        }
+
+    def _add_provider_env(env_var: str, entry: dict) -> None:
+        """Add one provider without discarding peers that share ``env_var``."""
+        existing = meta.get(env_var)
+        if existing is None:
+            meta[env_var] = entry
+            return
+        if existing.get("provider") == entry.get("provider"):
+            return
+        profiles = existing.setdefault("provider_profiles", [_profile(existing)])
+        if not any(profile.get("provider") == entry.get("provider") for profile in profiles):
+            profiles.append(_profile(entry))
+
     for d in provider_catalog():
         if d.tab != "keys":
             continue
         # API-key vars: the first is the primary (password) field; aliases are
         # kept as additional password fields so users can clear them too.
-        for env_var in d.api_key_env_vars:
+        for index, env_var in enumerate(d.api_key_env_vars):
             if env_var in _non_provider_keys:
                 continue  # don't hijack a shared tool/messaging credential
-            meta.setdefault(
+            entry = _provider_card(
+                d, d.description, d.signup_url or None, is_password=True, advanced=False,
+            )
+            entry["provider_primary"] = index == 0
+            _add_provider_env(
                 env_var,
-                _provider_card(d, d.description, d.signup_url or None, is_password=True, advanced=False),
+                entry,
             )
         # Base-URL override is an advanced, non-secret field for the same card.
         if d.base_url_env_var:
@@ -263,6 +290,15 @@ def _get_env_vars_sync(profile: Optional[str] = None):
             # by the SAME provider identity the CLI `hermes model` picker uses.
             "provider": cat_meta.get("provider", ""),
             "provider_label": cat_meta.get("provider_label", ""),
+            # One credential can intentionally serve multiple built-in routes.
+            # Preserve those identities so Desktop can render distinct cards
+            # that edit the same underlying env var.
+            "provider_profiles": cat_meta.get("provider_profiles", []),
+            # The provider's own index-0 credential flag. Desktop picks a card's
+            # main "Paste key" field from this FIRST, so a shared alias that a
+            # peer profile contributes (DASHSCOPE_API_KEY for the CN Coding /
+            # Token Plan cards) can never re-point the card's primary field.
+            "provider_primary": bool(cat_meta.get("provider_primary", False)),
             # True for a .env key in no catalog at all — an arbitrary/custom var
             # the user added directly, listed so the Keys page can manage it.
             "custom": custom,
@@ -296,15 +332,22 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     # auxiliary.*.api_key / custom_providers[*]), so a rotation can't leave a
     # stale higher-precedence copy that keeps authenticating with the old key.
     # Display-only previews (sentinel or legacy mask) must never gain write authority.
-    # Checked before the error mapper: it turns HTTPException into a 500 at this site.
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
-    with _env_write_errors("PUT /api/env failed", http_passthrough=False):
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+    with _env_write_errors("PUT /api/env failed"):
+        return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value, body.provider_setup))
 
-        return await scoped_to_thread(
-            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
-        )
+
+def _save_env_credential(key: str, value: str, provider_setup: bool = False) -> Any:
+    """Save under the request's profile scope; a new provider API key also counts as a provider setup."""
+    from hermes_cli.config import load_env
+    from hermes_cli.credential_lifecycle import save_provider_env_credential
+    from hermes_cli.observability.shared_metrics_setup import record_api_key_saved, web_setup_surface
+
+    previous = load_env().get(key)
+    result = save_provider_env_credential(key, value)
+    record_api_key_saved(key, value, previous, web_setup_surface(), connecting=provider_setup)
+    return result
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
@@ -325,7 +368,7 @@ def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     return slug or fallback
 
 
-def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
+def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> tuple[Any, Optional[dict[str, Any]]]:
     """Resolve a custom endpoint id using the stored key first, then its legacy slug.
 
     The list route hands Desktop the literal ``providers.<key>`` (a v11→v12
@@ -343,8 +386,8 @@ def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[An
     return find_provider_entry(providers, normalized_key)
 
 
-def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
-    models: List[str] = []
+def _models_from_custom_endpoint_entry(entry: dict[str, Any]) -> list[str]:
+    models: list[str] = []
     raw_models = entry.get("models")
     if isinstance(raw_models, (dict, list)):
         models.extend(str(model).strip() for model in raw_models)
@@ -357,7 +400,7 @@ def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     return [model for model in models if model and not (model in seen or seen.add(model))]
 
 
-def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+def _api_key_display(entry: dict[str, Any]) -> tuple[bool, Optional[str]]:
     """Return ``(has_api_key, preview)`` for a provider or model config block.
 
     Keys live in ``.env`` behind ``key_env``; only older entries still carry a
@@ -395,7 +438,7 @@ def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
 _DESKTOP_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
 
 
-def _endpoint_api_mode(entry: Dict[str, Any]) -> str:
+def _endpoint_api_mode(entry: dict[str, Any]) -> str:
     """The transport a providers entry pins (``api_mode``, or the v12 migration's ``transport``
     spelling), canonicalized; ``""`` = runtime auto-detect. Mirrors the read order of
     ``runtime_provider_custom._get_named_custom_provider``."""
@@ -405,9 +448,9 @@ def _endpoint_api_mode(entry: Dict[str, Any]) -> str:
 
 
 def _endpoint_row(
-    endpoint_id: str, name: str, base_url: str, model: str, models: List[str], context_length,
-    discover_models: bool, key_entry: Dict[str, Any], is_current: bool, source: str,
-) -> Dict[str, Any]:
+    endpoint_id: str, name: str, base_url: str, model: str, models: list[str], context_length,
+    discover_models: bool, key_entry: dict[str, Any], is_current: bool, source: str,
+) -> dict[str, Any]:
     has_api_key, api_key_preview = _api_key_display(key_entry)
     return {
         "id": endpoint_id, "name": name, "base_url": base_url, "model": model, "models": models,
@@ -418,7 +461,7 @@ def _endpoint_row(
     }
 
 
-def _model_names_provider(model_cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]]) -> bool:
+def _model_names_provider(model_cfg: dict[str, Any], provider_key: str, entry: Optional[dict[str, Any]]) -> bool:
     """True when ``model.provider`` points at this ``providers`` entry.
 
     ``switch_model`` spells the active provider either as the stored key or as
@@ -433,13 +476,13 @@ def _model_names_provider(model_cfg: Dict[str, Any], provider_key: str, entry: O
     return current.removeprefix("custom:") in names
 
 
-def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _custom_endpoint_response(cfg: dict[str, Any]) -> dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
     current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
     current_base_url = str(model_cfg.get("base_url", "") or "")
 
-    endpoints: List[Dict[str, Any]] = []
+    endpoints: list[dict[str, Any]] = []
     providers = cfg.get("providers")
     if isinstance(providers, dict):
         for provider_id, raw_entry in providers.items():
@@ -495,7 +538,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _pop_legacy_custom_provider(cfg: Dict[str, Any], provider_key: str) -> Optional[Dict[str, Any]]:
+def _pop_legacy_custom_provider(cfg: dict[str, Any], provider_key: str) -> Optional[dict[str, Any]]:
     """Remove and return the legacy ``custom_providers:`` list entry whose name slugs to *provider_key*."""
     legacy = cfg.get("custom_providers")
     if not isinstance(legacy, list):
@@ -506,7 +549,7 @@ def _pop_legacy_custom_provider(cfg: Dict[str, Any], provider_key: str) -> Optio
     return None
 
 
-def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]] = None) -> None:
+def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, entry: Optional[dict[str, Any]] = None) -> None:
     """Drop the main-slot mirror of a provider that no longer exists.
 
     ``activate_custom_endpoint`` copies the endpoint's ``base_url`` and
@@ -527,7 +570,7 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
-def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
+def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> tuple[str, dict[str, Any]]:
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
     model = (body.model or "").strip()
@@ -536,7 +579,10 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         raise HTTPException(status_code=400, detail="name required")
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url required")
-    parsed = urllib.parse.urlparse(base_url)
+    try:
+        parsed = urllib.parse.urlparse(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="base_url must include scheme and host") from exc
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status_code=400, detail="base_url must include scheme and host")
     if not model:
@@ -553,14 +599,32 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     stored_key, existing = _resolve_custom_endpoint_entry(providers, body.id or body.name)
     endpoint_id = coerce_provider_id(stored_key) if existing is not None else _custom_endpoint_id(body.id or body.name)
     if existing is None:
+        # Settings saves the row the list rendered. A legacy custom_providers
+        # entry is not in providers, so resolving only there forked a keyless
+        # twin and left the list row (and its key_env) behind.
+        from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
+
+        legacy = _pop_legacy_custom_provider(cfg, endpoint_id)
+        converted = (
+            _custom_provider_entry_to_provider_config(legacy, provider_key=endpoint_id)
+            if legacy is not None else None
+        )
+        if isinstance(converted, dict):
+            existing = converted
+        elif legacy is not None:
+            restored = cfg.get("custom_providers")
+            if isinstance(restored, list):
+                restored.append(legacy)
+    if existing is None:
         existing = {}
+
 
     # Merge onto the existing entry rather than replacing it: a providers.<name>
     # block can carry hand-written keys the dashboard has no field for
     # (``key_env``/``api_key_env``, ``extra_headers`` — possibly with
     # credentials — ``request_overrides``); rebuilding from scratch silently
     # dropped them on an unrelated edit.
-    entry: Dict[str, Any] = dict(existing)
+    entry: dict[str, Any] = dict(existing)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
@@ -583,7 +647,7 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     # See #69988.
     details = {d.id.strip(): d for d in (body.model_details or ()) if d.id.strip()}
     existing_models = entry.get("models")
-    models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    models_map: dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
     for candidate in (*(body.models or ()), *details, model):
         model_id = str(candidate).strip()
         if not model_id:
@@ -683,12 +747,26 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
         # drop this write (or vice versa).
         with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             cfg = load_config()
+            providers = cfg.get("providers")
+            created = _resolve_custom_endpoint_entry(
+                providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        if created:  # editing an endpoint that exists sets nothing new up
+            _record_custom_endpoint_setup(home)
         response["ok"] = True
         response["id"] = endpoint_id
         return response
+
+
+def _record_custom_endpoint_setup(home: Any) -> None:
+    """Counted after the config lock is released (a cold metrics runtime must not stall writers)."""
+    from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done, web_setup_surface
+
+    record_provider_setup_done(web_setup_surface(), "custom", hermes_home=home, background=True)
 
 
 @router.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
@@ -793,6 +871,14 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
     entries = _parse_model_entries(resp)
     ids = [e["id"] for e in entries]
+    if not ids:
+        # A 200 that parses to zero models is the SPA-catch-all signature (#83128): a real
+        # OpenAI-compatible /models answers JSON with a usable list. ``_parse_model_entries``
+        # is lenient by design, so classify the empty result here instead of reporting
+        # success. ok:false + reachable:true is a warning in the UI — Save stays possible
+        # for endpoints that legitimately expose no model list.
+        return {"ok": False, "reachable": True, "message": _no_models_probe_message(resp, resolved),
+                "models": [], "model_details": [], "resolved_base_url": resolved}
     # /models answering proves nothing about the transport the runtime will POST to:
     # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
     # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses, on the
@@ -811,7 +897,31 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         result.update(ok=False, message=missing)
     return result
 
-async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> Tuple[str, Any]:
+def _no_models_probe_message(resp: Any, base_url: str) -> str:
+    """Why a 200 ``/models`` probe yielded no usable models (#83128).
+
+    Distinguishes the three ways that happens — a non-JSON body (an SPA catch-all serves
+    HTML for every route, so 200 proves nothing), a JSON body without a model list, and a
+    genuinely empty list — mirroring the onboarding store's wording for the last case.
+    """
+    url = base_url + "/models"
+    content_type = (resp.headers.get("content-type") or "").split(";")[0].strip()
+    try:
+        payload = resp.json()
+    except ValueError:  # json.JSONDecodeError — a non-JSON body (HTML, plain text) is the case being named
+        payload = None
+    if not isinstance(payload, (dict, list)):
+        kind = content_type or "a non-JSON body"
+        return (f"Connected to {url}, but it returned {kind} instead of a JSON model list — "
+                "the URL may be an SPA catch-all or a wrong base URL, not an OpenAI-compatible API.")
+    data = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(data, list):
+        return f"Connected to {url}, but its response is not an OpenAI-compatible model list."
+    return (f"Connected to {url}, but it advertised no models. "
+            "Start a model on that endpoint and try again.")
+
+
+async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> tuple[str, Any]:
     """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
     first answers a non-success. Returns ``(resolved_base_url, response)`` — the base that served the
     model list is what the caller must PERSIST: the runtime appends ``/chat/completions`` to the saved
@@ -848,7 +958,7 @@ def _auto_api_mode(base_url: str) -> str:
     return _detect_api_mode_for_url(base_url) or "chat_completions"
 
 
-async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: Dict[str, str]) -> str:
+async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: dict[str, str]) -> str:
     """POST a 1-token request to ``mode``'s route; return a failure message when the host does
     not serve it (404/405/501), ``""`` otherwise. Any other status — 200, 400 (bad body), 401,
     422, 429 — means the route exists, which is all the check needs to know; a network error or
@@ -961,7 +1071,7 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     # ones kept providers alive in the model picker), the affected providers'
     # model-cache rows, and value-matched config.yaml api_key mirrors.
     # OAuth/device-code/manual pool entries for the same provider are preserved.
-    with _env_write_errors("DELETE /api/env failed", http_passthrough=True):
+    with _env_write_errors("DELETE /api/env failed"):
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         result = await scoped_to_thread(

@@ -55,7 +55,7 @@ class ConfigReadError(RuntimeError):
     must be abandoned, else the merged result would replace real settings with only merged keys."""
 
 
-def load_yaml_file(path: Path) -> Dict[str, Any]:
+def load_yaml_file(path: Path) -> dict[str, Any]:
     """Load a YAML mapping: absent/empty -> ``{}``; unreadable/unparseable/non-mapping ->
     :class:`ConfigReadError` so the caller refuses and leaves the file byte-identical."""
     if not path.exists():
@@ -82,23 +82,23 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
     return data
 
 
-def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
+def dump_yaml_file(path: Path, data: dict[str, Any]) -> None:
     """Atomic YAML write; only reached after :func:`load_yaml_file` succeeded on the same path."""
     atomic_yaml_write(path, data)
 
 
-def extract_markdown_entries(text: str) -> List[str]:
+def extract_markdown_entries(text: str) -> list[str]:
     """Split markdown into memory entries: headings become context prefixes; bullets and
     paragraphs become entries; code blocks and tables are skipped."""
-    entries: List[str] = []
-    headings: List[str] = []
-    paragraph_lines: List[str] = []
+    entries: list[str] = []
+    headings: list[str] = []
+    paragraph_lines: list[str] = []
 
     def add_entry(content: str) -> None:
         prefix = " > ".join(
             h for h in headings
             if h and not re.search(r"\b(MEMORY|USER|SOUL|AGENTS|TOOLS|IDENTITY|CLAUDE)\.md\b",
-                                   h, re.I))
+                                   h, re.IGNORECASE))
         entries.append(f"{prefix}: {content}" if prefix else content)
 
     def flush_paragraph() -> None:
@@ -134,7 +134,7 @@ def extract_markdown_entries(text: str) -> List[str]:
         paragraph_lines.append(stripped)
 
     flush_paragraph()
-    deduped: List[str] = []
+    deduped: list[str] = []
     seen = set()
     for entry in entries:
         normalized = normalize_text(entry)
@@ -144,7 +144,7 @@ def extract_markdown_entries(text: str) -> List[str]:
     return deduped
 
 
-def parse_existing_memory_entries(path: Path) -> List[str]:
+def parse_existing_memory_entries(path: Path) -> list[str]:
     """Parse the DESTINATION memory store (``ENTRY_DELIMITER``-split, as ``MemoryStore`` does).
     Do NOT fall back to :func:`extract_markdown_entries`: it drops code blocks/table rows and
     splits bullets, and the merged result overwrites the user's store — the loss is permanent."""
@@ -154,7 +154,7 @@ def parse_existing_memory_entries(path: Path) -> List[str]:
 
 
 def merge_entries(existing: Sequence[str], incoming: Sequence[str],
-                  limit: int) -> Tuple[List[str], Dict[str, int]]:
+                  limit: int) -> tuple[list[str], dict[str, int]]:
     merged = list(existing)
     seen = {normalize_text(e) for e in existing if e.strip()}
     stats = {"existing": len(existing), "added": 0, "duplicates": 0, "overflowed": 0}
@@ -191,12 +191,12 @@ def claude_rule_to_command_pattern(rule: str) -> Optional[str]:
     return inner[:-2] + "*" if inner.endswith(":*") else inner
 
 
-def detect_agents() -> List[str]:
+def detect_agents() -> list[str]:
     """Return the list of supported agents whose default dirs exist."""
     return [a for a in SUPPORTED_AGENTS if (Path.home() / _AGENT_DEFAULT_DIRS[a]).is_dir()]
 
 
-def sanitize_mcp_env(env: Any) -> Tuple[Dict[str, str], List[str]]:
+def sanitize_mcp_env(env: Any) -> tuple[dict[str, str], list[str]]:
     """Split an MCP server env dict into (kept, stripped-secret-names)."""
     if not isinstance(env, dict):
         return {}, []
@@ -204,10 +204,10 @@ def sanitize_mcp_env(env: Any) -> Tuple[Dict[str, str], List[str]]:
     return kept, [str(k) for k in env if str(k) not in kept]
 
 
-def _translate_mcp_server(name: str, srv: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+def _translate_mcp_server(name: str, srv: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Map one Claude/Codex MCP server entry to Hermes shape; returns (server, stripped secret paths)."""
-    hermes_srv: Dict[str, Any] = {}
-    stripped: List[str] = []
+    hermes_srv: dict[str, Any] = {}
+    stripped: list[str] = []
     if srv.get("command"):
         hermes_srv["command"] = srv["command"]
         if srv.get("args"):
@@ -247,10 +247,10 @@ class AgentImporter:
         # Skills a previous import-agent run copied (from the sync manifest), name → digest of the copy
         # it wrote (None = pre-digest manifest, trusted). --sync refreshes a destination in place only
         # while it still matches that digest; a locally edited copy keeps conflict semantics.
-        self.sync_skills: Dict[str, Optional[str]] = (dict(sync_skills) if isinstance(sync_skills, Mapping)
+        self.sync_skills: dict[str, Optional[str]] = (dict(sync_skills) if isinstance(sync_skills, Mapping)
                                                        else {name: None for name in sync_skills})
-        self.items: List[Dict[str, Any]] = []
-        self.stripped_secrets: List[str] = []
+        self.items: list[dict[str, Any]] = []
+        self.stripped_secrets: list[str] = []
 
     def record(self, kind: str, source, destination, status: str,
                reason: str = "", **details) -> None:
@@ -259,7 +259,7 @@ class AgentImporter:
                            "status": status, "reason": reason, **details})
 
     def load_target_config(self, kind: str, source,
-                           destination: Path) -> Optional[Dict[str, Any]]:
+                           destination: Path) -> Optional[dict[str, Any]]:
         """Read the destination config.yaml, or record a refusal and return None. Runs in dry-run
         too: ``--dry-run`` must report the refusal, not preview an ``imported`` that destroys it."""
         try:
@@ -269,7 +269,7 @@ class AgentImporter:
             return None
 
     def apply(self, kind: str, source, destination, would: str, action,
-              details: Optional[Dict[str, Any]] = None) -> None:
+              details: Optional[dict[str, Any]] = None) -> None:
         """Record ``imported`` (reason ``would`` in dry-run); in execute mode run ``action`` first.
         ``action`` may add keys to ``details`` (shared by reference) and returns an error string
         (recorded as ``error``) or None."""
@@ -278,18 +278,18 @@ class AgentImporter:
         self.record(kind, source, destination, "error" if error else "imported",
                     error or ("" if self.execute else would), **details)
 
-    def build_report(self) -> Dict[str, Any]:
+    def build_report(self) -> dict[str, Any]:
         summary = {"imported": 0, "skipped": 0, "conflict": 0, "error": 0}
         for item in self.items:
             summary[item["status"]] = summary.get(item["status"], 0) + 1
-        report: Dict[str, Any] = {"agent": self.agent, "source": str(self.source_root),
+        report: dict[str, Any] = {"agent": self.agent, "source": str(self.source_root),
                                   "target": str(self.target_root), "dry_run": not self.execute,
                                   "items": self.items, "summary": summary}
         if self.stripped_secrets:
             report["stripped_secrets"] = sorted(set(self.stripped_secrets))
         return report
 
-    def run(self) -> Dict[str, Any]:
+    def run(self) -> dict[str, Any]:
         if not self.source_root.is_dir():
             self.record("source", self.source_root, None, "error",
                         "Source directory does not exist")
@@ -307,7 +307,7 @@ class AgentImporter:
         # mcpServers: ~/.claude.json (preferred; lives NEXT TO ~/.claude/) then settings.json
         claude_json = self._load_source_mapping(
             "mcp-servers", self.source_root.parent / ".claude.json", json.loads, self._JSON_ERRORS)
-        servers: Dict[str, Any] = {}
+        servers: dict[str, Any] = {}
         for source in (claude_json.get("mcpServers"), settings.get("mcpServers")):
             if isinstance(source, dict):
                 for name, srv in source.items():
@@ -337,7 +337,7 @@ class AgentImporter:
 
     def _load_source_mapping(self, kind: str, path: Path, parse, errors, *,
                              record_missing: bool = False,
-                             non_mapping_error: str = "") -> Dict[str, Any]:
+                             non_mapping_error: str = "") -> dict[str, Any]:
         """Parse ``path`` into a mapping; problems become per-item error records and ``{}``."""
         if not path.exists():
             if record_missing:
@@ -359,7 +359,7 @@ class AgentImporter:
         self._import_markdown_files(kind, source, [source] if source.exists() else None,
                                     f"No {source.name} found", single_file=True)
 
-    def _import_markdown_files(self, kind: str, source: Path, files: Optional[List[Path]],
+    def _import_markdown_files(self, kind: str, source: Path, files: Optional[list[Path]],
                                missing_reason: str, single_file: bool = False) -> None:
         """Extract entries from ``files`` (None = source missing) and merge into memories/MEMORY.md.
         An unreadable file records an error; a directory import then still reports "no entries"
@@ -368,7 +368,7 @@ class AgentImporter:
         if files is None:
             self.record(kind, None, destination, "skipped", missing_reason)
             return
-        incoming: List[str] = []
+        incoming: list[str] = []
         failed = False
         for md_file in files:
             try:
@@ -412,7 +412,7 @@ class AgentImporter:
         "allow": ("command-allowlist", ("command_allowlist",), True),
         "deny": ("command-denylist", ("approvals", "deny"), False)}
 
-    def _import_permission_rules(self, settings: Dict[str, Any], key: str) -> None:
+    def _import_permission_rules(self, settings: dict[str, Any], key: str) -> None:
         """settings.json permissions.allow/deny → config.yaml command_allowlist / approvals.deny."""
         kind, config_path, track_unmapped = self._PERMISSION_RULES[key]
         label = f"settings.json permissions.{key}"
@@ -425,7 +425,7 @@ class AgentImporter:
         mapped = [(r, claude_rule_to_command_pattern(r)) for r in rules if isinstance(r, str)]
         patterns = sorted(dict.fromkeys(p for _, p in mapped if p))
         skipped_rules = [r for r, p in mapped if not p]
-        unmapped: Dict[str, Any] = {"unmapped_rules": skipped_rules} if track_unmapped else {}
+        unmapped: dict[str, Any] = {"unmapped_rules": skipped_rules} if track_unmapped else {}
         if not patterns:
             self.record(kind, None, destination, "skipped",
                         f"No Bash(...) {key} rules to import", **unmapped)
@@ -436,7 +436,7 @@ class AgentImporter:
         if config is None:
             return
         # Walk to the list's parent mapping, materializing missing/invalid levels.
-        parent: Dict[str, Any] = config
+        parent: dict[str, Any] = config
         for part in config_path[:-1]:
             child = parent.get(part)
             parent[part] = parent = child if isinstance(child, dict) else {}
@@ -455,7 +455,7 @@ class AgentImporter:
         self.apply(kind, label, destination, "Would merge patterns", write,
                    {"added_patterns": added, **unmapped})
 
-    def import_mcp_servers(self, servers: Dict[str, Any], kind: str) -> None:
+    def import_mcp_servers(self, servers: dict[str, Any], kind: str) -> None:
         """mcpServers / [mcp_servers.*] → config.yaml mcp_servers."""
         destination = self.target_root / "config.yaml"
         if not servers:
@@ -571,7 +571,7 @@ def import_agent_command(args) -> None:
     if not get_config_path().exists():
         save_config(load_config())
 
-    def run_import(execute: bool, phase: str) -> Optional[Dict[str, Any]]:
+    def run_import(execute: bool, phase: str) -> Optional[dict[str, Any]]:
         """Run the importer; on failure print the error and return None."""
         try:
             return AgentImporter(agent, source_dir.resolve(), hermes_home.resolve(),
@@ -626,7 +626,7 @@ def import_agent_command(args) -> None:
                "to configure providers, or add them to ~/.hermes/.env.")
 
 
-def print_import_report(report: Dict[str, Any], dry_run: bool) -> None:
+def print_import_report(report: dict[str, Any], dry_run: bool) -> None:
     """Print a formatted per-item import report (claw-migrate style)."""
     from hermes_cli.setup import Colors, color, print_header, print_info
 
@@ -663,28 +663,3 @@ def print_import_report(report: Dict[str, Any], dry_run: bool) -> None:
     parts = [f"{summary[k]} {label}" for k, _, _, label in groups if summary.get(k)]
     if parts:
         print_info(f"Summary: {', '.join(parts)}")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def backup_memory_file(path: Path) -> Optional[Path]:
-    """Snapshot ``path`` before a destructive rewrite; return the backup path.
-
-    Restores parity with the openclaw migration script this module was ported
-    from, which calls ``maybe_backup(destination)`` before rewriting a memory
-    store.  Uses the same ``<name>.bak.<unix_ts>`` naming as
-    ``MemoryStore._backup_drifted_file``.  Returns None when there is nothing
-    to back up.
-    """
-    if not path.exists():
-        return None
-    backup = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
-    shutil.copy2(path, backup)
-    return backup
-
-def default_source_dir(agent: str) -> Path:
-    return Path.home() / _AGENT_DEFAULT_DIRS[agent]
-# ---- END PLUGIN-COMPAT ----

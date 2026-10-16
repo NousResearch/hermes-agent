@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 
-import hermes_cli.config_defaults as config_defaults
+from hermes_cli import config_defaults
 from hermes_cli.subcommands import gateway as gateway_subcommands
 
 

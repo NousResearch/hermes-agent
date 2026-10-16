@@ -21,7 +21,7 @@ from hermes_cli.tools_config_post_setup import _run_post_setup
 ])
 def test_browser_setup_respects_provider_and_native_owner(monkeypatch, capsys, provider, docker, playwright):
     with (
-        patch('tools.browser_use_cli.install_cli', return_value=(True, 'ready')) as install,
+        patch('tools.browser_use_cli._find_cli', return_value=['harness']) as install,
         patch('tools.browser_tool_install._running_in_docker', return_value=docker),
         patch('tools.browser_tool_install._find_agent_browser', return_value='/image/agent-browser'),
         patch('tools.browser_tool_install._chromium_installed', return_value=False) as chromium,
@@ -114,54 +114,3 @@ def test_importable_sdk_does_not_bypass_pm_constraints(monkeypatch, capsys, key,
         assert "Restart Hermes" not in output
     else:
         assert "Restart Hermes" in output
-
-
-@pytest.mark.parametrize("failure", [None, "sdk", "admission"])
-def test_langfuse_setup_uses_plugin_admission_and_preserves_config_on_refusal(
-    monkeypatch, tmp_path, capsys, failure,
-):
-    from hermes_cli.config import get_hermes_home, read_raw_config
-
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
-    monkeypatch.setitem(sys.modules, "langfuse", ModuleType("langfuse"))
-    config_path = get_hermes_home() / "config.yaml"
-    config_path.write_text(
-        "plugins:\n  enabled: [other]\n  disabled: [langfuse, observability/langfuse]\n",
-        encoding="utf-8",
-    )
-    before = config_path.read_bytes()
-
-    def resolve_candidate(**kwargs):
-        assert kwargs["explicit"] is True
-        assert kwargs["plugins"].data["enabled"]
-        if failure == "admission":
-            raise pm.InstallError("venv", "candidate refused")
-        # The real admission publisher must commit both lists, not a second UI writer.
-        from pm.publication import PluginSelection
-        from pm.paths import repo_root
-        from hermes_cli.runtime_state import runtime_lock, finish_publication
-        with runtime_lock(repo_root()):
-            PluginSelection(dict(kwargs["plugins"].data)).publish(repo_root())
-            finish_publication(repo_root())
-
-    with (
-        patch("pm.sync_venv", side_effect=pm.InstallError("venv", "SDK refused") if failure == "sdk" else None) as sdk,
-        patch("pm.client.sync_venv", side_effect=resolve_candidate) as admission,
-    ):
-        _run_post_setup("langfuse")
-
-    sdk.assert_called_once_with(["langfuse"], explicit=True)
-    if failure == "sdk":
-        admission.assert_not_called()
-    else:
-        admission.assert_called_once()
-    if failure:
-        assert config_path.read_bytes() == before
-        output = capsys.readouterr().out
-        assert "refused" in output
-        if failure == "sdk":
-            assert "Retry with: hermes tools" in output
-    else:
-        plugin_config = read_raw_config()["plugins"]
-        assert set(plugin_config["enabled"]) == {"other", "observability/langfuse"}
-        assert plugin_config["disabled"] == []

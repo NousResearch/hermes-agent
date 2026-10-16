@@ -123,7 +123,7 @@ def _confined_steps(lay: Layout) -> list[Step]:
     lay.link("linkdir", lay.out)
     lay.link("innerlink.txt", lay.ws / "inner.txt")
     lay.marks["token"] = token = H.canary("oauth-token")
-    (lay.hh / "auth.json").write_text('{"providers": {"nous": {"access_token": "%s"' % token, encoding="utf-8")
+    (lay.hh / "auth.json").write_text(f'{{"providers": {{"nous": {{"access_token": "{token}"', encoding="utf-8")
     quarantined = (lay.hh / "auth.json.corrupt", token)
     return [
         Step("write_dotdot", "write_file", {"path": "../../outside/new-dotdot.txt", "content": "x"},

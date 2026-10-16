@@ -392,7 +392,7 @@ class _MockHandler(BaseHTTPRequestHandler):
     captured_requests: list = []
     response_queue: list = []
 
-    def do_POST(self):  # noqa: N802 (http.server API)
+    def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(length).decode())
         type(self).captured_requests.append(req)
@@ -652,7 +652,7 @@ class TestPrologueMoaAndInPlaceBackfill:
             get_active_compression_failure_cooldown=lambda: None,
         )
 
-        def _compress(messages, _system, approx_tokens=None, task_id=None):
+        def _compress(messages, _system, approx_tokens=None, task_id=None, trigger=None):
             # Emulate compress_context in in_place mode: archive_and_compact
             # already inserted these rows (api_content=NULL — the stamp has
             # not happened yet), fresh copies replace the live dicts.
@@ -922,7 +922,7 @@ class TestMaxIterationsSummaryReplay:
             {"role": "assistant", "content": "a1"},
         ]
         with patch.object(
-            agent, "_ensure_primary_openai_client", return_value=client
+            agent, "_create_request_openai_client", return_value=client
         ):
             out = handle_max_iterations(agent, messages, 5)
 

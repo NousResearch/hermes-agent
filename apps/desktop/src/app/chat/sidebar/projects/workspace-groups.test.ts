@@ -8,6 +8,7 @@ import {
   baseName,
   excludeProjectSessions,
   kanbanWorktreeDir,
+  laneSwitchTarget,
   liveSessionProjectId,
   mergeRepoWorktreeGroups,
   NO_PROJECT_ID,
@@ -38,6 +39,30 @@ describe('baseName', () => {
     expect(baseName('/www/hermes-agent/')).toBe('hermes-agent')
     expect(baseName('C:\\repos\\app')).toBe('app')
     expect(baseName('')).toBeUndefined()
+  })
+})
+
+describe('laneSwitchTarget (#108694)', () => {
+  const main = { isMain: true, label: 'main', path: '/repo' }
+  const local = (name: string) => ({ isRemote: false, name })
+
+  it('skips the synthetic main fallback on a repo whose trunk is master', () => {
+    expect(laneSwitchTarget(main, [local('master')])).toBeNull()
+  })
+
+  it('switches to a label git lists as a local branch', () => {
+    expect(laneSwitchTarget(main, [local('master'), local('main')])).toBe('main')
+  })
+
+  it('switches to a remote-only branch git switch can DWIM', () => {
+    expect(laneSwitchTarget(main, [local('dev'), { isRemote: true, name: 'origin/main' }])).toBe('main')
+  })
+
+  it('never switches non-git, linked, or unverifiable lanes', () => {
+    expect(laneSwitchTarget({ ...main, isGit: false }, [local('main')])).toBeNull()
+    expect(laneSwitchTarget({ ...main, isMain: false }, [local('main')])).toBeNull()
+    expect(laneSwitchTarget({ ...main, path: null }, [local('main')])).toBeNull()
+    expect(laneSwitchTarget(main, [])).toBeNull()
   })
 })
 

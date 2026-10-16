@@ -31,8 +31,8 @@ from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -57,7 +57,7 @@ class GatewayConfigLoadersMixin:
         return os.getenv(env_var, "").strip() or cls._cfg_str(section, key)
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages() -> list[dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
 
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
@@ -176,8 +176,7 @@ class GatewayConfigLoadersMixin:
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         model: str = "",
     ) -> dict | None:
-        """Session ``/reasoning --session`` > channel override > per-model
-        ``agent.reasoning_overrides`` > global.
+        """Session override > channel/topic override > per-model override > global.
 
         ``model`` must be the session's *effective* model (session ``/model`` override included);
         empty uses ``model.default``.
@@ -187,29 +186,55 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
-        if source is not None:
-            try:
-                override = self._channel_override(
-                    source.platform,
-                    str(source.chat_id) if source.chat_id else "",
-                    str(source.thread_id) if getattr(source, "thread_id", None) else None,
-                    str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
-                )
-                channel_effort = getattr(override, "reasoning_effort", None)
-                if channel_effort is not None:
-                    from hermes_constants import parse_reasoning_effort
+        from gateway.session_setting_commands import local_policy
+        if (policy := local_policy(self, source)) is not None:
+            # A local session runs its frozen (or followed) level, not the profile's.
+            return policy.current_reasoning_config(self, resolved_session_key)
+        if source is not None and getattr(self, "config", None) is not None:
+            from gateway.run import _get_channel_override_field
+            from hermes_constants import parse_reasoning_effort
 
-                    parsed = parse_reasoning_effort(channel_effort)
-                    if parsed is not None:
-                        return parsed
-                    if str(channel_effort).strip():
-                        logger.warning(
-                            "Unknown channel reasoning_effort '%s', using global default",
-                            channel_effort,
-                        )
-            except Exception:
-                logger.debug("Failed to resolve channel reasoning override", exc_info=True)
+            effort = _get_channel_override_field(
+                self.config,
+                source.platform,
+                str(source.chat_id) if source.chat_id else "",
+                "reasoning_effort",
+                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+            )
+            if effort is not None:
+                parsed = parse_reasoning_effort(effort)
+                if parsed is not None:
+                    return parsed
+                logger.warning("Invalid channel reasoning_effort %r; using per-model/global value", effort)
         return self._load_reasoning_config(model)
+
+    def _has_scoped_reasoning_override(
+        self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None
+    ) -> bool:
+        """Session/channel reasoning stays fixed through same-turn model or provider changes."""
+        resolved_session_key = self._resolve_session_key_or_none(source, session_key)
+        if resolved_session_key:
+            state = self._peek_session_state(resolved_session_key)
+            if state is not None and state.conversation.reasoning_override is not None:
+                return True
+        if source is None or getattr(self, "config", None) is None:
+            return False
+        from gateway.session_setting_commands import local_policy
+        if local_policy(self, source) is not None:
+            return False
+        from gateway.run import _get_channel_override_field
+        from hermes_constants import parse_reasoning_effort
+
+        effort = _get_channel_override_field(
+            self.config,
+            source.platform,
+            str(source.chat_id) if source.chat_id else "",
+            "reasoning_effort",
+            thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+            parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+        )
+        return effort is not None and parse_reasoning_effort(effort) is not None
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
         """Set or clear the session-scoped reasoning override."""
@@ -231,6 +256,10 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
+        from gateway.session_setting_commands import local_live_for_route, local_policy
+        live = local_live_for_route(self, resolved_session_key)
+        if live is not None and (policy := local_policy(self, live.source)) is not None:
+            return policy.current_service_tier(self, resolved_session_key)  # its frozen tier, not config.yaml's
         return self._load_service_tier()
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:
@@ -245,17 +274,10 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_service_tier(cls) -> str | None:
-        """``agent.service_tier``: fast/priority/on => "priority"; normal/off => None; None when unset/unknown."""
-        raw = cls._cfg_str("agent", "service_tier")
-        value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
-            return None
-        if value in {"fast", "priority", "on"}:
-            return "priority"
-        if value in {"auto", "cold"}:
-            return value
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
-        return None
+        """``agent.service_tier`` parsed like the CLI (``hermes_cli.cli_config_load``); None when unset/unknown."""
+        from hermes_cli.cli_config_load import _parse_service_tier_config
+
+        return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -468,7 +490,7 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_cron_drain_timeout(cls) -> float:
-        """The cron-only floor under the stop()/drain wait.
+        """The cron and api_server (/v1) floor under the stop()/drain wait.
 
         See #82161.
         """

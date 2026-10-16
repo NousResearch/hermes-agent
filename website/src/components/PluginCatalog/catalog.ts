@@ -94,6 +94,13 @@ export const TIER_CONFIG: Record<
     border: "var(--plugin-catalog-official-border)",
     icon: "\u{2713}",
   },
+  verified: {
+    label: "Verified",
+    color: "var(--plugin-catalog-verified)",
+    bg: "var(--plugin-catalog-verified-bg)",
+    border: "var(--plugin-catalog-verified-border)",
+    icon: "\u{2714}",
+  },
   community: {
     label: "Community",
     color: "var(--plugin-catalog-community)",

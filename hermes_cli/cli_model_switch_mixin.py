@@ -55,10 +55,22 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     stored_model = str((session_meta or {}).get("model") or "").strip()
     if not stored_model:
         return None
+    # A persisted bare alias must be re-resolved on resume. The provider 404s on the
+    # bare name, and the alias target can change between sessions. Anything the startup
+    # resolver does not recognize (a fully-qualified model the config no longer names)
+    # returns None and is left exactly as stored.
+    from hermes_cli.model_switch import resolve_startup_model_route
+    _alias_route = resolve_startup_model_route(stored_model, current_provider=current_provider)
+    _alias_provider = ""
+    if _alias_route is not None:
+        stored_model = _alias_route.model
+        _alias_provider = _alias_route.provider or ""
     from hermes_state import SessionDB as _SessionDB
     runtime = _SessionDB.session_gateway_runtime(session_meta)
     base_url = runtime.get("base_url") or None
     provider = _heal_bare_custom_provider(runtime.get("provider") or None, base_url=base_url, model=stored_model)
+    if _alias_provider:
+        provider = _alias_provider
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
         return None

@@ -312,13 +312,22 @@ class CLIStatusBarMixin:
                 from agent.usage_anchor import anchored_context_tokens
 
                 _msgs = getattr(agent, "_session_messages", None)
+                # Thinking that is replayed on EVERY request (must-echo tier, or the
+                # ``model.reasoning_echo`` opt-in) is durable budget, not a sawtooth: it is
+                # charged against the same window the compaction trigger monitors. There the
+                # meter must follow the LATEST anchor with full-thinking charging, or it can
+                # read 40% while compaction preflight is at 90% (#136267). Everywhere else
+                # the stable turn-base display (introduced by #100621) is kept.
+                _thinking_included = bool(agent._needs_thinking_reasoning_pad())
+                _anchor = (getattr(agent, "_usage_anchor", None) if _thinking_included
+                           else getattr(agent, "_turn_base_usage_anchor", None))
                 _anchored = anchored_context_tokens(
                     _msgs if isinstance(_msgs, list) else [],
-                    getattr(agent, "_turn_base_usage_anchor", None),
-                    charge_stale_thinking=False)
+                    _anchor,
+                    charge_stale_thinking=_thinking_included)
                 if _anchored is not None and _anchored > 0:
                     context_tokens = _anchored
-                    anchor = agent._turn_base_usage_anchor
+                    anchor = _anchor
                     delta = _msgs[int(anchor["base_count"]):]
                     if delta and delta[0].get("role") == "assistant":
                         delta = delta[1:]

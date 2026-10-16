@@ -54,3 +54,27 @@ def test_resume_prefers_gateway_runtime_over_stale_top_level_keys():
         {"provider": "anthropic", **NOUS_ROUTE, "gateway_runtime": {"provider": "openai-codex", "api_mode": "codex_responses"}})}
     desktop = _stored_session_runtime_overrides(row)["model_override"]
     assert (desktop["provider"], desktop["base_url"], desktop["api_mode"]) == ("openai-codex", None, "codex_responses")
+
+
+def test_resume_resolves_a_persisted_bare_alias(monkeypatch):
+    """A session persisted with a bare ``model_aliases:`` name resumes on the alias TARGET.
+
+    ``model.default: free`` is written to the row as the bare name; resuming passed that
+    string straight to the provider, which answered ``Model 'free' not found`` (#137267)."""
+    import hermes_cli.model_switch as ms
+
+    monkeypatch.setitem(
+        ms.DIRECT_ALIASES, "free",
+        ms.DirectAlias("meituan/longcat-2.5-preview:free", "nous", ""),
+    )
+    row = {"model": "free", "model_config": "{}"}
+    assert stored_session_route(row, current_model="free", current_provider="") == (
+        "meituan/longcat-2.5-preview:free", "nous", None, "chat_completions", True)
+
+
+def test_resume_leaves_a_fully_qualified_stored_model_untouched():
+    """A stored model the startup resolver does not recognize is returned exactly as stored."""
+    row = {"model": "nvidia/nemotron-3-ultra-550b-a55b", "model_config": "{}"}
+    assert stored_session_route(
+        row, current_model="nvidia/nemotron-3-ultra-550b-a55b", current_provider="nous"
+    ) is None

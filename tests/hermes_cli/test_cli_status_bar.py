@@ -522,3 +522,44 @@ class TestCacheHitBaselineReset:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
             text = cli_obj._build_status_bar_text(width=80)
         assert "weekly-digest" not in text
+
+
+class TestContextMeterAnchorSelection:
+    """#136267: the footer meter must agree with the window compaction monitors.
+
+    Thinking replayed on every request (must-echo tier, or the ``model.reasoning_echo``
+    opt-in) is durable budget, so the meter follows the latest anchor with full-thinking
+    charging. Without it the stable turn-base display (#100621) is retained.
+    """
+
+    def _cli_with_anchors(self, *, thinking_included: bool):
+        from agent.usage_anchor import capture_usage_anchor
+
+        cli_obj = _make_cli()
+        messages = [{"role": "user", "content": "start"},
+                    {"role": "assistant", "content": "reply"}]
+        turn_base = capture_usage_anchor(400_000, 200, messages)
+        messages.append({"role": "assistant", "content": "anchored reply"})
+        latest = capture_usage_anchor(900_000, 50, messages)
+        _attach_agent(
+            cli_obj, prompt_tokens=900_000, completion_tokens=50, total_tokens=900_050,
+            api_calls=4, context_tokens=900_000, context_length=1_000_000)
+        cli_obj.agent._session_messages = messages
+        cli_obj.agent._turn_base_usage_anchor = turn_base
+        cli_obj.agent._usage_anchor = latest
+        cli_obj.agent._needs_thinking_reasoning_pad = lambda: thinking_included
+        return cli_obj
+
+    def test_thinking_included_follows_the_latest_anchor(self):
+        snap = self._cli_with_anchors(thinking_included=True)._get_status_bar_snapshot()
+
+        # ~900K, not the ~400K turn-base figure.
+        assert 900_000 <= snap["context_tokens"] <= 900_050 + 5_000
+        assert snap["context_percent"] >= 85
+        assert snap["context_estimated"] is False
+
+    def test_thinking_not_included_keeps_the_stable_turn_base_display(self):
+        snap = self._cli_with_anchors(thinking_included=False)._get_status_bar_snapshot()
+
+        assert 400_000 <= snap["context_tokens"] < 450_000
+        assert snap["context_percent"] < 45

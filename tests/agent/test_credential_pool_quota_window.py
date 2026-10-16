@@ -180,3 +180,26 @@ class TestSpentWindowOn429:
             rotate_and_swap=lambda status, label: rotated.append(label) or True,
         )
         assert recovered is True and rotated
+
+
+class TestEnvTokenResolution:
+    """The per-request credential refresh resolves ``ANTHROPIC_TOKEN`` outside pool selection;
+    after a spent-window bench it must not hand the benched token straight back."""
+
+    def _resolve(self, monkeypatch, token):
+        from agent import anthropic_credentials
+
+        monkeypatch.setenv("ANTHROPIC_TOKEN", token)
+        monkeypatch.setattr(anthropic_credentials, "read_claude_code_credentials", lambda: None)
+        return anthropic_credentials.resolve_anthropic_token(model="claude-sonnet-x")
+
+    def test_env_token_benched_for_a_spent_window_is_not_resolved(self, tmp_path, monkeypatch):
+        pool = _seed_pool(tmp_path, monkeypatch)
+        assert pool.mark_quota_exhausted(reset_at=WEEK_RESET, credential_id="spent")
+        assert self._resolve(monkeypatch, "tok-spent") is None
+
+    def test_env_token_resolves_once_its_window_has_reset(self, tmp_path, monkeypatch):
+        pool = _seed_pool(tmp_path, monkeypatch)
+        assert pool.mark_quota_exhausted(reset_at=WEEK_RESET, credential_id="spent")
+        monkeypatch.setattr(time, "time", lambda: WEEK_RESET + 1)
+        assert self._resolve(monkeypatch, "tok-spent") == "tok-spent"

@@ -679,7 +679,8 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[st
 
 
 def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Optional[str]:
-    """Return *token* unless the pool holds an active cooldown for it on *model*.
+    """Return *token* unless the pool holds an active cooldown for it on *model*, or an
+    account-wide bench for a spent subscription window.
 
     Only model-aware callers (the API-call paths) are gated: diagnostics that
     resolve a token without a model (usage display, model discovery) keep it.
@@ -688,7 +689,8 @@ def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Op
         return token or None
     try:
         from agent.credential_pool import load_pool
-        if load_pool("anthropic").token_is_blocked(token, model=model):
+        pool = load_pool("anthropic")
+        if pool.token_is_blocked(token, model=model) or pool.token_quota_spent(token):
             return None
     except Exception:
         # Credential discovery must remain available when the pool store is

@@ -70,6 +70,20 @@ def apply_spent_quota_window(context: dict[str, Any], headers: Any) -> None:
 
 
 class CredentialPoolQuotaWindowMixin:
+    def token_quota_spent(self, token: str) -> bool:
+        """Whether *token* backs an entry benched for a spent window that has not reset yet. Closes
+        the paths that hand out a native Anthropic token without selecting it (env / borrowed)."""
+        from agent.credential_pool import STATUS_EXHAUSTED
+
+        now = time.time()
+        with self._lock:
+            return any(
+                e.runtime_api_key == token and e.last_status == STATUS_EXHAUSTED
+                and e.last_error_reason == QUOTA_EXHAUSTED_REASON
+                and (_parse_absolute_timestamp(e.last_error_reset_at) or 0) > now
+                for e in self._entries
+            )
+
     def _benches_model_only(
         self, status_code: Optional[int], model: Optional[str], failure_reason: Optional[str], error_context: Any,
     ) -> bool:

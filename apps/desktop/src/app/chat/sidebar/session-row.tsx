@@ -30,7 +30,6 @@ import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
-import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
@@ -547,7 +546,7 @@ function SidebarSessionRowImpl({
               return (
                 <>
                   {leadNode}
-                  <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
+                  <SessionRowSlot area={SESSION_ROW_AREAS.leading} session={session} />
                   {handoffBadge}
                   {continuationBadge}
                   <span className="min-w-0 flex-1 self-center">
@@ -594,7 +593,7 @@ function SidebarSessionRowImpl({
                       </span>
                     )}
                   </span>
-                  <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
+                  <SessionRowSlot area={SESSION_ROW_AREAS.trailing} session={session} />
                 </>
               )
             }
@@ -608,7 +607,7 @@ function SidebarSessionRowImpl({
                     entire width — nothing truncates against the kebab. */}
                 <div className="flex min-w-0 items-center gap-1.5">
                   {leadNode}
-                  <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
+                  <SessionRowSlot area={SESSION_ROW_AREAS.leading} session={session} />
                   <span
                     className={cn(
                       'min-w-0 flex-1 truncate text-[0.6875rem] text-(--ui-text-tertiary)',
@@ -619,7 +618,7 @@ function SidebarSessionRowImpl({
                   </span>
                   {handoffBadge}
                   {continuationBadge}
-                  <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
+                  <SessionRowSlot area={SESSION_ROW_AREAS.trailing} session={session} />
                   {actionsNode}
                 </div>
                 {/* Title + preview: ONE grouped cell with its own tight

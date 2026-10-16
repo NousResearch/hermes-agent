@@ -59,6 +59,13 @@ A small, deterministic Electron suite that guards three issue classes end to end
   cold relaunch (#121148). `lineage-compaction-prompt.spec.ts`: a redirect
   prompt acknowledged mid-turn whose turn then compacts; the refresh passes
   through `preserveLocalPendingTurnMessages` (#121088).
+- **Linked Kanban work** — `origin-kanban-background.spec.ts`: no dispatcher, no task execution. The
+  fixture is written by the real producer (`kanban_create` under the origin's own session ids — a
+  compression root and tip — on two boards), then task state is set directly. The origin row's badge
+  is the loudest linked state; after the conversation's own turn ends the composer strip still lists
+  every task with a distinct state (evidence-backed background, reserved-only, needs-input, done) and
+  "worker log" opens that board's drawer on the log; a second profile holding the SAME literal
+  session id shows nothing, and the links are back when returning to the owner.
 - **Remote topology** — `remote-topology.spec.ts`: the whole app on a remote
   `hermes serve` (`HERMES_DESKTOP_REMOTE_URL` + token): a client-only image is
   shipped as bytes, never as a client path (#120730, env-remote shape); remote

@@ -1150,8 +1150,14 @@ def _handle_create(args: dict, **kw) -> str:
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
-        return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+        subscribed = _maybe_auto_subscribe(conn, new_tid)
+        # Index AFTER subscribing so inherited and fresh tui subscriptions are both on the row. A session id
+        # taken from the worker's own task was not verified in this (worker) profile's store.
+        from hermes_cli import kanban_origin
+        kanban_origin.index_created_task(
+            conn, new_tid, session_id=session_id,
+            inherited_session=bool(self_task and session_id == self_task.session_id))
+        return _ok(task_id=new_tid, **landed, **gate, subscribed=subscribed)
 
 
 def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:

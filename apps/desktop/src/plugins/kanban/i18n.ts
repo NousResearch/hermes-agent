@@ -222,6 +222,37 @@ type KanbanMessages = {
     openKanban: string
     artifacts: (n: number) => string
   }
+  // Tasks a conversation ordered, shown on its sidebar row and above its composer.
+  origin: {
+    title: string
+    summary: (tasks: number) => string
+    /** What each activity means. `background` is the only execution claim. */
+    state: Record<
+      | 'archived'
+      | 'background'
+      | 'blocked'
+      | 'done'
+      | 'needs-input'
+      | 'queued'
+      | 'reserved'
+      | 'review'
+      | 'stale'
+      | 'unavailable'
+      | 'unknown'
+      | 'waiting',
+      string
+    >
+    /** Why an indexed link could not be confirmed (the task facts are withheld). */
+    evidence: Record<'board_missing' | 'board_unreadable' | 'not_associated' | 'task_missing', string>
+    unreadable: string
+    unknownHere: string
+    truncated: (shown: number, total: number) => string
+    board: (slug: string) => string
+    openTask: (title: string) => string
+    logs: (title: string) => string
+    expand: string
+    collapse: string
+  }
 }
 
 export const en: KanbanMessages = {
@@ -449,6 +480,38 @@ export const en: KanbanMessages = {
     timedOutTitle: 'Task took too long — Hermes will retry it automatically',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
+  },
+  origin: {
+    title: 'Kanban',
+    summary: (tasks: number) => (tasks === 1 ? '1 linked task' : `${tasks} linked tasks`),
+    state: {
+      background: 'Running in the background',
+      reserved: 'Claimed by a worker — not confirmed running',
+      unknown: 'No evidence a worker is running',
+      stale: 'No recent worker activity',
+      queued: 'Queued',
+      waiting: 'Waiting on other tasks',
+      'needs-input': 'Needs your input',
+      blocked: 'Blocked',
+      review: 'In review',
+      done: 'Done',
+      archived: 'Archived',
+      unavailable: 'Status unavailable'
+    },
+    evidence: {
+      board_missing: 'Board not found',
+      board_unreadable: 'Board unreadable',
+      task_missing: 'Task not found',
+      not_associated: 'No longer linked to this conversation'
+    },
+    unreadable: 'Linked task status can’t be read right now — that does not mean idle.',
+    unknownHere: 'Linked tasks can’t be listed for this conversation from here.',
+    truncated: (shown: number, total: number) => `Showing ${shown} of ${total} linked tasks`,
+    board: (slug: string) => `Board: ${slug}`,
+    openTask: (title: string) => `Open task: ${title}`,
+    logs: (title: string) => `Open logs: ${title}`,
+    expand: 'Show linked tasks',
+    collapse: 'Hide linked tasks'
   }
 }
 
@@ -676,6 +739,38 @@ const ja: KanbanMessages = {
     timedOutTitle: 'タスクに時間がかかりすぎました — Hermes が自動で再試行します',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
+  },
+  origin: {
+    title: 'カンバン',
+    summary: (tasks: number) => `リンク済みタスク ${tasks} 件`,
+    state: {
+      background: 'バックグラウンドで実行中',
+      reserved: 'ワーカーが確保済み — 実行中かは未確認',
+      unknown: 'ワーカーが実行中である証拠なし',
+      stale: '最近のワーカー活動なし',
+      queued: '待機中',
+      waiting: '他のタスクを待機中',
+      'needs-input': '入力が必要です',
+      blocked: 'ブロック中',
+      review: 'レビュー中',
+      done: '完了',
+      archived: 'アーカイブ済み',
+      unavailable: '状態を取得できません'
+    },
+    evidence: {
+      board_missing: 'ボードが見つかりません',
+      board_unreadable: 'ボードを読み取れません',
+      task_missing: 'タスクが見つかりません',
+      not_associated: 'この会話にはもうリンクされていません'
+    },
+    unreadable: 'リンク済みタスクの状態を現在読み取れません — アイドルという意味ではありません。',
+    unknownHere: 'この場所からはこの会話のリンク済みタスクを一覧できません。',
+    truncated: (shown: number, total: number) => `リンク済みタスク ${total} 件中 ${shown} 件を表示`,
+    board: (slug: string) => `ボード: ${slug}`,
+    openTask: (title: string) => `タスクを開く: ${title}`,
+    logs: (title: string) => `ログを開く: ${title}`,
+    expand: 'リンク済みタスクを表示',
+    collapse: 'リンク済みタスクを隠す'
   }
 }
 
@@ -900,6 +995,38 @@ const zh: KanbanMessages = {
     timedOutTitle: '任务耗时过长 — Hermes 将自动重试',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
+  },
+  origin: {
+    title: '看板',
+    summary: (tasks: number) => `${tasks} 个关联任务`,
+    state: {
+      background: '正在后台运行',
+      reserved: '已被工作单元领取 — 尚未确认在运行',
+      unknown: '没有工作单元正在运行的证据',
+      stale: '近期没有工作单元活动',
+      queued: '排队中',
+      waiting: '等待其他任务',
+      'needs-input': '需要你的输入',
+      blocked: '受阻',
+      review: '审查中',
+      done: '已完成',
+      archived: '已归档',
+      unavailable: '状态不可用'
+    },
+    evidence: {
+      board_missing: '找不到看板',
+      board_unreadable: '无法读取看板',
+      task_missing: '找不到任务',
+      not_associated: '已不再关联到此对话'
+    },
+    unreadable: '暂时无法读取关联任务的状态 — 这并不表示空闲。',
+    unknownHere: '无法从这里列出此对话的关联任务。',
+    truncated: (shown: number, total: number) => `显示 ${total} 个关联任务中的 ${shown} 个`,
+    board: (slug: string) => `看板：${slug}`,
+    openTask: (title: string) => `打开任务：${title}`,
+    logs: (title: string) => `打开日志：${title}`,
+    expand: '显示关联任务',
+    collapse: '隐藏关联任务'
   }
 }
 
@@ -1124,6 +1251,38 @@ const zhHant: KanbanMessages = {
     timedOutTitle: '任務耗時過長 — Hermes 將自動重試',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
+  },
+  origin: {
+    title: '看板',
+    summary: (tasks: number) => `${tasks} 個關聯任務`,
+    state: {
+      background: '正在背景執行',
+      reserved: '已被工作單元領取 — 尚未確認在執行',
+      unknown: '沒有工作單元正在執行的證據',
+      stale: '近期沒有工作單元活動',
+      queued: '排隊中',
+      waiting: '等待其他任務',
+      'needs-input': '需要你的輸入',
+      blocked: '受阻',
+      review: '審查中',
+      done: '已完成',
+      archived: '已封存',
+      unavailable: '狀態無法取得'
+    },
+    evidence: {
+      board_missing: '找不到看板',
+      board_unreadable: '無法讀取看板',
+      task_missing: '找不到任務',
+      not_associated: '已不再關聯到此對話'
+    },
+    unreadable: '暫時無法讀取關聯任務的狀態 — 這並不表示閒置。',
+    unknownHere: '無法從這裡列出此對話的關聯任務。',
+    truncated: (shown: number, total: number) => `顯示 ${total} 個關聯任務中的 ${shown} 個`,
+    board: (slug: string) => `看板：${slug}`,
+    openTask: (title: string) => `開啟任務：${title}`,
+    logs: (title: string) => `開啟日誌：${title}`,
+    expand: '顯示關聯任務',
+    collapse: '隱藏關聯任務'
   }
 }
 

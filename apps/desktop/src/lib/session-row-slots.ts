@@ -21,15 +21,33 @@ export const SESSION_ROW_AREAS = {
   trailing: 'sessionRow.trailing'
 } as const
 
-/** Props handed to a session-row decoration's `render`. */
-export interface SessionRowSlotProps {
-  /** The STORED (durable) id of the session the row renders — the lineage root,
-   *  not the live id. Auto-compression rotates the live id, so a plugin that
-   *  remembers `session.id` decorates the row until the next compaction and then
-   *  silently stops matching; the durable id is the one `host.sessions.*` and
-   *  core's own pin/reorder address (see `sessionPinId`). */
+/** Who a conversation is, where it lives, and whether plugin REST can reach it.
+ *  Handed to every per-session decoration (sidebar rows, the composer's session
+ *  strip) so a plugin never re-derives lineage or ownership. */
+export interface SessionRouteContext {
+  /** The STORED (durable) id of the conversation — the lineage root, not the
+   *  live id. Auto-compression rotates the live id, so a plugin that remembers
+   *  `session.id` decorates the row until the next compaction and then silently
+   *  stops matching; the durable id is the one `host.sessions.*` and core's own
+   *  pin/reorder address (see `sessionPinId`). */
   sessionId: string
+  /** Every id the conversation has answered to (live tip, root, intermediate
+   *  segments). Durable references stamped mid-lineage match through this. */
+  lineageIds: readonly string[]
+  /** Owning profile (normalized; `default` when the row carries none). */
+  profile: string
+  /** Registry connection that serves the conversation; '' for the primary
+   *  local backend. */
+  connectionId: string
+  /** True only when plugin REST (`ctx.rest`) is routed to this owner right
+   *  now — same connection AND the active gateway profile. A plugin must not
+   *  query on behalf of a conversation where this is false: the call would hit
+   *  another profile's or backend's data. */
+  ambient: boolean
 }
+
+/** Props handed to a session-row decoration's `render`. */
+export type SessionRowSlotProps = SessionRouteContext
 
 /** Payload of a `sessionRow.*` contribution's `data`. */
 export interface SessionRowSlotContribution {

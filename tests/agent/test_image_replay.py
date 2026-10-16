@@ -119,3 +119,37 @@ def test_replay_window_skips_untrusted_bytes_and_typed_markers(tmp_path):
     assert users[2]["content"] == "I literally typed\n[screenshot]"
     assert users[1]["content"] == older["content"]
     assert users[0]["content"].endswith("\n[screenshot]")  # outside the 2-image window
+
+
+def test_replay_keeps_part_order_and_appended_turn_context(tmp_path):
+    """Turn-time memory/hook context lands after the image (``_append_multimodal_context``); the
+    rebuilt row still carries the image in place (the reload scrubs the memory fence itself)."""
+    from agent.turn_context import _append_multimodal_context
+
+    _config()
+    live, _ = _live_turn(tmp_path, "label.png", "What is on this label?")
+    _append_multimodal_context(_Agent(), live, "recalled memory", "plugin hook context", preflight_compressed=False)
+    assert live["content"][-1]["type"] == "text"
+
+    rebuilt = _rebuilt_request(tmp_path, [live])[0]["content"]
+    assert rebuilt[:2] == live["content"][:2]
+    assert rebuilt[2]["type"] == "text" and rebuilt[2]["text"].endswith("plugin hook context")
+
+
+@pytest.mark.parametrize("parts", [
+    [{"type": "image_url", "image_url": {"url": "IMG"}}, {"type": "text", "text": "what is this?"}],
+    [{"type": "text", "text": "what is this?"}, {"type": "image_url", "image_url": {"url": "IMG", "detail": "low"}}],
+], ids=["image-first", "detail-low"])
+def test_api_server_image_replays_with_its_position_and_detail(tmp_path, parts):
+    """API callers send the image first or pick ``detail``; the API ingress (commit + restore) row
+    rebuilt from the DB replays the same parts."""
+    import base64
+
+    from gateway.session_api_media import commit_api_images, restore_api_images
+
+    _config()
+    url = "data:image/png;base64," + base64.b64encode(_PNG).decode()
+    parts = [{**p, "image_url": {**p["image_url"], "url": url}} if p["type"] == "image_url" else p for p in parts]
+    live = {"role": "user", "content": restore_api_images(parts, commit_api_images(parts))}
+
+    assert _rebuilt_request(tmp_path, [live])[0]["content"] == live["content"]

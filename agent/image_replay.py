@@ -1,11 +1,12 @@
 """Re-attach user images on turns whose history was rebuilt from the session DB.
 
 The DB stores user rows as text (``session_persistence._durable_content``): an image part becomes a
-trailing ``[screenshot]`` line. A turn rebuilt from the DB (every API-server request, ``--resume``,
-a gateway restart) therefore showed the model that placeholder instead of the photo the user asked
-about one message earlier. The bytes are not gone: the session-authority attach paths (CLI, the
-shared-gateway TUI, messaging gateway, API server) commit them under the profile's content-addressed
-``native-inputs/<sha256>/<name>`` and name that path in the same row (``[Image attached at: <path>]``,
+``[screenshot]`` line at its position (``[screenshot detail=low]`` when the caller chose a detail).
+A turn rebuilt from the DB (every API-server request, ``--resume``, a gateway restart) therefore
+showed the model that placeholder instead of the photo the user asked about one message earlier.
+The bytes are not gone: the session-authority attach paths (CLI, the shared-gateway TUI, messaging
+gateway, API server) commit them under the profile's content-addressed ``native-inputs/<sha256>/<name>``
+and name that path in the same row (``[Image attached at: <path>]``,
 written by ``image_routing.build_native_content_parts`` / ``session_api_media.restore_api_images``).
 
 On the WIRE COPY only, when this turn sends images natively, the ``vision.replay_recent_images``
@@ -28,8 +29,9 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_REPLAY_RECENT_IMAGES = 3
-SCREENSHOT_MARKER = "[screenshot]"
 _HINT_RE = re.compile(r"^\[Image attached(?P<local> at)?: (?P<ref>.+)\]$")
+# ``session_persistence._image_marker``: the live part's ``detail`` rides on its marker.
+_MARKER_RE = re.compile(r"^\[screenshot(?: detail=(?P<detail>low|high|auto))?\]$")
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 
 
@@ -46,23 +48,26 @@ def resolve_replay_recent_images(cfg: dict) -> int:
     return 0
 
 
-def _split_rebuilt_row(content: str) -> Optional[tuple[str, list[str]]]:
-    """``(text, refs)`` for a DB-rebuilt user row whose trailing ``[screenshot]`` lines pair 1:1 with
-    its ``[Image attached…]`` hints; ``None`` for anything else (a typed marker never pairs)."""
+def _split_rebuilt_row(content: str) -> Optional[list[tuple[str, Any]]]:
+    """A DB-rebuilt user row as its original parts, in order: ``("text", str)`` for each text run and
+    ``("image", (ref, detail, marker_line))`` per ``[screenshot]`` line, the markers pairing 1:1 in order
+    with the row's ``[Image attached…]`` hints wherever the image sat (API callers put it first;
+    turn-time memory/hook context follows it). ``None`` when the counts disagree (a typed marker)."""
     lines = content.split("\n")
-    n = 0
-    while n < len(lines) and lines[len(lines) - 1 - n] == SCREENSHOT_MARKER:
-        n += 1
-    if not n:
+    markers = [(i, m.group("detail")) for i, line in enumerate(lines) if (m := _MARKER_RE.match(line))]
+    hints = [m for line in lines if (m := _HINT_RE.match(line))]
+    if not markers or len(hints) != len(markers):
         return None
-    text_lines = lines[: len(lines) - n]
-    refs: list[str] = []
-    for line in text_lines[len(text_lines) - n:] if len(text_lines) > n else ():
-        m = _HINT_RE.match(line)
-        if m is None:
-            return None
-        refs.append(m.group("ref") if m.group("local") else "")
-    return ("\n".join(text_lines), refs) if len(refs) == n else None
+    parts: list[tuple[str, Any]] = []
+    start = 0
+    for (i, detail), hint in zip(markers, hints):
+        if i > start:
+            parts.append(("text", "\n".join(lines[start:i])))
+        parts.append(("image", (hint.group("ref") if hint.group("local") else "", detail, lines[i])))
+        start = i + 1
+    if start < len(lines):
+        parts.append(("text", "\n".join(lines[start:])))
+    return parts
 
 
 def _retained_data_url(ref: str) -> Optional[str]:
@@ -96,23 +101,30 @@ def replay_recent_images(api_messages: list[dict[str, Any]], keep: int) -> int:
         if isinstance(content, list):
             budget -= sum(1 for p in content if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)
             continue
-        split = _split_rebuilt_row(content) if isinstance(content, str) else None
-        if split is None:
+        parts = _split_rebuilt_row(content) if isinstance(content, str) else None
+        if parts is None:
             continue
-        text, refs = split
-        urls: list[Optional[str]] = [None] * len(refs)
-        for i in range(len(refs) - 1, -1, -1):  # a row's latest image first
-            if budget > 0 and (url := _retained_data_url(refs[i])):
+        images = [i for i, (kind, _) in enumerate(parts) if kind == "image"]
+        urls: dict[int, str] = {}
+        for i in reversed(images):  # a row's latest image first
+            if budget > 0 and (url := _retained_data_url(parts[i][1][0])):
                 urls[i] = url
                 budget -= 1
-        if any(urls):
-            plan.append((msg, text, urls))
+        if urls:
+            plan.append((msg, parts, urls))
     attached = 0
-    for msg, text, urls in plan:
-        msg["content"] = [{"type": "text", "text": text}, *(
-            {"type": "image_url", "image_url": {"url": u}} if u else {"type": "text", "text": SCREENSHOT_MARKER}
-            for u in urls)]
-        attached += sum(1 for u in urls if u)
+    for msg, parts, urls in plan:
+        rebuilt: list[dict[str, Any]] = []
+        for i, (kind, value) in enumerate(parts):
+            if kind == "text":
+                rebuilt.append({"type": "text", "text": value})
+            elif i in urls:
+                image = {"url": urls[i], **({"detail": value[1]} if value[1] else {})}
+                rebuilt.append({"type": "image_url", "image_url": image})
+            else:
+                rebuilt.append({"type": "text", "text": value[2]})
+        msg["content"] = rebuilt
+        attached += len(urls)
     return attached
 
 
@@ -139,7 +151,7 @@ def _turn_replay_window(agent: Any) -> int:
 def replay_for_agent(agent: Any, api_messages: list[dict[str, Any]]) -> None:
     """``build_api_messages`` hook: replay only when this turn's model takes images natively."""
     if not any(m.get("role") == "user" and isinstance(m.get("content"), str)
-               and m["content"].endswith(SCREENSHOT_MARKER) for m in api_messages):
+               and "[screenshot" in m["content"] for m in api_messages):
         return
     if (keep := _turn_replay_window(agent)) <= 0:
         return

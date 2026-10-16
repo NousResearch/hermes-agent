@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
-import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { isDesktopFsRemoteMode, isSessionWorkspaceOrigin } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
@@ -50,7 +50,11 @@ export function PreviewAttachment({ target }: { target: string }) {
   const { t } = useI18n()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
-  const cwd = useStore(useSessionView().$cwd)
+  const sessionView = useSessionView()
+  const cwd = useStore(sessionView.$cwd)
+  const runtimeId = useStore(sessionView.$runtimeId)
+  const storedId = useStore(sessionView.$storedId)
+  const origin = { sessionId: storedId || runtimeId || undefined }
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -84,20 +88,30 @@ export function PreviewAttachment({ target }: { target: string }) {
 
   // Classify the target against the local filesystem so the card offers the
   // native action instead of a Download this machine already has (#101683).
+  // Session-workspace files are not on this computer even when Desktop is
+  // connected locally; only a real host directory keeps the native action.
   useEffect(() => {
     let current = true
     setLocalTarget(null)
+    const requestOrigin = origin
 
     void classifyLocalTarget(target, cwd).then(state => {
-      if (current) {
-        setLocalTarget(state)
+      if (!current) {
+        return
       }
+
+      if (isSessionWorkspaceOrigin(requestOrigin) && state?.type !== 'directory') {
+        setLocalTarget(null)
+        return
+      }
+
+      setLocalTarget(state)
     })
 
     return () => {
       current = false
     }
-  }, [cwd, target])
+  }, [cwd, origin.sessionId, target])
 
   async function openInFileManager(path: string, directory: boolean) {
     if (opening) {
@@ -143,8 +157,10 @@ export function PreviewAttachment({ target }: { target: string }) {
     }
 
     // The classifier already knows this path is not on this computer: report
-    // instead of running a pipeline that would fabricate a broken tab.
-    if (localTarget?.type === 'missing') {
+    // instead of running a pipeline that would fabricate a broken tab. A
+    // session workspace is resolved by the owning backend, so host absence
+    // is not authoritative there.
+    if (localTarget?.type === 'missing' && !isSessionWorkspaceOrigin(origin)) {
       notifyError(new Error(`${target} — ${t.preview.missingTarget}`), t.preview.unavailable)
 
       return
@@ -157,7 +173,7 @@ export function PreviewAttachment({ target }: { target: string }) {
     setOpening(true)
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined)
+      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined, origin)
 
       if (
         !mountedRef.current ||

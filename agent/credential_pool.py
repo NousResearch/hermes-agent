@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
-from agent.credential_pool_timestamps import _parse_absolute_timestamp
+from agent.credential_pool_quota_window import CredentialPoolQuotaWindowMixin
+from agent.credential_pool_timestamps import _normalize_error_context, _parse_absolute_timestamp
 
 import logging
 import os
@@ -21,7 +22,6 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
-from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
 from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from agent.credential_persistence import (
@@ -413,30 +413,6 @@ def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     if state_ts is None:
         return False
     return state_ts < entry_ts
-
-
-def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[str, Any]:
-    if not isinstance(error_context, dict):
-        return {}
-    normalized: dict[str, Any] = {}
-    for key in ("reason", "message"):
-        value = error_context.get(key)
-        if isinstance(value, str) and value.strip():
-            normalized[key] = value.strip()
-    reset_at = (
-        error_context.get("reset_at")
-        or error_context.get("resets_at")
-        or error_context.get("retry_until")
-    )
-    parsed_reset_at = _parse_absolute_timestamp(reset_at)
-    message = error_context.get("message")
-    if parsed_reset_at is None and isinstance(message, str):
-        retry_delay_seconds = reset_delay_from_message(message)
-        if retry_delay_seconds is not None:
-            parsed_reset_at = time.time() + retry_delay_seconds
-    if parsed_reset_at is not None:
-        normalized["reset_at"] = parsed_reset_at
-    return normalized
 
 
 def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
@@ -978,7 +954,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin, CredentialPoolQuotaWindowMixin):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -2289,7 +2265,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
-            if self._is_model_scoped_failure(status_code, model, failure_reason):
+            if self._benches_model_only(status_code, model, failure_reason, error_context):
                 # A generic Anthropic 429 (per-model rate limit) or a Codex account model
                 # entitlement rejection: bench this model only, the credential stays
                 # available for its siblings.

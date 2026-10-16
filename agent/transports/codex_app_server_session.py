@@ -320,8 +320,7 @@ class CodexAppServerSession:
         with self._active_turn_lock:
             self._active_turn_id = None
         if self._client is not None:
-            with contextlib.suppress(Exception):  # pragma: no cover - best-effort cleanup
-                self._client.close()
+            self._client.close()
         self._client = None
         self._thread_id = None
 

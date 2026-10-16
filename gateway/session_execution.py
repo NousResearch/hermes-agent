@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from gateway.agent_cache_release import codex_release_barrier
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -92,7 +93,10 @@ class GatewaySessionAgentMixin:
         from gateway.run import _AGENT_PENDING_SENTINEL
         evicted = self._runner._agent_cache.pop(self._ctx.session_key, None)
         agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
-        return agent if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
+            codex_release_barrier(self._runner).track(self._ctx.session_key, agent)
+            return agent
+        return None
 
     def _lookup_cached_agent(self, sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count):
         ctx = self._ctx
@@ -101,7 +105,10 @@ class GatewaySessionAgentMixin:
             return out
         with cache_lock:
             cached = cache.get(ctx.session_key)
-            if not (cached and cached[1] == sig):
+            if not cached:
+                return out
+            if cached[1] != sig:
+                out.evicted = self._pop_cached_agent_for_eviction()
                 return out
             # cached[2] = message_count at cache time (stale when a second process appended rows);
             # cached[3] = the session_id the snapshot was taken for.
@@ -145,7 +152,7 @@ class GatewaySessionAgentMixin:
         """Off-lock soft release on a daemon thread so teardown never blocks the gateway loop."""
         self._runner._spawn_release_thread(
             self._runner._release_evicted_agent_soft, (agent,), f"agent-xproc-evict-{str(self._ctx.session_key)[:24]}",
-            inline_fallback=True,
+            inline_fallback=True, session_key=self._ctx.session_key,
         )
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
@@ -212,12 +219,13 @@ class GatewaySessionAgentMixin:
             # A cached agent already moved onto a fallback provider cannot serve a confirmed lock.
             found.evicted, found.reused, agent = agent, False, None
             with cache_lock:
-                cache.pop(ctx.session_key, None)
+                self._pop_cached_agent_for_eviction()
         if found.reused and agent is not None:
             self._runner._apply_fallback_chain_to_agent(agent, None if locked else runner._refresh_fallback_model())
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
+            codex_release_barrier(runner).wait(ctx.session_key)
             agent = self._build_fresh_agent(
                 turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
             )

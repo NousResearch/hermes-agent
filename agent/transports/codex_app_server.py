@@ -197,9 +197,8 @@ class CodexAppServerClient:
             self._proc.terminate()
             self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            with contextlib.suppress(Exception):
-                kill_process_tree(self._proc.pid)
-                self._proc.wait(timeout=1.0)
+            kill_process_tree(self._proc.pid)
+            self._proc.wait(timeout=1.0)
         finally:
             _reap_snapshotted(descendants)
 

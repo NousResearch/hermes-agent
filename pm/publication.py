@@ -46,7 +46,8 @@ def candidate_members(extra_dirs=(), **selection):
 
 def selection_snapshot() -> dict[Path, bytes | None]:
     from pm.plugins_state import dependency_homes
-    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml") for home in dependency_homes()}
+    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml")  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
+            for home in dependency_homes()}
 
 
 def validate_manifest(source: Path) -> dict:
@@ -68,7 +69,7 @@ class PluginSelection:
         if not self.home.is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")
         self.path = self.home / "config.yaml"
-        self.previous = read_bytes_or_none(self.path)
+        self.previous = read_bytes_or_none(self.path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
         expected = selection.get("expected_config")
         actual = hashlib.sha256(self.previous).hexdigest() if self.previous is not None else "missing"
         if expected is not None and expected != actual:

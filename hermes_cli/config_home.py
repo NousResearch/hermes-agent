@@ -80,7 +80,7 @@ def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> 
 
 
 def config_load_issue(exc: Exception):
-    from hermes_cli.config import ConfigIssue
+    from hermes_cli.config_issues import ConfigIssue
 
     if isinstance(exc, (HomeInitializationError, OSError)):
         return ConfigIssue(

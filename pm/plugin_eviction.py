@@ -89,7 +89,7 @@ class PluginEviction:
         self.edits: list[tuple[Path, bytes | None, bytes]] = []
         for home, names in by_home.items():
             path = home / "config.yaml"
-            previous = read_bytes_or_none(path)
+            previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
             yaml = roundtrip_yaml()
             config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
             # read_home_selection already proved plugins/memory are mappings and the lists are lists.

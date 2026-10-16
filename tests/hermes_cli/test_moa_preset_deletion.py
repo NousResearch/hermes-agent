@@ -269,7 +269,9 @@ def test_moa_save_refuses_transient_read_failure_without_losing_config(tmp_path,
     _seed(tmp_path, monkeypatch, _three_presets(), operator_settings={"keep": None})
     config_path = tmp_path / "config.yaml"
     before = config_path.read_bytes()
-    real_load = config_mod.fast_safe_load
+    import utils
+
+    real_load = utils.fast_safe_load
     failed_reads = []
 
     def fail_once(stream):
@@ -278,7 +280,8 @@ def test_moa_save_refuses_transient_read_failure_without_losing_config(tmp_path,
             raise OSError(errno.EMFILE, "Too many open files")
         return real_load(stream)
 
-    monkeypatch.setattr(config_mod, "fast_safe_load", fail_once)
+    # Config reads go through the ConfigBackend seam, which parses with utils.fast_safe_load.
+    monkeypatch.setattr(utils, "fast_safe_load", fail_once)
     payload = (
         _preset("gpt-5.8").model_dump()
         if legacy else

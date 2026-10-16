@@ -331,6 +331,7 @@ def _not_configured_error(platform_name, platform, entry):
     from gateway.config import _getenv
     from gateway.config_env import _ENV_ENABLE_CREDENTIALS
     from hermes_constants import get_hermes_home
+    from hermes_cli.config_backend import config_exists
     home = get_hermes_home()
     env_names = list(_ENV_ENABLE_CREDENTIALS.get(platform) or (entry.required_env if entry else ()))
     names = "/".join(env_names) or "credentials"
@@ -344,7 +345,7 @@ def _not_configured_error(platform_name, platform, entry):
         block = user_config.get("platforms", {}).get(platform_name)
     except Exception:
         user_config, block = {}, None
-    if not config_path.exists():
+    if not config_exists(config_path):
         config_state = "missing"
     elif not isinstance(block, dict):
         config_state = f"no platforms.{platform_name} block"

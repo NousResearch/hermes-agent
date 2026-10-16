@@ -1,11 +1,26 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedTicketEndpoint, runGatewayEnsure } from './local-gateway'
+import {
+  configurePythonGatewayTicketClient,
+  createLocalGatewayDials,
+  createStaleGatewayRestarter,
+  ensureLocalGateway,
+  gatewayOwnerProfile,
+  mintLocalGatewayTicket,
+  nativeGatewayHttpHeaders,
+  redialLocalGateway,
+  routedTicketEndpoint,
+  runGatewayEnsure
+} from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
-configurePythonGatewayTicketClient(createGatewayTicketResolver(
-  async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
+configurePythonGatewayTicketClient(
+  createGatewayTicketResolver(
+    async () => ensureRuntime(await resolveHermesBackend([]), () => undefined),
+    resolveHermesCwd
+  )
+)
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -5103,7 +5118,8 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
             env: {},
             kind: 'command',
             shell: shellForProbe,
-            local: 'installed', root: await launcherInstallRoot(hermesCommand) // ticket minting needs it (#138774)
+            local: 'installed',
+            root: await launcherInstallRoot(hermesCommand) // ticket minting needs it (#138774)
           }
         }
 
@@ -5379,7 +5395,13 @@ function fetchJson(url, token, options: any = {}) {
     async (requestState: any) => {
       // Mint inside each retry: a grant authorizes exactly one HTTP request.
       const nativeHeaders = options.gatewayDescriptor
-        ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url, HERMES_HOME, options.method || 'GET', options.upload ? undefined : options.body)
+        ? await nativeGatewayHttpHeaders(
+            options.gatewayDescriptor,
+            url,
+            HERMES_HOME,
+            options.method || 'GET',
+            options.upload ? undefined : options.body
+          )
         : null
 
       return new Promise((resolve, reject) => {
@@ -7904,7 +7926,9 @@ async function freshGatewayWsUrl(profile, webContentsId) {
       use: async current => {
         // A shared-primary descriptor answers for a sibling profile too: the socket's
         // ticket must name THAT profile's home or its sessions are another owner's.
-        const ticket = await mintLocalGatewayTicket(await routedTicketEndpoint(current.gatewayEndpoint, String(profile ?? ''), HERMES_HOME))
+        const ticket = await mintLocalGatewayTicket(
+          await routedTicketEndpoint(current.gatewayEndpoint, String(profile ?? ''), HERMES_HOME)
+        )
 
         return localGatewayDials.prepare(current.baseUrl, ticket, webContentsId)
       }
@@ -10822,14 +10846,13 @@ async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
   }
 
   if (backendPool.delete(localRoute.poolKey)) {
-    rememberLog(`[gateway] forgot stale canonical endpoint for connection "${String(connectionId || '').trim() || 'primary'}" profile "${profileKey}"; re-ensuring`)
+    rememberLog(
+      `[gateway] forgot stale canonical endpoint for connection "${String(connectionId || '').trim() || 'primary'}" profile "${profileKey}"; re-ensuring`
+    )
   }
 }
 
-async function ensureBackend(
-  profile,
-  opts: { passive?: boolean; request?: { method?: string; path?: string } } = {}
-) {
+async function ensureBackend(profile, opts: { passive?: boolean; request?: { method?: string; path?: string } } = {}) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const passive = Boolean(opts.passive)
 
@@ -11758,41 +11781,47 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
 
-  const connection = await ensureLocalGateway(async () => {
-    const backend = await ensureRuntime(
-      await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
-      () => assertPoolEntryStillOwned(poolKey, entry)
-    )
+  const connection = await ensureLocalGateway(
+    async () => {
+      const backend = await ensureRuntime(
+        await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
+        () => assertPoolEntryStillOwned(poolKey, entry)
+      )
 
-    profileDeletionGate.assertCanStart(profile)
-    assertPoolEntryStillOwned(poolKey, entry)
+      profileDeletionGate.assertCanStart(profile)
+      assertPoolEntryStillOwned(poolKey, entry)
 
-    // Never another profile's dotenv credentials from the Desktop env (#68367).
-    return runGatewayEnsure(
-      { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
-      resolveHermesCwd(),
-      HERMES_HOME,
-      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile })
-    )
-  }, async () => {
-    // Same update mutual exclusion as the primary's waitForLocalStart (#73822);
-    // a held update shows the window's blocked screen for this profile too.
-    await waitForPoolUpdateClearance({
-      profile,
-      poolKey,
-      gateDeps: updateGateDeps,
-      signal: localBackendLifecycle.signal,
-      isCancelled: (): boolean => backendPool.get(poolKey) !== entry,
-      log: rememberLog,
-      showHold: showUpdateHold,
-      clearHold: clearUpdateHold,
-      pollMs: UPDATE_WAIT_POLL_MS,
-      timeoutMs: UPDATE_WAIT_TIMEOUT_MS
-    })
-    // Update waits yield: retirement or profile deletion may win in that gap.
-    assertPoolEntryStillOwned(poolKey, entry)
-    assertLocalProfileCanStart(profile, profileDeletionGate, key => directoryExists(path.join(HERMES_HOME, 'profiles', key)))
-  }, restartStaleLocalGateway)
+      // Never another profile's dotenv credentials from the Desktop env (#68367).
+      return runGatewayEnsure(
+        { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
+        resolveHermesCwd(),
+        HERMES_HOME,
+        profileBackendParentEnv({ hermesHome: HERMES_HOME, profile })
+      )
+    },
+    async () => {
+      // Same update mutual exclusion as the primary's waitForLocalStart (#73822);
+      // a held update shows the window's blocked screen for this profile too.
+      await waitForPoolUpdateClearance({
+        profile,
+        poolKey,
+        gateDeps: updateGateDeps,
+        signal: localBackendLifecycle.signal,
+        isCancelled: (): boolean => backendPool.get(poolKey) !== entry,
+        log: rememberLog,
+        showHold: showUpdateHold,
+        clearHold: clearUpdateHold,
+        pollMs: UPDATE_WAIT_POLL_MS,
+        timeoutMs: UPDATE_WAIT_TIMEOUT_MS
+      })
+      // Update waits yield: retirement or profile deletion may win in that gap.
+      assertPoolEntryStillOwned(poolKey, entry)
+      assertLocalProfileCanStart(profile, profileDeletionGate, key =>
+        directoryExists(path.join(HERMES_HOME, 'profiles', key))
+      )
+    },
+    restartStaleLocalGateway
+  )
 
   assertPoolEntryStillOwned(poolKey, entry)
 
@@ -11822,7 +11851,9 @@ async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
   )
 
   const reason = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/).filter(Boolean).pop()
-  rememberLog(`[gateway] hermes --profile ${ownerProfile} gateway restart exited ${result.code}${reason ? `: ${reason}` : ''}`)
+  rememberLog(
+    `[gateway] hermes --profile ${ownerProfile} gateway restart exited ${result.code}${reason ? `: ${reason}` : ''}`
+  )
 }
 
 // A ready gateway whose boot commit differs from this Hermes (it outlived `hermes update`) is
@@ -11832,9 +11863,12 @@ const restartStaleLocalGateway = createStaleGatewayRestarter(restartLocalGateway
 // Models-page "Restart Hermes": restart the local gateway behind `profile`'s cached descriptor.
 // A remote/SSH descriptor has no gatewayEndpoint, so nothing local is touched for it.
 async function restartAttachedLocalGateway(profile: string): Promise<void> {
-  const pending = profile === primaryProfileKey()
-    ? backendConnectionState.getPromise()
-    : localProfilePoolKeys(profile).map(key => backendPool.get(key)?.connectionPromise).find(Boolean)
+  const pending =
+    profile === primaryProfileKey()
+      ? backendConnectionState.getPromise()
+      : localProfilePoolKeys(profile)
+          .map(key => backendPool.get(key)?.connectionPromise)
+          .find(Boolean)
 
   const connection = await pending?.catch(() => null)
   const endpoint = connection?.gatewayEndpoint
@@ -12236,18 +12270,29 @@ async function startHermes(requestedProfile?: string) {
     // Local WSL backend — paths are bridgeable.
     setWslBridgeProfileState(primaryProfile, true)
 
-    const connection = await ensureLocalGateway(() => runGatewayEnsure(
-      { ...setup.backend, env: desktopBackendSpawnEnv(setup.backend.env || {}) },
-      resolveHermesCwd(),
-      HERMES_HOME,
-      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: primaryProfile })
-    ), undefined, restartStaleLocalGateway)
+    const connection = await ensureLocalGateway(
+      () =>
+        runGatewayEnsure(
+          { ...setup.backend, env: desktopBackendSpawnEnv(setup.backend.env || {}) },
+          resolveHermesCwd(),
+          HERMES_HOME,
+          profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: primaryProfile })
+        ),
+      undefined,
+      restartStaleLocalGateway
+    )
 
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     backendStartFailure = null
     rememberLog('[backend] Hermes gateway is ready')
-    updateBootProgress({ phase: 'backend.ready', message: 'Hermes gateway is ready', progress: 94, running: true, error: null })
+    updateBootProgress({
+      phase: 'backend.ready',
+      message: 'Hermes gateway is ready',
+      progress: 94,
+      running: true,
+      error: null
+    })
     bootstrapRepairAttempt = 0
 
     // The primary descriptor names its own profile: a profile-less descriptor
@@ -14399,7 +14444,10 @@ ipcMain.handle('hermes:connection:for', async (event, payload) => {
   const registry = readDesktopConnectionsRegistry()
   const id = registryDialConnectionId(connectionId, registry.primary)
 
-  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' }, event.sender)
+  return connectDesktopProfileRoute(
+    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
+    event.sender
+  )
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -15430,7 +15478,9 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
         ensure: () => ensureRegistryBackend(payload?.connectionId, payload?.profile),
         forget: () => forgetRegistryLocalGatewayDescriptor(payload?.connectionId, payload?.profile),
         use: async (current: typeof connection) => {
-          const ticket = await mintLocalGatewayTicket(await routedTicketEndpoint(current.gatewayEndpoint, String(payload?.profile ?? ''), HERMES_HOME))
+          const ticket = await mintLocalGatewayTicket(
+            await routedTicketEndpoint(current.gatewayEndpoint, String(payload?.profile ?? ''), HERMES_HOME)
+          )
 
           return localGatewayDials.prepare(current.baseUrl, ticket, _event.sender.id)
         }
@@ -15601,7 +15651,12 @@ async function fetchJsonForBackend(
         .filter(name => typeof name === 'string' && name)
 
       const readProfile = (_profile, scoped) =>
-        fetchJsonForBackend(descriptor, scoped, { method: opts.method, body: opts.body, timeoutMs: opts.timeoutMs, profileScoped: true })
+        fetchJsonForBackend(descriptor, scoped, {
+          method: opts.method,
+          body: opts.body,
+          timeoutMs: opts.timeoutMs,
+          profileScoped: true
+        })
 
       return sessions
         ? fetchAllProfilesSessionsPerProfile(path, profiles, readProfile)
@@ -16472,12 +16527,13 @@ async function handleHermesApiRequest(request) {
     // Main's shared transport for every descriptor: configured headers, a native
     // gateway grant per attempt, and the OAuth bearer→cookie fallback that
     // survives refresh failures and login races (requestWithOauthFallback).
-    const send = current => fetchJsonForBackend(current, apiRoute.requestPath, {
-      method: request?.method,
-      body: request?.body,
-      upload: request?.upload,
-      timeoutMs
-    })
+    const send = current =>
+      fetchJsonForBackend(current, apiRoute.requestPath, {
+        method: request?.method,
+        body: request?.body,
+        upload: request?.upload,
+        timeoutMs
+      })
 
     response = connection.gatewayEndpoint
       ? await redialLocalGateway({
@@ -18101,8 +18157,14 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 
 function registerDeepLinkProtocol() {
   registerDeepLinkProtocolWith({
-    app, protocol: HERMES_PROTOCOL, env: process.env, defaultApp: Boolean(process.defaultApp),
-    argv: process.argv, execPath: process.execPath, resolve: entry => path.resolve(entry), log: rememberLog
+    app,
+    protocol: HERMES_PROTOCOL,
+    env: process.env,
+    defaultApp: Boolean(process.defaultApp),
+    argv: process.argv,
+    execPath: process.execPath,
+    resolve: entry => path.resolve(entry),
+    log: rememberLog
   })
 }
 

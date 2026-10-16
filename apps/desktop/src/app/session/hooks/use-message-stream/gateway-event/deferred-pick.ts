@@ -45,7 +45,8 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
   // Another profile's session can share this id (imports): its outcome is not this composer's.
   const ownSource = fromActiveSource()
   const profile = event.profile ?? deps.activeGatewayProfile
-  const invalidate = () => void deps.queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(profile, sessionId) })
+  const invalidate = () =>
+    void deps.queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(profile, sessionId) })
 
   if (update.status === 'refused') {
     const model = typeof update.model === 'string' ? update.model : ''
@@ -80,14 +81,24 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
           profile,
           pick.provider ? 'config.set' : 'slash.exec',
           pick.provider
-            ? { session_id: sessionId, key: 'model', value: `${pick.model} --provider ${pick.provider} --session`, confirm_expensive_model: true }
+            ? {
+                session_id: sessionId,
+                key: 'model',
+                value: `${pick.model} --provider ${pick.provider} --session`,
+                confirm_expensive_model: true
+              }
             : { session_id: sessionId, command: `/model ${pick.model}`, confirm_expensive_model: true }
         ),
       finish: invalidate
     }).then(applied => {
       // Declined, or the confirmed resend failed: the committed model is still the session's.
       if (!applied && committed && ownSource) {
-        repaintCommitted(ctx, target, committed, typeof update.committed_provider === 'string' ? update.committed_provider : '')
+        repaintCommitted(
+          ctx,
+          target,
+          committed,
+          typeof update.committed_provider === 'string' ? update.committed_provider : ''
+        )
         invalidate()
       }
     })

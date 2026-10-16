@@ -262,7 +262,9 @@ type CompressSummary = { headline?: string; noop?: boolean; note?: string; token
 
 /** The authority's report (headline, token line, note), as the native /compress prints it. */
 function printCompressSummary(summary: CompressSummary, ctx: SlashRunCtx) {
-  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed'))
+  ctx.transcript.sys(
+    summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed')
+  )
 
   for (const line of [summary?.token_line, summary?.note]) {
     if (line) {

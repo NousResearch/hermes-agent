@@ -604,10 +604,18 @@ function applyDeferredPickOutcome(
     const info = getUiState().info
 
     if (info && typeof update.model === 'string' && update.model) {
-      patchUiState({ info: { ...info, model: update.model, ...(typeof update.provider === 'string' ? { provider: update.provider } : {}) } })
+      patchUiState({
+        info: {
+          ...info,
+          model: update.model,
+          ...(typeof update.provider === 'string' ? { provider: update.provider } : {})
+        }
+      })
     }
 
-    sys(t('slashCmd.session.model.deferredRefused', String(update.target_model ?? ''), String(update.reason ?? 'refused')))
+    sys(
+      t('slashCmd.session.model.deferredRefused', String(update.target_model ?? ''), String(update.reason ?? 'refused'))
+    )
 
     return
   }

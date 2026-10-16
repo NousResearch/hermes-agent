@@ -3538,7 +3538,8 @@ export const en: Translations = {
     restoreImageDraft: 'Restore image draft',
     queueCancelFailed: "Couldn't remove the queued turn",
     queueLostDiscard: 'Discard',
-    queueLostDiscardTip: 'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
+    queueLostDiscardTip:
+      'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',

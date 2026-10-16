@@ -143,8 +143,11 @@ function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void 
       payload?.stored_session_id ?? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
 
     // A canonical frame's own place in the session's event order fences absence-based retirement.
-    reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions,
-      pendingSnapshotFence(event.replay_epoch, event.seq))
+    reconcilePendingSubmissions(
+      storedId,
+      (payload as Record<string, unknown>)?.pending_submissions,
+      pendingSnapshotFence(event.replay_epoch, event.seq)
+    )
   }
 }
 

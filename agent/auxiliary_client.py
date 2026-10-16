@@ -3558,6 +3558,7 @@ def _prepare_same_provider_retry(
         retry_client, retry_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
             api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime, task=task,
+            is_vision=(task == "ocr"),
         )
         effective_provider = _effective_provider_for_client(retry_client, resolved_provider)
     if retry_client is None:
@@ -4101,7 +4102,7 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
-    if task == "vision" and (
+    if task in ("vision", "ocr") and (
             main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
         # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
         # text-only main model turns a transient 429 into a guaranteed 400 (#108349).
@@ -7545,7 +7546,7 @@ def _ladder_nous_rungs(
     # 404s); force a fresh Portal fetch and retry once.
     if first_err.verdict.reason is FailoverReason.model_not_found and client_is_nous:
         healed_model = _refresh_nous_recommended_model(
-            vision=(task == "vision"), stale_model=kwargs.get("model"))
+            vision=(task in ("vision", "ocr")), stale_model=kwargs.get("model"))
         if healed_model and healed_model != kwargs.get("model"):
             logger.warning("Auxiliary %s%s: model %r no longer in Nous catalog; "
                            "retrying with refreshed recommendation %r",

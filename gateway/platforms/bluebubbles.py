@@ -11,7 +11,7 @@ from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, quote
 
 import httpx
@@ -48,6 +48,17 @@ _WEBHOOK_MAX_BODY_BYTES = 1_048_576
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
+
+# Inbound attachments: Messages.app syncs files to disk asynchronously, so a download right after
+# the message event can fail with "Attachment does not exist in disk!" and the attachment would be
+# lost forever. The webhook path makes exactly one in-band attempt per attachment (BlueBubbles
+# holds the HTTP response open meanwhile), and the background recovery task retries with a bounded
+# backoff (total added wait ~85s), then keeps polling every _LATE_ATTACHMENT_RECOVERY_INTERVAL_S
+# for a longer window so late-syncing files still get delivered.
+_ATTACHMENT_DOWNLOAD_RETRY_DELAYS = (5.0, 20.0, 60.0)
+_LATE_ATTACHMENT_RECOVERY_INTERVAL_S = 90.0
+_LATE_ATTACHMENT_RECOVERY_WINDOW_S = 15 * 60.0
+_LATE_ATTACHMENT_RECOVERY_CAP = 200  # LRU cap of attachment guids already delivered
 
 # iMessage has no stable bot mention identity (unlike <@U...>/@botname/MXID), so
 # `require_mention: true` without custom aliases uses Hermes wake words.
@@ -131,6 +142,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Attachment delivery bookkeeping: guids with a delivery in flight (dispatch until
+        # gateway acceptance), and recently accepted delivery guids (bounded LRU, so the same
+        # file is not delivered twice — by late recovery or a replayed webhook event).
+        self._late_recovery_pending: Set[str] = set()
+        self._late_recovery_done: OrderedDict[str, None] = OrderedDict()
+        self._delivery_inflight: Set[str] = set()
 
     # --- API helpers ---
 
@@ -471,24 +488,37 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Inbound attachment downloading ---
 
-    async def _download_attachment(self, att_guid: str, att_meta: dict[str, Any]) -> Optional[str]:
-        """Download an attachment and cache it locally; local path or None on failure."""
+    async def _fetch_attachment_once(self, att_guid: str, att_meta: Dict[str, Any]) -> Optional[str]:
+        """Single download attempt: cached local path, or None when not connected. Raises on
+        download/caching failure; callers decide about retries and logging."""
+        if not self.client:
+            return None
+        resp = await self.client.get(self._api_url(f"/api/v1/attachment/{quote(att_guid, safe='')}/download"),
+                                     timeout=60, follow_redirects=True)
+        resp.raise_for_status()
+        data = resp.content
+        mime = (att_meta.get("mimeType") or "").lower()
+        if mime.startswith("image/"):
+            return await cache_image_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_IMAGE_EXT_OVERRIDES, ".jpg"))
+        if mime.startswith("audio/"):
+            return await cache_audio_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_AUDIO_EXT_OVERRIDES, ".mp3"))
+        # Videos, documents, and everything else
+        return await cache_document_from_bytes_async(data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}")
+
+    async def _download_attachment(self, att_guid: str, att_meta: Dict[str, Any]) -> Optional[str]:
+        """One in-band download attempt; local path or None on failure.
+
+        Messages.app writes inbound attachments to disk asynchronously, so this first attempt can
+        fail with "Attachment does not exist in disk!". Failures are NOT waited out here — the
+        webhook response is on this path and BlueBubbles holds the HTTP connection open meanwhile.
+        Retries live in the background recovery task (_recover_late_attachments), which backs off
+        through _ATTACHMENT_DOWNLOAD_RETRY_DELAYS and then keeps polling for a longer window."""
         if not self.client:
             return None
         try:
-            resp = await self.client.get(self._api_url(f"/api/v1/attachment/{quote(att_guid, safe='')}/download"),
-                                         timeout=60, follow_redirects=True)
-            resp.raise_for_status()
-            data = resp.content
-            mime = (att_meta.get("mimeType") or "").lower()
-            if mime.startswith("image/"):
-                return await cache_image_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_IMAGE_EXT_OVERRIDES, ".jpg"))
-            if mime.startswith("audio/"):
-                return await cache_audio_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_AUDIO_EXT_OVERRIDES, ".mp3"))
-            # Videos, documents, and everything else
-            return await cache_document_from_bytes_async(data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}")
+            return await self._fetch_attachment_once(att_guid, att_meta)
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
+            logger.debug("[bluebubbles] attachment %s download failed: %s", _redact(att_guid), exc)
             return None
 
     # --- Webhook handling ---
@@ -518,25 +548,222 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload_str = (form.get("payload") or form.get("data") or form.get("message") or [""])[0]
             return json.loads(payload_str) if payload_str else {}
 
-    async def _collect_attachments(self, record: dict[str, Any]):
-        """Download inbound attachments; returns (media_urls, media_types, msg_type)."""
-        media_urls: list[str] = []
-        media_types: list[str] = []
-        msg_type = MessageType.TEXT
+    @staticmethod
+    def _message_type_for_attachments(items: List[Tuple[str, Dict[str, Any]]]) -> MessageType:
+        """Aggregate one message type from downloaded attachments (``(mime, att)`` pairs).
+
+        Historical rule shared by the webhook and late-recovery paths: the last attachment's
+        kind wins, except that any image in a multi-attachment message makes it PHOTO."""
+        kinds: List[MessageType] = []
+        for mime, att in items:
+            is_voice = mime.startswith("audio/") or (att.get("uti") or "").endswith("caf")
+            kinds.append(MessageType.PHOTO if mime.startswith("image/") else MessageType.VOICE
+                         if is_voice else MessageType.VIDEO if mime.startswith("video/")
+                         else MessageType.DOCUMENT)
+        if len(kinds) > 1 and MessageType.PHOTO in kinds:
+            return MessageType.PHOTO
+        return kinds[-1] if kinds else MessageType.TEXT
+
+    async def _collect_attachments(self, record: Dict[str, Any]):
+        """Download inbound attachments; returns ``(entries, failed)``.
+
+        ``entries`` pairs every downloaded file with its attachment guid and metadata
+        (``(guid, cached_path, mime, att)``). Attachments that could not be downloaded are
+        returned in ``failed`` instead of being silently skipped; the caller must surface them
+        (see _attachment_failure_notice). Guids already delivered or with a delivery in flight
+        are skipped entirely: BlueBubbles replays the same message as both new-message and
+        updated-message, and a replay must not download the same file again. Downloading does
+        NOT claim the guids — the caller claims the entries before building the event and keeps
+        only the media whose claim it won (see _handle_webhook)."""
+        entries: List[Tuple[str, str, str, Dict[str, Any]]] = []
+        failed: List[Dict[str, Any]] = []
         for att in record.get("attachments") or []:
             att_guid = att.get("guid", "")
+            if att_guid and self._attachment_claimed(att_guid):
+                logger.debug("[bluebubbles] attachment %s already delivered or in flight; skipping",
+                             _redact(att_guid))
+                continue
             cached = await self._download_attachment(att_guid, att) if att_guid else None
             if not cached:
+                failed.append(att)
                 continue
-            mime = (att.get("mimeType") or "").lower()
-            media_urls.append(cached)
-            media_types.append(mime)
-            is_voice = mime.startswith("audio/") or (att.get("uti") or "").endswith("caf")
-            msg_type = (MessageType.PHOTO if mime.startswith("image/") else MessageType.VOICE if is_voice
-                        else MessageType.VIDEO if mime.startswith("video/") else MessageType.DOCUMENT)
-        if len(media_urls) > 1 and any(m.split("/")[0] == "image" for m in media_types):  # any image → PHOTO
-            msg_type = MessageType.PHOTO
-        return media_urls, media_types, msg_type
+            if att_guid and self._attachment_claimed(att_guid):
+                # Claimed by another delivery while this download was in flight: it owns the file.
+                logger.debug("[bluebubbles] attachment %s claimed during download; skipping",
+                             _redact(att_guid))
+                continue
+            entries.append((att_guid, cached, (att.get("mimeType") or "").lower(), att))
+        return entries, failed
+
+    @staticmethod
+    def _attachment_failure_notice(failed: List[Dict[str, Any]]) -> str:
+        """Agent-facing notice for attachments BlueBubbles could not serve (never drop silently)."""
+        labels: List[str] = []
+        for att in failed:
+            label = (att.get("transferName") or "").strip() or (att.get("guid") or "").strip() or "attachment"
+            labels.append(_redact(label))
+        return (f"[attachment download failed: {', '.join(labels) or 'attachment'} — BlueBubbles could not "
+                f"retrieve the file yet (it may still be syncing to disk). If it never arrives, ask the "
+                f"sender to resend.]")
+
+    def _remember_delivered_attachment(self, att_guid: str) -> None:
+        """Track delivered attachment guids (bounded LRU) so late recovery cannot re-deliver them."""
+        if not att_guid:
+            return
+        self._late_recovery_done[att_guid] = None
+        self._late_recovery_done.move_to_end(att_guid)
+        while len(self._late_recovery_done) > _LATE_ATTACHMENT_RECOVERY_CAP:
+            self._late_recovery_done.popitem(last=False)
+
+    def _attachment_claimed(self, att_guid: str) -> bool:
+        """True when ``att_guid`` is already delivered or its delivery is currently in flight."""
+        return att_guid in self._late_recovery_done or att_guid in self._delivery_inflight
+
+    def _claim_attachment_delivery(self, att_guid: str) -> bool:
+        """Reserve ``att_guid`` for a delivery that is about to be dispatched.
+
+        Returns False when the guid was already delivered or is being delivered elsewhere.
+        The claim is settled with _settle_attachment_delivery once the gateway accepts or
+        rejects the event, so a refused delivery does not keep the attachment marked as done."""
+        if not att_guid or self._attachment_claimed(att_guid):
+            return False
+        self._delivery_inflight.add(att_guid)
+        return True
+
+    def _settle_attachment_delivery(self, att_guid: str, accepted: bool) -> None:
+        """Release an in-flight delivery claim; accepted deliveries stay marked as done."""
+        if not att_guid:
+            return
+        self._delivery_inflight.discard(att_guid)
+        if accepted:
+            self._remember_delivered_attachment(att_guid)
+
+    async def _deliver_and_settle(self, event: MessageEvent, claimed_guids: List[str]) -> bool:
+        """Dispatch an event and settle its attachment claims against gateway acceptance.
+
+        ``handle_message`` sets ``event._gateway_accepted`` only once the event was actually
+        scheduled or queued (refused/dropped events stay False). The receipt is read again in
+        ``finally``: a delivery task cancelled after acceptance keeps the accepted work claimed
+        (a replay must not deliver it again), while a cancellation before acceptance still
+        releases the claims. Returns whether the gateway accepted the event."""
+        accepted = False
+        try:
+            await self.handle_message(event)
+            accepted = event._gateway_accepted is True
+        except asyncio.CancelledError:
+            raise  # finally settles the claims against the event receipt before propagating
+        except Exception as exc:
+            logger.error("[bluebubbles] attachment delivery failed: %s", exc, exc_info=True)
+        finally:
+            accepted = accepted or event._gateway_accepted is True
+            for guid in claimed_guids:
+                self._settle_attachment_delivery(guid, accepted)
+            if claimed_guids and not accepted:
+                logger.warning("[bluebubbles] gateway did not accept message with attachment(s) %s; "
+                               "released delivery claims", ", ".join(_redact(g) for g in claimed_guids))
+        return accepted
+
+    async def _recover_late_attachments(self, failed: List[Dict[str, Any]], *, source,
+                                        reply_to_message_id: Optional[str] = None) -> None:
+        """Poll in the background for attachments that were not downloadable during the webhook.
+
+        Messages.app often finishes syncing the file only minutes later; within a bounded window
+        keep retrying and deliver whatever shows up as a follow-up message so the inbound
+        attachment is not silently lost. A recovered file stays pending until its handoff is
+        accepted (or the window closes): a gateway-refused delivery is retried on the next round
+        instead of being dropped after a single attempt."""
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _LATE_ATTACHMENT_RECOVERY_WINDOW_S
+            pending = list(failed)
+            round_index = 0  # 0-based: the first background retry uses the first retry delay
+            while pending and self.client and loop.time() < deadline:
+                delay = (_ATTACHMENT_DOWNLOAD_RETRY_DELAYS[round_index]
+                         if round_index < len(_ATTACHMENT_DOWNLOAD_RETRY_DELAYS)
+                         else _LATE_ATTACHMENT_RECOVERY_INTERVAL_S)
+                round_index += 1
+                await asyncio.sleep(delay)
+                delivered: List[Any] = []  # (cached_path, mime, att)
+                still: List[Dict[str, Any]] = []
+                for att in pending:
+                    guid = att.get("guid") or ""
+                    if not guid or guid in self._late_recovery_done:
+                        continue  # nothing to retry / already delivered through another event
+                    if guid in self._delivery_inflight:
+                        still.append(att)  # another delivery owns it right now; re-check next round
+                        continue
+                    try:
+                        path = await self._fetch_attachment_once(guid, att)
+                    except ValueError as exc:
+                        # Permanent failure (e.g. non-image payload, oversize media): retrying
+                        # cannot succeed, so drop it instead of spending the recovery window.
+                        logger.debug("[bluebubbles] late attachment %s permanently failed; giving up: %s",
+                                     _redact(guid), exc)
+                        continue
+                    except Exception as exc:
+                        logger.debug("[bluebubbles] late attachment %s still unavailable: %s",
+                                     _redact(guid), exc)
+                        if self.client:
+                            still.append(att)
+                        continue
+                    if path:
+                        delivered.append((path, (att.get("mimeType") or "").lower(), att))
+                pending = list(still)
+                if delivered:
+                    # Keep delivered files pending until the handoff is accepted (or the window
+                    # closes): a refused admission, or a claim lost to another delivery, comes
+                    # back as a retry entry and is re-attempted on the next round.
+                    retry = await self._deliver_late_attachments(delivered, source=source,
+                                                                 reply_to_message_id=reply_to_message_id)
+                    seen = {att.get("guid") or "" for att in pending}
+                    for _, _, att in retry:
+                        guid = att.get("guid") or ""
+                        if guid not in seen:
+                            pending.append(att)
+                            seen.add(guid)
+        finally:
+            for att in failed:
+                if guid := (att.get("guid") or ""):
+                    self._late_recovery_pending.discard(guid)
+
+    async def _deliver_late_attachments(self, delivered: List[Any], *, source,
+                                        reply_to_message_id: Optional[str] = None) -> List[Any]:
+        """Deliver a follow-up message carrying attachments recovered after the fact.
+
+        Returns the entries that still need a delivery attempt — their claim was won by another
+        delivery (deferred) or the gateway refused the handoff (refused) — so the recovery loop
+        can keep them pending and retry within its window. The handoff is awaited instead of
+        fired off as a background task: the caller learns the admission outcome, and a refused
+        handoff is re-attempted rather than dropping a file that was already downloaded."""
+        claimed_guids: List[str] = []
+        kept: List[Any] = []
+        retry: List[Any] = []
+        for item in delivered:
+            guid = item[2].get("guid") or ""
+            if guid and not self._claim_attachment_delivery(guid):
+                logger.debug("[bluebubbles] late attachment %s already delivered or in flight; "
+                             "not delivering again", _redact(guid))
+                retry.append(item)  # deferred: re-judged on the next recovery round
+                continue
+            if guid:
+                claimed_guids.append(guid)
+            kept.append(item)
+        if not kept:
+            return retry
+        media_urls = [path for path, _, _ in kept]
+        media_types = [mime for _, mime, _ in kept]
+        msg_type = self._message_type_for_attachments([(mime, att) for _, mime, att in kept])
+        names = ", ".join(_redact((a.get("transferName") or "").strip() or "attachment") for _, _, a in kept)
+        text = (f"[late attachment delivered: BlueBubbles could not download {names or 'an attachment'} when "
+                f"the message arrived, but the file has now synced and is attached below.]")
+        event = MessageEvent(
+            text=text, message_type=msg_type, source=source, raw_message={},
+            message_id=None, reply_to_message_id=reply_to_message_id,
+            media_urls=media_urls, media_types=media_types)
+        accepted = await self._deliver_and_settle(event, claimed_guids)
+        if not accepted:
+            retry.extend(kept)  # refused: keep pending and try again within the window
+        return retry
 
     def _webhook_token(self, request) -> Optional[str]:
         return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
@@ -589,10 +816,45 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
                 return _ok()
             text = self._clean_mention_text(text)
-        media_urls, media_types, msg_type = await self._collect_attachments(record)
+        entries, failed_atts = await self._collect_attachments(record)
+        # Claims are attempted before the event is built and only the media whose claim this
+        # dispatch won is kept (the same "retain only claim winners" rule as
+        # _deliver_late_attachments): when two concurrent webhooks carry the same attachment,
+        # the dispatch that loses the claim must drop that file instead of delivering it a
+        # second time. BlueBubbles also replays the same message through both new-message and
+        # updated-message, so the claims are synchronous: a replay arriving while this delivery
+        # runs must not download and deliver the same file again. _deliver_and_settle releases
+        # the claims unless the gateway accepts the event.
+        claimed_guids: List[str] = []
+        kept: List[Tuple[str, str, str, Dict[str, Any]]] = []
+        for guid, cached, mime, att in entries:
+            if guid and not self._claim_attachment_delivery(guid):
+                logger.debug("[bluebubbles] attachment %s already delivered or in flight; "
+                             "dropping it from this event", _redact(guid))
+                continue
+            if guid:
+                claimed_guids.append(guid)
+            kept.append((guid, cached, mime, att))
+        media_urls = [cached for _, cached, _, _ in kept]
+        media_types = [mime for _, _, mime, _ in kept]
+        msg_type = self._message_type_for_attachments([(mime, att) for _, _, mime, att in kept])
         if not text and media_urls:
             text = "(attachment)"
-        if not sender or not (chat_guid or chat_identifier) or not text:
+        if failed_atts:  # never drop a message because its attachment was not downloadable yet
+            notice = self._attachment_failure_notice(failed_atts)
+            text = f"{text}\n{notice}" if text else notice
+        if not sender or not (chat_guid or chat_identifier):
+            # Malformed payload: nothing will be dispatched, so release whatever was claimed.
+            for guid in claimed_guids:
+                self._settle_attachment_delivery(guid, False)
+            return web.json_response({"error": "missing message fields"}, status=400)
+        if not text:
+            if entries and not kept:
+                # Every attachment was already claimed by a concurrent delivery which carries
+                # the message content; this dispatch has nothing left to deliver.
+                logger.debug("[bluebubbles] every attachment was claimed by a concurrent "
+                             "delivery; acknowledging")
+                return _ok()
             return web.json_response({"error": "missing message fields"}, status=400)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
                                    chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
@@ -602,9 +864,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_id=self._value(record.get("guid"), record.get("messageGuid"), record.get("id")),
             reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
             media_urls=media_urls, media_types=media_types)
-        task = asyncio.create_task(self.handle_message(event))
+        task = asyncio.create_task(self._deliver_and_settle(event, claimed_guids))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        # The file often lands on disk minutes later: keep retrying in the background and deliver
+        # whatever shows up as a follow-up message.
+        recoverable: List[Dict[str, Any]] = []
+        for att in failed_atts:
+            guid = att.get("guid")
+            if guid and guid not in self._late_recovery_pending and not self._attachment_claimed(guid):
+                self._late_recovery_pending.add(guid)
+                recoverable.append(att)
+        if recoverable:
+            recovery = asyncio.create_task(self._recover_late_attachments(
+                recoverable, source=source, reply_to_message_id=event.message_id))
+            self._background_tasks.add(recovery)
+            recovery.add_done_callback(self._background_tasks.discard)
         if self.send_read_receipts and session_chat_id:  # fire-and-forget read receipt
             asyncio.create_task(self.mark_read(session_chat_id))
         return _ok()

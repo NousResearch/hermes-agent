@@ -90,6 +90,18 @@ class GatewayGoalsMixin:
             from hermes_cli.goals import GoalManager
             max_turns = self._goal_max_turns_from_config()
             return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if event.source.platform == Platform.LOCAL and authority is not None:
+            from gateway.session_contract import SessionRef
+            from gateway.session_local_recovery import transcript_target
+            ref = SessionRef(authority.profile_id, event.source.chat_id)
+            # Cold local sessions may be finalized on shutdown. A goal command must read
+            # the retained target, never let get_or_create_session rotate that route.
+            target = await self._run_in_executor_with_context(lambda: transcript_target(authority, ref))
+            await self._warm_goals_session_db("goal manager")
+            entry = self.session_store.lookup_by_session_key(authority.sessions[ref.session_id].route)
+            return _load()(target), entry
         return await self._manager_for_event(event, "goal", _load)
 
     async def _get_heartbeat_manager_for_event(self, event: MessageEvent):

@@ -703,6 +703,16 @@ class TestParseContract:
         assert contract.stop_when == "a schema change needs product sign-off"
         assert not contract.is_empty()
 
+    def test_multiline_headline_keeps_whitespace_around_contract_fields(self):
+        from hermes_cli.goals import parse_contract
+
+        headline = "Ship the feature\n\n  keep this indentation\n<example>user XML</example>"
+        parsed, contract = parse_contract(headline + "\nverify: tests pass")
+        assert parsed == headline
+        assert contract.verification == "tests pass"
+        single, empty = parse_contract("Ship the feature")
+        assert single == "Ship the feature" and empty.is_empty()
+
     def test_alias_variants(self):
         from hermes_cli.goals import parse_contract
 

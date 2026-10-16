@@ -31,6 +31,7 @@ COMMANDS: dict[str, tuple[str, str | None]] = {
     "model": ("Show current model and provider, or switch models", "model name to switch to"),
     "reasoning": ("Show or change reasoning effort for this session", "level"),
     "fast": ("Show or change fast mode for this session", "normal|fast|ultrafast|auto|cold|status"),
+    "goal": ("Set or control this session’s persistent goal", "text|status|pause|resume|clear"),
     "tools": ("List available tools", None),
     "context": ("Show conversation context usage", None),
     "reset": ("Clear conversation history", None),

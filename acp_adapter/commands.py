@@ -54,6 +54,8 @@ class SlashCommandsMixin:
         ),
         "reasoning": ("Show or change reasoning effort", "Show or change reasoning effort", "level"),
         "fast": ("Show or change fast mode", "Show or change fast mode", "normal|fast|ultrafast|auto|cold|status"),
+        "goal": ("Set or control a persistent goal", "Set or control this session’s persistent goal",
+                 "text|status|pause|resume|clear"),
         "tools": ("List available tools", "List available tools with descriptions", None),
         "context": ("Show conversation context info", "Show conversation message counts by role", None),
         "reset": ("Clear conversation history", "Clear conversation history", None),
@@ -150,6 +152,10 @@ class SlashCommandsMixin:
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider or "openrouter"
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
+
+    def _cmd_goal(self, args: str, state: SessionState) -> str:
+        from acp_adapter.goals import run_command
+        return run_command(state, args)
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:

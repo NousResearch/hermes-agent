@@ -849,6 +849,7 @@ class HermesACPAgent(SessionControlsMixin, SlashCommandsMixin, acp.Agent):
         if not user_text and not (isinstance(user_content, list) and user_content):
             return PromptResponse(stop_reason="end_turn")
 
+        await self._settle_goal_cancellation(state)
         user_text, user_content = self._rewrite_prompt_for_interrupt(state, user_text, user_content, text_only_prompt)
 
         # Slash commands are text-only; a prompt with media goes to the agent even if it starts with "/".
@@ -864,19 +865,63 @@ class HermesACPAgent(SessionControlsMixin, SlashCommandsMixin, acp.Agent):
                     await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
                     await self._send_usage_update(state)
                 # A mutating command held command_op; prompts that arrived mid-op are queued.
-                await self._drain_queued_prompts(state, session_id, self._conn)
-                return PromptResponse(stop_reason="end_turn")
+                cancelled = await self._drain_queued_prompts(state, session_id, self._conn)
+                return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn")
 
+        await self._settle_goal_cancellation(state)
         absorbed = self._claim_turn_or_queue(state, session_id, user_text, user_content, text_only_prompt)
         if absorbed is not None:
             if self._conn:
                 await self._conn.session_update(session_id, acp.update_agent_message_text(absorbed))
             return PromptResponse(stop_reason="end_turn")
 
+        return await self._execute_prompt(state, session_id, user_text, user_content)
+
+    async def _settle_goal_cancellation(self, state: SessionState) -> None:
+        """Pause cancelled automatic work before explicit human input renews its scope."""
+        with state.runtime_lock:
+            if state.is_running or state.command_op:
+                return  # The owning turn settles cancellation before draining human input.
+            cancel_event = state.cancel_event
+        if not (cancel_event and cancel_event.is_set()):
+            return
+        from acp_adapter.goals import after_turn
+        await asyncio.to_thread(after_turn, state, '', interrupted=True)
+        with state.runtime_lock:
+            if not state.is_running and not state.command_op and state.cancel_event is cancel_event:
+                # Old admissions and responses retain the set event; never clear it.
+                state.cancel_event = threading.Event()
+
+    async def _prompt_goal(
+        self, state: SessionState, session_id: str, text: str, cancel_event: threading.Event,
+        goal_revision: int,
+    ) -> PromptResponse:
+        """Claim automatic work only in its original cancellation and goal scopes."""
+        with state.runtime_lock:
+            cancelled = cancel_event.is_set()
+            if not cancelled:
+                if goal_revision != state.goal_revision:
+                    return PromptResponse(stop_reason="end_turn")
+                if state.is_running or state.command_op:
+                    state.pending_goal_prompt = text
+                    return PromptResponse(stop_reason="end_turn")
+                state.is_running = True
+                state.current_prompt_text = text.strip()
+        if cancelled:
+            if state.cancel_event is cancel_event:
+                from acp_adapter.goals import after_turn
+                await asyncio.to_thread(after_turn, state, '', interrupted=True)
+            return PromptResponse(stop_reason="cancelled")
+        # Execution starts directly from this claim, without another admission await.
+        # Automatic work never passes through human replay, redirect or queue admission.
+        return await self._execute_prompt(state, session_id, text.strip(), text)
+
+    async def _execute_prompt(
+        self, state: SessionState, session_id: str, user_text: str, user_content: Any,
+    ) -> PromptResponse:
+        """Execute an admitted turn and settle its response and queue."""
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
         conn, loop = self._conn, asyncio.get_running_loop()
-        if state.cancel_event:
-            state.cancel_event.clear()
         cbs = self._wire_turn_callbacks(state, session_id, conn, loop)
 
         def _run_agent() -> dict:
@@ -974,6 +1019,8 @@ class HermesACPAgent(SessionControlsMixin, SlashCommandsMixin, acp.Agent):
         streamed_message: bool,
     ) -> PromptResponse:
         """Persist, emit provenance/final text, drain queued prompts, report usage."""
+        cancel_event = state.cancel_event
+        drain_cancelled = False
         try:
             # Key presence, not truthiness: ``messages=[]`` is a legitimate cleared transcript (#10844);
             # only a result without the key leaves the history untouched.
@@ -993,7 +1040,7 @@ class HermesACPAgent(SessionControlsMixin, SlashCommandsMixin, acp.Agent):
                     logger.debug("Could not emit ACP provenance update after rotation for %s", session_id, exc_info=True)
 
             final_response = result.get("final_response") or ""  # None on an interrupted turn
-            cancelled = bool(state.cancel_event and state.cancel_event.is_set())
+            cancelled = bool(cancel_event and cancel_event.is_set())
             # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
             from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
@@ -1012,12 +1059,23 @@ class HermesACPAgent(SessionControlsMixin, SlashCommandsMixin, acp.Agent):
                     state.message_ids.close()
                 await conn.session_update(session_id, update)
 
+            from acp_adapter.goals import after_turn
+            goal_notice = await asyncio.to_thread(after_turn, state, final_response, interrupted=interrupted)
+            if goal_notice and conn:
+                await conn.session_update(session_id, acp.update_agent_message_text(goal_notice + "\n"))
+
+            # Notifications can admit cancellation after the judge queued a continuation.
+            # Settle the goal before ordinary queued input can renew the cancel scope.
+            cancelled = bool(cancel_event and cancel_event.is_set())
+            if cancelled:
+                await asyncio.to_thread(after_turn, state, '', interrupted=True)
+
         finally:
             # Go idle before draining so recursive prompt() calls can acquire the session.
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
-            await self._drain_queued_prompts(state, session_id, conn)
+            drain_cancelled = await self._drain_queued_prompts(state, session_id, conn)
 
         usage = None
         if any(result.get(k) is not None for k in ("prompt_tokens", "completion_tokens", "total_tokens")):
@@ -1027,19 +1085,35 @@ class HermesACPAgent(SessionControlsMixin, SlashCommandsMixin, acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
         await self._send_usage_update(state)
+        cancelled = cancelled or drain_cancelled or bool(cancel_event and cancel_event.is_set())
         return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
 
-    async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> None:
+    async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> bool:
         """Run queued prompts while the session is idle. Reached from ``_finish_turn`` and
         from the slash path after a state-mutating command releases ``command_op``."""
+        cancel_event = state.cancel_event
+        cancelled = False
         while True:
             with state.runtime_lock:
-                if state.is_running or state.command_op or not state.queued_prompts:
-                    return
-                next_prompt = state.queued_prompts.pop(0)
+                if state.is_running or state.command_op:
+                    return cancelled or bool(cancel_event and cancel_event.is_set())
+                goal_cancel_event = None
+                if state.queued_prompts:
+                    next_prompt = state.queued_prompts.pop(0)
+                elif state.pending_goal_prompt:
+                    next_prompt, state.pending_goal_prompt = state.pending_goal_prompt, None
+                    goal_cancel_event = state.cancel_event
+                    goal_revision = state.goal_revision
+                else:
+                    return cancelled or bool(cancel_event and cancel_event.is_set())
             if conn:
                 await conn.session_update(session_id, acp.update_user_message_text(next_prompt))
-            await self.prompt(prompt=[TextContentBlock(type="text", text=next_prompt)], session_id=session_id)
+            blocks = [TextContentBlock(type="text", text=next_prompt)]
+            if goal_cancel_event is not None:
+                response = await self._prompt_goal(state, session_id, next_prompt, goal_cancel_event, goal_revision)
+            else:
+                response = await self.prompt(prompt=blocks, session_id=session_id)
+            cancelled = cancelled or response.stop_reason == "cancelled"
 
     # ---- Session settings (ACP protocol methods) -----------------------------
 

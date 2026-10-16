@@ -413,6 +413,21 @@ These controls do not change edit or tool permission policy.
 the embedded in-process adapter restores reasoning and fast controls to configured
 defaults while retaining the selected model.
 
+### Persistent goals
+
+`/goal` appears in the command palette and `/help`. Use `/goal <text>` to set a
+session goal and start working, `/goal` or `/goal status` to inspect it, and
+`/goal pause`, `/goal resume`, or `/goal clear` to control it. Multiline goal text
+keeps its line breaks and indentation; trailing host runtime metadata is excluded.
+Inline completion-contract fields use the same parser as the CLI.
+
+The shared goal manager checks each completed turn with the configured goal judge
+and schedules a follow-up until completion, pause, or the configured turn budget.
+On the gateway, follow-ups enter the canonical session FIFO and reach the editor
+through its event stream. The in-process adapter uses its existing prompt queue.
+Goal state survives session load and resume; inspect it and use `/goal resume` to
+continue after reconnecting. Goals are commands, not settings selectors.
+
 ## Working directory behavior
 
 ACP sessions bind the editor's cwd to the Hermes task ID so file and terminal tools run relative to the editor workspace, not the server process cwd.

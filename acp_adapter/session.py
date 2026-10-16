@@ -145,6 +145,9 @@ class SessionState:
     # a prompt claims the turn mid-mutation.
     command_op: bool = False
     queued_prompts: list[str] = field(default_factory=list)
+    pending_goal_prompt: str | None = None
+    goal_revision: int = 0  # runtime_lock binds detached admissions to goal command authority
+    goal_lock: Any = field(default_factory=threading.Lock)
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
@@ -472,7 +475,9 @@ class SessionManager:
         if db is None:
             return None
         try:
-            row = db.get_session(session_id)
+            target = db.get_compression_tip(session_id)
+            row = db.get_session(target)
+            controls_row = db.get_session(session_id) if target != session_id else row
         except Exception:
             logger.debug("Failed to query DB for ACP session %s", session_id, exc_info=True)
             return None
@@ -484,31 +489,34 @@ class SessionManager:
         # contract the TUI gateway's cold-resume path uses.
         if row.get("ended_at") is not None:
             try:
-                db.reopen_session(session_id)
+                db.reopen_session(target)
             except Exception:
                 logger.debug("Failed to reopen ACP session %s", session_id, exc_info=True)
 
         meta = _parse_model_config(row.get("model_config"))
+        # ACP choices belong to the stable editor session; compression children
+        # carry agent init metadata, not the adapter's authoritative controls.
+        controls = _parse_model_config(controls_row.get("model_config")).get("acp_controls")
         cwd, model = meta.get("cwd", "."), row.get("model") or None
 
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
         try:
-            history = db.get_messages_as_conversation(session_id, repair_alternation=True)
+            history = db.get_messages_as_conversation(target, repair_alternation=True)
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
 
         try:
             agent = self._make_agent(
-                session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
+                session_id=target, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
                 requested_provider=meta.get("provider") or row.get("billing_provider"),
                 base_url=meta.get("base_url") or row.get("billing_base_url"))
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False, controls=meta.get("acp_controls"))
+                                    history, persist=False, controls=controls)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 

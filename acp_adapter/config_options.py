@@ -107,10 +107,13 @@ def project_options(info, models):
     ]
 
 
+def command_body(arg):
+    """Remove only the recognized trailing harness metadata, preserving user whitespace."""
+    return _T3_RUNTIME_SUFFIX.sub("", arg).strip()
+
+
 def text_selection(arg):
-    # T3 appends this text block even to slash commands. Only controls consume it;
-    # prompt content (including multiline /steer and /queue) stays intact.
-    arg = _T3_RUNTIME_SUFFIX.sub("", arg)
+    arg = command_body(arg)
     parts = arg.split()
     if "--global" in parts:
         raise ValueError("ACP controls are session-scoped; change global defaults through Hermes config.")

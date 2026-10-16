@@ -1,6 +1,7 @@
 """Directory initialization and storage diagnostics for the active Hermes home."""
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -52,10 +53,33 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         ) from exc
 
 
+_read_only_depth = 0
+
+
+@contextmanager
+def read_only_home():
+    """Read-only probes (the desktop's source check) must not seed SOUL.md or the home skeleton.
+
+    Importing ``hermes_cli.config`` loads the config at module import and so initializes the
+    home; inside this context :func:`initialize_home` creates the home directory only, and
+    records nothing, so the next real command still runs the full initialization (#131026).
+    """
+    global _read_only_depth
+    _read_only_depth += 1
+    try:
+        yield
+    finally:
+        _read_only_depth -= 1
+
+
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> None:
     from hermes_cli.config import _ensure_default_soul_md, is_managed
 
     managed = is_managed()
+    if _read_only_depth:
+        # A probe's cache file hangs off the home, so the directory itself may exist; nothing else.
+        _ensure_directory(home, create=not managed, secure=False, home=home)
+        return
     old_umask = os.umask(0o007) if managed else None
     try:
         _ensure_directory(home, create=not managed, secure=not managed, home=home)

@@ -71,3 +71,19 @@ def test_reader_sizes_mxfp4_tensor_blocks(tmp_path):
 
     assert header.tensor_bytes == 34
     assert header.embd_table_bytes == header.tensor_bytes
+
+
+def _one_tensor_gguf(path, ggml_type: int, elems: int) -> None:
+    name = b"token_embd.weight"
+    path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 1, 0) + struct.pack("<Q", len(name)) + name
+                     + struct.pack("<IQIQ", 1, elems, ggml_type, 0))
+
+
+def test_reader_sizes_upstream_q1_0_and_q2_0_blocks(tmp_path):
+    """Upstream ggml Q1_0 (41: fp16 scale + 128 one-bit quants = 18 bytes) and Q2_0 (42: fp16 scale +
+    64 two-bit quants = 18 bytes), per ggml-common.h. 1-bit Bonsai GGUFs use Q1_0 and stock llama.cpp
+    serves them, so the planner must size them instead of refusing the file."""
+    for ggml_type, block_elems in ((41, 128), (42, 64)):
+        gguf = tmp_path / f"t{ggml_type}.gguf"
+        _one_tensor_gguf(gguf, ggml_type, block_elems * 4)
+        assert read_gguf_header(gguf).tensor_bytes == 18 * 4

@@ -1,8 +1,8 @@
 name: surp
 repo: https://github.com/ivcained/surp-hermes-x402-llm
-sha: 8455792636c2a86d5770cb8e3d8bc1794a89f627
+sha: 238234a19a72d5740f86c2e08ca60bd1aabd0f8b
 title: Surp x402 LLM Router
-version: "0.3.0"
+version: "0.3.1"
 description: Jev-integrated smart LLM routing through Surp with live model discovery, quotes, guarded paid chat, usage, custom combos, decision-model route selection via TypeSafe Jev, and x402 payments on Base.
 maintainer: ivcained
 tier: community

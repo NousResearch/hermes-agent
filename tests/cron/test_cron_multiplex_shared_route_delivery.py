@@ -160,3 +160,48 @@ def test_live_native_adapter_without_platform_block_is_not_treated_as_disabled()
         {"id": "j"}, Platform.DISCORD, "discord", {"platform": "discord", "chat_id": "C1"},
         {Platform.DISCORD: adapter}, config)
     assert resolved is None and "not configured/enabled" in err
+
+
+def _satellite_home_with_route(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "fitness"
+    sat_home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({
+        "gateway": {"multiplex_profiles": True, "profile_routes": [
+            {"platform": "discord", "guild_id": "G1", "chat_id": "C1", "profile": "fitness"}]},
+    }), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    return sat_home
+
+
+def test_satellite_with_only_a_desktop_local_adapter_still_borrows_the_routed_primary(tmp_path, monkeypatch):
+    """A profile the Desktop app chats with has a ``local`` adapter, which holds no platform
+    credential. It must not stop the profile borrowing the primary bot for its routed targets;
+    before, the non-empty adapter map skipped ``SharedRouteAdapters`` and delivery failed with
+    "platform 'discord' not configured/enabled"."""
+    from cron.scheduler_preflight import adapters_for_satellite
+
+    sat_home = _satellite_home_with_route(tmp_path, monkeypatch)
+    primary, local = _primary_adapter(), object()
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        view = adapters_for_satellite({Platform.LOCAL: local}, {Platform.DISCORD: primary})
+        assert isinstance(view, SharedRouteAdapters)
+        assert view.get(Platform.LOCAL) is local  # the satellite keeps its own adapters
+        error, standalone = _run(_job("C1"), view)
+        assert error is None, error
+        assert primary.sent == ["C1"] and standalone == []
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_satellite_with_its_own_platform_credential_never_borrows_the_primary(tmp_path, monkeypatch):
+    from cron.scheduler_preflight import adapters_for_satellite
+
+    sat_home = _satellite_home_with_route(tmp_path, monkeypatch)
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        own = {Platform.LOCAL: object(), Platform.TELEGRAM: object()}
+        assert adapters_for_satellite(own, {Platform.DISCORD: _primary_adapter()}) == own
+    finally:
+        reset_hermes_home_override(token)

@@ -198,17 +198,26 @@ class SharedRouteAdapters:
     the target; anything else (unmatched target, disabled route, other profile, or target-less
     ``get(platform)``) is a miss — fail closed, never the default bot.
 
+    ``own`` holds the satellite's credential-free adapters (the Desktop ``local`` transport); they
+    stay reachable under their own platform and never fall through to the primary.
+
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, own=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        self._own = dict(own or {})
 
     def __bool__(self) -> bool:
-        return bool(self._primary) and bool(self._routes)
+        return bool(self._own) or (bool(self._primary) and bool(self._routes))
+
+    def owns(self, platform) -> bool:
+        return platform in self._own
 
     def get(self, platform, target=None, default=None):
+        if platform in self._own:
+            return self._own[platform]
         if not target:
             return default
         adapter = self._primary.get(platform)
@@ -231,6 +240,21 @@ class SharedRouteAdapters:
             ):
                 return adapter
         return default
+
+
+def adapters_for_satellite(own_adapters, primary_adapters):
+    """The adapter view a served (non-primary) profile delivers cron output through. A profile with
+    no credential-bearing adapter of its own borrows the primary's adapters for the targets the
+    primary's ``profile_routes`` map to it. The Desktop ``local`` transport holds no platform
+    credential, so it does not make the profile its own credential boundary (the same reading as
+    ``GatewayRunner._is_shared_bot_satellite``); it stays available through ``own``."""
+    from gateway.config import Platform
+
+    own = own_adapters if own_adapters is not None else {}  # the live map, not a copy
+    if not primary_adapters or any(platform != Platform.LOCAL for platform in own):
+        return own
+    routes = _primary_profile_routes_for_current_home()
+    return SharedRouteAdapters(primary_adapters, routes, own=own) if routes else own
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:

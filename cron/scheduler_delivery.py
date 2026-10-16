@@ -1165,7 +1165,9 @@ def _resolve_target_transport(
     from gateway.delivery import DeliveryTransport, resolve_delivery_transport
     target_adapters = adapters
     transport = None
-    if isinstance(adapters, _preflight.SharedRouteAdapters):
+    if isinstance(adapters, _preflight.SharedRouteAdapters) and adapters.owns(platform):
+        target_adapters = {platform: adapters.get(platform)}  # the satellite's own transport
+    elif isinstance(adapters, _preflight.SharedRouteAdapters):
         # Credentialless satellite: the primary adapter serves THIS target only when an exact
         # primary route maps it to this profile; a miss fails closed below.
         # See #101113.

@@ -294,11 +294,23 @@ def _profiles(authority, actor, home, params):
                     'last_active': target.get('last_activity_at') or target.get('started_at') or 0,
                     'message_count': target.get('message_count') or 0}
 
+        # Adopted local history keeps its original id as chat_id. Its durable
+        # binding, not an id spelling, distinguishes it from native messaging.
+        from hermes_state_local_migration import LEGACY_PREFIX
+
+        def local_chat(session):
+            chat_id = str(session.get('chat_id') or '')
+            if chat_id.startswith('local-'):
+                return True
+            with authority.db._lock:
+                return bool(authority.db._conn.execute(
+                    'SELECT 1 FROM state_meta WHERE key=?', (LEGACY_PREFIX + chat_id,)).fetchone())
+
         # The named registry is not a recency window and canonical chats are hidden.
         canonical = authority.db.get_session_by_title('Bot Chat')
         if (canonical and (canonical.get('user_id') == actor.subject
                            or 'session:operator' in actor.capabilities)
-                and str(canonical.get('chat_id') or '').startswith('local-') and not canonical.get('archived')):
+                and local_chat(canonical) and not canonical.get('archived')):
             row['canonical_session'] = summary(canonical)
         if 'session:operator' in actor.capabilities:
             owner_filter, owner_params = '', ()
@@ -308,10 +320,11 @@ def _profiles(authority, actor, home, params):
             from hermes_state_sessions import INTERNAL_LISTING_SOURCES
             hidden_sources = ','.join('?' * len(INTERNAL_LISTING_SOURCES))
             latest = authority.db._conn.execute(
-                f"SELECT id FROM sessions WHERE {owner_filter}chat_id LIKE 'local-%' AND archived=0 "
+                f"SELECT id FROM sessions WHERE {owner_filter}(chat_id LIKE 'local-%' OR EXISTS "
+                "(SELECT 1 FROM state_meta WHERE key=? || sessions.chat_id)) AND archived=0 "
                 f"AND COALESCE(source,'') NOT IN ({hidden_sources}) "
                 "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1",
-                (*owner_params, *INTERNAL_LISTING_SOURCES)).fetchone()
+                (*owner_params, LEGACY_PREFIX, *INTERNAL_LISTING_SOURCES)).fetchone()
         if latest:
             row['last_session'] = summary(authority.db.get_session(latest[0]))
     profiles = [row]

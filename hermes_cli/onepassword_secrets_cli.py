@@ -386,7 +386,8 @@ def _op_whoami(binary: Path, account: str, *, token_value: str = "") -> Optional
     try:
         res = subprocess.run(
             cmd, env=env, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=10
+            encoding="utf-8", errors="replace", timeout=10,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

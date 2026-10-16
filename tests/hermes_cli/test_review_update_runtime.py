@@ -25,7 +25,7 @@ def test_pre_pm_version_reads_checkout_stamp_without_importing_pm():
         "print(__version__)\n"
     )
     result = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True,
-                            text=True, encoding="utf-8", timeout=20)
+                            text=True, encoding="utf-8", timeout=20, check=False)
     assert result.returncode == 0, result.stderr
     stamp = root / "install-stamp.json"
     expected = json.loads(stamp.read_text(encoding="utf-8-sig")).get("baseVersion") if stamp.exists() else None

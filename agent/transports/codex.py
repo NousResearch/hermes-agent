@@ -28,19 +28,25 @@ logger = logging.getLogger(__name__)
 _CRON_SESSION_ID_RE = re.compile(r"^(cron_.+)_\d{8}_\d{6}$")
 
 
-def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
+def cache_scope_from_session_id(session_id: Optional[str]) -> str:
     """Normalize a physical session_id into a stable logical cache scope."""
     sid = str(session_id or "")
     match = _CRON_SESSION_ID_RE.match(sid)
     return match.group(1) if match else sid
 
 
-def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
+_cache_scope_from_session_id = cache_scope_from_session_id  # original private spelling, kept as an alias
+
+
+def bounded_prompt_cache_key(value: Any) -> Optional[str]:
     """Return a provider-safe (<=64 char) cache key without changing session identity."""
     key = "" if value is None else str(value).strip()
     if not key:
         return None
     return key if len(key) <= 64 else "pck_" + hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+
+_bounded_prompt_cache_key = bounded_prompt_cache_key  # original private spelling, kept as an alias
 
 
 def _bound_prompt_cache_key_field(container: Any) -> None:
@@ -413,7 +419,7 @@ def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url:
         kwargs["include"] = [item for item in include if "logprob" not in str(item).lower()]
 
 
-def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
+def content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]], scope_id: str = "") -> Optional[str]:
     """``pck_<sha256[:24]>`` of (scope_id, instructions, name-sorted tools), or None if nothing static.
 
     Routing hint only; ``scope_id`` keeps unrelated sessions off one bucket.
@@ -435,6 +441,9 @@ def _content_cache_key(instructions: str, tools: Optional[list[dict[str, Any]]],
     # \x00 separators so a boundary can't be forged by content containing the same bytes.
     content = f"{scope_id}\x00{instructions or ''}\x00{tools_part}"
     return "pck_" + hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+
+_content_cache_key = content_cache_key  # original private spelling, kept as an alias
 
 
 def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any = None) -> Optional[tuple]:

@@ -185,25 +185,29 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
 
 
 def _windows(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli.gateway_windows import _schtasks_encoding
+    from hermes_cli.gateway_windows import _decode_schtasks_output
     suffix = service_suffix(home)
     name = f"Hermes_Gateway{'_' + suffix if suffix else ''}"
-    result = _run(["schtasks.exe", "/Query", "/FO", "CSV", "/NH"], deadline, encoding=_schtasks_encoding())
-    if result.returncode:
-        raise RuntimeStartError("service_manager_unavailable")
-    rows = list(csv.reader(io.StringIO(result.stdout)))
+
+    def query(refusal: str, *argv: str) -> str:
+        # schtasks/whoami write the console code page, and /XML declares UTF-16 over those bytes:
+        # decode like the drift check does (#116193) instead of the locale codec or raw bytes (#139083).
+        result = _run(list(argv), deadline, encoding=None)
+        if result.returncode:
+            raise RuntimeStartError(refusal)
+        return _decode_schtasks_output(result.stdout or b"")
+
+    rows = list(csv.reader(io.StringIO(query("service_manager_unavailable", "schtasks.exe", "/Query", "/FO", "CSV", "/NH"))))
     if any(len(row) != 3 for row in rows if row):
         raise RuntimeStartError("service_state_unknown")
     if any(row and row[0].lstrip("\\") == name for row in rows):
         from hermes_cli.gateway_runtime_service_identity import verify_windows_task
-        definition = _run(["schtasks.exe", "/Query", "/TN", name, "/XML"], deadline, encoding=None)
-        identity = _run(["whoami.exe", "/USER", "/FO", "CSV", "/NH"], deadline, encoding=_schtasks_encoding())
-        if definition.returncode or identity.returncode:
-            raise RuntimeStartError("service_identity_unverified")
-        accounts = list(csv.reader(io.StringIO(identity.stdout)))
+        unverified = "service_identity_unverified"
+        definition = query(unverified, "schtasks.exe", "/Query", "/TN", name, "/XML")
+        accounts = list(csv.reader(io.StringIO(query(unverified, "whoami.exe", "/USER", "/FO", "CSV", "/NH"))))
         if len(accounts) != 1 or len(accounts[0]) != 2:
             raise RuntimeStartError("service_identity_unverified")
-        _verify_binding(verify_windows_task, definition.stdout, home, *accounts[0])
+        _verify_binding(verify_windows_task, definition, home, *accounts[0])
         return ExistingService("windows", ("schtasks.exe", "/Run", "/TN", name))
     # A Startup-folder entry (the fallback when Scheduled Task install was declined/blocked) is login
     # persistence only, with no start verb or identity to verify. Starting a stopped owner is the

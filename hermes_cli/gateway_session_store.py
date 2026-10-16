@@ -57,7 +57,8 @@ def _zero(*_a, **_k):
 
 
 class GatewaySessionStore:
-    """Truthy while the gateway connection is usable (main's ``if self._session_db:`` guards)."""
+    """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
+    a gateway hang-up stays truthy, and the next call redials."""
 
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
@@ -66,7 +67,7 @@ class GatewaySessionStore:
         self._reader = None
 
     def __bool__(self):
-        return not self.connection.closed
+        return not self.connection.final
 
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
@@ -128,11 +129,16 @@ class GatewaySessionStore:
         gateway does not know is left as is: main's own "Session not found" path reports it."""
         if getattr(cli, "_resumed", False):
             try:
-                return self._adopt(self.attach(cli.session_id))
+                snapshot = self.attach(cli.session_id)
             except GatewayClientError as exc:
                 if str(exc) in {"not_found", "permission_denied"}:
                     return None
                 raise
+            # The CLI sends a coding-posture toolset pick and an env-folded ignore_rules too; only a typed
+            # -t / --ignore-rules is checked.
+            _check_resume_launch({**(launch or {}), "toolsets": getattr(cli, "_typed_toolsets", None),
+                                  "ignore_rules": getattr(cli, "_explicit_ignore_rules", None) or None}, snapshot)
+            return self._adopt(snapshot)
         return self.create(launch)
 
     def create(self, launch=None, title=None, *, record_cwd=True):
@@ -242,17 +248,36 @@ class GatewaySessionStore:
             row = conn.execute("SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id)).fetchone()
         return row[0] if row else None
 
+    def _leave(self, session_id):
+        """Drop this viewer's subscription record and return its id. The connection's SessionState holds
+        the live id (a reconnect resubscribes under a new one); cleared, no later reconnect resumes it."""
+        state = self.connection.states.get(session_id)
+        subscription = state.subscription_id if state is not None else None
+        if state is not None:
+            state.subscription_id = None
+        return subscription
+
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
         self._mutate(session_id, "delete", {})
+        self._leave(session_id)
         return True
 
     def end_session(self, session_id, reason=None):
         """Main's ``end_session(sid, reason)``: detach this viewer with ``end_reason``; the owner ends
         the idle local row with that reason once no viewer is left (``ended_at`` / ``end_reason``)."""
         snapshot = self.snapshots.pop(session_id, None)
-        subscription = (snapshot or {}).get("subscription_id")
-        if subscription and not self.connection.closed:
+        state = self.connection.states.get(session_id)
+        reachable = state is not None and state.subscription_id is not None and not self.connection.final
+        if reachable:
+            try:
+                # Hung up: redial first, so the detach names the subscription the reconnect resumed.
+                self.connection.start()
+            except GatewayClientError as exc:
+                logger.debug("redial for session.detach failed: %s", exc)
+                reachable = False
+        subscription = self._leave(session_id)
+        if subscription and reachable:
             params = {"end_reason": reason} if reason else {}
             try:
                 self.call("session.detach", session_id=session_id, subscription_id=subscription, **params)
@@ -372,12 +397,37 @@ def _creation_policy(launch):
         fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
     policy = _requested_policy(argparse.Namespace(**fields, source=None))
     policy.pop("source", None)
-    if launch.get("run_budget") is not None:  # main's `--run-budget` (the thin client refuses it)
-        policy["run_budget"] = float(launch["run_budget"])
-    if launch.get("verbose"):  # main's `-v` (the thin client refuses it)
-        policy["verbose"] = True
+    policy.update(_classic_only_policy(launch))
     policy.update(env_launch_flags())
     return policy
+
+
+def _classic_only_policy(launch):
+    """Main's `--run-budget` and `-v`, which the thin client refuses."""
+    policy = {}
+    if launch.get("run_budget") is not None:
+        policy["run_budget"] = float(launch["run_budget"])
+    if launch.get("verbose"):
+        policy["verbose"] = True
+    return policy
+
+
+# Flags a resume may only repeat (``toolsets`` arrives here only from an explicit ``-t``).
+_RESUME_CHECKED = _LAUNCH_POLICY
+
+
+def _check_resume_launch(launch, snapshot):
+    """Explicit launch flags on ``--resume`` / ``-c`` against the session's frozen route, as the thin
+    client checks them: the same flags again are fine, a different value is refused, never dropped."""
+    from hermes_cli.gateway_chat import check_resume_policy, resume_policy_error
+    fields = {key: launch.get(key) for key in _RESUME_CHECKED}
+    if isinstance(fields.get("toolsets"), (list, tuple)):
+        fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
+    check_resume_policy(argparse.Namespace(**fields), snapshot)
+    frozen = ((snapshot.get("info") or {}).get("launch_request") or {})
+    differs = [key for key, value in _classic_only_policy(launch).items() if frozen.get(key) != value]
+    if differs:
+        raise resume_policy_error(differs)
 
 
 def session_store():

@@ -519,6 +519,62 @@ def test_hung_hosted_request_answers_504_and_the_host_serves_the_next(daemon, mo
     assert after.json()["pid"] == before.json()["pid"]  # the same host, not a restarted one
 
 
+@pytest.mark.platforms("posix")  # the hosts are real child processes
+def test_concurrent_first_requests_start_one_host_and_share_it(daemon, monkeypatch):
+    """A secondary profile's first plugin requests, arriving together, start one plugin host and all
+    reach it: each racing request used to construct and start a host of its own."""
+    monkeypatch.setattr(PluginHost, "asgi_request", _REAL_ASGI_REQUEST)
+    _beta_plugin(daemon)
+    (daemon.beta / "plugins" / NAME / "dashboard" / "plugin_api.py").write_text(_HOME_API)
+    selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
+    racers, entered, all_entered, built = 4, [], threading.Event(), []
+    lookup, build = plugins_mod.PluginManager._plugin_host, PluginHost._build_base_context
+
+    def counted_lookup(manager):
+        entered.append(1)
+        if len(entered) >= racers:
+            all_entered.set()
+        return lookup(manager)
+
+    def held_build(host):  # the first host is built only once every request is looking it up
+        built.append(host)
+        all_entered.wait(30)
+        return build(host)
+
+    monkeypatch.setattr(plugins_mod.PluginManager, "_plugin_host", counted_lookup)
+    monkeypatch.setattr(PluginHost, "_build_base_context", held_build)
+
+    async def scenario():
+        async with _asgi_client() as client:
+            return await asyncio.gather(*(client.get(f"/api/plugins/{NAME}/whoami", **selected)
+                                          for _ in range(racers)))
+
+    try:
+        answers = asyncio.run(scenario())
+    finally:
+        for host in built:
+            host.shutdown()
+    assert [a.status_code for a in answers] == [200] * racers
+    assert len(built) == 1, f"{len(built)} plugin hosts were built for one profile"
+    assert len({a.json()["pid"] for a in answers}) == 1
+
+
+def test_a_host_that_failed_to_build_is_built_again_by_the_next_request(daemon, monkeypatch):
+    _beta_plugin(daemon)
+    build, failures = PluginHost._build_base_context, [RuntimeError("profile secrets unreadable")]
+
+    def flaky(host):
+        if failures:
+            raise failures.pop()
+        return build(host)
+
+    monkeypatch.setattr(PluginHost, "_build_base_context", flaky)
+    selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
+
+    assert daemon.client.get(PING, **selected).status_code == 502
+    assert daemon.client.get(PING, **selected).json() == {"hosted": True}
+
+
 def test_launch_profiles_hosted_mount_answers_504_too(daemon, monkeypatch):
     """``plugins.isolation: host`` for the launch profile forwards through the same path."""
     _install(daemon.launch, "launch-hosted")

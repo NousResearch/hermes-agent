@@ -16,7 +16,7 @@ export const zhHantAssistant = {
       hideNames: '隱藏名稱',
       skill: name => `技能 ${name}`,
       kind: { plugin: '外掛', skill: '技能' },
-      tier: { official: '官方', community: '社群' },
+      tier: { official: '官方', verified: '已驗證', community: '社群' },
       targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
       sendFailed: '無法傳送你的回覆，請再試一次。',
       commitLabel: '提交',

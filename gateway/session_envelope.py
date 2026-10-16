@@ -205,6 +205,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     # its fingerprint. Explicit context (including an empty skill list) is exact.
     envelope['event'].update({name: deepcopy(getattr(event, name)) for name in _CONTEXT_FIELDS
                               if getattr(event, name) is not None})
+    if event.inherit_channel_pin is True:  # synthetic goal/resume turn reuses the session's pins (#126109)
+        envelope['event']['inherit_channel_pin'] = True
     if metadata := _native_metadata(event):
         envelope['event']['metadata'] = metadata
     if event.message_type != MessageType.TEXT:

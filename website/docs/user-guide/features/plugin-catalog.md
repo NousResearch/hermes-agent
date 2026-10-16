@@ -16,7 +16,7 @@ hermes plugins install <name>
 
 Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
 category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
-Models), with search, tier filters (Official / Community), capability chips, and
+Models), with search, tier filters (Official / Verified / Community), capability chips, and
 copyable install commands for every entry.
 
 Every entry also has its own page at `/docs/plugins/<name>` (click a card):
@@ -49,7 +49,7 @@ directory of the hermes-agent repository, declaring:
 | `repo` | The plugin's public git repository |
 | `sha` | The **exact 40-hex commit** that was reviewed — installs check out this pin, not a branch tip |
 | `subdir` | Path to the plugin inside the repo for monorepos — a plain relative path matching `[A-Za-z0-9._/-]+` (no `..`, `.`, empty segments, absolute or backslash forms) (optional, default repo root) |
-| `tier` | `official` (maintained by NousResearch) or `community` |
+| `tier` | `official` (maintained by NousResearch), `verified` (verified by the Nous team to come from the reputable company whose product it integrates), or `community`. Only Nous maintainers set `official` or `verified` |
 | `category` | Browse shelf: `desktop` (default), `memory`, `platform`, `web`, `tools`, `voice`, `automation`, `models` or `general` |
 | `maintainer` | Who owns the plugin |
 | `capabilities` | Declared tools, hooks, middleware, and required env vars |

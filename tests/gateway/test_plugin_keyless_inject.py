@@ -208,6 +208,20 @@ def test_with_no_calling_session_only_the_one_attached_classic_cli_session_is_pi
     assert 'no classic CLI session' in refusals[0] and '2 classic CLI sessions' in refusals[1], refusals
 
 
+def test_a_key_less_inject_from_a_messaging_chat_keeps_mains_refusal_line(tmp_path, caplog):
+    """A calling route no served profile holds as a local session (a messaging chat) is refused with
+    main's plain line, not the other-profile local-session refusal."""
+    from types import SimpleNamespace
+    from gateway import plugin_keyless_inject as keyless
+    authority = SimpleNamespace(sessions={}, db=SimpleNamespace(db_path=str(tmp_path / 'state.db')))
+    runner = SimpleNamespace(session_authorities=None, session_authority=authority)
+    with caplog.at_level('WARNING', logger='gateway.run'):
+        assert keyless.resolve(runner, plugin_home=tmp_path, plugin_id='desk',
+                               calling_session_key='agent:main:telegram:dm:42') is None
+    assert [r.getMessage() for r in caplog.records] == [
+        'inject_message: gateway mode requires an existing session_key or an origin']
+
+
 def test_a_refusal_warns_once_per_window_and_expired_marks_are_dropped(monkeypatch, caplog):
     """One warning per (plugin, kind) per window; a mark older than the window is dropped on the next
     refusal, so the map holds only the plugins refused within the last window."""

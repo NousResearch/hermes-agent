@@ -10,9 +10,10 @@ profile, so the target is picked here, in order:
    plugin's profile launched by the classic CLI (frozen policy source ``cli``) with a viewer attached.
 3. Otherwise refused by name: nothing is injected anywhere.
 
-A calling context that is not a local session of the plugin's profile (a messaging chat) keeps main's
-refusal. A resolved target is committed like a keyed plugin inject under the session authority: a
-queued producer admission in that session's FIFO, run once, in order.
+A calling context that is another profile's local session gets the keyed path's refusal naming the
+plugin's profile; any other one (a messaging chat) keeps main's refusal. A resolved target is
+committed like a keyed plugin inject under the session authority: a queued producer admission in that
+session's FIFO, run once, in order.
 """
 from __future__ import annotations
 
@@ -68,7 +69,7 @@ def resolve(runner, *, plugin_home, calling_session_key: str, plugin_id: str):
     """``(authority, live session)`` the key-less inject goes to, or ``None`` (logged). Runs on the
     plugin's calling thread so a refusal is the plugin's own ``False``; it only reads the authority's
     live map, never the store."""
-    from gateway.session_authorities import authority_for_home
+    from gateway.session_authorities import all_authorities, authority_for_home
     authority = authority_for_home(runner, plugin_home) if plugin_home is not None else None
     if authority is None:
         _refuse(plugin_id, "unserved", f"its profile home {plugin_home} is not served by this gateway")
@@ -77,6 +78,13 @@ def resolve(runner, *, plugin_home, calling_session_key: str, plugin_id: str):
     if calling_session_key:
         live = next((s for s in sessions if s.route == calling_session_key and _local(runner, s)), None)
         if live is None:
+            if any(s.route == calling_session_key and s.source is not None and s.source.platform == Platform.LOCAL
+                   for other in all_authorities(runner) if other is not None and other is not authority
+                   for s in other.sessions.values()):
+                # Another profile's local session: the keyed path's refusal, naming the plugin's profile.
+                logger.warning("Plugin message injection refused: plugin=%s session=%s is not a live local session "
+                               "of the plugin's profile home %s", plugin_id, calling_session_key, plugin_home)
+                return None
             # Main's answer for a key-less inject from a messaging chat's command, hook or tool.
             logger.warning("inject_message: gateway mode requires an existing session_key or an origin")
             return None

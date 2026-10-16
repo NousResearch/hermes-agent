@@ -126,7 +126,7 @@ async def _scan_owner_receipts(authority, home):
     for path, record, mtime in pins:
         key, age, legacy = record['delivery_id'], time.time() - mtime, 'owner' in record
         if (record['profile_home'] != str(home)
-                or _admission_at(authority, record['session_id'], 'bot:' + key) is not None):
+                or _pin_committed(authority, record, 'bot:' + key)):
             _warn_malformed(path, _record_shape_error(path, record))
             continue
         cleared = False
@@ -146,6 +146,17 @@ async def _scan_owner_receipts(authority, home):
         logging.getLogger(__name__).info('%s Bot delivery %s pre-admission pin (age %ds): nothing was admitted',
                                          'Requeued' if legacy else 'Withdrew', key, age)
     return root, records, barrier
+
+
+def _pin_committed(authority, record, request_id):
+    """Whether the pin's admission may have committed: a live row, or a deleted target (its
+    admissions moved to retired receipts keyed by the route principal the pin never recorded)."""
+    if _admission_at(authority, record['session_id'], request_id) is not None:
+        return True
+    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    with authority.db._read_ctx() as conn:
+        return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                            (RETIRED_PREFIX + record['session_id'],)).fetchone() is not None
 
 
 def _legacy_order(path, record):

@@ -145,3 +145,38 @@ async def test_a_scan_outside_the_owner_withdraws_nothing(bot, caplog):
         await scan_receipts(bot.home)
     assert path.exists()
     assert _scan_warnings(caplog, KEY)
+
+
+
+@pytest.mark.asyncio
+async def test_a_committed_pin_on_a_deleted_bot_chat_is_kept_and_the_resend_does_not_run_twice(bot, monkeypatch):
+    """A delete moves the admission rows to retired receipts keyed by the route principal, which
+    the pin never recorded: a deleted target must read as "may have committed", never withdrawn."""
+    import asyncio
+    from gateway.session_bot import deliver, recover_bot_deliveries
+    from gateway.session_local import create_local_session
+    from gateway.session_local_title import title_new_session
+    real = type(bot.authority).admit_automation
+    async def committed_then_refused(self, *args):
+        await real(self, *args)
+        raise RuntimeStoreError('stale_epoch')
+    monkeypatch.setattr(type(bot.authority), 'admit_automation', committed_then_refused)
+    with pytest.raises(RuntimeStoreError, match='stale_epoch'):
+        await deliver(bot.connection, dict(id=KEY, profile='default', message='run once'))
+    monkeypatch.setattr(type(bot.authority), 'admit_automation', real)
+    for _ in range(250):
+        rows = list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False)
+        if rows and all(row['status'] == 'terminal' for row in rows):
+            break
+        await asyncio.sleep(0.02)
+    assert bot.authority.db.delete_session(bot.chat)
+    path = bot.home / 'runtime' / 'bot_live_delivery' / f'{KEY}.json'
+    _age(path, HOUR)
+    await recover_bot_deliveries(bot.authority)
+    assert path.exists()
+    chat = create_local_session(bot.authority, bot.connection.actor, {
+        'request_id': 'bot2', 'source': 'gui', 'cwd': str(bot.home), 'model': 'fixture', 'toolsets': []})
+    title_new_session(bot.authority, chat, 'Bot Chat')
+    with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+        await deliver(bot.connection, dict(id=KEY, profile='default', message='run once'))
+    assert list_session_admissions(bot.authority.db, session_id=chat.session_id, pending_only=False) == []

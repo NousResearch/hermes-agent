@@ -1003,10 +1003,24 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         topic_id = (metadata or {}).get("direct_messages_topic_id") or (metadata or {}).get("telegram_direct_messages_topic_id")
         return str(topic_id) if topic_id is not None else None
 
+    @staticmethod
+    def _telegram_message_id(value: Any) -> Optional[int]:
+        """A reply anchor as a Telegram message id, or None when it is not one.
+
+        Anchors are opaque event ids upstream: a route wake (kanban-wake, loop-tick) is admitted with a
+        synthetic JSON identity (``session_automation.admit_route_wake``), and ``_reply_anchor_for_event``
+        hands it to the send verbatim. Raw ``int()`` on that raised ValueError and failed every reply into
+        the session (#139611); an unanchored reply is strictly better than a failed send."""
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        text = str(value).strip() if value is not None else ""
+        return int(text) if text.isascii() and text.isdigit() and int(text) > 0 else None
+
     @classmethod
     def _metadata_reply_to_message_id(cls, metadata: Optional[dict[str, Any]]) -> Optional[int]:
-        reply_to = (metadata or {}).get("telegram_reply_to_message_id")
-        return int(reply_to) if reply_to is not None else None
+        return cls._telegram_message_id((metadata or {}).get("telegram_reply_to_message_id"))
 
     @staticmethod
     def _dm_topic_fallback(metadata: Optional[dict[str, Any]]) -> bool:
@@ -1028,8 +1042,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     @classmethod
     def _reply_to_message_id_for_send(
         cls, reply_to: Optional[str], metadata: Optional[dict[str, Any]] = None, reply_to_mode: Optional[str] = None) -> Optional[int]:
-        if reply_to:
-            return int(reply_to)
+        anchor = cls._telegram_message_id(reply_to)
+        if anchor is not None:
+            return anchor
         if cls._dm_topic_fallback(metadata) and reply_to_mode != "off":
             return cls._metadata_reply_to_message_id(metadata)
         return None
@@ -1427,7 +1442,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         metadata_reply_to = self._metadata_reply_to_message_id(metadata)
         private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
         dm_topic_reply_to_off = private_dm_topic_send and self._reply_to_mode == "off" and self._dm_topic_fallback(metadata)
-        reply_to_source = reply_to or (str(metadata_reply_to) if private_dm_topic_send and metadata_reply_to is not None else None)
+        explicit_reply_to = self._telegram_message_id(reply_to)
+        reply_to_source = (str(explicit_reply_to) if explicit_reply_to is not None else None) or (
+            str(metadata_reply_to) if private_dm_topic_send and metadata_reply_to is not None else None)
         if private_dm_topic_send:
             should_thread = reply_to_source is not None and self._reply_to_mode != "off"
         else:

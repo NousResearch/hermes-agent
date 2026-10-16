@@ -3,6 +3,31 @@ import { $activeSessionId, setYoloActive } from '@/store/session'
 
 export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
+/** Writer into a session's runtime slice — `updateSessionState` from the
+ *  session-state cache owner, registered once by the wiring. */
+export type SessionYoloSliceWriter = (sessionId: string, yolo: boolean) => void
+
+let sliceWriter: SessionYoloSliceWriter | null = null
+
+/**
+ * The cache that owns per-session runtime state registers its writer here so
+ * every YOLO toggle (slash, ⌘K, status bar, session-create) lands in the
+ * session's own slice. That slice is the authority every later
+ * `updateSessionState` re-syncs the composer atoms from
+ * (`syncRuntimeMetadataToView`) — an atom-only write let the very next
+ * transcript append (`/yolo`'s own "YOLO on" system line) flip the indicator
+ * straight back off.
+ */
+export function registerSessionYoloSliceWriter(writer: SessionYoloSliceWriter | null): () => void {
+  sliceWriter = writer
+
+  return () => {
+    if (sliceWriter === writer) {
+      sliceWriter = null
+    }
+  }
+}
+
 /**
  * Toggle per-session YOLO (approval bypass) via gateway `config.set` — the same
  * session-scoped flag as the TUI's Shift+Tab. It does NOT touch the global
@@ -21,7 +46,12 @@ export async function setSessionYolo(
 
   const active = result?.value === '1'
 
-  setYoloActive(active)
+  sliceWriter?.(sessionId, active)
+
+  // A background tile's toggle must never repaint the primary's indicator.
+  if (!sliceWriter || sessionId === $activeSessionId.get()) {
+    setYoloActive(active)
+  }
 
   return active
 }

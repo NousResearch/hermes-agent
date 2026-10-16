@@ -4617,7 +4617,11 @@ export const esOverrides = {
       smart: 'Inteligente',
       smartDescription: 'Evaluar automáticamente las acciones y preguntar cuando sea necesario',
       off: 'Desactivado',
-      offDescription: 'Ejecutar sin solicitudes de aprobación'
+      offDescription: 'Ejecutar sin solicitudes de aprobación',
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `Modo de aprobación: ${mode} · YOLO activado para este chat`,
+      sessionYoloRow: 'YOLO para este chat',
+      sessionYoloDescription: 'Omitir las solicitudes de aprobación solo en este chat'
     },
     statusbar: {
       unknown: 'desconocido',

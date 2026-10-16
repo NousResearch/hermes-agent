@@ -4631,7 +4631,11 @@ export const frOverrides = {
       smart: 'Intelligent',
       smartDescription: 'Évaluer automatiquement les actions et demander quand nécessaire',
       off: 'Désactivé',
-      offDescription: "Exécuter sans invites d'approbation"
+      offDescription: "Exécuter sans invites d'approbation",
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `Mode d’approbation : ${mode} · YOLO activé pour cette conversation`,
+      sessionYoloRow: 'YOLO pour cette conversation',
+      sessionYoloDescription: 'Ignorer les demandes d’approbation uniquement dans cette conversation'
     },
     statusbar: {
       unknown: 'inconnu',

@@ -4621,7 +4621,11 @@ export const deOverrides = {
       smart: 'Smart',
       smartDescription: 'Aktionen automatisch beurteilen und bei Bedarf nachfragen',
       off: 'Aus',
-      offDescription: 'Ohne Genehmigungs-Abfragen ausführen'
+      offDescription: 'Ohne Genehmigungs-Abfragen ausführen',
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `Genehmigungsmodus: ${mode} · YOLO für diesen Chat aktiviert`,
+      sessionYoloRow: 'YOLO für diesen Chat',
+      sessionYoloDescription: 'Genehmigungs-Abfragen nur in diesem Chat überspringen'
     },
     statusbar: {
       unknown: 'unbekannt',

@@ -610,6 +610,50 @@ class TestDeleteProfile:
         finally:
             check.close()
 
+    def test_delete_settles_when_the_profile_owns_its_state_db(self, profile_env, capsys):
+        """A profile with its own state.db must still delete cleanly (#132825).
+
+        The delete path tombstones the home before settling identity, and the registry's
+        resurrection guard (#94590) then refuses to re-open that home's database: the
+        FileNotFoundError used to be reported as a pending settlement naming a retry command
+        that could not do better either. The tombstoned home's rows die with the directory
+        the rmtree removes right after, so the settlement is complete — while the ROOT
+        database still loses this profile's rows.
+        """
+        from hermes_state import SessionDB
+
+        tmp_path = profile_env
+        create_profile("gone", no_alias=True)
+        scope = str(tmp_path / ".hermes" / "sessions")
+        db = SessionDB(tmp_path / ".hermes" / "state.db")
+        db.save_gateway_routing_entry(
+            "agent:gone:feishu:dm:chatA",
+            json.dumps({"session_key": "agent:gone:feishu:dm:chatA"}),
+            scope=scope)
+        db.close()
+        # The profile's own database: what a run of tasks on the profile leaves behind.
+        profile_db = get_profile_dir("gone") / "state.db"
+        owned = SessionDB(profile_db)
+        owned.save_gateway_routing_entry(
+            "agent:gone:feishu:dm:chatB",
+            json.dumps({"session_key": "agent:gone:feishu:dm:chatB"}),
+            scope=str(profile_db.parent / "sessions"),
+        )
+        owned.close()
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+            deleted = delete_profile("gone", yes=True)
+
+        assert deleted == get_profile_dir("gone")
+        assert "identity purge failed" not in capsys.readouterr().err
+        assert not profile_db.exists()  # the directory died with its rows
+        check = SessionDB(tmp_path / ".hermes" / "state.db")
+        try:
+            assert set(check.load_gateway_routing_entries(scope=scope)) == set()
+        finally:
+            check.close()
+
     def test_delete_reports_pending_settlement_for_a_live_multiplexer(self, profile_env, capsys):
         """With a live multiplexer the owner process purges, so the CLI must not race it (#111926).
 

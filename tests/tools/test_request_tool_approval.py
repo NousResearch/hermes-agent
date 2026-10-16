@@ -122,7 +122,12 @@ class TestRequestToolApproval:
         monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
         res = request_tool_approval("terminal", "smtp send")
         assert res["approved"] is False
-        assert "cron" in res["message"].lower()
+        # Plugin-contextual deny wording: the message names the flagged rule (the same identity
+        # pattern_key carries) and never offers the approvals.*_mode: approve switch or an
+        # alternative route — unattended block advice gets executed, and this decision is human's.
+        assert res["pattern_key"].removeprefix("plugin_rule:") in res["message"]
+        assert "approvals." not in res["message"]
+        assert "find an alternative" not in res["message"].lower()
 
     def test_cron_approve_mode_allows(self, monkeypatch):
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
@@ -214,7 +219,12 @@ class TestRequestToolApproval:
         res = request_tool_approval("home_lock", "unlock the front door", rule_key="unlock")
 
         assert res["approved"] is False
-        assert "unattended platform" in res["message"].lower()
+        # Plugin-contextual deny wording on the unattended-platform branch too: names the flagged
+        # rule, keeps fail-closed, and never offers the approvals.*_mode: approve switch or an
+        # alternative route.
+        assert "plugin rule 'unlock'" in res["message"]
+        assert "approvals." not in res["message"]
+        assert "find an alternative" not in res["message"].lower()
 
     def test_yolo_session_bypasses_gate(self, monkeypatch):
         """A --yolo session skips the plugin approval gate (parity with the

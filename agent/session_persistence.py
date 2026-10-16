@@ -521,8 +521,8 @@ class SessionPersistenceMixin:
     _convert_to_trajectory_format = _forward("agent.agent_runtime_helpers", "convert_to_trajectory_format")
 
     def _save_trajectory(self, messages: list[dict[str, Any]], user_query: str, completed: bool):
-        """Save conversation trajectory to JSONL file."""
-        if not self.save_trajectories:
+        """Save conversation trajectory to JSONL file (never for a temporary chat)."""
+        if not self.save_trajectories or getattr(self, "_temporary", False):
             return
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)

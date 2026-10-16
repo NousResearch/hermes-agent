@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "Escolha outro modelo com /model.
 userMessages.turn.layer.streaming.title: "A conexão com o fornecedor do modelo caiu no meio da resposta"
 userMessages.turn.notAnswered: "{0}. Sua mensagem não foi respondida."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Chat temporário — não é salvo no histórico e a memória está desativada. É excluído ao sair."
+session.lifecycle.temporaryBlocked: "/{0} não está disponível em um chat temporário."
+status.temporary: "🕶 chat temporário · não salvo"

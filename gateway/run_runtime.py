@@ -486,9 +486,11 @@ async def settle_gateway_runtime(runner, budget=None):
     # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
     from gateway.session_acp_lifecycle import end_idle_acp_sessions
+    from gateway.session_temporary import delete_all_unviewed
     for authority in _authorities(runner):
         try:
             end_idle_acp_sessions(authority)
+            delete_all_unviewed(authority)  # temporary chats never outlive the gateway that owns them
         except Exception:
             # Best-effort bookkeeping: a store that cannot answer must not abort the stop sequence.
             import logging

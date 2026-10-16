@@ -8787,6 +8787,11 @@
             "title": "Hidden",
             "type": "boolean"
           },
+          "temporary": {
+            "default": false,
+            "title": "Temporary",
+            "type": "boolean"
+          },
           "follow_profile_config": {
             "anyOf": [
               {
@@ -35508,6 +35513,11 @@
           "hidden": {
             "default": false,
             "title": "Hidden",
+            "type": "boolean"
+          },
+          "temporary": {
+            "default": false,
+            "title": "Temporary",
             "type": "boolean"
           },
           "room_plumbing": {

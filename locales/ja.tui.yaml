@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "/model で別のモデルを選�
 userMessages.turn.layer.streaming.title: "応答の途中でモデルプロバイダーとの接続が切れました"
 userMessages.turn.notAnswered: "{0}。メッセージへの応答はありませんでした。"
 userMessages.turn.withProvider: "{0}（{1}）"
+session.lifecycle.temporaryBanner: "🕶  一時チャット — 履歴に保存されず、メモリはオフです。終了時に削除されます。"
+session.lifecycle.temporaryBlocked: "/{0} は一時チャットでは使用できません。"
+status.temporary: "🕶 一時チャット · 保存されません"

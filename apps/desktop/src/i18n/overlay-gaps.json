@@ -772,6 +772,7 @@
   "keybinds.actions.session.focusSearch": ["ja","zh-hant"],
   "keybinds.actions.session.new": ["ja","zh-hant"],
   "keybinds.actions.session.newTab": ["ja","zh-hant"],
+  "keybinds.actions.session.newTemporary": ["ja","zh-hant"],
   "keybinds.actions.session.newWindow": ["ja","zh-hant"],
   "keybinds.actions.session.next": ["ja","zh-hant"],
   "keybinds.actions.session.prev": ["ja","zh-hant"],

@@ -11,6 +11,7 @@ import {
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
 } from '@/lib/inflight-turn-journal'
+import { forgetTemporaryChat, registerTemporaryChat } from '@/store/temporary-chat'
 
 const STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
 const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
@@ -63,6 +64,28 @@ afterEach(() => {
 })
 
 describe('persistInFlightTurnState', () => {
+  it('never journals a temporary chat and drops a snapshot it already had', () => {
+    window.localStorage.setItem(sessionStorageKey('temp-1'), JSON.stringify({ stale: 'secret plan' }))
+    registerTemporaryChat('temp-1', 'temp-runtime-1')
+
+    try {
+      persistInFlightTurnState(
+        journalState({
+          messages: [user('u1', 'secret plan'), assistant('a1', 'secret reply', { pending: true })],
+          storedSessionId: 'temp-1'
+        })
+      )
+      vi.advanceTimersByTime(400)
+
+      const stored = Object.keys(window.localStorage).map(key => window.localStorage.getItem(key) ?? '')
+
+      expect(window.localStorage.getItem(sessionStorageKey('temp-1'))).toBeNull()
+      expect(stored.join('\n')).not.toContain('secret')
+    } finally {
+      forgetTemporaryChat('temp-1')
+    }
+  })
+
   it('sweeps expired and oldest session entries once before the first write', () => {
     const now = Date.now()
 

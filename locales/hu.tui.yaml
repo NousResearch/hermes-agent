@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "Válassz másik modellt a /model
 userMessages.turn.layer.streaming.title: "A modellszolgáltatóval a kapcsolat a válasz közben megszakadt"
 userMessages.turn.notAnswered: "{0}. Az üzenetedre nem érkezett válasz."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Ideiglenes csevegés — nem kerül az előzmények közé, a memória ki van kapcsolva. Kilépéskor törlődik."
+session.lifecycle.temporaryBlocked: "A /{0} nem érhető el ideiglenes csevegésben."
+status.temporary: "🕶 ideiglenes csevegés · nincs mentve"

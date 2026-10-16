@@ -1,7 +1,10 @@
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { iconSize, Incognito } from '@/lib/icons'
 import { capitalize, normalize } from '@/lib/text'
+import { $temporaryDraft } from '@/store/temporary-chat'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
 import { Wordmark } from './wordmark'
@@ -161,6 +164,13 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const { t } = useI18n()
+  // A temporary draft says what the mode means instead of the rotating greeting.
+  const temporary = useStore($temporaryDraft)
+
+  if (temporary) {
+    return <TemporaryIntro description={t.temporaryChat.description} title={t.temporaryChat.title} />
+  }
+
   const rotationSeed = mountSeed + (seed ?? 0)
   const copy = resolveCopy(personality, rotationSeed)
   const key = normalizeKey(personality)
@@ -180,6 +190,20 @@ export function Intro({ personality, seed }: IntroProps) {
 
         <p className="m-0 text-center leading-normal tracking-tight">{body}</p>
       </div>
+    </div>
+  )
+}
+
+function TemporaryIntro({ description, title }: { description: string; title: string }) {
+  return (
+    <div
+      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-0.5 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
+      data-slot="aui_intro"
+      data-temporary="true"
+    >
+      <Incognito className={iconSize.xl} />
+      <p className="m-0 mt-2 text-base font-medium text-foreground">{title}</p>
+      <p className="m-0 mt-1 max-w-md leading-normal tracking-tight">{description}</p>
     </div>
   )
 }

@@ -16,11 +16,13 @@ import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { FirstRunCopy } from './types_first_run'
+import type { LanguageTranslations } from './types_language'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { TemporaryChatTranslations } from './types_temporary_chat'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
@@ -96,6 +98,7 @@ export interface Translations extends NoticeTranslations {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
   }
+  temporaryChat: TemporaryChatTranslations
   connectors: ConnectorCardTranslations
   connectorsPage: {
     title: string
@@ -582,15 +585,7 @@ export interface Translations extends NoticeTranslations {
     previous: string
   }
 
-  language: {
-    label: string
-    description: string
-    saving: string
-    saveError: string
-    switchTo: string
-    searchPlaceholder: string
-    noResults: string
-  }
+  language: LanguageTranslations
 
   settings: {
     subpages: Record<string, string>

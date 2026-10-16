@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from utils import atomic_json_write
 
@@ -232,12 +232,63 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     try:
         import sys as _sys
 
-        # 10 tokens: enough for `hermes serve --host X --port N --profile P` while bounding
-        # pathological argv. Structured detail is canonical; argv is the human-readable fallback.
-        entry.argv = " ".join(_sys.argv[:10])
+        # Structured detail is canonical; argv is the human-readable fallback.
+        entry.argv = ledger_argv(_sys.argv)
     except Exception:
         pass
     return _append_entry(entry)
+
+
+def _is_query_flag(flag: str) -> bool:
+    """``-q`` or any abbreviation argparse accepts for ``--query`` (``--qu``…); not ``--query-file``."""
+    return flag == "-q" or (len(flag) >= 4 and "--query".startswith(flag))
+
+
+_PROMPT = "<prompt>"
+
+
+def _redact_query_token(tok: str) -> tuple[str, bool]:
+    """(token with any attached prompt replaced, whether the NEXT token is the prompt)."""
+    flag, eq, _value = tok.partition("=")
+    if _is_query_flag(tok):
+        return tok, True
+    if eq and _is_query_flag(flag):
+        return f"{flag}={_PROMPT}", False
+    if tok.startswith("-") and not tok.startswith("--") and "q" in tok:
+        # Bundled short options (-vq TEXT, -QqTEXT): argparse takes the rest after `q` as the
+        # value, or the next token when `q` ends the bundle. Over-redacting a rare attached value
+        # that happens to contain a `q` (-mqwen) only costs readability.
+        head = tok[: tok.index("q") + 1]
+        return (tok, True) if head == tok else (head + _PROMPT, False)
+    return tok, False
+
+
+def ledger_argv(argv: Sequence[str]) -> str:
+    """Human-readable argv for the spawn ledger. 10 tokens: enough for `hermes serve --host X
+    --port N --profile P` while bounding pathological argv. The ``-q/--query`` prompt is replaced in
+    every spelling argparse accepts, so a chat's words — a ``--temporary`` one above all — never
+    reach spawn-ledger.json (the relauncher reads structured detail, never this)."""
+    tokens = [str(t) for t in argv[:10]]
+    for i, tok in enumerate(tokens):
+        tokens[i], next_is_prompt = _redact_query_token(tok)
+        if next_is_prompt and i + 1 < len(tokens):
+            tokens[i + 1] = _PROMPT
+    return " ".join(tokens)
+
+
+def _scrub_recorded_argv(argv: Any) -> Any:
+    """An entry an older build recorded keeps its prompt in a space-joined argv whose word
+    boundaries are gone: keep everything before the first query flag, then just ``<prompt>``."""
+    if not isinstance(argv, str):
+        return argv
+    tokens = argv.split(" ")
+    for i, tok in enumerate(tokens):
+        redacted, next_is_prompt = _redact_query_token(tok)
+        if next_is_prompt and i + 1 < len(tokens) and tokens[i + 1] != _PROMPT:
+            return " ".join([*tokens[:i], tok, _PROMPT])
+        if redacted != tok and not tok.endswith(_PROMPT):
+            return " ".join([*tokens[:i], redacted])
+    return argv
 
 
 def is_desktop_owned_backend(argv: Optional[Sequence[str]] = None) -> bool:
@@ -311,6 +362,8 @@ def _append_entry(entry: LedgerEntry) -> bool:
             and e["pid"] != entry.pid
             and _pid_alive_matches(e["pid"], e.get("create_time")) is not False
         ]
+        for e in pruned:
+            e["argv"] = _scrub_recorded_argv(e.get("argv", ""))
         pruned.append(asdict(entry))
         try:
             from hermes_constants import mkdir_under_hermes_home
@@ -343,7 +396,7 @@ def register_child(pid: int, purpose: str, *, project_root: Optional[Path] = Non
     try:
         import psutil
 
-        entry.argv = " ".join(psutil.Process(pid).cmdline()[:10])
+        entry.argv = ledger_argv(psutil.Process(pid).cmdline())
     except Exception:
         pass
     return _append_entry(entry)

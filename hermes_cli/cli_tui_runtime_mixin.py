@@ -308,6 +308,8 @@ class CLITuiRuntimeMixin:
         except Exception:
             pass
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        from hermes_cli.cli_temporary import temporary_banner
+        temporary_banner(self)
 
         self._tui_startup_prewarm_and_warnings(_welcome_skin)
         self._print_random_tip()
@@ -381,6 +383,10 @@ class CLITuiRuntimeMixin:
         threading.Thread(target=self._run_startup_maintenance, name="startup-maintenance", daemon=True).start()
 
     def _run_startup_maintenance(self):
+        # Temporary chats whose owning process died (crash, kill -9) were never deleted on exit.
+        with suppress(Exception):
+            if (db := getattr(self, "_session_db", None)) is not None:
+                db.sweep_orphaned_temporary_sessions(sessions_dir=get_hermes_home() / "sessions")
         with suppress(Exception):
             from agent.curator import maybe_run_curator
             maybe_run_curator(
@@ -520,8 +526,11 @@ class CLITuiRuntimeMixin:
                 # /exit --delete: remove transcripts + SQLite history.
                 try:
                     _sid = _closing_sid
-                    if self._session_db.delete_session(_sid, sessions_dir=get_hermes_home() / "sessions"):
-                        _cprint(f"  {_DIM}{t('cli.tui.session_deleted', session_id=_escape(_sid))}{_RST}")
+                    _delete = self._session_db.delete_temporary_session if self.temporary else self._session_db.delete_session
+                    if _delete(_sid, sessions_dir=get_hermes_home() / "sessions"):
+                        _msg = (t('cli.session.temporary_deleted') if self.temporary
+                                else t('cli.tui.session_deleted', session_id=_escape(_sid)))
+                        _cprint(f"  {_DIM}{_msg}{_RST}")
                     else:
                         _cprint(f"  {_DIM}{t('cli.tui.session_delete_missing', session_id=_escape(_sid))}{_RST}")
                 except (Exception, KeyboardInterrupt) as e:

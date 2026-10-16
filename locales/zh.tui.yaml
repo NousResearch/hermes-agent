@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "用 /model 选择其他模型。
 userMessages.turn.layer.streaming.title: "与模型提供方的连接在回复中途断开"
 userMessages.turn.notAnswered: "{0}。你的消息未得到回复。"
 userMessages.turn.withProvider: "{0}（{1}）"
+session.lifecycle.temporaryBanner: "🕶  临时聊天 — 不会保存到历史记录，记忆已关闭。退出时删除。"
+session.lifecycle.temporaryBlocked: "临时聊天中不可使用 /{0}。"
+status.temporary: "🕶 临时聊天 · 不会保存"

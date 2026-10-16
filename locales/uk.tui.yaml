@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "Виберіть іншу мод
 userMessages.turn.layer.streaming.title: "З'єднання з провайдером моделі обірвалося посеред відповіді"
 userMessages.turn.notAnswered: "{0}. На ваше повідомлення не відповіли."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Тимчасовий чат — не зберігається в історії, пам'ять вимкнено. Видаляється після виходу."
+session.lifecycle.temporaryBlocked: "/{0} недоступна в тимчасовому чаті."
+status.temporary: "🕶 тимчасовий чат · не зберігається"

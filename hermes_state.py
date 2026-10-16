@@ -78,6 +78,7 @@ from hermes_state_maintenance import SessionMaintenanceMixin
 from hermes_state_gateway import SessionGatewayMixin
 from hermes_state_compression import SessionCompressionMixin
 from hermes_state_search import SessionSearchMixin
+from hermes_state_temporary import SessionTemporaryMixin
 
 try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
     import psutil
@@ -462,6 +463,7 @@ class SessionDB(
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
     SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionTemporaryMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -804,6 +806,9 @@ class SessionDB(
             _secure_state_db_files(self.db_path)
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
+            # Zero every page this writer frees (deletes, updates, FTS merges): an ended temporary
+            # chat must not survive on the freelist, whichever later write freed its pages.
+            conn.execute("PRAGMA secure_delete=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
         except BaseException:
             self._close_connection_quietly(conn)

@@ -267,6 +267,9 @@ class SessionAuthority:
                 if not live.subscribers:
                     from gateway.session_local_mcp import release_editor_mcp
                     await asyncio.to_thread(release_editor_mcp, self, [session_id])
+                    from gateway.session_temporary import close_if_temporary
+                    if await close_if_temporary(self, session_id, end_reason):
+                        return  # deleted (or left to its sweep), never stamped ended
                     if end_reason:
                         from gateway.session_viewer_close import close_viewer_session
                         await close_viewer_session(self, session_id, end_reason)
@@ -1136,4 +1139,6 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epochs[db_key] = epoch
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
+    from gateway.session_temporary import start_temporary_sweeper
+    start_temporary_sweeper(authority)
     return authority

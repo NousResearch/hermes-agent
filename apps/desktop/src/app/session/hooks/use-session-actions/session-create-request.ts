@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n/runtime'
 import { requestGatewayForAgent } from '@/store/gateway'
 import {
   $activeGatewayProfile,
@@ -40,6 +41,18 @@ function rejectedField(params: Record<string, unknown>, error: unknown): string 
   )
 }
 
+/** A backend predating temporary chats rejects the field — never retried without it (that would
+ *  save the conversation the user asked to keep out of history); the user gets a plain reason.
+ *  The standalone backend names the field; the canonical gateway answers a bare `invalid_params`. */
+function temporaryUnsupported(params: Record<string, unknown>, error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return (
+    params.temporary === true &&
+    (message.includes('invalid params for session.create: temporary:') || message.trim() === 'invalid_params')
+  )
+}
+
 /** `session.create` on the captured owner route (or the window's gateway). */
 export async function createGatewaySession(
   route: AgentProfileRoute | null,
@@ -67,7 +80,9 @@ export async function createGatewaySession(
       const field = rejectedField(requestParams, error)
 
       if (!field) {
-        throw error
+        throw temporaryUnsupported(requestParams, error)
+          ? new Error(translateNow('temporaryChat.unsupportedBackend'))
+          : error
       }
 
       const { [field]: _dropped, ...compatible } = requestParams

@@ -26,6 +26,8 @@ const parseToggle = (v?: string): boolean | null => {
 export const TERMUX_TUI_MODE: boolean = isTermuxTuiMode()
 
 export const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
+// `hermes --temporary`: every session this TUI creates is a temporary chat (never saved, no memory).
+export const STARTUP_TEMPORARY = truthy(process.env.HERMES_TUI_TEMPORARY)
 export const STARTUP_QUERY = (process.env.HERMES_TUI_QUERY ?? '').trim()
 export const STARTUP_IMAGE = (process.env.HERMES_TUI_IMAGE ?? '').trim()
 // Workspace the dashboard user picked for a fresh chat (`/api/pty?cwd=`). Sent as the explicit

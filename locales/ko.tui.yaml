@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "/model 로 다른 모델을 선�
 userMessages.turn.layer.streaming.title: "응답 중에 모델 제공자와의 연결이 끊어졌어요"
 userMessages.turn.notAnswered: "{0}. 메시지에 답변이 오지 않았어요."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  임시 채팅 — 기록에 저장되지 않으며 메모리가 꺼져 있습니다. 종료하면 삭제됩니다."
+session.lifecycle.temporaryBlocked: "/{0}은(는) 임시 채팅에서 사용할 수 없습니다."
+status.temporary: "🕶 임시 채팅 · 저장되지 않음"

@@ -692,3 +692,29 @@ def test_resume_refusal_names_the_clashing_flag_and_the_way_forward(store):
     with pytest.raises(GatewayClientError, match="--provider differs .* use /model after resuming"):
         check_resume_policy(argparse.Namespace(provider="anthropic"),
                             {"info": {"launch_request": {"provider": "openrouter"}}})
+
+
+def test_a_temporary_cli_creates_every_session_temporary(store, monkeypatch):
+    """`hermes --temporary`: the first session and every `/new` one are created temporary on the
+    gateway (it stamps, hides and later deletes the row); a normal CLI never sends the flag."""
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db, client = store
+    temporary_cli = types.SimpleNamespace(session_id="x", _resumed=False, temporary=True)
+    db.open_session(temporary_cli, {})
+    assert client.calls[-1] == ("session.create", client.calls[-1][1]) and client.calls[-1][1]["temporary"] is True
+    db.create({})  # /new
+    assert client.calls[-1][1]["temporary"] is True
+    db.open_session(cli(), {})
+    assert "temporary" not in client.calls[-1][1]
+
+
+def test_delete_temporary_session_never_deletes_a_saved_chat(store, monkeypatch):
+    db, _client = store
+    reader = types.SimpleNamespace(is_session_temporary=lambda sid: sid == "local-temp")
+    monkeypatch.setattr(db, "_db", lambda: reader)
+    deleted = []
+    monkeypatch.setattr(db, "delete_session", lambda sid, sessions_dir=None: deleted.append(sid) or True)
+    assert db.delete_temporary_session("local-saved") is False
+    assert db.delete_temporary_session("local-temp") is True
+    assert deleted == ["local-temp"]
+    db.mark_session_temporary("local-temp")  # the gateway stamps it at create: a no-op here

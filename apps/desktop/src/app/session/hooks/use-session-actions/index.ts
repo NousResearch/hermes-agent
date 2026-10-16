@@ -22,7 +22,6 @@ import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
   preserveLocalAssistantErrors,
-  QUESTION_CARD_TOOLS,
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
@@ -132,6 +131,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { clearSessionSubagents } from '@/store/subagents'
+import { setTemporaryDraft } from '@/store/temporary-chat'
 import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
@@ -162,7 +162,11 @@ import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
 import { restorePendingApproval } from './restore-pending-approval'
-import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
+import {
+  pendingClarifyToolPayload,
+  restorePendingClarifyFromSnapshot,
+  withoutEarlyClarifyProjection
+} from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import {
   ambientResumeConnectionId,
@@ -172,6 +176,7 @@ import {
   resolveResumeOwner
 } from './resume-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
+import { seedCreatedSession, temporaryCreateParams } from './temporary-create'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -294,42 +299,11 @@ function reconcileAuthoritativeMessages(
 
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
+  /** Start the draft as a temporary chat (default: a normal one — New Chat exits temporary mode). */
+  temporary?: boolean
   replaceRoute?: boolean
   rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
-}
-
-/** Drop the pre-hydration request-id row without copying the other messages.
- *  A copied clarify row looks like a concurrent edit and hydration keeps both. */
-function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: string): ChatMessage[] {
-  let changed = false
-  const next: ChatMessage[] = []
-
-  for (const message of messages) {
-    const parts = message.parts.filter(
-      part =>
-        !(
-          part.type === 'tool-call' &&
-          QUESTION_CARD_TOOLS.has(part.toolName) &&
-          part.result === undefined &&
-          part.toolCallId === requestId
-        )
-    )
-
-    if (parts.length === message.parts.length) {
-      next.push(message)
-
-      continue
-    }
-
-    changed = true
-
-    if (parts.length > 0) {
-      next.push({ ...message, parts })
-    }
-  }
-
-  return changed ? next : messages
 }
 
 /** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
@@ -573,6 +547,8 @@ export function useSessionActions({
         rotateFreshDraftKey()
       }
 
+      setTemporaryDraft(draftOptions.temporary ?? false)
+
       resetViewSync()
       busyRef.current = false
       setBusy(false)
@@ -686,7 +662,8 @@ export function useSessionActions({
 
         const params = {
           ...(await desktopSessionCreateParams(cwd, capturedRoute, capturedProfile, legacyProfileIntent)),
-          request_id: createIntent
+          request_id: createIntent,
+          ...temporaryCreateParams()
         }
 
         // Lease the owner socket for the whole create → owner-publication
@@ -783,13 +760,17 @@ export function useSessionActions({
 
         if (stored) {
           markSessionCreatedThisRun(stored)
+
           // Seed the sidebar preview with the user's first message so the row
           // reads meaningfully while the turn is in flight, instead of flashing
           // "Untitled session" until the turn persists and auto-title runs. The
           // server later returns its own preview/title and supersedes this.
           // The row carries the create route's exact owner (backend profile +
           // connection), never the ambient profile — see upsertOptimisticSession.
-          upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+          seedCreatedSession(params, created.session_id, stored, () =>
+            upsertOptimisticSession(created, stored, null, preview?.trim() || null, null, undefined, capturedRoute)
+          )
+
           // Anything still parked under the pre-session draft bucket belongs
           // to this chat now (#114122); the composer moves it on scope swap.
           announceNewSessionDraftKey(stored)

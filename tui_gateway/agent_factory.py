@@ -665,7 +665,7 @@ def _make_agent(
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
-        cwd=cwd_override,
+        cwd=cwd_override, temporary=_session_is_temporary(session, session_db, session_id or key),
         # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),

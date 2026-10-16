@@ -6,6 +6,7 @@ import {
 } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
+import { isTemporarySession } from '@/store/temporary-chat-registry'
 
 /**
  * Crash-survivable in-flight turn journal.
@@ -987,6 +988,14 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
   const storedSessionId = state.storedSessionId
 
   if (!storedSessionId) {
+    return
+  }
+
+  // A temporary chat is never written to disk, even to survive a crash; one it
+  // somehow already has is dropped.
+  if (isTemporarySession(storedSessionId)) {
+    clearInFlightTurnJournal(storedSessionId)
+
     return
   }
 

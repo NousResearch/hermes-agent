@@ -7,7 +7,7 @@ import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/ga
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { localCreationOptions } from '../canonicalGateway.js'
-import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
+import { STARTUP_TEMPORARY, STARTUP_WORKSPACE_CWD } from '../config/env.js'
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
@@ -28,6 +28,7 @@ import type { Msg, PanelSection, SessionInfo } from '../types.js'
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
+import { sessionCreateParams, temporaryCreateOption } from './sessionCreateParams.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { renameCanonicalSession } from './slash/canonicalSessionCommands.js'
 import { captureDestination } from './submissionDestination.js'
@@ -54,6 +55,10 @@ const statusFromLiveSession = (status?: string, running = false) => {
 
 /** Session-start notices, in their original order: credential, config, then the caller's message. */
 const reportNewSessionNotices = (info: null | SessionInfo, msg: string | undefined, sys: (text: string) => void) => {
+  if (STARTUP_TEMPORARY) {
+    sys(t('session.lifecycle.temporaryBanner'))
+  }
+
   if (info?.credential_warning) {
     sys(`warning: ${describeCredentialWarning(info.credential_warning)}`)
   }
@@ -372,11 +377,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         // session.create on both transports, so /new stays in that workspace.
         const workspaceCwd = STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {}
 
+        // `hermes --temporary`: every session this process creates is a temporary chat.
         const r = await rpc<SessionCreateResponse>(
           'session.create',
           gw.isCanonical
-            ? { request_id: randomUUID(), ...localCreationOptions(), ...workspaceCwd }
-            : { cols: colsRef.current, ...workspaceCwd }
+            ? { request_id: randomUUID(), ...localCreationOptions(), ...workspaceCwd, ...temporaryCreateOption() }
+            : sessionCreateParams(colsRef.current)
         )
 
         if (flight !== attachmentFlight.current) {

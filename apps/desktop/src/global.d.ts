@@ -566,6 +566,7 @@ declare global {
       ) => void
       onClosePreviewRequested?: (callback: () => void) => () => void
       onPreviewNav?: (callback: (command: 'back' | 'forward' | 'reload') => void) => () => void
+      onNewTemporaryChatRequested?: (callback: () => void) => () => void
       onOpenFolderRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
       onDeepLink?: (

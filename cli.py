@@ -883,6 +883,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     _seeded_first_message: Optional[_SeededQueryMessage] = None
     # Inspection surfaces (banner, /tools, status line) read this on partially built instances too.
     disabled_toolsets: Optional[list[str]] = None
+    temporary: bool = False  # --temporary (hermes_cli.cli_temporary)
 
     def __init__(
         self,
@@ -900,12 +901,16 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        temporary: bool = False,
     ):
         """CLI args win over config; ``reasoning`` is per-run only; ``resume`` restores history from SQLite."""
+        from hermes_cli.cli_temporary import init_temporary_mode
+        init_temporary_mode(self, temporary, resume)
         self._init_display_options(verbose, compact)
         self._init_model_routing(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                  checkpoints, pass_session_id, ignore_rules)
         self._init_runtime_state(resume)
+        self._delete_session_on_exit = self.temporary
 
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
@@ -1188,6 +1193,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             # See #34584.
             self._pending_resume_sessions = None
 
+        from hermes_cli.cli_temporary import refuse_in_temporary_chat
+        if refuse_in_temporary_chat(self, canonical):
+            return True
         entry = self._slash_handler(canonical)
         if entry is None:
             return self._process_unregistered_slash(cmd_original, cmd_lower)
@@ -1496,7 +1504,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             relaunch(self._pending_relaunch, preserve_inherited=False)
 
 
-def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
+def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills, *, temporary=False):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
     if isinstance(toolsets, str) and toolsets:
@@ -1536,6 +1544,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             checkpoints=checkpoints,
             pass_session_id=pass_session_id,
             ignore_rules=ignore_rules,
+            temporary=temporary,
         )
     except ImportError as e:
         # Direct `python cli.py` bypasses cmd_chat's partial-update ImportError handler.
@@ -1671,6 +1680,7 @@ def main(
     output_format: str = "text",
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    temporary: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -1738,7 +1748,8 @@ def main(
             raise ValueError("--format stream-json requires -q/--query")
         quiet = True
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
-                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills,
+                               temporary=temporary)
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.

@@ -364,11 +364,12 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
 
 
 def _start_backend_liveness() -> None:
-    """Backend heartbeat refresher + startup orphan sweep (idempotent, once per process); a
-    failure of either is logged and never blocks the connection."""
+    """Backend heartbeat refresher + startup orphan and temporary-chat sweeps (idempotent, once per
+    process); a failure of any is logged and never blocks the connection."""
     for start, what in (
         (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
         (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
+        (server._schedule_temporary_session_sweep, "temporary-session sweep scheduling"),
     ):
         try:
             start()

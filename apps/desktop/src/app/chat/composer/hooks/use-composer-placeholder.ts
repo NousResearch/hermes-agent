@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { useTemporaryChat } from '@/app/chat/temporary/use-temporary-chat'
 import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
 
 import { pickPlaceholder } from '../composer-utils'
+import { useComposerScope } from '../scope'
 
 interface UseComposerPlaceholderOptions {
   disabled: boolean
@@ -20,6 +22,9 @@ interface UseComposerPlaceholderOptions {
  */
 export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
   const { t } = useI18n()
+  // A temporary chat says so where the user types.
+  const scope = useComposerScope()
+  const temporary = useTemporaryChat(sessionId) && scope.target === 'main'
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
@@ -57,5 +62,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
     ? reconnecting
       ? t.composer.placeholderReconnecting
       : t.composer.placeholderStarting
-    : restingPlaceholder
+    : temporary
+      ? t.temporaryChat.placeholder
+      : restingPlaceholder
 }

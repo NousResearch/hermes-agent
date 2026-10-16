@@ -13,6 +13,7 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_errors import is_malformed_db_error
+from hermes_state_temporary import not_temporary_sql
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
@@ -179,6 +180,8 @@ def _search_filter_clauses(
     if exclude_sources is not None:
         where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
         params.extend(exclude_sources)
+    # Temporary chats are never searchable — not by session_search, the dashboard or the CLI.
+    where.append(not_temporary_sql("s"))
     if role_filter:
         where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
         params.extend(role_filter)

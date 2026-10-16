@@ -26,6 +26,7 @@ import {
   undoRestoredDraft,
   updateComposerAttachment
 } from './composer'
+import { forgetTemporaryChat, registerTemporaryChat } from './temporary-chat'
 
 describe('voice conversation start requests', () => {
   it('latches each request until the main composer consumes it once', () => {
@@ -450,5 +451,23 @@ describe('freezeComposerTransportPayload', () => {
     expect(frozen.transportText).toContain('selected terminal lines')
     expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
     expect(freezeComposerTransportPayload(frozen.transportText).transportText).toBe(frozen.transportText)
+  })
+})
+
+describe('temporary chat drafts', () => {
+  it('keeps a temporary chat draft in memory only', () => {
+    registerTemporaryChat('temp-d', null)
+
+    try {
+      stashSessionDraft('saved-d', 'a saved draft', [])
+      stashSessionDraft('temp-d', 'my secret draft', [])
+
+      expect(takeSessionDraft('temp-d').text).toBe('my secret draft')
+      const raw = window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? ''
+      expect(raw).toContain('a saved draft')
+      expect(raw).not.toContain('secret')
+    } finally {
+      forgetTemporaryChat('temp-d')
+    }
   })
 })

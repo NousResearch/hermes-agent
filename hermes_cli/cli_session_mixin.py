@@ -439,6 +439,9 @@ class CLISessionMixin:
         from cli import logger
         if not self._session_db or not session_id:
             return False
+        if getattr(self, "temporary", False):
+            from hermes_cli.cli_temporary import discard_temporary_session
+            return discard_temporary_session(self._session_db, session_id)
         # In-memory transcript is authoritative: a real conversation whose DB flush failed
         # or hasn't happened yet must never be pruned.
         if getattr(self, "conversation_history", None):
@@ -560,6 +563,8 @@ class CLISessionMixin:
                             "max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
                         })
                     self.agent._session_db_created = True
+                    from agent.temporary_chat import mark_agent_session_temporary
+                    mark_agent_session_temporary(self.agent)
                 if title:
                     title = _apply_new_session_title(self, title)
             # Tell memory providers the session_id rotated (reset=True flushes per-session
@@ -1111,6 +1116,9 @@ class CLISessionMixin:
         for message in _cli_module._session_end_messages:
             print(message)
         _cli_module._session_end_messages.clear()
+        if getattr(self, "temporary", False):  # deleted on exit: there is nothing to resume
+            print(t("cli.session.temporary_deleted"))
+            return
         msg_count = len(self.conversation_history)
         if not msg_count:
             try:

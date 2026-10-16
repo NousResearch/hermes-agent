@@ -259,6 +259,49 @@ display:
 Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a 6-char hex suffix (e.g. `20250305_091523_a1b2c3`), gateway sessions use an 8-char suffix (e.g. `20250305_091523_a1b2c3d4`). You can resume by ID (full or unique prefix) or by title — both work with `-c` and `-r`.
 :::
 
+## Temporary Chats
+
+A temporary chat is a conversation that leaves nothing behind, like the temporary or incognito
+mode of other AI assistants:
+
+- It never appears in `/resume`, `hermes sessions list`, the Desktop sidebar or the dashboard, and
+  `session_search` (in any other session) cannot find it.
+- It does not read or write long-term memory: built-in `MEMORY.md`/`USER.md` and external memory
+  providers are off, the `memory` and `session_search` tools are disabled, background
+  memory/skill review is skipped, and no title is generated.
+- It is deleted — transcript, compression continuations and request dumps — when you leave it.
+
+**CLI / TUI:** `hermes --temporary` (or `hermes chat --temporary`), in the classic CLI and the TUI
+alike (`display.interface: tui` or `--tui`). A banner confirms the mode — the TUI's status bar also
+reads "🕶 temporary chat · not saved" for the whole session; `/new` deletes the current temporary
+chat and starts another; exiting deletes it. Switching to a saved chat (`/resume`, and in the TUI
+`/sessions`/`/switch`) and `/branch` are refused, so a temporary process can never adopt (and later
+delete) a saved conversation or copy the temporary transcript into one. `--temporary` cannot be
+combined with `--resume`/`--continue`.
+
+**Desktop:** click the incognito button in the composer of a new, empty chat (the empty state and
+input placeholder change to say so), or use **File → New Temporary Chat** / the command palette /
+<kbd>⌘⇧P</kbd> (<kbd>Ctrl+Shift+P</kbd>). While it is open you always know you are private: a
+violet **Temporary chat** bar across the top of the app, a pressed **Temporary** pill in the
+composer, and a **Temporary** badge in the header.
+
+A temporary chat is *sticky*: switching to another chat, a plugin or any page does not delete it
+(a reply may still be streaming). The top bar then reads "Back to temporary chat · End temporary
+chat", so it is never out of reach. It is deleted when you:
+
+- click **End temporary chat** (bar or composer pill — confirms first) or close its tab (<kbd>⌘W</kbd>);
+- leave it idle off screen for 10 minutes after its last reply finished (a running reply never
+  expires);
+- quit the app (the shared local gateway deletes a temporary chat nobody has viewed for
+  30 minutes, and every one it owns when it stops).
+
+If Hermes is killed before it can clean up (crash, `kill -9`, power loss), the next gateway, CLI or
+Desktop backend start removes temporary chats whose owning process is gone. When the owner cannot be checked
+(another machine or PID namespace) the row is removed after 72 hours of inactivity.
+
+The model provider still receives the conversation, as with any chat; "temporary" is about what
+Hermes keeps.
+
 ## Cross-Platform Handoff
 
 Use `/handoff <platform>` from a CLI session to transfer the live conversation to a messaging platform's home channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.

@@ -289,6 +289,9 @@ def _flush_one_shot_session_store(cli) -> None:
         db.end_session(session_id, "cli_close")
     except Exception:
         logger.debug("one-shot end_session failed", exc_info=True)
+    if getattr(cli, "temporary", False):
+        from hermes_cli.cli_temporary import discard_temporary_session
+        discard_temporary_session(db, session_id)
 
 
 def _wait_for_oneshot_background_completions(cli) -> None:

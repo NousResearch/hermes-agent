@@ -3059,6 +3059,7 @@ export interface SessionCreateParams {
   service_tier?: string | null
   close_on_disconnect?: boolean
   hidden?: boolean
+  temporary?: boolean
   room_plumbing?: boolean
   follow_profile_config?: boolean
   idempotency_key?: string | null
@@ -4876,6 +4877,7 @@ export interface CanonicalCreateParams {
   editor?: Record<string, unknown> | null
   title?: string | null
   hidden?: boolean
+  temporary?: boolean
   follow_profile_config?: boolean | null
   service_tier?: string | null
   cwd_explicit?: boolean | null

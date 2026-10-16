@@ -7,6 +7,7 @@ import { jaBoot } from './ja_boot'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
 import { jaFirstRun } from './ja_first_run'
+import { jaLanguage } from './ja_language'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -14,6 +15,7 @@ import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
+import { jaTemporaryChat } from './ja_temporary_chat'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
@@ -28,6 +30,7 @@ export const jaOverrides = {
   sharedMetrics: jaSharedMetrics,
   firstRun: jaFirstRun,
   intro: introJa,
+  ...jaTemporaryChat,
   sessionImport: jaConnectors.sessionImport,
   common: {
     apply: '適用',
@@ -231,15 +234,7 @@ export const jaOverrides = {
     resetHudLayout: 'HUD のサイズと位置をリセット'
   },
 
-  language: {
-    label: '言語',
-    description: 'デスクトップインターフェイスの言語を選択します。',
-    saving: '言語を保存中…',
-    saveError: '言語の更新に失敗しました',
-    switchTo: '言語を切り替え',
-    searchPlaceholder: '言語を検索…',
-    noResults: '言語が見つかりません'
-  },
+  ...jaLanguage,
 
   settings: {
     uninstallSection: {

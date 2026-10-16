@@ -41,6 +41,7 @@ import {
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
 import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
+import { requestNewTemporaryChat } from '@/store/temporary-chat'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isPeerInstanceWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -542,6 +543,9 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [])
+
+  // File > New Temporary Chat — same request as the ⌘⇧P keybind.
+  useEffect(() => window.hermesDesktop?.onNewTemporaryChatRequested?.(requestNewTemporaryChat), [])
 
   // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
   useEffect(() => {

@@ -501,6 +501,9 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
+    if session.get("temporary"):
+        from hermes_state_temporary import TEMPORARY_MODEL_CONFIG_KEY, temporary_owner_record
+        model_config[TEMPORARY_MODEL_CONFIG_KEY] = temporary_owner_record()
     from tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
     return row_model, with_session_yolo(model_config, session.get("session_key") or "")
 

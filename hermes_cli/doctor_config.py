@@ -16,6 +16,51 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _has_provider_config_credential(
+    cfg: dict | None, env_map: dict | None = None
+) -> bool:
+    """Return True when config.yaml itself carries a provider credential or custom endpoint.
+
+    The .env substring scan is the classic path, but a user-defined provider can hold its
+    credential entirely in config: an inline ``providers.<name>.api_key``, a ``key_cmd`` mint
+    command (documented as beating ``api_key``/``key_env``), a ``key_env``/``api_key_env``
+    pointer whose variable is actually set (on-disk .env or process env), or a ``custom:*``
+    model.provider / explicit ``model.base_url`` — the "custom endpoint" half of the check's
+    label. Without this, a live custom provider is reported as missing (#132666).
+    """
+    if not isinstance(cfg, dict):
+        return False
+    entries: list = []
+    with warn_on_error(""):
+        from hermes_cli.config import get_compatible_custom_providers
+
+        entries = get_compatible_custom_providers(cfg)
+    for entry in entries if isinstance(entries, list) else ():
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("api_key") or "").strip():
+            return True
+        if str(entry.get("key_cmd") or "").strip():
+            return True
+        pointer = str(entry.get("key_env") or "").strip()
+        if (
+            pointer
+            and str(
+                (env_map or {}).get(pointer) or os.environ.get(pointer) or ""
+            ).strip()
+        ):
+            return True
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "").strip().lower()
+        if (
+            provider.startswith("custom:")
+            or str(model_cfg.get("base_url") or "").strip()
+        ):
+            return True
+    return False
+
+
 # Legacy config keys still read for back-compat: warn-only with the modern replacement, never auto-migrated
 # (migrations live in config.py). (section, key, replacement)
 _DEPRECATED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
@@ -180,7 +225,25 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
             content = env_path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             content = env_path.read_text(encoding="latin-1")
-        if not check_bool(_has_provider_env_config(content), "API key or custom endpoint configured", f"No API key found in {_DHH}/.env"):
+        env_map, cfg = None, None
+        with warn_on_error(""):
+            # load_config_readonly (not read_user_config_raw): behavioral reads must run the
+            # managed-config overlay, or a provider supplied by a managed scope is never seen.
+            from hermes_cli.config import load_config_readonly, load_env
+
+            env_map = load_env()
+            cfg = load_config_readonly()
+        env_configured = _has_provider_env_config(content)
+        if check_bool(
+            env_configured or _has_provider_config_credential(cfg, env_map),
+            "API key or custom endpoint configured",
+            f"No API key or custom endpoint found in {_DHH}/.env or config.yaml",
+        ):
+            if not env_configured:
+                check_info(
+                    "Credentials resolved from config.yaml (providers:/model), not the .env file"
+                )
+        else:
             f.issues.append("Run 'hermes setup' to configure API keys")
     elif (PROJECT_ROOT / '.env').exists():  # project root as fallback
         check_ok(".env file exists (in project directory)")

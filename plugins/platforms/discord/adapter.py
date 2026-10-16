@@ -100,6 +100,8 @@ _REQUIRED = object()
 _NATIVE_SLASH_COMMAND_SPECS: tuple = (
     ("new", "platform.discord.command.new.description", (), "/reset", "platform.discord.command.new.followup"),
     ("reset", "platform.discord.command.reset.description", (), "/reset", "platform.discord.command.reset.followup"),
+    # Messaging /clear shares /reset semantics, including its localized copy.
+    ("clear", "platform.discord.command.reset.description", (), "/reset", "platform.discord.command.reset.followup"),
     ("model", "platform.discord.command.model.description",
      (("name", str, "", "platform.discord.command.model.arg_name", None),),
      "/model {name}", None),

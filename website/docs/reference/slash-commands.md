@@ -235,6 +235,12 @@ Commands support prefix matching: typing `/h` resolves to `/help`, `/mod` resolv
 
 ## Messaging slash commands
 
+Slack's native slash list is capped at 50 commands. `/clear` deliberately takes the
+slot otherwise occupied by `/usage` in the current registry; use `/hermes usage`
+instead. This is capacity-based, not a permanent exclusion: `/usage` returns to
+the native list when an earlier slot is freed. `/clear` has no name hint; use
+`/new [name]` to name a new session.
+
 > **Slack thread commands (`!` prefix):**
 > Slack itself blocks native slash commands inside message threads ("/queue is not supported in threads. Sorry!") and never delivers them to Hermes. Inside a Slack thread, use the `!` prefix instead — `!stop`, `!new`, `!status` — and the gateway dispatches it exactly like the slash form. `@Hermes !stop` and `@Hermes /stop` work in threads too. Only the first token is checked against the known command list, so messages like `!nice work` pass through to the agent unchanged. See [Using commands inside threads](../user-guide/messaging/slack.md#using-commands-inside-threads-the-cmd-prefix) for details.
 
@@ -244,6 +250,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 |---------|-------------|
 | `/start` | Platform-protocol command. Many chat platforms (Telegram, Discord, …) send `/start` automatically the first time a user opens a bot conversation. Hermes acknowledges the ping silently — no agent reply, no session burn — so first-contact handshakes don't waste a turn. You can also send it explicitly to confirm the gateway is reachable. |
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
+| `/clear` | **Messaging surfaces only.** Chat has no screen to clear, so `/clear` resets the conversation session exactly like `/new` (same confirmation prompt, same busy-session interrupt). In the interactive CLI `/clear` keeps its terminal meaning (clear screen + new session). |
 | `/status` | Show session info, followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest prompt + reply). |
 | `/stop` | Kill all running background processes and interrupt the running agent. |
 | `/pause [reason \| off]` | Global emergency stop, the in-chat form of [`hermes pause`](./cli-commands.md): puts new cron, kanban and gateway work on hold until `/pause off`. In-flight work finishes normally, and slash commands keep working while paused, so a messaging-only operator can always lift it. |
@@ -327,7 +334,7 @@ The CLI prompts before running slash commands that throw away unsaved session st
 
 | Command | What it destroys |
 |---------|------------------|
-| `/clear` | Clears the screen and starts a fresh session — current session ID and in-memory history are gone. |
+| `/clear` | Clears the screen and starts a fresh session — current session ID and in-memory history are gone. In messaging chats `/clear` instead resets the session like `/new` (no screen to clear). |
 | `/new` / `/reset` | Starts a fresh session (new session ID + empty history). |
 | `/undo` | Removes the last user/assistant exchange from history. |
 | `/exit --delete` / `/quit --delete` | Exits **and** permanently deletes the current session's SQLite history and on-disk transcripts. |

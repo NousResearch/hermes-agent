@@ -23,6 +23,8 @@ _LICENSE_ERR = (
     "Please run 'sudo xcodebuild -license' from within a Terminal window to review and agree to the Xcode "
     "and Apple SDKs license."
 )
+# Test text for a refused `xcode-select --install`, not Apple's exact wording.
+_INSTALL_ERR = "xcode-select: error: no GUI session to show the install dialog"
 _WORKING_GIT = "#!/bin/sh\necho 'git version 2.50.1'\n"
 
 
@@ -62,7 +64,8 @@ def _run_prerequisites(tmp_path: Path, *, git: str = "stub", interactive: bool =
          f'#!/bin/sh\nif [ "$1" = -p ]; then\n'
          f'  if [ -d "{dev_dir}" ]; then echo "{dev_dir}"; exit 0; fi\n'
          f'  echo "xcode-select: error: unable to get active developer directory" >&2; exit 2\nfi\n'
-         f'echo "xcode-select $*" >> "{calls}"\nexit {install_rc}\n')
+         f'echo "xcode-select $*" >> "{calls}"\n'
+         f'[ {install_rc} -eq 0 ] || echo "{_INSTALL_ERR}" >&2\nexit {install_rc}\n')
     # Each poll interval is where the user may finish Apple's dialog.
     finish = f'touch "{done}"\n' if clt_finishes else ""
     _exe(bin_dir / "sleep", f'#!/bin/sh\necho "sleep $*" >> "{calls}"\n{finish}exit 0\n')
@@ -90,8 +93,15 @@ def _run_prerequisites(tmp_path: Path, *, git: str = "stub", interactive: bool =
 
 
 @pytest.mark.platforms("macos")
-def test_macos_stub_waits_for_clt_dialog_then_continues(tmp_path):
-    result, calls = _run_prerequisites(tmp_path, interactive=True)
+@pytest.mark.parametrize("opts", [
+    pytest.param({"interactive": True}, id="terminal"),
+    # Hermes-Setup runs stages with --non-interactive --json and no terminal.
+    pytest.param({"json": True}, id="hermes-setup-json"),
+    # After a macOS upgrade `-p` names a folder that exists but holds no git.
+    pytest.param({"dev": "damaged", "interactive": True}, id="upgrade-leftover-folder"),
+])
+def test_macos_stub_opens_clt_dialog_waits_then_continues(tmp_path, opts):
+    result, calls = _run_prerequisites(tmp_path, **opts)
 
     assert result.returncode == 0, result.stderr
     assert "click Install" in result.stdout
@@ -100,12 +110,12 @@ def test_macos_stub_waits_for_clt_dialog_then_continues(tmp_path):
 
 
 @pytest.mark.platforms("macos")
-def test_macos_stub_hermes_setup_json_run_waits_too(tmp_path):
-    """Hermes-Setup runs stages with --non-interactive --json and no terminal."""
-    result, calls = _run_prerequisites(tmp_path, interactive=False, json=True)
+def test_macos_stub_shows_why_clt_install_failed_before_waiting(tmp_path):
+    result, calls = _run_prerequisites(tmp_path, install_rc=1, interactive=True)
 
     assert result.returncode == 0, result.stderr
-    assert "prerequisites ok" in result.stdout
+    assert _INSTALL_ERR in result.stdout
+    assert result.stdout.index(_INSTALL_ERR) < result.stdout.index("click Install")
     assert calls == ["xcode-select --install", "sleep 5"]
 
 
@@ -119,16 +129,6 @@ def test_macos_stub_prefers_homebrew_without_dialog(tmp_path):
 
 
 @pytest.mark.platforms("macos")
-def test_macos_headless_non_interactive_fails_fast_with_remedy(tmp_path):
-    result, calls = _run_prerequisites(tmp_path, interactive=False)
-
-    assert result.returncode != 0
-    assert "xcode-select --install" in result.stderr
-    assert "prerequisites ok" not in result.stdout
-    assert calls == ["xcode-select --install"]
-
-
-@pytest.mark.platforms("macos")
 def test_macos_stub_wait_gives_up_after_fifteen_minutes(tmp_path):
     result, calls = _run_prerequisites(tmp_path, interactive=True, clt_finishes=False)
 
@@ -139,36 +139,28 @@ def test_macos_stub_wait_gives_up_after_fifteen_minutes(tmp_path):
 
 
 @pytest.mark.platforms("macos")
-def test_macos_tools_present_but_git_fails_reports_git_error_without_waiting(tmp_path):
-    """An unaccepted Xcode license: no dialog opens, so neither prompt nor wait."""
-    result, calls = _run_prerequisites(tmp_path, git="license", dev="complete", interactive=True)
+@pytest.mark.parametrize(("opts", "expect", "forbid", "expected_calls"), [
+    pytest.param({}, ["xcode-select --install"], [], ["xcode-select --install"], id="headless-non-interactive"),
+    # An unaccepted Xcode license: the tools hold git, so no brew, dialog or wait,
+    # and git's own remedy rather than the Command Line Tools one.
+    pytest.param({"git": "license", "dev": "complete", "brew": True, "interactive": True},
+                 ["git is installed but cannot run", "sudo xcodebuild -license"], ["Command Line Tools"], [],
+                 id="tools-present-git-fails"),
+    # `--install` refuses over a leftover folder: no dialog opens, so no wait.
+    pytest.param({"dev": "damaged", "install_rc": 1, "interactive": True},
+                 ["sudo rm -rf /Library/Developer/CommandLineTools"], [], ["xcode-select --install"],
+                 id="install-refused-over-leftover-folder"),
+])
+def test_macos_fails_fast_with_remedy(tmp_path, opts, expect, forbid, expected_calls):
+    result, calls = _run_prerequisites(tmp_path, **opts)
 
     assert result.returncode != 0
-    assert "git is installed but cannot run" in result.stderr
-    assert "sudo xcodebuild -license" in result.stderr
-    assert "Command Line Tools" not in result.stderr
-    assert calls == []
-
-
-@pytest.mark.platforms("macos")
-def test_macos_upgrade_leftover_tools_folder_still_opens_dialog(tmp_path):
-    """After a macOS upgrade `-p` names a folder that exists but holds no git."""
-    result, calls = _run_prerequisites(tmp_path, dev="damaged", interactive=True)
-
-    assert result.returncode == 0, result.stderr
-    assert "prerequisites ok" in result.stdout
-    assert calls == ["xcode-select --install", "sleep 5"]
-
-
-@pytest.mark.platforms("macos")
-def test_macos_damaged_tools_install_refused_fails_fast_with_reinstall_remedy(tmp_path):
-    """`--install` refuses over a leftover folder: no dialog opens, so no wait."""
-    result, calls = _run_prerequisites(tmp_path, dev="damaged", install_rc=1, interactive=True)
-
-    assert result.returncode != 0
-    assert "sudo rm -rf /Library/Developer/CommandLineTools" in result.stderr
+    for text in expect:
+        assert text in result.stderr
+    for text in forbid:
+        assert text not in result.stderr
     assert "prerequisites ok" not in result.stdout
-    assert calls == ["xcode-select --install"]
+    assert calls == expected_calls
 
 
 @pytest.mark.platforms("linux")

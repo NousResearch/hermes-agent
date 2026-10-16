@@ -529,22 +529,28 @@ git_runs() { command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; }
 # Prefer Homebrew (headless); else open Apple's install dialog and wait for the
 # user to finish it, so the install continues in this run.
 install_macos_git() {
+    # Developer tools present with their git (e.g. an Xcode license never
+    # accepted, or a broken ~/.gitconfig): installing another git won't help,
+    # so let the caller report git's own error. A folder alone is not enough:
+    # a macOS upgrade can leave it behind empty.
+    local _dev
+    _dev="$(xcode-select -p 2>/dev/null)" || _dev=""
+    [ -n "$_dev" ] && [ -x "$_dev/usr/bin/git" ] && return 0
     if command -v brew >/dev/null 2>&1; then
         # Auto-update runs git (the broken stub here) and can take minutes.
         run_logged --may-fail "Installing git with Homebrew" env HOMEBREW_NO_AUTO_UPDATE=1 brew install git || true
         hash -r
         git_runs && return 0
     fi
-    # Developer tools present with their git (e.g. an Xcode license never
-    # accepted): no dialog will open, so let the caller report git's own error.
-    # A folder alone is not enough: a macOS upgrade can leave it behind empty.
-    local _dev
-    _dev="$(xcode-select -p 2>/dev/null)" || _dev=""
-    [ -n "$_dev" ] && [ -x "$_dev/usr/bin/git" ] && return 0
     # Opens Apple's install dialog. With a leftover folder it may refuse
     # instead ("already installed"); no dialog opens, so don't wait for one.
-    if ! xcode-select --install >/dev/null 2>&1 && [ -n "$_dev" ] && [ -d "$_dev" ]; then
-        fail "The developer tools at $_dev are incomplete and xcode-select --install declined to reinstall them. Reinstall the Command Line Tools (run: sudo rm -rf /Library/Developer/CommandLineTools, then xcode-select --install), then re-run this installer." git_missing
+    local _xs
+    if ! _xs="$(xcode-select --install 2>&1)"; then
+        if [ -n "$_dev" ] && [ -d "$_dev" ]; then
+            fail "The developer tools at $_dev are incomplete and xcode-select --install declined to reinstall them. Reinstall the Command Line Tools (run: sudo rm -rf /Library/Developer/CommandLineTools, then xcode-select --install), then re-run this installer." git_missing
+        fi
+        # Say why (e.g. no GUI session over SSH) before any wait.
+        log_warn "xcode-select --install: $(printf '%s\n' "$_xs" | error_line)"
     fi
     local _remedy="Install Apple's Command Line Tools (run: xcode-select --install), then re-run this installer."
     # Hermes-Setup drives stages with --json: no stage timeout, a Cancel
@@ -564,7 +570,8 @@ install_macos_git() {
 }
 
 stage_prerequisites() {
-    if [ "$(uname -s 2>/dev/null)" = Darwin ] && ! git_runs; then
+    # No git on PATH at all is not the stub: report "git is required" below.
+    if [ "$(uname -s 2>/dev/null)" = Darwin ] && command -v git >/dev/null 2>&1 && ! git_runs; then
         install_macos_git
     fi
     command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager." git_missing

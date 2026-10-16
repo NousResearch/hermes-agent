@@ -31,7 +31,22 @@ def _branch_boundary(conn, target, through):
     return through
 
 
-def branch_in_transaction(db, conn, session_id, payload):
+def _child_policy(policy, child, prepared):
+    """The parent's frozen policy, except editor MCP servers: the gateway prepared the child's own
+    selection under the child's own scope (gateway/session_local_mcp.py ``prepare_branch_editor``).
+    Copying the parent's would share its scope, borrowed credentials and live connections."""
+    if prepared is None:
+        if policy.get('editor_mcp_json'):
+            raise RuntimeStoreError('runtime_coordination_required')
+        return policy
+    # Prepared against the parent's selection and the child id this commit derives; anything else moved.
+    if child != prepared['child'] or policy.get('editor_mcp_json') != prepared['parent_editor_mcp_json']:
+        raise RuntimeStoreError('revision_conflict')
+    return {**policy, 'editor_mcp_json': prepared['editor_mcp_json'], 'toolsets': prepared['toolsets'],
+            'config_secret_ref': prepared['config_secret_ref']}
+
+
+def branch_in_transaction(db, conn, session_id, payload, prepared=None):
     row = conn.execute('SELECT value FROM state_meta WHERE key=?',
                        (POLICY_PREFIX + session_id,)).fetchone()
     if row is None:
@@ -43,8 +58,9 @@ def branch_in_transaction(db, conn, session_id, payload):
     from gateway.session import SessionEntry, SessionSource
     from gateway.config import Platform
     from hermes_state_keys import local_identity, profile_from_session_key
-    request_id = 'branch:' + uuid.uuid4().hex
+    request_id = prepared['request_id'] if prepared else 'branch:' + uuid.uuid4().hex
     child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
+    policy = _child_policy(saved['policy'], child, prepared)
     # The child keeps the parent's owning profile: a served secondary's origin names it
     # (``local_source``), and restore compares the stored origin against that exactly.
     source = SessionSource(Platform.LOCAL, child, user_id=saved['principal_id'], chat_type='dm',
@@ -55,7 +71,6 @@ def branch_in_transaction(db, conn, session_id, payload):
     now = _now()
     entry = SessionEntry(route, child, now, now, origin=source, platform=Platform.LOCAL)
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
-    policy = saved['policy']
     db._publish_child_session_row(conn, parent, parent_session_id=target,
         child_session_id=child, source=policy['source'], model=policy['model'],
         model_config={'_branched_from': target}, system_prompt=None,

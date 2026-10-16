@@ -8,6 +8,21 @@ from typing import Any, Optional
 
 from gateway.config import GatewayConfig
 
+
+def _start_deferred_state_db_integrity_check(evidence: dict) -> None:
+    """Run the store scan an unclean-exit report deferred, once the runner is live.
+
+    On the event loop it held every local listener open but unanswered for the whole
+    ``quick_check`` (minutes on a multi-GB ``state.db``), so local clients hung instead of being
+    refused. A daemon thread nothing waits on; it only appends the forensic exit-diag record.
+    """
+    from agent.memory_provider import spawn_context_thread
+    from gateway.lifecycle_ledger import STATE_DB_INTEGRITY_DEADLINE_S, run_deferred_integrity_check
+    # Under the caller's profile scope: the scan resolves this gateway's state.db through it.
+    spawn_context_thread(
+        run_deferred_integrity_check, args=(evidence,),
+        kwargs={"deadline_s": STATE_DB_INTEGRITY_DEADLINE_S}, name="state-db-integrity-check").start()
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
@@ -772,23 +787,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway.run_runtime import start_gateway_runtime_api
         await start_gateway_runtime_api(runner)
 
-        def _lifecycle_record_startup() -> None:
+        def _lifecycle_record_startup() -> Optional[dict]:
             # Report if the previous life died uncleanly (SIGKILL / OOM / VM death), then claim the
             # sentinel for this life. After the PID-file claim so a --replace loser can't clobber it.
+            # The store scan that report used to run here is deferred: see below.
             from gateway.lifecycle_ledger import record_startup
-            record_startup()
+            return record_startup()
 
         def _start_keepalive() -> None:
             from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
             start_nous_auth_keepalive()
 
-        _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
+        _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
         _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
         _ensure_windows_gateway_venv_imports()
 
         _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
         if _early_verdict is not None:
             return _early_verdict
+        if _unclean_exit is not None:
+            _start_deferred_state_db_integrity_check(_unclean_exit)
 
         cron_stop, cron_provider, cron_thread, housekeeping_thread = (
             _start_gateway_start_cron_and_housekeeping(runner))

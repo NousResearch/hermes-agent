@@ -1,10 +1,17 @@
-"""Native ACP stdio through ordinary gateway source, real model and MCP peers."""
+"""Native ACP stdio through ordinary gateway source, real model and MCP peers.
+
+The editor's ``mcpServers`` is a request: the owner binds each session's servers under that
+session's own scope, changes them only through the fenced ``editor_mcp`` mutation (or a re-freeze
+at an admission start), and never writes a transport credential to state.db or events
+(#134889 ACP-8, ACP-10, ACP-12).
+"""
 import asyncio
 from http.server import BaseHTTPRequestHandler
 import json
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -12,6 +19,7 @@ import time
 import psutil
 import pytest
 
+from hermes_cli.gateway_client import GatewayRPCError
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.gateway.test_normal_runtime_boot import control
 from tests.waiting import async_wait_until
@@ -85,6 +93,14 @@ for line in sys.stdin:
     return spec('A'), spec('B')
 
 
+def respec(spec, marker, tmp_path):
+    """*spec*'s server with another marker, gate and borrowed secret (same name, same tools)."""
+    changed = json.loads(json.dumps(spec))
+    changed['env'] = [{'name': 'MARKER', 'value': marker}, {'name': 'GATE', 'value': str(tmp_path / marker)},
+                      {'name': 'BORROWED_TOKEN', 'value': 'opaque-secret-' + marker}]
+    return changed
+
+
 async def initialize(acp):
     assert 'result' in await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
 
@@ -126,7 +142,6 @@ async def test_native_opposing_editor_mcp_survives_viewer_exit(daemon, specs, tm
         for session_id in (sid, bs):
             saved = await ws.rpc('session.resume', session_id=session_id)
             assert 'OWNED_RESULT_' in json.dumps(saved['messages'])
-    import sqlite3
     with sqlite3.connect(daemon[0] / 'state.db') as db:
         dump = '\n'.join(db.iterdump())
     assert all('opaque-secret-' + marker not in dump for marker in ('A', 'B'))
@@ -136,8 +151,10 @@ async def test_native_opposing_editor_mcp_survives_viewer_exit(daemon, specs, tm
 
 @pytest.mark.platforms("linux")
 @pytest.mark.asyncio
-async def test_native_cold_editor_rebind_refuses_changed_secret(daemon, specs, tmp_path, model_peer):
+async def test_native_cold_editor_rebind_applies_changed_secret(daemon, specs, tmp_path, model_peer):
+    """A changed editor config on load is the owner's ``editor_mcp`` rebind, not a refusal (#134889 ACP-10)."""
     (tmp_path / 'A').touch()
+    (tmp_path / 'C').touch()
     async with editor(daemon, tmp_path) as acp:
         await initialize(acp)
         created = await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[specs[0]])
@@ -166,18 +183,152 @@ async def test_native_cold_editor_rebind_refuses_changed_secret(daemon, specs, t
             cold = home, current, env, root
             async with editor(cold, tmp_path) as acp:
                 await initialize(acp)
-                changed = json.loads(json.dumps(specs[0]))
-                changed['env'][-1]['value'] = 'changed-secret'
-                refused = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[changed])
-                assert 'acp_mcp_policy_conflict' in json.dumps(refused), refused
-                loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[specs[0]])
+                changed = respec(specs[0], 'C', tmp_path)
+                loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[changed])
                 assert 'result' in loaded, loaded
                 acp.frames.clear()  # Old replay is not evidence of new execution.
                 assert 'result' in await prompt(acp, sid, 'Use owned echo after restart')
-                assert 'OWNED_RESULT_A' in json.dumps(acp.frames)
+                frames = json.dumps(acp.frames)
+                assert 'OWNED_RESULT_C' in frames and 'OWNED_RESULT_A' not in frames
+                # Same server, same schemas: the frozen manifest (prompt-cache prefix) did not move.
+                assert 'Editor MCP tools changed' not in frames
+                assert 'opaque-secret-' not in frames
+            with sqlite3.connect(home / 'state.db') as db:
+                dump = '\n'.join(db.iterdump())
+            assert all('opaque-secret-' + marker not in dump for marker in 'AC')
             print('ACP_MCP_COLD_RECEIPT=' + json.dumps({'session_id': sid,
-                'old_pid': descriptor['pid'], 'new_pid': process.pid, 'changed_secret_refused': True}))
+                'old_pid': descriptor['pid'], 'new_pid': process.pid, 'changed_secret_rebound': True}))
         finally:
             if process.poll() is None:
                 process.send_signal(signal.SIGINT)
                 await asyncio.to_thread(process.wait, 20)
+
+
+def _policies(home, *session_ids):
+    with sqlite3.connect(home / 'state.db') as db:
+        rows = [db.execute('SELECT value FROM state_meta WHERE key=?',
+                           ('gateway.local_policy.v1:' + sid,)).fetchone()[0] for sid in session_ids]
+        dump = '\n'.join(db.iterdump())
+    assert 'opaque-secret-' not in dump
+    return [json.loads(json.loads(row)['policy']['editor_mcp_json'] or 'null') for row in rows]
+
+
+def _peers_running(pid):
+    return [child for child in psutil.Process(pid).children(recursive=True)
+            if any('peer.py' in part for part in child.cmdline())]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.asyncio
+async def test_native_fork_binds_child_editor_mcp_in_its_own_scope(daemon, specs, tmp_path, model_peer):
+    for marker in 'AC':
+        (tmp_path / marker).write_text('release')
+    async with editor(daemon, tmp_path) as acp:
+        await initialize(acp)
+        created = await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[specs[0]])
+        assert 'result' in created, created
+        sid = created['result']['sessionId']
+        assert 'result' in await prompt(acp, sid)
+        forked = await acp.rpc('session/fork', sessionId=sid, cwd=str(tmp_path),
+                               mcpServers=[respec(specs[0], 'C', tmp_path)])
+        assert 'result' in forked, forked
+        child = forked['result']['sessionId']
+        acp.frames.clear()
+        assert 'result' in await prompt(acp, child)
+        frames = json.dumps(acp.frames)
+        assert 'OWNED_RESULT_C' in frames and 'OWNED_RESULT_A' not in frames
+        # No list: the child gets a copy of the parent's servers, still under its own scope.
+        copied = await acp.rpc('session/fork', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
+        assert 'result' in copied, copied
+        twin = copied['result']['sessionId']
+        acp.frames.clear()
+        assert 'result' in await prompt(acp, twin)
+        assert 'OWNED_RESULT_A' in json.dumps(acp.frames)
+        acp.frames.clear()
+        assert 'result' in await prompt(acp, sid, 'Use owned echo again')
+        frames = json.dumps(acp.frames)
+        assert 'OWNED_RESULT_A' in frames and 'OWNED_RESULT_C' not in frames
+        assert 'opaque-secret-' not in frames
+    parent, forked_policy, twin_policy = _policies(daemon[0], sid, child, twin)
+    assert len({parent['scope'], forked_policy['scope'], twin_policy['scope']}) == 3
+    assert forked_policy['fingerprint'] != parent['fingerprint'] == twin_policy['fingerprint']
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.asyncio
+async def test_native_schema_drift_refreezes_at_the_next_turn(daemon, specs, tmp_path, model_peer):
+    (tmp_path / 'A').write_text('release')
+    async with editor(daemon, tmp_path) as acp:
+        await initialize(acp)
+        created = await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[specs[0]])
+        assert 'result' in created, created
+        sid = created['result']['sessionId']
+        assert 'result' in await prompt(acp, sid)
+    # The last viewer left: its connection closes. The server's schema then changes.
+    await async_wait_until(lambda: not _peers_running(daemon[1]['pid']), timeout=20,
+                           what='editor MCP peer released with the last viewer')
+    script = tmp_path / 'peer.py'
+    script.write_text(script.read_text().replace("'owned echo'", "'drifted echo'"))
+    async with editor(daemon, tmp_path) as acp:
+        await initialize(acp)
+        loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[specs[0]])
+        assert 'result' in loaded, loaded
+        acp.frames.clear()
+        reply = await prompt(acp, sid, 'Use owned echo after drift')
+        assert 'result' in reply, reply
+        frames = json.dumps(acp.frames)
+        assert 'Editor MCP tools changed (servers: same-name)' in frames
+        assert 'OWNED_RESULT_A' in frames and 'opaque-secret-' not in frames
+    (frozen,) = _policies(daemon[0], sid)
+    assert 'drifted echo' in json.dumps(frozen['schemas'])
+
+
+def _completed(ws, frames, marker):
+    """Predicate: a ``message.complete`` carrying *marker* arrived (its admission is terminal)."""
+    def seen():
+        while not ws.events.empty():
+            frames.append(ws.events.get_nowait())
+        return any(frame['params'].get('type') == 'message.complete' and marker in json.dumps(frame)
+                   for frame in frames)
+    return seen
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.asyncio
+async def test_editor_mcp_mutation_is_fenced_idle_only_and_secret_free(daemon, specs, tmp_path, model_peer):
+    async with viewer(daemon) as ws:
+        created = await ws.rpc('session.create', request_id='editor-owner', source='acp', cwd=str(tmp_path),
+                               editor={'mcp_servers': [specs[0]], 'edit_approval_policy': 'ask'})
+        sid = created['session_id']
+        snapshot = await ws.rpc('session.resume', session_id=sid)
+        changed = respec(specs[0], 'C', tmp_path)
+        base = dict(session_id=sid, operation='editor_mcp', payload={'mcp_servers': [changed]})
+        with pytest.raises(GatewayRPCError, match='invalid_params'):
+            await ws.rpc('session.mutate', request_id='unfenced', expected_revision=snapshot['revision'], **base)
+        with pytest.raises(GatewayRPCError, match='revision_conflict'):
+            await ws.rpc('session.mutate', request_id='stale', expected_revision=snapshot['revision'] + 5,
+                         expected_generation=snapshot['execution_generation'], **base)
+        await ws.rpc('prompt.submit', session_id=sid, input_id='busy-turn', text='Use owned echo')
+        await async_wait_until(lambda: (tmp_path / 'A.entered').exists(), timeout=25, what='turn inside the MCP tool')
+        running = await ws.rpc('session.resume', session_id=sid)
+        with pytest.raises(GatewayRPCError, match='session_busy'):
+            await ws.rpc('session.mutate', request_id='busy', expected_revision=running['revision'],
+                         expected_generation=running['execution_generation'], **base)
+        (tmp_path / 'A').write_text('release')
+        frames = []
+        await async_wait_until(_completed(ws, frames, 'OWNED_RESULT_A'), timeout=30, what='first turn settled')
+        idle = await ws.rpc('session.resume', session_id=sid)
+        fence = dict(expected_revision=idle['revision'], expected_generation=idle['execution_generation'])
+        applied = await ws.rpc('session.mutate', request_id='applied', **fence, **base)
+        assert applied['tools_changed'] is False and applied['mcp_servers'] == ['same-name']
+        assert applied['revision'] > idle['revision']
+        assert await ws.rpc('session.mutate', request_id='applied', **fence, **base) == applied
+        (tmp_path / 'C').write_text('release')
+        await ws.rpc('prompt.submit', session_id=sid, input_id='after-rebind', text='Use owned echo')
+        await async_wait_until(_completed(ws, frames, 'OWNED_RESULT_C'), timeout=30, what='rebound turn settled')
+        events = json.dumps(frames)
+        assert 'OWNED_RESULT_C' in events
+        assert 'opaque-secret-' not in events and 'BORROWED_TOKEN' not in events
+    from gateway.session_local_mcp import fingerprint
+    (frozen,) = _policies(daemon[0], sid)
+    assert frozen['fingerprint'] == fingerprint([changed])

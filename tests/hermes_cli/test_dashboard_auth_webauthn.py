@@ -484,6 +484,39 @@ class TestOriginGating:
         assert body.json()["providers"][0]["name"] == "webauthn"
         assert body.json()["providers"][0]["supports_password"] is False
 
+    def test_register_options_json_shape(self, gated_client, provider):
+        """The JSON the enrol page JS receives: a {"publicKey": …} wrapper whose
+        challenge/user.id are base64url STRINGS (the browser must decode them —
+        a page feeding this straight into parseCreationOptionsFromJSON gets
+        'challenge is required and must be an instance of DOMString')."""
+        import base64
+        import re as re_mod
+
+        token = provider.issue_enrolment_token()
+        body = gated_client.get(
+            "/auth/webauthn/register/options", params={"enrolment": token})
+        assert body.status_code == 200
+        payload = body.json()
+        pk = payload["publicKey"]
+        assert isinstance(pk, dict)
+        for member in ("challenge", "user"):  # b64url strings, not ArrayBuffers
+            value = pk[member] if member == "challenge" else pk[member]["id"]
+            assert isinstance(value, str)
+            base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        assert re_mod.search(r"attestation|authenticatorSelection|pubKeyCredParams", body.text)
+
+    def test_enrol_page_js_unwraps_and_decodes(self, gated_client, provider):
+        """The served page must unwrap `publicKey` and decode buffers itself —
+        the parseCreationOptionsFromJSON shortcut is the bug shape."""
+        token = provider.issue_enrolment_token()
+        page = gated_client.get("/auth/webauthn/enrol",
+                                params={"token": token, "label": "contract"})
+        assert page.status_code == 200
+        html = page.text
+        assert "options.publicKey || options" in html
+        assert "b64urlToBuffer(pk.challenge)" in html
+        assert "parseCreationOptionsFromJSON" not in html
+
     def test_login_page_button_only_on_matching_origin(self, gated_client, provider):
         page = gated_client.get("/login")
         assert page.status_code == 200

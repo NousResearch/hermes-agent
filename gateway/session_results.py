@@ -80,6 +80,13 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
             saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                                  (_RESULT_PREFIX + row['admission_id'],)).fetchone()
             if saved is None:
+                # Interrupted/cancelled turns commit no result blob (settle only
+                # writes one when result is not None); a later read-back returns
+                # the resultless settlement. Mirrors _RESULTLESS_OUTCOMES in
+                # session_hosted_rpc (lazy: that module imports back at call time).
+                from gateway.session_hosted_rpc import _RESULTLESS_OUTCOMES
+                if current['outcome'] in _RESULTLESS_OUTCOMES:
+                    return dict(current), ''
                 raise RuntimeStoreError('storage_unavailable')
             result = json.loads(saved[0])
             return dict(current), result['result'].get('final_response') or ''

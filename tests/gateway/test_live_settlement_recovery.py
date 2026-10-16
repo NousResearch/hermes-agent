@@ -170,3 +170,32 @@ async def test_recovered_native_reply_is_sent_only_after_its_outcome_commits(tmp
     else:
         assert status == 'terminal' and sent == [('model reply', 'terminal')]
     assert receipt.admission_id not in authority.pending_deliveries
+
+
+@pytest.mark.asyncio
+async def test_finish_result_tolerates_resultless_interrupted_settlement(tmp_path, monkeypatch):
+    from gateway import session_results
+    from gateway.session_results import finish_result
+    from hermes_state_runtime import (
+        claim_session_input,
+        get_session_admission,
+        settle_session_input,
+    )
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, "_schedule", lambda ref: None)
+    with db:
+        receipt = await authority.submit(ACTOR, Submission("doomed", REF, {"text": "work"}, "queue"))
+        claimed = claim_session_input(db, epoch=authority.epoch, session_id="s")
+        assert claimed and claimed["admission_id"] == receipt.admission_id
+        # The cancel path settles an interrupted turn with no captured result,
+        # so no result blob is written for this admission.
+        settle_session_input(db, epoch=authority.epoch, admission_id=receipt.admission_id,
+                             generation=claimed["generation"], outcome="interrupted", result=None)
+        row = get_session_admission(db, admission_id=receipt.admission_id)
+        assert (row["status"], row["outcome"]) == ("terminal", "interrupted")
+        # A later read-back (retry after a commit failure, redelivery) must return
+        # the resultless settlement instead of raising storage_unavailable --
+        # the same exemption session_hosted_rpc grants _RESULTLESS_OUTCOMES.
+        settled, response = finish_result(db, epoch=authority.epoch, row=row, response="",
+                                          outcome="interrupted", result=None)
+        assert settled["status"] == "terminal" and response == ""

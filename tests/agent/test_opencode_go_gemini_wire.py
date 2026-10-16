@@ -162,3 +162,62 @@ async def test_async_aux_reaches_native_wire(monkeypatch):
         client._sync.close()
     assert seen[0].url.path.endswith(":generateContent")
     assert seen[0].headers["x-opencode-session"] == "async-fixture"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_native_call_inherits_timeout_and_merges_query(monkeypatch, stream):
+    from agent.opencode_gemini import make_go_gemini_client
+    seen = []
+    def respond(_transport, request):
+        seen.append(request)
+        payload = {"candidates": [{"content": {"parts": [{"text": "OK"}]}}]}
+        return httpx.Response(200, content="data: " + json.dumps(payload) + "\n\n") if stream else httpx.Response(200, json=payload)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    with make_go_gemini_client("https://opencode.ai/inference/go/v1", api_key="fixture", timeout=7,
+                               default_query={"fixture": "default"}) as client:
+        result = client.chat.completions.create(
+            model="gemini-4-argon-contributor", messages=[], stream=stream,
+            extra_query={"fixture": "request"},
+        )
+        if stream:
+            list(result)
+    assert seen[0].extensions["timeout"]["read"] == 7
+    assert seen[0].url.params["fixture"] == "request"
+
+
+def test_go_native_round_trip_over_real_loopback():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from agent.opencode_gemini import make_go_gemini_client
+    seen = []
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append((self.path, dict(self.headers), body))
+            payload = json.dumps({"candidates": [{"content": {"role": "model", "parts": [{"text": "loopback OK"}]},
+                                                   "finishReason": "STOP"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with make_go_gemini_client(f"http://127.0.0.1:{server.server_port}/inference/go/v1", api_key="synthetic-only") as client:
+            response = client.chat.completions.create(
+                model="gemini-fixture", messages=[{"role": "user", "content": "fixture"}],
+                extra_headers={"x-opencode-session": "socket-fixture"}, timeout=5,
+            )
+            assert response.choices[0].message.content == "loopback OK"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert seen[0][0] == "/inference/go/v1/models/gemini-fixture:generateContent"
+    assert seen[0][1]["x-goog-api-key"] == "synthetic-only"
+    assert seen[0][2]["contents"][0]["parts"][0]["text"] == "fixture"

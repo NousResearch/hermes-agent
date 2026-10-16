@@ -25,6 +25,7 @@ import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urljoin, urlsplit
 
 try:
     from aiohttp import web
@@ -60,6 +61,11 @@ DEFAULT_WEBHOOK_HOST = None
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
+# Where Meta's signed media URL (and its redirects) may point. ``*.fbcdn.net`` is a CDN suffix, so
+# this bounds "Meta's CDN", not one tenant; the bearer itself only survives same-origin hops.
+_META_MEDIA_HOSTS = {"lookaside.fbsbx.com"}
+_META_MEDIA_HOST_SUFFIXES = (".fbcdn.net",)
+_MEDIA_REDIRECT_LIMIT = 5
 WEBHOOK_MAX_BODY_BYTES = 3 * 1024 * 1024
 # Meta retries failed webhooks for up to 7 days, but the practical duplicate risk is
 # within minutes — 5000 FIFO entries bounds memory and covers that.
@@ -656,6 +662,66 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
         return resp
 
+    @staticmethod
+    def _media_url_origin(url: str) -> Optional[tuple[str, str, int]]:
+        """Return a normalized origin only for HTTPS Meta media URLs."""
+        try:
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").lower()
+            port = parsed.port or 443
+        except ValueError:
+            return None
+        if (
+            parsed.scheme.lower() != "https"
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or port != 443
+            or not (host in _META_MEDIA_HOSTS or host.endswith(_META_MEDIA_HOST_SUFFIXES))
+        ):
+            return None
+        return "https", host, port
+
+    async def _download_media_response(self, url: str, headers: Dict[str, str], media_id: str) -> Any:
+        """Fetch a validated Meta media URL without carrying auth across origins."""
+        client = self._http_client
+        if client is None:
+            return None
+        origin = self._media_url_origin(url)
+        if origin is None:
+            logger.warning("[whatsapp_cloud] refusing untrusted media URL (id=%s)", media_id)
+            return None
+
+        request_headers = dict(headers)
+        for _ in range(_MEDIA_REDIRECT_LIMIT + 1):
+            try:
+                resp = await client.get(url, headers=request_headers)
+            except Exception:
+                logger.exception("[whatsapp_cloud] media bytes fetch raised (id=%s)", media_id)
+                return None
+            if resp.status_code not in {301, 302, 303, 307, 308}:
+                if resp.status_code != 200:
+                    logger.warning(
+                        "[whatsapp_cloud] media bytes fetch failed (id=%s, status=%d)",
+                        media_id,
+                        resp.status_code,
+                    )
+                    return None
+                return resp
+
+            location = resp.headers.get("location")
+            next_url = urljoin(url, location) if location else ""
+            next_origin = self._media_url_origin(next_url)
+            if next_origin is None:
+                logger.warning("[whatsapp_cloud] refusing untrusted media redirect (id=%s)", media_id)
+                return None
+            if next_origin != origin:
+                request_headers.pop("Authorization", None)
+            url, origin = next_url, next_origin
+
+        logger.warning("[whatsapp_cloud] media bytes exceeded redirect limit (id=%s)", media_id)
+        return None
+
     async def _download_media_to_cache(self, media_id: str, *, ext_hint: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Two-step Graph download: ``GET /<id>`` → signed temp URL (~5 min) → bytes.
         Returns ``(local_path, mime_type)`` or ``(None, None)`` on any failure (logged)."""
@@ -678,8 +744,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         temp_url, mime = meta.get("url"), meta.get("mime_type") or ""
         if not temp_url:
             return None, None
-        # Auth is required even though the URL is signed (Meta documents this).
-        blob_resp = await self._graph_get(temp_url, headers, "bytes", media_id)
+        # Auth is required for Meta's signed URL, but must not cross an origin boundary.
+        blob_resp = await self._download_media_response(temp_url, headers, media_id)
         if blob_resp is None:
             return None, None
         _INBOUND_MEDIA_CACHE.mkdir(parents=True, exist_ok=True)

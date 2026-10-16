@@ -9,7 +9,7 @@ import uuid
 
 import acp
 from acp.schema import (
-    AgentCapabilities, Implementation, InitializeResponse, LoadSessionResponse,
+    AgentCapabilities, Implementation, InitializeResponse, LoadSessionResponse, McpCapabilities,
     NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionListCapabilities, SessionResumeCapabilities,
 )
@@ -188,6 +188,9 @@ class GatewayACPAgent(acp.Agent):
         return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=__version__),
             agent_capabilities=AgentCapabilities(load_session=True,
+                # Omitted, http/sse default to false and spec-following clients drop their remote
+                # MCP servers; the owner already attaches all three kinds (gateway/session_local_mcp.py).
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(fork=SessionForkCapabilities(), list=SessionListCapabilities(),
                                                          resume=SessionResumeCapabilities())),

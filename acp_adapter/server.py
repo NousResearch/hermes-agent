@@ -17,11 +17,12 @@ from typing import Any, Callable, Deque, Optional
 import acp
 from acp.schema import (
     AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
-    Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
-    McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
-    SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
-    SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
-    SetSessionModeResponse, SetSessionModelResponse, TextContentBlock, Usage, UsageUpdate, UserMessageChunk,
+    Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpCapabilities, McpServerHttp,
+    McpServerSse, McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse,
+    ResumeSessionResponse, SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate,
+    SessionListCapabilities, SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities,
+    SetSessionConfigOptionResponse, SetSessionModeResponse, SetSessionModelResponse, TextContentBlock, Usage,
+    UsageUpdate, UserMessageChunk,
 )
 
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
@@ -170,7 +171,11 @@ def _history_replay_updates(history: list[dict[str, Any]]):
 def _mcp_server_config(server: McpServerStdio | McpServerHttp | McpServerSse) -> dict:
     if isinstance(server, McpServerStdio):
         return {"command": server.command, "args": list(server.args), "env": {i.name: i.value for i in server.env}}
-    return {"url": server.url, "headers": {i.name: i.value for i in server.headers}}
+    config = {"url": server.url, "headers": {i.name: i.value for i in server.headers}}
+    if isinstance(server, McpServerSse):
+        # Without it _run_http tries Streamable HTTP first, which an SSE-only server may reject or hang on.
+        config["transport"] = "sse"
+    return config
 
 
 def _restore_env(key: str, value: str | None) -> None:
@@ -548,6 +553,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=get_version_info().base_version),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
+                # Advertise HTTP/SSE so ACP clients send remote MCP servers in
+                # session/new|load. Omitted mcpCapabilities defaults both to
+                # false per the ACP spec — even though we already convert
+                # McpServerHttp / McpServerSse in _register_session_mcp_servers.
+                mcp_capabilities=McpCapabilities(http=True, sse=True),
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(), list=SessionListCapabilities(), resume=SessionResumeCapabilities(),

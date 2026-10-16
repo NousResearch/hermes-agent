@@ -248,3 +248,36 @@ async def test_an_overlapping_retry_with_another_key_is_still_refused(owner, fir
     _stage(authority, connection, _params(home, **first))
     _rotate_key(home)
     assert _attempt(_stage, authority, connection, _params(home, **second)) == 'admission_conflict'
+
+
+PROMPT = 'HERMES_EPHEMERAL_SYSTEM_PROMPT'  # kept by the rules of a client the gateway did not prove local
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('first, second', [({PROMPT: 'P'}, {PROMPT: 'Q'}), ({PROMPT: 'P'}, None),
+                                           (None, {PROMPT: 'P'}), ({PROMPT: 'P'}, {})])
+async def test_an_overlapping_alias_retry_with_another_client_env_never_takes_the_held_key(owner, first, second):
+    """The held key is for the same create request only, and a client_env the slot holder's rules tell
+    apart is another request: refused at staging, so it gets neither the key nor a session, even when
+    the holder never commits."""
+    home, authority, connection = owner
+    with_env = (lambda env: _params(home, model='alias-key', **({} if env is None else {'client_env': env})))
+    _stage(authority, connection, with_env(first))
+    _rotate_key(home)
+    assert _attempt(_stage, authority, connection, with_env(second)) == 'admission_conflict'
+    with authority.db._read_ctx() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_overlapping_alias_retry_differing_only_in_a_dropped_name_reuses_the_held_key(owner):
+    """A name the holder's rules drop (PATH from a client not proven local) does not make another request."""
+    from gateway.session_policy import launch_key, restore_policy
+    home, authority, connection = owner
+    staged = [_stage(authority, connection, _params(home, model='alias-key', client_env={PROMPT: 'P'}))]
+    _rotate_key(home)
+    staged.append(_stage(authority, connection, _params(home, model='alias-key',
+                                                        client_env={PROMPT: 'P', 'PATH': '/client/bin'})))
+    ref = _commit(authority, staged[1])
+    assert _commit(authority, staged[0]) == ref
+    assert launch_key(authority, restore_policy(_policy(authority, ref))) == 'alias-key-1'

@@ -266,10 +266,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         from hermes_state_local import local_receipt
         saved = local_receipt(authority.db, sid)
         original = restore_policy(saved['policy'])
-        from hermes_state_local import same_create_request
-        from agent.session_client_env import retry_matches
-        if (not same_create_request(original.request_json, policy.request_json)
-                or not retry_matches(saved['policy'], params)):
+        from hermes_state_local import same_create_retry
+        if not same_create_retry(saved['policy'], policy.request_json, params):
             raise RuntimeStoreError('invalid_params', field='request_id',
                                     detail='a resumed request_id must carry the same frozen request')
         import hmac
@@ -293,8 +291,10 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     policy = replace(policy, skills_prompt=skills_prompt)
     if warning := project_plugins_warning(policy):
         logger.warning('session %s: %s', sid, warning)
+    client_request = {k: params[k] for k in ('client_env',) if k in params}
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets,
-                             owner_key=client_key is None)  # an overlapping exact retry takes the held one
+                             owner_key=client_key is None,  # an overlapping exact retry takes the held one
+                             client_request=client_request)
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
@@ -309,7 +309,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})
     # Owner memory, never stored: an overlapping create's commit judges this request's own map by the
     # winner's committed rules, as a sequential retry is.
-    staged.client_request = {k: params[k] for k in ('client_env',) if k in params}
+    staged.client_request = client_request
     return staged
 
 

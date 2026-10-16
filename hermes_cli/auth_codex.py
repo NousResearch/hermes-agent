@@ -718,6 +718,16 @@ def _codex_quota_probe_cache_key(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
 
+def _purge_stale_codex_quota_probe_cache(now: float, min_interval_seconds: float) -> None:
+    """Keep only entries that can still satisfy the probe throttle."""
+    stale_keys = [
+        cache_key for cache_key, (cached_at, _) in _codex_quota_probe_cache.items()
+        if now - cached_at >= min_interval_seconds
+    ]
+    for cache_key in stale_keys:
+        _codex_quota_probe_cache.pop(cache_key, None)
+
+
 def _codex_usage_probe_url(base_url: Optional[str]) -> str:
     """Resolve the Codex usage endpoint for a probe.
 
@@ -748,6 +758,7 @@ def _probe_codex_quota_restored(
     cache_key = _codex_quota_probe_cache_key(token)
     now = time.monotonic()
     with _codex_quota_probe_lock:
+        _purge_stale_codex_quota_probe_cache(now, min_interval_seconds)
         cached = _codex_quota_probe_cache.get(cache_key)
         if cached is not None and (now - cached[0]) < min_interval_seconds:
             return cached[1]
@@ -813,6 +824,7 @@ def _refresh_expired_codex_probe_token(
     cache_key = _codex_quota_probe_cache_key(token)
     now = time.monotonic()
     with _codex_quota_probe_lock:
+        _purge_stale_codex_quota_probe_cache(now, min_interval_seconds)
         cached = _codex_quota_probe_cache.get(cache_key)
         if cached is not None and (now - cached[0]) < min_interval_seconds:
             return None

@@ -134,6 +134,9 @@ def start_loop_liveness_watchdog(
                 logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
             if stop_event.is_set():
                 return
+            # Windows has no service supervisor to receive this exit code — arm our own
+            # replacement before dying so the restart contract still holds.
+            _spawn_windows_self_replacement(exit_code)
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
             _hard_exit(exit_code)
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
@@ -236,6 +239,62 @@ def resolve_shutdown_watchdog_delay(
     return _coerce_float(drain_timeout, 0.0) + grace
 
 
+def _spawn_windows_self_replacement(exit_code: int) -> bool:
+    """Best-effort Windows stand-in for the missing service supervisor.
+
+    The exit-code contract ("exiting with 75 so the service supervisor can restart it") only
+    holds under systemd/s6/launchd.  On Windows the installed Scheduled Task (and the
+    Startup-folder fallback) launch the gateway *detached* — the launcher's
+    ``sh.Run command_line, 0, False`` returns immediately, so the task instance ends while the
+    gateway keeps running — and nothing honours exit 75: a gateway taking this route stays dead
+    until something external notices.  Arm the post-update detached respawn watcher BEFORE
+    dying so the process honours its own restart contract: the watcher waits for this PID to
+    vanish and relaunches the recorded argv, windowless, with correct detach flags.
+
+    Deliberately conservative: Windows-only, and only for
+    ``GATEWAY_SERVICE_RESTART_EXIT_CODE`` — intentional stops and every other exit path keep
+    exact upstream semantics.  Never raises; on any failure the caller proceeds to the hard
+    exit unchanged.
+    """
+    if sys.platform != "win32":
+        return False
+    if exit_code != GATEWAY_SERVICE_RESTART_EXIT_CODE:
+        return False
+    try:
+        from gateway.status import _get_pid_path
+
+        try:
+            record = json.loads(_get_pid_path().read_text(encoding="utf-8"))
+        except Exception:
+            logger.debug(
+                "Self-replacement: pid file unreadable; skipping respawn arming", exc_info=True,
+            )
+            return False
+        old_pid = int(record.get("pid") or 0)
+        run_argv = [str(part) for part in (record.get("argv") or [])]
+        if old_pid != os.getpid() or not run_argv:
+            logger.debug(
+                "Self-replacement: pid file stale (pid=%r, want %r); skipping",
+                old_pid, os.getpid(),
+            )
+            return False
+        # Imported lazily at exit time: hermes_cli.gateway is heavyweight and shutdown_watchdog
+        # must stay cheap to import from bare-loop tests.
+        from hermes_cli.gateway import launch_detached_gateway_restart_by_cmdline
+
+        armed = launch_detached_gateway_restart_by_cmdline(old_pid, run_argv)
+        if armed:
+            logger.warning(
+                "No Windows service supervisor exists to honour exit code %d — armed a detached "
+                "self-replacement watcher; the gateway will respawn right after this exit.",
+                exit_code,
+            )
+        return bool(armed)
+    except Exception:
+        logger.debug("Self-replacement arming failed", exc_info=True)
+        return False
+
+
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
                          snapshot: Optional[dict[str, Any]]) -> None:
     """Best-effort faulthandler + metadata dump before hard-exit."""
@@ -292,6 +351,10 @@ def arm_shutdown_watchdog(
         for stream in (sys.stdout, sys.stderr):
             with contextlib.suppress(Exception):
                 stream.flush()
+        # Same Windows supervisor-gap handling as the loop-liveness path — a no-op unless this
+        # exit carries the restart-contract code. Must precede the PID-file release below: the
+        # arming reads the recorded pid/argv out of that file.
+        _spawn_windows_self_replacement(exit_code)
         # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
         # (never strand locks), then drain the log queue so logger.critical lands before os._exit.
         with contextlib.suppress(Exception):

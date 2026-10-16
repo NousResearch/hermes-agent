@@ -171,3 +171,136 @@ async def test_loop_tick_witness_arms_over_tcp_on_windows(short_home, caplog):
 async def test_loop_tick_witness_arms_on_posix(short_home):
     payload = await _run_heartbeat_until_payload(short_home)
     assert payload["loop_tick_socket"] is True
+
+
+# ---------------------------------------------------------------------------
+# Windows self-replacement arming (re-landed fork fix: exit-75 supervisor gap)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.platforms("windows")
+def test_self_replacement_arms_watcher_for_exit75(tmp_path, monkeypatch):
+    """Exit 75 on Windows arms the detached respawn watcher (nothing else honours it)."""
+    pid_file = tmp_path / "gateway.pid"
+    run_argv = ["C:\\venv\\Scripts\\python.exe", "-m", "hermes_cli.main", "gateway", "run"]
+    pid_file.write_text(
+        json.dumps({"pid": os.getpid(), "kind": "hermes-gateway", "argv": run_argv}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("gateway.status._get_pid_path", lambda: pid_file)
+
+    calls = []
+
+    def fake_arm(old_pid, argv):
+        calls.append((old_pid, list(argv)))
+        return True
+
+    monkeypatch.setattr(
+        "hermes_cli.gateway.launch_detached_gateway_restart_by_cmdline", fake_arm
+    )
+
+    assert (
+        shutdown_watchdog_module._spawn_windows_self_replacement(
+            shutdown_watchdog_module.GATEWAY_SERVICE_RESTART_EXIT_CODE
+        )
+        is True
+    )
+    assert calls == [(os.getpid(), run_argv)]
+
+
+@pytest.mark.platforms("windows")
+def test_self_replacement_skips_other_exit_codes(monkeypatch):
+    """Only the restart-contract code arms a replacement; stops stay stops."""
+
+    def fail_arm(old_pid, argv):
+        raise AssertionError("launcher must not be called for non-75 exits")
+
+    monkeypatch.setattr(
+        "hermes_cli.gateway.launch_detached_gateway_restart_by_cmdline", fail_arm
+    )
+    assert shutdown_watchdog_module._spawn_windows_self_replacement(1) is False
+    assert shutdown_watchdog_module._spawn_windows_self_replacement(0) is False
+
+
+@pytest.mark.platforms("windows")
+def test_self_replacement_skips_stale_pidfile(tmp_path, monkeypatch):
+    """A pid file owned by another process must NOT trigger a respawn."""
+    pid_file = tmp_path / "gateway.pid"
+    pid_file.write_text(
+        json.dumps({"pid": 999999, "kind": "hermes-gateway", "argv": ["python"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("gateway.status._get_pid_path", lambda: pid_file)
+
+    def fail_arm(old_pid, argv):
+        raise AssertionError("stale pidfile must not arm the watcher")
+
+    monkeypatch.setattr(
+        "hermes_cli.gateway.launch_detached_gateway_restart_by_cmdline", fail_arm
+    )
+    assert (
+        shutdown_watchdog_module._spawn_windows_self_replacement(
+            shutdown_watchdog_module.GATEWAY_SERVICE_RESTART_EXIT_CODE
+        )
+        is False
+    )
+
+
+@pytest.mark.platforms("posix")
+def test_self_replacement_skips_non_windows(monkeypatch):
+    """Off Windows the arming is a no-op — upstream supervisor semantics untouched."""
+
+    def fail_arm(old_pid, argv):
+        raise AssertionError("arming must be Windows-only")
+
+    monkeypatch.setattr(
+        "hermes_cli.gateway.launch_detached_gateway_restart_by_cmdline", fail_arm
+    )
+    assert (
+        shutdown_watchdog_module._spawn_windows_self_replacement(
+            shutdown_watchdog_module.GATEWAY_SERVICE_RESTART_EXIT_CODE
+        )
+        is False
+    )
+
+
+def test_self_replacement_armed_before_both_hard_exits():
+    """Source pin: both watchdog paths arm the replacement before their hard exit, and every
+    ``os._exit`` in the module stays behind ``_hard_exit`` (the single choke point)."""
+    import ast
+
+    source_path = Path(__file__).resolve().parents[2] / "gateway" / "shutdown_watchdog.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    def name_calls(node, name):
+        return sorted(
+            n.lineno
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
+        )
+
+    def attr_calls(node, attr):
+        return sorted(
+            n.lineno
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == attr
+        )
+
+    for fn_name in ("start_loop_liveness_watchdog", "arm_shutdown_watchdog"):
+        fn = next(
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == fn_name
+        )
+        armed = name_calls(fn, "_spawn_windows_self_replacement")
+        exits = name_calls(fn, "_hard_exit")
+        assert armed, f"{fn_name} must arm the Windows self-replacement"
+        assert exits, f"{fn_name} must hard-exit through _hard_exit"
+        assert armed[0] < exits[0], f"{fn_name}: arming must precede the hard exit"
+
+    hard_exit = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_hard_exit"
+    )
+    assert attr_calls(tree, "_exit") == attr_calls(hard_exit, "_exit"), (
+        "a raw os._exit outside _hard_exit would bypass the Windows self-replacement arming"
+    )

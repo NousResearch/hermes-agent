@@ -347,11 +347,11 @@ function shellQuote(file: string): string {
   return `'${file.replace(/'/g, `'\\''`)}'`
 }
 
-// These are collection routes beneath /api/profiles, not profile names. Keep this in step with
-// dashboard_auth.native_http._check_profile_scope: every other first path segment names the
-// profile whose native ticket must be minted.
+// Exact `/api/profiles/<suffix>` collection paths, mirroring the gateway's native-http scope check
+// (hermes_cli/dashboard_auth/native_http.py::_check_profile_scope). Matched on the whole suffix, so a
+// profile NAMED `projects` or `sessions` still gets its own ticket on `/api/profiles/projects/soul`.
 const PROFILE_COLLECTION_ROUTES = new Set([
-  'active', 'import', 'projects', 'sessions'
+  'active', 'import', 'projects/tree', 'sessions', 'sessions/pull-requests', 'sessions/sidebar'
 ])
 
 /** The batched sidebar names its owner in `recents_profile`. A named profile route carries its
@@ -367,7 +367,7 @@ function scopedProfileOf(url: URL): null | string {
   const suffix = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : ''
   const segment = suffix.split('/', 1)[0]
 
-  if (segment && !PROFILE_COLLECTION_ROUTES.has(segment)) {
+  if (segment && !PROFILE_COLLECTION_ROUTES.has(suffix)) {
     try {
       return decodeURIComponent(segment)
     } catch {

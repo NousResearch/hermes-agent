@@ -474,6 +474,20 @@ test('every named Profiles-screen route mints for its profile; collection routes
   expect(route('/api/profiles/sessions?profile=p2')).toBe(path.resolve('hermes-home', 'profiles', 'p2'))
 })
 
+// A profile may be NAMED like a collection route: only the exact collection paths stay on their
+// selector, so `/api/profiles/projects/soul` still mints for the `projects` profile.
+test('a profile named like a collection route still gets its own ticket', () => {
+  const endpoint = { profile_id: path.resolve('hermes-home'), instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
+  const route = (p: string) => routedGatewayEndpoint(endpoint, `http://127.0.0.1:1${p}`, endpoint.profile_id).profile_id
+
+  for (const name of ['projects', 'sessions', 'active', 'import']) {
+    expect(route(`/api/profiles/${name}/soul`)).toBe(path.resolve('hermes-home', 'profiles', name))
+  }
+
+  expect(route('/api/profiles/sessions/sidebar?recents_profile=p2')).toBe(path.resolve('hermes-home', 'profiles', 'p2'))
+  expect(route('/api/profiles/sessions/pull-requests?profile=p2')).toBe(path.resolve('hermes-home', 'profiles', 'p2'))
+})
+
 // The batched sidebar names its owner in `recents_profile`; a grant for the window's own profile
 // is refused there (profile_scope_mismatch) and the sidebar drops that profile's sessions.
 test('a sidebar read mints for the profile its recents_profile names', () => {

@@ -137,6 +137,20 @@ def tui_usage(stats: dict) -> dict:
     return usage
 
 
+def usage_frame(stats: dict) -> dict:
+    """The ``session.usage`` event payload: BOTH views of the same counters, in one frame.
+
+    ``SessionUsagePayload`` (``tui_gateway/contracts/events.py``) allows either view — the TUI
+    ``usage`` object (``server._start_usage_ticker``) or the session-cumulative counters at the top
+    level — and the two readers on the far end want different halves. ``hermes_cli.gateway_agent``
+    (the classic CLI / TUI mirror) reads only the loose counters; the Desktop status bar reads only
+    ``payload.usage``, so its context / cache-hit / tokens-per-second meters render their empty
+    placeholder for as long as the frame carries the counters alone. Publishing both serves either
+    viewer from one frame, and leaves the counters untouched for every existing consumer.
+    """
+    return {"usage": tui_usage(stats), **stats}
+
+
 def publish_usage(turn, agent, *, record: bool = False) -> None:
     """One ``session.usage`` frame on the viewer's stream; never breaks the turn. At turn end
     (``record``) the same dict rides the captured execution result, so the turn's
@@ -145,7 +159,7 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
         return
     with contextlib.suppress(Exception):
         stats = usage_stats(agent)
-        turn._publish_execution("session.usage", stats)
+        turn._publish_execution("session.usage", usage_frame(stats))
         if record:
             from gateway.session_results import execution_result
             captured = execution_result.get()

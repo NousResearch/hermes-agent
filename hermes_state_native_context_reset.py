@@ -49,8 +49,23 @@ def _require_claim(conn, claim):
         raise RuntimeStoreError("unknown_execution")
 
 
+def _same_native_owner(conn, owner_id, session_id):
+    # A shared group's user_id is the last speaker, not its authorization
+    # boundary. The authenticated native route and its peer remain authoritative.
+    columns = "SELECT source,session_key,chat_id,thread_id,chat_type,user_id FROM sessions WHERE id=?"
+    owner, row = (
+        conn.execute(columns, (sid,)).fetchone() for sid in (owner_id, session_id)
+    )
+    return (
+        owner is not None
+        and row is not None
+        and bool(row["session_key"])
+        and tuple(owner)[:5] == tuple(row)[:5]
+        and (row["chat_type"] == "group" or owner["user_id"] == row["user_id"])
+    )
+
+
 def _require_parent(conn, claim, entry):
-    from hermes_state_mutation_binding import same_history_owner
 
     if _canonical_chain(conn, claim.owner_id)[-1] != claim.parent_id:
         raise RuntimeStoreError("admission_conflict")
@@ -59,12 +74,12 @@ def _require_parent(conn, claim, entry):
     ).fetchone()
     origin = entry["origin"]
     if (
-        not same_history_owner(conn, claim.owner_id, claim.parent_id)
+        not _same_native_owner(conn, claim.owner_id, claim.parent_id)
         or parent["ended_at"] is not None
         or parent["source"] in {"local", "api_server", "bot_room", "cli", "tui", "gui"}
         or parent["source"] != entry["platform"]
         or parent["session_key"] != entry["session_key"]
-        or parent["user_id"] != origin["user_id"]
+        or (parent["chat_type"] != "group" and parent["user_id"] != origin["user_id"])
         or parent["chat_id"] != origin["chat_id"]
         or parent["thread_id"] != origin.get("thread_id")
     ):
@@ -168,8 +183,6 @@ def predates_context_reset(db, owner_id, sequence):
 
 
 def _projection_receipt(conn, chain, route):
-    from hermes_state_mutation_binding import same_history_owner
-
     for child in reversed(chain[1:]):
         saved = conn.execute(
             "SELECT value FROM state_meta WHERE key=?", (PREFIX + child,)
@@ -184,7 +197,7 @@ def _projection_receipt(conn, chain, route):
             or entry["session_key"] != route
             or value["parent_id"] != chain[index - 1]
             or value["owner_id"] != chain[0]
-            or not same_history_owner(conn, value["owner_id"], child)
+            or not _same_native_owner(conn, value["owner_id"], child)
         ):
             raise RuntimeStoreError("admission_conflict")
         return entry

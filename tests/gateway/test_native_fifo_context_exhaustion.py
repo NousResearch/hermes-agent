@@ -404,6 +404,68 @@ def _completion(native, route, target, identity):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("compressed", [False, True])
+async def test_shared_thread_reset_accepts_the_current_participants_peer_refresh(
+    native, monkeypatch, compressed
+):
+    from hermes_state_runtime import claim_session_input
+
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42,43")
+    native.source = native.adapter.build_source(
+        chat_id="42", chat_type="group", thread_id="thread", user_id="42"
+    )
+    store, authority = native.runner.session_store, native.authority
+    original = store.get_or_create_session(native.source)
+    native.source = native.adapter.build_source(
+        chat_id="42", chat_type="group", thread_id="thread", user_id="43"
+    )
+    _, receipts = await _admit(native, "first", "second")
+    ref = receipts[0].ref
+    assert ref.session_id == original.session_id
+    row = claim_session_input(
+        authority.db, epoch=authority.epoch, session_id=ref.session_id
+    )
+    if compressed:
+        child = original.session_id + "-compressed"
+        authority.db.publish_compression_child(
+            parent_session_id=original.session_id,
+            child_session_id=child,
+            source="discord",
+            messages=[{"role": "user", "content": "summary"}],
+            require_compression_lease=False,
+        )
+        original = store.advance_compression_session(
+            original.session_key, original.session_id, child
+        )
+    # The real agent runner refreshes this peer from the current speaker. The
+    # cached routing entry still carries the source which created the thread.
+    store._record_gateway_session_peer(
+        original.session_id, original.session_key, native.source
+    )
+    assert original.origin is not None
+    assert original.origin.user_id == "42"
+    assert authority.db.get_session(original.session_id)["user_id"] == "43"
+    claim = SimpleNamespace(
+        ref=ref, row=row, route=original.session_key, entry=original
+    )
+    fresh, _ = await _reset_claim(native, claim)
+    assert fresh.session_id != original.session_id
+    assert authority.logical_owner(fresh.session_id) == ref.session_id
+    assert authority.db.get_session(fresh.session_id)["user_id"] == "43"
+    from gateway.session_native_context_reset import recovery_entry
+
+    recovered = recovery_entry(
+        store, ref.session_id, fresh.session_id, original.session_key
+    )
+    assert recovered is not None
+    assert recovered.session_id == fresh.session_id
+    assert [
+        r["status"]
+        for r in list_session_admissions(authority.db, session_id=ref.session_id)
+    ] == ["started", "queued"]
+
+
+@pytest.mark.asyncio
 async def test_reset_retires_old_completions_but_keeps_route_wakes_and_humans(
     native, monkeypatch
 ):

@@ -42,6 +42,12 @@ def current_execution():
     return _execution.get()
 
 
+def bind_execution(authority, session_id, job_id, execution_id):
+    """Bind this context's cron admission ``(authority, session_id, job_id, execution_id)``, the
+    layout ``current_execution()`` readers index; returns the ``ContextVar`` reset token."""
+    return _execution.set((authority, session_id, job_id, execution_id))
+
+
 def _actor(authority, actor):
     if actor is None:
         return Principal(CRON_PRINCIPAL_ID, authority.profile_id,
@@ -234,7 +240,7 @@ async def execute(authority, ref, row, policy):
     execution_id = scheduler_execution_id(data['cron_job']['id'], row['request_id'])
     # The frozen snapshot predates the fire's ledger row; the run's progress stamps need its id.
     job = dict(data['cron_job'], execution_id=execution_id)
-    token = _execution.set((authority, ref.session_id, job['id'], execution_id))
+    token = bind_execution(authority, ref.session_id, job['id'], execution_id)
     try:
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
         with _profile_runtime_scope(db_path.parent):

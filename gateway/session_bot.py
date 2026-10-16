@@ -7,6 +7,7 @@ import asyncio
 from functools import partial
 import logging
 from pathlib import Path
+import time
 
 from agent.turn_author import parse_turn_author
 
@@ -16,7 +17,7 @@ from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_live_delivery import _delivery_id, _read
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
-    scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin)
+    scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
 
 
 _CANONICAL_RECEIPT_STATUSES = frozenset({
@@ -71,20 +72,98 @@ def _record_shape_error(path, record):
     return 'unknown receipt schema'
 
 
-def _scan_records(root):
-    """Bulk mailbox scan: isolate unreadable/malformed records; exact-id reads still fail closed."""
+def _is_pre_admission_pin(path, record):
+    """The ``ambiguous`` pin ``_admit`` writes before it admits: no admission id, never refused."""
+    return (record.get('status') == 'ambiguous' and 'admission_id' not in record and 'refused' not in record
+            and _canonical_record_error(path, record, ('profile_home', 'session_id', 'principal_id')) is None)
+
+
+def _warn_malformed(path, problem):
+    logging.getLogger(__name__).warning("Skipping malformed Bot mailbox receipt %s (%s)", path, problem)
+
+
+def _scan_records(root, pins=None):
+    """Bulk mailbox scan: isolate unreadable/malformed records; exact-id reads still fail closed.
+    An owner scan passes ``pins``: pre-admission pins land there with their mtime, unwarned, since
+    only the owner can tell whether their admission committed (``_scan_owner_receipts``)."""
     for path in root.glob('*.json'):
         try:
             record = _read(path)
             problem = None if record is None else _record_shape_error(path, record)
+            if problem is not None and pins is not None and _is_pre_admission_pin(path, record):
+                pins.append((path, record, path.stat().st_mtime))
+                continue
         except (OSError, ValueError) as exc:
             record, problem = None, str(exc)
         if problem is not None:
-            logging.getLogger(__name__).warning(
-                "Skipping malformed Bot mailbox receipt %s (%s)", path, problem)
+            _warn_malformed(path, problem)
             continue
         if record is not None:
             yield path, record
+
+
+# An ``_admit`` pins, commits and withdraws under the mailbox lock in well under a second: a
+# pre-admission pin older than this is no in-flight admission, and the owner scan may withdraw it.
+_PIN_GRACE_SECONDS = 300
+
+
+async def _scan_owner_receipts(authority, home):
+    """The owner's bulk scan, under the mailbox lock ``_admit`` holds. A pre-admission pin past the
+    grace window whose ``bot:<key>`` never committed (refused by an older build, a death before the
+    commit, a transient refusal on the legacy migration path) is withdrawn as ``_admit`` withdraws
+    one: the scan stops warning and a same-id resend admits once. A pin laid over a legacy ticket
+    (``owner``) is that never-run message's only copy: it is requeued instead, for ``_migrate`` to
+    admit once under the same id. A pin whose admission committed stays the explicit unknown record
+    and keeps its warning.
+
+    Also returns the FIFO barrier: the lowest ``_legacy_order`` of a legacy pin of this home that is
+    still unresolved (inside the grace window, or its requeue lost to a concurrent change). No
+    legacy ticket ordered after it may be admitted by this pass. It holds for one scan only: past
+    the grace window the pin is requeued and released, and a failed requeue is re-read by the next
+    scan (gone, admitted or a ticket again), so the barrier never outlives the pin."""
+    pins, barrier = [], None
+    root, records = await scan_receipts(home, pins)
+    for path, record, mtime in pins:
+        key, age, legacy = record['delivery_id'], time.time() - mtime, 'owner' in record
+        if (record['profile_home'] != str(home)
+                or _pin_committed(authority, record, 'bot:' + key)):
+            _warn_malformed(path, _record_shape_error(path, record))
+            continue
+        cleared = False
+        if age >= _PIN_GRACE_SECONDS and legacy:
+            ticket = await requeue_pin(home, key)
+            cleared = ticket is not None and _record_shape_error(path, ticket) is None
+            if cleared:
+                records.append((path, ticket))
+        elif age >= _PIN_GRACE_SECONDS:
+            cleared = await withdraw_pin(home, key)
+        if not cleared:
+            if legacy:
+                order = _legacy_order(path, record)
+                barrier = order if barrier is None else min(barrier, order)
+            _warn_malformed(path, _record_shape_error(path, record))
+            continue
+        logging.getLogger(__name__).info('%s Bot delivery %s pre-admission pin (age %ds): nothing was admitted',
+                                         'Requeued' if legacy else 'Withdrew', key, age)
+    return root, records, barrier
+
+
+def _pin_committed(authority, record, request_id):
+    """Whether the pin's admission may have committed: a live row, or a deleted target (its
+    admissions moved to retired receipts keyed by the route principal the pin never recorded)."""
+    if _admission_at(authority, record['session_id'], request_id) is not None:
+        return True
+    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    with authority.db._read_ctx() as conn:
+        return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                            (RETIRED_PREFIX + record['session_id'],)).fetchone() is not None
+
+
+def _legacy_order(path, record):
+    """``_migrate``'s FIFO key of a legacy ticket, or of the pin laid over one (it keeps the ticket's
+    fields). A pin without an integer order holds every legacy ticket until it resolves."""
+    order = record.get('sequence', record.get('created_at'))
+    return (order, path.name) if isinstance(order, int) and not isinstance(order, bool) else (float('-inf'), '')
 
 
 def _home(authority, actor, profile):
@@ -410,14 +489,17 @@ def relay_operation(connection, operation, params):
 
 
 async def _migrate(authority, actor, home, root):
-    root, records = await scan_receipts(home)
+    # FIFO: a legacy ticket queued after an unresolved legacy pin waits for that pin's requeue. An
+    # owner-state refusal below raises out of the pass, so nothing after the refused ticket runs.
+    root, records, barrier = await _scan_owner_receipts(authority, home)
     legacy = [(path, record) for path, record in records
               if record and 'owner' in record and not record.get('admission_id')
-              and record['status'] in {'queued', 'claimed'}]
+              and record['status'] in {'queued', 'claimed'}
+              and (barrier is None or _legacy_order(path, record) < barrier)]
     if not legacy:
         return
     ref, live, entry = await _target(authority, actor)
-    for path, record in sorted(legacy, key=lambda item: (item[1].get('sequence', item[1]['created_at']), item[0].name)):
+    for path, record in sorted(legacy, key=lambda item: _legacy_order(*item)):
         owner = record['owner']
         if owner['profile_home'] != str(home):
             continue
@@ -440,7 +522,7 @@ async def recover_bot_deliveries(authority):
     """Rebuild derivative replies and queued legacy admissions at owner startup."""
     home = Path(authority.db.db_path).parent.resolve()
     async with mailbox_lock(authority):
-        root, records = await scan_receipts(home)
+        root, records, _ = await _scan_owner_receipts(authority, home)
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue

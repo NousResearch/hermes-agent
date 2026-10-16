@@ -1,7 +1,7 @@
 name: plan-mode
 title: Plan mode
 repo: https://github.com/100yenadmin/hermes-plan-mode
-sha: 7e77318d6d69d561a50deed07e4ae72d6498be0f
+sha: 9cd020105ac76409af164262195f8de77eace8a0
 description: 'Claude Code-style plan mode on every interactive Hermes surface: /plan or /planmode on blocks mutating Hermes tools dispatched
   through pre_tool_call (writes outside .hermes/plans, terminal, code execution, delegation, MCP) while the agent
   explores, asks clarifying questions and writes a plan. The agent submits the plan with plan_mode(submit) and you
@@ -10,27 +10,31 @@ description: 'Claude Code-style plan mode on every interactive Hermes surface: /
   When yolo or approvals.mode: off would auto-approve, it asks one clarify question instead (Approve plan rev N /
   Keep planning), and only that answer approves. By default plans are compact and decision-complete and the agent
   does not commit unless asked (plan_style, allow_commits and plan_skill settings; plan_style: core keeps the
-  zero-context /plan craft).
+  zero-context /plan craft). The default lean profile keeps compact planning short: a brief planning note, at
+  most three targeted questions, and no todo bookkeeping for short plans (plan_profile: classic keeps 0.3.5); on
+  TUI, Desktop and hermes serve the agent writes the plan once, in its reply, and the plugin saves it.
   Classic CLI enforced on every supported Hermes; gateway, TUI and Desktop from Hermes v2026.9.24 (0.21.5), and
   refused on older builds. Disclosure — plan-mode does not enforce Codex app-server exec/applyPatch or TUI
-  /background and btw side agents. It reads seven internal Hermes seams for session identity, workspace, profile and
+  /background and btw side agents. It reads eight groups of internal Hermes seams for session identity, workspace, profile and
   skills.inline_shell, each guarded with a documented fallback. It creates .hermes/plans under the session working directory
   and keeps per-session state in plugin state. It adds a turn note while planning or executing, a ≤200-char
   system-prompt hint, and a one-line footer to short replies on chat platforms. When you pick "Always" on a plan
   approval, Hermes core writes a plugin_rule:plan-mode entry to command_allowlist in config.yaml. With
-  allow_gateway_injection: true it queues one message to start work after a typed /planmode approve. No network
+  allow_gateway_injection: true it queues one message to start work after a typed /planmode approve. On TUI, Desktop
+  and hermes serve sessions (lean profile, plan_once) it reads the visible reply text from post_api_request while
+  planning and saves its <proposed_plan> block as the plan file. No network
   calls, no subprocesses, no self-updater.'
 maintainer: 100yenadmin
 tier: community
 category: tools
-requires_hermes: '>=0.21.2'
+requires_hermes: '>=0.21.3'
 docs_url: https://github.com/100yenadmin/hermes-plan-mode#readme
-version: "0.3.5"
-image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/banner.png
+version: "0.4.4"
+image: https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9cd020105ac76409af164262195f8de77eace8a0/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-approval.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-deny-clarify.png
-  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/7e77318d6d69d561a50deed07e4ae72d6498be0f/docs/media/cli-approve-implement.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9cd020105ac76409af164262195f8de77eace8a0/docs/media/cli-approval.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9cd020105ac76409af164262195f8de77eace8a0/docs/media/cli-deny-clarify.png
+  - https://raw.githubusercontent.com/100yenadmin/hermes-plan-mode/9cd020105ac76409af164262195f8de77eace8a0/docs/media/cli-approve-implement.png
 platforms: []
 capabilities:
   provides_tools:
@@ -44,5 +48,8 @@ capabilities:
     - post_approval_response
     - on_session_finalize
     - on_session_reset
+    - post_llm_call
+    - transform_tool_result
+    - post_api_request
   provides_middleware: []
   requires_env: []

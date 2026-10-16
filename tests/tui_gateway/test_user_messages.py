@@ -15,8 +15,7 @@ from tui_gateway.user_messages import agent_init_failed_message
 
 @pytest.mark.parametrize("exc_text", [
     "Timed out waiting for auth store lock (/home/u/.hermes/profiles/coder/auth.lock); "
-    "another hermes process (pid 4242) probably still holds it "
-    "(e.g. a dashboard or a slow credential refresh)",
+    "another hermes process (pid 4242) probably still holds it",
     "Timed out waiting for auth store lock (/home/u/.hermes/profiles/coder/auth.lock)",
     "Timed out waiting for shared Nous auth lock (/home/u/.hermes/shared/nous.lock)",
 ], ids=["auth-store-with-holder", "auth-store-no-holder", "shared-nous-store"])

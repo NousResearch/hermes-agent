@@ -783,7 +783,7 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
             "reasoning_effort": "",
-            "language": "",
+            "language": "", "system_prompt": "",
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),

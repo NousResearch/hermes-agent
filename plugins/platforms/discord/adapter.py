@@ -3800,7 +3800,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 self._reset_voice_timeout(guild_id)
                 self._bind_voice_text_channel(guild_id, text_channel_id, source)
                 return True
-            vc = await channel.connect()
+            from .voice_connection import DiscordVoiceClient
+
+            vc = await channel.connect(cls=DiscordVoiceClient)
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
             self._bind_voice_text_channel(guild_id, text_channel_id, source)

@@ -20,7 +20,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import gateway_service_owner, setup_platforms
+from hermes_cli import gateway_service_owner, gateway_service_pids, setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -206,7 +206,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
-    return pids
+    return gateway_service_pids.with_gateway_descendants(pids)
 
 
 def _get_parent_pid(pid: int) -> int | None:

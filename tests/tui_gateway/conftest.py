@@ -8,3 +8,17 @@ Importing it once here, before any window opens, keeps boot out of the mocked im
 """
 
 import hermes_bootstrap
+import pytest
+
+
+@pytest.fixture
+def route_profiles(monkeypatch):
+    """``route(server, home_for)``: resolve RPC ``profile`` names through ``home_for(name) -> home | None`` at
+    the seam production reads (``server._resolve_profile_home``; ``_profile_home`` wraps it), pairing each
+    home with the generation a real resolution captures for it."""
+    def route(server, home_for):
+        def resolve(profile):
+            home = home_for(profile)
+            return home, None if home is None else server._capture_profile_incarnation(home)
+        monkeypatch.setattr(server, "_resolve_profile_home", resolve)
+    return route

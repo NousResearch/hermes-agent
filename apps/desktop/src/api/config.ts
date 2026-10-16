@@ -128,12 +128,44 @@ export function getLogs(params: {
   })
 }
 
-export function getHermesConfig(profile?: string): Promise<HermesConfig> {
-  return hermesApi<HermesConfig>({
+// The config.yaml revision a GET answered with, beside the record like its
+// read origin so the config object itself stays exactly what the backend holds.
+const configRevisions = new WeakMap<object, number>()
+
+/** The revision of the config.yaml a `getHermesConfig` answer was read from:
+ *  its mtime in microseconds, ordered across every writer of that profile.
+ *  Undefined from a backend that predates revisions. */
+export function peekConfigRevision(config: object | null | undefined): number | undefined {
+  return config ? configRevisions.get(config) : undefined
+}
+
+/** `{ config, revision }` asked for with `with_revision`. A backend that
+ *  predates it ignores the flag and answers the bare config, which can hold
+ *  arbitrary keys but never exactly this pair. */
+function isRevisionedConfig(body: unknown): body is { config: HermesConfig; revision: number } {
+  if (!body || typeof body !== 'object' || Object.keys(body).length !== 2) {
+    return false
+  }
+
+  const { config, revision } = body as Record<string, unknown>
+
+  return Number.isSafeInteger(revision) && !!config && typeof config === 'object' && !Array.isArray(config)
+}
+
+export async function getHermesConfig(profile?: string): Promise<HermesConfig> {
+  const body = await hermesApi<unknown>({
     ...profileScoped(profile),
-    path: '/api/config',
+    path: '/api/config?with_revision=true',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
+
+  if (!isRevisionedConfig(body)) {
+    return body as HermesConfig
+  }
+
+  configRevisions.set(body.config, body.revision)
+
+  return body.config
 }
 
 /** GET a config record on the capability scope and bind the serving
@@ -176,12 +208,19 @@ export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSc
   })
 }
 
+/** `revision`: the config.yaml revision this save produced (see
+ *  `peekConfigRevision`); absent from a backend that predates revisions. */
+export interface ConfigSaveResult {
+  ok: boolean
+  revision?: number
+}
+
 export function saveHermesConfig(
   config: HermesConfigRecord,
   profile?: ProfileScope,
   { preserveLanguage = false }: { preserveLanguage?: boolean } = {}
-): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
+): Promise<ConfigSaveResult> {
+  return window.hermesDesktop.api<ConfigSaveResult>({
     ...resolveConfigWriteScope(config, profile),
     path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
     method: 'PUT',

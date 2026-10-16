@@ -19,10 +19,10 @@
 import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { setSessionOwnerResolver } from '@/api/client'
+import { ambientOwnerConnectionId, setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
-import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
   $layoutTree,
   focusedSessionTabAnchor,
@@ -37,6 +37,7 @@ import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messa
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
+import { appearanceOwnerKey, forgetProfileAppearance } from '@/themes/profile-appearance'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
@@ -93,6 +94,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
+import { orderTilesByTree } from './session-tile-order'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
@@ -2247,48 +2249,6 @@ export function sessionTileDelegate(): SessionTileDelegate | null {
   return delegate
 }
 
-/** Reorder tiles to match layout-tree encounter order (stored ids in the order
- *  their `session-tile:` panes are walked). Restore replays the array through
- *  sequential adoption (each center tile APPENDS after the ones before it), so
- *  array order IS strip order — no `before` stamping needed; a stale `before`
- *  naming an absent pane falls back to append anyway (see insertAtGroup). Tiles
- *  not yet adopted sort after placed ones, stably. Returns `null` when nothing
- *  moves so callers can skip a needless persist. */
-export function orderTilesByTree<T extends { storedSessionId: string }>(
-  tree: LayoutNode | null,
-  tiles: readonly T[]
-): null | T[] {
-  if (!tree || tiles.length < 2) {
-    return null
-  }
-
-  const order: string[] = []
-
-  const walk = (node: LayoutNode) => {
-    if (node.type === 'group') {
-      for (const id of node.panes) {
-        if (id.startsWith(TILE_PANE_PREFIX)) {
-          order.push(id.slice(TILE_PANE_PREFIX.length))
-        }
-      }
-
-      return
-    }
-
-    node.children.forEach(walk)
-  }
-
-  walk(tree)
-
-  const rank = new Map(order.map((id, i) => [id, i]))
-
-  const next = [...tiles].sort(
-    (a, b) => (rank.get(a.storedSessionId) ?? Infinity) - (rank.get(b.storedSessionId) ?? Infinity)
-  )
-
-  return next.some((t, i) => t !== tiles[i]) ? next : null
-}
-
 function syncTileStripOrder() {
   const next = orderTilesByTree($layoutTree.get(), $sessionTiles.get())
 
@@ -2750,6 +2710,8 @@ export function dropTilesForProfile(
   }
 
   const name = normalizeProfileKey(profile)
+  const appearanceConnection = route?.connectionId?.trim() || ambientOwnerConnectionId() || ''
+  forgetProfileAppearance(appearanceOwnerKey(appearanceConnection, name))
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
@@ -2852,6 +2814,9 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   if (!from || !to || from === to) {
     return
   }
+
+  forgetProfileAppearance(appearanceOwnerKey(LOCAL_CONNECTION_ID, from))
+  forgetProfileAppearance(appearanceOwnerKey(LOCAL_CONNECTION_ID, to))
 
   const isLocal = (owner: SessionProfileRoute | undefined) =>
     Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'

@@ -50,6 +50,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { profileShortLabel } from '@/lib/profile-short-label'
 import {
@@ -117,6 +118,16 @@ const RAIL_GAP = 4 // px — matches gap-1 between squares.
 // drag targets, endless horizontal scroll), so the rail collapses to a compact
 // menu. Drag-reorder and long-press-recolor live only on the squares path.
 const PROFILE_DROPDOWN_THRESHOLD = 13
+
+// The Webapp always takes the dropdown: squares are a native-window gesture
+// surface (drag, hold-to-recolor), and in a browser tab they read as chrome.
+const ALWAYS_CONDENSED = isBrowserHostedDesktop()
+
+// The threshold counts the whole fleet: fourteen squares are fourteen squares
+// wherever they live.
+function railCondensed(profileCount: number, restGroups: readonly FleetGroup[]): boolean {
+  return ALWAYS_CONDENSED || profileCount + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+}
 
 // #91710: a profile that finished (or blocked, or is still working) while
 // another was selected carries an indicator on its rail square and dropdown
@@ -278,9 +289,7 @@ export function ProfileRail() {
 
   // Too many profiles for the square strip → collapse to the select. Declared
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
-  // The threshold counts the whole fleet: fourteen squares are fourteen
-  // squares wherever they live.
-  const condensed = profiles.length + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+  const condensed = railCondensed(profiles.length, restGroups)
 
   const measureScroll = useCallback(() => {
     const el = scrollRef.current

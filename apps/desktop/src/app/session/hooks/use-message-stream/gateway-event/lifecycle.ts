@@ -16,6 +16,7 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { clearAllPrompts, clearApprovalRequest } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
@@ -26,6 +27,22 @@ import { $sessionTiles, dropSessionState, sessionTileDelegate, unbindTileRuntime
 import { ingestBackendSkin } from '@/themes/backend-sync'
 
 import type { GatewayEventContext } from './types'
+
+/** A runtime skin switch (Hermes activating an authored skin, or `/skin` on
+ *  another surface). Only the active source+profile's change repaints. */
+function applyRuntimeSkinChange({ event, payload, fromActiveSource }: GatewayEventContext): void {
+  // One process may serve several profiles and broadcasts to every socket,
+  // so the socket's stamp alone can't tell whose config moved; the backend
+  // tags it. An untagged event (older backend) keeps the source check alone.
+  const owner = (event as GatewayEvent<'skin.changed'>).payload?.profile
+
+  if (
+    fromActiveSource() &&
+    (!owner || normalizeProfileKey(owner) === normalizeProfileKey($activeGatewayProfile.get()))
+  ) {
+    ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
+  }
+}
 
 function onGatewayReady(ready: GatewayEvent<'gateway.ready'>['payload'], activeSource: boolean): void {
   // Seed the active skin into the desktop theme registry without applying,
@@ -65,11 +82,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'skin.changed') {
-    // A runtime skin switch (Hermes activating an authored skin, or `/skin`
-    // on another surface). Only the active source+profile's change repaints.
-    if (fromActiveSource()) {
-      ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
-    }
+    applyRuntimeSkinChange(ctx)
 
     return true
   }

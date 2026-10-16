@@ -144,7 +144,7 @@ class TestInodeReplacement:
 
         calls = {"n": 0}
 
-        def _fail_open(path):
+        def _fail_open(path, expected_profile_incarnation):
             calls["n"] += 1
             raise OSError("disk temporarily gone")
 
@@ -160,7 +160,7 @@ class TestInodeReplacement:
         monkeypatch.setattr(
             registry,
             "_open_session_db",
-            lambda path: _make_session_db(path),
+            lambda path, expected_profile_incarnation: _make_session_db(path),
         )
         fresh = registry.acquire(db_path)
         assert fresh is not old
@@ -209,7 +209,7 @@ class TestTeardownOutsideLock:
             def close(self):
                 self.closed = True
 
-        def _blocked_open(path):
+        def _blocked_open(path, expected_profile_incarnation):
             nonlocal open_calls
             with count_lock:
                 open_calls += 1
@@ -258,7 +258,7 @@ class TestTeardownOutsideLock:
             def close(self):
                 pass
 
-        def _fail_then_open(path):
+        def _fail_then_open(path, expected_profile_incarnation):
             nonlocal open_calls
             open_calls += 1
             if open_calls == 1:
@@ -441,6 +441,40 @@ class TestLegacyCloseSemantics:
         assert stats["retired_generations"] == 0
 
 
+class TestProfileIncarnation:
+    def test_existing_generation_rejects_stale_profile_incarnation(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Every acquire validates its caller, even when the DB is shared."""
+        from hermes_cli import profiles
+        from hermes_cli.profile_incarnation import read_profile_incarnation
+
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        profile_home = profiles.create_profile(
+            "worker",
+            no_alias=True,
+            no_skills=True,
+        )
+        incarnation = read_profile_incarnation(profile_home)
+        assert incarnation is not None
+
+        db = registry.acquire(
+            profile_home / "state.db",
+            expected_profile_incarnation=incarnation,
+        )
+        with pytest.raises(FileNotFoundError, match="incarnation"):
+            registry.acquire(
+                profile_home / "state.db",
+                expected_profile_incarnation="0" * 32,
+            )
+
+        assert registry.stats()["total_refcounts"] == 1
+        assert registry.release(db) is True
+
+
 class TestAcquireSingleFlight:
     def test_concurrent_first_acquires_share_one_generation(self, tmp_path, monkeypatch):
         """Two threads acquiring a cold path concurrently must end up
@@ -450,8 +484,8 @@ class TestAcquireSingleFlight:
         gate = threading.Event()
         opened = []
 
-        def _gated_open(path):
-            db = real_open(path)
+        def _gated_open(path, expected_profile_incarnation):
+            db = real_open(path, expected_profile_incarnation)
             opened.append(db)
             # Hold the first open so a second thread can race in.
             if len(opened) == 1:

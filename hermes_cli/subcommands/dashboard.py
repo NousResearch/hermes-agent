@@ -1,9 +1,10 @@
-"""``hermes dashboard`` / ``hermes serve`` subcommand parsers.
+"""``hermes dashboard`` / ``hermes webapp`` / ``hermes serve`` parsers.
 
 ``dashboard`` is the browser web UI; ``serve`` is the same gateway, headless —
 what the desktop app and remote backends run. ``serve`` also skips the web UI
-build (``headless_backend=True``): pure JSON-RPC/WS clients never load the SPA.
-Both share one handler (``cmd_dashboard`` → ``start_server``).
+build: pure JSON-RPC/WS clients never load the SPA. Each parser fixes its launch
+surface as ``ui_surface`` (``serve`` | ``dashboard`` | ``webapp``), and all share
+one server (``cmd_dashboard`` → ``start_server``).
 """
 
 from __future__ import annotations
@@ -12,8 +13,11 @@ import argparse
 from typing import Callable
 
 
-def _add_server_runtime_args(parser) -> None:
-    """Runtime flags shared by ``dashboard`` and ``serve`` (same ``web_server.start_server``)."""
+def _add_server_runtime_args(
+    parser, *, build_hint: str = "cd web && npm run build",
+    lifecycle_target: str = "all running Hermes web server processes",
+) -> None:
+    """Runtime flags shared by ``dashboard``, ``webapp``, and ``serve``."""
     parser.add_argument(
         "--port", type=int, default=9119, help="Port (default 9119, 0 for auto-assign by OS)")
     parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
@@ -27,7 +31,7 @@ def _add_server_runtime_args(parser) -> None:
         "--skip-build", action="store_true",
         help="Skip the web UI build step and serve the existing dist directly. "
             "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
-            "where npm may not be available. Pre-build with: cd web && npm run build")
+            f"where npm may not be available. Pre-build with: {build_hint}")
     parser.add_argument(
         "--isolated", action="store_true",
         help="When launched from a named profile, run a dedicated server scoped "
@@ -40,9 +44,9 @@ def _add_server_runtime_args(parser) -> None:
     # manager / PID file: they scan the process table for `hermes dashboard|serve`
     # cmdlines and SIGTERM them — the same path `hermes update` uses.
     parser.add_argument(
-        "--stop", action="store_true", help="Stop all running Hermes web server processes and exit")
+        "--stop", action="store_true", help=f"Stop {lifecycle_target} and exit")
     parser.add_argument(
-        "--status", action="store_true", help="List running Hermes web server processes and exit")
+        "--status", action="store_true", help=f"List {lifecycle_target} and exit")
 
 
 def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
@@ -56,7 +60,7 @@ def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
     parser.add_argument(
         "--ssh-owner-nonce", dest="ssh_owner_nonce", metavar="NONCE", default=None,
         help="Identify a Desktop-owned SSH backend process")
-    parser.set_defaults(func=cmd_dashboard, no_open=True, headless_backend=True, command="serve")
+    parser.set_defaults(func=cmd_dashboard, no_open=True, ui_surface="serve", command="serve")
 
 
 def build_serve_parser(
@@ -74,8 +78,10 @@ def build_serve_parser(
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable) -> None:
-    """Attach ``dashboard`` (browser UI) and ``serve`` (headless backend the desktop spawns)."""
+    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable,
+    cmd_webapp: Callable,
+) -> None:
+    """Attach the ``dashboard``, ``webapp``, and headless ``serve`` commands."""
     dashboard_parser = subparsers.add_parser(
         "dashboard", help="Start the web UI dashboard",
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
@@ -87,7 +93,7 @@ def build_dashboard_parser(
     # `--tui` was removed (embedded chat always on). Accept + ignore so an old app with a
     # new CLI doesn't die on "unrecognized arguments". Drop once the app floor is > 0.16.0.
     dashboard_parser.add_argument("--tui", action="store_true", help=argparse.SUPPRESS)
-    dashboard_parser.set_defaults(func=cmd_dashboard)
+    dashboard_parser.set_defaults(func=cmd_dashboard, ui_surface="dashboard")
 
     # `serve`: same gateway as `dashboard`, never opens a browser. Exists so the desktop
     # app / remote backends launch a backend WITHOUT invoking `dashboard` — independent
@@ -123,3 +129,37 @@ def build_dashboard_parser(
             "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
             "testing against a staging/preview portal.")
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    # =========================================================================
+    # webapp command — the Desktop workspace rendered in a normal browser
+    #
+    # The command prepares the renderer and then hands off to the same hardened
+    # server process as `dashboard`; it does not create a second backend stack.
+    # =========================================================================
+    webapp_parser = subparsers.add_parser(
+        "webapp",
+        help="Start the Hermes Desktop workspace in a browser",
+        description=(
+            "Launch the current Hermes Desktop workspace in a normal browser, "
+            "backed by the authenticated Hermes web server."
+        ),
+    )
+    _add_server_runtime_args(
+        webapp_parser,
+        build_hint="cd apps/desktop && npm run build:webapp",
+        lifecycle_target="running Hermes Webapp processes",
+    )
+    webapp_parser.add_argument(
+        "--no-open", action="store_true", help="Don't open browser automatically"
+    )
+    webapp_parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Build the browser-hosted Desktop renderer but do not start the server",
+    )
+    webapp_parser.add_argument(
+        "--force-build",
+        action="store_true",
+        help="Rebuild the browser-hosted Desktop renderer even when its build receipt is current",
+    )
+    webapp_parser.set_defaults(func=cmd_webapp, ui_surface="webapp")

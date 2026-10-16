@@ -16,7 +16,7 @@ from tui_gateway import server
 
 
 @pytest.fixture
-def homes(tmp_path, monkeypatch):
+def homes(tmp_path, monkeypatch, route_profiles):
     launch, worker = tmp_path / "launch", tmp_path / "profiles" / "worker"
     for home, model in ((launch, "launch-model"), (worker, "worker-model")):
         home.mkdir(parents=True)
@@ -30,7 +30,7 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_cfg_cache", None)
     monkeypatch.setattr(server, "_cfg_sig", None)
     monkeypatch.setattr(server, "_cfg_path", None)
-    monkeypatch.setattr(server, "_profile_home", lambda name: worker if name == "worker" else None)
+    route_profiles(server, lambda name: worker if name == "worker" else None)
     return launch, worker
 
 

@@ -131,7 +131,19 @@ export async function uploadComposerAttachment(
 
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
-  const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
+
+  // Edit-message drops bypass the main composer store, so also resolve their
+  // source descriptor here. Absence means an older browser backend/native file
+  // and retains the existing byte-upload rules.
+  const stagedUpload = attachment.kind === 'file'
+    ? attachment.stagedUpload ?? window.hermesDesktop?.getStagedFileForAttach?.(path)
+    : undefined
+
+  if (stagedUpload && stagedUpload.path !== path) {
+    throw new Error(`Could not attach ${label}: staged source changed; select the file again`)
+  }
+
+  const uploadBytes = !stagedUpload && (remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend))
 
   if (attachment.kind === 'image' && serverOwnsComposerQueue(storedSessionId ?? opts.sessionId)) {
     // Pin HTTP to the same owner before the native byte read yields. Images
@@ -194,9 +206,12 @@ export async function uploadComposerAttachment(
 
     const result = await requestGateway<FileAttachResponse>('file.attach', {
       name: label,
-      path,
       session_id: liveSessionId,
-      ...(fileDataUrl ? { data_url: fileDataUrl } : {})
+      // Omit path as well as bytes for the provenance-aware branch: an older
+      // RPC implementation must reject it rather than ignore source ownership.
+      ...(stagedUpload
+        ? { staged_upload: stagedUpload }
+        : { path, ...(fileDataUrl ? { data_url: fileDataUrl } : {}) })
     })
 
     if (!result.attached || !result.ref_text) {
@@ -207,6 +222,7 @@ export async function uploadComposerAttachment(
       ...attachment,
       attachedSessionId: liveSessionId,
       refText: result.ref_text,
+      ...(stagedUpload ? { stagedUpload } : {}),
       uploadState: undefined
     }
   }
@@ -460,6 +476,7 @@ export function usePromptActions({
                 path: nextAttachment.path,
                 mime: nextAttachment.mime,
                 refText: nextAttachment.refText,
+                stagedUpload: nextAttachment.stagedUpload,
                 uploadState: nextAttachment.uploadState
               })
             } else {

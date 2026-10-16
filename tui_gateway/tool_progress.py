@@ -478,7 +478,8 @@ def _progress_subagent(sid: str, name: str, preview, kw, event_type):
     # that home. A parent record already gone (close / WS orphan reap mid-turn) cannot be attributed
     # to a profile — bind nothing rather than fold the run into the launch profile.
     if (parent := _sessions.get(sid)) is not None:
-        _mirror_subagent_to_child(event_type, payload, parent.get("profile_home"))
+        _mirror_subagent_to_child(
+            event_type, payload, parent.get("profile_home"), parent.get("profile_incarnation") or None)
 
 
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be

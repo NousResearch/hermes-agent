@@ -73,6 +73,38 @@ def sleeper():
             p.wait()
 
 
+@pytest.fixture()
+def module_sleeper(tmp_path):
+    """Spawn ``python -m hermes_cli.main <tail>`` whose ``hermes_cli`` is a stand-in that only sleeps.
+
+    The holder classifier trusts only Python's real execution target, so a script that merely carries
+    ``-m hermes_cli.main serve`` among its own arguments is not a serve backend (#107002).
+    """
+    shadow = tmp_path / "module-sleeper"
+    (shadow / "hermes_cli").mkdir(parents=True)
+    (shadow / "hermes_cli" / "__init__.py").write_text("", encoding="utf-8")
+    (shadow / "hermes_cli" / "main.py").write_text("import time\ntime.sleep(300)\n", encoding="utf-8")
+    procs: list[subprocess.Popen] = []
+
+    def _spawn(*tail: str) -> subprocess.Popen:
+        # ``-m`` puts the working directory first on sys.path, so the stand-in shadows the real package.
+        p = subprocess.Popen(
+            [sys.executable, "-m", "hermes_cli.main", *tail],
+            cwd=shadow,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        procs.append(p)
+        assert _wait_until(lambda: _argv_visible(p.pid, "hermes_cli.main")), "module sleeper argv never visible"
+        return p
+
+    yield _spawn
+    for p in procs:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+
+
 def _write_ledger(entries: list[dict]) -> None:
     from hermes_cli import process_identity as pid_mod
 
@@ -123,7 +155,7 @@ def test_live_supervised_serve_suppresses_cold_start(sleeper, monkeypatch, tmp_p
     assert token is not None and token.get("cold_start_if_installed") is True
 
 
-def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tmp_path):
+def test_holder_scan_fallback_respects_token_classifier(module_sleeper, monkeypatch, tmp_path):
     from hermes_cli import update_cmd
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -131,9 +163,9 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
     _write_ledger([])  # force the fallback rung
 
     # Real process whose argv carries genuine serve shape, visible to psutil.
-    serve_like = sleeper("-m", "hermes_cli.main", "serve")
+    serve_like = module_sleeper("serve")
     # Lookalike from the #90778 class — must NOT confer ownership.
-    kanban_like = sleeper("-m", "hermes_cli.main", "kanban", "--preserve-cache")
+    kanban_like = module_sleeper("kanban", "--preserve-cache")
 
     import psutil
 
@@ -142,13 +174,15 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
     # raise NoSuchProcess and hand the fallback an empty scan, which returns
     # False without ever reaching the token classifier.
     serve_row, kanban_row = (
-        (p.pid, psutil.Process(p.pid).name(), " ".join(psutil.Process(p.pid).cmdline()))
+        # Quoted like the real detector's rows, so paths with spaces stay single tokens.
+        (p.pid, psutil.Process(p.pid).name(), subprocess.list2cmdline(psutil.Process(p.pid).cmdline()))
         for p in (serve_like, kanban_like)
     )
     assert "--preserve-cache" in kanban_row[2]
 
+    # The lifecycle probe calls its own module's detector by name; patch it there.
     monkeypatch.setattr(
-        "hermes_cli.main._detect_venv_python_processes", lambda: [serve_row, kanban_row]
+        "hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [serve_row, kanban_row]
     )
     # serve-shaped holder with a live parent (us) → owns
     assert update_cmd._desktop_owns_gateway_lifecycle() is True
@@ -158,6 +192,6 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
     serve_like.wait()
     assert kanban_like.poll() is None
     monkeypatch.setattr(
-        "hermes_cli.main._detect_venv_python_processes", lambda: [kanban_row]
+        "hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [kanban_row]
     )
     assert update_cmd._desktop_owns_gateway_lifecycle() is False

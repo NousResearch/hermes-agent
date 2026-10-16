@@ -30,8 +30,8 @@ def test_cron_profile_homes_serve_every_live_profile(tmp_path, monkeypatch):
     for name in ("worker", "guest", "gone"):
         (default_home / "profiles" / name).mkdir(parents=True)
         (default_home / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
-    from hermes_constants import mark_named_profile_deleted
-    mark_named_profile_deleted(default_home / "profiles" / "gone")
+    from hermes_cli.profile_lifecycle import mark_profile_deleting
+    mark_profile_deleting(default_home / "profiles" / "gone")
 
     import gateway.run as gateway_run
 

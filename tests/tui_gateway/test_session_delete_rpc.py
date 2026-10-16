@@ -165,14 +165,14 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path):
+def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: delete must target the profile state.db + sessions dir."""
     profile_home = tmp_path / "profiles" / "mlperf"
     (profile_home / "sessions").mkdir(parents=True)
     captured: dict = {}
 
     class ProfileDB(_NoOnboardingRun):
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             captured["db_path"] = db_path
 
         def delete_session(self, sid, sessions_dir=None, **_kw):
@@ -183,7 +183,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
 

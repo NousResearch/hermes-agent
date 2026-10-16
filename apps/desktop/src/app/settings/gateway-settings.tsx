@@ -31,6 +31,7 @@ import {
   RefreshCw,
   Terminal
 } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
@@ -46,11 +47,13 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
+import { KeychainEncryptionSetting, useKeychainEncryption } from './keychain-encryption-setting'
 import { ManagedUpdatesSection } from './managed-updates-section'
-import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { WebappGatewaySettings } from './webapp-gateway-settings'
 
 type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
 type AuthMode = 'oauth' | 'token'
@@ -174,6 +177,10 @@ interface GatewaySettingsProps {
 export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
   useSettingDeepLink('gateway', page => subpage === undefined || page === subpage)
 
+  if (isBrowserHostedDesktop()) {
+    return <WebappGatewaySettings embedded={embedded} />
+  }
+
   // Recovery always keeps the complete connection form, regardless of a
   // settings destination. Other tasks never mount that form or its probes.
   if (!embedded && subpage === 'devices') {
@@ -286,45 +293,9 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     void refreshConnectionsRegistry().catch(err => notifyError(err, g.failedLoad))
   }, [g.failedLoad])
 
-  // Opt-in OS-keychain encryption for stored gateway secrets. Read lazily via
-  // IPC (never touches the keychain); flipping it re-encodes stored secrets
-  // in the main process and can legitimately prompt for keychain access.
-  const [keychainEncryption, setKeychainEncryptionState] = useState(false)
-  const [keychainEncryptionBusy, setKeychainEncryptionBusy] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-
-    void window.hermesDesktop
-      ?.getSecretStorageEncryption?.()
-      .then(res => {
-        if (!cancelled && res) {
-          setKeychainEncryptionState(res.on === true)
-        }
-      })
-      .catch(() => {})
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const setKeychainEncryption = async (on: boolean) => {
-    setKeychainEncryptionBusy(true)
-    // Optimistic paint; the IPC result (or a failure rollback) gets the last word.
-    setKeychainEncryptionState(on)
-
-    try {
-      const res = await window.hermesDesktop.setSecretStorageEncryption(on)
-
-      setKeychainEncryptionState(res?.on === true)
-    } catch (err) {
-      setKeychainEncryptionState(!on)
-      notifyError(err, g.keychainEncryptionFailed)
-    } finally {
-      setKeychainEncryptionBusy(false)
-    }
-  }
+  // Read here rather than in the row, so the flag is in hand by the time the
+  // loading skeleton gives way and the toggle paints its real state.
+  const keychainEncryption = useKeychainEncryption()
 
   const acceptSavedConfig = (config: GatewaySettingsState): void => {
     const normalized = normalizeGatewaySettingsState(config)
@@ -1482,14 +1453,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
       {embedded ? null : (
         <div className="mt-6 grid gap-1">
-          <ToggleRow
-            checked={keychainEncryption}
-            description={g.keychainEncryptionDesc}
-            disabled={keychainEncryptionBusy}
-            id={settingElementId(SETTING_IDS.gateway.keychainEncryption)}
-            label={g.keychainEncryptionTitle}
-            onChange={on => void setKeychainEncryption(on)}
-          />
+          <KeychainEncryptionSetting keychain={keychainEncryption} />
           <ListRow
             action={
               <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">

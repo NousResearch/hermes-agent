@@ -26,6 +26,13 @@ vi.mock('@/store/sidebar-archive', async importOriginal => ({
   listEveryArchivedSession
 }))
 
+const selectDesktopPaths = vi.hoisted(() => vi.fn())
+
+vi.mock('@/lib/desktop-fs', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  selectDesktopPaths
+}))
+
 const archivedMatrixSession = {
   archived: true,
   ended_at: null,
@@ -64,5 +71,32 @@ describe('SessionsSettings unarchive', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['matrix-1'])
     expect($messagingSessions.get()[0]?.archived).toBe(false)
     expect($sessions.get()).toEqual([])
+  })
+})
+
+describe('SessionsSettings default directory in a browser tab', () => {
+  afterEach(() => {
+    delete document.documentElement.dataset.hermesDesktopHost
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('picks through the server folder browser instead of the native dialog', async () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    const settings = {
+      getDefaultProjectDir: vi.fn().mockResolvedValue({ defaultLabel: 'Server workspace', dir: null, resolvedCwd: '' }),
+      pickDefaultProjectDir: vi.fn().mockResolvedValue({ canceled: true, dir: null }),
+      setDefaultProjectDir: vi.fn(async (dir: null | string) => ({ dir }))
+    }
+    Object.assign(window, { hermesDesktop: { settings } })
+    selectDesktopPaths.mockReset().mockResolvedValue(['/srv/work'])
+
+    render(<SessionsSettings subpage="default-directory" />)
+    const button = await screen.findByRole('button', { name: en.common.choose })
+
+    await act(async () => fireEvent.click(button))
+
+    await waitFor(() => expect(settings.setDefaultProjectDir).toHaveBeenCalledWith('/srv/work'))
+    expect(selectDesktopPaths).toHaveBeenCalledWith(expect.objectContaining({ directories: true }))
+    expect(settings.pickDefaultProjectDir).not.toHaveBeenCalled()
   })
 })

@@ -184,7 +184,8 @@ def test_background_prompt_secret_reaches_its_own_session_and_profile(two_profil
     monkeypatch.setattr("run_agent.AIAgent", ModelBoundary)
     monkeypatch.setattr(server, "_background_agent_kwargs", lambda _agent, _task_id: {})
     sessions = {
-        sid: {"agent": object(), "session_key": f"key-{sid}", "profile_home": str(home), "cwd": str(home)}
+        sid: {"agent": object(), "session_key": f"key-{sid}", "profile_home": str(home), "cwd": str(home),
+              "profile_incarnation": server._capture_profile_incarnation(home)}
         for sid, home in (("session-A", home_a), ("session-B", home_b))
     }
     frames, completed = _client(
@@ -233,7 +234,8 @@ def test_closed_runtime_secret_request_is_refused(two_profiles, monkeypatch):
     ask_reached = threading.Event()  # worker → main: paused right before credential capture
     agent_a = object()
     session_a = {
-        "agent": agent_a, "session_key": "key-session-A", "profile_home": str(home_a), "cwd": str(home_a)}
+        "agent": agent_a, "session_key": "key-session-A", "profile_home": str(home_a), "cwd": str(home_a),
+        "profile_incarnation": server._capture_profile_incarnation(home_a)}
 
     class ModelBoundary:
         def __init__(self, **_kw):

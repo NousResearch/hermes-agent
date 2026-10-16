@@ -42,5 +42,4 @@ def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool
 
     # Description last, so a partial-create failure doesn't strand a description file.
     if description and description.strip():
-        with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
-            write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
+        write_profile_meta(profile_dir, description=description.strip(), description_auto=False)

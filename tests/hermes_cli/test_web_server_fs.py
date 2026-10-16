@@ -410,6 +410,43 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert response.status_code == 200
     assert sibling.read_text() == "existing"
     assert (tmp_path / "report%20v2.md").read_text() == "new"
+
+
+def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile(client, monkeypatch):
+    """A browser paste is saved in the profile's host image cache even when its workspace is an
+    SSH machine. Sending it reads it back through this route, so that one host-owned path must not
+    go looking on the SSH machine; every other path still does."""
+
+    class FakeSshFs:
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+        def inspect_file(self, path):
+            raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+    pasted = base64.b64decode("iVBORw0KGgo=")
+    upload = client.post(
+        "/api/chat/image-upload",
+        json={"data_url": "data:image/png;base64,iVBORw0KGgo=", "filename": "paste.png"},
+    )
+    assert upload.status_code == 200, upload.text
+    host_path = Path(upload.json()["path"])
+
+    # The same bytes on this host outside the image cache are still the SSH machine's to answer.
+    elsewhere = host_path.parent.parent / "elsewhere.png"
+    elsewhere.write_bytes(pasted)
+
+    read_back = client.get("/api/fs/read-data-url", params={"path": str(host_path)})
+    saved = client.get("/api/fs/download", params={"path": str(host_path)})
+    not_host_owned = client.get("/api/fs/read-data-url", params={"path": str(elsewhere)})
+
+    assert read_back.status_code == 200, read_back.text
+    assert base64.b64decode(read_back.json()["dataUrl"].split(",", 1)[1]) == pasted
+    assert (saved.status_code, saved.content) == (200, pasted)
+    assert not_host_owned.status_code == 404
+
+
 @pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
 def test_fs_reads_translate_docker_workspace_path_to_host(
     client, docker_volumes, monkeypatch, endpoint,

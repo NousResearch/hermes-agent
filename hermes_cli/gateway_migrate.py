@@ -251,7 +251,7 @@ def _live_gateway_pid(home: Path) -> Optional[int]:
     not abort a migration plan).
 
     Topology REPORTING, not ownership: ``live_gateway_pid_for_home`` deliberately answers with the
-    host multiplexer's PID for every home it serves (``gateway.status._host_gateway_serves_home``),
+    host multiplexer's PID for every home it serves (``gateway.status_home_evidence._host_gateway_serves_home``),
     so "this profile is being served" reads as a live PID. Use :func:`_own_gateway_pid` for the
     question this command acts on.
     """
@@ -378,7 +378,7 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
 
 
 def _stop_gateway_process(home: Path) -> None:
-    from hermes_cli.profiles import _stop_gateway_process
+    from hermes_cli.profiles_process_stop import _stop_gateway_process
     _stop_gateway_process(home)
 
 

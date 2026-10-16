@@ -26,7 +26,7 @@ from typing import Any, Callable, NamedTuple, Optional
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
-    reset_hermes_home_override, set_hermes_home_override)
+    named_profile_is_deleted, reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
@@ -47,7 +47,7 @@ from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
-    resume_failed_message, turn_error_text)
+    PROFILE_RETIRED_FOR_SESSION, profile_retired_error, resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -91,9 +91,11 @@ with contextlib.suppress(Exception):
 
     prefetch_update_check()
 
+from tui_gateway.profile_lifecycle import ProfileLifecycleFence
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
+_profile_lifecycle = ProfileLifecycleFence()
 _methods: dict[str, callable] = {}
 _db = None
 _db_error: str | None = None
@@ -481,19 +483,21 @@ def _transfer_db_to_agent(agent, db) -> bool:
     return False
 
 
-def _open_profile_session_db(profile_home):
+def _open_profile_session_db(profile_home, expected_profile_incarnation=None):
     """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED: a silent fallback to the
     launch ``state.db`` would bleed rows into the wrong profile's store exactly when the profile store is
     briefly unopenable (locked, mid-restore); callers let the error abort the build (→ ``agent_error``)."""
     from hermes_state_registry import acquire
     db_path = Path(profile_home) / "state.db"
     try:
-        return acquire(db_path)
+        return acquire(db_path, expected_profile_incarnation=expected_profile_incarnation)
+    except FileNotFoundError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"profile session store unavailable: {db_path}: {exc}") from exc
 
 
-def _bootstrap_served_profile_store(db_path: Path) -> None:
+def _bootstrap_served_profile_store(db_path: Path, expected_profile_incarnation: str | None = None) -> None:
     """A served profile whose first RPC is a read (Bot Chat registry lookup on a fresh bot) has no
     ``state.db`` yet. Browsing never creates a store, but THIS process is the profile's session
     owner (``_open_profile_session_db`` acquires the writer for every agent build), so it seeds the
@@ -504,13 +508,16 @@ def _bootstrap_served_profile_store(db_path: Path) -> None:
     except FileNotFoundError:
         pass
     from hermes_state_registry import acquire, release_or_close
-    release_or_close(acquire(db_path))
+    # Bound to the generation the RPC resolved: a deleted or recreated profile fails as stale
+    # instead of seeding the new generation's store.
+    release_or_close(acquire(db_path, expected_profile_incarnation=expected_profile_incarnation))
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None, *, writer: bool = False):
+def _profile_db(params: dict | None = None, *, writer: bool = False, resolved: tuple | None = None):
     """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
-    profile handles, leaves the launch-profile shared handle open.
+    profile handles, leaves the launch-profile shared handle open. ``resolved``: the ``(home,
+    incarnation)`` the RPC already resolved that profile to, so the handle binds that generation.
 
     Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
     gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
@@ -518,17 +525,22 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
     profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
-    if (profile_home := _profile_home(profile)) is None:
+    profile_home, profile_incarnation = resolved or _resolve_profile_home(profile)
+    if profile_home is None:
         db, owns = _get_db(), False
     else:
         try:
             if writer:
                 from hermes_state_registry import acquire
-                db = acquire(Path(profile_home) / "state.db")
+                db = acquire(Path(profile_home) / "state.db",
+                             expected_profile_incarnation=profile_incarnation)
             else:
                 from hermes_cli.web_server_sessions import _open_session_db_at_path
-                _bootstrap_served_profile_store(Path(profile_home) / "state.db")
-                db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
+                # Seeded through the registry, which takes the generation lease itself; never
+                # nested inside the read lease below.
+                _bootstrap_served_profile_store(Path(profile_home) / "state.db", profile_incarnation)
+                with _profile_home_lease(profile_home, profile_incarnation):
+                    db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
             owns = True
         except Exception as exc:
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)
@@ -550,22 +562,35 @@ def _canonical_profile_request(name: str) -> str:
     """
     if name.casefold() in {".hermes", "hermes"}:
         from hermes_cli import profiles as profiles_mod
-        # Check the profiles root directly: get_profile_dir rejects "hermes" as a
-        # reserved name, but a pre-reserved-list install may still carry that dir.
-        if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
+        # The legacy '.hermes' alias is not a valid named-profile id.
+        home = profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)
+        if not home.is_dir():
+            # A deleted named profile keeps its tombstone until a successor is
+            # published, so it is never a legacy alias for the default home.
+            if named_profile_is_deleted(home):
+                return name
             return "default"
     return name
 
 
 def _response_profile_name(profile: str | None = None) -> str:
-    """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
+    """:func:`_resolved_profile_name` for a ``profile`` this call resolves itself."""
     name = _canonical_profile_request((profile or "").strip())
-    if not name:
-        return _current_profile_name()
     try:
-        return name if _profile_home(name) is not None else _current_profile_name()
+        return _resolved_profile_name(name, _profile_home(name) if name else None)
     except ProfileUnavailableError:
+        # A retired profile must not turn response decoration into a second failure.
         return _current_profile_name()
+
+
+def _resolved_profile_name(profile: str | None, home: Path | None) -> str:
+    """Profile name to report on session.* payloads, for a ``profile`` the RPC resolved to ``home``.
+
+    Prefer the RPC's requested profile when it is a real non-launch profile;
+    otherwise the process launch profile.
+    """
+    name = _canonical_profile_request((profile or "").strip())
+    return name if name and home is not None else _current_profile_name()
 
 
 def _db_unavailable_error(rid, *, code: int):
@@ -588,17 +613,40 @@ class ProfileUnavailableError(FileNotFoundError):
 
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
-    if not (name := _canonical_profile_request((profile or "").strip())):
-        return None
-    from hermes_cli import profiles as profiles_mod
+    return _resolve_profile_home(profile)[0]
+
+
+def _resolve_profile_home(profile: str | None) -> tuple[Path | None, str | None]:
+    """``(home, incarnation)``: :func:`_profile_home` plus the generation it captured and validated, ``(None,
+    None)`` for the launch profile. A caller binding state to the home reuses this token: a capture takes the
+    profile's cross-process lease, and a second one could bind a successor generation mid-RPC."""
+    name = _canonical_profile_request((profile or "").strip())
+    if not name:
+        return None, None
     try:
-        home = Path(profiles_mod.get_profile_dir(name))
-    except ValueError:
-        home = None
-    if home is None or not home.is_dir():
-        raise ProfileUnavailableError(f"Profile '{name}' does not exist.")
+        from hermes_cli import profiles as profiles_mod
+
+        canon = profiles_mod.normalize_profile_name(name)
+        # Resolve existing safe basenames; reserved names only restrict creation.
+        home = Path(profiles_mod.get_profile_dir(canon))
+    except (TypeError, ValueError) as exc:
+        raise ProfileUnavailableError(f"Profile '{name}' is invalid.") from exc
+    missing = f"Profile '{canon}' is missing or being deleted."
+    if not home.is_dir():
+        raise ProfileUnavailableError(missing)
+    # Already the launch profile? No override needed.
     if home.resolve() == Path(_hermes_home).resolve():
-        return None  # already the launch profile (no override needed)
+        if _profile_home_rejected(home):
+            raise ProfileUnavailableError(missing)
+        return None, None
+    if named_profile_is_deleted(home) or not profiles_mod.profile_exists(canon):
+        raise ProfileUnavailableError(missing)
+    try:
+        profile_incarnation = _capture_profile_incarnation(home)
+    except FileNotFoundError as exc:
+        raise ProfileUnavailableError(missing) from exc
+    if _profile_home_rejected(home, profile_incarnation, require_incarnation=True):
+        raise ProfileUnavailableError(missing)
     if home not in _served_profile_homes:
         # This process now hosts a second profile home: freeze the launch env as the launch
         # profile's own and flip get_secret() to fail closed, so an unscoped read for a
@@ -607,7 +655,7 @@ def _profile_home(profile: str | None) -> Path | None:
         from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
         activate_multi_profile_hosting()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
-    return home
+    return home, profile_incarnation
 
 
 # Profile homes served besides the launch home — the only extra stores the sessions watcher
@@ -1709,15 +1757,17 @@ class _RuntimeFallbackResolution(NamedTuple):
 
 
 
-def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None) -> None:
+def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | None, profile_incarnation: str | None = None) -> None:
     """Adopt the stored row's cwd and fill missing Git metadata, or persist a fresh cwd."""
     owns_db, db = False, session_db
     if db is None and not profile_home:
         db = _get_db()
     elif db is None:
         try:
-            db = _open_profile_session_db(profile_home)
+            db = _open_profile_session_db(profile_home, expected_profile_incarnation=profile_incarnation)
             owns_db = True
+        except FileNotFoundError:
+            raise
         except Exception:
             # FAIL CLOSED (as the deferred-build bind): a named-profile session must never touch the launch
             # state.db — skip hydration (the row lands on the agent's own lazy-create once the store recovers).

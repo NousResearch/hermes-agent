@@ -11,6 +11,9 @@ class TestResizeObserver {
 
   observe(target: Element) {
     Object.defineProperty(target, 'scrollHeight', { configurable: true, value: 400 })
+    Object.defineProperty(target, 'clientWidth', { configurable: true, value: 200 })
+    Object.defineProperty(target, 'scrollWidth', { configurable: true, value: 400 })
+    Object.defineProperty(target, 'scrollLeft', { configurable: true, writable: true, value: 0 })
     this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver)
   }
 
@@ -39,5 +42,33 @@ describe('ExpandableBlock', () => {
     fireEvent.click(toggle)
 
     expect(screen.getByRole('button', { name: 'Collapse' }).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('shows a non-blocking horizontal cue until a wide block reaches its end', () => {
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+
+    render(
+      <ExpandableBlock>
+        <pre data-testid="content">{'wide line\n'.repeat(2)}</pre>
+      </ExpandableBlock>
+    )
+
+    const scroller = screen.getByTestId('content').parentElement!
+
+    expect(scroller.getAttribute('data-horizontal-overflow')).toBe('')
+    expect(
+      screen
+        .getByTestId('content')
+        .parentElement?.parentElement?.querySelector('[data-slot="expandable-horizontal-fade"]')
+    ).not.toBeNull()
+
+    scroller.scrollLeft = 200
+    fireEvent.scroll(scroller)
+
+    expect(
+      screen
+        .getByTestId('content')
+        .parentElement?.parentElement?.querySelector('[data-slot="expandable-horizontal-fade"]')
+    ).toBeNull()
   })
 })

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profiles, profiles_remove
+from hermes_cli import profile_lifecycle, profiles, profiles_remove
 
 _HOLDER = (
     "import sys\nfrom pathlib import Path\nfrom gateway.runtime_ownership import process_ownership\n"
@@ -58,7 +58,7 @@ def test_profile_home_waits_for_the_live_owner_to_release_it(profile, monkeypatc
     if op == "recreate":
         shutil.rmtree(profile)
         profile.mkdir()
-        profiles.mark_named_profile_deleted(profile)
+        profile_lifecycle.mark_profile_deleting(profile)
     holder = _hold(profile)
     outcome = {}
 

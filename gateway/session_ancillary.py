@@ -151,10 +151,16 @@ async def attach_file(connection, ref, params):
     # The staging helpers are bound onto the sidecar module's globals (method_ctx.bind_module).
     from tui_gateway import server
     session = {'cwd': policy.cwd, 'profile_home': authority.profile_id}
+
+    def stage():
+        # No sidecar slot backs an authority session (authorized above); publication is still
+        # fenced to the owner profile's generation captured here.
+        session['profile_incarnation'] = server._capture_profile_incarnation(authority.profile_id)
+        return server._stage_session_file_attachment(
+            session, raw_path=params.get('path', ''), data_url=params.get('data_url', ''),
+            name=params.get('name', ''), owner=(None, authority.profile_id, session['profile_incarnation']))
     try:
-        stored, uploaded = await asyncio.to_thread(
-            server._stage_session_file_attachment, session, raw_path=params.get('path', ''),
-            data_url=params.get('data_url', ''), name=params.get('name', ''))
+        stored, uploaded = await asyncio.to_thread(stage)
     except ValueError as exc:
         raise RuntimeStoreError('invalid_params') from exc
     except OSError as exc:

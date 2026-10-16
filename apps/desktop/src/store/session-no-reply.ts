@@ -1,6 +1,9 @@
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
 
+// The retry card for a live turn the backend ended without a reply, stamped by
+// session-states' silent-turn check (markTurnWithoutReply).
+
 // Raised only after the backend confirmed the turn is over and no reply reached
 // this window, so Retry cannot run the prompt twice.
 const NO_REPLY_SURFACE: ErrorSurface = { code: 'no_reply', layer: 'runtime', retryable: true }

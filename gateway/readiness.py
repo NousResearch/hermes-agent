@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -28,6 +27,7 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
     the latch here is what makes readiness and ``/api/status`` agree with the session list
     (#72046). ``detail="corrupt"`` is the one reason string consumers key off."""
     from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+    from hermes_cli.sqlite_safe_read import connect_tracked
 
     path = home / "state.db"
     if not path.exists():
@@ -38,7 +38,7 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
         # Read-only schema query: catches unreadable/corrupt DBs without competing with
         # writers. ``closing`` is required — sqlite3's context manager only commits/rolls
         # back, never closes, so a bare ``with connect()`` leaks a connection per poll.
-        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=1.0)) as conn:
+        with closing(connect_tracked(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=1.0)) as conn:
             # A readiness probe must never compete with normal state writers. See #69567, #69678.
             conn.execute("PRAGMA query_only = ON")
             conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()

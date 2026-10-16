@@ -1,4 +1,4 @@
-"""Tests: spawn_tree.* JSON-RPC handlers (tui_gateway/methods_session.py).
+"""Tests: spawn_tree.* JSON-RPC handlers (tui_gateway/methods_session_spawn_tree.py).
 
 A parseable-but-non-object snapshot file must not wedge ``spawn_tree.list``
 (the legacy per-file scan called ``raw.get`` outside its suppress guard) and

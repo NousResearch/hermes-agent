@@ -198,7 +198,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
-          <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
+          <Pre className="aui-shiki m-0 bg-transparent p-0">
             {plain ? (
               <PlainCode code={content} />
             ) : (

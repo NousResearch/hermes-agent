@@ -1,6 +1,6 @@
 """HTTP lifespan composition; standalone backend services remain opt-in owners."""
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 import asyncio
 import logging
 import os
@@ -33,6 +33,7 @@ async def standalone_lifespan(app: "FastAPI"):
         _auto_archive_ticker_loop, _terminate_desktop_managed_gateway, _probe_install_before_state_db,
     )
     from hermes_cli.web_server_chat import PTY_REGISTRY
+    from hermes_cli.web_server_surface import policy
 
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
@@ -103,9 +104,7 @@ async def standalone_lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
-    # Desktop-spawned backends fire cron jobs themselves, since the app has no
-    # gateway running the scheduler. Server `hermes dashboard` is unaffected —
-    # it relies on its own gateway.
+    # Gateway lifecycle ownership remains exclusive to Electron-spawned backends.
     from hermes_cli.process_identity import is_desktop_owned_backend
     cron_stop: threading.Event | None = None
     cron_thread: threading.Thread | None = None
@@ -125,6 +124,10 @@ async def standalone_lifespan(app: "FastAPI"):
         except Exception:
             logger.exception("Desktop startup: orphan gateway reap failed")
 
+    # Desktop-spawned backends and standalone Webapp fire cron jobs themselves: no
+    # gateway runs their scheduler. Webapp reuses the profile-aware ticker without
+    # adopting Electron's gateway cleanup; plain dashboard relies on its own gateway.
+    if desktop_owned or policy(app.state).cron_ticker:
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,
@@ -134,8 +137,14 @@ async def standalone_lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
-    # Reap idle/dead keep-alive PTY sessions (30-min TTL).
+    # Reap idle/dead keep-alive PTY sessions (30-min TTL). The registry is process-wide and
+    # close_all() refuses new spawns, so a re-entered lifespan reopens it first.
+    PTY_REGISTRY._closed = False
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
+    from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
+    # Host shells, and the reaper that retires them, exist only where the surface allows them.
+    host_terminals = host_terminal_lifespan(app) if policy(app.state).host_terminal else nullcontext()
+    await host_terminals.__aenter__()
     # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
     # Live auto-archive timer, independent of list requests.
@@ -183,6 +192,7 @@ async def standalone_lifespan(app: "FastAPI"):
         auto_archive_task.cancel()
         eager_reconcile_thread.join()
         await PTY_REGISTRY.close_all()
+        await host_terminals.__aexit__(None, None, None)
 
         # PtySession.close() removes markers owned by live registry sessions.
         # This second pass cleans any channel markers left in app state,
@@ -212,6 +222,7 @@ async def http_lifespan(app: FastAPI):
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}
     app.state.chat_argv_lock = asyncio.Lock()
+    PTY_REGISTRY._closed = False  # a prior lifespan's close_all() refuses spawns until reopened
     tasks = [
         asyncio.create_task(run_reaper(PTY_REGISTRY), name="gateway-api-pty-reaper"),
         asyncio.create_task(_dashboard_selftest_loop(), name="gateway-api-selftest"),

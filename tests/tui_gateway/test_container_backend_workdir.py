@@ -93,9 +93,11 @@ def test_attached_host_file_is_staged_and_agent_sees_container_path(launch_home,
     report.parent.mkdir()
     report.write_bytes(b"%PDF-1.4\x00\x01binary")
     session = {"cwd": server._completion_cwd({}), "profile_home": None}
+    monkeypatch.setitem(server._sessions, "container-attach", session)
 
     stored, uploaded = server._stage_session_file_attachment(
-        session, raw_path=str(report), data_url="", name="")
+        session, raw_path=str(report), data_url="", name="",
+        owner=server._attachment_owner(session, "container-attach"))
 
     assert uploaded is True
     assert stored.parent == (launch_home / "attachments").resolve()

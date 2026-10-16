@@ -36,7 +36,7 @@ def test_boot_time_credential_injection_is_inside_the_frozen_launch_env(tmp_path
     monkeypatch.setattr(web_server, "_run_serve", lambda *a, **k: served.append(True))
 
     try:
-        web_server.start_server(open_browser=False, headless=True)
+        web_server.start_server(open_browser=False, ui_surface="serve")
     finally:
         os.environ.pop(LATE_KEY, None)
 

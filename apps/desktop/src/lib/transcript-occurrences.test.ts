@@ -2,12 +2,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
-  mergeInFlightMessages,
   persistInFlightTurnState,
   readInFlightTurnJournal,
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
 } from '@/lib/inflight-turn-journal'
+import { mergeInFlightMessages } from '@/lib/inflight-turn-merge'
 import type { SessionMessage } from '@/types/hermes'
 
 const prompt: SessionMessage = { id: 1, role: 'user', content: 'Inspect each phase', timestamp: 1 }

@@ -69,6 +69,7 @@ import type {
   SlashExecResponse
 } from '../../../types'
 
+import { remoteBrowserManageRefusal } from './browser-manage-refusal'
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
@@ -1334,9 +1335,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           if ((cmdAction === 'connect' || cmdAction === 'disconnect') && $connection.get()?.mode === 'remote') {
-            renderSlashOutput(
-              '/browser connect manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
-            )
+            renderSlashOutput(remoteBrowserManageRefusal(cmdAction))
 
             return
           }

@@ -35,6 +35,11 @@ class AdmissionStatus(Result):
     outcome: str | None
     authority_epoch: int
     execution_generation: int | None
+    # Dedup receipt source identity echo (#63298): the canonical equivalent of the legacy
+    # ``PromptSubmitStatus.duplicate`` names the already-owned source back to the retrying client.
+    # Optional and absent on every ordinary admission receipt.
+    message_id: str | None = None
+    submitted_at: float | None = None
 
 
 class PromptReceiptParams(Params):

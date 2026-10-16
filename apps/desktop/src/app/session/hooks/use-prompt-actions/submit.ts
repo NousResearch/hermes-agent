@@ -1041,7 +1041,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           .filter(attachment => attachment.kind === 'image' && attachment.mime)
           .map(attachment => ({ path: attachment.path!, mime: attachment.mime! }))
 
+        const sourceMetadata = {
+          ...(options?.messageId ? { message_id: options.messageId } : {}),
+          ...(options?.submittedAt !== undefined ? { submitted_at: options.submittedAt / 1000 } : {})
+        }
         const submitParams = (targetId: string) => ({
+          ...sourceMetadata,
           session_id: targetId,
           text,
           submission_id: submissionId,

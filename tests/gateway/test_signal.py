@@ -103,6 +103,75 @@ class TestSignalConnectCleanup:
         assert adapter._platform_lock_identity is None
 
 
+class TestSignalRuntimeStatus:
+    """Regression for #138709: connect()/disconnect() must publish the runtime status.
+
+    SignalAdapter used to set ``self._running = True`` directly without calling
+    ``_mark_connected()``, so no ``<profile>:signal`` entry was ever written to
+    gateway_state.json. Every sibling adapter (weixin, whatsapp_cloud, bluebubbles,
+    ...) publishes its state, and hermes_cli/web_routers/messaging.py renders a
+    configured platform with a running gateway but no runtime state as
+    "pending_restart" — a permanent "Restart needed" card even though Signal is
+    connected and delivering messages.
+    """
+
+    @staticmethod
+    def _connected_adapter(monkeypatch):
+        """A SignalAdapter whose connect() health check succeeds; SSE/monitor tasks
+        idle on an Event until disconnect() cancels them."""
+        adapter = _make_signal_adapter(monkeypatch)
+
+        release = asyncio.Event()
+
+        async def _idle():
+            await release.wait()
+
+        monkeypatch.setattr(adapter, "_sse_listener", _idle)
+        monkeypatch.setattr(adapter, "_health_monitor", _idle)
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))
+        mock_client.aclose = AsyncMock()
+        return adapter, mock_client, release
+
+    @pytest.mark.asyncio
+    async def test_connect_publishes_connected_status(self, monkeypatch):
+        adapter, mock_client, release = self._connected_adapter(monkeypatch)
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"), \
+             patch("gateway.status.publish_runtime_status") as mock_publish:
+            assert await adapter.connect() is True
+            connect_kwargs = mock_publish.call_args.kwargs
+            await adapter.disconnect()
+        release.set()
+
+        kwargs = connect_kwargs
+        assert kwargs.get("platform") == "signal"
+        assert kwargs.get("platform_state") == "connected"
+        assert adapter._running is False  # disconnect ran clean
+
+    @pytest.mark.asyncio
+    async def test_disconnect_publishes_disconnected_status(self, monkeypatch):
+        adapter, mock_client, release = self._connected_adapter(monkeypatch)
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"), \
+             patch("gateway.status.publish_runtime_status") as mock_publish:
+            assert await adapter.connect() is True
+            mock_publish.reset_mock()
+            await adapter.disconnect()
+        release.set()
+
+        # gateway_state.json outlives its writer; without this publish a stale
+        # "connected" entry would survive a clean disconnect.
+        kwargs = mock_publish.call_args.kwargs
+        assert kwargs.get("platform") == "signal"
+        assert kwargs.get("platform_state") == "disconnected"
+
+
 class TestSignalHelpers:
 
     def test_redact_phone_short(self):

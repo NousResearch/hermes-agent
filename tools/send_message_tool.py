@@ -319,9 +319,45 @@ def _resolve_platform_config(platform_name, config):
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
         pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
+    elif _enabled_without_own_credential(platform, config):
+        # Enabled token-platform block with no usable credential of this profile's own (e.g. after
+        # duplicate-token cleanup): borrow the unique host bot, otherwise refuse before transport —
+        # a tokenless send can never deliver.
+        host, reason = _shared_bot_host(platform_name, platform, config)
+        if host is not None:
+            return platform, host.pconfig, entry, None
+        msg = _not_configured_error(platform_name, platform, entry)
+        return None, None, None, f"{msg} Host-bot fallback: {reason}." if reason else msg
     if pconfig is None:
-        return None, None, None, _not_configured_error(platform_name, platform, entry)
+        # Credentialless multiplex satellite: send through the host profile's bot that already
+        # serves this profile via gateway.profile_routes (tools/send_message_shared_bot.py).
+        host, reason = _shared_bot_host(platform_name, platform, config)
+        if host is not None:
+            return platform, host.pconfig, entry, None
+        msg = _not_configured_error(platform_name, platform, entry)
+        return None, None, None, f"{msg} Host-bot fallback: {reason}." if reason else msg
     return platform, pconfig, entry, None
+
+
+def _enabled_without_own_credential(platform, config):
+    """Token platform enabled in config but holding no credential of this profile's own."""
+    try:
+        from gateway.config import PLATFORM_TOKEN_ENV_NAMES
+        from tools.send_message_shared_bot import own_credential_present
+        return platform in PLATFORM_TOKEN_ENV_NAMES and not own_credential_present(platform, config)
+    except Exception:  # noqa: BLE001 - unknown: let the host lookup decide and fail closed
+        logger.debug("own-credential check failed for %s", platform, exc_info=True)
+        return True
+
+
+def _shared_bot_host(platform_name, platform, config):
+    """``(SharedBotHost | None, reason)``; a fault in the lookup is a refusal, never a send."""
+    try:
+        from tools.send_message_shared_bot import resolve_shared_bot_host
+        return resolve_shared_bot_host(platform_name, platform, config)
+    except Exception as exc:  # noqa: BLE001 - fail closed to the not-configured error
+        logger.debug("shared-bot host lookup failed for %s", platform_name, exc_info=True)
+        return None, f"host lookup failed ({type(exc).__name__})"
 
 
 def _not_configured_error(platform_name, platform, entry):

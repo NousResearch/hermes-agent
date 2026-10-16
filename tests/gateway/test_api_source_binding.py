@@ -26,6 +26,24 @@ def test_private_api_binding_restores_exact_route(owner):
     assert 'foreign-native' not in owner.sessions
 
 
+def test_private_api_binding_adopts_matching_legacy_declared_key(owner):
+    """Regression for #139835: a pre-binding API row stores the caller's declared key."""
+    from gateway.session_api import bind_api_session, declared_api_session
+
+    session_id = 'legacy-api-session'
+    declared_key = 'webui:legacy-api-session'
+    owner.db.create_session(session_id, source='api_server')
+    owner.db.record_gateway_session_peer(session_id, source='api_server', session_key=declared_key)
+
+    ref = bind_api_session(owner, session_id, declared_key=declared_key)
+
+    row = owner.db.get_session(session_id)
+    assert row['session_key'] == owner.sessions[ref.session_id].route
+    assert declared_api_session(owner.db, declared_key) == session_id
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        bind_api_session(owner, 'other-api-session', declared_key=declared_key)
+
+
 @pytest.mark.asyncio
 async def test_private_api_binding_is_not_public_submission_authority(owner):
     from gateway.session_api import bind_api_session

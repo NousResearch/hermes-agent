@@ -160,7 +160,9 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                 raise RuntimeStoreError('admission_conflict')
             if conn.execute('SELECT 1 FROM sessions WHERE title=? AND id!=?', (title, session_id)).fetchone():
                 raise RuntimeStoreError('admission_conflict')
-        if row is not None and row['session_key'] not in (None, '', route):
+        # Earlier API releases stored the caller-declared key directly on the session row.
+        # The declared-key registry above proves that this caller still owns that legacy value.
+        if row is not None and row['session_key'] not in (None, '', route, declared_key):
             raise RuntimeStoreError('admission_conflict')
         existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
                                 (route,)).fetchone()

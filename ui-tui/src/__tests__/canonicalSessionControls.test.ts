@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { $uiState, getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
 const info = { model: 'old', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 4 }
@@ -231,4 +231,134 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
   expect(ctx.transcript.sys).toHaveBeenCalledWith('  Approx request size: ~6,547 tokens (unchanged)')
   expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
   expect(request.mock.calls.filter(([method]) => method === 'session.resume')).toHaveLength(1)
+})
+
+it('a model switch paints the reply route_info with the model in one update, without a follow-up read', async () => {
+  patchUiState({ info: { ...info, reasoning_effort: 'xhigh', reasoning_effort_wire: 'xhigh' } })
+  const { request, slash } = harness()
+  const painted: Array<Record<string, unknown> | undefined> = []
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      return { revision: 8, execution_generation: 4, info, messages: [] } as any
+    }
+
+    if (method === 'session.mutate') {
+      return {
+        model: 'claude-opus-5-5',
+        execution_generation: 5,
+        route_info: { reasoning_effort: 'high', reasoning_effort_wire: 'high', service_tier: '', fast: false }
+      }
+    }
+
+    return {}
+  })
+  const unsubscribe = $uiState.listen(state => painted.push(state.info as Record<string, unknown> | undefined))
+  slash('/model claude-opus-5-5 --provider anthropic --reasoning high --tui-session')
+  await flush()
+  await flush()
+  unsubscribe()
+  expect(request).not.toHaveBeenCalledWith('session.info', expect.anything())
+  expect(getUiState().info).toMatchObject({
+    model: 'claude-opus-5-5',
+    reasoning_effort: 'high',
+    reasoning_effort_wire: 'high',
+    execution_generation: 5
+  })
+  // No intermediate state ever shows the new model beside the previous route's effort.
+  expect(painted.some(state => state?.model === 'claude-opus-5-5' && state?.reasoning_effort === 'xhigh')).toBe(false)
+})
+
+it('an owner without route_info falls back to repainting effort and provider with a session.info read', async () => {
+  patchUiState({
+    info: { ...info, provider: 'azure-foundry', reasoning_effort: 'xhigh', reasoning_effort_wire: 'xhigh' }
+  })
+  const { request, slash } = harness()
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      return { revision: 8, execution_generation: 4, info, messages: [] } as any
+    }
+
+    if (method === 'session.mutate') {
+      return { model: 'claude-opus-5-5', execution_generation: 5 }
+    }
+
+    if (method === 'session.info') {
+      return { model: 'claude-opus-5-5', provider: 'anthropic', reasoning_effort: 'high', reasoning_effort_wire: 'high' }
+    }
+
+    return {}
+  })
+  slash('/model claude-opus-5-5 --provider anthropic --reasoning high --tui-session')
+  await flush()
+  await flush()
+  expect(request).toHaveBeenCalledWith('session.info', { session_id: 'owner' })
+  expect(getUiState().info).toMatchObject({
+    model: 'claude-opus-5-5',
+    provider: 'anthropic',
+    reasoning_effort: 'high',
+    reasoning_effort_wire: 'high',
+    execution_generation: 5
+  })
+})
+
+it('a failed or superseded post-switch info read never undoes the switch or a newer snapshot', async () => {
+  for (const mode of ['fails', 'superseded'] as const) {
+    resetUiState()
+    patchUiState({ sid: 'owner', info: { ...info, reasoning_effort: 'xhigh' } })
+    const { request, slash } = harness()
+    request.mockImplementation(async (method: string) => {
+      if (method === 'session.resume') {
+        return { revision: 8, execution_generation: 4, info, messages: [] } as any
+      }
+
+      if (method === 'session.mutate') {
+        return { model: 'picked', execution_generation: 5 }
+      }
+
+      if (method === 'session.info') {
+        if (mode === 'fails') {
+          throw new Error('connection lost')
+        }
+
+        patchUiState(state => ({ ...state, info: { ...state.info!, model: 'newer', execution_generation: 6 } }))
+
+        return { model: 'picked', reasoning_effort: 'high' }
+      }
+
+      return {}
+    })
+    slash('/model picked')
+    await flush()
+    await flush()
+    expect(getUiState().info).toMatchObject(
+      mode === 'fails'
+        ? { model: 'picked', reasoning_effort: 'xhigh', execution_generation: 5 }
+        : { model: 'newer', reasoning_effort: 'xhigh', execution_generation: 6 }
+    )
+  }
+})
+
+it('an empty route_info still falls back to the session.info read', async () => {
+  patchUiState({ info: { ...info, reasoning_effort: 'xhigh' } })
+  const { request, slash } = harness()
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      return { revision: 8, execution_generation: 4, info, messages: [] } as any
+    }
+
+    if (method === 'session.mutate') {
+      return { model: 'picked', execution_generation: 5, route_info: {} }
+    }
+
+    if (method === 'session.info') {
+      return { model: 'picked', reasoning_effort: 'high' }
+    }
+
+    return {}
+  })
+  slash('/model picked --reasoning high')
+  await flush()
+  await flush()
+  expect(request).toHaveBeenCalledWith('session.info', { session_id: 'owner' })
+  expect(getUiState().info).toMatchObject({ model: 'picked', reasoning_effort: 'high', execution_generation: 5 })
 })

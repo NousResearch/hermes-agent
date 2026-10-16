@@ -17,6 +17,11 @@ interface MutationGateway {
 // must query that receipt, not silently authorize another write at a new revision.
 const pending = new WeakMap<MutationGateway, Map<string, Record<string, unknown>>>()
 
+/** Exported for the picker round-trip test: whatever `modelPickerCommand` emits must parse here. */
+export function modelPayloadFromArg(arg: string) {
+  return modelPayload(arg)
+}
+
 function modelPayload(arg: string) {
   const parts = arg.trim().split(/\s+/)
   const model = parts.shift()!
@@ -35,6 +40,15 @@ function modelPayload(arg: string) {
 
     if (flag === '--provider' && parts[0] && !parts[0].startsWith('--')) {
       payload.provider = parts.shift()!
+
+      continue
+    }
+
+    // The picker's effort step rides in as `--reasoning <level>`. It is carried in the payload
+    // rather than rejected: the owner applies it after the swap (switch_model re-resolves
+    // reasoning from config, so an earlier write is clobbered) — same order as the CLI path.
+    if (flag === '--reasoning' && parts[0] && !parts[0].startsWith('--')) {
+      payload.reasoning = parts.shift()!
 
       continue
     }
@@ -232,15 +246,20 @@ async function applyBranchResult(result: CanonicalControlResult, arg: string, ct
   }
 }
 
-function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
+function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx): boolean {
   if (!result.model) {
     throw new Error(t('session.main.invalidModelSwitchResponse'))
   }
+
+  // The owner's reply carries the new route's effort/tier (`route_info`), so the statusbar paints
+  // model and effort in one update instead of the new model beside the previous route's effort.
+  const route = modelRouteInfo(result.route_info)
 
   patchUiState(state => ({
     ...state,
     info: {
       ...state.info,
+      ...route,
       model: result.model,
       execution_generation: Math.max(state.info?.execution_generation ?? 0, result.execution_generation ?? 0),
       skills: state.info?.skills ?? {},
@@ -248,6 +267,52 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
     }
   }))
   ctx.transcript.sys(t('session.main.modelSwitched', result.model))
+
+  return Boolean(route)
+}
+
+// Route fields the statusbar shows beside the model (`gateway/session_mutations.py`
+// MODEL_ROUTE_INFO_KEYS, plus `provider` from a full `session.info`).
+const MODEL_ROUTE_INFO_KEYS = ['provider', 'reasoning_effort', 'reasoning_effort_wire', 'service_tier', 'fast'] as const
+
+function modelRouteInfo(raw: unknown): null | Record<string, unknown> {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const fields = raw as Record<string, unknown>
+  const keys = MODEL_ROUTE_INFO_KEYS.filter(key => key in fields)
+
+  // An empty `route_info` paints nothing, so it must not suppress the fallback read.
+  return keys.length ? Object.fromEntries(keys.map(key => [key, fields[key]])) : null
+}
+
+/** Fallback for an owner whose model reply carries no `route_info`: repaint the new route's
+ *  effort/provider with a follow-up read. Best-effort: a failed read leaves the switch as applied;
+ *  a newer snapshot or another session is never overwritten (the next turn's `session.info`
+ *  reconciles either way). */
+async function refreshModelRouteInfo(
+  gw: MutationGateway,
+  sid: string,
+  result: CanonicalControlResult,
+  ctx: SlashRunCtx
+) {
+  const fresh = asRpcResult(await gw.request('session.info', { session_id: sid }).catch(() => null)) as
+    Record<string, unknown> | null | undefined
+
+  const current = getUiState()
+
+  if (
+    !fresh ||
+    ctx.stale() ||
+    current.sid !== sid ||
+    current.info?.model !== result.model ||
+    (current.info?.execution_generation ?? 0) > (result.execution_generation ?? 0)
+  ) {
+    return
+  }
+
+  patchUiState(state => ({ ...state, info: { ...state.info!, ...modelRouteInfo(fresh) } }))
 }
 
 type CompressSummary = { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
@@ -323,7 +388,9 @@ export async function runCanonicalSessionControl(
     } else if (operation === 'branch') {
       await applyBranchResult(result, arg, ctx)
     } else if (operation === 'model') {
-      applyModelResult(result, ctx)
+      if (!applyModelResult(result, ctx)) {
+        await refreshModelRouteInfo(gw, ctx.sid, result, ctx)
+      }
     } else if (result.status === 'preview') {
       // `--preview` is a read-only report; nothing to re-hydrate.
       ctx.transcript.sys((result.lines as string[]).join('\n'))

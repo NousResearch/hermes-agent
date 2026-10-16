@@ -9,8 +9,13 @@ def validate_action(operation, payload):
     if not isinstance(payload, dict) or not isinstance(operation, str):
         raise RuntimeStoreError('invalid_params')
     # ``confirm``: the owner's selection-guard token for this exact resolved target (session_mutation_model).
-    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm'}
+    # ``reasoning``: the TUI picker's effort step, applied by the same mutation after the swap.
+    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'reasoning', 'confirm'}
             and all(isinstance(v, str) and v.strip() for v in payload.values())):
+        if 'reasoning' in payload:
+            from hermes_constants import parse_reasoning_effort
+            if parse_reasoning_effort(payload['reasoning']) is None:
+                raise RuntimeStoreError('invalid_params')
         return
     if operation == 'branch' and _valid_branch_payload(payload):
         return

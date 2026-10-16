@@ -474,7 +474,11 @@ class ModelFlagParseResult:
 
 # --- Flag parsing
 
-_BOOL_FLAGS = {"--global": "is_global", "--session": "is_session", "--refresh": "force_refresh", "--once": "is_once"}
+_BOOL_FLAGS = {"--global": "is_global", "--session": "is_session", "--refresh": "force_refresh", "--once": "is_once",
+               # The TUI pickers append this; it is the same session scope as ``--session``.
+               # Without it here the token is folded into the model name by the positional
+               # collector and the switch targets a model that does not exist.
+               "--tui-session": "is_session"}
 _VALUE_FLAGS = {"--provider": "explicit_provider", "--reasoning": "reasoning_effort"}
 
 

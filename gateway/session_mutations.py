@@ -5,10 +5,13 @@ transactions. Local reset prepares its replacement in the receipt transaction;
 branch/compress/model still require their own prepared runtime publication.
 """
 import asyncio
+import logging
 from contextlib import nullcontext
 from functools import partial
 
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
+
+logger = logging.getLogger(__name__)
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
@@ -199,12 +202,32 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
             result = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields,
                                              _prepared=prepared, _authorize_write=authorize_write)
         await _project_result(authority, ref, live, params, result, editor_servers, applied=applied)
+    if operation == 'model' and result.get('model') and ref.session_id in authority.sessions:
+        result = _with_model_route_info(authority, ref, result)
     if operation == 'delete':
         # After the synchronous projections (no yield before retirement), off the loop: the
         # retired-media owner check is a messages-table pass (exact retries repeat it too).
         from hermes_state_media import collect_retired_media
         await asyncio.to_thread(collect_retired_media, authority.db)
     return result
+
+
+# The statusbar fields beside the model that a switch changes with it.
+MODEL_ROUTE_INFO_KEYS = ('reasoning_effort', 'reasoning_effort_wire', 'service_tier', 'fast')
+
+
+def _with_model_route_info(authority, ref, result):
+    """The switch's reply carries the new route's effort/tier, read from the just-published policy,
+    so the requester paints model and effort together instead of the new model beside the previous
+    route's effort. Reply-only (never stored in the receipt); best-effort: a failed read leaves the
+    committed switch as is and the next ``session.info`` reconciles."""
+    try:
+        from gateway.session_local import local_session_info
+        info = local_session_info(authority, ref)
+    except Exception:  # health: allow BLE001 -- display enrichment must not fail a committed switch
+        logger.debug('model route info unavailable for %s', ref.session_id, exc_info=True)
+        return result
+    return {**result, 'route_info': {key: info[key] for key in MODEL_ROUTE_INFO_KEYS if key in info}}
 
 
 async def _project_result(authority, ref, live, params, result, editor_servers, *, applied):

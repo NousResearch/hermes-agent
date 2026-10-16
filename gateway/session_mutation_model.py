@@ -29,6 +29,14 @@ async def prepare_model(authority, live, payload, prepared):
     if refusal is not None:
         return refusal
     frozen = old.config()
+    # The picker's effort step travels with the model pick (``--reasoning <level>``). Apply it to
+    # the same frozen config the switch just wrote: ``switch_model`` re-resolves reasoning from
+    # config, so this must land after it — same order as the CLI path. An explicit level wins over
+    # a per-model default, as ``prepare_reasoning`` does.
+    effort = payload.get('reasoning')
+    if effort:
+        frozen.setdefault('agent', {})['reasoning_effort'] = effort
+        frozen['agent'].pop('reasoning_overrides', None)
     # The one selection shape config.yaml gets (#25106): api_mode follows the target, a context pin
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
     # Off-loop: the context-pin check can do cold-start disk I/O.

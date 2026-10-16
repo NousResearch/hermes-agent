@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Vault-value redaction registry (profile-scoped, bounded)
 # ---------------------------------------------------------------------------
-# Exact secret values that transited a server-side vault fill (browser_vault_fill). Generic
+# Exact secret values that transited a server-side vault fill (browser_vault). Generic
 # credential-shaped regexes cannot catch an arbitrary user password, so the fill path registers
 # the exact bytes and every browser_* tool result (including browser_cdp Runtime.evaluate
 # passthrough) is scrubbed against them before it can reach the model. Memory only: never

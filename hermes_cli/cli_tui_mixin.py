@@ -941,7 +941,7 @@ class CLITuiMixin:
         return True
 
     def _tui_clear_or_exit(self, event) -> None:
-        """Idle press: clear text/images like bash; exit when everything is already empty."""
+        """Clear text/images like bash; exit when everything is already empty."""
         if event.app.current_buffer.text or self._attached_images:
             event.app.current_buffer.reset()
             self._attached_images.clear()
@@ -952,8 +952,8 @@ class CLITuiMixin:
 
     def _tui_handle_ctrl_c(self, event):
         """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt →
-        interrupt the running agent (first press) → force exit (second press within 2s) → when
-        idle clear the draft or exit."""
+        clear a typed draft, even mid-run (a correction must never kill the turn) → interrupt
+        the running agent → force exit (second press within 2s) → when idle and empty, exit."""
         now = time.time()
         if self._tui_cancel_voice_recording(event):
             return
@@ -965,7 +965,7 @@ class CLITuiMixin:
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
             return
-        if self._agent_running and self.agent:
+        if self._agent_running and self.agent and not (event.app.current_buffer.text or self._attached_images):
             if now - self._last_ctrl_c_time < 2.0:
                 print("\n" + t("cli.tui.force_exiting"))
                 self._should_exit = True
@@ -988,7 +988,7 @@ class CLITuiMixin:
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
             return
-        if self._agent_running and self.agent:
+        if self._agent_running and self.agent and not (event.app.current_buffer.text or self._attached_images):
             print("\n" + t("cli.tui.interrupting"))
             request_hard_interrupt(self.agent)
         else:
@@ -1491,9 +1491,9 @@ class CLITuiMixin:
                 self._should_exit = True
                 if event.app.is_running:
                     event.app.exit()
-        elif (
-            self._should_handle_steer_command_inline(text, has_images=has_images)
-            or self._should_handle_background_command_inline(text, has_images=has_images)):
+        elif (self._should_handle_steer_command_inline(text, has_images=has_images)
+              or self._should_handle_background_command_inline(text, has_images=has_images)
+              or self._should_handle_stop_command_inline(text, has_images=has_images)):
             self.process_command(text)
         else:
             return False

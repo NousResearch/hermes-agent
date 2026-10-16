@@ -8,5 +8,14 @@ export const jaUpdateChannel = {
   stableConfirmBody:
     'Hermes は最新の公開リリースに移動します。現在のコードより古い場合があります。新しいコードが書き込んだデータは正しく読めない可能性があるため、先にバックアップしてください。',
   stableConfirm: '安定版に切り替え',
-  failed: 'アップデートチャンネルを変更できませんでした'
+  failed: 'アップデートチャンネルを変更できませんでした',
+  detailsLabel: 'チャンネル',
+  branch: (b: string) => `ブランチ: ${b}`,
+  change: '変更',
+  latestRelease: (v: string) => `最新の安定版リリース（${v}）を使用しています。`,
+  rollbackTitle: (v: string) => `安定版リリース ${v} に戻す`,
+  rollbackBody: (v: string) =>
+    `このビルドは安定版リリース ${v} より新しいです。インストールすると Hermes はそのリリースに戻ります。`,
+  rollbackAction: (v: string) => `${v} に戻す`,
+  allChanges: 'すべての変更を見る'
 }

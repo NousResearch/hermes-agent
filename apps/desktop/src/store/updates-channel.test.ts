@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopUpdateStatus } from '@/global'
 
-import { sourceUpdateChannel } from './updates'
+import { sourceUpdateChannel, sourceUpdateTrack } from './updates'
 
 const status = (fields: Partial<DesktopUpdateStatus>): DesktopUpdateStatus => ({
   supported: true,
@@ -28,5 +28,16 @@ describe('sourceUpdateChannel', () => {
     expect(sourceUpdateChannel(status({ channel: 'stable', channelSelectable: undefined }))).toBeNull()
     // A custom branch is neither stable releases nor every commit on main.
     expect(sourceUpdateChannel(status({ branch: 'feature/gui' }))).toBeNull()
+  })
+})
+
+describe('sourceUpdateTrack', () => {
+  it('names what a source checkout follows, including a custom branch and older runtimes', () => {
+    expect(sourceUpdateTrack(status({ channel: 'stable', channelSelectable: undefined }))).toEqual({ kind: 'stable' })
+    expect(sourceUpdateTrack(status({ branch: 'main' }))).toEqual({ kind: 'main' })
+    expect(sourceUpdateTrack(status({ branch: 'feature/gui' }))).toEqual({ kind: 'branch', name: 'feature/gui' })
+    // Packages own their channel; preview channels are not a source track.
+    expect(sourceUpdateTrack(status({ mechanism: 'electron-updater', channel: 'stable' }))).toBeNull()
+    expect(sourceUpdateTrack(status({ channel: 'pm-preview' }))).toBeNull()
   })
 })

@@ -33,6 +33,8 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_retry import retryable_user_text
+from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -480,34 +482,19 @@ def drop_shadowed_checkpoints(
 
 
 def _prune_stale_reasoning_replay(messages: list[dict[str, Any]]) -> int:
-    """Strip stale ``codex_reasoning_items`` from assistant turns older than the active one.
-    Boundary is the last USER message (a turn spans several assistant rows): the Responses API replays a
-    turn's bridging reasoning items together, so cutting at the last ASSISTANT would strip mid-chain.
-    Only the NEWEST ``type: "compaction"`` checkpoint survives (``drop_shadowed_checkpoints``): a shadowed
-    one was still copied into the compacted transcript and every child session built from it (#102374).
-    Filter items, never pop the key on the carrier. In place; returns pruned message count."""
+    """Drop shadowed ``type: "compaction"`` checkpoints from assistant turns older than the active one; only the
+    NEWEST survives (``drop_shadowed_checkpoints``): a shadowed one was still copied into the compacted transcript
+    and every child session built from it (#102374). Per-turn ``codex_reasoning_items`` are never pruned: the
+    compacted list becomes canonical history, the wire builder already filters per issuer/model, and a later
+    switch to a route that reads earlier-turn reasoning needs them. In place; returns pruned message count."""
     # Active turn = everything after the last real user message; synthetic
     # continuation rows and tool results never mark a turn boundary.
     last_user_idx = _last_index_with_role(messages, "user")
     if last_user_idx < 0:
-        # No user boundary: prune nothing (fail open toward correctness).
         return 0
-
     pruned = set()
     for key in _STALE_REPLAY_PRUNE_KEYS:
         pruned.update(drop_shadowed_checkpoints(messages, key, before=last_user_idx))
-        for i in range(last_user_idx):
-            msg = messages[i]
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            items = msg.get(key)
-            if not isinstance(items, list) or not items:
-                continue
-            kept = [item for item in items if _is_checkpoint_item(item)]
-            if len(kept) == len(items):
-                continue  # nothing stale in this sidecar
-            _set_sidecar(msg, key, kept)
-            pruned.add(i)
     return len(pruned)
 
 
@@ -573,7 +560,8 @@ def _salvage_reduce_todo_snapshot(out: list[dict[str, Any]]) -> None:
 def salvage_grown_transcript(
     original: list[dict[str, Any]], candidate: list[dict[str, Any]], budget: Optional[int] = None,
 ) -> Optional[list[dict[str, Any]]]:
-    """Mechanically shrink a compression candidate (copies, cheapest loss first); ``None`` unless strictly smaller."""
+    """Mechanically shrink a compression candidate (copies, cheapest loss first); ``None`` unless strictly smaller.
+    Never strips reasoning (text or encrypted items): the result becomes canonical history replay reads."""
     if not candidate or not original:
         return None
     if budget is None:
@@ -583,15 +571,10 @@ def salvage_grown_transcript(
 
     out = [dict(msg) if isinstance(msg, dict) else msg for msg in candidate]
     tool_indices = [i for i, msg in enumerate(out) if isinstance(msg, dict) and msg.get("role") == "tool"]
-    last_assistant_idx = _last_index_with_role(out, "assistant")
-    salvage_reasoning_keys = _NEWEST_TURN_ONLY_BUDGET_KEYS + ("reasoning_details",)
     keep_tools = set(tool_indices[-_SALVAGE_KEEP_RECENT_TOOLS:])
     for index, msg in enumerate(out):
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") == "assistant" and index != last_assistant_idx:
-            for key in salvage_reasoning_keys:
-                msg.pop(key, None)
         if msg.get("role") == "tool" and index not in keep_tools:
             content = msg.get("content")
             if isinstance(content, str) and len(content) > _PRUNE_MIN_CHARS:
@@ -849,8 +832,8 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 
 def _is_summary_stub(content: str) -> bool:
-    """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary."""
-    return content.startswith("[") and " chars)" in content and len(content) < 400
+    """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary or a lean-tail demotion stub."""
+    return content.startswith("[") and " chars)" in content and len(content) < 400 or is_demoted_stub(content)
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -866,8 +849,6 @@ _PRUNE_MIN_CHARS = 200
 # PR #44166 emitted ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making re-injection fire
 # even when the marker had survived).
 SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
-# Small skill_view results stay verbatim; shared by emit site and summarizer scan.
-_SKILL_VIEW_PRUNE_MIN_CHARS = 5000
 # Bounds the re-injected "## Pruned Skills" block; newest-referenced win.
 _MAX_PRUNED_SKILL_MARKERS = 20
 
@@ -891,19 +872,27 @@ def _extract_pruned_skill_names(text: str) -> list[str]:
     return list(dict.fromkeys(m.group(1) for m in _SKILL_PRUNED_MARKER_RE.finditer(text or "")))
 
 
+def _skill_view_failed(content: Any) -> bool:
+    """True for a ``skill_view`` that loaded nothing: the raw failure payload or its ``[skill_view] … FAILED`` stub."""
+    if not isinstance(content, str):
+        return False
+    return bool(_result_failure_suffix(content)) or (
+        content.startswith("[skill_view] ") and " FAILED" in content.split(" (", 1)[0])
+
+
 def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
-    """Skill names about to be lost in compaction: demoted ``skill_view`` rows and raw, never-demoted bodies."""
-    call_id_to_skill: dict[str, str] = {}
-    for idx, skill in _skill_view_call_sites(turns):
-        for tc in turns[idx].get("tool_calls") or []:
-            cid = _tc_get(tc, "id")
-            if cid and _tc_get(_tc_get(tc, "function", {}), "name") == "skill_view":
-                call_id_to_skill[cid] = skill
+    """Skills about to be lost in compaction, whatever their size: marked or plain ``skill_view`` stubs, raw
+    ``skill_view`` bodies, and skills a ``/skill``, bundle or auto-load turn carried inline."""
+    from agent.skill_commands import skills_loaded_by_scaffold
+    call_id_to_skill = skill_view_names_by_call_id(turns)
     names: list[str] = []
     for msg in turns:
         content = msg.get("content")
-        names += _extract_pruned_skill_names(_content_text_for_contains(content))
-        if msg.get("role") == "tool" and isinstance(content, str) and len(content) > _SKILL_VIEW_PRUNE_MIN_CHARS:
+        text = _content_text_for_contains(content)
+        names += _extract_pruned_skill_names(text)
+        if msg.get("role") == "user":
+            names += skills_loaded_by_scaffold(text)
+        elif msg.get("role") == "tool" and not _skill_view_failed(content) and not is_demoted_stub(text):
             names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
     return [name for name in dict.fromkeys(names) if name]
 
@@ -944,21 +933,6 @@ _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
 _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
 _LEAN_USER_MESSAGES_HEADING = "## User Messages (verbatim, newest first)"
 _LEAN_RECOVERY_HEADING = "## Context Recovery"
-# Demote tool results older than the newest N rounds so the tail budget binds
-# (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
-_LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
-_LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
-
-
-def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
-    """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
-    return (
-        f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
-        f"chars preserved in session history.{hint}]"
-    )
-
-
 _SYNTHETIC_USER_ROW_PREFIXES = (
     "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background", "[Your active task list",
     "[Planning state preserved", "[ASYNC DELEGATION", "[OUT-OF-BAND", "Cronjob Response:",
@@ -972,6 +946,13 @@ def _synthetic_user_row(content: str) -> bool:
     return content.lstrip().startswith(_SYNTHETIC_USER_ROW_PREFIXES)
 
 
+def _typed_user_text(content: str) -> str:
+    """A ``/skill``, bundle or auto-load turn as the user typed it (``/skill do X``); other text unchanged.
+    Its inline skill body is not the user's words — it is carried by a ``[SKILL_PRUNED: ...]`` marker instead."""
+    from agent.skill_commands import describe_skill_invocation, skills_loaded_by_scaffold
+    return (describe_skill_invocation(content, separator=" ") or "") if skills_loaded_by_scaffold(content) else content
+
+
 def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
     """Compacted region's REAL user messages verbatim, newest-first under a char budget (straddler truncated); "" if none."""
     collected: list[str] = []
@@ -979,7 +960,7 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
     for msg in reversed(turns):
         if msg.get("role") != "user":
             continue
-        content = _content_text_for_contains(msg.get("content"))
+        content = _typed_user_text(_content_text_for_contains(msg.get("content")))
         if _synthetic_user_row(content):
             continue
         remaining = _LEAN_USER_MESSAGES_BUDGET_CHARS - used
@@ -1063,7 +1044,8 @@ _ANCHOR_NOISE = frozenset({
 
 def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
     """Regex-harvest exact identifiers from the compacted region (LLM-free); per-category caps, most-frequent first."""
-    text = "\n".join(c for c in (msg.get("content") for msg in turns) if isinstance(c, str) and c)
+    contents = (_typed_user_text(m["content"]) if m.get("role") == "user" and isinstance(m.get("content"), str) else m.get("content") for m in turns)
+    text = "\n".join(c for c in contents if isinstance(c, str) and c)
     if not text:
         return ""
     sections: list[str] = []
@@ -1291,8 +1273,7 @@ _REPLAY_BUDGET_KEYS = "reasoning", "reasoning_content", "codex_reasoning_items",
 _ALWAYS_REPLAYED_BUDGET_KEYS = "codex_reasoning_items", "codex_message_items"
 _NEWEST_TURN_ONLY_BUDGET_KEYS = "reasoning", "reasoning_content"
 
-# Safe to strip from stale assistant turns: only the current turn's replay needs
-# them, and the compaction boundary already invalidated the prompt-cache prefix.
+# Sidecars whose shadowed compaction checkpoints are dropped from stale turns.
 _STALE_REPLAY_PRUNE_KEYS = "codex_reasoning_items",
 
 
@@ -1740,9 +1721,12 @@ def _sum_execute_code(name, args, content, content_len, line_count):
 
 def _sum_skill_view(name, args, content, content_len, line_count):
     skill = args.get("name", "?")
-    # Ghost-skill defense: canonical marker says instructions are gone and how to reload.
-    marker = " " + _skill_pruned_marker(str(skill)) if content_len > _SKILL_VIEW_PRUNE_MIN_CHARS else ""
-    return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
+    # Ghost-skill defense: any loaded body, however small, leaves the marker saying it is gone and how to reload.
+    failed = _result_failure_suffix(content) or (" FAILED" if _skill_view_failed(content) else "")
+    # Re-summarizing a stub (fallback summary) keeps that stub's own verdict instead of re-deciding blind.
+    keep = SKILL_PRUNED_MARKER_PREFIX in content if _is_summary_stub(content) else not failed
+    marker = " " + _skill_pruned_marker(str(skill)) if skill != "?" and keep else ""
+    return f"[skill_view] name={skill}{failed} ({content_len:,} chars)" + marker
 
 
 # Runtime notices that clarify producers persisted as user_response before per-response
@@ -2316,6 +2300,7 @@ class ContextCompressor(
         self._ineffective_compression_count = 0
         # Wall-clock probe deadline; 0.0 = unarmed (durable copy re-read via _load_anti_thrash_recovery_deadline).
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
+        self._structural_no_op_len = 0
         # Observability only; never feeds the strike latch or the fallback streak.
         self._prellm_skip_count = 0
         # Only a healthy completed summary resets this; ordinary fitting responses do not.
@@ -2514,11 +2499,14 @@ class ContextCompressor(
         self._ineffective_compression_count = count
         self._persist_ineffective_compression_count()
 
-    def _record_structural_no_op(self, reason: str) -> None:
+    def _record_structural_no_op(self, reason: str, n_messages: int = 0) -> None:
         """Defer retries after a structural no-op WITHOUT striking the anti-thrash breaker.
         Nothing eligible existed, so nothing was "ineffective"; striking would permanently disarm
-        auto-compaction on short sessions. The backoff still stops per-turn re-scans."""
+        auto-compaction on short sessions. The backoff still stops per-turn re-scans. It is a
+        verdict about THIS transcript shape: a serving process that keeps the compressor across
+        turns (the gateway daemon) lifts it as soon as the transcript has grown (``compress``)."""
         self._structural_no_op_backoff_until = time.monotonic() + self._STRUCTURAL_NO_OP_BACKOFF_SECONDS
+        self._structural_no_op_len = int(n_messages or 0)
         if not self.quiet_mode:
             logger.warning(
                 "Compression skipped (%s): retrying in %.0fs (structural no-op backoff)", reason,
@@ -3568,7 +3556,8 @@ class ContextCompressor(
                     _collect_paths_from_jsonish(parsed, relevant_files)
         for msg in turns_to_summarize:
             role = msg.get("role", "unknown")
-            text = _compact_fallback_turn(msg.get("content"))
+            content = msg.get("content")
+            text = _compact_fallback_turn(_typed_user_text(content) if role == "user" and isinstance(content, str) else content)
             _collect_path_mentions(text, relevant_files)
             synthetic_user = role == "user" and self._is_synthetic_compression_user_turn(msg)
             tool_names = [_extract_tool_call_name_and_args(tc)[0] for tc in (msg.get("tool_calls") or [])] if role == "assistant" else []
@@ -3671,29 +3660,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return self._augment_summary_lean(summary, turns_to_summarize)
 
     def _demote_stale_tail_tools(self, messages: list[dict[str, Any]], tail_start: int) -> list[dict[str, Any]]:
-        """Lean mode: demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
-        recovery stubs; skill-marker rows untouched. New list (untouched rows shared, demoted copied)."""
-        session_id = getattr(self, "_session_id", "") or ""
-        rounds_seen = 0
-        protected: set[int] = set()
-        prev_idx = None
-        for i in (i for i in range(len(messages) - 1, tail_start - 1, -1) if messages[i].get("role") == "tool"):
-            rounds_seen += prev_idx is None or prev_idx - i > 1
-            prev_idx = i
-            if rounds_seen > _LEAN_TAIL_KEEP_TOOL_ROUNDS:
-                break
-            protected.add(i)
-        result = list(messages)
-        demoted = 0
-        for i in range(tail_start, len(messages)):
-            msg = messages[i]
-            content = msg.get("content")
-            if msg.get("role") != "tool" or i in protected or not isinstance(content, str):
-                continue
-            if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
-                continue
-            result[i] = _rewritten(msg, _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id))
-            demoted += 1
+        """Lean mode: demote stale tail tool results to recovery stubs (``demote_stale_tail_tools``)."""
+        result, demoted = demote_stale_tail_tools(messages, tail_start, getattr(self, "_session_id", "") or "")
         if demoted and not self.quiet_mode:
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
         return result
@@ -4452,7 +4420,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # display_kind notices are operational traffic, not user intent.
             if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or msg.get("display_kind"):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
             if not text:
                 continue
             text = " ".join(text.split())
@@ -4479,7 +4447,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         for msg in reversed(messages):
             if msg.get("role") != "user" or not _is_real_user_message(msg):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
             if not text:
                 continue
             if len(text) > _ACTIVE_TASK_MAX_CHARS:
@@ -5298,11 +5266,17 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._structural_no_op_backoff_until = 0.0
         return telemetry
 
-    def _structural_no_op_result(self, telemetry: dict[str, Any], failure_class: str, reason: str) -> None:
+    def _structural_no_op_result(self, telemetry: dict[str, Any], failure_class: str, reason: str,
+                                 n_messages: int = 0) -> None:
         """Nothing eligible to compress: transient backoff (#93022), never an ineffectiveness strike."""
         telemetry["failure_class"] = failure_class
         self._last_compression_savings_pct = 0.0
-        self._record_structural_no_op(reason)
+        self._record_structural_no_op(reason, n_messages)
+
+    def lift_structural_backoff_if_grown(self, n_messages: int) -> None:
+        """A structural no-op said "nothing eligible among N messages"; more messages is new evidence."""
+        if self._structural_no_op_backoff_until and n_messages > getattr(self, "_structural_no_op_len", 0):
+            self._structural_no_op_backoff_until = 0.0
 
     def _drop_blank_echoes(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Remove blank platform echoes trailing the latest actionable user turn."""
@@ -5527,8 +5501,6 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         # Invariant (#57491): no compacted message leaves compress() with a persistence marker.
         _strip_persistence_markers(compressed)
-        # Prior-turn codex_reasoning_items are re-billed dead weight (#71058); the cache prefix is
-        # already broken here.
         _pruned_replay = _prune_stale_reasoning_replay(compressed)
         if _pruned_replay and not self.quiet_mode:
             logger.info("Pruned stale replay items from %d assistant message(s) during compaction", _pruned_replay)
@@ -5585,6 +5557,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         if n_messages <= _min_for_compress:
             self._structural_no_op_result(
                 telemetry, "insufficient_messages", f"only {n_messages} messages (need > {_min_for_compress})",
+                n_messages,
             )
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
@@ -5609,6 +5582,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._structural_no_op_result(
                 telemetry, "no_compressible_window",
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
+                n_messages,
             )
             return canonical_messages
         turns_to_summarize = messages[compress_start:compress_end]
@@ -5627,6 +5601,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._structural_no_op_result(
                 telemetry, "empty_post_handoff_window",
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
+                n_messages,
             )
             return canonical_messages
         if not self.quiet_mode:
@@ -5806,30 +5781,6 @@ def history_before_user_originated_turn(
         raise ValueError("selected row is not a user-originated turn")
     prefix = [message.copy() for message in messages[:index]] + ([handoff] if handoff is not None else [])
     return prefix, live_view
-
-
-def retryable_user_text(content: Any) -> str:
-    """Lossless retry text, or raise before destructive mutation (media/unknown parts fail closed: no replay protocol)."""
-    if not isinstance(content, (str, list)):
-        raise ValueError("retry does not support non-text content")
-    chunks: list[str] = []
-    for part in [content] if isinstance(content, str) else content:
-        if isinstance(part, str):
-            chunks.append(part)
-            continue
-        if not isinstance(part, dict):
-            raise ValueError("retry does not support non-text content")
-        if part.get("type") not in {"text", "input_text", "output_text"}:
-            raise ValueError("retry does not support media or unknown content parts")
-        if set(part) - {"type", "text"}:
-            raise ValueError("retry cannot losslessly flatten annotated text parts")
-        if not isinstance(part.get("text"), str):
-            raise ValueError("retry text parts must contain text")
-        chunks.append(part["text"])
-    text = "".join(chunks)
-    if not text.strip():
-        raise ValueError("retry found no text to send")
-    return text
 
 
 def _handoff_carries_live_user_content(message: Any) -> bool:

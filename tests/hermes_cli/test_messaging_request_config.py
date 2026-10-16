@@ -16,7 +16,7 @@ from hermes_cli.web_server_profiles import _hermes_home_scope
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(messaging, "resolve_gateway_liveness", lambda **kw: SimpleNamespace(running=False))
-    monkeypatch.setattr(messaging, "multiplexer_liveness_for_profile", lambda *a: None)
+    monkeypatch.setattr(messaging, "served_profile_runtime", lambda *a: None)
     monkeypatch.setattr(messaging, "get_runtime_status_running_pid", lambda *a, **kw: None)
     monkeypatch.setattr(messaging, "read_runtime_status", lambda **kw: None)
     monkeypatch.setattr(messaging, "_GATEWAY_HEALTH_URL", None)

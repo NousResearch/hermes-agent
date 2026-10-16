@@ -9,5 +9,14 @@ export const enUpdateChannel: UpdateChannelCopy = {
   stableConfirmBody:
     'Hermes will move to the latest published release, which can be older than the code you run now. Data written by newer code may not read correctly, so back it up first.',
   stableConfirm: 'Switch to stable',
-  failed: 'Could not change the update channel'
+  failed: 'Could not change the update channel',
+  detailsLabel: 'Channel',
+  branch: (b: string) => `Branch: ${b}`,
+  change: 'Change',
+  latestRelease: (v: string) => `You’re on the latest stable release (${v}).`,
+  rollbackTitle: (v: string) => `Back to stable release ${v}`,
+  rollbackBody: (v: string) =>
+    `This build is newer than the stable release ${v}. Installing it moves Hermes back to that release.`,
+  rollbackAction: (v: string) => `Roll back to ${v}`,
+  allChanges: 'See all changes'
 }

@@ -92,7 +92,24 @@ describe('VaultSettings', () => {
     expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('')
   })
 
-  it('validates the origin before submitting a login item', async () => {
+  it('allows adding a login without a site origin', async () => {
+    requestGateway.mockImplementation(async (method: string) =>
+      method === 'vault.list' ? { items: [] } : { id: 'vault_no_origin' }
+    )
+    renderVault()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Private note' } })
+    fireEvent.change(screen.getByLabelText('Identifier'), { target: { value: 'me@example.com' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 's3cret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.add', {
+      kind: 'login', label: 'Private note', secret: expect.objectContaining({ password: 's3cret' })
+    }))
+  })
+
+  it('validates a non-empty origin before submitting a login item', async () => {
     requestGateway.mockResolvedValue({ items: [] })
     renderVault()
 

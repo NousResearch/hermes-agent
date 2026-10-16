@@ -52,7 +52,9 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_o
         coords = dict(profile='default', source='bot_room')
         sid = rpc.create(**coords, title='Group: room')['session_id']
         args = dict(**coords, session_id=sid, prompt='input', task=task, execution_generation=1, on_terminal=lambda r: None)
-        receipt = rpc.submit(**args)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            rpc.submit(**args, member_id='other')
+        receipt = rpc.submit(**args, member_id='member')
         assert rpc.submit(**args)['admission_id'] == receipt['admission_id']
         rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
         assert len(rows) == 1

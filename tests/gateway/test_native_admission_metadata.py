@@ -109,6 +109,13 @@ async def test_native_codec_closed_metadata_contract_and_reply_expected(tmp_path
         for bad in (replace(event, reply_expected='no'), replace(event, text='/new now')):
             with pytest.raises(RuntimeStoreError, match='invalid_params'):
                 snapshot_native(runner, bad)
+        # MSG-2: an adapter's absent media list (None) is no media at the envelope boundary, with the
+        # same fingerprint as []; any other non-list still refuses.
+        for name in ('media_urls', 'media_types', 'media_text_inlined'):
+            assert snapshot_native(runner, replace(event, **{name: None})) == snapshot_native(runner, event)
+            for bad in ('x', ('x',)):
+                with pytest.raises(RuntimeStoreError, match='invalid_params'):
+                    snapshot_native(runner, replace(event, **{name: bad}))
     finally:
         authority.db.close()
     # Closed producer matrix: no other adapter stamps MessageEvent.metadata on ordinary inbound,

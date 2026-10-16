@@ -79,31 +79,30 @@ def _is_active_session_subagent(turn, payload: dict) -> bool:
 
 def _publish_subagent(turn, event_type, payload) -> None:
     owner = getattr(turn, "_approval_owner", None)
-    if owner is not None:
-        authority, session_id, generation = owner
-        executing = getattr(authority, "executing", None)
-        if not (isinstance(executing, dict) and executing.get(session_id) != generation):
-            if turn._publish_execution(event_type, payload) is not False:
-                return
-        if not _is_active_session_subagent(turn, payload):
+    executing = getattr(owner[0], "executing", None) if owner is not None else None
+    if owner is None or not isinstance(executing, dict):
+        turn._publish_execution(event_type, payload)
+        return
+    authority, session_id, generation = owner
+    stream = getattr(authority.sessions.get(session_id), "event_stream", None)
+    lock = getattr(stream, "lock", None)
+    import contextlib
+    # The claim is stamped and cleared under this lock, so the in-turn/out-of-turn choice cannot race the turn's end.
+    with lock if lock is not None else contextlib.nullcontext():
+        if executing.get(session_id) == generation:
+            turn._publish_execution(event_type, payload)
+            return
+        if stream is None or not _is_active_session_subagent(turn, payload):
             return
         # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
-        live = authority.sessions.get(session_id)
-        stream = getattr(live, "event_stream", None)
-        if stream is not None:
-            import contextlib
-            lock = getattr(stream, "lock", None)
-            with lock if lock is not None else contextlib.nullcontext():
-                saved = getattr(stream, "execution", None)
-                if isinstance(saved, dict):
-                    stream.execution = {}
-                try:
-                    stream.publish(session_id, payload, event_type=event_type)
-                finally:
-                    if isinstance(saved, dict):
-                        stream.execution = saved
-        return
-    turn._publish_execution(event_type, payload)
+        saved = getattr(stream, "execution", None)
+        if isinstance(saved, dict):
+            stream.execution = {}
+        try:
+            stream.publish(session_id, payload, event_type=event_type)
+        finally:
+            if isinstance(saved, dict):
+                stream.execution = saved
 
 
 def publish_progress(turn, event_type, name, preview, kwargs) -> None:

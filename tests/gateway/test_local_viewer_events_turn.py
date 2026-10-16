@@ -454,6 +454,19 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     assert params['type'] == 'subagent.complete' and 'admission_id' not in params and 'execution_generation' not in params
     assert live.event_stream.execution == {'admission_id': 'turn-b', 'execution_generation': 2}
 
+    # In-turn event with no live viewer: recorded once with the turn's identity, never retried as an out-of-turn frame.
+    authority = turn._approval_owner[0]
+    authority.executing = {'s': 1}
+    publish_calls = []
+    turn._publish_execution = lambda kind, payload: publish_calls.append(kind) or False
+    _register_subagent({'subagent_id': 'sa-0-abc12345', 'agent': owned_child, 'owner_agent_session_id': 's'})
+    try:
+        stream_frames.clear()
+        relay('subagent.start')
+    finally:
+        _unregister_subagent('sa-0-abc12345')
+    assert publish_calls == ['subagent.start'] and stream_frames == []
+
     # Messaging routes never publish subagent.* viewer frames.
     msg_published = []
     msg_turn = _turn(Platform.TELEGRAM, msg_published)

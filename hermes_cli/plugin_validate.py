@@ -185,6 +185,20 @@ def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
         report.add("requires_env", True, "all entries UPPER_SNAKE")
 
 
+def _check_oauth(report: ValidationReport, manifest: dict, plugin_dir: Path) -> None:
+    """``oauth:`` clients (hermes_cli.plugin_oauth): shape and declared variables fail admission; plugin
+    code that names a token URL is a reviewer warning, since Hermes refreshes the grant itself."""
+    from hermes_cli.plugin_oauth import oauth_admission_problems, token_url_mentions
+
+    if not manifest.get("oauth"):
+        report.add("oauth", True, "not declared")
+        return
+    problems = oauth_admission_problems(manifest, plugin_dir)
+    report.add("oauth", not problems, "; ".join(problems) or "clients valid")
+    for warning in token_url_mentions(manifest, plugin_dir):
+        report.warn(warning)
+
+
 # ─── Capability probe (subprocess-isolated) ──────────────────────────────────
 
 # Self-contained harness run in a scratch child process. Imports the plugin
@@ -529,6 +543,7 @@ def validate_plugin_dir(
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
+    _check_oauth(report, manifest, plugin_dir)
     _check_loadable(report, plugin_dir, manifest)
     _check_python_dependencies(report, plugin_dir)
     recorded = _check_capabilities(report, manifest, plugin_dir, probe)

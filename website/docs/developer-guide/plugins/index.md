@@ -466,6 +466,84 @@ returns an `AccountUsageSnapshot` (plan, session/weekly windows with
 **Sign-out** belongs to Hermes, not to a plugin: point users at
 `hermes auth logout openai-codex` instead of deleting credential files.
 
+### Use your own OAuth client (Google and other APIs)
+
+A plugin that calls a third-party API with the user's own OAuth client (a
+Google Cloud "Desktop app" client, a Microsoft or Notion app) does not run the
+consent flow, store the refresh token or refresh it. Declare the client and
+Hermes owns the grant:
+
+```yaml
+name: gemini-voice
+requires_env:
+  - name: GEMINI_VOICE_CLIENT_ID
+  - name: GEMINI_VOICE_CLIENT_SECRET
+    secret: true
+oauth:
+  - id: google
+    authorize_url: https://accounts.google.com/o/oauth2/v2/auth
+    token_url: https://oauth2.googleapis.com/token
+    scopes:
+      - https://www.googleapis.com/auth/calendar.events.owned
+      - https://www.googleapis.com/auth/documents
+    client_id_env: GEMINI_VOICE_CLIENT_ID
+    client_secret_env: GEMINI_VOICE_CLIENT_SECRET  # optional: a public PKCE client has none
+    hosts: [www.googleapis.com, docs.googleapis.com]
+    authorize_params: {access_type: offline, prompt: consent}  # Google issues a refresh token only with these
+```
+
+The user signs in once from a terminal with `hermes auth add gemini-voice:google`
+(the plugin's key, a colon, the entry's `id`). That is the same PKCE login the
+model-provider helper runs: a loopback redirect on `127.0.0.1`, with an SSH
+tunnel hint when Hermes runs on a remote host. If the IdP grants fewer scopes
+than declared, nothing is saved. `hermes auth status|refresh|logout
+gemini-voice:google` show, refresh and remove the grant. It lives in the active
+profile's `auth.json`; Hermes refreshes it on use once less than two minutes
+remain and never starts a sign-in under the gateway or cron.
+
+The plugin calls the API through the same helper, with the entry's `id` as the
+provider:
+
+```python
+from hermes_cli.auth_constants import AuthError
+from hermes_cli.plugin_provider_requests import ProviderNotSignedIn, credentialed_provider_request
+
+def create_document(title: str) -> dict:
+    try:
+        resp = credentialed_provider_request(
+            "google", "POST", "https://docs.googleapis.com/v1/documents", json={"title": title}, timeout=20)
+    except ProviderNotSignedIn as exc:
+        return {"ok": False, "error": str(exc)}  # names `hermes auth add gemini-voice:google`
+    except AuthError as exc:
+        return {"ok": False, "error": f"{exc.code}: {exc}"}
+    return {"ok": resp.status < 300, "status": resp.status, "body": resp.json()}
+```
+
+The Codex rules above apply, plus:
+
+- **Declared hosts only.** The bearer goes to `https://<host>` (port 443) for
+  the entry's `hosts`. Any other URL, `http`, or a URL with user info raises
+  `PermissionError` before a request is made.
+- **The plugin's own grant.** The grant is stored under the calling plugin's
+  key, so another plugin declaring the same `id` cannot use it, and the plugin's
+  own entry wins over a Hermes sign-in of the same name.
+- **The grant follows the declaration.** It remembers the entry it was made
+  for: a plugin version that changes the token URL, hosts, scopes or client
+  variables gets `ProviderNotSignedIn` until the user signs in again, and a
+  catalog re-pin that adds an `oauth` entry or changes its token host, hosts or
+  scopes asks before updating.
+- **Errors.** `ProviderNotSignedIn`: not signed in, revoked, or the entry
+  changed since sign-in. `AuthError` codes: `oauth_client_id_missing` and
+  `oauth_client_secret_missing` (the variable is not set), `invalid_client`,
+  `unauthorized_client` and `invalid_scope` (the IdP rejected the client; the
+  user has to fix it), `oauth_refresh_failed` (network or server error; try
+  later). A revoked grant (`invalid_grant`) is retired: nothing goes to the
+  network until the next sign-in.
+
+`hermes plugins validate` checks the `oauth:` block and that its client
+variables are declared, and warns when plugin code names the token URL. Like
+`requires_auth`, this is consent and visibility, not a sandbox.
+
 ### Manifest v2 reference
 
 `plugin.yaml` also supports an additive **v2 schema** (#64165). Every field is
@@ -487,6 +565,7 @@ this Hermes understands still loads with a warning.
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 | `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
+| `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`. Signed in with `hermes auth add <plugin>:<id>`, used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
 
 ```yaml
 # plugin.yaml — manifest v2 example

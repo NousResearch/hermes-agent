@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 
+import httpx
 import psutil
 import pytest
 
@@ -72,3 +73,55 @@ def test_cached_client_follows_managed_endpoint_restart(managed_server):
 
     state_path().unlink()
     assert aux._get_cached_client("llama.cpp", MODEL, task="compression") == (None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("task", ["researcher", "vision"])
+@pytest.mark.parametrize("alias", ["llamacpp", "llama.cpp", "llama-cpp"])
+async def test_strict_public_call_keeps_managed_alias_route(
+    managed_server, monkeypatch, asynchronous, task, alias,
+):
+    """Alias identity must survive vision normalization and strict keyword forwarding."""
+    managed_server(18001, "local-fixture-key")
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if json.loads(request.content).get("stream"):
+            chunk = {
+                "id": "local-fixture", "object": "chat.completion.chunk", "created": 1,
+                "model": MODEL, "choices": [{"index": 0, "finish_reason": "stop",
+                                              "delta": {"content": "local result"}}],
+            }
+            return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                  content=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n")
+        return httpx.Response(200, json={
+            "id": "local-fixture", "object": "chat.completion", "created": 1,
+            "model": json.loads(request.content)["model"],
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "local result"}}],
+        })
+
+    def transport_for_url(_client, _url):
+        return httpx.MockTransport(respond)
+
+    monkeypatch.setattr(httpx.Client, "_transport_for_url", transport_for_url)
+    monkeypatch.setattr(httpx.AsyncClient, "_transport_for_url", transport_for_url)
+    kwargs = dict(task=task, provider=alias, model=MODEL, allow_fallback=False,
+                  messages=[{"role": "user", "content": "local fixture"}])
+    response = await aux.async_call_llm(**kwargs) if asynchronous else aux.call_llm(**kwargs)
+    assert response.choices[0].message.content == "local result"
+    accepted_requests = list(requests)
+    assert [(str(r.url), r.headers["authorization"], json.loads(r.content)["model"])
+            for r in requests] == [
+        ("http://127.0.0.1:18001/v1/chat/completions", "Bearer local-fixture-key", MODEL),
+    ]
+
+    state_path().unlink()
+    with pytest.raises(aux.AuxiliaryClientUnavailable):
+        if asynchronous:
+            await aux.async_call_llm(**kwargs)
+        else:
+            aux.call_llm(**kwargs)
+    assert requests == accepted_requests  # No cloud request after the managed route disappears.

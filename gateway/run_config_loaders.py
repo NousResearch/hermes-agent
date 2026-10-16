@@ -190,7 +190,8 @@ class GatewayConfigLoadersMixin:
         if (policy := local_policy(self, source)) is not None:
             # A local session runs its frozen (or followed) level, not the profile's.
             return policy.current_reasoning_config(self, resolved_session_key)
-        return self._load_reasoning_config(model)
+        from gateway.session_model_pin import pinned_reasoning_config
+        return pinned_reasoning_config(self, resolved_session_key, model)
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
         """Set or clear the session-scoped reasoning override."""

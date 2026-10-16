@@ -2108,14 +2108,13 @@ DEFAULT_CONFIG = {
         # at-least-once). Disable to lose in-flight final responses on crash/restart.
         "delivery_ledger": True,
         # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
-        # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
-        # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
-        # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
-        # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
-        # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits
-        # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
-        # negative disables the timeout entirely (wait indefinitely).
+        # connect timed out" loops (many slash commands to sync, #19776). 0/negative = wait forever.
+        # Bridged to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
         "platform_connect_timeout": 30,
+        # Opt-in: a chat keeps the model/provider/reasoning it last ran on until /new instead of
+        # re-reading model.default and agent.reasoning_effort per message (a mid-chat switch re-sends
+        # the whole conversation uncached). An explicit /model still applies.
+        "pin_session_model": False,
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
         # systemd/launchd revives the process instead of leaving a wedged-but-alive zombie.

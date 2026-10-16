@@ -1358,6 +1358,12 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # Keep each chat on the model/provider/reasoning it last ran on until /new,
+  # instead of re-reading model.default and agent.reasoning_effort on every
+  # message. Config edits then reach new chats only, and open chats keep their
+  # prompt cache. An explicit /model still applies.
+  # pin_session_model: false
+
 # =============================================================================
 # Toolsets
 # =============================================================================

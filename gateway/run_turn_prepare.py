@@ -205,6 +205,8 @@ class GatewayTurnPrepareMixin:
                         "No model configured — defaulting to %s for provider %s", model, runtime_kwargs["provider"],
                     )
 
+        from gateway.session_model_pin import pinned_route
+        model, runtime_kwargs = pinned_route(self, skey, user_config, model, runtime_kwargs)
         return _recover_or_remember_model(self, skey, model), runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
@@ -258,6 +260,8 @@ class GatewayTurnPrepareMixin:
         runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
+        from gateway.session_model_pin import recorded_reasoning
+        runtime.update(recorded_reasoning(agent))  # None stays: "no reasoning config" is a value to pin
         try:
             db = self._session_db._db
             row = db.get_session(session_id)

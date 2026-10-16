@@ -277,6 +277,17 @@ Sessions persist across messages until they reset. The agent remembers your conv
 
 A `/model` switch in a gateway chat applies to that session and now **survives gateway restarts**: the model/provider choice is persisted to the session store and rehydrated on first use after a restart (credentials are re-resolved at load time and never written to disk). `/new` (or `/reset`) clears the override, and `/model <name> --global` writes it through to `config.yaml` instead. `/model <name> --once` applies for a single turn only.
 
+### Keeping a chat on its model (`gateway.pin_session_model`)
+
+By default the gateway reads `model.default` (and `agent.reasoning_effort`) from `config.yaml` on every message, so editing the config or running `hermes model` moves every open chat to the new model on its next message. That switch re-sends the whole conversation without the prompt cache. To apply config changes to new chats only, opt in:
+
+```yaml
+gateway:
+  pin_session_model: true
+```
+
+A chat then keeps the model, provider and reasoning config it last ran on until `/new` (or `/reset`), including across gateway restarts and compression. An explicit `/model` switch still applies immediately. A turn that ended on a provider fallback is not pinned, so fallback restore works as usual. Credentials are never stored; the pinned provider's credentials are resolved fresh each time.
+
 ### Delivery Reliability
 
 Final agent responses are recorded in a durable **delivery ledger**

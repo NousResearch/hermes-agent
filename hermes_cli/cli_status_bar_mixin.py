@@ -555,21 +555,24 @@ class CLIStatusBarMixin:
 
     def _render_spinner_text(self) -> str:
         """The live spinner/status text exactly as rendered in the TUI."""
+        from hermes_cli.cli_transcript import SPINNER_HINT_AFTER_S, spinner_suffix
         txt = getattr(self, "_spinner_text", "")
         if not txt:
             return ""
         flow = self._spinner_token_flow()
+        # A running tool shows its own timer; between tools the whole turn's elapsed time.
         t0 = getattr(self, "_tool_start_time", 0) or 0
-        if t0 > 0:
-            elapsed = time.monotonic() - t0
-            # Fixed-width timers (01m05s / " 5.2s") avoid status-line wrap jitter on repaint.
-            if elapsed >= 60:
-                elapsed_str = t("cli.shared.duration_ms_compact",
-                                minutes=f"{int(elapsed // 60):02d}", seconds=f"{int(elapsed % 60):02d}")
-            else:
-                elapsed_str = t("cli.shared.duration_s", seconds=f"{elapsed:5.1f}")
-            return f"  {txt}  ({elapsed_str} · {flow})" if flow else f"  {txt}  ({elapsed_str})"
-        return f"  {txt}  ({flow})" if flow else f"  {txt}"
+        turn_t0 = getattr(self, "_prompt_start_time", None) if getattr(self, "_agent_running", False) else None
+        turn_elapsed = max(0.0, time.time() - turn_t0) if turn_t0 else None
+        elapsed = time.monotonic() - t0 if t0 > 0 else turn_elapsed
+        line = f"  {txt}{spinner_suffix(elapsed, flow)}"
+        # Ctrl+C is the classic CLI's interrupt key (double Esc only clears a draft).
+        if turn_elapsed is not None and turn_elapsed >= SPINNER_HINT_AFTER_S and getattr(self, "agent", None):
+            hinted = f"  {txt}{spinner_suffix(elapsed, flow, hint=t('cli.stream.spinner_interrupt_hint'))}"
+            width = self._get_tui_terminal_width()
+            if not width or self._status_bar_display_width(hinted) <= width:
+                line = hinted
+        return line
 
     def _spinner_token_flow(self) -> str:
         """Cumulative output tokens for the running turn, for the spinner."""
@@ -616,6 +619,9 @@ class CLIStatusBarMixin:
             self._turn_token_baseline = (
                 getattr(agent, "session_output_tokens", 0) or 0
             ) if agent is not None else 0
+            self._turn_cost_baseline = (
+                float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0) if agent is not None else None)
+            self._turn_thinking_label = None  # spinner verb is picked once per turn
         except Exception:
             self._turn_summary_collector = None
 
@@ -636,8 +642,13 @@ class CLIStatusBarMixin:
         if collector is None or not self._turn_summary_is_active():
             return
         try:
+            from agent.turn_summary import format_turn_summary
+            from hermes_cli.cli_transcript import receipt_extras
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
-            line = collector.render(max(0.0, time.monotonic() - started) if started else 0.0)
+            extras = receipt_extras(getattr(self, "agent", None), getattr(self, "_turn_token_baseline", 0),
+                                    getattr(self, "_turn_cost_baseline", None))
+            line = format_turn_summary(max(0.0, time.monotonic() - started) if started else 0.0,
+                                       collector.tally, extras=extras)
             if line:
                 _cprint(f"  {_D}{line}{_RST}")
         except Exception:

@@ -1962,17 +1962,10 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
-        from hermes_cli.cli_subagent_monitor import modal_prompt_active, open_monitor, toggle_dock
-        for key in ('c-t', 'f6'):
-            kb.add(key, filter=Condition(lambda: not modal_prompt_active(self)))(
-                lambda event: open_monitor(self))
-        # F7 is retained for terminals that forward the function-key sequence;
-        # Ctrl+R is the portable fallback because macOS often reserves F7 for
-        # a hardware control unless Fn/globe is held.
-        kb.add('c-r', filter=Condition(lambda: not modal_prompt_active(self)))(
-            lambda event: toggle_dock(self))
-        kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
-            lambda event: toggle_dock(self))
+        # Ctrl+T/F6 + Ctrl+R/F7 dock, Alt+Up queue recall.
+        from hermes_cli import cli_subagent_monitor, cli_transcript
+        for bind in (cli_subagent_monitor.bind_keys, cli_transcript.bind_queue_recall):
+            bind(self, kb)
         return kb
 
     def _tui_bind_editor_and_stash(self, kb) -> None:

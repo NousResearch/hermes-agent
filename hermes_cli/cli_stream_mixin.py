@@ -58,10 +58,11 @@ class CLIStreamMixin:
         if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
             return
         from gateway.warning_notifications import DiagnosticText, render_notification
+        from hermes_cli.cli_transcript import stable_thinking_label
         def show():
             if not text:
                 self._flush_reasoning_preview(force=True)
-            self._spinner_text = text or ""
+            self._spinner_text = stable_thinking_label(self, text) if text else ""
             self._tool_start_time = 0.0  # clear tool timer when switching to thinking
             self._invalidate()
         render_notification(show, platform="cli", diagnostic=isinstance(text, DiagnosticText),
@@ -178,33 +179,33 @@ class CLIStreamMixin:
         if flush_text:
             self._emit_reasoning_preview(flush_text)
 
-    def _format_submitted_user_message_preview(self, user_input: str) -> str:
-        """Format the submitted user-message scrollback preview."""
-        from cli import _accent_hex, datetime
-        ts_suffix = (
-            f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
-            if getattr(self, "show_timestamps", False) else "")
-        lines = user_input.split("\n")
-        if len(lines) <= 1:
-            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
-
-        first_lines = max(1, int(getattr(self, "user_message_preview_first_lines", 2)))
-        last_lines = max(0, int(getattr(self, "user_message_preview_last_lines", 2)))
-        head = lines[:first_lines]
-        tail_count = min(last_lines, max(0, len(lines) - len(head)))
-        tail = lines[-tail_count:] if tail_count else []
-        hidden_middle_count = len(lines) - len(head) - len(tail)
-        if hidden_middle_count < 0:
-            hidden_middle_count = 0
-            tail = []
-
-        preview_lines = [f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
-        if hidden_middle_count > 0:
-            key = "cli.stream.preview_more_lines_one" if hidden_middle_count == 1 else "cli.stream.preview_more_lines_other"
-            preview_lines.append(f"[dim]{_escape(t(key, count=hidden_middle_count))}[/]")
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
-        return "\n".join(preview_lines)
+    def _format_submitted_user_message_preview(self, user_input: str, colors: dict | None = None):
+        """The submitted user message as a Rich ``Text``: ``❯`` (skin prompt symbol) + the text,
+        multi-line input elided to its first/last lines; continuation lines hang under the text."""
+        from rich.text import Text
+        from cli import datetime
+        from hermes_cli.cli_transcript import active_band_colors, preview_lines
+        from hermes_cli.skin_engine import get_active_prompt_symbol
+        from prompt_toolkit.utils import get_cwidth
+        colors = colors or active_band_colors()
+        symbol = get_active_prompt_symbol()
+        hang = " " * get_cwidth(symbol)
+        head, hidden, tail = preview_lines(
+            user_input, int(getattr(self, "user_message_preview_first_lines", 2)),
+            int(getattr(self, "user_message_preview_last_lines", 2)))
+        out = Text(style=f"{colors['fg']} on {colors['bg']}")
+        out.append(symbol, style=f"bold {colors['symbol']}")
+        out.append(head[0], style="bold")
+        if getattr(self, "show_timestamps", False):
+            out.append(" " + datetime.now().strftime(getattr(self, "timestamp_format", "%H:%M")), style="dim")
+        for line in head[1:]:
+            out.append("\n" + hang + line, style="bold")
+        if hidden:
+            key = "cli.stream.preview_more_lines_one" if hidden == 1 else "cli.stream.preview_more_lines_other"
+            out.append("\n" + hang + t(key, count=hidden), style="dim")
+        for line in tail:
+            out.append("\n" + hang + line, style="bold")
+        return out
 
     def _expand_paste_references(self, text: str | None) -> str:
         """Expand [Pasted text #N -> file] placeholders into file contents."""
@@ -227,20 +228,19 @@ class CLIStreamMixin:
         return paste_ref_re.sub(_expand_ref, text)
 
     def _print_user_message_preview(self, user_input: str) -> None:
-        """Render a user message using the normal chat scrollback style."""
-        from cli import ChatConsole, _accent_hex
+        """Echo a submitted user message as a full-width, skin-tinted band (``❯ text``)."""
+        from rich.padding import Padding
+        from cli import ChatConsole
+        from hermes_cli.cli_transcript import active_band_colors
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
             from gateway.warning_notifications import render_notification
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        text = str(user_input or "")
-        if "\n" in text:
-            ChatConsole().print(self._format_submitted_user_message_preview(text))
-        else:
-            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+        colors = active_band_colors()
+        body = self._format_submitted_user_message_preview(str(user_input or ""), colors)
+        ChatConsole().print(Padding(body, (0, 1, 0, 0), style=f"on {colors['bg']}", expand=True))
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.

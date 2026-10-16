@@ -2226,12 +2226,13 @@ display:
 `display.turn_summary` (default `true`) prints one dim accounting line after each **interactive CLI** turn, summarising what that turn actually did:
 
 ```
-⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands
+⋯ Worked for 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands · ↓ 1.2k tok
 ```
 
 The tally is observed from the tool-progress feed the CLI already receives, so it costs nothing extra. Details:
 
-- Wall time is the turn's real duration (`2m05s` past the one-minute mark).
+- Wall time is the turn's real duration (`2m 5s` past the one-minute mark, `1h 2m` past the hour).
+- The line ends with the turn's output tokens and, when the provider's pricing gives a real estimate, its cost (`~$0.04`). Both come from counters the CLI already keeps; `included` or unknown pricing never shows a misleading `$0.00`.
 - Tool calls are grouped by verb (`edited`, `read`, `ran`, `searched`, …) with correct pluralisation; plugin/MCP tools without a curated verb collapse into `called N tools`.
 - `+X -Y` line deltas appear only when the tool result already reports a diff (currently `patch`). Hermes never shells out to git to compute them, so a `write_file` edit is counted without a delta.
 - **Failed tool calls are not counted** — a denied write never renders as a successful edit (see the [file-mutation verifier](#file-mutation-verifier) for the complementary warning).

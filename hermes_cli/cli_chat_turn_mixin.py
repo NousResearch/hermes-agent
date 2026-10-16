@@ -92,7 +92,9 @@ class CLIChatTurnMixin:
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        # Interactive turns already opened with the full-width user band; the rule is for -q.
+        if not getattr(self, "_interactive_turn", False):
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         _cprint("")
 
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
@@ -595,7 +597,8 @@ class CLIChatTurnMixin:
         self._last_turn_interrupted = _interrupted_this_turn
         if _interrupted_this_turn:
             pending_message = turn.result.get("interrupt_message") or interrupt_msg
-            _show_interrupt_marker = bool(response and pending_message)
+            # Every interrupted turn leaves a receipt in scrollback, with or without a follow-up.
+            _show_interrupt_marker = True
         elif interrupt_msg:
             # agent.interrupt() fired but the result doesn't acknowledge it (racy): either
             # the thread had passed its last interrupt check so finalize_turn() never saw

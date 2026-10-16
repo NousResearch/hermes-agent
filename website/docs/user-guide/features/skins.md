@@ -71,6 +71,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `prompt` | Interactive prompt text color | `#FFF8DC` |
 | `input_rule` | Horizontal rule above the input area | `#CD7F32` |
 | `response_border` | Border around the agent's response box (ANSI escape) | `#FFD700` |
+| `user_message_bg` | Background of the full-width band that echoes your submitted message in the classic CLI. When unset, a neutral surface matching the terminal's light/dark polarity, tinted with `ui_accent`. | derived |
 | `session_label` | Session label color | `#DAA520` |
 | `session_border` | Session ID dim border color | `#8B8682` |
 | `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |

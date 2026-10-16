@@ -44,7 +44,7 @@ def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(herm
     assert "⊙ Goal (active, 0/20 turns): ship the dock feature" in lines[0]
     queue_at = next(i for i, line in enumerate(lines) if "Queue · 4 queued" in line)
     assert [line.strip() for line in lines[queue_at + 1:]] == [
-        "1. first follow-up with a newline", "2. look at this", "3. spoken ask", "+1 more"]
+        "↳ first follow-up with a newline", "↳ look at this", "↳ spoken ask", "+1 more"]
     assert all(get_cwidth(line) <= 80 for line in lines)
     dock.collapsed = True
     collapsed = dock.dock_text(columns=80, rows=40)

@@ -135,13 +135,21 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
     { icon: 'list-ordered', id: 'manual', label: f.manual }
   ]
 
+  // `profile` is deliberately absent even though `SidebarRowMeta` still admits
+  // it: the owning-profile chip renders on every row unconditionally, so a
+  // checkbox here would write to `sidebarRowMeta` and change nothing on screen
+  // — a dead switch that still lit the "view customized" flag. The union member
+  // stays so an already-persisted 'profile' keeps decoding through
+  // `listOf(ROW_META)` instead of being silently dropped on load; nothing reads
+  // it. Do not re-add the entry without a real reader for it. (This is the
+  // `showProfile` prop's situation inverted: that one has live callers, so it
+  // keeps its prop; this one has none.)
   const ROW_META: Option<SidebarRowMeta>[] = [
     { icon: 'clock', id: 'updated', label: f.updated },
     { icon: 'comment', id: 'preview', label: f.preview },
     { icon: 'symbol-numeric', id: 'tokens', label: f.tokens },
     { icon: 'credit-card', id: 'cost', label: f.cost },
-    { icon: 'git-pull-request', id: 'pr', label: f.pr },
-    { icon: 'account', id: 'profile', label: f.profile }
+    { icon: 'git-pull-request', id: 'pr', label: f.pr }
   ]
 
   const PR_FILTERS: Option<PullRequestBucket>[] = [

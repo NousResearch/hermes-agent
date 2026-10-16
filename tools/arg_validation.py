@@ -1,4 +1,4 @@
-"""Reject missing or unsupported arguments for registered tools before dispatch.
+"""Reject missing required arguments and report unsupported arguments that were not used.
 
 The model-facing schema is deliberately smaller than some handlers' accepted input.
 Compatibility rules below preserve those known arguments/forms without exempting any
@@ -7,6 +7,7 @@ whole tool from validation. Internal dispatch kwargs are never model arguments.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Dict, Optional
@@ -16,7 +17,7 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 # Accepted but unadvertised inputs, documented by the corresponding handlers.
-# These extend accepted keys only: other unknown keys are still rejected.
+# These extend accepted keys only; other unknown keys are omitted with a notice.
 _COMPATIBILITY_ARGUMENTS = {
     "write_file": frozenset({"cross_profile"}),  # sandbox-mirror override
     "patch": frozenset({"cross_profile", "mode", "patch"}),  # model-dependent V4A schema
@@ -85,11 +86,11 @@ def _argument_error(tool_name: str, args: Dict[str, Any], message: str) -> str:
 
 
 def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
-    """Check required and supported argument names; return an error JSON or ``None``.
+    """Check required argument names; return an error JSON or ``None``.
 
     Runs after coercion and middleware. Parameter values remain the handler's contract
-    (and deferred tools' existing JSON Schema validator). No alias guessing, argument
-    removal, or automatic retry. Explicit open schemas/patternProperties are respected.
+    (and deferred tools' existing JSON Schema validator). No alias guessing or automatic
+    retry. Unsupported keys are handled by split_tool_args.
     """
     params = _validation_parameters(tool_name)
     if params is None or not isinstance(args, dict):
@@ -112,17 +113,50 @@ def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
             f"{tool_name} is missing required argument(s): {', '.join(missing)}. "
             f"The tool was NOT invoked. Valid arguments: {valid}.")
 
+    return None
+
+
+def split_tool_args(tool_name: str, args: Dict[str, Any]) -> tuple[Dict[str, Any], list[str]]:
+    """Separate unsupported top-level keys without mutating the caller's payload."""
+    params = _validation_parameters(tool_name)
+    if params is None or not isinstance(args, dict):
+        return args, []
+    properties = params.get("properties")
+    if not isinstance(properties, dict):
+        return args, []
     additional = params.get("additionalProperties", False)
     if additional is True or isinstance(additional, dict):
-        return None
+        return args, []
     patterns = params.get("patternProperties") or {}
     extra_keys = _COMPATIBILITY_ARGUMENTS.get(tool_name, ())
-    unknown = [key for key in args
+    ignored = [key for key in args
                if key not in properties and key not in extra_keys
                and not any(re.search(pattern, key) for pattern in patterns)]
-    if unknown:
-        return _argument_error(
-            tool_name, args,
-            f"{tool_name} does not accept argument(s): {', '.join(unknown)}. "
-            f"The tool was NOT invoked. Valid arguments: {valid}.")
-    return None
+    if not ignored:
+        return args, []
+    return {key: value for key, value in args.items() if key not in ignored}, ignored
+
+
+def with_ignored_arguments(result: Any, tool_name: str, ignored: list[str]) -> Any:
+    """Preserve the tool result and explicitly state which options did not take effect."""
+    if not ignored:
+        return result
+    notice = (f"Unsupported argument(s) for {tool_name}: {', '.join(ignored)}. "
+              "These arguments WERE NOT USED. The tool was invoked with supported arguments only; "
+              "do not assume the requested options took effect.")
+    if isinstance(result, dict):
+        payload = dict(result)
+    else:
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            payload = result
+        if not isinstance(payload, dict):
+            payload = {"output": payload}
+    if payload.get("_multimodal") is True and isinstance(payload.get("content"), list):
+        payload["content"] = [*payload["content"], {"type": "text", "text": notice}]
+        if payload.get("text_summary"):
+            payload["text_summary"] = str(payload["text_summary"]) + "\n" + notice
+    previous = payload.get("_warning")
+    payload["_warning"] = f"{previous}\n{notice}" if previous else notice
+    return payload if isinstance(result, dict) else json.dumps(payload, ensure_ascii=False)

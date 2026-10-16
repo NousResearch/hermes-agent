@@ -22,7 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
-from tools.arg_validation import validate_tool_args
+from tools.arg_validation import split_tool_args, validate_tool_args, with_ignored_arguments
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 from utils import file_signature
 
@@ -848,7 +848,9 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id, ids.task_id)
-        return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+        accepted_args, ignored = split_tool_args(function_name, next_args)
+        result = registry.dispatch(function_name, accepted_args, **dispatch_kwargs)
+        return with_ignored_arguments(result, function_name, ignored)
 
     with _approval_observability(ids):
         if skip_tool_execution_middleware:

@@ -22,23 +22,23 @@ def test_missing_required_argument_is_rejected_before_the_tool_runs(tmp_path):
         assert "total_count" not in result
 
 
-def test_unknown_search_key_is_rejected_and_corrected_call_runs(tmp_path):
+def test_unknown_search_key_is_reported_after_search_runs(tmp_path):
     (tmp_path / "a.py").write_text("needle\n")
     (tmp_path / "b.ini").write_text("needle\n")
     result = _call("search_files", {"pattern": "needle", "path": str(tmp_path), "include": "*.ini"}, "t-inc")
-    assert "NOT invoked" in result["error"]
-    assert "include" in result["error"] and "file_glob" in result["error"]
-    assert "total_count" not in result
+    assert result["total_count"] == 2
+    assert "include" in result["_warning"] and "WERE NOT USED" in result["_warning"]
     valid = _call("search_files", {"pattern": "needle", "path": str(tmp_path), "file_glob": "*.ini"}, "t-ok")
-    assert valid["total_count"] == 1 and "warning" not in valid
+    assert valid["total_count"] == 1 and "_warning" not in valid
 
 
-def test_write_file_rejects_edit_keys_without_touching_the_file(tmp_path):
+def test_write_file_runs_supported_write_and_reports_unused_edit_keys(tmp_path):
     target = tmp_path / "big.txt"
     target.write_text("keep me\n" * 100)
     result = _call("write_file", {"path": str(target), "content": "x", "old_string": "keep", "new_string": "y"}, "t-wf")
-    assert "old_string" in result["error"] and "NOT invoked" in result["error"]
-    assert target.read_text() == "keep me\n" * 100
+    assert "old_string, new_string" in result["_warning"]
+    assert "WERE NOT USED" in result["_warning"]
+    assert target.read_text() == "x"
 
 
 def test_arguments_a_handler_accepts_beyond_its_schema_are_not_flagged():
@@ -63,13 +63,12 @@ def test_execute_code_does_not_treat_command_as_an_alias(monkeypatch):
 
     args = {"code": "print(1)", "command": "print(2)"}
     result = _call("execute_code", args, "code-and-command")
-    assert "command" in result["error"] and "NOT invoked" in result["error"]
-    assert "terminal(command=...)" in result["error"]
-    assert "execute_code(code=...)" in result["error"]
-    assert seen == []
+    assert result["output"] == "ran code"
+    assert "command" in result["_warning"] and "WERE NOT USED" in result["_warning"]
+    assert seen == [{"code": "print(1)"}]
     valid = _call("execute_code", {"code": "print(1)"}, "corrected-code")
     assert valid["output"] == "ran code"
-    assert seen == [{"code": "print(1)"}]
+    assert seen == [{"code": "print(1)"}, {"code": "print(1)"}]
 
 
 def _install_argument_rewrite(monkeypatch, phase, rewrite):
@@ -86,7 +85,7 @@ def _install_argument_rewrite(monkeypatch, phase, rewrite):
 
 
 @pytest.mark.parametrize("phase", ["hook", "execution"])
-def test_rewritten_arguments_are_validated_and_errors_name_only_remaining_unknown_keys(tmp_path, monkeypatch, phase):
+def test_rewritten_arguments_warn_only_about_remaining_unused_keys(tmp_path, monkeypatch, phase):
     (tmp_path / "a.py").write_text("needle\n")
     (tmp_path / "b.ini").write_text("needle\n")
 
@@ -102,37 +101,30 @@ def test_rewritten_arguments_are_validated_and_errors_name_only_remaining_unknow
         "search_files", {"query": "needle", "path": str(tmp_path), "include": "*.ini"},
         task_id=f"rewrite-{phase}", skip_tool_request_middleware=True,
     ))
-    assert "NOT invoked" in result["error"]
-    assert "total_count" not in result
-    rejected_keys = result["error"].split(". The tool")[0]
-    assert "unused_option" in rejected_keys
-    assert "query" not in rejected_keys and "include" not in rejected_keys
+    assert result["total_count"] == 1
+    assert "unused_option" in result["_warning"]
+    assert "query" not in result["_warning"] and "include" not in result["_warning"]
 
 
 @pytest.mark.parametrize("phase", ["hook", "execution"])
 @pytest.mark.parametrize("invalid", ["missing_required", "unknown_write_key"])
-def test_rewrites_cannot_dispatch_invalid_arguments(tmp_path, monkeypatch, phase, invalid):
+def test_rewrites_reject_missing_arguments_but_report_ignored_write_keys(tmp_path, monkeypatch, phase, invalid):
     target = tmp_path / "keep.txt"
-    original = "keep me\n"
-    target.write_text(original)
+    target.write_text("keep me\n")
     if invalid == "missing_required":
-        name, args, rejected_key = "search_files", {"pattern": "needle", "path": str(tmp_path)}, "pattern"
-
-        def rewrite(args):
-            return {key: value for key, value in args.items() if key != "pattern"}
+        name, args = "search_files", {"pattern": "needle", "path": str(tmp_path)}
+        rewrite = lambda args: {key: value for key, value in args.items() if key != "pattern"}
     else:
-        name, args, rejected_key = "write_file", {"path": str(target), "content": "replacement"}, "old_string"
-
-        def rewrite(args):
-            return {**args, "old_string": "keep me"}
-
+        name, args = "write_file", {"path": str(target), "content": "replacement"}
+        rewrite = lambda args: {**args, "old_string": "keep me"}
     _install_argument_rewrite(monkeypatch, phase, rewrite)
-    result = json.loads(handle_function_call(
-        name, args, task_id=f"reject-{phase}-{invalid}", skip_tool_request_middleware=True,
-    ))
-    assert rejected_key in result["error"] and "NOT invoked" in result["error"]
-    assert "total_count" not in result
-    assert target.read_text() == original
+    result = json.loads(handle_function_call(name, args, task_id=f"rewrite-{phase}-{invalid}", skip_tool_request_middleware=True))
+    if invalid == "missing_required":
+        assert "pattern" in result["error"] and "NOT invoked" in result["error"]
+        assert target.read_text() == "keep me\n"
+    else:
+        assert "old_string" in result["_warning"] and "WERE NOT USED" in result["_warning"]
+        assert target.read_text() == "replacement"
 
 
 @pytest.mark.parametrize("shape", ["missing", "unknown", "rewritten_unknown"])
@@ -155,10 +147,15 @@ def test_invalid_writes_report_validation_errors(tmp_path, monkeypatch, shape):
     result = json.loads(handle_function_call(
         "write_file", args, task_id=f"invalid-observer-{shape}", skip_tool_request_middleware=True,
     ))
-    assert "NOT invoked" in result["error"] and target.read_text() == "original\n"
     assert len(events) == 2
-    assert all(event["status"] == "error" and event["error_type"] == "invalid_arguments" for event in events)
-    assert all(event["error_message"] == result["error"] for event in events)
+    if shape == "missing":
+        assert "NOT invoked" in result["error"] and target.read_text() == "original\n"
+        assert all(event["status"] == "error" and event["error_type"] == "invalid_arguments" for event in events)
+        assert all(event["error_message"] == result["error"] for event in events)
+    else:
+        assert target.read_text() == "replacement"
+        assert "old_string" in result["_warning"]
+        assert all(event["status"] != "error" for event in events)
 
 
 @pytest.mark.parametrize("name,args", [
@@ -169,13 +166,19 @@ def test_invalid_writes_report_validation_errors(tmp_path, monkeypatch, shape):
     ("execute_code", {"code": "print(1)", "timeout": 30}),
     ("execute_code", {"code": "print(1)", "invented_option": True}),
 ])
-def test_unknown_arguments_never_dispatch_or_retry(monkeypatch, name, args):
+def test_unknown_arguments_are_omitted_and_tool_runs_once(monkeypatch, name, args):
+    from tools.arg_validation import split_tool_args
+    expected, ignored = split_tool_args(name, args)
     dispatched = []
-    monkeypatch.setattr("model_tools.registry.dispatch", lambda *a, **kw: dispatched.append(a))
+    def dispatch(tool, actual, **kwargs):
+        dispatched.append((tool, actual))
+        return json.dumps({"output": "ran", "warning": "existing handler warning"})
+    monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
     result = _call(name, args, f"unsupported-{name}")
-    assert "NOT invoked" in result["error"]
-    assert "Valid arguments:" in result["error"]
-    assert dispatched == []
+    assert result["output"] == "ran" and result["warning"] == "existing handler warning"
+    assert "WERE NOT USED" in result["_warning"]
+    assert all(key in result["_warning"] for key in ignored)
+    assert dispatched == [(name, expected)]
 
 
 @pytest.mark.parametrize("phase", ["hook", "execution"])
@@ -223,21 +226,18 @@ def test_current_schema_can_explicitly_allow_extension_arguments(monkeypatch, pa
     assert seen == [args]
 
 
-def test_rejected_code_cannot_write_a_file_and_explicit_correction_can(tmp_path, monkeypatch):
+def test_code_with_unused_timeout_executes_once_and_reports_notice(tmp_path, monkeypatch):
     from tools.code_kernel import shutdown_all_kernels
-
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     marker = tmp_path / "executed.txt"
-    code = f"from pathlib import Path\nPath({str(marker)!r}).write_text('done')"
+    code = f"from pathlib import Path\nwith Path({str(marker)!r}).open('a') as f: f.write('once')"
     shutdown_all_kernels()
     try:
-        rejected = _call("execute_code", {"code": code, "timeout": 30}, "code-side-effect")
-        assert "NOT invoked" in rejected["error"]
-        assert not marker.exists()
-        corrected = _call("execute_code", {"code": code}, "code-side-effect")
-        assert not corrected.get("error"), corrected
-        assert marker.read_text() == "done"
+        result = _call("execute_code", {"code": code, "timeout": 30}, "code-side-effect")
+        assert not result.get("error"), result
+        assert "timeout" in result["_warning"] and "WERE NOT USED" in result["_warning"]
+        assert marker.read_text() == "once"
     finally:
         shutdown_all_kernels()
 
@@ -256,10 +256,11 @@ def test_newly_registered_tools_are_validated_without_an_allowlist(monkeypatch, 
     for module in ["model_tools", "tools.arg_coercion", "tools.arg_validation"]:
         monkeypatch.setattr(f"{module}.registry", isolated)
     assert "NOT invoked" in _call(name, {}, "new-tool-missing")["error"]
-    assert "invented" in _call(name, {"query": "hello", "invented": True}, "new-tool-unknown")["error"]
-    assert seen == []
-    assert _call(name, {"query": "hello"}, "new-tool-valid")["answer"] == "hello"
+    result = _call(name, {"query": "hello", "invented": True}, "new-tool-unknown")
+    assert result["answer"] == "hello" and "invented" in result["_warning"]
     assert seen == [{"query": "hello"}]
+    assert _call(name, {"query": "hello"}, "new-tool-valid")["answer"] == "hello"
+    assert seen == [{"query": "hello"}, {"query": "hello"}]
 
 
 @pytest.mark.parametrize("name,args", [
@@ -292,9 +293,9 @@ def test_supported_compatibility_arguments_do_not_exempt_the_tool(monkeypatch, n
         monkeypatch.setattr("tools.arg_validation.registry", active_registry)
     assert active_registry.get_schema(name) is not None
     assert validate_tool_args(name, args) is None
-    rejected = json.loads(validate_tool_args(name, {**args, "invented_parameter": True}))
-    assert "invented_parameter" in rejected["error"]
-    assert "NOT invoked" in rejected["error"]
+    from tools.arg_validation import split_tool_args
+    accepted, ignored = split_tool_args(name, {**args, "invented_parameter": True})
+    assert accepted == args and ignored == ["invented_parameter"]
 
 
 def test_current_dynamic_parameters_are_accepted_without_mutating_static_schema(monkeypatch):
@@ -313,10 +314,12 @@ def test_current_dynamic_parameters_are_accepted_without_mutating_static_schema(
     assert validate_tool_args("dynamic_plugin", {"prompt": "hello", "new_option": 1}) is None
     assert "new_option" not in schema["parameters"]["properties"]
     assert "NOT invoked" in json.loads(validate_tool_args("dynamic_plugin", {"new_option": 1}))["error"]
-    assert "invented" in json.loads(validate_tool_args("dynamic_plugin", {"prompt": "hello", "invented": 1}))["error"]
+    from tools.arg_validation import split_tool_args
+    accepted, ignored = split_tool_args("dynamic_plugin", {"prompt": "hello", "invented": 1})
+    assert accepted == {"prompt": "hello"} and ignored == ["invented"]
 
 
-def test_registered_zero_argument_tool_rejects_invented_arguments(monkeypatch):
+def test_registered_zero_argument_tool_separates_unused_arguments(monkeypatch):
     from tools.arg_validation import validate_tool_args
     from tools.registry import ToolRegistry
 
@@ -325,18 +328,22 @@ def test_registered_zero_argument_tool_rejects_invented_arguments(monkeypatch):
         "parameters": {"type": "object", "properties": {}}}, handler=lambda args, **kw: "{}")
     monkeypatch.setattr("tools.arg_validation.registry", isolated)
     assert validate_tool_args("no_args", {}) is None
-    assert "NOT invoked" in json.loads(validate_tool_args("no_args", {"invented": 1}))["error"]
+    from tools.arg_validation import split_tool_args
+    assert split_tool_args("no_args", {"invented": 1}) == ({}, ["invented"])
 
 
 @pytest.mark.parametrize("extra", [{"timeout": 60}, {"workdir": "/tmp"}, {"invented": True}])
-def test_execute_code_unrelated_argument_errors_do_not_suggest_switching_tools(monkeypatch, extra):
+def test_execute_code_unused_arguments_do_not_suggest_switching_tools(monkeypatch, extra):
     seen = []
-    monkeypatch.setattr("model_tools.registry.dispatch", lambda *args, **kwargs: seen.append(args))
-    result = _call("execute_code", {"code": "print(1)", **extra}, "code-unrelated-argument")
-    assert "NOT invoked" in result["error"]
-    assert next(iter(extra)) in result["error"]
-    assert "terminal(command=...)" not in result["error"]
-    assert seen == []
+    def dispatch(name, args, **kwargs):
+        seen.append(args)
+        return json.dumps({"output": "ran"})
+    monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
+    result = _call("execute_code", {"code": "print(1)", **extra}, "code-unused-argument")
+    assert result["output"] == "ran"
+    assert next(iter(extra)) in result["_warning"]
+    assert "terminal(command=...)" not in result["_warning"]
+    assert seen == [{"code": "print(1)"}]
 
 
 def test_tool_owned_hint_cannot_bypass_rejection_and_valid_calls_skip_it(monkeypatch):
@@ -368,3 +375,31 @@ def test_tool_owned_hint_cannot_bypass_rejection_and_valid_calls_skip_it(monkeyp
     assert executed == [] and len(hints) == 1
     assert _call("hinted_tool", {"query": "hello"}, "valid-hint") == {"answer": "hello"}
     assert executed == [{"query": "hello"}] and len(hints) == 1
+
+
+@pytest.mark.parametrize("result", [
+    '{"output": "value", "_warning": "original warning"}',
+    '{"error": "original failure"}',
+    {"_multimodal": True, "content": [{"type": "text", "text": "caption"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}], "text_summary": "caption"},
+])
+def test_unused_argument_notice_preserves_results_and_multimodal_content(monkeypatch, result):
+    import copy
+    from agent.tool_dispatch_helpers import _multimodal_text_summary
+    original = copy.deepcopy(result)
+    monkeypatch.setattr("model_tools.registry.dispatch", lambda *args, **kwargs: result)
+    actual = handle_function_call("execute_code", {"code": "print(1)", "timeout": 60}, task_id="notice-result")
+    payload = actual if isinstance(actual, dict) else json.loads(actual)
+    assert "timeout" in payload["_warning"] and "WERE NOT USED" in payload["_warning"]
+    if isinstance(result, dict):
+        assert actual["content"][:-1] == original["content"]
+        assert "WERE NOT USED" in _multimodal_text_summary(actual)
+        assert "WERE NOT USED" in actual["content"][-1]["text"]
+    else:
+        source = json.loads(result)
+        if "error" in source:
+            assert payload["error"] == source["error"]
+        else:
+            assert payload["output"] == source["output"]
+            assert "original warning" in payload["_warning"]
+    assert result == original

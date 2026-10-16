@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { completionSoundCopy } from './completion-sound-copy'
 import type { TranslationOverrides } from './define-locale'
 import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
@@ -238,9 +239,7 @@ export const zhHantSettings = {
       testBody: '通知運作正常。',
       testSent: '測試已傳送。若沒有出現，請檢查系統通知權限與專注模式／勿擾模式。',
       testUnsupported: '此系統不支援原生通知。',
-      completionSoundTitle: '完成提示音',
-      completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
-      completionSoundPreview: '預覽'
+      ...completionSoundCopy['zh-hant']
     },
     sections: {
       model: '模型',

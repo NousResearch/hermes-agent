@@ -1,5 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { completionSoundCopy } from './completion-sound-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
@@ -972,9 +973,7 @@ export const frOverrides = {
       testSent:
         "Test envoyé. Si rien n'apparaît, vérifiez les autorisations de notification de votre système et le mode Ne pas déranger.",
       testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
-      completionSoundTitle: 'Son de fin',
-      completionSoundDesc: "Se joue à la fin d'un tour d'agent. Choisissez un préréglage et prévisualisez-le ici.",
-      completionSoundPreview: 'Aperçu'
+      ...completionSoundCopy.fr
     },
     sections: {
       model: 'Modèle',

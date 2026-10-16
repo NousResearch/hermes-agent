@@ -4,9 +4,14 @@
 import { getAudioContext } from '@/lib/audio-context'
 import { ownsAmbientCue } from '@/store/ambient'
 import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
+import { $completionSoundVolume } from '@/store/completion-sound-volume'
 import { $hapticsMuted } from '@/store/haptics'
 
 type OscType = OscillatorType
+
+// Raise the quiet cue's base gain while retaining its envelopes and timbre.
+// The volume control can reduce it to the previous level (20%) or silence it.
+export const COMPLETION_SOUND_BASE_GAIN = 2.4
 
 // One enveloped oscillator voice → master. Linear attack into an exponential
 // decay keeps the tail smooth and avoids the click you get ramping to zero.
@@ -399,7 +404,7 @@ function playVariant(variantId: number) {
   tone.type = 'lowpass'
   tone.frequency.setValueAtTime(3800, ac.currentTime)
   tone.Q.setValueAtTime(0.32, ac.currentTime)
-  master.gain.setValueAtTime(0.48, ac.currentTime)
+  master.gain.setValueAtTime(COMPLETION_SOUND_BASE_GAIN * $completionSoundVolume.get(), ac.currentTime)
   master.connect(tone)
 
   const dry = ac.createGain()

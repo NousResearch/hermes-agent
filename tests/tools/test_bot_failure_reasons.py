@@ -33,6 +33,22 @@ FIXTURE_TARGET_SCOPE_DETAILED = (
 )
 
 
+def test_closed_vocabulary_contains_every_code():
+    """The vocabulary is closed over everything the module can EMIT: a rule that returns a code
+    outside ``ALL_REASONS``, or a constant the emitter can hand a consumer, would put a value in
+    the sender's envelope that the closed set does not name."""
+    declared = {
+        value for name, value in vars(fr).items()
+        if name.isupper() and not name.startswith("_") and isinstance(value, str)
+        and not name.startswith("RETRY_")
+    }
+    assert declared <= fr.ALL_REASONS
+    # The classifier's table is the other emitter: no rule may return an unnamed code.
+    assert {code for _pattern, code in fr._RULES} <= fr.ALL_REASONS
+    # constants match their string values
+    assert fr.RUNTIME_OFFLINE == "runtime_offline"
+    assert fr.PROVIDER_AUTH_OR_ACCESS == "provider_auth_or_access"
+    assert fr.UNKNOWN == "unknown"
 
 
 @pytest.mark.parametrize(

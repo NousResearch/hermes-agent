@@ -72,6 +72,8 @@ gateway:
     err_stale_override: "enregistré dans config.yaml, mais l'ancienne surcharge de session n'a pas été effacée ({error})"
     next_turn_only: "    (prochain tour uniquement — rétabli après une réponse)"
     switch_cancelled: "🟡 Changement de modèle annulé. Le modèle actuel est inchangé ({model})."
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
     guard_confirm: |-
       ⚠️ **{title}**
 

@@ -390,14 +390,7 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
-_CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
-
-
-def _separate_chunk_indicator_from_fence(text: str) -> str:
-    """Move a ``(N/M)`` chunk marker that ``truncate_message()`` appended to a synthesized closing
-    fence onto its own line — Telegram rejects ````` \\(1/2\\)`` as a fence."""
-    return _CHUNK_INDICATOR_ON_FENCE_RE.sub(r'```\n\g<indicator>', text)
-
+from plugins.platforms.telegram.fence_indicator import _separate_chunk_indicator_from_fence
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
@@ -6206,9 +6199,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         return dataclasses.replace(
             event, text=self._telegram_group_observe_attributed_text(event),
             source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt,
-            # The shared source is sender-less by design, but the CURRENT inbound message still has a
-            # trusted sender: keep it on the live event so the gateway can bind the turn's actor for
-            # actor-bound tools (#140059). Never inferred from text — it is the Telegram update's sender.
+            # Sender-less shared source, but the live event keeps this update's trusted sender (#140059).
             user_id=event.source.user_id, user_name=event.source.user_name)
 
     def _media_message_type(self, msg: Message) -> MessageType:

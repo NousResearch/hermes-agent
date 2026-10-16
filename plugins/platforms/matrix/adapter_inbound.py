@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 
 
 class MatrixInboundMixin:
+    def _matrix_reply_expected(
+        self, is_dm: bool, is_mentioned: bool, body: str, relates_to: dict,
+        reply_to_author_id: Optional[str],
+    ) -> Optional[bool]:
+        """Only clearly unaddressed room turns may silence; thread/reply intent stays unknown."""
+        if is_dm or is_mentioned or body.startswith("/") or reply_to_author_id == self._user_id:
+            return True
+        if relates_to.get("rel_type") == "m.thread" or relates_to.get("m.in_reply_to"):
+            return None
+        return False
+
     def _configure_peer_budget(self, config: PlatformConfig) -> None:
         peer_agents_raw = config.extra.get("peer_agent_ids", [])
         if isinstance(peer_agents_raw, list):
@@ -35,11 +46,13 @@ class MatrixInboundMixin:
         self._peer_reply_budget_per_human_message = max(0, peer_budget)
         self._peer_reply_budget_remaining: dict[str, int] = {}
 
-    def _admit_peer_room_message(self, room_id: str, sender: str, is_mentioned: bool) -> bool:
+    def _admit_peer_room_message(
+        self, room_id: str, sender: str, is_mentioned: bool, thread_id: Optional[str],
+    ) -> bool:
         """Charge only authorized, directly mentioned peers after the ordinary inference gates."""
         if not self._peer_agent_ids:
             return True
-        authorized = self._is_authorized_user(sender, room_id, chat_type="group")
+        authorized = self._is_authorized_user(sender, room_id, chat_type="group", thread_id=thread_id)
         if sender not in self._peer_agent_ids:
             if authorized:
                 self._peer_reply_budget_remaining[room_id] = self._peer_reply_budget_per_human_message
@@ -91,8 +104,6 @@ class MatrixInboundMixin:
                     "Matrix: ignoring message %s in thread %s — no @mention (thread_require_mention=true)",
                     event_id, thread_id)
                 return None
-            if not self._admit_peer_room_message(room_id, sender, is_mentioned):
-                return None
         if is_mentioned and (self._require_mention or is_peer_agent_message):
             # Strip the mention from the reply text only: the quote block carries the
             # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
@@ -114,6 +125,9 @@ class MatrixInboundMixin:
                     self._matrix_session_scope != "room" and self._auto_thread)
             if synthetic:
                 thread_id = event_id
+        # Pairing authorization follows the same final real/synthetic thread as the event.
+        if not is_dm and not self._admit_peer_room_message(room_id, sender, is_mentioned, thread_id):
+            return None
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)

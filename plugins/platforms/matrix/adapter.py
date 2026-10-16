@@ -2080,11 +2080,12 @@ class MatrixAdapter(MatrixInboundMixin, BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, *, mention_claimed: bool = False, **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
         downloading); resolving it twice would double the read receipt / thread mark."""
+        is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         if ctx is None:
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
@@ -2101,6 +2102,8 @@ class MatrixAdapter(MatrixInboundMixin, BasePlatformAdapter):
             body = ""  # transport filename, not user text
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
+            reply_expected=self._matrix_reply_expected(
+                _is_dm, is_mentioned, body, relates_to, reply_to_author_id),
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
             reply_to_author_name=reply_to_author_name,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
@@ -2192,6 +2195,7 @@ class MatrixAdapter(MatrixInboundMixin, BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
+            mention_claimed=mention_claimed,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
             await self.handle_message(msg_event)
@@ -2532,11 +2536,13 @@ class MatrixAdapter(MatrixInboundMixin, BasePlatformAdapter):
         return expires_at is not None and time.monotonic() > float(expires_at)
 
     def _is_authorized_user(
-        self, user_id: str, room_id: str | None = None, *, chat_type: str | None = None
+        self, user_id: str, room_id: str | None = None, *, chat_type: str | None = None,
+        thread_id: str | None = None,
     ) -> bool:
         """Resolve live gateway authorization, falling back to the startup snapshot when unwired."""
         if getattr(self, "_authorization_check", None) is not None:
-            return self._is_sender_authorized(user_id, chat_type=chat_type, chat_id=room_id) is True
+            return self._is_sender_authorized(
+                user_id, chat_type=chat_type, chat_id=room_id, thread_id=thread_id) is True
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
         return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)

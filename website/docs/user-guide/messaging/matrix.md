@@ -158,22 +158,26 @@ With peer-agent gating enabled:
 
 - `peer_agent_ids` selects the peer policy; peers must also pass the receiver's
   normal user authorization (listing a peer does not authorize it);
-- authorized non-peer messages open a new per-receiver, per-room round and reset the peer-call
+- authorized non-peer messages open a new per-receiver, per-room round and reset the peer-event
   allowance;
 - peer messages require a direct mention of the current bot even though ordinary
   human messages do not;
-- each accepted peer-triggered model call consumes one slot, including a call
-  that ends in `NO_REPLY` or an error;
+- each admitted peer event consumes one slot before downstream execution;
+  a later `NO_REPLY` does not refund it, and commands, later refusals or failures
+  can consume a slot without a provider call;
 - untagged peer messages and tagged peer messages after exhaustion are ignored
   before model invocation; and
 - a gateway restart begins with no peer allowance until an authorized human
   sends a new message.
 
 Hermes tells agents in Matrix shared rooms that they may return exactly
-`NO_REPLY` when they have nothing useful, warm, or interesting to add. The
-gateway preserves that turn in context but sends no visible marker. With two
-profiles and a budget of `2` on each, one human message can cause at most two
-initial model calls plus four peer follow-up calls.
+`NO_REPLY` on unaddressed room messages when they have nothing useful, warm, or
+interesting to add. The gateway preserves that turn in context but sends no
+visible marker. Direct mentions, commands, replies to the bot and DMs require a
+visible response; thread follow-ups and replies with unclear intent retain the
+gateway's visible-response safeguard. With two profiles and a budget of `2` on
+each, up to four peer events can be admitted across both receivers before another
+authorized non-peer message replenishes their room allowances.
 
 ### Project Room Isolation
 

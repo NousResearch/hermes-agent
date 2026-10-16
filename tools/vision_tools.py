@@ -1055,11 +1055,13 @@ def check_vision_ocr_requirements() -> bool:
     """``vision_ocr`` gate: an OCR model is configured AND the OCR task's own route resolves to a
     client (probed under ``aux_probe_mode``). Independent of the vision route, so an OCR-only setup
     advertises the tool; the handler fails closed with guidance otherwise."""
-    from agent.auxiliary_client import aux_probe_mode, get_text_auxiliary_client
+    from agent.auxiliary_client import _try_configured_fallback_chain, aux_probe_mode, get_text_auxiliary_client
     if _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) is None:
         return False
     with aux_probe_mode():
         client, _ = get_text_auxiliary_client("ocr")
+        if client is None:
+            client, _, _ = _try_configured_fallback_chain("ocr", "")
     return client is not None
 
 

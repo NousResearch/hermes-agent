@@ -1341,3 +1341,15 @@ class TestVisionOcrGating:
             patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)),
         ):
             assert check_vision_ocr_requirements() is False
+
+    def test_vision_ocr_gate_passes_on_configured_ocr_fallback_chain(self, monkeypatch):
+        from tools.vision_tools import check_vision_ocr_requirements
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with (
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"ocr": {"model": "unlimited-test"}}}),
+            patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(object(), "fb-ocr", "fallback_chain[0](x)")) as fb,
+        ):
+            assert check_vision_ocr_requirements() is True
+        assert fb.call_args.args[0] == "ocr"

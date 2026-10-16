@@ -62,9 +62,11 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 /**
- * A stored id is dead only if a by-id lookup 404s on the active profile AND on
- * every named profile. The active-scope probe covers single-profile installs;
- * named-profile probes rule out sessions living on another profile.
+ * A stored id is dead only if a by-id lookup 404s on the active profile, on the
+ * serving (unscoped) backend, AND on every other named profile. The active
+ * profile owns the sidebar's stored ids, so it is probed first; the unscoped
+ * probe covers the serving backend, and named-profile probes rule out sessions
+ * living on another profile.
  *
  * Completeness assumption: `$profiles` is the same profile list the UI uses to
  * route and resolve sessions (resolveStoredSession, the picker). A session on
@@ -82,6 +84,23 @@ async function sessionVerdict(id: string): Promise<Verdict> {
     return 'unknown'
   }
 
+  // The sidebar's stored ids belong to the ACTIVE profile — probe it
+  // explicitly first. The unscoped lookup below resolves to the serving
+  // profile's store, and the desktop main backend serves the default profile
+  // regardless of which profile the sidebar is on, so an active-profile pin
+  // would 404 unscoped (#132868).
+  try {
+    await getSession(id, activeKey)
+
+    return 'alive'
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      return 'unknown'
+    }
+  }
+
+  // Serving-profile probe: covers a backend that isn't in the profile list
+  // (single-profile installs where the list may not have loaded yet).
   try {
     await getSession(id)
 
@@ -130,6 +149,13 @@ function collectCandidates(): string[] {
     if (row._lineage_root_id) {
       covered.add(row._lineage_root_id)
     }
+
+    // Pin ids are durable lineage roots, which for deep compression chains
+    // differ from the row's display-root projection — only the full lineage
+    // list shields every alias a stored id may reference (#132868).
+    for (const lineageId of row._lineage_ids ?? []) {
+      covered.add(lineageId)
+    }
   }
 
   const candidates = new Set<string>()
@@ -162,8 +188,12 @@ function collectCandidates(): string[] {
 function dropDeadId(id: string): void {
   // Cheap re-verification before destructive drops: if a row for this id
   // appeared while the probe was in flight (a session resurrected or a slow
-  // page landed), the id is no longer dead — keep every entry.
-  const covered = $sessions.get().some(row => row.id === id || row._lineage_root_id === id)
+  // page landed), the id is no longer dead — keep every entry. Same lineage
+  // coverage as collectCandidates, so a row that landed mid-probe shields the
+  // id through any of its aliases.
+  const covered = $sessions.get().some(
+    row => row.id === id || row._lineage_root_id === id || row._lineage_ids?.includes(id)
+  )
 
   if (covered) {
     return

@@ -373,6 +373,28 @@ def test_pre_command_fires_in_the_sessions_own_profile(tmp_path):
 
 
 @pytest.mark.platforms("linux")
+def test_a_command_ink_answers_itself_fires_once_in_the_gateway_when_observed(tmp_path):
+    """Ink answers ``/usage`` and ``/history`` without ``slash.exec`` and reports them through
+    ``command.observe``: each fires ``pre_command`` once, in the gateway, under the TUI session's
+    profile, with main's values. A name only Ink knows (``/fortune``) is refused and fires nothing."""
+    from hermes_cli.gateway_client import GatewayClientError
+    with _gateway(tmp_path) as (proc, desc, home, work, _env, log, _peer):
+        wire = _Wire(home, desc)
+        try:
+            tui = wire.call('session.create', request_id='ink', source='tui', toolsets=[], cwd=str(work))['session_id']
+            assert wire.call('command.observe', session_id=tui, name='usage', arg='') == {'queued': True}
+            with pytest.raises(GatewayClientError):
+                wire.call('command.observe', session_id=tui, name='fortune', arg='')
+            assert wire.call('command.observe', session_id=tui, name='history', arg='') == {'queued': True}
+            fired = _hooks_through(log, 'history')
+        finally:
+            wire.close()
+    assert [(r['pid'], r['surface'], r['platform'], r['command'], r['alias_used'], r['session_key'], r['home'])
+            for r in fired] == [(proc.pid, 'cli', 'cli', command, command, tui, str(home.resolve()))
+                                for command in ('usage', 'history')], fired
+
+
+@pytest.mark.platforms("linux")
 def test_commands_refused_during_a_turn_fire_nothing(tmp_path):
     """``/reasoning`` is a settings control the busy dispatcher rejects during a turn (default
     ``busy_policy``): through ``slash.exec`` and ``command.dispatch`` it is refused and fires nothing.

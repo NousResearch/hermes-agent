@@ -18,6 +18,38 @@ vi.mock('@/lib/voice-playback', () => ({
 
 const SESSION_ID = 'session-under-test'
 const IDLE_STATE = { audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' as const }
+const SPEAKING_STATE = {
+  audioElement: null,
+  messageId: 'prior-clip',
+  sequence: 1,
+  source: 'read-aloud' as const,
+  status: 'speaking' as const
+}
+
+function wirePendingReply($messages: ReturnType<typeof atom<ChatMessage[]>>) {
+  const pendingReply = () => {
+    const messages = $messages.get()
+    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+    const spoken = resolveSpokenReply(SESSION_ID, messages)
+
+    if (!last || last.id === spoken?.id) {
+      return null
+    }
+
+    return { id: last.id, pending: Boolean(last.pending), text: chatMessageText(last) }
+  }
+
+  const markSpoken = () => {
+    const messages = $messages.get()
+    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+    if (last) {
+      markAssistantIdSpoken(SESSION_ID, messages, last.id)
+    }
+  }
+
+  return { markSpoken, pendingReply }
+}
 
 function assistantMessage(id: string, text: string): ChatMessage {
   return { id, parts: [assistantTextPart(text)], role: 'assistant' }
@@ -332,5 +364,76 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
       ])
     })
     await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(2))
+  })
+})
+
+// Session-final replies often land while the prior clip is still playing. The
+// hold path only re-arms on `$voicePlayback` → idle; if that edge is missed,
+// the reply is abandoned with no TTS request at all.
+describe('useAutoSpeakReplies — hold re-arm when idle is missed', () => {
+  afterEach(() => {
+    cleanup()
+    clearSpokenRepliesForTests()
+    $autoSpeakReplies.set(false)
+    setVoicePlaybackState({ ...IDLE_STATE })
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    vi.clearAllMocks()
+  })
+
+  it('speaks a held reply after the hold retry even when the idle listener never fires', async () => {
+    vi.useFakeTimers()
+    $autoSpeakReplies.set(true)
+    vi.spyOn($voicePlayback, 'listen').mockImplementation(() => () => {})
+
+    const $messages = atom<ChatMessage[]>([])
+    const { markSpoken, pendingReply } = wirePendingReply($messages)
+
+    vi.mocked(playSpeechText).mockResolvedValue(true)
+    setVoicePlaybackState({ ...SPEAKING_STATE })
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    act(() => {
+      $messages.set([assistantMessage('session-final', 'Here is the final report.')])
+    })
+
+    expect(playSpeechText).not.toHaveBeenCalled()
+
+    // Still speaking — hold retry must not start a second overlapping clip.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000)
+    })
+    expect(playSpeechText).not.toHaveBeenCalled()
+
+    // Player reaches idle without emitting the listen edge (the silent-drop case).
+    act(() => {
+      setVoicePlaybackState({ ...IDLE_STATE })
+    })
+    expect(playSpeechText).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000)
+    })
+
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
+    expect(playSpeechText).toHaveBeenCalledWith(
+      'Here is the final report.',
+      expect.objectContaining({ messageId: 'session-final', source: 'read-aloud' })
+    )
   })
 })

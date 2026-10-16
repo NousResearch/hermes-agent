@@ -85,7 +85,7 @@ class ContextEngine(ABC):
     def should_compress(self, prompt_tokens: int | None = None) -> bool:
         """Return True if compaction should fire this turn."""
 
-    def should_compress_info(self, prompt_tokens: int | None = None) -> "tuple[bool, str | None]":
+    def should_compress_info(self, prompt_tokens: int | None = None) -> tuple[bool, str | None]:
         """Return ``(should_compress, reason)``.
 
         Engines with block reasons (summary-LLM cooldown, anti-thrashing guard) override

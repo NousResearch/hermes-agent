@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # In-flight stage-2 upgrade threads. They bill their aux usage to the session from a daemon thread,
 # so a process that reads the ledger right before exit (``-z --usage-file``) must be able to join
 # them (bounded) instead of racing the write (#112848).
-_UPGRADE_THREADS: "weakref.WeakSet[threading.Thread]" = weakref.WeakSet()
+_UPGRADE_THREADS: weakref.WeakSet[threading.Thread] = weakref.WeakSet()
 
 
 def wait_for_title_upgrades(timeout: float = 10.0) -> None:

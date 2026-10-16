@@ -27,7 +27,7 @@ def _powershell() -> str:
 def _dot_sourced(body: str) -> subprocess.CompletedProcess:
     script = f'$ErrorActionPreference = "Stop"; . "{INSTALLER}"; {body}'
     return subprocess.run([_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, check=False)
 
 
 def test_native_stderr_under_stop_leaves_the_exit_code_to_the_caller():
@@ -56,7 +56,7 @@ def _stage(origin: Path, home: Path, *extra: str, **env_extra: str) -> tuple[sub
     env = dict(os.environ, HERMES_REPO_URL=str(origin), HERMES_HOME=str(home), **env_extra)
     result = subprocess.run([_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
                              "-Stage", "repository", "-Json", *extra],
-                            env=env, capture_output=True, text=True, timeout=180)
+                            env=env, capture_output=True, text=True, timeout=180, check=False)
     frames = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
     assert len(frames) == 1, result.stdout + result.stderr
     return result, frames[0]
@@ -133,7 +133,7 @@ def test_pinned_fresh_clone_never_materializes_the_branch_tip(tmp_path):
 def test_pinned_fresh_clone_publishes_nothing_when_the_pin_is_refused(tmp_path):
     origin, _, off_branch = _pin_fixture(tmp_path)
     home = tmp_path / "home"
-    result, frame = _stage(origin, home, "-Commit", off_branch)
+    _, frame = _stage(origin, home, "-Commit", off_branch)
     assert frame["ok"] is False
     assert "is not on branch main" in frame["reason"]
     assert not (home / "hermes-agent").exists()

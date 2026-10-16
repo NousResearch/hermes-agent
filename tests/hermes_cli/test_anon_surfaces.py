@@ -13,7 +13,6 @@ import dataclasses
 import json
 import re
 import time
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +28,7 @@ from hermes_cli import (
 )
 from hermes_cli.auth import _load_auth_store
 from hermes_constants import get_hermes_home
+from tests.hermes_cli.anon_portal import as_local_desktop_backend
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
 # Words that must never appear on a user-facing free-tier surface.
@@ -54,6 +54,7 @@ def _guest_state() -> dict:
         "auth_method": "anonymous", "account_tier": "anonymous", "anon_token": "anon_t",
         "access_token": _jwt(), "expires_at": "2030-01-01T00:00:00+00:00",
         "inference_base_url": WELCOME, "user_id": "nas_user:abc", "org_id": "nas_organisation:def",
+        anon_auth.WELCOME_CLAIM_FLAG: True,
     }
 
 
@@ -69,7 +70,8 @@ def _account_state() -> dict:
 @pytest.fixture
 def isolated_store(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    # The welcome trial carries inference only on the desktop's local backend.
+    as_local_desktop_backend(monkeypatch)
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     # No network: the account lookup is derived from the JWT the store already holds.
@@ -210,25 +212,12 @@ def test_the_paid_tool_notice_switches_wording_inside_a_chat():
     ) == nous_account.FREE_TIER_NEEDS_ACCOUNT
 
 
-def test_cli_chat_status_names_the_free_tier(isolated_store):
-    from hermes_cli.cli_session_mixin import CLISessionMixin
-
+def test_a_claimed_guest_off_the_desktop_backend_is_not_the_free_tier(isolated_store, monkeypatch, capsys):
+    """On the CLI surface the trial carries no inference: the guest reads as not signed in."""
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
     _write_auth(_guest_state())
-    rendered = []
-    cli = SimpleNamespace(
-        _session_db=None,
-        session_id="cli-free-tier-status",
-        session_start=datetime.now(),
-        agent=SimpleNamespace(session_total_tokens=0, reasoning_config=None),
-        provider="nous",
-        model=anon_auth.GUEST_MODEL,
-        _agent_running=False,
-        reasoning_config=None,
-        show_reasoning=None,
-        session_key="cli:free-tier-status",
-        _get_status_bar_snapshot=dict,
-        _console_print=lambda text, **_kwargs: rendered.append(text),
-    )
-    CLISessionMixin._show_session_status(cli)
 
-    assert anon_auth.FREE_TIER_STATUS_LINE in rendered[0]
+    auth_commands.auth_status_command(SimpleNamespace(provider="nous"))
+    text = capsys.readouterr().out
+    assert "free tier" not in text.lower() and anon_auth.GUEST_MODEL not in text

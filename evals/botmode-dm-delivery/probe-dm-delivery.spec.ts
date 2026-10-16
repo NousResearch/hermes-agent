@@ -50,26 +50,18 @@ test('cron output waits for a CLI-only owner and arrives after owner release', a
   try {
     await fixture.mock.waitForHeldCompletion()
     const script = 'import json; from cron.scheduler_delivery import _deliver_to_bot_chat; j={"id":"cli-residual","name":"CLI residual","execution_id":"fixed-execution"}; result=_deliver_to_bot_chat(j,"CLI_OWNER_CRON_SENTINEL","beta"); print(json.dumps({"result":result,"job":j}))'
-    const setup = process.env.BOT_DM_EXCEPTION ? 'from pathlib import Path; from cron.bot_chat_delivery import defer; from hermes_constants import get_hermes_home; defer("e"*64,{"id":"exception-head"},"EXCEPTION_MUST_NOT_RUN","beta",get_hermes_home()/"profiles"/"beta"); ' : ''
+    const setup = ''
     const result = JSON.parse(execFileSync(python, ['-c', setup + script], { env: cronEnv, cwd: repo, encoding: 'utf8', timeout: 30_000 }))
     console.log('CLI_OWNER_CRON_ADMISSION', JSON.stringify(result))
     fs.writeFileSync(path.join(evidence, 'cli-owner-admission.json'), JSON.stringify(result, null, 2))
-    if (process.env.BOT_DM_CORRUPT) fs.writeFileSync(path.join(fixture.sandbox.hermesHome, 'cron', 'bot_chat_pending', 'broken.json'), '{')
     fixture.mock.releaseHeldStream()
     await expect.poll(() => child.exitCode, { timeout: 60_000 }).toBe(0)
     fs.mkdirSync(path.join(fixture.sandbox.root, 'changed-launch-home'), { recursive: true })
-    const tickArgs = process.env.BOT_DM_EXCEPTION ? [path.join(repo, 'evals/botmode-dm-delivery/exception-tick.py')] : ['-c', 'import time; from cron.scheduler import tick; from cron.bot_chat_delivery import _running; tick(verbose=False);\nwhile _running: time.sleep(0.1)']
-    const receiptPath = path.join(evidence, 'exception-receipts.json')
-    const ticker = spawn(python, tickArgs, { env: { ...cronEnv, HOME: path.join(fixture.sandbox.root, 'changed-launch-home'), BOT_DM_EXCEPTION_RECEIPT: receiptPath }, cwd: repo, stdio: ['ignore', output, output] })
+    // Delivery is admitted through the profile authority inside tick(); nothing to drain afterwards.
+    const tickArgs = ['-c', 'from cron.scheduler import tick; tick(verbose=False)']
+    const ticker = spawn(python, tickArgs, { env: { ...cronEnv, HOME: path.join(fixture.sandbox.root, 'changed-launch-home') }, cwd: repo, stdio: ['ignore', output, output] })
     await expect.poll(() => ticker.exitCode, { timeout: 90_000 }).not.toBeNull()
     expect(ticker.exitCode).toBe(0)
-    if (process.env.BOT_DM_EXCEPTION) {
-      const receipts = JSON.parse(fs.readFileSync(receiptPath, 'utf8'))
-      expect(receipts.raised).toBe(1)
-      expect(receipts.records.find((r: { id: string }) => r.id === 'e'.repeat(64)).status).toBe('ambiguous')
-      expect(receipts.records.find((r: { id: string }) => r.id !== 'e'.repeat(64)).status).toBe('settled')
-      expect(dbMessages('beta').filter(([, text]) => text.includes('EXCEPTION_MUST_NOT_RUN'))).toHaveLength(0)
-    }
     await openBot('beta')
     expect(dbMessages('beta').filter(([role, text]) => role === 'user' && text.includes('CLI_OWNER_CRON_SENTINEL'))).toHaveLength(1)
     await expect(fixture.page.getByText(/CLI_OWNER_CRON_SENTINEL/).filter({ visible: true }).first()).toBeVisible({ timeout: 45_000 })

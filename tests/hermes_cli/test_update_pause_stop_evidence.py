@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -48,7 +48,7 @@ def _accepted_then_orphaned(tmp_path: Path, monkeypatch, *, home_writable: bool)
     saved = pause_record.read()["token"]
     assert saved["stop_sent"] == [], "premise: no checkpoint landed in the record"
     body = json.loads(marker.read_text(encoding="utf-8"))
-    body["written_at"] = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()  # past the TTL
+    body["written_at"] = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()  # past the TTL
     marker.write_text(json.dumps(body), encoding="utf-8")
     pause_record.write(saved, owner=pause_record.UNOWNED)  # the updater died
     return marker, saved["pause_id"]

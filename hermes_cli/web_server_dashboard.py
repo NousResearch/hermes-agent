@@ -128,7 +128,8 @@ def mount_spa(application: FastAPI):
             # gate is off: on a gated serve the token must never be readable without auth.
             # See #94227, #95575.
             gated = bool(getattr(application.state, "auth_required", False))
-            if full_path == "" and not gated:
+            withheld = gated or bool(getattr(app.state, "withhold_session_token", False))
+            if full_path == "" and not withheld:
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
                     f"window.__HERMES_SESSION_TOKEN__={json.dumps(_server()._SESSION_TOKEN)};"
@@ -162,7 +163,9 @@ def mount_spa(application: FastAPI):
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
-        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+        # The gateway-hosted listener (gateway/run_api.py) never publishes it: local clients use tickets.
+        withheld = gated or bool(getattr(app.state, "withhold_session_token", False))
+        token_js = "" if withheld else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
         # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
         # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
         initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")
@@ -639,6 +642,12 @@ def _schedule_check_fn_probe(fn) -> Optional[threading.Thread]:
     return thread
 
 
+def _plugin_login_command(name: str) -> str:
+    """A plugin that left core with its own login command (``hermes spotify login``), else ``hermes auth <name>``."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    return next((f"hermes {f.cli} login" for f in LEFT_CORE if f.plugin == name and f.cli), f"hermes auth {name}")
+
+
 def _plugin_auth_hint(name: str, provides_tools: list) -> tuple:
     """``(auth_required, auth_command)`` from last-known cached tool availability only.
 
@@ -655,7 +664,7 @@ def _plugin_auth_hint(name: str, provides_tools: list) -> tuple:
             if cached_result is None:
                 _schedule_check_fn_probe(entry.check_fn)
             elif cached_result is False:
-                return True, f"hermes auth {name}"
+                return True, _plugin_login_command(name)
     except Exception:
         pass
     return False, ""

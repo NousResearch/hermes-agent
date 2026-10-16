@@ -132,7 +132,7 @@ class ChatStreamWatchdog:
             f"({elapsed:.1f}s elapsed, timed out)")
 
 
-def chat_stream_windows(client: Any, kwargs: dict, task: Optional[str]) -> "tuple[float, Optional[float]]":
+def chat_stream_windows(client: Any, kwargs: dict, task: Optional[str]) -> tuple[float, Optional[float]]:
     """(inter-chunk window, first-token window) for a streamed chat-completions attempt. Between
     chunks: the Codex guard's window (``auxiliary.<task>.no_progress_timeout``, 60s default). Before
     the first token: the main loop's cloud stale patience for the routed provider (its explicit
@@ -156,7 +156,7 @@ def chat_stream_windows(client: Any, kwargs: dict, task: Optional[str]) -> "tupl
     return window, first
 
 
-def consume_chat_stream(chunks: Any, acc: Any, no_progress: "Optional[tuple[float, Optional[float]]]") -> None:
+def consume_chat_stream(chunks: Any, acc: Any, no_progress: Optional[tuple[float, Optional[float]]]) -> None:
     """Feed *chunks* into the accumulator *acc*. Under a ``(window, first_token_window)`` watchdog a
     silent stream raises TimeoutError, except after the terminal chunk: with finish_reason (and any
     usage) in hand a stall is teardown, so the completed response and its billed usage are kept."""

@@ -10,7 +10,7 @@ import signal
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -41,7 +41,7 @@ def _session_expiry_timestamp(session_info: dict[str, Any]) -> Optional[float]:
         _bt.logger.warning("Ignoring invalid cloud browser session expiry timestamp")
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
@@ -477,7 +477,7 @@ def _update_session_activity(task_id: str):
         _bt._session_owner_homes.setdefault(task_id, str(get_hermes_home()))
 
 
-def _kill_process_tree(proc: "subprocess.Popen") -> None:
+def _kill_process_tree(proc: subprocess.Popen) -> None:
     """Best-effort kill of *proc* and every descendant; never raises.
 
     ``Popen.kill()`` only signals the direct child; npm/npx helpers and the detached
@@ -504,7 +504,7 @@ def _kill_process_tree(proc: "subprocess.Popen") -> None:
         _legacy_kill_process_tree(proc)
 
 
-def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
+def _legacy_kill_process_tree(proc: subprocess.Popen) -> None:
     """Local tree-kill (fallback when agent.deadline is unavailable; tests pin
     the signal sequence). A child leading its own group gets SIGTERM then
     SIGKILL via killpg; a shared-group child can never be killpg'd (that is OUR

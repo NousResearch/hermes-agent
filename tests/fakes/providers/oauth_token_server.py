@@ -208,7 +208,7 @@ class OAuthTokenServer:
 
     # ---- lifecycle -------------------------------------------------------
 
-    def start(self) -> "OAuthTokenServer":
+    def start(self) -> OAuthTokenServer:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(self))
         self._httpd.daemon_threads = True
         self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.05},
@@ -234,7 +234,7 @@ class OAuthTokenServer:
     def handler_class(self) -> type[BaseHTTPRequestHandler]:
         return _make_handler(self)
 
-    def __enter__(self) -> "OAuthTokenServer":
+    def __enter__(self) -> OAuthTokenServer:
         return self.start()
 
     def __exit__(self, *exc: object) -> None:
@@ -306,7 +306,7 @@ def make_test_ca(directory: Path, hosts: Iterable[str]) -> TestCA:
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
     directory.mkdir(parents=True, exist_ok=True)
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "hermes e2e test CA")])
     ca_cert = (
@@ -362,7 +362,7 @@ class TLSInterceptProxy:
         assert self._sock is not None, "proxy not started"
         return f"http://127.0.0.1:{self._sock.getsockname()[1]}"
 
-    def start(self) -> "TLSInterceptProxy":
+    def start(self) -> TLSInterceptProxy:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.bind(("127.0.0.1", 0))
         self._sock.listen(64)
@@ -416,7 +416,7 @@ class TLSInterceptProxy:
             except OSError:
                 pass
 
-    def __enter__(self) -> "TLSInterceptProxy":
+    def __enter__(self) -> TLSInterceptProxy:
         return self.start()
 
     def __exit__(self, *exc: object) -> None:

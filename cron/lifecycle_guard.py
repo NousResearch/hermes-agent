@@ -129,8 +129,7 @@ def _pattern_reaches_host_interpreter(pattern: str, *, full_cmdline: bool, exact
     that names the interpreter and then only wildcards or a `hermes` token reaches it, while
     `python mt_add.py` (a specific script) does not."""
     core = pattern.strip().strip("\"'").lstrip("^")
-    if core.endswith("$"):
-        core = core[:-1]
+    core = core.removesuffix("$")
     head, _, rest = core.partition(" ") if full_cmdline else (core, "", "")
     # A literal interpreter name first (`python3.12`: the dot is a version separator, not an ERE
     # wildcard); only then read the head as an ERE with a metacharacter tail (`python3?`, `python.*`).

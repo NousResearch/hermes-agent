@@ -9,9 +9,23 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# A gateway session's frozen effective ``auxiliary:`` section (recovered secrets applied, a task whose
+# secret changed returned to the primary route). Set for the turn; never the live config.yaml.
+_SESSION_AUXILIARY: ContextVar = ContextVar("session_auxiliary", default=None)
+
+
+@contextlib.contextmanager
+def session_auxiliary_scope(auxiliary):
+    token = _SESSION_AUXILIARY.set(auxiliary if isinstance(auxiliary, dict) else {})
+    try:
+        yield
+    finally:
+        _SESSION_AUXILIARY.reset(token)
 
 
 def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dict[str, Any]:
@@ -22,12 +36,14 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dic
     until the user pins a route on the task itself. ``_seen`` guards re-registration cycles."""
     if not task:
         return {}
-    try:
-        from hermes_cli.config import load_config_readonly
-        config = load_config_readonly()
-    except ImportError:
-        return {}
-    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    aux = _SESSION_AUXILIARY.get()
+    if aux is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+        except ImportError:
+            return {}
+        aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}

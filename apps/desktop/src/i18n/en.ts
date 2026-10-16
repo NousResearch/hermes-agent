@@ -1,17 +1,23 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
-import { enAppTour, enHandoffTour } from './en_app_tour'
+import { enAppTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
+import { enClarify } from './en_clarify'
+import { enConnectorAccounts } from './en_connector_accounts'
+import { enConnectorCard } from './en_connector_card'
+import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
+import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
 
 export const en: Translations = {
@@ -27,40 +33,10 @@ export const en: Translations = {
   },
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
+  firstRun: enFirstRun,
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
-  connectors: {
-    title: 'Connect your apps',
-    connect: 'Connect',
-    skip: 'Not now',
-    cancel: 'Stop waiting',
-    retry: 'Try again',
-    grant: 'Reconnect',
-    connected: 'Connected',
-    checking: 'Checking your apps…',
-    notConnected: 'Not connected',
-    skipped: 'Skipped',
-    disabled: 'Unavailable',
-    failed: 'Could not connect',
-    needsAuth: 'Access expired',
-    opening: 'Opening sign-in…',
-    waiting: 'Waiting for your browser…',
-    timeout: 'Still waiting for authorization.',
-    refresh: 'Refresh status',
-    connectError: 'Could not start authorization. Try again.',
-    connectErrorFor: (app: string) => `Could not start authorization for ${app}.`,
-    unavailable: 'Connectors are unavailable for this session.',
-    ownerMissing: 'Reopen this conversation to manage its connections.',
-    search: 'Find an app',
-    empty: 'No matching apps',
-    disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
-    execution: 'Connector tools',
-    setup: server => `Set up ${server}`,
-    openInBrowser: 'Open in browser',
-    setupCancel: 'Cancel',
-    authorizedToolsUnavailable: 'Authorized. Tools unavailable.',
-    required: 'Required'
-  },
+  connectors: enConnectorCard,
 
   // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
   connectorsPage: {
@@ -225,6 +201,8 @@ export const en: Translations = {
       advanced: 'Advanced',
       advancedHint: 'the mcp.json entry and logs'
     },
+
+    accounts: enConnectorAccounts,
 
     tools: {
       title: 'Tools',
@@ -801,17 +779,22 @@ export const en: Translations = {
         title: 'Install plugin',
         description: 'Review what this repository contains before installing anything.',
         repoLabel: 'Repository',
+        verified: 'Verified',
+        unverified: 'Unverified',
+        reviewedByNous: 'Reviewed by Nous.',
+        installsAndEnables: profile => `Installs for ${profile} and turns on right away.`,
+        installsOnly: profile => `Installs for ${profile}.`,
+        advanced: 'Advanced',
+        versionLabel: 'Version',
+        reviewedPin: sha => (sha ? `Reviewed pin ${sha}` : 'Reviewed pin'),
+        latestCommit: 'Latest commit',
+        nothingToInstall: 'This package has nothing to install here.',
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
         desktopLabel: 'Desktop UI',
         profileLabel: 'Install for profile',
         agentTargetLocal: (profile, dir) => `Installs into the ${profile} backend (${dir})`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
-        catalogPinned: (name, sha) =>
-          `Hermes catalog entry "${name}" — the agent component installs at the reviewed pin${sha ? ` ${sha}` : ''}, not the branch tip.`,
-        reviewedHeading: 'Reviewed catalog entry',
-        reviewedIntro:
-          'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
         toolsConnected: n => (n === 1 ? '1 tool connected' : `${n} tools connected`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} ready` : `${names.length} skills ready`),
         nextChat: 'more tools available in your next chat',
@@ -822,13 +805,11 @@ export const en: Translations = {
         desktopTargetFromPackage: 'Loaded into this app from the package above — same for every profile',
         desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
         insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
-        securityHeading: 'Before you install',
         securityIntro:
           'Install only from sources you trust — review the repository below if you want to see what will be added.',
         sourceHeading: 'Source code',
         viewRepository: 'View repository',
         viewPluginFiles: 'View plugin files',
-        gitCloneLabel: 'Git clone URL',
         enableAgent: 'Enable agent plugin after install',
         forceReinstall: 'Force reinstall (replace if already installed)',
         pinToCommit: 'Pin to commit (optional)',
@@ -1160,12 +1141,6 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
-    poolLimits: {
-      warmBotBackendsAria: 'Warm bot backends',
-      warmBotBackendsTitle: 'Warm Bot Backends',
-      backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
-      backendIdleTimeoutTitle: 'Backend Idle Timeout'
-    },
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -1212,9 +1187,7 @@ export const en: Translations = {
       screenRecording: 'Screen Recording',
       driverHealth: 'Driver health'
     },
-    about: {
-      updates: 'Updates'
-    },
+    about: { updates: 'Updates', channel: enUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Minimize to tray',
       minimizeToTrayDesc:
@@ -1249,12 +1222,6 @@ export const en: Translations = {
       alwaysExternalLinksTitle: 'Always open links in external browser',
       alwaysExternalLinksDesc:
         'Open every link you click in your system browser instead of the in-app browser. "Open in in-app browser" in the right-click menu still works.',
-      developerTitle: 'Developer',
-      resetOnboardingTitle: 'Reset onboarding',
-      resetOnboardingDesc:
-        'Delete the setup chats, rebuild the setup profile and run the first-run setup again. Your own profiles, chats and plugins stay.',
-      resetOnboardingAction: 'Reset',
-      resetOnboardingFailed: 'Could not reset onboarding',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
@@ -3423,6 +3390,7 @@ export const en: Translations = {
     openDirective: 'Open',
     queueMessage: 'Queue message',
     steer: 'Steer the current run',
+    redirect: 'Redirect the current run',
     stop: 'Stop',
     send: 'Send',
     speaking: 'Speaking',
@@ -3559,11 +3527,6 @@ export const en: Translations = {
     editingQueuedInComposer: 'Editing queued turn in composer',
     restoredDraftNotice: 'Restored your unsent message',
     restoredDraftUndo: 'Undo',
-    localSetup: {
-      title: 'This could run on your computer',
-      text: (model: string) => `${model} fits this machine. Free, and chats stay on your computer.`,
-      action: 'Show me'
-    },
     queueEdit: 'Edit',
     queueExpand: 'Expand',
     queueCollapse: 'Collapse',
@@ -3571,6 +3534,11 @@ export const en: Translations = {
     queueSteer: 'Steer — redirect the live turn now',
     queueSend: 'Send',
     queueDelete: 'Delete',
+    queueLostNote: 'Turn lost during restart',
+    restoreImageDraft: 'Restore image draft',
+    queueCancelFailed: "Couldn't remove the queued turn",
+    queueLostDiscard: 'Discard',
+    queueLostDiscardTip: 'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',
@@ -3751,7 +3719,7 @@ export const en: Translations = {
       heartbeatEveryHours: hours => `every ${hours}h`,
       heartbeatEverySeconds: seconds => `every ${seconds}s`,
       heartbeatNext: time => `next ${time}`,
-      heartbeatDueWaitingForIdle: 'due — waiting for idle',
+      dueWaitingForIdle: 'due — waiting for idle',
       heartbeatActions: 'Heartbeat actions',
       pauseHeartbeat: 'Pause heartbeat',
       resumeHeartbeat: 'Resume heartbeat',
@@ -3977,7 +3945,6 @@ export const en: Translations = {
     versionDetailsUncommittedChanges: 'uncommitted changes'
   },
 
-  handoffTour: enHandoffTour,
   install: {
     stageStates: {
       pending: 'Pending',
@@ -4847,49 +4814,8 @@ export const en: Translations = {
         `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
       alwaysAllow: 'Always allow'
     },
-    clarify: {
-      notReady: 'Clarify request is not ready yet',
-      gatewayDisconnected: 'Hermes is offline right now. Reconnect, then send it again.',
-      sendFailed: 'Could not send clarify response',
-      loadingQuestion: 'Loading question…',
-      other: 'Other (type your answer)',
-      placeholder: 'Type your answer…',
-      skip: 'Skip',
-      skipped: 'Skipped',
-      noAnswer: 'No answer',
-      confirmAndContinueLabel: 'Confirm and continue',
-      singleSelectHint: 'Pick one',
-      multiSelectHint: 'Select all that apply',
-      oneQuestion: '1 question',
-      questionProgress: (answered, total) => `${answered} of ${total} answered`,
-      notDelivered:
-        "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Accent color',
-        connectors: 'Apps',
-        layout: 'Layout',
-        plugins: 'Plugins',
-        theme: 'Appearance'
-      },
-      loading: 'Loading options…',
-      unavailable: "This list isn't available right now. Reply in chat instead.",
-      findApp: 'Find an app',
-      customColor: 'Custom color',
-      plugin: 'Plugin',
-      startsLater: "We'll set these up when you start."
-    },
-    startChat: {
-      starting: title => `Starting “${title}”…`,
-      startingUntitled: 'Starting a chat…',
-      untitled: 'New chat',
-      notStarted: "Couldn't start that chat.",
-      retry: 'Retry',
-      inProfile: profile => `In ${profile}`,
-      open: 'Open',
-      openFailed: "Couldn't open the chat"
-    },
+    clarify: enClarify,
+    themePicker: enThemePicker,
     catalogInstall: enCatalogInstall,
     mcpSetup: {
       installTitle: 'Add MCP servers',
@@ -5001,8 +4927,6 @@ export const en: Translations = {
           pending: 'Searching session history',
           pendingAction: 'Searching'
         },
-        setup_choose: { done: 'Asked a setup question', pending: 'Asking a setup question', pendingAction: 'Asking' },
-        start_chat: { done: 'Started a chat', pending: 'Starting a chat', pendingAction: 'Starting' },
         terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
         todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
         vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },

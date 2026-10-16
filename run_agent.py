@@ -254,7 +254,9 @@ class AIAgent(
         read_terminal_callback: Callable[..., Any] | None = None, read_preview_callback: Callable[..., Any] | None = None,
         drive_preview_callback: Callable[..., Any] | None = None, read_window_below_callback: Callable[..., Any] | None = None,
         connection_callback: Callable[..., Any] | None = None, tour_callback: Callable[..., Any] | None = None,
-        setup_choose_callback: Callable[..., Any] | None = None, step_callback: Callable[..., Any] | None = None,
+        theme_callback: Callable[..., Any] | None = None,
+        setup_beat_callback: Callable[..., Any] | None = None,
+        step_callback: Callable[..., Any] | None = None,
         stream_delta_callback: Callable[..., Any] | None = None, interim_assistant_callback: Callable[..., Any] | None = None,
         tool_gen_callback: Callable[..., Any] | None = None, status_callback: Callable[..., Any] | None = None,
         notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
@@ -268,7 +270,7 @@ class AIAgent(
         skip_context_files: bool = False, load_soul_identity: bool = False,
         skip_memory: bool = False, skip_background_review: bool = False,
         session_db=None, parent_session_id: str | None = None,
-        iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
+        iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
         fallback_model: dict[str, Any] | None = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
@@ -567,6 +569,7 @@ class AIAgent(
             return float("inf")
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
+        from agent.gemini_long_decode import long_decode_stale_multiplier
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
         explicit = self._stale_timeout_is_explicit()
@@ -574,6 +577,8 @@ class AIAgent(
         # cap below, so the floor can never outlive the run budget.
         if self.api_mode == "codex_responses" and not explicit:
             timeout = max(timeout, _high_effort_silence_floor(self))
+        if not explicit:
+            timeout *= long_decode_stale_multiplier(api_payload)
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         if not explicit:
@@ -1452,7 +1457,7 @@ def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[list[str]]:
     return names
 
 
-def _save_sample_trajectory(agent: "AIAgent", result: dict, user_query: str, model: str) -> None:
+def _save_sample_trajectory(agent: AIAgent, result: dict, user_query: str, model: str) -> None:
     """``--save_sample``: write one trajectory (same format as batch_runner) to a UUID-named JSON file."""
     sample_filename = f"sample_{str(uuid.uuid4())[:8]}.json"
     entry = {

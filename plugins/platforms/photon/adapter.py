@@ -18,7 +18,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -426,9 +426,9 @@ def _is_richlink_preview_content(content: dict[str, Any]) -> bool:
 
 def _parse_timestamp(ts_str: str) -> datetime:
     try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now(tz=timezone.utc)
+        return datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=UTC)
     except ValueError:
-        return datetime.now(tz=timezone.utc)
+        return datetime.now(tz=UTC)
 
 
 _Normalized = tuple[str, MessageType, list[str], list[str]]  # text, type, media_urls, media_types
@@ -592,7 +592,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # markdown path renders a fence as inline Unicode monospace, not a block.
         self.supports_code_blocks = False
         self._sidecar_proc: Optional[subprocess.Popen] = None
-        self._http_client: Optional["httpx.AsyncClient"] = None
+        self._http_client: Optional[httpx.AsyncClient] = None
         self._respawn_lock: Optional[asyncio.Lock] = None
         self._sidecar_supervisor_task = self._inbound_task = self._sidecar_health_task = None
         self._watchdog_task: Optional[asyncio.Task] = None
@@ -618,7 +618,7 @@ class PhotonAdapter(BasePlatformAdapter):
     # -- Group-mention gating (parity with BlueBubbles) ----------------------------
 
     @staticmethod
-    def _compile_mention_patterns(raw: Any) -> "list[re.Pattern]":
+    def _compile_mention_patterns(raw: Any) -> list[re.Pattern]:
         """``raw``: list, string (JSON list or comma/newline-separated) or None (defaults)."""
         return compile_mention_patterns(
             raw, log_prefix="photon", defaults=_DEFAULT_MENTION_PATTERNS, logger_=logger)
@@ -1049,7 +1049,7 @@ class PhotonAdapter(BasePlatformAdapter):
         from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows
         await self._apply_spectrum_patch(windows_hide_flags())
         try:
-            self._sidecar_proc = subprocess.Popen(
+            self._sidecar_proc = subprocess.Popen(  # noqa: ASYNC220 -- persistent sidecar; callers use the Popen pipes and poll()
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                 start_new_session=(sys.platform != "win32"),

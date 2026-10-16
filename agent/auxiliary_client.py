@@ -32,7 +32,7 @@ from agent.error_classifier import (
     is_reasoning_required_rejection,
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
-from agent.auxiliary_structured_output import remember_structured_output_rejection
+from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -649,22 +649,21 @@ _TEMPERATURE_REJECTED_ROUTES: set = set()
 def remember_temperature_rejection(
     provider: Optional[str], base_url: Optional[str], rejected_kwargs: dict[str, Any], error: BaseException,
 ) -> None:
-    from agent.auxiliary_structured_output import _route_key
     _TEMPERATURE_REJECTED_ROUTES.add((_route_key(provider, base_url), _bare_model(rejected_kwargs.get("model"))))
 
 
 def _fixed_temperature_for_model(
     model: Optional[str], base_url: Optional[str] = None, provider: Optional[str] = None,
-) -> "Optional[float] | object":
-    """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot, OpenAI reasoning families, routes that
-    already rejected it), a fixed ``float``, or ``None``."""
+) -> Optional[float] | object:
+    """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot, OpenAI reasoning families, Gemini 3.6+, routes
+    that already rejected it), a fixed ``float``, or ``None``."""
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
-    if _is_openai_default_temperature_only(model):
-        logger.debug("Omitting temperature for %r (accepts only the default)", model)
+    from agent.gemini_native_adapter import gemini_sampling_deprecated
+    if _is_openai_default_temperature_only(model) or gemini_sampling_deprecated(_bare_model(model)):
+        logger.debug("Omitting temperature for %r (default-only, or Gemini 3.6+ ignores sampling)", model)
         return OMIT_TEMPERATURE
-    from agent.auxiliary_structured_output import _route_key
     if (_route_key(provider, base_url), _bare_model(model)) in _TEMPERATURE_REJECTED_ROUTES:
         logger.debug("Omitting temperature for %r (route rejected it earlier)", model)
         return OMIT_TEMPERATURE
@@ -748,8 +747,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         base_url = base_url.rstrip("/")
         if not base_url:
             return ""
-        if base_url.endswith("/v1"):  # fetch_models_with_pricing appends /v1/models
-            base_url = base_url[:-3]
+        base_url = base_url.removesuffix("/v1")
         # Nous-only args must match the pickers' or the seeded cache loses sale chrome and
         # policy-catalog expiry.
         _nous_kwargs = {}
@@ -2296,7 +2294,7 @@ def _warn_paid_lane_once(model: str) -> None:
     )
 
 
-def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None, model: str | None = None,
+def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, model: str | None = None,
                     explicit_base_url: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
@@ -2503,7 +2501,7 @@ def _read_main_model_for_aux() -> str:
     return model
 
 
-def _read_main_api_key_if_same_origin(aux_base_url: str) -> Union[str, Callable[[], str]]:
+def _read_main_api_key_if_same_origin(aux_base_url: str) -> str | Callable[[], str]:
     """Main api_key only when *aux_base_url* has the main base_url's exact origin.
 
     Unconditional inheritance would leak the credential to any misconfigured host; mismatch keeps ``no-key-required`` → 401.
@@ -2626,7 +2624,7 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
@@ -2650,7 +2648,7 @@ def _relay_sync_completion(
         return run_with_aux_hooks(
             lambda: relay_llm.execute_current(
                 kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-                name=provider_name, model_name=model_name, metadata=metadata,
+                name=provider_name, model_name=model_name, metadata=relay_chat_metadata(metadata),
                 defer_logical_completion=True,
             ),
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
@@ -2665,7 +2663,7 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
@@ -2681,7 +2679,7 @@ async def _relay_async_completion(
         return await arun_with_aux_hooks(
             lambda: relay_llm.execute_current_async(
                 kwargs, callback, name=provider_name, model_name=model_name,
-                metadata=metadata, defer_logical_completion=True,
+                metadata=relay_chat_metadata(metadata), defer_logical_completion=True,
             ),
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
             provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
@@ -2694,7 +2692,7 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
@@ -2710,7 +2708,7 @@ def _relay_sync_stream(
     return run_with_aux_hooks(
         lambda: relay_llm.stream_current(
             kwargs, create, name=provider_name, model_name=model_name, finalizer=dict,
-            metadata=metadata, completed_response_predicate=lambda value: hasattr(value, "choices"),
+            metadata=relay_chat_metadata(metadata), completed_response_predicate=lambda value: hasattr(value, "choices"),
         ),
         aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
         provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""), streaming=True,
@@ -3039,7 +3037,7 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
+def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
                    explicit_base_url: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
@@ -3411,22 +3409,6 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     if _contains_any(err_lower, ("response mime type", "response_schema", "response_json_schema")):
         return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
-
-
-def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
-    """Copy *kwargs* without ``response_format`` (top-level and ``extra_body``); None when nothing was
-    removed, so call sites don't retry an unchanged request."""
-    retry_kwargs = dict(kwargs)
-    changed = retry_kwargs.pop("response_format", None) is not None
-    extra_body = retry_kwargs.get("extra_body")
-    if isinstance(extra_body, dict) and "response_format" in extra_body:
-        remaining = {k: v for k, v in extra_body.items() if k != "response_format"}
-        if remaining:
-            retry_kwargs["extra_body"] = remaining
-        else:
-            retry_kwargs.pop("extra_body", None)
-        changed = True
-    return retry_kwargs if changed else None
 
 
 def _is_reasoning_field_rejection(exc: Exception) -> bool:
@@ -3815,10 +3797,12 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
 
 
 async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mode: Optional[str], task: Optional[str], **prep) -> Any:
+    import asyncio
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
-    return _validate_llm_response(
+    return await asyncio.to_thread(
+        _validate_llm_response,
         await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
         task,
     )
@@ -4202,7 +4186,9 @@ async def _call_fallback_candidate_async(
     )
 
     async def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
-        return _validate_llm_response(
+        import asyncio
+        return await asyncio.to_thread(
+            _validate_llm_response,
             await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
             task,
         )
@@ -4885,7 +4871,7 @@ class _ResolveRequest(NamedTuple):
     async_mode: bool
     raw_codex: bool
     explicit_base_url: Optional[str]
-    explicit_api_key: Optional[Union[str, Callable[[], str]]]
+    explicit_api_key: Optional[str | Callable[[], str]]
     api_mode: Optional[str]
     main_runtime: Optional[dict[str, Any]]
     is_vision: bool
@@ -4895,7 +4881,7 @@ class _ResolveRequest(NamedTuple):
 _ResolveResult = tuple[Optional[Any], Optional[str]]
 
 
-def _normalize_api_key(raw: Any) -> Union[str, Callable[[], str]]:
+def _normalize_api_key(raw: Any) -> str | Callable[[], str]:
     """A key_cmd/Entra callable passes through uncalled; strings are stripped; anything else is ''."""
     if callable(raw) and not isinstance(raw, str):
         return raw
@@ -5422,7 +5408,7 @@ _EXPLICIT_PROVIDER_BRANCHES: dict[str, Callable[[_ResolveRequest], _ResolveResul
 
 def resolve_provider_client(
     provider: str, model: str | None = None, async_mode: bool = False, raw_codex: bool = False,
-    explicit_base_url: str | None = None, explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
+    explicit_base_url: str | None = None, explicit_api_key: Optional[str | Callable[[], str]] = None,
     api_mode: str | None = None, main_runtime: Optional[dict[str, Any]] = None, is_vision: bool = False,
     task: Optional[str] = None,
 ) -> tuple[Optional[Any], Optional[str]]:
@@ -6812,7 +6798,8 @@ def _validate_llm_response(
     """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
 
     Also the single aux-usage accounting chokepoint: every successful non-streaming response
-    passes here exactly once; *provider*/*base_url* are optional hints.
+    passes here exactly once; *provider*/*base_url* are optional hints. Async callers
+    await this off-loop because accounting may commit through synchronous worker RPC.
 
     See #7264.
     Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
@@ -7015,7 +7002,7 @@ def _client_streams_internally(client: Any) -> bool:
 
 
 _MANAGED_LOCAL_STATE_TTL_S = 15.0
-_managed_local_cache: "tuple[float, str]" = (0.0, "")
+_managed_local_cache: tuple[float, str] = (0.0, "")
 
 
 def _managed_local_netloc() -> str:
@@ -7122,7 +7109,7 @@ def _create_with_progress(
         return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream)
 
 
-def _stream_request_plan(kwargs: dict[str, Any]) -> "tuple[dict[str, Any], str, float]":
+def _stream_request_plan(kwargs: dict[str, Any]) -> tuple[dict[str, Any], str, float]:
     """(stream kwargs, model name, total ceiling) for a streamed re-aggregation."""
     stream_kwargs = dict(kwargs)
     stream_kwargs["stream"] = True
@@ -7189,7 +7176,7 @@ def _create_with_progress_once(
 
 def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
-    no_progress: "Optional[tuple[float, Optional[float]]]" = None,
+    no_progress: Optional[tuple[float, Optional[float]]] = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
     ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
@@ -7575,7 +7562,7 @@ _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
 )
 
 
-def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
+def _rung(step: _LadderStep, accept: Callable[[Exception], bool]):
     """One ladder rung: perform ``step``; yields ``(response, None)`` on success,
     ``(None, exc)`` when ``accept(exc)`` lets the next rung handle it, else re-raises."""
     try:
@@ -7924,9 +7911,10 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
     # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
     # lands on the next entry, then discovery where the selection policy allows it (#106367).
-    # Bounded by construction: every pass quarantines its candidate and the walk stops as soon as
-    # re-selection hands back a lane already tried, so each lane is attempted at most once.
+    # Bounded: each pass quarantines its candidate and a re-selected lane ends the walk (≤1 try each).
+    # Candidates overwrite route_info; on exhaustion the PRIMARY error is raised, so restore its route.
     tried_lanes: set = set()
+    primary_route = dict(route.route_info) if route.route_info is not None else None
     while fb_client is not None:
         lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
         if lane in tried_lanes:
@@ -7939,13 +7927,12 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
             task_chain_only=explicit_auth_with_task_chain)
-    # All fallback layers exhausted — one user-visible warning, then re-raise.
+    # All fallback layers exhausted: one user-visible warning (#26882), then the caller re-raises.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
-                   # All fallback layers exhausted — emit a single user-visible warning so the operator
-                   # knows aux task is about to fail. (#26882) The error itself is re-raised below.
-                   # (#26882)
                    "(fallback_chain + main agent model). Raising the primary error.",
                    task or "call", tag, reason, resolved_provider)
+    if primary_route is not None and route.route_info is not None:
+        route.route_info.update(primary_route)
     return None
 
 
@@ -8386,7 +8373,9 @@ async def _async_call_llm_impl(
             return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async)
 
         async def _primary(**validate_kw: Any) -> Any:
-            return _validate_llm_response(
+            import asyncio
+            return await asyncio.to_thread(
+                _validate_llm_response,
                 await _relay_async_completion(
                     client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
                     create=_acreate),
@@ -8404,7 +8393,8 @@ async def _async_call_llm_impl(
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
-                return _validate_llm_response(await _relay_async_completion(*args, **kw), task)
+                import asyncio
+                return await asyncio.to_thread(_validate_llm_response, await _relay_async_completion(*args, **kw), task)
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args

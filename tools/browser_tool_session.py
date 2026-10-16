@@ -132,7 +132,7 @@ def _agent_browser_argv(browser_cmd: str) -> list:
     return [browser_cmd]
 
 
-def _shim_safe_args(argv0: str, command: str, args: list[str]) -> "tuple[str, list[str], Optional[bytes]]":
+def _shim_safe_args(argv0: str, command: str, args: list[str]) -> tuple[str, list[str], Optional[bytes]]:
     """``(spawn_command, spawn_args, stdin_payload)`` for one CLI command. Arguments that reach a
     ``.cmd``/``.bat`` shim (``npx.cmd``, npm's ``agent-browser.cmd`` on Windows) go through cmd.exe,
     which re-parses the child command line: a newline ends the argument and ``%VAR%`` expands even
@@ -228,7 +228,7 @@ def _ensure_screen_for_headed_chromium() -> None:
 
 
 def _popen_agent_browser(argv: list[str], env: dict[str, str], socket_dir: str, tag: str,
-                         stdin_payload: Optional[bytes] = None) -> "subprocess.Popen":
+                         stdin_payload: Optional[bytes] = None) -> subprocess.Popen:
     """Spawn agent-browser with stdout/stderr redirected to ``socket_dir/_std{out,err}_<tag>``;
     ``stdin_payload`` (a ``batch`` JSON body) is served from ``_stdin_<tag>`` the same way.
 
@@ -264,19 +264,28 @@ def _session_record(prefix: str, cdp_url: Optional[str], features: dict[str, Any
             "cdp_url": cdp_url, "features": features}
 
 
+def real_profile_note(task_id: str) -> Optional[str]:
+    """The real-profile fallback note on ``task_id``'s existing session; never creates or touches one."""
+    with _bt._cleanup_lock:
+        return (_bt._active_sessions.get(task_id) or {}).get("real_profile_unavailable")
+
+
 def _create_local_session(task_id: str, allow_real_profile: bool = True) -> dict[str, str]:
     """Local Chromium session; consented real-profile CDP attach when allowed.
 
-    Real-profile fails closed on resolver/launch errors (a consented user must never be
-    silently downgraded to a throwaway). The hybrid private-URL sidecar passes
-    ``allow_real_profile=False``: the user's cookie jar must not reach an arbitrary
-    internal host the model chose.
+    When the real profile can't be loaded (browser holding its cookies, non-Chromium default,
+    launch failure) the session falls back to a fresh browser and carries the reason as
+    ``real_profile_unavailable`` so the first navigation tells the model it is signed out. The
+    hybrid private-URL sidecar passes ``allow_real_profile=False``: the user's cookie jar must
+    not reach an arbitrary internal host the model chose.
     """
+    fallback_note = None
     if allow_real_profile:
         cdp_url, err = _real_profile._real_profile_cdp()
         if err:
-            raise RuntimeError(err)
-        if cdp_url:
+            _bt.logger.warning("real-profile unavailable for task %s, using a fresh browser: %s", task_id, err)
+            fallback_note = _real_profile.real_profile_fallback_note(err)
+        elif cdp_url:
             info = _session_record("rp", _cdp._resolve_cdp_override(cdp_url), {"local": True, "real_profile": True})
             _bt.logger.info("Created real-profile local session %s for task %s", info["session_name"], task_id)
             return info
@@ -284,10 +293,12 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> dict
     # Browser Use mode + ``browser.engine: lightpanda`` drives a Hermes-spawned
     # ``lightpanda serve`` (the built-in tools are hidden in that mode).
     if _bt._is_browser_use_cli_mode() and _lp._using_lightpanda_engine():
-        return _create_lightpanda_session(task_id)
-
-    info = _session_record("h", None, {"local": True})
-    _bt.logger.info("Created local browser session %s for task %s", info["session_name"], task_id)
+        info = _create_lightpanda_session(task_id)
+    else:
+        info = _session_record("h", None, {"local": True})
+        _bt.logger.info("Created local browser session %s for task %s", info["session_name"], task_id)
+    if fallback_note:
+        info["real_profile_unavailable"] = fallback_note
     return info
 
 
@@ -567,7 +578,7 @@ def _sandbox_socket_dir(env) -> str:
     return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/agent-browser"
 
 
-def sandbox_screenshot_path(host_path: "Path") -> Optional[str]:
+def sandbox_screenshot_path(host_path: Path) -> Optional[str]:
     """Where the sandboxed CLI should write a screenshot (its own tmp), or None on a gateway-hosted browser."""
     if not _browser_in_sandbox():
         return None
@@ -578,7 +589,7 @@ def sandbox_screenshot_path(host_path: "Path") -> Optional[str]:
     return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/shots/{host_path.name}"
 
 
-def fetch_sandbox_file(remote_path: str, local_dest: "Path", *, max_bytes: int = 16 * 1024 * 1024) -> bool:
+def fetch_sandbox_file(remote_path: str, local_dest: Path, *, max_bytes: int = 16 * 1024 * 1024) -> bool:
     """Copy a file the sandboxed browser wrote (a screenshot) to the host; False when not in sandbox mode."""
     if not _browser_in_sandbox():
         return False
@@ -660,7 +671,7 @@ def _browser_in_sandbox() -> bool:
     return placement.resolve().where == placement.TERMINAL
 
 
-def _sandbox_wrap(cmd_parts: list[str], browser_env: dict[str, str], task_socket_dir: str) -> "tuple[list[str], dict[str, str]]":
+def _sandbox_wrap(cmd_parts: list[str], browser_env: dict[str, str], task_socket_dir: str) -> tuple[list[str], dict[str, str]]:
     """Rewrite one agent-browser invocation to run inside the sandbox: exec prefix + the CLI by name, with the
     browser-relevant variables exported there (the daemon's socket dir mirrors the host path so the host-side
     liveness probes keep their shape) and a screen-published DISPLAY. Identity on a gateway-hosted screen."""
@@ -810,7 +821,7 @@ def run_fenced(session_info: dict[str, Any], fn: Callable[[], dict[str, Any]]) -
     return result
 
 
-def run_fenced_pair(session_info: dict[str, Any], fn: Callable[[], "tuple[str, dict[str, Any]]"]) -> "tuple[str, dict[str, Any]]":
+def run_fenced_pair(session_info: dict[str, Any], fn: Callable[[], tuple[str, dict[str, Any]]]) -> tuple[str, dict[str, Any]]:
     """``run_fenced`` for the dispatch shape ``(engine, result)``; a refusal carries no engine (never ran)."""
     engine_box: list = []
 
@@ -846,7 +857,7 @@ def _bot_desktop_attach_port(session_info: dict[str, Any]) -> Optional[int]:
 def _dispatch_browser_command(
     task_id: str, session_info: dict[str, Any], browser_cmd: str, command: str, args: list[str],
     timeout: int, _engine_override: Optional[str],
-) -> "tuple[str, dict[str, Any]]":
+) -> tuple[str, dict[str, Any]]:
     """Build the agent-browser argv for ``session_info`` and run it once → ``(engine, result)``."""
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):

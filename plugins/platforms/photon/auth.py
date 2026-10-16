@@ -456,7 +456,7 @@ def _validated_dashboard_token(candidates: list) -> str:
 
 def login_device_flow(
     *, client_id: str = DEFAULT_CLIENT_ID, open_browser: bool = True,
-    on_user_code: Optional[Callable[["DeviceCode"], None]] = None) -> str:
+    on_user_code: Optional[Callable[[DeviceCode], None]] = None) -> str:
     """Run the full device-code login flow, validate the token against the dashboard API
     before persisting it, and return it. ``on_user_code`` receives the :class:`DeviceCode`."""
     code = request_device_code(client_id=client_id)

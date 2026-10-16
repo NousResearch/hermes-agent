@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 import json
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -170,7 +170,7 @@ def test_non_positive_interval_hours_falls_back_to_default(curator_env, monkeypa
     re-running the review pass each time; it must fall back to the default interval instead."""
     c = curator_env["curator"]
     monkeypatch.setattr(c, "_load_config", lambda: {"interval_hours": bad_hours})
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     c.save_state({"last_run_at": (now - timedelta(minutes=1)).isoformat()})
 
     assert c.get_interval_hours() == c.DEFAULT_INTERVAL_HOURS
@@ -200,7 +200,7 @@ def test_pinned_skill_is_never_touched(curator_env):
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "precious")
 
-    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    super_old = (datetime.now(UTC) - timedelta(days=365)).isoformat()
     data = u.load_usage()
     data["precious"] = u._empty_record()
     data["precious"]["created_by"] = "agent"
@@ -223,7 +223,7 @@ def test_pinned_skill_is_never_touched(curator_env):
 
 def _backdate(u, name: str, days: int, *, use_count: int = 1):
     """Write an agent-created usage record whose activity is *days* old."""
-    ts = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    ts = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     data = u.load_usage()
     data[name] = u._empty_record()
     data[name]["created_by"] = "agent"
@@ -449,7 +449,7 @@ def test_prune_builtins_still_archives_bundled_via_deterministic_pass(
     skills_dir = _write_bundled_and_agent(curator_env, u)
     _enable_prune_builtins(curator_env, monkeypatch)
 
-    super_old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    super_old = (datetime.now(UTC) - timedelta(days=200)).isoformat()
     data = u.load_usage()
     data["bundled-fixture"] = u._empty_record()
     data["bundled-fixture"]["last_used_at"] = super_old
@@ -496,7 +496,7 @@ def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypat
     _enable_prune_builtins(curator_env, monkeypatch)
 
     # Force a record that is far past the archive cutoff.
-    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    super_old = (datetime.now(UTC) - timedelta(days=500)).isoformat()
     data = u.load_usage()
     data[name] = u._empty_record()
     data[name]["last_used_at"] = super_old
@@ -522,12 +522,12 @@ def test_preseeded_never_used_builtin_is_reanchored_not_staled(curator_env, monk
     _write_skill(skills_dir, "bundled-helper")
     (skills_dir / ".bundled_manifest").write_text("bundled-helper:abc\n", encoding="utf-8")
     _enable_prune_builtins(curator_env, monkeypatch)
-    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    super_old = (datetime.now(UTC) - timedelta(days=365)).isoformat()
     data = u.load_usage()
     data["bundled-helper"] = {**u._empty_record(), "created_at": super_old, "state": u.STATE_STALE}
     u.save_usage(data)
 
-    t0 = datetime.now(timezone.utc)
+    t0 = datetime.now(UTC)
     counts = c.apply_automatic_transitions(now=t0)
     assert (counts["marked_stale"], counts["archived"], counts["seeded"]) == (0, 0, 1)
     rec = u.get_record("bundled-helper")

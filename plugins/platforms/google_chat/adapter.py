@@ -1721,7 +1721,7 @@ async def _standalone_send(
     # Bound the synchronous token refresh so a hung STS endpoint can't stall cron.
     try:
         await asyncio.wait_for(asyncio.to_thread(creds.refresh, _GoogleAuthRequest()), timeout=10.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return _standalone_error("token refresh timed out")
     except Exception as e:
         return _standalone_error(f"token refresh failed: {e}")

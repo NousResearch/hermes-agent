@@ -40,7 +40,7 @@ class ScheduledHandle:
 
     __slots__ = ("_cancelled", "_context", "_fn", "_interval", "_runner", "_scheduler")
 
-    def __init__(self, scheduler: "PeriodicScheduler", fn: Callable[[], object], interval: float):
+    def __init__(self, scheduler: PeriodicScheduler, fn: Callable[[], object], interval: float):
         self._scheduler = scheduler
         self._fn = fn
         self._interval = interval

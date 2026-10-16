@@ -6,22 +6,19 @@ import { useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
-import { $settledClarifyResults, normalizeSetupChoose, sessionClarifyRequest } from '@/store/clarify'
+import { $settledClarifyResults, sessionClarifyRequest } from '@/store/clarify'
 
 import { selectMessageRunning } from '../tool/fallback-model'
-import { parseMaybeObject } from '../tool/fallback-model/format'
 
 import { readClarifyArgs } from './parse'
 import { ClarifyToolPending } from './pending'
 import { ClarifyToolSettled } from './settled'
-import { SetupChoosePending } from './setup-pending'
-import { SetupChooseSettled } from './setup-settled'
 import { useUndeliveredClarify } from './use-undelivered'
 
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   // Answered → settled Q&A (ToolFallback collapsed the answer away).
   if (props.result !== undefined) {
-    return props.toolName === 'setup_choose' ? <SetupChooseSettled {...props} /> : <ClarifyToolSettled {...props} />
+    return <ClarifyToolSettled {...props} />
   }
 
   return <ClarifyToolLive {...props} />
@@ -39,11 +36,8 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   // session's clarify (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
   const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
-  const setupCard = props.toolName === 'setup_choose'
-  const sessionRequest = useStore($request)
-  const request = sessionRequest && Boolean(sessionRequest.setup) === setupCard ? sessionRequest : null
+  const request = useStore($request)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
-  const setupArgs = useMemo(() => normalizeSetupChoose(parseMaybeObject(props.args)), [props.args])
   const messageRunning = useAuiState(selectMessageRunning)
   const messageId = useAuiState(s => s.message.id)
   const rowKey = `${sessionId ?? ''}:${messageId}:${props.toolCallId}`
@@ -62,11 +56,7 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered && !settledResult)
 
   if (settledResult) {
-    return setupCard ? (
-      <SetupChooseSettled {...props} result={settledResult} />
-    ) : (
-      <ClarifyToolSettled {...props} result={settledResult} />
-    )
+    return <ClarifyToolSettled {...props} result={settledResult} />
   }
 
   // Stopped mid-prompt with no result — don't leave a dead interactive panel.
@@ -77,14 +67,7 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
-  return setupCard ? (
-    <SetupChoosePending
-      fromArgs={setupArgs}
-      onAnswered={() => setAnswered(true)}
-      request={request}
-      undelivered={undelivered}
-    />
-  ) : (
+  return (
     <ClarifyToolPending
       fromArgs={fromArgs}
       onAnswered={() => setAnswered(true)}

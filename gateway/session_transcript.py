@@ -120,7 +120,7 @@ class SessionTranscriptMixin:
             return session_id
 
     def _heal_compression_tip_locked(
-        self, entry: "SessionEntry", original_session_id: Optional[str],
+        self, entry: SessionEntry, original_session_id: Optional[str],
         canonical_session_id: Optional[str]) -> bool:
         """Rewrite *entry* to the compression continuation if stale. Lock held."""
         if not original_session_id or not canonical_session_id:

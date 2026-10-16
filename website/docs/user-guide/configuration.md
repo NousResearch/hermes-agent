@@ -470,12 +470,12 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 
 ### SSH Backend
 
-Runs commands on a remote server over SSH. Uses ControlMaster for connection reuse (5-minute idle keepalive). Persistent shell is enabled by default — state (cwd, env vars) survives across commands.
+Runs commands on a remote server over SSH. Uses ControlMaster for connection reuse (5-minute idle keepalive). Each command is a fresh `ssh … bash -c`; the working directory always carries over, and exported environment variables carry over while `persistent_shell` is on (the default). See [Persistent Shell](#persistent-shell).
 
 ```yaml
 terminal:
   backend: ssh
-  persistent_shell: true           # Keep a long-lived bash session (default: true)
+  persistent_shell: true           # Carry exported env vars between commands (default: true)
 ```
 
 **Required environment variables:**
@@ -491,9 +491,9 @@ TERMINAL_SSH_USER=ubuntu
 |----------|---------|-------------|
 | `TERMINAL_SSH_PORT` | `22` | SSH port |
 | `TERMINAL_SSH_KEY` | (system default) | Path to SSH private key |
-| `TERMINAL_SSH_PERSISTENT` | `true` | Enable persistent shell |
+| `TERMINAL_SSH_PERSISTENT` | follows `terminal.persistent_shell` (`true`) | Carry exported env vars between commands |
 
-**How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`. Persistent shell keeps a single `bash -l` process alive on the remote host, communicating via temporary files. Commands that need `stdin_data` or `sudo` automatically fall back to one-shot mode.
+**How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`, then captures the remote login shell's environment once into a snapshot file. Every command runs as a fresh `bash -c` that sources that snapshot, `cd`s to the tracked working directory, and runs your command.
 
 **Skill / config env passthrough:** variables a skill declares in `required_environment_variables`, or that you list under `terminal.env_passthrough`, are forwarded with OpenSSH `SendEnv` — the names go on the `ssh` command line and the values travel in the client's environment, never in the remote command text. The remote `sshd` must accept them; add to `/etc/ssh/sshd_config` on the server and reload sshd:
 
@@ -742,43 +742,34 @@ A host path in `terminal.cwd` (for example `C:\Users\me\project` on Windows, or 
 
 ### Persistent Shell
 
-By default, each terminal command runs in its own subprocess — working directory, environment variables, and shell variables reset between commands. When **persistent shell** is enabled, a single long-lived bash process is kept alive across `execute()` calls so that state survives between commands.
+Every terminal command on the **local** and **SSH** backends runs in a fresh `bash` process. Hermes captures your login shell's environment once (PATH, exports from your profile, functions, aliases) and starts the first command from that snapshot. With the setting off, every command starts from it. With the setting on, each command saves its exported variables for the next one, and that saved copy holds exported variables only, so profile functions and aliases are gone after the first command.
 
-This is most useful for the **SSH backend**, where it also eliminates per-command connection overhead. Persistent shell is **enabled by default for SSH** and disabled for the local backend.
+| What | Setting on (default) | Setting off |
+|------|----------------------|-------------|
+| Working directory (`cd ~/project`) | carries over | carries over |
+| Exported env vars (`export FOO=bar`) | carry over | reset to the login environment |
+| Plain shell vars (`MY_VAR=hello`) | do **not** carry over | do not carry over |
+| Functions / aliases defined mid-session | do **not** carry over | do not carry over |
+| Login environment (PATH, profile exports) | always present | always present |
+| Profile functions / aliases | first command only | always present |
 
-```yaml
-terminal:
-  persistent_shell: true   # default — enables persistent shell for SSH
-```
+The working directory always carries over because the file tools resolve relative paths against it. To make a variable stick in either mode, `export` it (setting on) or put it in your shell profile or `terminal.env_passthrough`.
 
-To disable:
+The SSH backend reads `terminal.persistent_shell`; the local backend has its own switch. Both default to on. To make each command start from the login environment:
 
 ```bash
-hermes config set terminal.persistent_shell false
+hermes config set terminal.persistent_shell false   # SSH
+export TERMINAL_LOCAL_PERSISTENT=false              # local
 ```
-
-**What persists across commands:**
-- Working directory (`cd ~/project` sticks for the next command)
-- Exported environment variables (`export FOO=bar`)
-- Shell variables (`MY_VAR=hello`)
 
 **Precedence:**
 
-| Level | Variable | Default |
-|-------|----------|---------|
-| Config | `terminal.persistent_shell` | `true` |
-| SSH override | `TERMINAL_SSH_PERSISTENT` | follows config |
-| Local override | `TERMINAL_LOCAL_PERSISTENT` | `false` |
+| Backend | Variable | Default |
+|---------|----------|---------|
+| SSH | `TERMINAL_SSH_PERSISTENT`, else `terminal.persistent_shell` (`TERMINAL_PERSISTENT_SHELL`) | `true` |
+| Local | `TERMINAL_LOCAL_PERSISTENT` | `true` |
 
-Per-backend environment variables take highest precedence. If you want persistent shell on the local backend too:
-
-```bash
-export TERMINAL_LOCAL_PERSISTENT=true
-```
-
-:::note
-Commands that require `stdin_data` or sudo automatically fall back to one-shot mode, since the persistent shell's stdin is already occupied by the IPC protocol.
-:::
+Docker, Singularity, Modal, Daytona, Vercel Sandbox and plugin backends ignore these settings.
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 
@@ -1980,7 +1971,7 @@ agent:
 | `auto` | Requests in the first `fast_auto_seconds` of **every** turn | Snappy first reply; long tool loops fall back to standard pricing |
 | `cold` | Same window, but only on the **first turn** of a session (no prior history) | Fast onboarding reply, standard pricing afterwards |
 
-`/fast normal|fast|ultrafast|auto|cold` switches the mode for the session. Add `--global` to persist to `config.yaml`. `/fast` alone shows the current mode.
+`/fast normal|fast|ultrafast|auto|cold` switches the mode for the session (`/fast ultra` is shorthand for `ultrafast`). On a ChatGPT/Codex subscription, Ultrafast is offered only when your account's Codex model catalog lists it for the current model; the backend otherwise accepts the request and serves standard speed. Add `--global` to persist to `config.yaml`. `/fast` alone shows the current mode.
 
 **Cost note:** both providers bill fast requests at a multiplier on standard rates (Anthropic: $8 / $40 per MTok in/out on Opus 5.5, $10 / $50 on Opus 5 and Opus 4.8), stacking with prompt-cache pricing. Hermes prices each Anthropic response from the speed the API reports in `usage.speed`. `auto`/`cold` bound that premium to the window only. Fast params are only sent to the first-party endpoint that supports them (`api.openai.com` / Codex subscription, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Copilot, Azure, Bedrock, and custom `base_url` routes never receive them in any mode.
 
@@ -3064,10 +3055,12 @@ First-touch onboarding hints and the first-message offer:
 onboarding:
   profile_build: "ask"   # "ask" (default) | "off"
   seen: {}               # internal latch — leave empty
+  run: null              # desktop first-run onboarding: null (fresh install) | true | false
 ```
 
-- `profile_build` — controls the offer on the first message ever, in the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup, never reads connected accounts silently, and saves confirmed facts to user memory. In the Microsoft Store desktop app the offer is instead one closing line that points at `/initiate-setup` (`/initiate_setup` on Telegram, `/hermes initiate-setup` on Slack). The offer is skipped when the first message is `/initiate-setup` itself, and always in the desktop app's setup profile. `"off"` stops only the offer; the agent still gives a plain intro. The offer fires at most once per profile. `/initiate-setup` sends a short block of facts about the computer; see [What the setup chat knows about your computer](./desktop.md#what-the-setup-chat-knows-about-your-computer).
+- `profile_build` — controls the offer on the first message ever, in the TUI, the desktop app and messaging direct messages (never in a group chat). `"ask"` (default) offers to build a user profile; the offer is **opt-in and consent-gated** — the agent asks before any lookup, never reads connected accounts silently, and saves confirmed facts to user memory. `"off"` stops only the offer; the agent still gives a plain intro. The offer fires at most once per profile.
 - `seen` — internal state. Hermes latches each shown hint here so it never fires again; the first-message offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
+- `run` — whether the desktop app opens its first-run onboarding chat on the next launch. Unset means only on a fresh install (no sessions and no profiles yet). Hermes writes `true` when onboarding starts and `false` when it is finished or skipped. It always lives in the default profile's `config.yaml`, whichever profile the app runs. Set `false` to never show it; managed installs can pin it in the managed config.
 
 ## Dashboard
 

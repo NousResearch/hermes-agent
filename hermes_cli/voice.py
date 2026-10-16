@@ -580,7 +580,7 @@ def _speak_streaming(text: str, stop_event: Optional[threading.Event]) -> bool:
 
     if resolve_streaming_provider(_load_tts_config()) is None:
         return False
-    text_queue: "queue.Queue" = queue.Queue()
+    text_queue: queue.Queue = queue.Queue()
     text_queue.put(text)
     text_queue.put(None)  # end-of-text sentinel
     done_event = threading.Event()

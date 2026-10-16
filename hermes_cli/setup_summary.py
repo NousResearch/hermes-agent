@@ -167,18 +167,6 @@ def _modal_row(config, feats):
     return None
 
 
-def _spotify_row(config, feats):
-    # OAuth via hermes auth spotify — check auth.json, not env vars
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-        state = get_provider_auth_state("spotify") or {}
-        if state.get("access_token") or state.get("refresh_token"):
-            return ("Spotify (PKCE OAuth)", True, None)
-    except Exception:
-        pass
-    return None
-
-
 def _skills_hub_row(config, feats):
     ok = bool(_setup.get_env_value("GITHUB_TOKEN"))
     return ("Skills Hub (GitHub)", ok, None if ok else "GITHUB_TOKEN")
@@ -192,7 +180,7 @@ def _always_on_rows(config, feats):
 
 _TOOL_ROW_BUILDERS = (
     _vision_row, _web_row, _browser_row, _image_gen_row, _video_gen_row, _tts_row, _stt_row,
-    _modal_row, _spotify_row, _skills_hub_row, _always_on_rows)
+    _modal_row, _skills_hub_row, _always_on_rows)
 
 
 def _print_cmd_rows(rows):

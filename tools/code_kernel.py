@@ -322,7 +322,7 @@ class SessionKernel:
         self.attached: int = 0
         # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
         self.pinned: bool = False
-        self.response_q: "queue.Queue[dict]" = queue.Queue()
+        self.response_q: queue.Queue[dict] = queue.Queue()
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
         self.cell_authority: Optional[CellAuthority] = None

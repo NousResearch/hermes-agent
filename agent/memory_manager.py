@@ -449,8 +449,17 @@ class MemoryManager:
         schemas = list(provider.get_tool_schemas())
 
         if provider.name != "builtin":
+            from hermes_cli.config import load_config
+
+            # Recall is provider-ranked: keep it whole unless this profile opts in.
+            # Snapshot both gates at registration, never re-read them mid-conversation.
+            memory = load_config().get("memory", {})
+            spill_config = get_spill_config()
+            if not (isinstance(memory, dict) and memory.get("prefetch_spill_enabled", False) is True):
+                # Off by default, but keep a ceiling so a runaway provider can't overflow the context.
+                spill_config["max_chars"] = max(spill_config["max_chars"] * 10, 100_000)
+            self._external_prefetch_spill_config = spill_config
             self._has_external = True
-            self._external_prefetch_spill_config = get_spill_config()
 
         self._providers.append(provider)
 
@@ -548,8 +557,8 @@ class MemoryManager:
             raise result_box["error"]
         result = result_box.get("value", "")
         if result and result.strip():
-            # Prefetch is stamped into the user turn's api_content and replayed every later turn;
-            # spill oversized results like plugin hook output so one provider can't inflate the prefix.
+            # Opt-in spill limits recall replayed with the user turn's api_content;
+            # the registration snapshot leaves provider-ranked results intact by default.
             result = spill_if_oversized(
                 result, session_id=session_id, source=f"{provider.name} memory prefetch",
                 config=self._external_prefetch_spill_config,
@@ -861,7 +870,7 @@ class MemoryManager:
 
     # Actions mirrored to external providers; non-mutating results (errors, staged) are
     # filtered by ``notify_memory_tool_write`` first.
-    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "patch", "remove"}
 
     @staticmethod
     def _memory_tool_result_succeeded(result: Any) -> bool:
@@ -899,16 +908,29 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
-                field = {"replace": "replaced", "remove": "removed"}.get(action)
+                field = {"replace": "replaced", "patch": "patched", "remove": "removed"}.get(action)
                 if field:
                     if batched:
                         entries = result.get(f"{field}_entries", {})
                         previous = entries.get(str(index), entries.get(index)) if isinstance(entries, dict) else None
                     else:
                         previous = result.get(f"{field}_entry")
+                        if field == "patched" and previous is None:
+                            previous = result.get("patched_entry_before")
                     if isinstance(previous, str) and previous:
                         metadata["previous_content"] = previous
-                self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
+                mirrored_action, content = action, str(op.get("content") or op.get("new_text") or "")
+                if action == "patch":
+                    # To a provider a patch replaced the whole entry with its edited form; mirror it as
+                    # that replace, with the entry the store reports, so providers that know
+                    # add/replace/remove handle it unchanged.
+                    if batched:
+                        after_entries = result.get("patched_entries_after") or {}
+                        after = after_entries.get(str(index), after_entries.get(index))
+                    else:
+                        after = result.get("patched_entry_after")
+                    mirrored_action, content = "replace", str(after or "")
+                self.on_memory_write(mirrored_action, target, content, metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 

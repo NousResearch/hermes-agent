@@ -383,7 +383,7 @@ class SlashCommandCompleter(Completer):
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd, encoding="utf-8", errors="replace")
+                    cwd=cwd, encoding="utf-8", errors="replace", check=False)
             except (subprocess.TimeoutExpired, OSError):
                 continue
             if proc.returncode != 0 or not proc.stdout.strip():

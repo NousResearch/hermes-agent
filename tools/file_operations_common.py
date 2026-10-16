@@ -317,7 +317,7 @@ def _keep_untouched_line_endings(original: str, edited: str, fallback: Optional[
                 return old[i][1]
         return fallback or ""
 
-    out: List[str] = []
+    out: list[str] = []
     for tag, i1, i2, j1, j2 in blocks:
         if tag == "delete":
             continue

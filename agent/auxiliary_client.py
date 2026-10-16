@@ -7913,9 +7913,10 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
     # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
     # lands on the next entry, then discovery where the selection policy allows it (#106367).
-    # Bounded by construction: every pass quarantines its candidate and the walk stops as soon as
-    # re-selection hands back a lane already tried, so each lane is attempted at most once.
+    # Bounded: each pass quarantines its candidate and a re-selected lane ends the walk (≤1 try each).
+    # Candidates overwrite route_info; on exhaustion the PRIMARY error is raised, so restore its route.
     tried_lanes: set = set()
+    primary_route = dict(route.route_info) if route.route_info is not None else None
     while fb_client is not None:
         lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
         if lane in tried_lanes:
@@ -7928,13 +7929,12 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
             task_chain_only=explicit_auth_with_task_chain)
-    # All fallback layers exhausted — one user-visible warning, then re-raise.
+    # All fallback layers exhausted: one user-visible warning (#26882), then the caller re-raises.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
-                   # All fallback layers exhausted — emit a single user-visible warning so the operator
-                   # knows aux task is about to fail. (#26882) The error itself is re-raised below.
-                   # (#26882)
                    "(fallback_chain + main agent model). Raising the primary error.",
                    task or "call", tag, reason, resolved_provider)
+    if primary_route is not None and route.route_info is not None:
+        route.route_info.update(primary_route)
     return None
 
 

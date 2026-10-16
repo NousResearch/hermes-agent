@@ -14,9 +14,25 @@ from hermes_state_keys import admission_fingerprint
 
 
 class RuntimeStoreError(ValueError):
-    def __init__(self, reason: str):
+    """A refusal by the state authority. ``reason`` is the bounded wire code (callers compare it as a
+    string); ``field`` and ``detail`` name the check that fired and why, so a client and the gateway
+    log can tell the reasons' many checks apart instead of reporting the bare code."""
+
+    def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None):
         self.reason = reason
+        self.field = _one_line(field, 80)
+        self.detail = _one_line(detail, 160)
         super().__init__(reason)
+
+
+def _one_line(value, limit):
+    """A refusal's ``field``/``detail`` as the log line and the client frame carry it: either may hold
+    client text, so whitespace collapses to single spaces, other non-printables drop (no forged log
+    lines), and the length is bounded below the client's frame limit."""
+    if value is None:
+        return None
+    text = ''.join(ch for ch in ' '.join(str(value).split()) if ch.isprintable())
+    return text[:limit] or None
 
 
 def _text(value):
@@ -151,6 +167,13 @@ def get_session_admission(db, *, admission_id: str) -> dict | None:
         return _row(row if row is not None else terminal_admission(conn, admission_id))
 
 
+def find_session_admission(db, *, principal_id: str, session_id: str, request_id: str) -> dict | None:
+    """The admission at its exact durable identity: the UNIQUE (principal, target, request) key."""
+    with db._read_ctx() as conn:
+        return _row(conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND target_session_id=? '
+                                 'AND request_id=?', (principal_id, session_id, request_id)).fetchone())
+
+
 def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -> list[dict]:
     with db._read_ctx() as conn:
         # Pending is an explicit index-range IN, not ``!='terminal'``: a negated status cannot
@@ -244,6 +267,37 @@ def cancel_session_input(db, *, epoch: int, admission_id: str) -> dict:
     return db._execute_write(write)
 
 
+def rehome_queued_inputs(db, *, epoch: int, old_session_id: str, new_session_id: str,
+                         principal_prefix: str) -> list[str]:
+    """Re-target the old owner's still-queued ``principal_prefix*`` admissions onto
+    ``new_session_id`` in one transaction (the compression-exhaustion auto-reset). Each row keeps
+    its admission id, request id and seq, so FIFO order and retry dedupe survive; the digest is
+    re-keyed to the new target. Nothing moves while the old FIFO holds an ``unknown`` row (the
+    operator's to resume). Returns the moved admission ids in FIFO order."""
+    for value in (old_session_id, new_session_id, principal_prefix):
+        _text(value)
+    def write(conn):
+        _epoch(conn, epoch)
+        _session(conn, new_session_id)
+        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='unknown'",
+                        (old_session_id,)).fetchone():
+            return []
+        rows = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' "
+                            "AND substr(principal_id,1,?)=? ORDER BY seq",
+                            (old_session_id, len(principal_prefix), principal_prefix)).fetchall()
+        for row in rows:
+            digest = admission_fingerprint(canonical_target=new_session_id, payload={
+                'input': json.loads(row['payload_json']), 'intent': row['intent']})
+            conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=?,payload_digest=? "
+                         "WHERE admission_id=? AND status='queued'",
+                         (new_session_id, json.dumps([new_session_id]), digest, row['admission_id']))
+        if rows:
+            for sid in (old_session_id, new_session_id):
+                conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (sid,))
+        return [row['admission_id'] for row in rows]
+    return db._execute_write(write)
+
+
 def recover_session_inputs(db, *, epoch: int) -> int:
     """Never replay started work. Live worker adoption is a separate explicit operation."""
     def write(conn):
@@ -251,6 +305,28 @@ def recover_session_inputs(db, *, epoch: int) -> int:
         conn.execute("UPDATE worker_executions SET status='unknown' WHERE status IN ('registered','running') AND owner_epoch!=?", (epoch,))
         return conn.execute("UPDATE session_admissions SET status='unknown' WHERE status='started' AND owner_epoch!=?", (epoch,)).rowcount
     return db._execute_write(write)
+
+
+def mutation_receipt_key(principal_id, session_id, request_id, *, operation, payload, expected_revision,
+                         expected_generation=None):
+    """``(state_meta key, digest)`` of a mutation request's durable exact-retry receipt."""
+    key = 'gateway.mutation.v1.' + admission_fingerprint(
+        canonical_target=session_id, payload={'principal': principal_id, 'request': request_id})
+    fingerprint = {'operation': operation, 'payload': payload, 'expected_revision': expected_revision}
+    if expected_generation is not None:
+        fingerprint['expected_generation'] = expected_generation
+    return key, admission_fingerprint(canonical_target=session_id, payload=fingerprint)
+
+
+def replay_mutation_receipt(conn, key, digest):
+    """The stored result of an exact retry, ``None`` when unseen; a different request refuses."""
+    old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    if old is None:
+        return None
+    receipt = json.loads(old[0])
+    if receipt['digest'] != digest:
+        raise RuntimeStoreError('admission_conflict')
+    return receipt['result']
 
 
 def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str,
@@ -275,21 +351,14 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
         raise RuntimeStoreError('invalid_params')
     # Snapshot caller data before waiting for the writer lock.
     payload = json.loads(_json(payload))
-    key = 'gateway.mutation.v1.' + admission_fingerprint(
-        canonical_target=session_id, payload={'principal': principal_id, 'request': request_id})
-    fingerprint = {'operation': operation, 'payload': payload, 'expected_revision': expected_revision}
-    if expected_generation is not None:
-        fingerprint['expected_generation'] = expected_generation
-    digest = admission_fingerprint(canonical_target=session_id, payload=fingerprint)
+    key, digest = mutation_receipt_key(principal_id, session_id, request_id, operation=operation, payload=payload,
+                                       expected_revision=expected_revision, expected_generation=expected_generation)
 
     def write(conn):
         _epoch(conn, epoch)
-        old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
-        if old is not None:
-            receipt = json.loads(old[0])
-            if receipt['digest'] != digest:
-                raise RuntimeStoreError('admission_conflict')
-            return receipt['result']
+        replay = replay_mutation_receipt(conn, key, digest)
+        if replay is not None:
+            return replay
         session = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
         if session is None and operation != 'import':
             raise RuntimeStoreError('not_found')

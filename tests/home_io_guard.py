@@ -86,13 +86,15 @@ class HomeIOGuard:
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
                 return
-            # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
-            # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is
-            # command lookup, not reading Hermes state. CI has no such entries.
+            # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``, and command resolution
+            # realpath()s the entry itself (is it a Hermes-managed bin dir?), which lstats each of
+            # its ancestors. A developer shell puts PM's tool store (~/.hermes/tools/...) on PATH;
+            # probing there is command lookup, not reading Hermes state. CI has no such entries.
             if metadata:
                 path = os.environ.get("PATH", "")
                 cwd = os.getcwd() if self._relative_path_entries(path) else None
-                if os.path.dirname(absolute) in self._path_entries(path, cwd):
+                entries = self._path_entries(path, cwd)
+                if os.path.dirname(absolute) in entries or any(_contains(absolute, entry) for entry in entries):
                     return
             # The interpreter's own installation (a PM-managed python under ~/.hermes/tools):
             # stdlib source reads (linecache, traceback) are not Hermes state either, nor is

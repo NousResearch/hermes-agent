@@ -42,6 +42,14 @@ def send_message_tool(args, **kw):
     return _handle_send(args)
 
 
+def send_message_once(args):
+    """One plain Telegram notification attempt through the existing native authorization path."""
+    from tools.send_message_once import is_plain_telegram_request
+    if not is_plain_telegram_request(args):
+        return json.dumps({"success": False, "error": "SINGLE_ATTEMPT_UNSUPPORTED", "delivery_status": "not_sent"})
+    return _handle_send(args, single_attempt=True)
+
+
 def _resolve_tool_target(target: str, *, pass_unresolved_references: bool = False):
     """``(platform_name, chat_id, thread_id, error)``; ``chat_id`` is None when no ref was given
     (caller falls back to the home channel)."""
@@ -201,7 +209,7 @@ def _handle_react(args, remove=False):
     return json.dumps(result if isinstance(result, dict) else {"success": bool(result)})
 
 
-def _handle_send(args):
+def _handle_send(args, *, single_attempt=False):
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
@@ -268,7 +276,8 @@ def _handle_send(args):
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request. ``mentions`` is a WhatsApp-only
         # contract (the CLI rejects it elsewhere); other platforms' standalone senders don't accept the kwarg.
-        handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        from tools.send_message_once import sender_options
+        handler_args = sender_options(entry, args, single_attempt=single_attempt)
         mentions = args.get("mentions")
         if mentions and platform_name == "whatsapp":
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
@@ -675,7 +684,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, fei
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, single_attempt=False):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -687,6 +696,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                                              thread_id=thread_id, max_len=None, force_document=force_document)
     # Telegram chunks internally on the *formatted* text (escaping inflates length).
     if platform == Platform.TELEGRAM:
+        if single_attempt:
+            from tools.send_message_once import send_telegram_once
+            return await send_telegram_once(pconfig, chat_id, message, thread_id=thread_id)
         return await _send_telegram(
             pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
             disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))

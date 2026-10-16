@@ -41,28 +41,35 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
 
 
 @contextmanager
-def warn_on_error(text: str, detail: str = "({e})", report=check_warn):
+def warn_on_error(text: str, detail: str = "({e})", report=check_warn, finding: "Finding | None" = None):
     """Best-effort block: an exception prints ``report(text.format(e=e), detail.format(e=e))`` (nothing when
-    *text* is ``""``) instead of propagating. ``{e}`` in either string is the exception."""
+    *text* is ``""``) instead of propagating. ``{e}`` in either string is the exception. When *finding* is
+    given the crash is also counted on ``finding.crashed`` so runners can surface it (best-effort stays
+    best-effort: the exception is never re-raised)."""
     try:
         yield
     except Exception as e:
+        if finding is not None:
+            finding.crashed += 1
         if text:
             report(text.format(e=e), detail.format(e=e))
 
 
 @dataclass
 class Finding:
-    """What one doctor check contributed: auto-fixable issues, manual-only issues, fixes applied."""
+    """What one doctor check contributed: auto-fixable issues, manual-only issues, fixes applied,
+    plus how many times an enclosed best-effort block swallowed a crash (``crashed``)."""
 
     issues: list = field(default_factory=list)
     manual_issues: list = field(default_factory=list)
     fixed: int = 0
+    crashed: int = 0
 
     def merge(self, other: Finding) -> None:
         self.issues.extend(other.issues)
         self.manual_issues.extend(other.manual_issues)
         self.fixed += other.fixed
+        self.crashed += other.crashed
 
 
 def doctor_check(on_error: str | None = None, detail: str = ""):
@@ -78,7 +85,7 @@ def doctor_check(on_error: str | None = None, detail: str = ""):
             if on_error is None:
                 fn(should_fix, f)
             else:
-                with warn_on_error(on_error, detail):
+                with warn_on_error(on_error, detail, finding=f):
                     fn(should_fix, f)
             return f
         return check

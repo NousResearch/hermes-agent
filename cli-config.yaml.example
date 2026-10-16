@@ -424,6 +424,12 @@ terminal:
   # Desktop xterm font. Install the font locally; Nerd Fonts render Powerlevel10k glyphs.
   # font_family: "MesloLGS NF"  # Also accepts a CSS stack; blank uses bundled JetBrains Mono.
   timeout: 180
+  # Per-worker systemd MemoryMax (MiB) for local background executors (cron, kanban,
+  # terminal background processes). 0 = conservative default (min of the gateway's
+  # cgroup memory.max, half of physical RAM, and 4 GiB). Raise on RAM-rich hosts whose
+  # workers legitimately need more (test batteries, bundle builds); the gateway cgroup
+  # and half-RAM clamps still apply. TERMINAL_LOCAL_MEMORY_MAX_MB overrides this.
+  # local_memory_max_mb: 0
   # HOME policy for tool subprocesses:
   #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
   #   real    - force your real OS-user HOME

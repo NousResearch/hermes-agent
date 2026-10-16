@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 import time
+import types
 
 import pytest
 
@@ -138,6 +139,58 @@ def test_turn_wait_seconds_reads_config(monkeypatch):
         lambda: {"bot_mode": {"turn_wait_seconds": 7}},
     )
     assert bot_relay.turn_wait_seconds() == 7.0
+
+
+# ── Windows backend: msvcrt instead of the old no-op (#139507) ────────────────
+
+
+class _FakeMsvcrt(types.ModuleType):
+    """Records locking() calls; optionally refuses probes to simulate a held lock."""
+
+    LK_LOCK, LK_UNLCK, LK_NBLCK, LK_RLCK = 0, 1, 2, 3
+
+    def __init__(self, refuse_probes=False):
+        super().__init__("msvcrt")
+        self.refuse_probes = refuse_probes
+        self.calls = []
+
+    def locking(self, fd, mode, nbytes):
+        self.calls.append((fd, mode, nbytes))
+        if mode == self.LK_NBLCK and self.refuse_probes:
+            raise OSError(13, "Permission denied")  # what msvcrt raises while held
+
+
+def _as_windows(monkeypatch, fake):
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    monkeypatch.setattr(bot_relay.os, "name", "nt")
+
+
+def test_windows_backend_takes_a_real_msvcrt_lock(root, monkeypatch):
+    """#139507: with ``fcntl`` unavailable the turn lock used to be a no-op on Windows,
+    so an overlapping delivery skipped the queue entirely and died at the fail-fast
+    session lease. The probe must now be a real non-blocking 1-byte ``msvcrt.locking``
+    — the same backends ``hermes_cli.active_sessions._flock`` uses — unlocked on exit."""
+    fake = _FakeMsvcrt()
+    _as_windows(monkeypatch, fake)
+
+    with acquire_turn_lock(root, "ops", timeout_seconds=1):
+        probe = fake.calls[0] if fake.calls else None
+        assert probe and probe[1:] == (fake.LK_NBLCK, 1), "1-byte non-blocking probe"
+    assert fake.calls[-1][1:] == (fake.LK_UNLCK, 1), "held lock is released on exit"
+
+
+def test_windows_backend_queues_then_refuses_target_busy(root, monkeypatch):
+    """A held Windows lock must drive the same bounded wait → TurnBusyError path POSIX
+    takes, not the old silent no-op that reported the delivery lane free."""
+    fake = _FakeMsvcrt(refuse_probes=True)
+    _as_windows(monkeypatch, fake)
+    monkeypatch.setattr(bot_relay, "turn_wait_seconds", lambda: 0.2)
+
+    with pytest.raises(TurnBusyError) as excinfo:
+        with acquire_turn_lock(root, "ops"):
+            pass  # pragma: no cover — must not acquire
+    assert excinfo.value.reason == "target_busy"
+    assert len(fake.calls) >= 2, "probe retried within the budget before refusing"
 
 
 # ── wiring: peer transport (tools/bot_mode_dm.py) never contends locally ──────

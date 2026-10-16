@@ -641,20 +641,31 @@ def turn_lock_path(root: Path | str, profile: str) -> Path:
     return relay_root(root) / LOCKS_DIR / f"{safe}.lock"
 
 
+def _turn_lock_op(fd: int, *, lock: bool) -> None:
+    """Byte-range lock op for a turn lockfile: ``fcntl`` on POSIX, ``msvcrt`` on
+    Windows — the same backends ``hermes_cli.active_sessions._flock`` uses, so both
+    cross-process lock sites stay consistent. The probe is non-blocking; callers
+    bound their own wait budget around the ``OSError`` it raises while held."""
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK if lock else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if lock else fcntl.LOCK_UN)
+
+
 @contextlib.contextmanager
 def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | None = None) -> Iterator[Path]:
     """Hold ``profile``'s cross-process turn lock for the ``with`` body: non-blocking
-    flock probe + short-sleep retry up to the budget (``bot_mode.turn_wait_seconds``
+    probe + short-sleep retry up to the budget (``bot_mode.turn_wait_seconds``
     unless ``timeout_seconds``); raises :class:`TurnBusyError` when exhausted. No
-    ordering among waiters, but every waiter is bounded. Without ``fcntl`` (Windows)
-    the lock is a no-op — those installs never had this race path."""
-    try:
-        import fcntl
-    except ImportError:  # pragma: no cover — Windows
-        logger.debug("bot turn lock disabled: fcntl unavailable on this platform")
-        yield turn_lock_path(root, profile)
-        return
-
+    ordering among waiters, but every waiter is bounded. Both platforms lock for
+    real (``fcntl``/``msvcrt`` — the ``_flock`` backends): the old Windows no-op left
+    the fail-fast session lease as the only guard, so overlapping deliveries were
+    refused with ``target_busy`` instead of queuing (#139507)."""
     budget = turn_wait_seconds() if timeout_seconds is None else max(0.0, float(timeout_seconds))
     path = turn_lock_path(root, profile)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -664,7 +675,7 @@ def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | N
         deadline = start + budget
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _turn_lock_op(fd, lock=True)
                 break
             except OSError:
                 now = time.monotonic()
@@ -675,6 +686,6 @@ def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | N
             yield path
         finally:
             with contextlib.suppress(OSError):  # kernel releases on close anyway
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _turn_lock_op(fd, lock=False)
     finally:
         os.close(fd)

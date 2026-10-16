@@ -84,7 +84,7 @@ def gateway_approval_surface() -> str:
 _LOCAL_INTERACTIVE_SOURCES = frozenset({"cli", "tui", "gui", "acp"})
 
 
-def _is_local_interactive_session() -> bool:
+def is_local_interactive_session() -> bool:
     """True for a classic CLI, TUI, Desktop or ACP session's turn, read from the launch policy the gateway
     froze at ``session.create`` (never a per-turn client flag). Kanban, cron and forwarded routes keep
     their own sources and stay out."""

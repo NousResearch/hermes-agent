@@ -1208,7 +1208,7 @@ def _is_local_viewer_turn() -> bool:
     session key. The notifier is registered for every session turn, so it only tells side tasks (their own task
     key, none registered) apart; it does not show anyone is attached."""
     from agent.delegation_context import is_delegated_child_process_context
-    return (approval_context._is_local_interactive_session() and approval_context.is_viewer_turn_with_approver()
+    return (approval_context.is_local_interactive_session() and approval_context.is_viewer_turn_with_approver()
             and not is_delegated_child_process_context()
             and _gateway_notify_cb(get_current_session_key()) is not None)
 

@@ -114,19 +114,37 @@ async def _scan_owner_receipts(authority, home):
     one: the scan stops warning and a same-id resend admits once. A pin laid over a legacy ticket
     (``owner``) is that never-run message's only copy: it is requeued instead, for ``_migrate`` to
     admit once under the same id. A pin whose admission committed stays the explicit unknown record
-    and keeps its warning."""
-    pins = []
+    and keeps its warning.
+
+    Also returns the FIFO barrier: the lowest ``_legacy_order`` of a legacy pin of this home that is
+    still unresolved (inside the grace window, or its requeue lost to a concurrent change). No
+    legacy ticket ordered after it may be admitted by this pass. It holds for one scan only: past
+    the grace window the pin is requeued and released, and a failed requeue is re-read by the next
+    scan (gone, admitted or a ticket again), so the barrier never outlives the pin."""
+    pins, barrier = [], None
     root, records = await scan_receipts(home, pins)
     for path, record, mtime in pins:
         key, age = record['delivery_id'], time.time() - mtime
-        if (age < _PIN_GRACE_SECONDS or record['profile_home'] != str(home)
-                or _admission_at(authority, record['session_id'], 'bot:' + key) is not None
+        if (record['profile_home'] != str(home)
+                or _admission_at(authority, record['session_id'], 'bot:' + key) is not None):
+            _warn_malformed(path, _record_shape_error(path, record))
+            continue
+        if (age < _PIN_GRACE_SECONDS
                 or not await (_requeue(home, key, path, records) if 'owner' in record else withdraw_pin(home, key))):
+            if 'owner' in record:
+                barrier = min(_legacy_order(path, record), barrier or _legacy_order(path, record))
             _warn_malformed(path, _record_shape_error(path, record))
             continue
         logging.getLogger(__name__).info('%s Bot delivery %s pre-admission pin (age %ds): nothing was admitted',
                                          'Requeued' if 'owner' in record else 'Withdrew', key, age)
-    return root, records
+    return root, records, barrier
+
+
+def _legacy_order(path, record):
+    """``_migrate``'s FIFO key of a legacy ticket, or of the pin laid over one (it keeps the ticket's
+    fields). A pin without an integer order holds every legacy ticket until it resolves."""
+    order = record.get('sequence', record.get('created_at'))
+    return (order, path.name) if isinstance(order, int) and not isinstance(order, bool) else (float('-inf'), '')
 
 
 async def _requeue(home, key, path, records):
@@ -461,14 +479,17 @@ def relay_operation(connection, operation, params):
 
 
 async def _migrate(authority, actor, home, root):
-    root, records = await _scan_owner_receipts(authority, home)
+    # FIFO: a legacy ticket queued after an unresolved legacy pin waits for that pin's requeue. An
+    # owner-state refusal below raises out of the pass, so nothing after the refused ticket runs.
+    root, records, barrier = await _scan_owner_receipts(authority, home)
     legacy = [(path, record) for path, record in records
               if record and 'owner' in record and not record.get('admission_id')
-              and record['status'] in {'queued', 'claimed'}]
+              and record['status'] in {'queued', 'claimed'}
+              and (barrier is None or _legacy_order(path, record) < barrier)]
     if not legacy:
         return
     ref, live, entry = await _target(authority, actor)
-    for path, record in sorted(legacy, key=lambda item: (item[1].get('sequence', item[1]['created_at']), item[0].name)):
+    for path, record in sorted(legacy, key=lambda item: _legacy_order(*item)):
         owner = record['owner']
         if owner['profile_home'] != str(home):
             continue
@@ -491,7 +512,7 @@ async def recover_bot_deliveries(authority):
     """Rebuild derivative replies and queued legacy admissions at owner startup."""
     home = Path(authority.db.db_path).parent.resolve()
     async with mailbox_lock(authority):
-        root, records = await _scan_owner_receipts(authority, home)
+        root, records, _ = await _scan_owner_receipts(authority, home)
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue

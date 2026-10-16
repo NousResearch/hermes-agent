@@ -26,6 +26,9 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
         value = getattr(exc, key, None)
         if value:
             data[key] = value
+    for key in ('revision', 'execution_generation'):
+        if isinstance(getattr(exc, key, None), int):
+            data[key] = getattr(exc, key)
     return data
 
 
@@ -197,6 +200,14 @@ class AuthorityConnection:
             # Every handler indexes params as a mapping; refuse the frame before ``.get``.
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
+        from gateway.drain_control import ws_method_refused_while_draining
+        if self._operator is True and ws_method_refused_while_draining(getattr(self.authority, 'runner', None), method):
+            # An interactive socket reaches a draining owner only in a restart's after-turn wait:
+            # it may answer the parked turn and queue input, never change this owner's state.
+            exc = RuntimeStoreError('runtime_draining')
+            _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
+            return {'jsonrpc': '2.0', 'id': rid, 'error': {
+                'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
         profile = params.get('profile')
         if isinstance(profile, str) and profile:
             try:
@@ -373,6 +384,7 @@ class AuthorityConnection:
                 await tracked_write(self.authority, partial(
                     commit_local_session, self.authority.db, epoch=self.authority.epoch, receipt=receipt))
                 ref = restore_local_session(self.authority, receipt['session_id'])
+            # `--accept-hooks`: record this launch's consent; ``resume`` below registers the hooks.
             if params.get('accept_hooks') is True:
                 from gateway.session_policy import accept_launch_hooks, restore_policy
                 from hermes_state_local import local_receipt
@@ -505,6 +517,8 @@ class AuthorityConnection:
         info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
         source = self.authority.sessions[snapshot.handle.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL:
+            from gateway.session_policy import policy_for_source, refresh_profile_hooks
+            await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         display = {}
         if params.get('display_projection'):
@@ -570,7 +584,9 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'))
+        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
+        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'),
+                                              queue_while_restarting=self._operator is True)
         return asdict(receipt)
 
     async def mutate(self, ref, params):
@@ -582,6 +598,13 @@ class AuthorityConnection:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.
             raise RuntimeStoreError('session_busy') from exc
+        except RuntimeStoreError as exc:
+            if exc.reason in {'revision_conflict', 'stale_generation'}:
+                # The fresh fences ride on the refusal, so the client retries once without a re-read.
+                row = await asyncio.to_thread(self.authority.db.get_session, ref.session_id)
+                if row is not None:
+                    exc.revision, exc.execution_generation = row['runtime_revision'], row['runtime_generation']
+            raise
         # The branching viewer navigates straight into its new child; attach it
         # here (create parity) so the first submit is not refused as a stranger.
         child = result.get('branched_session_id') if isinstance(result, dict) else None

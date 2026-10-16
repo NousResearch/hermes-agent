@@ -8229,6 +8229,7 @@
       },
       "CanonicalBotDeliverResult": {
         "additionalProperties": false,
+        "description": "A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the\ndelivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``\nreceipt with no admission that the relay settles as the sender's answer.",
         "properties": {
           "status": {
             "title": "Status",
@@ -8247,8 +8248,29 @@
             "type": "string"
           },
           "admission_id": {
-            "title": "Admission Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refused"
           },
           "message": {
             "title": "Message",
@@ -8308,7 +8330,6 @@
           "delivery_id",
           "profile_home",
           "session_id",
-          "admission_id",
           "message"
         ],
         "title": "CanonicalBotDeliverResult",

@@ -198,7 +198,7 @@ _SESSION_SIGNATURE_FIELDS = (
 )
 # path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
 # normal 0.5 s watch pass stat-only; SQLite is read only after another process
-# actually commits (and for ``_RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
+# actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
 _sessions_db_sig_cache: dict[str, tuple[object, tuple | None]] = {}
 
 
@@ -264,13 +264,13 @@ def _session_db_content_sig(db_path: Path):
 # SQLite commits in place, so a commit landing in the tick of a read leaves the DB/WAL mtime unchanged.
 # A digest read while the mtime is that fresh must not become a cache hit ("racily clean", as in git's
 # index): it is cached under a key no mtime equals, so the next tick re-reads the rows.
-_RACY_MTIME_WINDOW_NS = 2_000_000_000
 _RACY_MTIME = object()
 
 
 def _settled_mtime(mtime):
     """``mtime`` when it is old enough to trust as a cache key, else a never-matching sentinel."""
-    if mtime is None or time.time_ns() - mtime < _RACY_MTIME_WINDOW_NS:
+    from utils import mtime_is_racy  # function-local: bodies are rebound onto server.py's globals
+    if mtime is None or mtime_is_racy(mtime):
         return _RACY_MTIME
     return mtime
 

@@ -92,7 +92,7 @@ import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
-import { renderComposerQueueSlot } from './queue-slot'
+import { renderComposerQueueSlot, useComposerQueueScopeKey } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
@@ -182,7 +182,7 @@ export function ChatBar({
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
-  const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
+  const activeQueueSessionKey = useComposerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
   const storedSessionId = useStore(useSessionView().$storedId)
   // Coding workspace drafts stay on the shared pre-session key: submit and
   // session.create resolve a fresh chat's scope as null ('__new__').

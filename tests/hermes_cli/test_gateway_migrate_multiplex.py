@@ -988,3 +988,71 @@ def test_standalone_profile_is_listed_left_alone_and_not_a_fold_target(fleet):
     assert payload["standalone_by_config"] == list(plan.standalone_by_config)
     assert "ops" not in [p["profile"] for p in payload["profiles"]]
     assert any("ops" in line for line in gm.format_plan(plan, dry_run=True))
+
+
+def _seed_standalone_history(root: Path, profile: str, key: str, sid: str) -> None:
+    from hermes_state import SessionDB
+    db = SessionDB(root / "profiles" / profile / "state.db")
+    try:
+        db.create_session(sid, "discord", session_key=key, chat_id=key.rsplit(":", 1)[-1],
+                          chat_type="thread", profile_name="default", system_prompt="sys")
+        db.append_message(sid, "user", "hello")
+    finally:
+        db.close()
+
+
+def _stored_key(root: Path, profile: str, sid: str):
+    from hermes_state import SessionDB
+    db = SessionDB(root / "profiles" / profile / "state.db", read_only=True)
+    try:
+        row = db.get_session(sid)
+        return row["session_key"], row["profile_name"]
+    finally:
+        db.close()
+
+
+def test_apply_rekeys_a_folded_standalone_gateways_history(fleet, capsys):
+    """#132848: a standalone gateway keys its sessions ``agent:main:...`` in its own store. Folding it
+    into the multiplexer must re-key them to ``agent:<profile>:...`` or every thread opens empty."""
+    _seed_standalone_history(fleet.root, "coder", "agent:main:discord:thread:1:1", "coder-old")
+    _seed_standalone_history(fleet.root, "ops", "agent:main:discord:thread:2:2", "ops-old")
+
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is True
+
+    assert _stored_key(fleet.root, "coder", "coder-old") == ("agent:coder:discord:thread:1:1", "coder")
+    assert _stored_key(fleet.root, "ops", "ops-old") == ("agent:ops:discord:thread:2:2", "ops")
+    assert "kept 1 standalone session(s) reachable under agent:coder:" in capsys.readouterr().out
+
+
+def test_apply_leaves_unrelated_stores_and_keys_alone(fleet):
+    """Only folded stores are touched, and only legacy ``agent:main:`` rows: an already-namespaced row
+    stays, and the default profile's own store is never re-keyed."""
+    from hermes_state import SessionDB
+    _seed_standalone_history(fleet.root, "coder", "agent:coder:discord:thread:3:3", "coder-new")
+    root_db = SessionDB(fleet.root / "state.db")
+    try:
+        root_db.create_session("root-1", "discord", session_key="agent:main:discord:dm:9", chat_id="9",
+                               chat_type="dm", profile_name="default", system_prompt="sys")
+    finally:
+        root_db.close()
+
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is True
+
+    assert _stored_key(fleet.root, "coder", "coder-new")[0] == "agent:coder:discord:thread:3:3"
+    from hermes_state import SessionDB as _DB
+    db = _DB(fleet.root / "state.db", read_only=True)
+    try:
+        assert db.get_session("root-1")["session_key"] == "agent:main:discord:dm:9"
+    finally:
+        db.close()
+
+
+def test_a_rekey_failure_is_reported_but_does_not_fail_the_migration(fleet, monkeypatch, capsys):
+    _seed_standalone_history(fleet.root, "coder", "agent:main:discord:thread:1:1", "coder-old")
+    monkeypatch.setattr("hermes_cli.sessions_repair_profiles.default_snapshot",
+                        lambda store: (_ for _ in ()).throw(RuntimeError("disk full")))
+
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is True
+
+    out = capsys.readouterr().out
+    assert "could not re-key its standalone history" in out and "repair-profiles --legacy-main rekey" in out

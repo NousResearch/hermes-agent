@@ -969,11 +969,11 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
         if target is None:
             return JSONResponse({"detail": f"plugin {name!r} is not enabled in this profile"}, status_code=404)
         host, dashboard_dir, api_file = target
-        from hermes_cli.web_server_plugin_profiles import hosted_response
-        return hosted_response(await asyncio.to_thread(
-            host.asgi_request, name, dashboard_dir, api_file, request.method, "/" + path,
-            request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"],
-            await request.body()))
+        from hermes_cli.web_server_plugin_profiles import run_hosted_request
+        query, headers = request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"]
+        body = await request.body()
+        return await run_hosted_request(host.home, name, lambda timeout: host.asgi_request(
+            name, dashboard_dir, api_file, request.method, "/" + path, query, headers, body, timeout=timeout))
 
     app.add_api_route(f"/api/plugins/{name}/{{path:path}}", forward, include_in_schema=False,
                       methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],

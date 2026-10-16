@@ -100,7 +100,7 @@ def daemon(_isolate_hermes_home, monkeypatch):
     monkeypatch.setattr(profiles, "_get_profiles_root", lambda: launch / "profiles")
     hosted, calls = [], []
 
-    def asgi_request(host, plugin, dashboard_dir, api_file, method, path, query, headers, body):
+    def asgi_request(host, plugin, dashboard_dir, api_file, method, path, query, headers, body, **_):
         hosted.append(plugin)
         calls.append(SimpleNamespace(home=host._home, dir=dashboard_dir, path=path, query=query,
                                      headers={str(k).lower() for k, _ in headers}))

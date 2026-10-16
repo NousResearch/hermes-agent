@@ -12,11 +12,14 @@ profile's plugin websockets are refused by name until it carries them.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import parse_qsl, urlencode
 
 from fastapi.responses import JSONResponse, Response
@@ -37,6 +40,15 @@ _GATEWAY_QUERY_KEYS = frozenset({"token", "ticket", "internal", "display_ticket"
 
 _profile_plugins: dict[str, list] = {}
 _profile_plugins_lock = threading.Lock()
+
+# Requests forwarded to a profile's plugin host wait on that profile's own threads, not the gateway's
+# shared ``asyncio.to_thread`` pool: a slow plugin queues behind its own profile's plugin requests
+# instead of stalling every route that offloads blocking work.
+_HOSTED_REQUEST_THREADS = 4
+# How long a forwarded request may take, queueing included, before it answers 504. The host protocol
+# has no cancel, so the host may still finish the abandoned handler; the gateway's thread is freed.
+HOSTED_REQUEST_TIMEOUT_SECS = 60.0
+_hosted_executors: dict[str, ThreadPoolExecutor] = {}
 
 
 def secondary_profile_home() -> Optional[Path]:
@@ -144,12 +156,38 @@ def hosted_response(result: dict[str, Any]) -> Response:
     return response
 
 
+def _hosted_executor(home: Path) -> ThreadPoolExecutor:
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key(home)
+    with _profile_plugins_lock:
+        executor = _hosted_executors.get(key)
+        if executor is None:
+            executor = _hosted_executors[key] = ThreadPoolExecutor(
+                _HOSTED_REQUEST_THREADS, thread_name_prefix=f"plugin-host-requests-{Path(home).name}")
+        return executor
+
+
+async def run_hosted_request(home: Path, name: str, call: Callable[[float], dict[str, Any]]) -> Response:
+    """Run ``call(timeout)``, one plugin host ``asgi`` round trip for plugin ``name`` of the profile at
+    ``home``, on that profile's own threads in this request's context; its answer, or 504 after
+    :data:`HOSTED_REQUEST_TIMEOUT_SECS`. Other failures propagate."""
+    timeout = HOSTED_REQUEST_TIMEOUT_SECS
+    deadline, context = time.monotonic() + timeout, contextvars.copy_context()
+    job = asyncio.get_running_loop().run_in_executor(
+        _hosted_executor(home), context.run, lambda: call(max(deadline - time.monotonic(), 0.01)))
+    try:
+        return hosted_response(await asyncio.wait_for(job, timeout))
+    except TimeoutError:
+        _log.warning("Plugin %s: its plugin host did not answer within %gs", name, timeout)
+        return JSONResponse({"detail": f"plugin {name!r} did not answer within {timeout:g}s"}, status_code=504)
+
+
 async def forward_secondary_plugin_request(request, name: str) -> Optional[Response]:
     """Serve ``/api/plugins/<name>/`` for a secondary profile through its own plugin host, or None
     when the in-process router answers (the launch profile, or a bundled plugin). Consent has been
     checked in the request's scope already."""
-    plugin = _secondary_hosted_plugin(name)
-    if plugin is None:
+    plugin, home = _secondary_hosted_plugin(name), secondary_profile_home()
+    if plugin is None or home is None:
         return None
     if not plugin.get("_api_file"):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
@@ -160,14 +198,14 @@ async def forward_secondary_plugin_request(request, name: str) -> Optional[Respo
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _GATEWAY_CREDENTIAL_HEADERS]
     body = await request.body()
 
-    def call() -> dict[str, Any]:
+    def call(timeout: float) -> dict[str, Any]:
         from hermes_cli.plugins import get_plugin_manager
         host = get_plugin_manager()._plugin_host()  # the active (secondary) profile's own host
         return host.asgi_request(name, str(plugin["_dir"]), str(plugin["_api_file"]), request.method, path,
-                                 query, headers, body)
+                                 query, headers, body, timeout=timeout)
 
     try:
-        return hosted_response(await asyncio.to_thread(call))
+        return await run_hosted_request(home, name, call)
     except Exception as exc:  # health: allow BLE001 -- the host runs third-party code; any failure is this request's 502
         _log.warning("Plugin %s: its profile's plugin host could not serve %s: %s", name, path, exc)
         return JSONResponse({"detail": f"plugin {name!r} could not run in this profile's plugin host"},

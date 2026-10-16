@@ -826,7 +826,8 @@ its own dashboard plugins (installed under its own `plugins/` folder or the root
 the profile's own copy winning a same-name conflict, and enabled in its own config) in its own plugin
 host, whatever its `plugins.isolation` says: another profile's plugin code never runs inside the
 gateway. The host does not carry websockets yet, so such a plugin's websocket routes are refused
-(HTTP 501) for that profile; its HTTP routes work.
+(HTTP 501) for that profile; its HTTP routes work. A slow hosted handler holds only its own profile's
+plugin requests, and a request the host has not answered after 60 s gets HTTP 504.
 
 What changes in `host` mode:
 

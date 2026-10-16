@@ -12,9 +12,12 @@ a recorder there; the last test runs a real one.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import parse_qsl, urljoin
 
@@ -418,7 +421,120 @@ def test_secondary_plugin_runs_in_a_real_host_bound_to_its_home(daemon, monkeypa
         assert Path(body["home"]).resolve() == daemon.beta.resolve()
         assert _never_imported(imported)
     finally:
-        for manager in list(plugins_mod._plugin_managers_by_home.values()):
-            host = getattr(manager, "_plugin_host_instance", None)
-            if host is not None:
-                host.shutdown()
+        _shutdown_hosts()
+
+
+def _shutdown_hosts():
+    for manager in list(plugins_mod._plugin_managers_by_home.values()):
+        host = getattr(manager, "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()
+
+
+def _asgi_client():
+    """An async client on the real app, so one test can hold requests in flight side by side."""
+    import httpx
+
+    async def loopback_peer(scope, receive, send):
+        scope["hermes.gateway_socket_peer"] = ("127.0.0.1", 50000)
+        await web_server.app(scope, receive, send)
+
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=loopback_peer), base_url="http://testserver")
+
+
+def test_slow_hosted_requests_do_not_starve_the_gateways_shared_threads(daemon, monkeypatch):
+    """A slow secondary-profile plugin ties up threads of its own host's forwarding only: with every
+    hosted request still in flight, a ``to_thread`` route (the plugin list) answers."""
+    _beta_plugin(daemon)
+    release, selected = threading.Event(), {"params": {"profile": "beta"}, "headers": daemon.owner}
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(2))  # the gateway's shared pool, kept small
+        started, two_started = [], asyncio.Event()
+
+        def slow(host, *args, **kwargs):
+            loop.call_soon_threadsafe(lambda: started.append(1) or (len(started) >= 2 and two_started.set()))
+            release.wait(30)
+            return {"status": 200, "headers": [], "body": b'{"hosted": true}'}
+
+        monkeypatch.setattr(PluginHost, "asgi_request", slow)
+        async with _asgi_client() as client:
+            hosted = [asyncio.ensure_future(client.get(PING, **selected)) for _ in range(4)]
+            try:
+                await asyncio.wait_for(two_started.wait(), 30)
+                try:
+                    listed = await asyncio.wait_for(client.get("/api/dashboard/plugins", **selected), 10)
+                except TimeoutError:
+                    listed = None
+                in_flight = not any(t.done() for t in hosted)
+            finally:
+                release.set()
+            answers = await asyncio.gather(*hosted)
+        return listed, in_flight, [a.status_code for a in answers]
+
+    listed, in_flight, answers = asyncio.run(scenario())
+    assert listed is not None, "the plugin list waited behind slow hosted plugin requests"
+    assert listed.status_code == 200 and NAME in {p["name"] for p in listed.json()}
+    assert in_flight and answers == [200] * 4
+
+
+_HANG_API = _HOME_API + '''
+
+@router.get("/hang")
+async def hang():
+    import asyncio
+    await asyncio.Event().wait()
+'''
+
+
+@pytest.mark.platforms("posix")  # the host is a real child process
+def test_hung_hosted_request_answers_504_and_the_host_serves_the_next(daemon, monkeypatch):
+    from hermes_cli import web_server_plugin_profiles
+    monkeypatch.setattr(PluginHost, "asgi_request", _REAL_ASGI_REQUEST)
+    monkeypatch.setattr(web_server_plugin_profiles, "HOSTED_REQUEST_TIMEOUT_SECS", 1.0, raising=False)
+    _beta_plugin(daemon)
+    (daemon.beta / "plugins" / NAME / "dashboard" / "plugin_api.py").write_text(_HANG_API)
+    selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
+    whoami, hang = f"/api/plugins/{NAME}/whoami", f"/api/plugins/{NAME}/hang"
+
+    async def scenario():
+        async with _asgi_client() as client:
+            try:
+                before = await client.get(whoami, **selected)
+                try:
+                    hung = await asyncio.wait_for(client.get(hang, **selected), 20)
+                except TimeoutError:
+                    hung = None
+                after = await client.get(whoami, **selected)
+            finally:
+                _shutdown_hosts()  # also frees a request still parked on the host
+        return before, hung, after
+
+    before, hung, after = asyncio.run(scenario())
+    assert hung is not None, "a hung plugin request never answered"
+    assert hung.status_code == 504 and NAME in hung.json()["detail"]
+    assert (before.status_code, after.status_code) == (200, 200)
+    assert after.json()["pid"] == before.json()["pid"]  # the same host, not a restarted one
+
+
+def test_launch_profiles_hosted_mount_answers_504_too(daemon, monkeypatch):
+    """``plugins.isolation: host`` for the launch profile forwards through the same path."""
+    from hermes_cli import web_server_plugin_profiles
+    monkeypatch.setattr(web_server_plugin_profiles, "HOSTED_REQUEST_TIMEOUT_SECS", 0.2, raising=False)
+    _install(daemon.launch, "launch-hosted")
+    _plugins(daemon.launch, enabled=["launch-hosted"], isolation="host")
+    homes = []
+
+    def slow(host, *args, timeout=None, **kwargs):
+        homes.append(host._home)
+        threading.Event().wait(timeout or 3)  # the channel's wait for a reply that never comes
+        if timeout:
+            raise TimeoutError
+        return {"status": 200, "headers": [], "body": b"{}"}
+
+    monkeypatch.setattr(PluginHost, "asgi_request", slow)
+    response = daemon.client.get("/api/plugins/launch-hosted/ping", headers=daemon.owner)
+
+    assert response.status_code == 504 and homes == [daemon.launch]
+

@@ -757,7 +757,8 @@ synchronous HTTP client, a long file scan) holds all of them until it returns: a
 delays an unrelated `/api/status` by seconds and can time out Desktop's connection. Use `async def` with
 async I/O, or move blocking work off the loop with `await asyncio.to_thread(...)` (a plain `def` handler
 also runs in a worker thread). `plugins.isolation: host` runs the handlers in a separate process
-([plugin host](plugins.md#running-plugins-out-of-process-pluginsisolation)).
+([plugin host](plugins.md#running-plugins-out-of-process-pluginsisolation)): a slow handler there
+delays only that profile's hosted plugin requests, and one with no answer after 60 s gets HTTP 504.
 
 #### Accessing Hermes internals
 

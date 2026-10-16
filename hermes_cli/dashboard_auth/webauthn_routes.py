@@ -289,6 +289,13 @@ lost authenticator cannot lock you out.</p>
     for (var i = 0; i < bytes.length; i++) { s += String.fromCharCode(bytes[i]); }
     return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
   }
+  function b64urlToBuffer(value) {
+    var s = String(value).replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) { s += '='; }
+    var raw = atob(s); var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) { bytes[i] = raw.charCodeAt(i); }
+    return bytes.buffer;
+  }
   function credentialToJSON(cred) {
     var data = { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, response: {} };
     var r = cred.response;
@@ -313,8 +320,21 @@ lost authenticator cannot lock you out.</p>
         if (!resp.ok) { throw new Error('Could not start enrolment (HTTP ' + resp.status + ').'); }
         return resp.json();
       })
-      .then(function (options) { return PublicKeyCredential.parseCreationOptionsFromJSON(options); })
-      .then(function (creation) { return navigator.credentials.create({ publicKey: creation }); })
+      .then(function (options) {
+        // The server serialises {"publicKey": <creation options>}; unwrap and
+        // decode the base64url members to ArrayBuffers ourselves — the classic
+        // create() path every browser ships; the JSON-parse shortcut here is
+        // what threw "challenge … must be an instance of DOMString" in Safari
+        // (it never saw a top-level challenge through the wrapper).
+        var pk = options.publicKey || options;
+        if (!pk || !pk.challenge) { throw new Error('Bad creation options from the server.'); }
+        pk.challenge = b64urlToBuffer(pk.challenge);
+        if (pk.user && pk.user.id) { pk.user.id = b64urlToBuffer(pk.user.id); }
+        (pk.excludeCredentials || []).forEach(function (c) {
+          c.id = b64urlToBuffer(c.id);
+        });
+        return navigator.credentials.create({ publicKey: pk });
+      })
       .then(function (attestation) {
         return fetch('/auth/webauthn/register/verify', {
           method: 'POST', credentials: 'same-origin',

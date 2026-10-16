@@ -129,6 +129,18 @@ Set these in `config.yaml` under `platforms.weixin.extra`:
 | `text_batch_delay_seconds` | `0.3` | Quiet period (seconds, max `2.0`) before a buffered burst of rapid text messages is flushed as one combined request. iLink delivers messages individually, so this debounce avoids one agent invocation per fragment. Set `0` to dispatch each message immediately. |
 | `text_batch_split_delay_seconds` | `1.0` | Extended flush delay (max `4.0`; never below `text_batch_delay_seconds`) used when the latest fragment is near the split threshold (long messages iLink may have chunked). |
 
+| `session_backoff_enabled` | `true` | Suppress repeated cross-delivery attempts while a peer session is not ready. When disabled, every delivery attempts the real send. |
+| `session_backoff_base_seconds` | `30` | Initial per-target session backoff. Failed re-probes double this value. |
+| `session_backoff_max_seconds` | `1800` | Maximum per-target backoff; after two short re-probes, one probe is allowed every 30 minutes by default. |
+| `session_alert_threshold` | `3` | Consecutive `session_not_ready` failures before one converged critical alert is emitted. |
+| `weixin_alert_webhook_url` | _(empty)_ | Optional webhook receiving one JSON alert per failure event. Delivery is confirmed only by a 2xx response whose JSON body contains `"ok": true`. |
+
+### Unpaired / expired-session behavior
+
+A proactive send can fail with `session_not_ready` when the peer has not recently messaged the bot (including an unpaired user). Hermes first retries once without the stale context token. If iLink still refuses the send, Hermes records the failure for that target and suppresses further sends: 30s, then 60s, then a bounded 30-minute window by default. Expiry allows exactly one real re-probe; success or an inbound message from that user clears suppression immediately, while another `session_not_ready` response restarts the sequence.
+
+After three consecutive failures by default, Hermes emits one critical log with the recovery instruction: **the user must send the bot a message first (or re-pair)**. The same failure event is not alerted again. Other chats continue sending normally.
+
 ## Access Policies
 
 ### DM Policy

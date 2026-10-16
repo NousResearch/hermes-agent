@@ -99,6 +99,12 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None
+    if synthetic_namespace:  # user code: never imported in-process under plugins.isolation: host
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        refusal = in_process_import_refusal(f"plugin {plugin_dir.name!r} (loaded as {module_name})")
+        if refusal:
+            logger.warning("%s", refusal)
+            return None
     # A synthetic package shell has no __file__; only reuse modules loaded from disk.
     cached = sys.modules.get(module_name)
     if cached is not None and getattr(cached, "__file__", None):

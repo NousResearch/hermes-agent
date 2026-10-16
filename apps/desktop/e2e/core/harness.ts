@@ -612,6 +612,8 @@ export async function currentSessionId(page: Page): Promise<string> {
 export interface PersistedMessage {
   role: string
   content: string
+  /** Set on synthetic rows (a process notification, a model switch) the renderer draws as notices. */
+  displayKind?: string
 }
 
 /**
@@ -661,7 +663,8 @@ export async function persistedTranscript(
 
   return (result?.messages ?? []).map((m: any) => ({
     role: String(m.role ?? ''),
-    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')
+    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''),
+    ...(typeof m.display_kind === 'string' && m.display_kind ? { displayKind: m.display_kind } : {})
   }))
 }
 

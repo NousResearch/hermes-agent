@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { traceIdentityChange } from '@/lib/identity-trace'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import {
@@ -66,6 +67,10 @@ export { $connectionsRegistry } from '@/store/connection-registry-state'
 // guessing it here would paint the wrong source as active for an unmatched v1
 // route or while a legacy main is still resolving the descriptor.
 export const $activeConnectionId = computed($connection, connection => connection?.connectionId ?? null)
+
+// The published connection is what plugins stamp rows with; trace it beside
+// the active socket ([gateway-route] active) so a disagreement is visible.
+$activeConnectionId.listen(id => traceIdentityChange('gateway-route', 'published', `connection=${id ?? '-'}`))
 
 export const $hasMultipleConnections = computed(
   $connectionsRegistry,

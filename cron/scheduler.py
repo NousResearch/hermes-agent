@@ -48,6 +48,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
+from agent.session_activity import AwakeIdleMeter
 from agent.turn_failure_copy import is_max_iteration_handoff
 
 logger = logging.getLogger(__name__)
@@ -1207,7 +1208,7 @@ def _consume_interrupted_flag(job_id: str, token: Optional[object] = None) -> bo
 
 def _inactivity_watchdog_loop(
     *, get_idle_seconds: Callable[[], float], limit_s: float, poll_s: float, stop: threading.Event,
-    future_done: Callable[[], bool],
+    future_done: Callable[[], bool], meter: Optional[AwakeIdleMeter] = None,
 ) -> bool:
     """Poll idle time until limit (-> True), stop, or the future completes (-> False). Uses
     ``threading.Event.wait``, not asyncio, so a blocked event loop cannot disable the watchdog.
@@ -1217,6 +1218,9 @@ def _inactivity_watchdog_loop(
     of #94285 — the 4118s-idle-on-a-600s-limit cron hang). Returns True when *limit_s* of inactivity was
     observed.
     """
+    # A sleeping host freezes the job with it, so time asleep never counts as inactivity.
+    if meter is None:
+        meter = AwakeIdleMeter()
     while not stop.wait(poll_s):
         if future_done():
             return False
@@ -1224,7 +1228,7 @@ def _inactivity_watchdog_loop(
             idle = float(get_idle_seconds() or 0.0)
         except Exception:
             idle = 0.0
-        if idle >= limit_s:
+        if meter.measure(idle) >= limit_s:
             return True
     return False
 
@@ -2003,6 +2007,8 @@ def _run_agent_with_watchdog(
         except Exception:
             logger.debug("Job '%s': run_claim heartbeat failed", job_name, exc_info=True)
 
+    # Establish suspend accounting before the worker can stamp its first activity.
+    _awake_idle = AwakeIdleMeter()
     _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     # Carry scheduler-scoped ContextVar state (e.g. env passthrough) into the worker thread.
     _cron_context = contextvars.copy_context()
@@ -2028,7 +2034,7 @@ def _run_agent_with_watchdog(
             return
         if _inactivity_watchdog_loop(
             get_idle_seconds=_idle_seconds, limit_s=_cron_inactivity_limit, poll_s=_POLL_INTERVAL,
-            stop=_watch_stop, future_done=_cron_future.done):
+            stop=_watch_stop, future_done=_cron_future.done, meter=_awake_idle):
             _inactivity_timeout = True
 
     _watch_thread = threading.Thread(
@@ -2834,12 +2840,15 @@ def run_one_job(
                 if not post_handoff:
                     delivery_error, delivery_outcome = _deliver_crash_failure(
                         job, error, adapters=adapters, loop=loop)
+                from cron.unreachable_retry import is_retry_run
                 mark_job_run(
                     job["id"],
                     False,
                     error,
                     delivery_error=delivery_error,
                     **({"expected_fire_owner": owner} if owner else {}),
+                    # A ladder re-run's occurrence already counted toward repeat.
+                    **({"ladder_rung": True} if is_retry_run(job) else {}),
                 )
             finally:
                 finish_execution(
@@ -2890,12 +2899,21 @@ def run_one_job(
 _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."
 
 
-def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], execution_id: str) -> None:
+def _record_fire_ownership_lost(
+    job: dict, fire_owner: Optional[str], execution_id: str,
+) -> None:
     """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
     not a real loss — we still own the claim, so record the interruption via the owner-fenced
-    terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
+    terminal write instead of leaving fire_claim/last_status stale; otherwise discard.
+    An interrupted ladder re-run re-ran an occurrence that already counted, so its terminal
+    write must not spend another repeat slot (same as every other terminal path)."""
+    from cron.unreachable_retry import is_retry_run
+    job_id = job["id"]
     if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
-        mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
+        mark_job_run(
+            job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner,
+            **({"ladder_rung": True} if is_retry_run(job) else {}),
+        )
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
     else:
         finish_execution(
@@ -3166,6 +3184,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Never-reached-the-model failure: schedule the Cowork-style bounded re-run
         # (cron/unreachable_retry.py) inside the same fenced store write.
         mark_kwargs["model_unreachable"] = True
+    from cron.unreachable_retry import is_retry_run
+    if is_retry_run(job):
+        # A re-run of an occurrence that already counted: must not spend another repeat slot.
+        mark_kwargs["ladder_rung"] = True
     _hold_s = job.pop("_quota_hold_seconds", None)
     if not d.success and _hold_s:
         # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
@@ -3381,7 +3403,7 @@ def _run_one_job_body(
 
         if _fire_claim_ownership_lost():
             _teardown_deferred()
-            _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
+            _record_fire_ownership_lost(job, fire_owner, execution_id)
             return True
 
         # An agent can finish its own turn after a delegated child has failed. Let it explicitly
@@ -3409,7 +3431,7 @@ def _run_one_job_body(
 
         if d.side_effect_ownership_lost:
             # The claim died inside a side-effect fence: the side effect did NOT complete.
-            _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
+            _record_fire_ownership_lost(job, fire_owner, execution_id)
             return True
 
         # Empty final_response is a soft failure so last_status is not "ok".
@@ -3434,7 +3456,7 @@ def _run_one_job_body(
                         "Job '%s': transport cancellation arrived before terminal completion; "
                         "recording the interrupted run",
                         job["id"])
-                _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
+                _record_fire_ownership_lost(job, fire_owner, execution_id)
                 return True
 
         if _consume_interrupted_flag(job["id"], execution_token):
@@ -3482,6 +3504,10 @@ def _run_one_job_body(
                     mark_kwargs["expected_fire_owner"] = fire_owner
                 if isinstance(e, Exception):
                     mark_kwargs["delivery_error"] = delivery_error
+                from cron.unreachable_retry import is_retry_run
+                if is_retry_run(job):
+                    # A crashed ladder re-run: its occurrence already counted toward repeat.
+                    mark_kwargs["ladder_rung"] = True
                 mark_job_run(job["id"], False, _err_text, **mark_kwargs)
         except Exception as record_err:
             # Never let bookkeeping mask the original interruption.
@@ -4120,7 +4146,7 @@ def _acquire_tick_lock(lock_file):
             with contextlib.suppress(OSError):
                 lock_fd.close()
             if _is_lock_contention_errno(exc):
-                logger.debug("Tick skipped — another instance holds the lock")
+                logger.info("Tick skipped — another instance holds the lock")
                 return None
         if _is_fd_exhaustion(exc):
             # fd reclamation is the ticker loop's job (scheduler_provider.py); here would double it.

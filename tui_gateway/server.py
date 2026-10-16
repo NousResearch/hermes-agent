@@ -170,7 +170,8 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # open; bot_relay.* = a FULL one-turn agent conversation (600s); setup.* / session.active_list =
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
-# git subprocess probes on an arbitrary (maybe slow) mount.
+# git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap).
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -184,7 +185,7 @@ _LONG_HANDLERS = frozenset({
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
-    "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -255,7 +256,8 @@ class _SlashWorker:
         # ``--provider`` pins the child to the parent agent's virtual provider: without it the
         # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
         # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key,
+                "--parent-pid", str(os.getpid())] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else [])
         self._closed = False
@@ -2426,7 +2428,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # Hermes-internal step (#61634) as a wire level the route does not have.
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
-        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
+        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
+            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,

@@ -584,7 +584,8 @@ def _error_info(
     raw_account: Optional[dict[str, Any]] = None, account_tier: Optional[str] = None,
 ) -> NousPortalAccountInfo:
     """A failed-lookup snapshot. ``account_tier`` is carried through when the caller still holds the
-    stored state: without it a guest whose lookup failed reads as a registered identity."""
+    stored state, so a guest whose lookup failed still gets the "needs a Nous account" copy rather
+    than billing or re-login guidance."""
     return NousPortalAccountInfo(
         logged_in=logged_in, source="error", fresh=False, portal_base_url=portal_base_url,
         raw_account=raw_account, error=str(error), account_tier=account_tier,

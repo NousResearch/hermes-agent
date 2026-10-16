@@ -4,6 +4,8 @@ import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 
+import { $selectedStoredSessionId } from './session'
+
 // A chat surface: the primary's workspace or a session tile. Everything else a
 // zone can show — the sessions list, Files, Terminal, a preview tab — is chrome.
 const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boolean(paneId?.startsWith('session-tile:'))
@@ -49,4 +51,23 @@ export const $focusedTreePaneId = computed(
 
     return active
   }
+)
+
+/** The stored id of the session the user is working in: a focused
+ *  `session-tile:<storedId>` pane IS that session, anything else falls back to
+ *  the route-driven primary selection.
+ *
+ *  Lives HERE, not in session-states.ts, because low-level stores (the preview
+ *  rail) need it and session-states imports them — defining it there made
+ *  `session-states` ⇄ `preview` a load cycle. The inputs (the layout tree and
+ *  the primary selection) are both leaf stores, so every consumer can share one
+ *  derivation without dragging session-states in. */
+export const TILE_PANE_PREFIX = 'session-tile:'
+
+export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
+  Boolean(active?.startsWith(TILE_PANE_PREFIX))
+)
+
+export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
+  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
 )

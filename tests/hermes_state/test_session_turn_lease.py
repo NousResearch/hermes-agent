@@ -440,11 +440,16 @@ def test_acquire_turn_lease_reraises_non_lock_sqlite_error(tmp_path, monkeypatch
 def test_non_expired_turn_lease_from_dead_pid_is_reclaimed(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A holder whose structured pid= no longer exists can be reclaimed early."""
+    """A holder whose structured pid= no longer exists can be reclaimed early.
+
+    Stamped with this process's own PID namespace: same-namespace kernel proof
+    is still proof (a foreign or unstamped holder would defer to TTL instead —
+    see tests/hermes_state/test_lease_pid_namespace.py)."""
     db = SessionDB(tmp_path / "state.db")
     db.create_session("shared", source="test")
 
-    dead_holder = "pid=424242:turn=dead:platform=test"
+    from hermes_state_pidns import holder_namespace_token
+    dead_holder = f"pid=424242{holder_namespace_token()}:turn=dead:platform=test"
     assert db.try_acquire_session_turn_lease(
         "shared", dead_holder, ttl_seconds=300
     ) is True

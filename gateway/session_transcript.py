@@ -513,6 +513,40 @@ class SessionTranscriptMixin:
             self._clear_dirty_transcript(session_id)
             return True
 
+    def is_published_compression_child(self, parent_session_id: str, child_session_id: str) -> bool:
+        """True when *child_session_id* is an atomically-published compression continuation of
+        *parent_session_id*: ``publish_compression_child()`` wrote the handoff (plus any cloned
+        foreign-tail rows) in the SAME transaction that ended the parent with
+        ``end_reason='compression'``, so the child transcript is already durable on disk.
+
+        Rewriting such a child is redundant AND destructive: the in-memory handoff lacks the rows
+        cloned during publication, and a failed rewrite reports a false "failed to persist
+        compressed transcript" over a committed compression. Fails open (False) on any DB error so
+        callers fall back to the rewrite."""
+        if not parent_session_id or not child_session_id:
+            return False
+        # The child id is not routed yet; the parent is, and it was ended in the same publish transaction.
+        db = self._db_for_session_id(parent_session_id)
+        if db is None:
+            return False
+        try:
+            child = db.get_session(child_session_id)
+            if not child or child.get("parent_session_id") != parent_session_id:
+                return False
+            if not db._is_compression_child_row(child):
+                return False
+            return db.get_active_message_watermark(child_session_id) > 0
+        except Exception:
+            logger.debug("published-compression-child probe failed for %s", child_session_id, exc_info=True)
+            return False
+
+    def persist_rotated_compression_child(
+            self, parent_session_id: str, child_session_id: str, messages: List[Dict[str, Any]]) -> bool:
+        """Make a rotated compression child durable before the live entry is repointed: a published
+        child already is, anything else gets *messages* written by the destructive rewrite."""
+        return (self.is_published_compression_child(parent_session_id, child_session_id)
+                or self.rewrite_transcript(child_session_id, messages))
+
     def has_input_owner(self, session_id: str, owner: str) -> bool:
         """Find this accepted input on the canonical live continuation and its ancestors.
 

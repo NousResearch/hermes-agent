@@ -37,6 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
+from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
@@ -1156,6 +1157,12 @@ def _build_replay_entry(
     # flushes skip rows already in state.db (#121462/#123462).
     if msg.get("_db_persisted"):
         entry["_db_persisted"] = True
+    # A merged user dict lost that stamp; this one is what ties it to its durable rows at compaction.
+    # The other counts the rows the repair dropped behind a dict or folded into an assistant turn,
+    # which this view cannot name either; the last names them for the commit.
+    for stamp in (MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS):
+        if msg.get(stamp):
+            entry[stamp] = msg[stamp]
     return entry
 
 

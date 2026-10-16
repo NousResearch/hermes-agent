@@ -109,23 +109,25 @@ describe('primary gateway registry scope', () => {
     expect(setApiRequestConnection).toHaveBeenLastCalledWith(null)
   })
 
-  it('ignores primary connection-id writes while a secondary registry scope is active (#95628 hardening)', async () => {
+  it('records a primary re-dial made while a secondary scope is foregrounded (#95628 keeps ambient routing)', async () => {
     setPrimaryGateway({ connectionState: 'open' } as never, 'default')
     setPrimaryGatewayConnectionId('primary-vps')
 
     // Foreground Gateway B's composite scope (connectionId 'homelab').
     await expect(ensureGatewayForAgent('homelab', 'default')).resolves.toBe(true)
+    vi.mocked(setApiRequestConnection).mockClear()
 
-    // Presentation-layer write while the secondary is foregrounded: the id
-    // describes the secondary, not the primary. It must be dropped — accepting
-    // it relabels the primary socket and poisons ambient routing.
-    setPrimaryGatewayConnectionId('homelab')
+    // A connection apply re-dials the PRIMARY socket to another machine while
+    // the secondary stays in front. Ambient requests still belong to the
+    // secondary, but the primary must stop claiming the machine it left —
+    // owner routing to 'primary-vps' would otherwise land on 'local'.
+    setPrimaryGatewayConnectionId('local')
+    expect(setApiRequestConnection).not.toHaveBeenCalled()
 
-    // Back on the primary route, its registry identity is intact.
     await ensureGatewayForProfile('default')
 
-    expect(activeGatewayConnectionId()).toBe('primary-vps')
-    expect(setApiRequestConnection).toHaveBeenLastCalledWith('primary-vps')
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect(setApiRequestConnection).toHaveBeenLastCalledWith('local')
   })
 })
 

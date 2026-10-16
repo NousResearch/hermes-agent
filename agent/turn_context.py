@@ -638,6 +638,8 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None  # send once
+    if getattr(agent, "_pending_startup_notices", None):  # gateway: init ran before its callbacks
+        agent._replay_startup_warnings()
 
     agent.iteration_budget = IterationBudget(agent.max_iterations)
     # Wall-clock run budget: stamped only when configured (one wrap-up notice per run).

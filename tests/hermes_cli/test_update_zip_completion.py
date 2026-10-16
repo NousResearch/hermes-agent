@@ -82,7 +82,6 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     monkeypatch.setattr(maint, "_print_post_update_notices_and_self_heals", lambda: None)
     monkeypatch.setattr(maint, "_print_bundled_skills_sync_report", lambda: None)
     monkeypatch.setattr("hermes_cli.profiles.seed_profile_skills", lambda *a, **kw: {})
-    monkeypatch.setattr("plugins.memory.honcho.cli.sync_honcho_profiles_quiet", lambda: [])
     monkeypatch.setattr(update_cmd, "_reload_config_modules", lambda: None)
     monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
     monkeypatch.setattr(fleet, "_print_legacy_units_warning", lambda: None)

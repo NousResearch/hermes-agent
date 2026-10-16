@@ -329,3 +329,39 @@ def test_module_cli_builds_the_requested_products(source_products, desktop, monk
     assert acquired == ["npm"]
     assert (root / "hermes_cli/web_dist/index.html").is_file()
     assert (root / "apps/desktop/release/linux-unpacked/hermes").exists() == desktop
+
+
+@pytest.mark.platforms("posix")
+def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypatch):
+    """The update skips the desktop build only when the shipped app's baked commit is HEAD
+    and its receipt is current; a moved HEAD or an unreadable stamp means build."""
+    import hermes_cli.main_desktop as main_desktop
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run([*git[:3], "init", "-q"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "one"], check=True)
+    desktop_dir = root / "apps/desktop"
+    exe = desktop_dir / "release/app/Hermes"
+    monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda _d: exe)
+    resources = main_desktop._packaged_resources_dir(desktop_dir)
+    (resources / "app.asar.unpacked/dist").mkdir(parents=True)
+    receipt_current = {"value": True}
+    monkeypatch.setattr(main_desktop, "_desktop_build_needed",
+                        lambda *_a, **_k: not receipt_current["value"])
+
+    def head():
+        return subprocess.run([*git[:3], "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+    def reused():
+        return main_desktop._packaged_desktop_current_for_head(desktop_dir, root)
+
+    assert not reused()  # no baked stamp
+    (resources / "install-stamp.json").write_text(json.dumps({"commit": head()}), encoding="utf-8")
+    assert reused()
+    receipt_current["value"] = False
+    assert not reused()
+    receipt_current["value"] = True
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "two"], check=True)
+    assert not reused()

@@ -1146,7 +1146,11 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      keepAwakeDesc:
+        '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',
+      keepAwakeOff: 'オフ',
+      keepAwakeWhileWorking: '実行中のみ',
+      keepAwakeAlways: '常に',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
         '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'
@@ -1715,6 +1719,20 @@ export const ja = defineLocale({
         }
       }
     }
+  },
+
+  skillDeepLink: {
+    installTitle: (name: string) => `「${name}」をインストールしますか？`,
+    installDescription:
+      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
+    installTo: 'インストール先',
+    thisComputer: 'このコンピューター',
+    installing: 'インストール中…',
+    installComplete: (name: string) => `「${name}」をインストールしました`,
+    destinationChanged:
+      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
+    installed: 'インストール済み',
+    source: '提供元'
   },
   skills: {
     plugins: {
@@ -2839,7 +2857,7 @@ export const ja = defineLocale({
       '/init': 'リポジトリを調べて AGENTS.md の指示を作成または更新',
       '/suggestions': '提案された自動化を確認し、採用または却下',
       '/blueprint': 'ブループリントから自動化を設定',
-      '/browser': 'ローカルブラウザー接続を管理',
+      '/browser': 'エージェントのブラウザーを管理 [connect|disconnect|status|use]',
       '/palette': 'コマンドパレットを開く',
       '/usage': 'このセッションのトークン使用量を表示',
       '/subscription': 'Nous のプランを確認し、ブラウザーで変更',
@@ -3608,6 +3626,8 @@ export const ja = defineLocale({
   },
   preview: {
     tab: 'プレビュー',
+    pin: 'ワークスペースにピン留め',
+    unpin: 'ワークスペースからピン留めを外す',
     closePane: 'プレビューペインを閉じる',
     loading: 'プレビューを読み込み中',
     unavailable: 'プレビューは利用できません',

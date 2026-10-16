@@ -1244,6 +1244,9 @@ export interface Translations {
       toolsetsWipeConfirm: string
       keepAwakeTitle: string
       keepAwakeDesc: string
+      keepAwakeOff: string
+      keepAwakeWhileWorking: string
+      keepAwakeAlways: string
       disableF12Title: string
       disableF12Desc: string
       alwaysExternalLinksTitle: string
@@ -2123,6 +2126,17 @@ export interface Translations {
     }
   }
 
+  skillDeepLink: {
+    installTitle: (name: string) => string
+    installDescription: string
+    installTo: string
+    thisComputer: string
+    installing: string
+    installComplete: (name: string) => string
+    destinationChanged: string
+    installed: string
+    source: string
+  }
   skills: {
     tabSkills: string
     tabToolsets: string
@@ -2211,6 +2225,7 @@ export interface Translations {
         no_interactive_session: string
         version_too_old: string
         missing_app: string
+        unsupported_gpu: string
         unknown: string
       }
       catalogTitle: string
@@ -4166,6 +4181,8 @@ export interface Translations {
 
   preview: {
     tab: string
+    pin: string
+    unpin: string
     closePane: string
     loading: string
     unavailable: string

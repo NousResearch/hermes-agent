@@ -182,6 +182,43 @@ def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
 
 
 
+@pytest.mark.parametrize("device_type, discrete", [(1, True), (2, False)])
+def test_vulkan_device_type_decides_discrete_vs_unified(monkeypatch, tmp_path, device_type, discrete):
+    """A discrete AMD/Intel card behind a Vulkan engine budgets its own memory with RAM as spill;
+    an integrated one (ggml IGPU) keeps the RAM-as-unified budget, never both pools. The engine is
+    the one config.yaml names, read through the real config loader."""
+    import hermes_cli.local_runtime.binaries as binaries
+    import hermes_cli.local_runtime.devices as devices
+
+    total = 16304 << 20
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("local_runtime:\n  backend: vulkan\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    requested = []
+    engine = binaries.Engine("vulkan", "b10964", tmp_path / "engine" / "llama-server")
+    monkeypatch.setattr(binaries, "installed_engine",
+                        lambda backend="auto", **_: requested.append(backend) or engine)
+    monkeypatch.setattr(devices, "probe_devices", lambda directory, backend: [{
+        "description": "AMD Radeon RX 9060 XT", "type": device_type, "free": total, "total": total}])
+    monkeypatch.setattr(hw, "_accelerator_cache", {})
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 20 * GIB))
+
+    b = hw.probe_budget(planning=True)
+
+    assert requested == ["vulkan"]
+    assert b.uma is (not discrete)
+    if discrete:
+        assert b.total_device_bytes == total
+        assert b.usable_vram_bytes == total - hw._MARGIN_FLOOR
+        assert b.ram_available_bytes == 32 * GIB
+    else:
+        assert b.total_device_bytes == 32 * GIB
+        assert b.ram_available_bytes == 0
+
+
 @pytest.mark.platforms("linux")
 def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
     """WSL exposes nvidia-smi through the Windows driver directory even

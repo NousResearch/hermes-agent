@@ -375,7 +375,10 @@ def _validate_media_proxy_url(url: str) -> str:
     # urlparse discards some control characters; accept surrounding spaces but
     # validate the original authority and path before the HTTP client sees them.
     url = (url or "").strip(" ")
-    parsed = urllib.parse.urlparse(url)
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError as exc:  # e.g. an unclosed or invalid bracketed host
+        raise HTTPException(status_code=400, detail="A remote image URL is required") from exc
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="A remote image URL is required")
     if not _media_proxy_host_allowed(parsed.hostname):
@@ -889,7 +892,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
             _raise_fs_backend_error(exc)
         return {"ok": True, "path": target, "byteSize": byte_size}
 
-    target = _fs_path(payload.path)
+    target = _fs_path(payload.path, decode_fallback=False)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 

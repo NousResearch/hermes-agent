@@ -11,12 +11,42 @@ import logging
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
 
 logger = logging.getLogger(__name__)
+
+# Answers to the dependency questions, reused while one plugin is installed into several profile
+# homes that share one environment (memory-provider migration on ``hermes update``, #125794).
+_shared_answers: ContextVar[Optional[dict]] = ContextVar("plugin_dependency_answers", default=None)
+
+
+@contextmanager
+def shared_dependency_answers():
+    """Inside this block each dependency question is asked once; repeats reuse the first answer."""
+    token = _shared_answers.set({})
+    try:
+        yield
+    finally:
+        _shared_answers.reset(token)
+
+
+def _ask_yes_no(key: tuple, prompt: str, console) -> bool:
+    answers = _shared_answers.get()
+    if answers is not None and key in answers:
+        console.print(f"  [dim]Reusing your answer for the first profile: {'yes' if answers[key] else 'no'}[/dim]")
+        return answers[key]
+    try:
+        accepted = input(prompt).strip().lower() in {"y", "yes"}
+    except (EOFError, KeyboardInterrupt):
+        accepted = False
+    if answers is not None:
+        answers[key] = accepted
+    return accepted
 
 
 def _pc():
@@ -26,7 +56,7 @@ def _pc():
 
 
 def _install_plugin_python_deps(
-    manifest: dict, target: Path, console
+    manifest: dict, target: Path, console, *, assume_yes: bool = False
 ) -> tuple[bool, Optional[str]]:
     """Consent gate for plugin python deps (settled 2026-09-02; C13 rework).
 
@@ -39,6 +69,8 @@ def _install_plugin_python_deps(
     reason): consented=True when the user accepted (or no prompt was
     needed); a decline/skip returns False and NOTHING is installed.
     Never raises — the caller keeps the plugin installed-but-disabled.
+    *assume_yes* is ``--yes-deps``: the user's own non-interactive answer
+    to the Python question, so a headless install is not refused (#122134).
     """
     from pm.plugin_declarations import read_python_declaration
 
@@ -58,16 +90,9 @@ def _install_plugin_python_deps(
     node_reason = None
     if has_package_json:
         console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
-        if sys.stdin.isatty() and sys.stdout.isatty():
-            try:
-                node_answer = input(
-                    "  Install them into the plugin's own node_modules now? [y/N]: "
-                ).strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                node_answer = ""
-        else:
-            node_answer = ""
-        if node_answer in {"y", "yes"}:
+        node_ok = sys.stdin.isatty() and sys.stdout.isatty() and _ask_yes_no(
+            ("node", manifest.get("name")), "  Install them into the plugin's own node_modules now? [y/N]: ", console)
+        if node_ok:
             from pm.workspace import install_node_sidecar
 
             node_reason = install_node_sidecar(target, explicit=True)
@@ -78,13 +103,17 @@ def _install_plugin_python_deps(
 
     if not has_python:
         return True, None
-    return _consent_python_deps(manifest.get("name", "this plugin"), deps, console)
+    return _consent_python_deps(manifest.get("name", "this plugin"), deps, console, assume_yes=assume_yes)
 
 
-def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tuple[bool, Optional[str]]:
+def _consent_python_deps(
+    plugin_name: str, deps: tuple[str, ...], console, *, assume_yes: bool = False
+) -> tuple[bool, Optional[str]]:
     """The y/N gate for Python deps entering the shared environment — install,
     reinstall AND an update that declares new ones all pass through here.
-    Returns (consented, reason); never raises."""
+    Returns (consented, reason); never raises. *assume_yes* (``--yes-deps``)
+    answers the question on the user's behalf ONLY because the user passed the
+    flag; the non-interactive default below stays a refusal."""
     console.print(
         f"\n[bold]{plugin_name}[/bold] declares Python dependencies:"
     )
@@ -94,6 +123,13 @@ def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tu
     else:
         console.print("  - (declared in its pyproject.toml)")
 
+    # An explicit --yes-deps is the user's own answer, TTY or not.
+    if assume_yes:
+        console.print(
+            "[dim]Consent given up front — preparing them without prompting.[/dim]\n"
+        )
+        return True, None
+
     # A decline or non-interactive invocation leaves the new plugin disabled.
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         console.print(
@@ -101,13 +137,7 @@ def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tu
             "Run `hermes plugins enable` when ready to prepare them.[/dim]\n"
         )
         return False, "dependency install skipped (non-interactive)"
-    try:
-        answer = input(
-            "  Prepare these with Hermes through PM now? [y/N]: "
-        ).strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-    if answer not in {"y", "yes"}:
+    if not _ask_yes_no(("python", plugin_name, deps), "  Prepare these with Hermes through PM now? [y/N]: ", console):
         console.print(
             "[dim]Skipped — run `hermes plugins enable` when ready "
             "to prepare them.[/dim]\n"
@@ -261,6 +291,7 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
     if not (tree / "plugin.json").is_file():
         return
     from hermes_cli.agent_plugins import load_agent_plugin
+    from hermes_platform.declaration import gpu_label
     from hermes_platform.resolver.availability import availability
 
     try:
@@ -272,6 +303,8 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         if result.offerable:
             continue
         found = f", found version {result.version}" if result.version else ""
+        if result.state == "unsupported_gpu":
+            found = f", needs {gpu_label(server_decl.declaration.required_gpu)}"
         raise _pc().PluginOperationError(
             f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}."
         )
@@ -293,6 +326,7 @@ def _install_plugin_core(
     scan_decision_cb=None,
     reviewed_pin: Optional[str] = None,
     python_deps: bool = True,
+    assume_deps_consent: bool = False,
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
@@ -302,7 +336,9 @@ def _install_plugin_core(
     *reviewed_pin* is the curated-catalog sha for this install; the scan trusts the tree
     only when the checked-out revision is exactly that sha (an annotated-tag pin is peeled to
     its commit first — HEAD can only ever be the commit). *python_deps* False refuses active
-    replacements; it never bypasses PM dependency admission. *catalog*
+    replacements; it never bypasses PM dependency admission. *assume_deps_consent* is the
+    caller's ``--yes-deps`` answer carried into the publication consent gate, so a headless
+    install of an active replacement is not refused non-interactively (#122134). *catalog*
     (``{"name", "repo", "tier", "pin"}``) is recorded on the install-metadata record with the
     checked-out sha — provenance lives OUTSIDE the plugin tree, so a repo cannot forge it;
     its ``pin`` is kept only when the checkout satisfies it (a ``--ref`` install is off-pin).
@@ -400,7 +436,8 @@ def _install_plugin_core(
         from hermes_cli.plugins_transaction import publish_plugin
 
         try:
-            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
+            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True,
+                           assume_consent=assume_deps_consent)
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 
@@ -436,6 +473,7 @@ def cmd_install(
     ref: Optional[str] = None,
     allow_removed: bool = False,
     no_deps: bool = False,
+    yes_deps: bool = False,
 ) -> None:
     """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
@@ -443,6 +481,11 @@ def cmd_install(
     metadata. An explicit different ``--ref`` is a custom pin. URLs/shorthand are custom sources. Every
     install is checked against the catalog kill list unless *allow_removed*.
     *enable* None prompts "Enable now? [y/N]"; True/False skip the prompt.
+    *yes_deps* is ``--yes-deps``: the explicit answer to the Python-deps consent
+    question, so non-interactive installs (SSH automation, CI, Docker entrypoints)
+    finish in one run instead of being refused and left for an ``enable`` that
+    cannot recover a refused publication (#122134). The default without it stays
+    fail-closed in non-interactive sessions.
     """
     from hermes_cli import plugins_cmd_catalog as catalog
     console = _pc()._console()
@@ -484,10 +527,10 @@ def cmd_install(
         if entry is not None:
             return catalog.install_catalog_entry(
                 entry, force=force, ref=ref, allow_removed=allow_removed, scan_decision_cb=_interactive_scan_decision,
-                python_deps=not no_deps)
+                python_deps=not no_deps, assume_deps_consent=yes_deps)
         return _pc()._install_plugin_core(
             identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision,
-            python_deps=not no_deps, allow_removed=allow_removed)
+            python_deps=not no_deps, allow_removed=allow_removed, assume_deps_consent=yes_deps)
 
     try:
         target, installed_manifest, installed_name = recorded_install(
@@ -512,7 +555,8 @@ def cmd_install(
         should_enable = _pc()._is_tty() and _pc()._ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
     deps_ok, deps_reason = (True, None)
     if should_enable and not already_active:
-        deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console)
+        deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console,
+                                                           assume_yes=yes_deps)
 
     _pc()._display_after_install(target, identifier)
 
@@ -567,11 +611,13 @@ def cmd_install(
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None,
+    ref: Optional[str] = None, assume_deps_consent: bool = False,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
-    contract as ``--ref``); every path enforces the kill list (no GUI bypass)."""
+    contract as ``--ref``); every path enforces the kill list (no GUI bypass). *assume_deps_consent*
+    is consent the caller already holds for the catalog entry's Python deps (the memory-provider
+    migration under ``security.allow_lazy_installs``), so no terminal is needed to answer the gate."""
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
@@ -594,7 +640,8 @@ def dashboard_install_plugin(
         return {"ok": False, "error": str(exc)}
     def _install() -> tuple:
         if entry is not None:
-            return catalog.install_catalog_entry(entry, force=force, allow_removed=False)
+            return catalog.install_catalog_entry(entry, force=force, allow_removed=False,
+                                                 assume_deps_consent=assume_deps_consent)
         return _pc()._install_plugin_core(identifier, force=force, ref=(ref or "").strip() or None)
 
     try:

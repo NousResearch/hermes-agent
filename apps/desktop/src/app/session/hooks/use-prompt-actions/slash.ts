@@ -1178,11 +1178,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await runExec(ctx)
         },
-        // /browser connect|disconnect|status manages the live CDP connection on
-        // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
+        // /browser connect|disconnect manages the live CDP connection on the
+        // gateway host, mirroring the TUI's browser.manage RPC. It mutates
         // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
-        // meaningful when that process runs on this machine, so it's gated to
-        // local connections. A remote gateway would act on the wrong host.
+        // meaningful when that process runs on this machine, so those two are
+        // gated to local connections. `status` and `use [off]` (the profile's
+        // browser.backend, applied to new chats) are right on any backend.
         browser: async ctx => {
           const resolved = await withSlashOutput(ctx)
 
@@ -1191,22 +1192,29 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           const { render: renderSlashOutput, sessionId } = resolved
+          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
+          const cmdAction = rawAction.toLowerCase()
 
-          if ($connection.get()?.mode === 'remote') {
+          if (!['connect', 'disconnect', 'status', 'use'].includes(cmdAction)) {
             renderSlashOutput(
-              '/browser manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
+              'usage: /browser [connect|disconnect|status|use] [url] · persistent: set browser.cdp_url in config.yaml'
             )
 
             return
           }
 
-          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
-          const cmdAction = rawAction.toLowerCase()
-
-          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
+          if ((cmdAction === 'connect' || cmdAction === 'disconnect') && $connection.get()?.mode === 'remote') {
             renderSlashOutput(
-              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+              '/browser connect manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
             )
+
+            return
+          }
+
+          const mode = cmdAction === 'use' ? (rest[0] ?? 'on').toLowerCase() : undefined
+
+          if (mode && mode !== 'on' && mode !== 'off') {
+            renderSlashOutput('usage: /browser use [off]')
 
             return
           }
@@ -1221,12 +1229,24 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const result = await requestGateway<BrowserManageResponse>('browser.manage', {
               action: cmdAction,
               session_id: sessionId,
-              ...(url && { url })
+              ...(url && { url }),
+              ...(mode && { enabled: mode === 'on' })
             })
 
             // Without a streamed session subscription, the gateway bundles its
             // progress lines into `messages` — flush them inline.
             result?.messages?.forEach(message => renderSlashOutput(message))
+
+            if (cmdAction === 'use') {
+              renderSlashOutput(
+                mode === 'on'
+                  ? 'Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0'
+                  : 'Browser Use mode disabled — built-in browser tools restored'
+              )
+              renderSlashOutput('applies to new chats — this one keeps its current tools (/new to start one)')
+
+              return
+            }
 
             if (cmdAction === 'status') {
               renderSlashOutput(
@@ -1234,6 +1254,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                   ? `browser connected: ${result.url || '(url unavailable)'}`
                   : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
               )
+
+              if (result?.browser_use) {
+                renderSlashOutput('Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)')
+              }
 
               return
             }

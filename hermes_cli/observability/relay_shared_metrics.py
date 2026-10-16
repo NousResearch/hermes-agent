@@ -228,6 +228,11 @@ class _Runtime:
         # Guards the opt-in send pass: at most one in flight per process.
         self._send_lock = threading.RLock()
         self._send_thread: threading.Thread | None = None
+        # Flushing is a process-wide Relay barrier. Keep it off interactive turn threads while
+        # coalescing concurrent finish hooks into one worker.
+        self._flush_lock = threading.RLock()
+        self._flush_pending = False
+        self._flush_thread: threading.Thread | None = None
         self._snapshot_checked_ns: int | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
@@ -554,7 +559,7 @@ class _Runtime:
         if retired:
             self.close_session({"session_id": session.session_id})
         elif finished:
-            self._flush_and_export("Hermes shared-metrics task flush failed")
+            self._schedule_flush_and_export("Hermes shared-metrics task flush failed")
 
     def close_session(self, event: dict[str, Any]) -> None:
         session = self._session(event)
@@ -566,16 +571,9 @@ class _Runtime:
         ):
             return
         self._emit_session_summary(session)
-        try:
-            self.relay.subscribers.flush()
-        except Exception as exc:
-            logger.warning(
-                "Hermes shared-metrics session %s closed with errors: subscriber flush failed: %s",
-                session.session_id,
-                exc,
-            )
-        else:
-            self._export()
+        self._schedule_flush_and_export(
+            f"Hermes shared-metrics session {session.session_id} flush failed"
+        )
         with self._sessions_lock:
             _forget(self._sessions, session.session_id, session)
 
@@ -669,6 +667,38 @@ class _Runtime:
         if task is not None:
             return self._run_in_task(task, callback, *args, **kwargs)
         return self.host.run_in_session(session.relay_session, callback, *args, **kwargs)
+
+    def _schedule_flush_and_export(self, failure_message: str) -> None:
+        """Schedule the process-wide Relay flush without blocking the finishing turn.
+
+        ``flush()`` also waits for every managed tool/LLM call in flight in ANY session, so on a
+        turn thread one session finishing stalls behind another session's long tool. One worker
+        per runtime (= per profile); triggers landing while it runs coalesce into one more pass.
+        """
+        from agent.memory_provider import spawn_context_thread
+
+        with self._flush_lock:
+            self._flush_pending = True
+            if self._flush_thread is not None:
+                return
+            # Context copy: the export reads the profile's send/consent config via contextvars.
+            thread = spawn_context_thread(
+                self._run_flush_worker, name="hermes-shared-metrics-flush", args=(failure_message,)
+            )
+            # The worker's first act is taking this lock, so it cannot clear the slot before it is set.
+            thread.start()
+            self._flush_thread = thread
+
+    def _run_flush_worker(self, failure_message: str) -> None:
+        while True:
+            with self._flush_lock:
+                if not self._flush_pending:
+                    # Cleared under the lock that schedulers check: a trigger can never land on a
+                    # worker that has already decided to exit.
+                    self._flush_thread = None
+                    return
+                self._flush_pending = False
+            self._flush_and_export(failure_message)
 
     def _flush_and_export(self, failure_message: str) -> None:
         """Flush the Relay subscriber, then export; a failed flush skips the export."""

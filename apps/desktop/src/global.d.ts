@@ -7,6 +7,7 @@ import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
+import type { KeepAwakeMode } from '../electron/power-save'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { GrowRequest } from '../electron/window-growth'
 
@@ -392,7 +393,7 @@ declare global {
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
       setTranslucency?: (payload: TranslucencyState) => void
-      setKeepAwake?: (on: boolean) => void
+      setKeepAwake?: (mode: KeepAwakeMode) => void
       minimizeToTray?: {
         get: () => Promise<{ enabled: boolean; available: boolean }>
         set: (on: boolean) => Promise<{ enabled: boolean; available: boolean }>
@@ -412,6 +413,8 @@ declare global {
         }) => void
       ) => () => void
       setPreviewShortcutActive?: (active: boolean) => void
+      /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
+      setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** One-shot loopback callback listener for MCP OAuth against remote

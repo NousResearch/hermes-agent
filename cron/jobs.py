@@ -1919,6 +1919,8 @@ def create_job(
         "last_delivery_error": None,
         # Targets acked without message_id/raw_response (accepted but UNVERIFIED).
         "last_delivery_unverified": None,
+        # Most recent failed run ({at, detail}); NOT cleared by a later success (#118354).
+        "last_failure": None,
         "failure_streak": 0,
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -2396,6 +2398,12 @@ def _record_run_outcome(
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).
         job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
+        # Sticky last-failure stamp (#118354): the next success resets last_status and
+        # failure_streak, which erases the only job-level trace that a run ever failed —
+        # a monitor sampling jobs.json then sees a permanently green job. last_failure
+        # survives success (latest failure wins); the recency window is the consumer's
+        # call. Delivery failures keep their own sticky last_delivery_error.
+        job["last_failure"] = {"at": now, "detail": error or (status or "run failed")}
     job["last_delivery_error"] = delivery_error
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None
@@ -2404,9 +2412,12 @@ def _record_run_outcome(
         job["run_claim"] = None
 
 
-def _advance_after_run(job: Dict[str, Any], now: str) -> None:
+def _advance_after_run(job: Dict[str, Any], now: str, *, ladder_rung: bool = False) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
-    completion when the repeat limit is reached or a one-shot has no further run."""
+    completion when the repeat limit is reached or a one-shot has no further run.
+
+    ``ladder_rung``: this run re-ran an occurrence that already counted (an unreachable-model
+    re-run, ``cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
     # (recurring schedule couldn't compute — e.g. 'croniter' missing from the runtime env). Recurring jobs
     # must NEVER be silently disabled: that turns a missing runtime dep into "job completed" and the user's
@@ -2420,9 +2431,10 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
         times = repeat.get("times")
         finite = times is not None and times > 0
         completed = repeat.get("completed", 0)
-        # Finite one-shots were pre-claimed by claim_dispatch() (completed already incremented) —
-        # do not double-count; recurring jobs and direct callers still get the increment.
-        if not (kind == "once" and finite and completed > 0):
+        # Count each occurrence once. A ladder re-run's occurrence already counted, and finite
+        # one-shots were pre-claimed by claim_dispatch() (completed already incremented); every
+        # other run, recurring or direct, gets the increment.
+        if not ladder_rung and not (kind == "once" and finite and completed > 0):
             completed += 1
             repeat["completed"] = completed
         if finite and completed >= times:
@@ -2460,6 +2472,7 @@ def mark_job_run(
     *,
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
+    ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
 ) -> bool:
@@ -2474,7 +2487,9 @@ def mark_job_run(
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
     earlier per ``cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
-    (Cowork-style; see cron/unreachable_retry.py).
+    (Cowork-style; see cron/unreachable_retry.py). ``ladder_rung``: this run IS one of those
+    re-runs (``is_retry_run``); its occurrence already counted, so ``repeat.completed`` is not
+    bumped again.
 
     ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
     ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
@@ -2492,7 +2507,7 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
-        _advance_after_run(job, now)
+        _advance_after_run(job, now, ladder_rung=ladder_rung)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 

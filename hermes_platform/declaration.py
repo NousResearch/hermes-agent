@@ -14,6 +14,7 @@ __all__ = [
     "RequiresSpec",
     "Declaration",
     "DeclarationError",
+    "gpu_label",
     "parse_app",
     "parse_requires",
     "parse_declaration",
@@ -44,6 +45,7 @@ class RequiresSpec:
 
     app: bool = False
     min_version: Optional[str] = None
+    gpu: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,10 @@ class Declaration:
     def min_version(self) -> Optional[str]:
         return self.requires.min_version
 
+    @property
+    def required_gpu(self) -> Optional[str]:
+        return self.requires.gpu
+
     def app_for(self, os_family: str) -> Optional[AppDef]:
         return self.app.for_os(os_family) if self.app else None
 
@@ -71,6 +77,15 @@ _APP_PRESENCE = ("executable", "bundle")
 _APP_VERSION_KINDS = {"pe_resource": "win32", "uninstall_registry": "win32", "plist": "darwin", "none": None}
 _APP_LIVENESS_KINDS = ("server_json", "none")
 _VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
+# `requires.gpu` values and how a sentence names them. Only NVIDIA: `facts.gpu_class()` reports the
+# highest-priority vendor present, which answers "is an NVIDIA GPU here" exactly and would not answer
+# it for AMD or Intel on a machine that also has an NVIDIA GPU.
+GPU_LABELS = {"nvidia": "an NVIDIA GPU"}
+
+
+def gpu_label(gpu: Optional[str]) -> str:
+    """How a user-facing sentence names a ``requires.gpu`` value."""
+    return GPU_LABELS.get(gpu or "", "a supported GPU")
 
 
 def _require_mapping(where: str, key: str, raw: Any) -> dict:
@@ -148,9 +163,12 @@ def parse_requires(raw: Any, app: Optional[AppSpec], *, where: str) -> RequiresS
     if raw is None:
         return RequiresSpec()
     _require_mapping(where, "requires", raw)
-    unknown = set(raw) - {"app", "min_version"}
+    unknown = set(raw) - {"app", "min_version", "gpu"}
     if unknown:
         raise DeclarationError(f"{where}: requires has unknown keys {sorted(unknown)}")
+    gpu = raw.get("gpu")
+    if gpu is not None and (not isinstance(gpu, str) or gpu not in GPU_LABELS):
+        raise DeclarationError(f"{where}: requires.gpu must be one of {sorted(GPU_LABELS)}")
     needs_app = raw.get("app", False)
     if not isinstance(needs_app, bool):
         raise DeclarationError(f"{where}: requires.app must be a boolean")
@@ -167,7 +185,7 @@ def parse_requires(raw: Any, app: Optional[AppSpec], *, where: str) -> RequiresS
         if unversioned:
             raise DeclarationError(
                 f"{where}: requires.min_version needs a version source under app.{unversioned[0]} (kind is none)")
-    return RequiresSpec(app=needs_app, min_version=min_version)
+    return RequiresSpec(app=needs_app, min_version=min_version, gpu=gpu)
 
 
 def parse_declaration(name: str, raw_app: Any, raw_requires: Any, *, where: str) -> Declaration:

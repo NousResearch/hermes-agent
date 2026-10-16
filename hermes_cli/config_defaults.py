@@ -1043,7 +1043,7 @@ DEFAULT_CONFIG = {
         # Username/password gate (dashboard_auth/basic plugin, no OAuth IDP). Active when username
         # plus password_hash (preferred) or password (hashed in-memory) are set; empty username =
         # no-op. Env HERMES_DASHBOARD_BASIC_AUTH_USERNAME / _PASSWORD_HASH / _PASSWORD / _SECRET /
-        # _TTL_SECONDS win when non-empty. secret signs session tokens; empty = random per-process
+        # _TTL_SECONDS / _REFRESH_TTL_SECONDS win when non-empty. secret signs session tokens; empty = random per-process
         # key (sessions die on restart, no multi-worker) — set 32+ random bytes. Hash:
         # plugins.dashboard_auth.basic.hash_password('PW').
         "basic_auth": {
@@ -1052,6 +1052,7 @@ DEFAULT_CONFIG = {
             "password": "",
             "secret": "",
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
+            "refresh_ttl_seconds": 0,  # 0 → plugin default (30d)
         },
         # Drain-control token auth (dashboard_auth/drain plugin). The secret is NOT here: env
         # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected

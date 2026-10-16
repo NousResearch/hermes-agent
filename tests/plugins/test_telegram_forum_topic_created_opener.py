@@ -213,7 +213,7 @@ async def test_captured_updates_through_build_message_event(monkeypatch):
     Service message with ``forum_topic_created`` followed by an adjacent thread-less opener:
     the event the runner sees must carry the created topic as its thread id.
     """
-    async with connected(monkeypatch) as (adapter, app, delivered):
+    async with connected(monkeypatch) as (adapter, app, _delivered):
         await adapter._handle_forum_topic_created(topic_created(app.bot), None)
         event = adapter._build_message_event(opener(app.bot).message, MessageType.TEXT, update_id=11)
 
@@ -264,24 +264,20 @@ async def test_bot_created_topic_other_bots_opener_is_not_adopted(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pending_created_topics_stays_bounded(monkeypatch):
-    """Distinct-key growth is bounded by prune-on-record, not by the lookup path (#136567).
+    """Consumed openers must not linger; abandoned creations expire on recording (#136567).
 
-    Jarvis4Sleaf's finding: records whose opener arrives already threaded (or that simply never
-    got claimed) are never revisited by the lookup path, so without a prune at record time the
-    map grows for the process lifetime. Three phases: (1) the leak — 10 distinct keys all
-    survive with the real TTL; (2) with a negative TTL every record is expired, so the next
-    record's prune evicts all of them; (3) a fresh record still claims its opener.
+    Healthy threaded openers consume five records, leaving only five abandoned creations.
+    A negative TTL then exercises expiry pruning; fresh creations must remain adoptable.
     """
     async with connected(monkeypatch) as (adapter, app, delivered):
         # Every delivered user must be allow-listed, or the message is blocked before it is
         # even built and never reaches the topic-routing path we are measuring.
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88," + ",".join(str(300 + i) for i in range(10)))
 
-        # Phase 1 — the leak: with the real TTL, no record is ever revisited by the lookup
-        # path, so all 10 distinct (chat, sender) keys survive for the process lifetime.
+        # Phase 1 — healthy threaded openers must release their records too, otherwise
+        # ordinary successful topic creation leaks pending entries.
         for i in range(10):
-            # Distinct keys; half get the healthy already-threaded opener (returns early at
-            # the adopt guard, never popped), half get nothing.
+            # Distinct keys; half receive a healthy opener, half remain unclaimed.
             if i % 2 == 0:
                 await _deliver(
                     app, adapter,
@@ -298,7 +294,8 @@ async def test_pending_created_topics_stays_bounded(monkeypatch):
                 )
 
         pending = adapter._pending_created_topics_store()
-        assert len(pending) == 10, "leak repro: every record survived; the map is unbounded"
+        assert len(pending) == 5, "only creations without an opener may remain pending"
+        assert set(pending) == {(str(200 + i), str(300 + i)) for i in range(10) if i % 2}
 
         # Phase 2 — prune-on-record: a negative TTL makes every delivered record immediately
         # expired, so the next record's prune evicts all of them at record time.
@@ -384,3 +381,187 @@ async def test_reply_to_the_creation_does_not_change_routing(monkeypatch, is_rep
         )
 
     assert delivered[0].source.thread_id == "40798", "adjacency governs adoption, not the reply flag"
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_creation_is_not_pending_or_name_cached(monkeypatch):
+    """Authorizing a sender later must not revive an unauthorized service message."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(app, adapter, topic_created(app.bot, user=99, name="Unauthorized topic"))
+
+        assert delivered == []
+        assert adapter._pending_created_topics == {}
+        assert "42:Unauthorized topic" not in adapter._dm_topics
+
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88,99")
+        await _deliver(app, adapter, opener(app.bot, user=99))
+        assert [event.source.thread_id for event in delivered] == [None]
+
+
+@pytest.mark.asyncio
+async def test_authorized_bot_creation_is_not_pending_or_name_cached(monkeypatch):
+    """Allow-listing a bot must not make its service message a human routing signal."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88,111")
+        await _deliver(
+            app, adapter,
+            topic_created(app.bot, user=111, is_bot=True, name="Bot topic"),
+        )
+
+        assert delivered == []
+        assert adapter._pending_created_topics == {}
+        assert "42:Bot topic" not in adapter._dm_topics
+
+        await _deliver(app, adapter, opener(app.bot))
+        assert [event.source.thread_id for event in delivered] == [None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_thread", [40798, 22328])
+async def test_healthy_threaded_opener_consumes_creation_without_changing_thread(monkeypatch, explicit_thread):
+    """An explicit thread wins, but cannot leave a stale creation behind."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(app, adapter, topic_created(app.bot))
+        assert set(adapter._pending_created_topics) == {("42", "88")}
+        assert adapter._dm_topics["42:Prova 3"] == 40798
+
+        await _deliver(app, adapter, opener(app.bot, thread=explicit_thread, is_topic=True))
+        assert [event.source.thread_id for event in delivered] == [str(explicit_thread)]
+        assert adapter._pending_created_topics == {}
+
+        await _deliver(app, adapter, opener(app.bot, uid=12, message_id=40801, text="later lobby"))
+        assert [event.source.thread_id for event in delivered] == [str(explicit_thread), None]
+
+
+@pytest.mark.asyncio
+async def test_non_adjacent_new_message_consumes_creation_once(monkeypatch):
+    """A delayed adjacent update must not revive a creation already passed by its sender."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(app, adapter, topic_created(app.bot))
+        assert set(adapter._pending_created_topics) == {("42", "88")}
+
+        await _deliver(app, adapter, opener(app.bot, message_id=40805, text="newer lobby"))
+        assert [event.source.thread_id for event in delivered] == [None]
+        assert adapter._pending_created_topics == {}
+
+        await _deliver(app, adapter, opener(app.bot, uid=12, text="delayed adjacent"))
+        assert [event.source.thread_id for event in delivered] == [None, None]
+        assert adapter._pending_created_topics == {}
+
+
+@pytest.mark.asyncio
+async def test_different_chat_cannot_adopt_or_consume_creation(monkeypatch):
+    """The original chat must still be able to claim its opener after another chat speaks."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(app, adapter, topic_created(app.bot))
+        pending_before = adapter._pending_created_topics.copy()
+        assert set(pending_before) == {("42", "88")}
+
+        await _deliver(app, adapter, opener(app.bot, chat=43))
+        assert [event.source.thread_id for event in delivered] == [None]
+        assert adapter._pending_created_topics == pending_before
+
+        await _deliver(app, adapter, opener(app.bot, uid=12))
+        assert [event.source.thread_id for event in delivered] == [None, "40798"]
+        assert adapter._pending_created_topics == {}
+
+
+@pytest.mark.asyncio
+async def test_different_authorized_sender_cannot_adopt_or_consume_creation(monkeypatch):
+    """Sender isolation must preserve the original sender's one-shot routing signal."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "88,99")
+        await _deliver(app, adapter, topic_created(app.bot))
+        pending_before = adapter._pending_created_topics.copy()
+        assert set(pending_before) == {("42", "88")}
+
+        await _deliver(app, adapter, opener(app.bot, user=99))
+        assert [event.source.thread_id for event in delivered] == [None]
+        assert adapter._pending_created_topics == pending_before
+
+        await _deliver(app, adapter, opener(app.bot, uid=12))
+        assert [event.source.thread_id for event in delivered] == [None, "40798"]
+        assert adapter._pending_created_topics == {}
+
+
+@pytest.mark.asyncio
+async def test_pending_limit_evicts_oldest_stamp_and_preserves_latest(monkeypatch):
+    """Refreshing an existing key must protect it even though its dict position is old."""
+    monkeypatch.setattr(TelegramAdapter, "_NEW_TOPIC_OPENER_MAX_PENDING", 3, raising=False)
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "300,301,302,303")
+        # Refresh 300 before overflowing: 301 is now the oldest stamp, not key 300.
+        for index, user in enumerate((300, 301, 302, 300, 303)):
+            await _deliver(
+                app, adapter,
+                topic_created(app.bot, uid=100 + index, chat=user, user=user,
+                              thread=60000 + index, message_id=50000 + index * 10),
+            )
+            assert len(adapter._pending_created_topics) <= 3
+
+        assert delivered == []
+        assert set(adapter._pending_created_topics) == {("300", "300"), ("302", "302"), ("303", "303")}
+        await _deliver(app, adapter, opener(app.bot, uid=200, chat=303, user=303, message_id=50041))
+        await _deliver(app, adapter, opener(app.bot, uid=201, chat=301, user=301, message_id=50011))
+        assert [event.source.thread_id for event in delivered] == ["60004", None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_field", ["message_thread_id", "from"])
+async def test_creation_without_thread_or_sender_is_not_pending_or_name_cached(monkeypatch, missing_field):
+    """Missing routing identity cannot be replaced with the chat id or service metadata."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        payload = topic_created(app.bot, name="Incomplete topic").to_dict()
+        payload["message"].pop(missing_field)
+        await _deliver(app, adapter, Update.de_json(payload, app.bot))
+
+        assert delivered == []
+        assert adapter._pending_created_topics == {}
+        assert "42:Incomplete topic" not in adapter._dm_topics
+
+        await _deliver(app, adapter, opener(app.bot))
+        assert [event.source.thread_id for event in delivered] == [None]
+
+
+@pytest.mark.asyncio
+async def test_expired_opener_consumes_creation_without_adoption(monkeypatch):
+    """Expiry must discard the record, not just suppress adoption until the next lookup."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(app, adapter, topic_created(app.bot))
+        assert set(adapter._pending_created_topics) == {("42", "88")}
+        monkeypatch.setattr(TelegramAdapter, "_NEW_TOPIC_OPENER_TTL_SECONDS", -1.0)
+
+        await _deliver(app, adapter, opener(app.bot))
+        assert [event.source.thread_id for event in delivered] == [None]
+        assert adapter._pending_created_topics == {}
+
+
+@pytest.mark.asyncio
+async def test_recording_creation_prunes_expired_pending_entries(monkeypatch):
+    """Unclaimed creations must expire even when their sender never sends another message."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(app, adapter, topic_created(app.bot))
+        assert set(adapter._pending_created_topics) == {("42", "88")}
+        monkeypatch.setattr(TelegramAdapter, "_NEW_TOPIC_OPENER_TTL_SECONDS", -1.0)
+
+        await _deliver(app, adapter, topic_created(app.bot, uid=12, chat=43, name="Fresh topic"))
+        assert ("42", "88") not in adapter._pending_created_topics
+        assert delivered == []
+
+        monkeypatch.setattr(TelegramAdapter, "_NEW_TOPIC_OPENER_TTL_SECONDS", 120.0)
+        await _deliver(app, adapter, topic_created(app.bot, uid=13, chat=44, name="Fresh topic"))
+        await _deliver(app, adapter, opener(app.bot, uid=14, chat=44))
+        assert [event.source.thread_id for event in delivered] == ["40798"]
+
+
+@pytest.mark.asyncio
+async def test_forum_general_keeps_thread_one_without_pending_creation(monkeypatch):
+    """A forum group's threadless message is General, never a private-topic opener."""
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        await _deliver(app, adapter, topic_created(app.bot, chat=-100123, thread=99, group=True))
+        assert adapter._pending_created_topics == {}
+        assert "-100123:Prova 3" not in adapter._dm_topics
+
+        await _deliver(app, adapter, opener(app.bot, chat=-100123, group=True))
+        assert [event.source.thread_id for event in delivered] == ["1"]
+        assert adapter._pending_created_topics == {}

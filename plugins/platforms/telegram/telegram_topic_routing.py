@@ -2,9 +2,11 @@
 
 Telegram normally stamps a newly created private-chat topic's opening message with the new
 ``message_thread_id``, but it sometimes delivers that opener with no thread id at all. The
-``forum_topic_created`` service message for the same event always carries the new topic id, so it is
-the only reliable source for it. Recording it here lets the opener adopt it instead of arriving
-lobby-shaped, where gateway topic recovery would pin it to the most recently bound topic.
+``Message`` carrying ``forum_topic_created`` supplies the new topic id, not ``ForumTopicCreated``
+itself. Recording authorized, non-bot private-chat creations in a bounded, short-lived store lets
+an adjacent thread-less opener adopt it instead of arriving lobby-shaped, where gateway topic
+recovery would pin it to the most recently bound topic. The first later message from the same
+chat and sender consumes the record, even when already threaded, so each creation is one-shot.
 """
 
 import logging
@@ -19,6 +21,7 @@ class TelegramTopicRoutingMixin:
 
     # How long a recorded topic creation may claim a following thread-less message.
     _NEW_TOPIC_OPENER_TTL_SECONDS = 120.0
+    _NEW_TOPIC_OPENER_MAX_PENDING = 256
 
     @staticmethod
     def _chat_type_str(chat) -> str:
@@ -49,9 +52,10 @@ class TelegramTopicRoutingMixin:
     def _pending_created_topics_store(self) -> dict:
         """``(chat_id, sender_id) -> (thread_id, creation message id, monotonic stamp)``.
 
-        Every record is claimed on the lookup path (adoption or TTL expiry) — except one whose
-        opener arrived already threaded, which returns early before any pop. Pruning expired
-        records here, at record time, keeps that path bounded without a background task (#136567).
+        Prune expired records before returning the store for insertion. The caller then evicts
+        the oldest stamps as needed to keep new records within ``_NEW_TOPIC_OPENER_MAX_PENDING``.
+        A later message from the same chat and sender consumes its record even if already threaded,
+        rather than leaving healthy openers' records around until TTL expiry (#136567).
         """
         pending = getattr(self, "_pending_created_topics", None)
         if not isinstance(pending, dict):
@@ -68,10 +72,11 @@ class TelegramTopicRoutingMixin:
         return pending
 
     async def _handle_forum_topic_created(self, update: Any, context: Any) -> None:
-        """Record the topic a ``forum_topic_created`` service message just created (#136567).
+        """Record an authorized, non-bot private-chat topic creation (#136567).
 
-        The creation carries the new ``message_thread_id`` and no text, so no other handler matches it.
-        Routing signal only: it is never handed to the agent.
+        The service ``Message`` supplies ``message_thread_id``; ``ForumTopicCreated`` does not.
+        Apply the existing intake authorization gate before remembering routing state or caching
+        a name, so rejected users cannot populate either. Routing signal only: never an agent turn.
         """
         message = getattr(update, "effective_message", None)
         created = getattr(message, "forum_topic_created", None) if message is not None else None
@@ -84,8 +89,17 @@ class TelegramTopicRoutingMixin:
         message_id = getattr(message, "message_id", None)
         if thread_id is None or not isinstance(message_id, int):
             return
+        sender = getattr(message, "from_user", None)
+        if sender is None or getattr(sender, "is_bot", False) is True:
+            return
+        if not self._is_user_authorized_from_message(message):
+            return
         chat_id = self._chat_id_str(message)
-        self._pending_created_topics_store()[(chat_id, self._sender_id_str(message))] = (
+        pending = self._pending_created_topics_store()
+        while len(pending) >= self._NEW_TOPIC_OPENER_MAX_PENDING:
+            oldest = min(pending, key=lambda key: pending[key][2])
+            pending.pop(oldest)
+        pending[(chat_id, self._sender_id_str(message))] = (
             str(thread_id), message_id, time.monotonic())
         topic_name = getattr(created, "name", None)
         if topic_name and isinstance(getattr(self, "_dm_topics", None), dict):
@@ -94,13 +108,14 @@ class TelegramTopicRoutingMixin:
         logger.debug("[%s] Recorded new Telegram topic %s (chat=%s)", self.name, thread_id, chat_id)
 
     def _adopt_created_topic_thread(self, message: Any, chat_type: str, thread_id: Optional[str]) -> Optional[str]:
-        """Return the just-created topic's thread id for that topic's thread-less opening message (#136567).
+        """Return the just-created topic's thread id for its thread-less non-bot opener (#136567).
 
-        One-shot and adjacency-bounded: only the message immediately following the creation
-        (``message_id == creation + 1``) from the same sender, within ``_NEW_TOPIC_OPENER_TTL_SECONDS``,
-        adopts it. Everything else keeps its incoming thread id, so a later lobby message is unaffected.
+        The first later integer message id from the same DM chat and sender consumes the record,
+        including already-threaded, non-adjacent or expired cases: one-shot, not left until TTL.
+        Adoption requires adjacency (``message_id == creation + 1``), a fresh record and no thread
+        in either the incoming routing value or the raw ``Message``. Other messages keep their thread.
         """
-        if thread_id is not None or chat_type != "dm":
+        if chat_type != "dm":
             return thread_id
         pending = getattr(self, "_pending_created_topics", None)
         if not isinstance(pending, dict) or not pending:
@@ -110,12 +125,16 @@ class TelegramTopicRoutingMixin:
         if record is None:
             return thread_id
         created_thread_id, created_message_id, stamped_at = record
+        message_id = getattr(message, "message_id", None)
+        if not isinstance(message_id, int) or message_id <= created_message_id:
+            return thread_id
+        pending.pop(key)
         if (time.monotonic() - stamped_at) > self._NEW_TOPIC_OPENER_TTL_SECONDS:
-            pending.pop(key, None)
             return thread_id
-        if getattr(message, "message_id", None) != created_message_id + 1:
+        if thread_id is not None or getattr(message, "message_thread_id", None) is not None:
             return thread_id
-        pending.pop(key, None)
+        if message_id != created_message_id + 1 or getattr(getattr(message, "from_user", None), "is_bot", False) is True:
+            return thread_id
         logger.info(
             "[%s] New Telegram topic %s adopted by its opening message (chat=%s)",
             self.name, created_thread_id, key[0])

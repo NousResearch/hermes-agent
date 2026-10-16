@@ -2202,7 +2202,7 @@ from gateway.run_watchers import GatewaySessionWatchersMixin
 from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
-from gateway.run_agent_cache import GatewayAgentCacheMixin
+from gateway.run_agent_cache import CACHE_BUSTING_CONFIG_KEYS, GatewayAgentCacheMixin
 from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.run_plugin_rewire import GatewayPluginRewireMixin
 from gateway.platforms.base import (
@@ -4123,26 +4123,9 @@ class GatewayRunner(
         return sum(1 for worker in workers if worker.is_alive())
 
     # (section, key) config values baked into the agent at construction: a change MUST invalidate the
-    # cached agent or a mid-gateway edit is silently ignored. Add new baked-in settings here.
-    # _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
-    _CACHE_BUSTING_CONFIG_KEYS: tuple = (
-        ("model", "context_length"), ("compression", "enabled"),
-        ("compression", "progress_notices"), ("compression", "threshold"),
-        ("compression", "model_thresholds"), ("compression", "threshold_tokens"),
-        ("compression", "platform_overrides"),
-        ("compression", "codex_gpt55_autoraise"), ("compression", "codex_app_server_auto"),
-        ("compression", "codex_responses_native"),
-        ("compression", "codex_responses_compact_threshold"), ("compression", "in_place"),
-        ("compression", "checkpoint_required"), ("compression", "micro_compact"),
-        ("compression", "micro_compact_every_n_turns"),
-        ("compression", "micro_compact_defrag_threshold_tokens"), ("compression", "target_ratio"),
-        ("compression", "tail_mode"), ("compression", "protect_last_n"),
-        ("compression", "proactive_prune_tokens"),
-        ("compression", "proactive_prune_min_result_chars"),
-        ("compression", "proactive_prune_min_reclaim_tokens"),
-        ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
-        ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
-        ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
+    # cached agent or a mid-gateway edit is silently ignored. Defined beside its only reader
+    # (GatewayAgentCacheMixin) so additions do not grow this file; add new baked-in settings there.
+    _CACHE_BUSTING_CONFIG_KEYS: tuple = CACHE_BUSTING_CONFIG_KEYS
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:

@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.agent_init_compression import _cfg_dict, _cfg_flag, _merge_platform_overrides
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
@@ -361,17 +362,6 @@ def _parse_config_int(raw: Any, default: int) -> int:
         return int(str(raw).strip())
     except (TypeError, ValueError):
         return default
-
-
-def _cfg_flag(cfg: dict[str, Any], key: str, default: bool) -> bool:
-    """Legacy string-set truthiness used by the ``compression`` section."""
-    return str(cfg.get(key, default)).lower() in {"true", "1", "yes"}
-
-
-def _cfg_dict(cfg: dict[str, Any], key: str) -> dict[str, Any]:
-    """``cfg[key]`` if it is a mapping, else ``{}`` (malformed sections are ignored)."""
-    section = cfg.get(key, {})
-    return section if isinstance(section, dict) else {}
 
 
 class CompressionSettings(SimpleNamespace):
@@ -1520,44 +1510,6 @@ def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optiona
     return app_server_auto, responses_native, compact_threshold
 
 
-def _platform_override_key(platform: Any) -> str:
-    """Normalise a surface name for the ``compression.platform_overrides`` lookup.
-
-    ``init_agent`` hands ``platform`` in as a plain string ("telegram", "local"), but callers
-    and tests also pass a ``Platform`` enum member, so read ``.value`` when present and fold
-    case: one spelling resolves either way.
-    """
-    if platform is None:
-        return ""
-    return str(getattr(platform, "value", platform) or "").strip().lower()
-
-
-def _merge_platform_compression_overrides(cfg: dict[str, Any], platform: Any) -> dict[str, Any]:
-    """Merge ``compression.platform_overrides.<platform>`` over the global section, per key.
-
-    Opt-in and additive: with no platform, or no block for that surface, ``cfg`` is returned
-    unchanged — so a profile that never writes the key behaves exactly as before. A block that
-    sets one key inherits the rest from the global section, and a non-mapping block is ignored
-    like any other malformed section. Returns a shallow copy; the loaded config is never mutated.
-    """
-    key = _platform_override_key(platform)
-    if not key:
-        return cfg
-    overrides = _cfg_dict(cfg, "platform_overrides")
-    block = overrides.get(key)
-    if block is None:
-        # The config file is hand-written, so match keys case-insensitively (exact hit first).
-        for name, value in overrides.items():
-            if isinstance(value, dict) and str(name).strip().lower() == key:
-                block = value
-                break
-    if not isinstance(block, dict) or not block:
-        return cfg
-    merged = dict(cfg)
-    merged.update(block)
-    return merged
-
-
 def _parse_compression_config(agent, _agent_cfg, platform: Any = None) -> CompressionSettings:
     """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG.
 
@@ -1565,8 +1517,7 @@ def _parse_compression_config(agent, _agent_cfg, platform: Any = None) -> Compre
     section for one surface, so a single profile can compact at different points on a messaging
     surface and on the CLI.
     """
-    cfg = _cfg_dict(_agent_cfg, "compression")
-    cfg = _merge_platform_compression_overrides(cfg, platform)
+    cfg = _merge_platform_overrides(_cfg_dict(_agent_cfg, "compression"), platform)
     threshold, autoraise_notice_enabled = _compression_threshold(agent, cfg)
     # Plain int()/float() coercions raise on garbage; evaluated up front, in config order.
     target_ratio = float(cfg.get("target_ratio", 0.20))

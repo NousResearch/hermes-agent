@@ -174,6 +174,7 @@ def test_native_call_inherits_timeout_and_merges_query(monkeypatch, stream):
         return httpx.Response(200, content="data: " + json.dumps(payload) + "\n\n") if stream else httpx.Response(200, json=payload)
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
     with make_go_gemini_client("https://opencode.ai/inference/go/v1", api_key="fixture", timeout=7,
+                               http_client=httpx.Client(timeout=60),
                                default_query={"fixture": "default"}) as client:
         result = client.chat.completions.create(
             model="gemini-4-argon-contributor", messages=[], stream=stream,

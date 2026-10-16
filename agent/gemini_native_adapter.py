@@ -874,7 +874,7 @@ class GeminiNativeClient:
 
     def __init__(
         self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[dict[str, str]] = None,
-        timeout: Any = None, http_client: Optional[httpx.Client] = None, default_query=None, **_: Any,
+        timeout: Any = httpx.USE_CLIENT_DEFAULT, http_client: Optional[httpx.Client] = None, default_query=None, **_: Any,
     ) -> None:
         if not callable(api_key) and not (api_key or "").strip():
             raise RuntimeError(self.MISSING_KEY_ERROR)
@@ -884,10 +884,12 @@ class GeminiNativeClient:
         self.base_url = normalize_gemini_base_url(urlunsplit(parsed._replace(query="", fragment="")))
         self._default_query = {**dict(parse_qsl(parsed.query)), **(default_query or {})}
         self._default_headers = dict(default_headers or {})
+        self._request_timeout = timeout
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         # read=1200: Gemini 4 hops can think for minutes; Google asks for a >=20 min read timeout (its
         # stream limit), and a shorter one cuts long-decode hops off mid-think.
-        self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=1200.0, write=30.0, pool=30.0))
+        self._http = http_client or httpx.Client(timeout=(httpx.Timeout(connect=15.0, read=1200.0, write=30.0, pool=30.0)
+                                                        if timeout is httpx.USE_CLIENT_DEFAULT else timeout))
 
     def close(self) -> None:
         self.is_closed = True
@@ -923,6 +925,8 @@ class GeminiNativeClient:
         timeout: Any = httpx.USE_CLIENT_DEFAULT, extra_headers: Optional[dict[str, str]] = None,
         extra_query: Optional[dict[str, Any]] = None, **_: Any,
     ) -> Any:
+        if timeout is httpx.USE_CLIENT_DEFAULT:
+            timeout = self._request_timeout
         extra = extra_body if isinstance(extra_body, dict) else {}
         # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
         budget = extra.get("max_output_tokens")

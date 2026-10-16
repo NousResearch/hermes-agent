@@ -25,6 +25,18 @@ _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provid
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
+class AdmissionQueued(RuntimeStoreError):
+    """The owner retired while this API admission was still queued. Unlike a refused request, the
+    input is committed: the row stays queued and the next owner runs it exactly once, so a client
+    that resends it submits the work twice. ``str()`` is the message every API surface shows."""
+
+    MESSAGE = 'Hermes is restarting. Your input is saved and will run once when it is back; do not resend it.'
+
+    def __init__(self):
+        super().__init__('admission_queued')
+        self.args = (self.MESSAGE,)
+
+
 def api_settings(authority, ref):
     with authority.db._read_ctx() as conn:
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
@@ -374,6 +386,13 @@ async def observe_api_turn(admitted, **kwargs):
         authority._publish_pending(ref)
         authority._schedule(ref)
         await asyncio.shield(waiter)
+    except RuntimeStoreError as exc:
+        # Retirement releases every observer with runtime_draining, the same reason a refused
+        # request gets. This one's input is admitted: say so while the row is still queued.
+        current = get_session_admission(authority.db, admission_id=row['admission_id']) or {}
+        if exc.reason == 'runtime_draining' and current.get('status') == 'queued':
+            raise AdmissionQueued() from exc
+        raise
     finally:
         # Shielding keeps the canonical turn alive past a cancelled request; only this
         # request's observer leaves, and the entry itself goes once the last one is gone.

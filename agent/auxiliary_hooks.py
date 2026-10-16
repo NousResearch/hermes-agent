@@ -54,7 +54,7 @@ def _system_prompt(messages: Any, kwargs: dict[str, Any]) -> str:
     return ""
 
 
-def _usage_summary(response: Any, *, provider: str, api_mode: str) -> Optional[dict[str, Any]]:
+def _usage_summary(response: Any) -> Optional[dict[str, Any]]:
     raw_usage = getattr(response, "usage", None)
     if response is None or not raw_usage:
         return None
@@ -62,7 +62,10 @@ def _usage_summary(response: Any, *, provider: str, api_mode: str) -> Optional[d
 
     from agent.usage_pricing import normalize_usage
 
-    cu = normalize_usage(raw_usage, provider=provider, api_mode=api_mode)
+    # Every auxiliary attempt returns from ``chat.completions.create``: native adapters
+    # (Codex Responses, Anthropic Messages) translate their usage to prompt/completion
+    # tokens first, so the native api_mode/provider shape would read zeros here.
+    cu = normalize_usage(raw_usage, api_mode="chat_completions")
     summary = asdict(cu)
     summary.pop("raw_usage", None)
     summary["prompt_tokens"] = cu.prompt_tokens
@@ -93,8 +96,6 @@ class _AuxCallHooks:
         self, *, aux_task: str, metadata: dict[str, Any], client: Any, kwargs: dict[str, Any],
         provider: str, model: str, api_mode: str, streaming: bool,
     ) -> None:
-        self.provider = provider
-        self.api_mode = api_mode
         self.streaming = streaming
         self.kwargs = kwargs
         self.started_at = time.time()
@@ -160,7 +161,7 @@ class _AuxCallHooks:
             payload.update(
                 finish_reason=finish_reason,
                 response_model=_field(response, "model"),
-                usage=_usage_summary(response, provider=self.provider, api_mode=self.api_mode),
+                usage=_usage_summary(response),
                 response=_Sanitize._sanitize_hook_payload({
                     "model": _field(response, "model"),
                     "finish_reason": finish_reason,

@@ -97,6 +97,82 @@ def test_stop_kills_the_session_processes_through_the_gateway(gateway, capsys):
     assert any(method == "process.stop" for method, _ in client.calls)
 
 
+def test_agents_lists_the_gateway_sessions_processes_and_subagents(gateway, capsys):
+    """/agents reads where the work runs (tracker #134889 CLI-7): the session's processes and its
+    running background subagents, not this process's empty registries."""
+    from hermes_cli.cli_commands_session_tools import CLICommandsSessionToolsMixin
+    agent, client = gateway
+    agent.connection.state(SID).usage = {"active_subagents": 2}
+    CLICommandsSessionToolsMixin._handle_agents_command(object())
+    out = capsys.readouterr().out
+    assert "proc_1" in out and "sleep 300" in out
+    assert "Background delegations: 2" in out
+    assert ("process.list", {"session_id": SID}) in client.calls
+
+
+def test_agents_before_the_first_turn_reads_the_opened_sessions_processes(gateway, capsys):
+    """A resumed session's background work runs on the gateway before this CLI's first turn builds
+    its chat agent: opening the session binds the view, so /agents never reads the empty local
+    registry (Greptile 4277259979)."""
+    from cli import HermesCLI
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+
+    class _ResumedStore(GatewaySessionStore):
+        def open_session(self, cli, launch=None):
+            return SID
+
+    agent, client = gateway
+    gateway_tools._view = None  # no chat agent built yet
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id, cli._resumed, cli.enabled_toolsets = SID, True, ["terminal"]
+    cli._session_db = _ResumedStore(agent.connection)
+    cli._ensure_gateway_session()
+    cli._handle_agents_command()
+    out = capsys.readouterr().out
+    assert "proc_1" in out and "sleep 300" in out
+    assert ("process.list", {"session_id": SID}) in client.calls
+
+
+def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, monkeypatch, capsys):
+    """/stop typed while a turn runs is dispatched inline and interrupts it like Ctrl+C (tracker
+    #134889 N4), instead of being queued until the turn it should stop has finished. Only the
+    interrupt runs on the UI thread: ``kill_all`` waits out each process's stop grace period, so it
+    runs on a worker and the input is back at once (Greptile 4277259986)."""
+    import threading
+    from types import SimpleNamespace
+    from cli import HermesCLI
+    _agent, client = gateway
+    view = gateway_tools.process_view()
+    assert view is not None
+    kill_all, release, stopped = view.kill_all, threading.Event(), threading.Event()
+
+    def slow_kill_all(**kw):  # process.stop still inside its grace periods
+        release.wait(5)
+        try:
+            return kill_all(**kw)
+        finally:
+            stopped.set()
+    monkeypatch.setattr(view, "kill_all", slow_kill_all)
+    stops = []
+
+    class _Agent:
+        def hard_interrupt(self, message=None):
+            stops.append(message)
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._agent_running, cli.agent = True, _Agent()
+    buffer = SimpleNamespace(reset=lambda **_k: None)
+    event = SimpleNamespace(app=SimpleNamespace(current_buffer=buffer, invalidate=lambda: None))
+    assert cli._tui_enter_inline_command(event, "/stop", False) is True
+    assert stops == [None] and not stopped.is_set()  # interrupted; the UI thread did not wait on kill_all
+    release.set()
+    for worker in [t for t in threading.enumerate() if t.name == "cli-stop"]:
+        worker.join(5)
+    out = capsys.readouterr().out
+    assert stopped.is_set() and "Interrupting agent" in out and "Stopped 1 process(es)." in out
+    assert any(method == "process.stop" for method, _ in client.calls)
+
+
 def test_dock_stop_kills_one_process_through_the_gateway(gateway):
     from hermes_cli import cli_process_dock as dock
     _agent, client = gateway

@@ -86,3 +86,36 @@ def test_fail_closed_prune_trigger():
     # the caller releases the attachment only for the banked candidates
     released = {c.source for c in store.banked}
     assert "cto-20261016" in released, "the attachment releases only after banking"
+
+
+def test_empty_attachments_stage_nothing():
+    """Edge case: no attachments -> nothing staged, nothing promoted, no writes."""
+    store = FakeStore()
+    dc = DreamCycle(store=store)
+    n = dc.light_sleep([])
+    assert n == 0
+    dc.rem_sleep()
+    promoted = dc.deep_sleep()
+    assert promoted == []
+    assert store.banked == []
+
+
+def test_all_noise_stages_nothing():
+    """Edge case: only noise -> nothing staged (the noise never enters the cycle)."""
+    dc = DreamCycle()
+    n = dc.light_sleep([{"session_id": "noisy", "load_bearing": [
+        {"kind": "chat", "text": "hello there", "provenance": "agent"},
+        {"kind": "chat", "text": "what time is it", "provenance": "agent"},
+    ]}])
+    assert n == 0, "noise excluded: {}".format(n)
+
+
+def test_dedup_skips_repeats():
+    """Edge case: duplicate candidates -> staged once (the digest dedup)."""
+    dc = DreamCycle()
+    att = {"session_id": "dup", "load_bearing": [
+        {"kind": "receipt", "text": "SPA lifecycle verified: 507 chars byte-exact", "provenance": "agent"},
+        {"kind": "receipt", "text": "SPA lifecycle verified: 507 chars byte-exact", "provenance": "agent"},
+    ]}
+    n = dc.light_sleep([att])
+    assert n == 1, "dedup: {}".format(n)

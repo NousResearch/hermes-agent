@@ -2,9 +2,11 @@ import type { ReactNode } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import type { Translations } from '@/i18n'
+import { useStoresSelector } from '@/lib/use-session-slice'
 import { type QueuedPromptEntry, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { notifyError } from '@/store/notifications'
-import { storedSessionIdForRuntimeId } from '@/store/session-states'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 
 import type { QueueEditState } from './composer-utils'
 import { cancelQueuedPrompt, discardLostPrompt } from './discard-lost-prompt'
@@ -32,7 +34,7 @@ export interface ComposerQueueSlotInputs {
  * claims it: a claimed runtime there is the chat just left, still active for a
  * frame after the switch, and its queue is not this chat's (#139190).
  */
-export function composerQueueScopeKey(
+function composerQueueScopeKey(
   queueSessionKey: null | string | undefined,
   sessionId: null | string | undefined,
   freshDraftKey: null | string | undefined
@@ -46,6 +48,19 @@ export function composerQueueScopeKey(
   }
 
   return freshDraftKey || null
+}
+
+/** `composerQueueScopeKey` subscribed to every store the runtime-claim lookup
+ *  reads: session.create publishes the runtime before its mirror, so a claim
+ *  can land while `sessionId` and the route stay put. */
+export function useComposerQueueScopeKey(
+  queueSessionKey: null | string | undefined,
+  sessionId: null | string | undefined,
+  freshDraftKey: null | string | undefined
+): null | string {
+  return useStoresSelector([$sessionTiles, $sessionStates, $activeSessionId, $selectedStoredSessionId], () =>
+    composerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
+  )
 }
 
 /**

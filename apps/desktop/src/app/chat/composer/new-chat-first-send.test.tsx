@@ -18,7 +18,7 @@ import { $sessionStates } from '@/store/session-states'
 import type { QueueEditState } from './composer-utils'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerQueue } from './hooks/use-composer-queue'
-import { composerQueueScopeKey } from './queue-slot'
+import { useComposerQueueScopeKey } from './queue-slot'
 import type { ChatBarProps } from './types'
 
 vi.mock('@assistant-ui/react', () => ({
@@ -51,7 +51,7 @@ function Harness({ freshDraftKey, latest, onSubmit, ...scope }: Scope & {
   latest: { current: Composer | null }
   onSubmit: ChatBarProps['onSubmit']
 }) {
-  const activeQueueSessionKey = composerQueueScopeKey(scope.queueSessionKey, scope.sessionId, freshDraftKey)
+  const activeQueueSessionKey = useComposerQueueScopeKey(scope.queueSessionKey, scope.sessionId, freshDraftKey)
   const queueEditRef = useRef<QueueEditState | null>(null)
   const attachments = useStore(mainComposerScope.$attachments)
 
@@ -189,6 +189,23 @@ it('a follow-up queued while session.create is in flight moves to the new chat a
   expect(onSubmit.mock.calls[0]?.[1]).toMatchObject({ sessionId: 'rt-new', storedSessionId: 'stored-new' })
   expect(getQueuedPrompts('session-a').map(entry => entry.id)).toEqual(['for-a'])
   expect(getQueuedPrompts(freshDraftKey)).toEqual([])
+})
+
+it('claiming the runtime re-scopes the composer without a sessionId or route change', () => {
+  const freshDraftKey = rotateFreshDraftKey()
+  const latest: { current: Composer | null } = { current: null }
+  const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
+
+  // session.create published the runtime before the mirror: nothing claims it yet.
+  render(
+    <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey={null} sessionId="rt-new" />
+  )
+  expect(latest.current?.scope).toBe('rt-new')
+
+  // The mirror lands; props and route stay put.
+  act(() => $sessionStates.set({ 'rt-new': { storedSessionId: 'stored-new' } as ClientSessionState }))
+
+  expect(latest.current?.scope).toBe(freshDraftKey)
 })
 
 it('a session already claimed elsewhere never hands its queue to the new chat on creation', () => {

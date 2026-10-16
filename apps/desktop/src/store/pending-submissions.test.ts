@@ -5,9 +5,11 @@ import { handleSessionInfoEvent } from '@/app/session/hooks/use-message-stream/g
 import type { GatewayEventContext } from '@/app/session/hooks/use-message-stream/gateway-event/types'
 import { applyRuntimeInfo } from '@/app/session/hooks/use-session-actions/utils'
 import { isSteerableEntry } from '@/store/composer-queue'
+import type { SessionInfo } from '@/types/hermes'
 
-import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from './composer-queue'
+import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts, migrateQueuedPrompts } from './composer-queue'
 import { readPendingSubmissions, reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
+import { $sessions } from './session'
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -144,4 +146,114 @@ it('a stale started snapshot keeps an existing unknown card and its Discard cont
   // Its real absence from a current snapshot still retires it.
   reconcilePendingSubmissions('lost', [])
   expect(getQueuedPrompts('lost')).toEqual([])
+})
+
+// After compression the panel reads the lineage root while the runtime reports the tip. A tip-keyed
+// projection only reached the panel through rotation migrations, which stacked copies there that no
+// later snapshot could retire: duplicate, undeletable, back after a delete (#138934).
+it('projects a compressed tip snapshot onto the lineage key the panel reads', () => {
+  $sessions.set([{ id: 'tip', _lineage_root_id: 'root' } as SessionInfo])
+
+  try {
+    const listed = [{ admission_id: 'x', status: 'queued', user: 'later' }]
+    reconcilePendingSubmissions('tip', listed, { epoch: 'e', sequence: 1 })
+    migrateQueuedPrompts('tip', 'root')
+    reconcilePendingSubmissions('tip', listed, { epoch: 'e', sequence: 2 })
+    migrateQueuedPrompts('tip', 'root')
+    expect(getQueuedPrompts('root').map(entry => [entry.id, entry.serverStatus])).toEqual([['x', 'queued']])
+
+    // Withdrawn at the gateway: the next snapshot no longer lists it.
+    reconcilePendingSubmissions('tip', [], { epoch: 'e', sequence: 3 })
+    expect(getQueuedPrompts('root')).toEqual([])
+
+    // The same earlier status mirrored again does not bring it back.
+    reconcilePendingSubmissions('tip', listed, { epoch: 'e', sequence: 2 })
+    migrateQueuedPrompts('tip', 'root')
+    expect(getQueuedPrompts('root')).toEqual([])
+  } finally {
+    $sessions.set([])
+  }
+})
+
+// The tip->root row can load after a snapshot was already journaled under the tip. The fence that
+// snapshot recorded must follow the card to the root, or a delayed older empty one hides it.
+it('late lineage discovery keeps the ordering fence: an older empty snapshot leaves the card', () => {
+  try {
+    reconcilePendingSubmissions('tip', [{ admission_id: 'x', status: 'queued', user: 'waiting' }], { epoch: 'e', sequence: 10 })
+    expect(getQueuedPrompts('tip').map(entry => entry.id)).toEqual(['x'])
+
+    $sessions.set([{ id: 'tip', _lineage_root_id: 'root' } as SessionInfo])
+    migrateQueuedPrompts('tip', 'root')
+
+    reconcilePendingSubmissions('tip', [], { epoch: 'e', sequence: 7 })
+    expect(getQueuedPrompts('root').map(entry => [entry.id, entry.serverStatus])).toEqual([['x', 'queued']])
+    expect(readPendingSubmissions('root').x?.status).toBe('queued')
+
+    // A current empty snapshot still retires it.
+    reconcilePendingSubmissions('tip', [], { epoch: 'e', sequence: 12 })
+    expect(getQueuedPrompts('root')).toEqual([])
+  } finally {
+    $sessions.set([])
+  }
+})
+
+// Submit tracks under the stored id it targets, which can be the tip. Its stronger status and the
+// display text only it knows must still meet the root-projected snapshots.
+it('a tip-keyed tracked receipt keeps its status, text and Discard across root projection', () => {
+  try {
+    trackPendingSubmission('tip', { id: 'u', text: 'full prompt', displayText: '/cmd', status: 'unknown' })
+    $sessions.set([{ id: 'tip', _lineage_root_id: 'root' } as SessionInfo])
+
+    // A replayed `started` is stale for an admission already answered `unknown`.
+    reconcilePendingSubmissions('tip', [{ admission_id: 'u', status: 'started', user: 'full prompt' }], { epoch: 'e', sequence: 1 })
+    reconcilePendingSubmissions('tip', [{ admission_id: 'u', status: 'started', user: 'full prompt' }], { epoch: 'e', sequence: 2 })
+
+    expect(getQueuedPrompts('root').map(({ id, text, displayText, serverStatus }) => ({ id, text, displayText, serverStatus })))
+      .toEqual([{ id: 'u', text: 'full prompt', displayText: '/cmd', serverStatus: 'unknown' }])
+    expect(readPendingSubmissions('root').u).toMatchObject({ status: 'unknown', displayText: '/cmd' })
+    expect(readPendingSubmissions('tip')).toEqual({})
+
+    // Tracking once the lineage is known lands where reconciliation reads.
+    trackPendingSubmission('tip', { id: 'v', text: 'next', displayText: '/next' })
+    expect(readPendingSubmissions('root').v).toMatchObject({ displayText: '/next' })
+  } finally {
+    $sessions.set([])
+  }
+})
+
+// Every send tracks its admission before the request and again after the reply, on the renderer
+// thread. That must cost the one admission's record, not a parse of every saved session's journal.
+it('tracking a submission reads its own record without enumerating other sessions', () => {
+  for (let index = 0; index < 20; index += 1) {
+    trackPendingSubmission(`other-${index}`, { id: `a-${index}`, text: 'elsewhere', status: 'queued' })
+  }
+
+  window.localStorage.setItem('hermes.desktop.pendingSubmissions.v1', JSON.stringify({ solo: { old: { id: 'old', text: 'legacy', displayText: '/old' } } }))
+  const enumerate = vi.spyOn(window.localStorage, 'key')
+
+  try {
+    trackPendingSubmission('solo', { id: 'mine', text: 'hi', displayText: '/hi' })
+    trackPendingSubmission('solo', { id: 'mine', text: 'hi', status: 'queued' })
+    // A legacy receipt still merges into its tracked successor.
+    trackPendingSubmission('solo', { id: 'old', text: '', status: 'unknown' })
+    expect(enumerate).not.toHaveBeenCalled()
+
+    // A newly known tip->root lineage adopts the tip's journal once; later sends read directly.
+    trackPendingSubmission('late-tip', { id: 'early', text: 'early', displayText: '/early', status: 'unknown' })
+    $sessions.set([{ id: 'late-tip', _lineage_root_id: 'late-root' } as SessionInfo])
+    trackPendingSubmission('late-tip', { id: 'next', text: 'next' })
+    expect(readPendingSubmissions('late-root').early).toMatchObject({ status: 'unknown', displayText: '/early' })
+    enumerate.mockClear()
+    trackPendingSubmission('late-tip', { id: 'next', text: 'next', status: 'queued' })
+    expect(enumerate).not.toHaveBeenCalled()
+  } finally {
+    enumerate.mockRestore()
+    $sessions.set([])
+  }
+
+  expect(readPendingSubmissions('solo')).toMatchObject({
+    mine: { text: 'hi', displayText: '/hi', status: 'queued' },
+    old: { text: 'legacy', displayText: '/old', status: 'unknown' }
+  })
+  expect(readPendingSubmissions('late-root').next).toMatchObject({ status: 'queued' })
 })

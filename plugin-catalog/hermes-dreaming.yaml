@@ -5,7 +5,7 @@ description: "Nightly deterministic memory consolidation (\"dreaming\"): corrobo
 maintainer: itpartypattaya
 tier: community
 category: memory
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.0"
 docs_url: https://github.com/itpartypattaya/hermes-dreaming/blob/cbb7f6dd21e9ba828790e38399671807aee1e593/README.md
 version: "2.8.0"
 image: "https://raw.githubusercontent.com/itpartypattaya/hermes-dreaming/cbb7f6dd21e9ba828790e38399671807aee1e593/docs/banner.png"

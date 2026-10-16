@@ -10,6 +10,8 @@ thing:
 - ``/reload``: ``reload.env`` re-reads ``.env`` where turns and tools run (this process re-reads too).
 - ``/handoff``: no gateway verb carries a handoff yet; refused as Ink and Desktop refuse it, instead
   of the store's ``request_handoff`` refusal dying silently in the process loop.
+- ``/discard [admission_id ...]``: acknowledges the turns a gateway restart left ``unknown``
+  (``prompt.resolve_unknown``), the in-chat form of ``hermes sessions discard``.
 """
 from __future__ import annotations
 
@@ -45,7 +47,45 @@ def _handoff(cli, connection, cmd):
     return True
 
 
-_ROUTES = {"diff": _diff, "reload": _reload, "handoff": _handoff}
+def _discard(cli, connection, cmd):
+    """Acknowledge the turns a gateway restart lost (``prompt.resolve_unknown``, fenced by the
+    generation the owner stamped): they are not replayed, and the session FIFO runs again.
+
+    A bare ``/discard`` acknowledges EVERY lost turn in the session, so it asks first, as
+    ``hermes sessions discard`` does; naming admission ids is the explicit form that does not ask.
+    """
+    import sys
+
+    from cli import _cprint
+    wanted = set(cmd.partition(" ")[2].split())
+    snapshot = connection.call("session.resume", session_id=cli.session_id) or {}
+    lost = [row for row in snapshot.get("pending", []) if row.get("status") == "unknown"
+            and (not wanted or row["admission_id"] in wanted)]
+    if not lost:
+        _cprint("  /discard: no lost turn in this session; nothing to discard.")
+        return True
+    if not wanted:
+        ids = ", ".join(row["admission_id"] for row in lost)
+        if not sys.stdin.isatty():
+            _cprint(f"  /discard: {len(lost)} lost turn(s) here ({ids}); this session is not interactive,"
+                    " so name the admission id(s) to discard: /discard <id>")
+            return True
+        _cprint(f"  This discards {len(lost)} lost turn(s) ({ids}) without replaying them.")
+        if input("  Proceed? [y/N] ").strip().lower() not in {"y", "yes"}:
+            _cprint("  Nothing discarded.")
+            return True
+    for row in lost:
+        connection.call("prompt.resolve_unknown", session_id=cli.session_id, admission_id=row["admission_id"],
+                        execution_generation=row["execution_generation"])
+        _cprint(f"  Discarded lost turn {row['admission_id']} (not replayed).")
+    # The next prompt reads this state: refresh it now rather than wait for the session.info frame.
+    after = connection.call("session.resume", session_id=cli.session_id) or {}
+    connection.state(cli.session_id).pending = list(after.get("pending") or [])
+    _cprint("  Queued messages in this session can run again.")
+    return True
+
+
+_ROUTES = {"diff": _diff, "reload": _reload, "handoff": _handoff, "discard": _discard}
 # Named refusals: nothing runs, so the gateway is not told (no ``pre_command``).
 REFUSED = frozenset({"handoff"})
 

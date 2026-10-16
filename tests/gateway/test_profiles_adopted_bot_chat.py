@@ -7,7 +7,7 @@ from hermes_state import SessionDB
 from hermes_state_local_migration import bind_legacy_target
 
 
-def test_adopted_bot_chat_keeps_canonical_and_recent_discovery(tmp_path, monkeypatch):
+def test_adopted_hidden_bot_chat_is_canonical_but_not_recent(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     sid = '20261006_105832_fixture'
     actor = Principal('fixture-owner', str(tmp_path), frozenset({'session:read'}), 'fixture')
@@ -28,7 +28,7 @@ def test_adopted_bot_chat_keeps_canonical_and_recent_discovery(tmp_path, monkeyp
         assert row['canonical_session'] is not None, 'adopted Bot Chat disappeared from roster'
         assert row['canonical_session']['resolved_id'] == sid
         assert row['canonical_session']['preview'] == 'The retained bot reply'
-        assert row['last_session']['resolved_id'] == sid
+        assert row['last_session'] is None, 'a hidden Bot Chat is never the newest listed conversation'
         assert db._conn.total_changes == before, 'discovery must remain read-only'
         assert db.get_session(sid)['chat_id'] == sid
 

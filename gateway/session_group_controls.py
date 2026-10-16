@@ -1,8 +1,12 @@
 """Profile-owned room controls over the canonical hosted service."""
 import asyncio
+import logging
 from pathlib import Path
+import weakref
 
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 GROUP_METHODS = {
@@ -61,13 +65,14 @@ async def dispatch_group_control(connection, method, params):
     if profile and not profile_matches_home(profile, home):
         raise RuntimeStoreError('profile_mismatch')
     supplied = {key: value for key, value in params.items() if key != 'profile'}
+    siblings = _roster_siblings(connection, supplied) if method == 'profiles.list' else ()
 
     def invoke():
         from gateway.run import _profile_runtime_scope
         from gateway.hosted_rooms import HostedRoomError
         with _profile_runtime_scope(home):
             if method == 'profiles.list':
-                return _profiles(authority, actor, home, supplied)
+                return _profiles(authority, actor, home, supplied, siblings)
             try:
                 return _group(authority, actor, home, method, supplied)
             except RuntimeStoreError:
@@ -253,8 +258,113 @@ def _execution_control(service, method, params):
     return handlers[method]()
 
 
-def _profiles(authority, actor, home, params):
-    from hermes_cli.profiles import _profile_info, read_profile_meta
+# A local chat: minted by this owner (``local-*``), or a pre-upgrade chat it adopted, which keeps its
+# historical id as chat_id under a ``gateway.local_legacy.v1:`` binding. These are the chats
+# ``resolve_local_target`` resolves by chat_id without adopting anything (its policy-receipt arm adds
+# none: a receipt-bound chat_id that is not ``local-*`` is an adopted one). A messaging or API
+# conversation with the same title is neither.
+_LOCAL_CHAT = "(chat_id LIKE 'local-%' OR EXISTS (SELECT 1 FROM state_meta WHERE key = ? || sessions.chat_id))"
+# Sibling authorities whose last roster read failed: warned once per outage, then logged at debug.
+# Weak, so an unserved profile drops out with its authority and a re-served one (a new authority)
+# is warned again.
+_DEGRADED = weakref.WeakSet()
+
+
+def _roster_siblings(connection, params):
+    """The other profiles this process serves, as ``[(authority, reader)]``, snapshotted on the owner
+    loop, where serve and unserve mutate the registry; an unbuilt slot is skipped. ``reader`` is the
+    principal that row's session fields are read as, or None for a metadata-only row: only a
+    host-scoped socket routes session verbs to a sibling (``AuthorityConnection._sibling_for``). It
+    carries this socket's subject and capabilities, which is what the routed connection would carry;
+    none is built, so no poll (routed or not) adds connections."""
+    from gateway.session_contract import Principal
+    authority, actor = connection.authority, connection.actor
+    registry = getattr(getattr(authority, 'runner', None), 'session_authorities', None)
+    if registry is None:
+        return []
+    readable = connection.host_scoped and params.get('include_sessions', True) is True
+    return [(sibling, Principal(actor.subject, sibling.profile_id, actor.capabilities, actor.transport_id)
+             if readable else None)
+            for sibling in list(registry) if sibling is not None and sibling is not authority]
+
+
+def _bot_sessions(authority, actor):
+    """A roster row's session fields, read from *authority*'s own store as *actor*: the exact
+    "Bot Chat" title (the status dot's session and the row's age) and the newest visible local
+    conversation, each only when the actor owns it or holds operator access. Reused while the
+    store has not moved, as the pre-unified roster did (#117257): every connection polls every 5 s.
+    Discovery is read-only: no legacy restore/unarchive or new SessionDB handle."""
+    from tui_gateway.profile_roster_cache import cached_reader_session_fields
+    operator = 'session:operator' in actor.capabilities
+    return cached_reader_session_fields(Path(authority.db.db_path).parent, (actor.subject, operator),
+                                        lambda: _read_bot_sessions(authority.db, actor.subject, operator))
+
+
+def _read_bot_sessions(db, subject, operator):
+    from hermes_state_local_migration import LEGACY_PREFIX
+    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+    hidden_sources = ','.join('?' * len(INTERNAL_LISTING_SOURCES))
+    owner_filter, owner_params = ('', ()) if operator else ('user_id=? AND ', (subject,))
+    # One read connection for the whole row. A store closed meanwhile (its profile unserved
+    # mid-poll) refuses rather than reopening a writer into a home that is being deleted.
+    with db._read_ctx(reopen=False) as conn:
+        def summary(root):
+            tip = db._compression_tip_on(conn, root['id'])
+            target = conn.execute('SELECT * FROM sessions WHERE id=?', (tip,)).fetchone() or root
+            message = conn.execute(
+                "SELECT content FROM messages WHERE session_id=? AND active=1 "
+                "AND role IN ('user','assistant') AND TRIM(COALESCE(content,''))!='' "
+                "ORDER BY id DESC LIMIT 1", (tip,)).fetchone()
+            text = ' '.join(str(message[0] or '').split()) if message else ''
+            return {'id': root['id'], 'resolved_id': tip, 'title': target['title'] or '',
+                    'root_title': root['title'] or '',
+                    'preview': text[:80] + '...' if len(text) > 80 else text,
+                    'started_at': target['started_at'] or 0,
+                    'last_active': target['last_activity_at'] or target['started_at'] or 0,
+                    'message_count': target['message_count'] or 0}
+
+        fields = {'last_session': None, 'worker_session': None, 'canonical_session': None}
+        # The named registry is not a recency window and canonical chats are hidden.
+        canonical = conn.execute(f'SELECT * FROM sessions WHERE title=? AND {_LOCAL_CHAT}',
+                                 ('Bot Chat', LEGACY_PREFIX)).fetchone()
+        if canonical and (canonical['user_id'] == subject or operator) and not canonical['archived']:
+            fields['canonical_session'] = summary(canonical)
+        # The newest conversation a picker shows: a hidden row (a Bot Chat, group member plumbing)
+        # never wins, as in the pre-unified roster's listing.
+        latest = conn.execute(
+            f"SELECT * FROM sessions WHERE {owner_filter}{_LOCAL_CHAT} AND archived=0 AND hidden=0 "
+            f"AND COALESCE(source,'') NOT IN ({hidden_sources}) "
+            "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1",
+            (*owner_params, LEGACY_PREFIX, *INTERNAL_LISTING_SOURCES)).fetchone()
+        if latest and fields['canonical_session'] and latest['id'] == canonical['id']:
+            fields['last_session'] = dict(fields['canonical_session'])
+        elif latest:
+            fields['last_session'] = summary(latest)
+    return fields
+
+
+def _sibling_sessions(authority, reader):
+    """A sibling row's session fields. A retiring sibling is not read: unserve marks it before it
+    closes the store, and this runs right before the read (a close that still lands mid-read is
+    refused by ``reopen=False``). Any failure leaves only that row metadata-only, as the
+    pre-unified roster degraded per profile, instead of failing the whole roster."""
+    if authority.retiring or authority.retired:
+        return {}
+    try:
+        fields = _bot_sessions(authority, reader)
+    except Exception as exc:  # health: allow BLE001 -- one bot's store must never fail the whole roster
+        log = logger.debug if authority in _DEGRADED else logger.warning
+        _DEGRADED.add(authority)
+        log('Bots roster: %s is metadata-only, its session store did not answer (%s)', authority.profile_id, exc)
+        return {}
+    _DEGRADED.discard(authority)
+    return fields
+
+
+def _profiles(authority, actor, home, params, siblings=()):
+    """The Bots roster: this profile's row, then every profile it can name. ``siblings`` is
+    ``_roster_siblings``' snapshot; a sibling with a reader carries the same session fields."""
+    from hermes_cli.profiles import _profile_info, profile_matches_home
     import hermes_yaml as yaml
     include_sessions = params.get('include_sessions', True)
     if type(include_sessions) is not bool:
@@ -276,68 +386,21 @@ def _profiles(authority, actor, home, params):
         row['ui_meta'] = meta['ui_meta']
     row['has_avatar'] = any((home / 'assets' / f'avatar.{ext}').is_file() for ext in ('png', 'jpg', 'webp'))
     if include_sessions:
-        row.update(last_session=None, worker_session=None, canonical_session=None)
-        # Discovery is read-only: no legacy restore/unarchive or new SessionDB handle.
-        def summary(session):
-            tip = authority.db.get_compression_tip(session['id']) or session['id']
-            target = authority.db.get_session(tip) or session
-            with authority.db._lock:
-                message = authority.db._conn.execute(
-                    "SELECT content FROM messages WHERE session_id=? AND active=1 "
-                    "AND role IN ('user','assistant') AND TRIM(COALESCE(content,''))!='' "
-                    "ORDER BY id DESC LIMIT 1", (tip,)).fetchone()
-            text = ' '.join(str(message[0] or '').split()) if message else ''
-            return {'id': session['id'], 'resolved_id': tip, 'title': target.get('title') or '',
-                    'root_title': session.get('title') or '',
-                    'preview': text[:80] + '...' if len(text) > 80 else text,
-                    'started_at': target.get('started_at') or 0,
-                    'last_active': target.get('last_activity_at') or target.get('started_at') or 0,
-                    'message_count': target.get('message_count') or 0}
-
-        # Adopted local history keeps its original id as chat_id. Its durable
-        # binding, not an id spelling, distinguishes it from native messaging.
-        from hermes_state_local_migration import LEGACY_PREFIX
-
-        def local_chat(session):
-            chat_id = str(session.get('chat_id') or '')
-            if chat_id.startswith('local-'):
-                return True
-            with authority.db._lock:
-                return bool(authority.db._conn.execute(
-                    'SELECT 1 FROM state_meta WHERE key=?', (LEGACY_PREFIX + chat_id,)).fetchone())
-
-        # The named registry is not a recency window and canonical chats are hidden.
-        canonical = authority.db.get_session_by_title('Bot Chat')
-        if (canonical and (canonical.get('user_id') == actor.subject
-                           or 'session:operator' in actor.capabilities)
-                and local_chat(canonical) and not canonical.get('archived')):
-            row['canonical_session'] = summary(canonical)
-        if 'session:operator' in actor.capabilities:
-            owner_filter, owner_params = '', ()
-        else:
-            owner_filter, owner_params = 'user_id=? AND ', (actor.subject,)
-        with authority.db._lock:
-            from hermes_state_sessions import INTERNAL_LISTING_SOURCES
-            hidden_sources = ','.join('?' * len(INTERNAL_LISTING_SOURCES))
-            latest = authority.db._conn.execute(
-                f"SELECT id FROM sessions WHERE {owner_filter}(chat_id LIKE 'local-%' OR EXISTS "
-                "(SELECT 1 FROM state_meta WHERE key=? || sessions.chat_id)) AND archived=0 "
-                f"AND COALESCE(source,'') NOT IN ({hidden_sources}) "
-                "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1",
-                (*owner_params, LEGACY_PREFIX, *INTERNAL_LISTING_SOURCES)).fetchone()
-        if latest:
-            row['last_session'] = summary(authority.db.get_session(latest[0]))
+        row.update(_bot_sessions(authority, actor))
     profiles = [row]
     seen = {home.resolve()}
 
-    def discovered(configured, target):
-        # Discovery metadata only: never a licence to read another owner's state/configuration.
+    def discovered(configured, target, reach=None):
+        # Discovery alone is never a licence to read another owner's state/configuration: only a
+        # sibling this connection already routes to (``reach``) adds its session fields.
         if target.resolve() in seen:
             return
         seen.add(target.resolve())
         entry = {'name': configured, 'path': str(target), 'is_default': configured == 'default',
                  'model': '', 'provider': '', 'description': '', 'display_name': configured,
                  'skill_count': 0}
+        if include_sessions and reach is not None:
+            entry.update(_sibling_sessions(*reach))
         meta_path = target / 'profile.yaml'
         try:
             meta = yaml.safe_load(meta_path.read_text(encoding='utf-8-sig')) if meta_path.is_file() else {}
@@ -351,9 +414,13 @@ def _profiles(authority, actor, home, params):
 
     # Sibling profiles this process multiplexes: the roster lists them with the same
     # standing as a hosted-room destination, and the client routes their sessions by name.
-    registry = getattr(getattr(authority, 'runner', None), 'session_authorities', None)
-    for sibling in (registry or ()):
-        discovered(served_profile_name(Path(sibling.profile_id)), Path(sibling.profile_id))
+    for sibling, reader in siblings:
+        configured, target = served_profile_name(Path(sibling.profile_id)), Path(sibling.profile_id)
+        # A row's fields come from the authority a click on that row opens: the client routes by
+        # this name. A linked ``profiles/<name>`` resolves outside ``profiles/`` and reads as
+        # ``default`` here, which routes to the launch profile, so its row stays metadata-only.
+        reach = (sibling, reader) if reader is not None and profile_matches_home(configured, target) else None
+        discovered(configured, target, reach)
     service = getattr(authority, 'hosted_room_service', None)
     if service is not None:
         for configured, target in service.profile_homes().items():

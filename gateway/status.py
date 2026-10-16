@@ -1258,8 +1258,8 @@ def derive_gateway_drainable(*, gateway_running: bool, gateway_state: Any) -> bo
 @dataclass(frozen=True)
 class GatewayLiveness:
     """Resolved gateway liveness for one dashboard surface. ``source``: which ladder rung answered
-    (logging/tests only -- never branch product behavior on it). ``probe_error``: a rung raised;
-    lets fail-open callers tell "down" from "unknown"."""
+    (logging/tests; product code reads it only via ``status_served.local_liveness_pid``).
+    ``probe_error``: a rung raised; lets fail-open callers tell "down" from "unknown"."""
 
     running: bool
     pid: Optional[int]

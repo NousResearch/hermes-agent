@@ -105,3 +105,31 @@ def test_dock_drops_the_prompt_a_turn_takes_from_the_queue_before_the_turn_runs(
     assert cli.chat.call_args.args[0] == "hello"
     assert seen == [[]]
     assert not monitor.has_rows
+
+
+def test_dock_loop_row_counts_down_to_the_next_wakeup(hermes_home):
+    """A standing /loop gets a dock row whose countdown moves with the clock (it used to be a
+    one-shot ``next in 45m`` transcript line that never changed)."""
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_cli.loops import LoopManager
+
+    mgr = LoopManager(session_id="sid-a")
+    mgr.set("check the deploy", interval_seconds=45 * 60)
+    mgr.fire_tick()
+    mgr.complete_tick("deploy still running")
+    due = mgr.state.next_due_at
+    dock = SubagentMonitor(SimpleNamespace(agent=None, session_id="sid-a", _loop_manager=mgr,
+                                           _pending_input=queue.Queue()))
+
+    assert dock.refresh(now=due - 45 * 60) and dock.has_rows
+    assert dock.dock_text(columns=100, rows=40).strip() == "↻ loop · every 45m · 1 run · next in 45m · check the deploy"
+    assert dock.refresh(now=due - 30 * 60 + 1) and "next in 30m" in dock.loop  # rounds up, never early
+    assert dock.refresh(now=due - 42) and "next in 42s" in dock.loop
+    assert not dock.refresh(now=due - 42)  # unchanged text → no repaint
+    dock.collapsed = True
+    assert dock.dock_text(columns=100, rows=40).strip() == "↻ loop next in 42s · Ctrl+R restore · check the deploy"
+
+    mgr.pause("user-paused")
+    assert dock.refresh(now=due) and dock.loop == "⏸ loop paused · user-paused · 1 run · check the deploy"
+    mgr.clear()
+    assert dock.refresh(now=due) and not dock.has_rows

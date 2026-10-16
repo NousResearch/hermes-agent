@@ -42,7 +42,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
 from agent.turn_context import compression_made_progress
-from agent.session_activity import ActivityProvenance
+from agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
@@ -427,16 +427,13 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
     project_root = Path(__file__).resolve().parent.parent
-    from pm.environments import committed_venv
+    from pm.environments import committed_venv, venv_python_version
 
     # A PM install's store Python was already activated onto the committed generation by
     # hermes_bootstrap; overlaying the leftover pre-PM venv loads a foreign ABI (#122183).
     if committed_venv(project_root) is not None:
         return
-    candidates: list[Path] = []
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
+    candidates = [Path(v) for v in (os.environ.get("VIRTUAL_ENV"),) if v] + [project_root / "venv"]
 
     seen: set[str] = set()
     for venv_dir in candidates:
@@ -452,7 +449,10 @@ def _ensure_windows_gateway_venv_imports() -> None:
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
             continue
-
+        # Built for another (or an unreadable) Python: its compiled modules crash this one (#139085).
+        if (found := venv_python_version(resolved_venv)) != sys.version_info[:2]:
+            logger.debug("Skipping venv overlay %s: Python %s, gateway %s", resolved_venv, found or "unknown", sys.version_info[:2])
+            continue
         project_entry = str(project_root)
         site_entry = str(site_packages)
         if project_entry not in sys.path:
@@ -777,11 +777,10 @@ def _approval_send_outcome(future, timeout: float) -> str:
         return "failed"
     if getattr(result, "success", False):
         return "sent"
-    # P5(b): a connector DECLINE is not a lane failure. The connector
-    # authorized the destination and refused it; re-sending the same content as
-    # plain text into that same chat is the exfiltration the egress guard
-    # exists to stop. `failed` is the cue to fall back, so a decline needs its
-    # own verdict — callers must surface it and send nothing further.
+    # P5(b): a connector DECLINE is not a lane failure. The connector authorized the destination and refused it;
+    # re-sending the same content as plain text into that same chat is the exfiltration the egress guard exists
+    # to stop. `failed` is the cue to fall back, so a decline needs its own verdict — callers must surface it 
+    # and send nothing further.
     #
     # CLASSIFY THE STRUCTURED RESPONSE, NOT THE ERROR STRING. The adapter
     # preserves the connector's own dict in `raw_response`; rebuilding a dict
@@ -2746,6 +2745,7 @@ def _watch_gateway_turn_inactivity(
     retain the session turn lease forever because every watchdog poll just skips it.
     """
     activity_origin = time.monotonic()
+    awake_idle = AwakeIdleMeter()  # host sleep is not idleness
     while not worker_done.wait(max(0.01, poll_interval)):
         now = time.monotonic()
         idle_seconds = now - activity_origin
@@ -2754,7 +2754,7 @@ def _watch_gateway_turn_inactivity(
             try:
                 reported_idle = agent.get_activity_summary().get("seconds_since_activity")
                 if reported_idle is not None:
-                    idle_seconds = max(0.0, float(reported_idle))
+                    idle_seconds = awake_idle.measure(max(0.0, float(reported_idle)))
                     # Preserve the most recent usable activity clock as the fallback if
                     # a later provider-side diagnostic read raises or returns None.
                     activity_origin = now - idle_seconds

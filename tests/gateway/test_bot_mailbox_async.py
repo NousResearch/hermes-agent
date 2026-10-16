@@ -141,8 +141,12 @@ async def test_drain_defers_retry_without_publishing_interim_failure(bot, monkey
     bot.errors[:] = ['Error code: 429 - rate limit exceeded']
     key = 'e' * 32
     await deliver(bot.connection, dict(id=key, profile='default', message='retry after restart'))
-    tasks = list(getattr(bot.authority, '_bot_receipt_tasks', ()))
-    if tasks: await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 10)
+    # Wait until nothing can still admit the retry, not for a snapshot of the receipt tasks:
+    # the settle publication wakes a receipt refresh after deliver() returned, and a refresh
+    # already running re-runs behind the reply watcher. Left running, it passes the drain gate
+    # once _draining is reset below and admits the retry this test expects drain to defer.
+    from tests.gateway.test_session_bot_retry import _settle_quietly
+    await _settle_quietly(bot)
     assert (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] == 'claimed'
     from gateway import session_bot
     read = session_bot.read_receipt

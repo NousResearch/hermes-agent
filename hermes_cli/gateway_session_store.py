@@ -348,34 +348,48 @@ _LOCAL_LABELLED = frozenset({"cli", "tui", "gui"})
 class SurfaceLabelReader:
     """A read-only ``SessionDB`` whose source-filtered listings read main's labels: ``source='cli'``
     also matches a gateway row labelled ``local`` that the CLI created (``created_source='cli'``), so
-    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made."""
+    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made. The
+    surface predicate runs in SQL, before LIMIT/OFFSET.
+    """
 
     def __init__(self, db):
         self._wrapped = db
+        self._has_column = False
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
 
-    def _labelled(self, method, requested, limit, offset, call):
+    def _has_created_source_column(self) -> bool:
+        """Read-only opens don't migrate, so ``created_source`` may be missing. Only "present" is
+        cached: a lock or I/O error is not proof of absence, and another connection may add it."""
+        if not self._has_column:
+            rows = self._wrapped._read_all("PRAGMA table_info(sessions)")
+            self._has_column = any(row[1] == "created_source" for row in rows)
+        return self._has_column
+
+    def _labelled(self, requested, limit, offset, call):
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
         surfaces = wanted & _LOCAL_LABELLED
-        if not surfaces:
-            return call(requested, limit, offset)
-        # Over-fetch, then keep only the local rows those surfaces created (ordering is the reader's own).
-        rows = call(sorted(wanted | {"local"}), (limit + offset) * 3 + 50, 0)
-        kept = [row for row in rows if row.get("source") != "local" or row.get("created_source") in surfaces]
-        return kept[offset:offset + limit]
+        # No column (and so no gateway ``local`` rows yet): naming it would raise, and the caller
+        # swallows that into an empty page.
+        if not surfaces or not self._has_created_source_column():
+            return call(requested, limit, offset, None)
+        return call(sorted(wanted | {"local"}), limit, offset, sorted(surfaces))
 
     def search_sessions(self, source=None, limit=20, offset=0, **kw):
-        return self._labelled("search_sessions", source, limit, offset,
-                              lambda src, lim, off: self._wrapped.search_sessions(source=src, limit=lim, offset=off, **kw))
+        return self._labelled(
+            source, limit, offset,
+            lambda src, lim, off, surfaces: self._wrapped.search_sessions(
+                source=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
 
     def list_sessions_rich(self, source=None, sources=None, limit=20, offset=0, **kw):
         requested = sources if sources else ([source] if source else None)
         if not requested:
             return self._wrapped.list_sessions_rich(limit=limit, offset=offset, **kw)
-        return self._labelled("list_sessions_rich", requested, limit, offset,
-                              lambda src, lim, off: self._wrapped.list_sessions_rich(sources=src, limit=lim, offset=off, **kw))
+        return self._labelled(
+            requested, limit, offset,
+            lambda src, lim, off, surfaces: self._wrapped.list_sessions_rich(
+                sources=src, limit=lim, offset=off, local_created_sources=surfaces, **kw))
 
 
 _CANONICAL_LOCAL_ID = re.compile(r"^local-([0-9a-f]{8})[0-9a-f]{56}$")

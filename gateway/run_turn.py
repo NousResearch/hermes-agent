@@ -1014,7 +1014,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(self, source)
         from gateway.session_authorities import active_authority
-        user_config = policy.config(active_authority(self)) if policy else _load_gateway_config()
+        user_config = policy.config(active_authority(self), secrets=False) if policy else _load_gateway_config()
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         if policy:
@@ -1647,7 +1647,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             if worker.agent_timeout is not None:
                 if worker.timeout_fired.is_set():
                     break
-                _idle_secs = self._agent_activity_summary(agent_holder[0]).get("seconds_since_activity", 0.0)
+                _idle_secs = turn_ctx.awake_idle.measure(self._agent_activity_summary(agent_holder[0]).get("seconds_since_activity", 0.0))
                 if not _warning_fired and worker.agent_warning is not None and _idle_secs >= worker.agent_warning:
                     _warning_fired = True
                     await self._run_agent_inactivity_warning(worker, turn_ctx.source, turn_ctx._status_thread_metadata)

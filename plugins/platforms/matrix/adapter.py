@@ -18,8 +18,9 @@ Note: any room with <=2 joined members is auto-classified as a DM (see
 ``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name —
 clients auto-name DMs like "Alice & Bot", so name alone can't be trusted. A DM-classified room
 therefore bypasses MATRIX_ALLOWED_ROOMS, MATRIX_FREE_RESPONSE_ROOMS, and MATRIX_REQUIRE_MENTION,
-and follows MATRIX_DM_AUTO_THREAD / MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD /
-MATRIX_SESSION_SCOPE. To make a deliberately-created 2-person room behave like a regular room,
+and, unless overridden by ``matrix.room_overrides``, follows MATRIX_DM_AUTO_THREAD /
+MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD / MATRIX_SESSION_SCOPE.
+To make a deliberately-created 2-person room behave like a regular room,
 add a third member so it has >2 joined members.
 """
 
@@ -78,6 +79,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from plugins.platforms.matrix.threading_policy import parse_room_auto_thread_overrides, should_create_thread
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -868,6 +870,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
         raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
+        self._room_auto_thread_overrides = parse_room_auto_thread_overrides(config.extra.get("room_overrides", {}))
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
         self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
@@ -914,6 +917,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    async def configure_room_threading(self, chat_id: str, mode: str) -> str:
+        from plugins.platforms.matrix.room_threading_command import configure_room_threading
+
+        return await configure_room_threading(self, chat_id, mode)
 
     @staticmethod
     def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
@@ -2107,16 +2115,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 body = quote_block + self._strip_mention(reply_text)
             else:
                 body = self._strip_mention(body)
-        # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
-        # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
-        if not thread_id:
-            if is_dm:
-                synthetic = (self._dm_mention_threads and is_mentioned) or self._dm_auto_thread
-            else:
-                synthetic = self._matrix_session_scope == "thread" or (
-                    self._matrix_session_scope != "room" and self._auto_thread)
-            if synthetic:
-                thread_id = event_id
+        if not thread_id and should_create_thread(self, room_id, is_dm, is_mentioned):
+            thread_id = event_id
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)

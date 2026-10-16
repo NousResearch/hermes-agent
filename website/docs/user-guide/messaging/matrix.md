@@ -84,6 +84,39 @@ Shared sessions can be useful for a collaborative room, but they also mean:
 
 ### Mention and Threading Configuration
 
+#### Control threading from the room
+
+Send `/threading on` or `/threading off` to Hermes in the room you want to
+configure. In clients that intercept slash commands, type `//threading on`
+or `//threading off`: the client's double-slash escape sends a single slash
+to Hermes.
+
+| Command sent to Hermes | Effect |
+|------------------------|--------|
+| `/threading on` | Automatically start threads for unthreaded inbound messages in this room. |
+| `/threading off` | Keep new conversations in this room's main timeline. |
+| `/threading default` | Remove this room's override and follow the global defaults. |
+| `/threading` or `/threading status` | Show the room's override and effective policy, including mention-only DM threading. |
+
+Changes take effect immediately and survive gateway restarts. A command inside
+a thread still changes the whole room's policy; replies to genuine existing
+threads remain in those threads. Commands also work while an agent is busy,
+without interrupting the current turn or moving its replies.
+
+The command uses Hermes's existing slash-command access policy. On a shared
+bot, configure `allow_admin_from` for DMs and `group_allow_admin_from` for group
+rooms to restrict it to operators. Already-admitted users can use slash commands
+when no admin restriction is configured. If an administrator manages Matrix
+`room_overrides`, the mapping cannot be changed from chat, including its
+unpinned rooms, because the gateway resolves it as one setting across YAML layouts.
+
+Settings are saved in the receiving bot's profile, even when that bot routes
+agent turns to another profile. The command writes
+`platforms.matrix.extra.room_overrides`, which takes precedence over root or
+nested Matrix settings; you do not need to edit YAML to use it.
+
+#### Configure defaults and overrides manually
+
 You can configure mention and auto-threading behavior via environment variables or `config.yaml`:
 
 ```yaml
@@ -102,6 +135,11 @@ matrix:
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
+  room_overrides:                 # Optional; applies to group rooms AND DM-classified rooms
+    "!continuous:matrix.org":
+      auto_thread: false          # Keep new conversations in the main timeline
+    "!tasks:matrix.org":
+      auto_thread: true           # Start a thread for each unthreaded inbound message
   max_message_length: 15000       # Outbound chunk size in UTF-8 bytes (default and max: 15000)
 ```
 
@@ -116,10 +154,35 @@ MATRIX_IGNORE_USER_PATTERNS='^@telegram_,^@whatsapp_'
 MATRIX_PROCESS_NOTICES=false
 MATRIX_SESSION_SCOPE=room       # recommended for stable project-room context
 MATRIX_AUTO_THREAD=true
+MATRIX_DM_AUTO_THREAD=false
 MATRIX_DM_MENTION_THREADS=false
 MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
 MATRIX_ALLOW_ROOM_MENTIONS=false
 ```
+
+`matrix.room_overrides` is YAML-only and uses exact room IDs (`!id:server`),
+not room names or aliases. `auto_thread` must be an unquoted YAML boolean,
+`true` or `false`; invalid overrides cause an explicit adapter startup error.
+An empty room settings mapping inherits the global defaults.
+
+Threading precedence:
+
+1. A genuine inbound Matrix thread always keeps its original root, even when
+   automatic thread creation is disabled.
+2. An explicit room `auto_thread` override wins over `session_scope`,
+   `auto_thread`, `MATRIX_DM_AUTO_THREAD`, and `dm_mention_threads`, including
+   their environment-variable equivalents. `false` prevents all synthetic
+   threads, even with `session_scope: thread` or a DM mention; `true` creates
+   them even with `session_scope: room` or disabled DM threading.
+3. Rooms without an explicit override keep the existing behavior: group rooms
+   use `session_scope` (`room` disables creation, `thread` forces it, `auto`
+   follows `auto_thread`); DM-classified rooms instead use
+   `MATRIX_DM_AUTO_THREAD` or `dm_mention_threads` when the bot is mentioned.
+
+Rooms with two or fewer joined members are classified as DMs, but their room
+overrides still apply. Overrides do not change mention requirements, room or
+user authorization, or whether sessions are shared between users. Restart the
+gateway after changing this configuration.
 
 :::tip Disabling reactions
 `MATRIX_REACTIONS=false` turns off the processing-lifecycle emoji reactions (👀/✅/❌) the bot posts on inbound messages. Useful for rooms where reaction events are noisy or aren't supported by all participating clients.
@@ -147,9 +210,9 @@ MATRIX_AUTO_THREAD=false
 
 | Scope | Behavior |
 |-------|----------|
-| `auto` | Backward-compatible default. Existing `MATRIX_AUTO_THREAD` behavior controls synthetic threads. |
-| `room` | Unthreaded room messages stay in one stable room session. Real Matrix threads still use their thread root. |
-| `thread` | Unthreaded room messages synthesize a thread/session from the triggering event ID. |
+| `auto` | Backward-compatible default. Existing `MATRIX_AUTO_THREAD` behavior controls synthetic threads unless a room override is set. |
+| `room` | Unthreaded group-room messages stay in one stable room session unless the room explicitly enables auto-threading. Real Matrix threads still use their thread root. |
+| `thread` | Unthreaded group-room messages synthesize a thread/session from the triggering event ID unless the room explicitly disables auto-threading. |
 
 Hermes now includes the current Matrix room name, room ID, topic, message ID,
 and a Matrix room-boundary note in the agent prompt. `/status` also shows the
@@ -157,7 +220,8 @@ current Matrix room/session scope, and `/resume` will not silently resume a
 named session from another Matrix room unless you explicitly use
 `/resume --cross-room <session name>`.
 
-`MATRIX_SESSION_SCOPE=room` controls the room/thread lane. The existing
+`MATRIX_SESSION_SCOPE=room` controls the default group-room/thread lane;
+`matrix.room_overrides` takes precedence for explicitly configured rooms. The existing
 `group_sessions_per_user` setting still controls whether users inside that room
 share the lane. With `group_sessions_per_user: true` (default), Alice and Bob get
 separate Project B sessions. With `group_sessions_per_user: false`, the room has

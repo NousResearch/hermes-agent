@@ -184,6 +184,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True, desktop="terminal"),
+    CommandDef("threading", "Control automatic threading in this Matrix room", "Configuration",
+               gateway_only=True, args_hint="[on|off|default|status]",
+               subcommands=("on", "off", "default", "status"),
+               busy_policy="dispatch", desktop="terminal"),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),

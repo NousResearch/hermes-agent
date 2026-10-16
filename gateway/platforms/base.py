@@ -2679,9 +2679,8 @@ class BasePlatformAdapter(ABC):
 
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Connect and start receiving; True on success. ``is_reconnect``: the reconnect watcher is
-        re-establishing a dropped platform — adapters with a server-side update queue (Telegram)
-        must preserve it so outage-time messages aren't discarded."""
+        """Connect and start receiving; True on success. ``is_reconnect`` re-establishes a dropped
+        platform: preserve server-side queues (Telegram) so outage-time messages aren't discarded."""
 
     @abstractmethod
     async def disconnect(self) -> None:
@@ -2696,17 +2695,18 @@ class BasePlatformAdapter(ABC):
     REQUIRES_EDIT_FINALIZE: bool = False
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
-        """Create a fresh thread under ``parent_chat_id`` for a CLI→platform session handoff; its id
-        as str, or None when unsupported/failed (the watcher then uses ``parent_chat_id``
-        directly)."""
+        """Create a fresh CLI→platform handoff thread; return its str id, or None when unsupported
+        or failed (the watcher then uses ``parent_chat_id`` directly)."""
         return None
+
+    async def configure_room_threading(self, chat_id: str, mode: str) -> str:
+        """Handle room-local auto-threading control; adapters opt in to persistence and policy."""
+        return t("threading.unsupported")
 
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
-        """Edit a sent message (optional: success=False makes callers send anew). ``finalize`` marks
-        the last edit of a streamed response; surfaces with a distinct "in progress" state (DingTalk
-        AI Cards) close the message on it and set ``REQUIRES_EDIT_FINALIZE`` so it's routed even
-        when content is unchanged."""
+        """Edit a sent message; success=False makes callers send anew. ``finalize`` closes streams
+        (DingTalk AI Cards); set ``REQUIRES_EDIT_FINALIZE`` to route it even if content is unchanged."""
         return SendResult(success=False, error="Not supported")
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:

@@ -105,7 +105,20 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         history = _branch_source_history(db, session, old_key)
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
-        if isinstance(count := params.get("count"), int) and count > 0:
+        through = params.get("through_message_id")
+        if through is not None:
+            # Row-anchored fork point (#139939): a merged desktop bubble spans several persisted rows
+            # (tool interleavings, auto-continues), so its bubble count has no stable mapping onto this
+            # raw-row history and a ``count`` slice lands inside the clicked answer. The boundary is
+            # the terminal durable row of the clicked bubble — the same row ``session.mutate``'s branch
+            # validates — and an id outside this transcript refuses the branch instead of miscutting it.
+            if not isinstance(through, int) or isinstance(through, bool) or through <= 0:
+                return _err(rid, 4008, f"invalid through_message_id: {through!r}")
+            boundary = next((i for i, message in enumerate(history) if message.get("_row_id") == through), None)
+            if boundary is None:
+                return _err(rid, 4008, f"branch point row {through} is not in this session's transcript")
+            history = history[:boundary + 1]
+        elif isinstance(count := params.get("count"), int) and count > 0:
             history = history[:count]
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
         try:

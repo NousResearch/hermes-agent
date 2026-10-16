@@ -104,6 +104,38 @@ test('a legacy dial branches from a message with the serve contract\'s count, ne
   }
 })
 
+test('a legacy dial sends the session.branch row boundary to a serve that knows it', async () => {
+  // #139939: a serve with the `through_message_id` contract must RECEIVE the boundary — the
+  // desktop used to strip it on every non-canonical dial, so even an upgraded serve cut the
+  // prefix by the merged-bubble count and dropped the clicked answer's tail.
+  const wsPackage = 'ws'
+  const { WebSocketServer } = await import(wsPackage)
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await new Promise<void>(resolve => server.once('listening', resolve))
+  const sent: any[] = []
+  server.on('connection', (socket: any) => {
+    socket.on('message', (bytes: Buffer) => {
+      const frame = JSON.parse(bytes.toString())
+      sent.push(frame)
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { session_id: 'child' } }))
+    })
+  })
+  const client = new HermesGateway()
+
+  try {
+    const address = server.address() as { port: number }
+    await client.connect(`ws://127.0.0.1:${address.port}/api/ws?ticket=legacy`)
+    await client.request('session.branch', { session_id: 'parent', idempotency_key: 'k', count: 3, through_message_id: 41 })
+    expect(sent).toHaveLength(1)
+    expect(sent[0].params.through_message_id).toBe(41)
+  } finally {
+    client.close()
+
+    for (const socket of server.clients) { socket.terminate() }
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
 test('a compress settle resumes under the caller\'s original timeout and abort signal', async () => {
   // R4: the follow-up `session.resume` must not fall back to the default 120 s deadline
   // and ignore the caller's AbortSignal (a cancelled compress would otherwise hang).

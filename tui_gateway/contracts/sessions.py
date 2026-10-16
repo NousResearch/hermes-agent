@@ -402,6 +402,11 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    # #139939: a merged desktop bubble spans several persisted rows, so the bubble ``count`` has no
+    # stable mapping onto the raw rows the server slices. Newer clients send the terminal durable
+    # row of the clicked bubble instead (the boundary ``session.mutate``'s branch validates); the
+    # legacy ``count`` keeps older clients on their historic prefix cut.
+    through_message_id: int | None = None
     # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
     # lost-response retry returns the SAME child instead of a duplicate.
     idempotency_key: str | None = None

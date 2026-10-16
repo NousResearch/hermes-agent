@@ -1441,8 +1441,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         self._tui_install_signal_handlers()
 
         if not self._tui_stdin_usable():
-            _run_cleanup()
-            self._print_exit_summary()
+            self._finish_interactive_exit()
             return
 
         try:

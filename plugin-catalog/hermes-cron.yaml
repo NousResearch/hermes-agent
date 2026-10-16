@@ -5,7 +5,7 @@ description: "Operating skill for Hermes cron: lifecycle rules (pause vs disable
 maintainer: itpartypattaya
 tier: community
 category: automation
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.0"
 docs_url: https://github.com/itpartypattaya/hermes-cron/blob/381acd75b2d40606b37574c14fa38a35e17c2c26/README.md
 version: "1.4.1"
 image: "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/381acd75b2d40606b37574c14fa38a35e17c2c26/docs/banner.png"

@@ -951,6 +951,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     with _abort_on_error("Could not prepare Windows gateway pause for update"):
         import gateway.status
         from hermes_cli.gateway import _capture_gateway_argv
+        from hermes_cli.gateway_restart_identity import restart_argv_is_host_gateway
     from hermes_cli import update_pause_record as pause_record
     with _abort_on_error("Could not read the gateways an earlier update paused"):
         adopted, claims = pause_record.adopt_orphans()
@@ -971,12 +972,16 @@ def _pause_windows_gateways_for_update() -> dict | None:
     if None in homes.values():
         raise RuntimeError("Could not prove the Hermes home of unmapped gateway PID(s) "
                            + ", ".join(str(p) for p, h in homes.items() if h is None) + "; nothing was stopped")
-    unmapped = [
-        {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
-                                            "Could not capture argv for unmapped gateway %s: %s", int(pid)),
-         "home": homes[int(pid)], "ct": born[int(pid)]}
-        for pid in unmapped_pids
-    ]
+    # Settle host identity now too: a selector-less host argv is only recognisable while its rendezvous
+    # record is live, and the replay runs after the kill. Without it the relaunch followed the sticky
+    # ``active_profile`` and the host stayed down (#132645).
+    unmapped = []
+    for pid in unmapped_pids:
+        argv = _try_call(lambda p=int(pid): _capture_gateway_argv(p),
+                         "Could not capture argv for unmapped gateway %s: %s", int(pid))
+        host = _try_call(lambda a=argv: restart_argv_is_host_gateway(list(a)),
+                         "Could not classify unmapped gateway %s: %s", int(pid)) if argv else None
+        unmapped.append({"pid": int(pid), "argv": argv, "home": homes[int(pid)], "ct": born[int(pid)], "host": host})
     intended = {
         "resume_needed": True, "unmapped_pids": unmapped_pids, "unmapped": unmapped,
         "profiles": {str(profile_processes[pid].profile): int(pid) for pid in running_pids
@@ -1374,9 +1379,11 @@ def _relaunch_paused_gateways(profiles: dict, unmapped: list) -> tuple[dict, lis
     launched_unmapped = []
     for entry in unmapped:
         argv, old_pid = entry.get("argv"), entry.get("pid")
-        # On the paused runtime's home (None on a pre-home record: the updater's own home, as before).
-        if argv and old_pid and _try_call(lambda o=old_pid, a=argv, h=entry.get("home"): launch_detached_gateway_restart_by_cmdline(
-                int(o), list(a), home=h),
+        # On the paused runtime's home (None on a pre-home record: the updater's own home, as before), with the
+        # host identity settled at pause time while the gateway was live (None on an older record: inferred at spawn).
+        host = entry.get("host") if isinstance(entry.get("host"), bool) else None
+        if argv and old_pid and _try_call(lambda o=old_pid, a=argv, h=entry.get("home"), hh=host: launch_detached_gateway_restart_by_cmdline(
+                int(o), list(a), home=h, host=hh),
                                           "Could not restart unmapped Windows gateway (pid %s) after update: %s", old_pid):
             launched_unmapped.append(entry)
     return launched, launched_unmapped

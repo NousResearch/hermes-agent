@@ -20,6 +20,35 @@
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), OpenRouter, OpenAI, your own endpoint, and [many others](https://hermes-agent.nousresearch.com/docs/integrations/providers). Switch with `hermes model` — no code changes, no lock-in.
 
+## A Synaptic Canvas fork — ATM on top of Hermes
+
+> This is a maintained fork of
+> [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
+> hosted at `randlee/hermes-agent`. It tracks upstream and layers one addition
+> on top: **ATM (Agent Team Mail)**.
+
+### What's added
+
+**ATM (Agent Team Mail)** — inter-agent messaging. The fork adds a public
+gateway injection seam (`GatewayRunner.inject_internal_message`) so ATM mail can
+be delivered directly into a running gateway session.
+
+### What it adds
+
+Messaging inserted into user sessions — mail from other agents lands in the same
+chat you already use to talk to the agent (e.g. Telegram), surfaced as messages
+inside that session rather than in a separate inbox.
+
+### What to install
+
+| Component | What it is | Install |
+| --- | --- | --- |
+| **hermes-agent** (this fork) | the agent itself | `randlee/hermes-agent` (this repo) |
+| **hermes-atm** (Python wheel) | wrapper for atm-graft — delivers ATM nudges into the gateway | `python -m pip install hermes-atm` |
+| **atm** (CLI) | the Agent Team Mail client/daemon | `brew install randlee/tap/agent-team-mail` (or `cargo install agent-team-mail`; Windows: `winget install randlee.agent-team-mail`) |
+
+---
+
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>

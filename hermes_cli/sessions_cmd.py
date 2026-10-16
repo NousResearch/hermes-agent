@@ -739,17 +739,26 @@ def _cmd_prune_or_archive(db, args, action):
     # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
     # never qualifies); the preview must show the same rows the archive will touch.
     filters["lineage_tips_only"] = not prune
+    # Desktop sessions never set ended_at, so the shared ended-only selector hides them from archive
+    # entirely (#139597); --include-open opts in for archive only — pruning is not reversible.
+    include_open = not prune and getattr(args, "include_open", False)
+    if include_open:
+        filters["include_open"] = True
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
     # Prune deletes a compression lineage only as a unit; the preview must list the rows it deletes.
     candidates = db.list_prune_candidates(**filters, whole_lineages=prune)
     # Archive expands each matched tip to its compression lineage, so a direct-open count would
     # misdescribe its effect.
-    skipped_open = db.count_open_prune_matches(**filters) if prune else 0
-    if skipped_open:
+    skipped_open = db.count_open_prune_matches(**filters) if (prune or not include_open) else 0
+    if skipped_open and prune:
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
               "will be skipped because prune only deletes ended sessions. Use `hermes sessions delete <id>` "
               "to remove one explicitly.")
+    elif skipped_open:
+        print(f"Note: {skipped_open} matching session{'' if skipped_open == 1 else 's'} still open — "
+              "skipped because archive defaults to ended sessions. Use --include-open to archive "
+              "them too.")
     if not candidates:
         print(f"No sessions match ({describe_filters(filters)}).")
         return

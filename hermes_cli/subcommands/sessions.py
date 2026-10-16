@@ -142,6 +142,10 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _add_session_filter_args(
         sessions_archive, "Only archive sessions older than AGE (duration like '5h'/'2d', "
         "bare number of days, or ISO timestamp)")
+    _flag(sessions_archive, "--include-open",
+        help="Also archive sessions that never ended (desktop app sessions never set an end "
+            "timestamp, so the default ended-only selector skips them); archive is reversible, "
+            "unlike prune")
 
     sessions_optimize = sessions_subparsers.add_parser(
         "optimize", help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)")

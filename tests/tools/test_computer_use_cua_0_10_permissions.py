@@ -187,7 +187,17 @@ def test_standard_backend_does_not_spawn_an_embedded_daemon():
     assert unrestricted._embedded_daemon is not None
 
 
-def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize("console_stderr", [True, False])
+def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypatch, console_stderr):
+    import io
+    import sys
+
+    stable_stderr = sys.__stderr__
+    redirected_stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", redirected_stderr)
+    if not console_stderr:
+        monkeypatch.setattr(sys, "__stderr__", None)
+    expected_errlog = stable_stderr if console_stderr else redirected_stderr
     from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
     (tmp_path / "config.yaml").write_text(
@@ -236,6 +246,8 @@ def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypa
             stop_task = asyncio.create_task(stop_when_ready())
             try:
                 await session._lifecycle_coro()
+                assert stdio_client.call_args.kwargs == {"errlog": expected_errlog}
+                assert session._setup_error is None
             finally:
                 await stop_task
 

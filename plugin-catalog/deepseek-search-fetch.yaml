@@ -1,12 +1,12 @@
 name: deepseek-search-fetch
 repo: https://github.com/JasonSwindle/hermes-deepseek-search-fetch
-sha: 304e23705d5cb566e1cccfcb7e08ee1048b5c711
+sha: 21d6653087835f14946b3850be4f6fd089fb7b56
 description: "DeepSeek Search & Fetch as a backend for the built-in web_search and web_extract. Disclosure — sends queries and requested URLs to api.deepseek.com with your DEEPSEEK_API_KEY and DeepSeek fetches pages server-side; billed per successful request; no other endpoint, no telemetry, no file or shell access."
 maintainer: JasonSwindle
 tier: community
 category: web
 docs_url: https://github.com/JasonSwindle/hermes-deepseek-search-fetch#readme
-version: "1.0.0"
+version: "1.0.1"
 platforms: []
 known_issues:
   - "Billed by DeepSeek per successful request (list price $0.75 per 1,000; failed calls are free)."

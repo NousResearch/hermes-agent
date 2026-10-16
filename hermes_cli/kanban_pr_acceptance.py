@@ -1,4 +1,4 @@
-"""Exact-head GitHub acceptance for explicitly declared PR tasks.
+"""Exact-head forge acceptance for explicitly declared PR/MR tasks.
 
 Network work happens outside SQLite transactions. The lifecycle owner persists
 receipts only after rechecking the captured run/status/contract under its lock.
@@ -18,13 +18,26 @@ from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+_GITLAB_MR = re.compile(
+    r"https://gitlab\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)/-/merge_requests/([1-9][0-9]*)"
+)
+
+
+def parse_publication(value: str | None) -> tuple[str, str, int] | None:
+    if not isinstance(value, str):
+        return None
+    for provider, pattern in (("github", _PR), ("gitlab", _GITLAB_MR)):
+        match = pattern.fullmatch(value)
+        if match:
+            return provider, match[1], int(match[2])
+    return None
 
 
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
-    if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+    if not isinstance(value, str) or not (_REPO.fullmatch(value) or parse_publication(value)):
+        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR/GitLab MR URL")
     return value
 
 
@@ -52,6 +65,28 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
+    return value
+
+
+def _glab_api(endpoint: str, *, profile_home: str | None = None):
+    command = ["glab", "api", endpoint, "--hostname", "gitlab.com"]
+    try:
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, encoding="utf-8", errors="replace", timeout=30,
+                                check=True, env=_glab_env(profile_home))
+    except subprocess.CalledProcessError as exc:
+        denied = re.search(r"HTTP (40[134])", exc.stderr or "")
+        no_login = re.search(r"not logged in|authentication required", exc.stderr or "", re.IGNORECASE)
+        if denied:
+            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
+        if no_login:
+            raise _GateAuthError(f"glab has no login for {endpoint.split('?')[0]}") from None
+        raise
+    value = json.loads(result.stdout)
+    if isinstance(value, dict) and value.get("message") in {
+        "401 Unauthorized", "403 Forbidden", "404 Not Found",
+    }:
+        raise _GateAuthError(f"GitLab refused {endpoint.split('?')[0]}")
     return value
 
 
@@ -90,6 +125,20 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     return env
 
 
+def _glab_env(profile_home: str | None) -> dict[str, str] | None:
+    if not profile_home:
+        return None
+    from tools.environments.local import _is_routed_home, hermes_subprocess_env, served_profile_child_env
+    base = hermes_subprocess_env(inherit_credentials=True)
+    routed = _is_routed_home(profile_home)
+    if routed:
+        base.pop("GLAB_CONFIG_DIR", None)
+    env = served_profile_child_env(base=base, target_home=profile_home, inherit_credentials=True)
+    if routed and not (env.keys() & {"GITLAB_TOKEN", "GLAB_CONFIG_DIR"}):
+        env["GLAB_CONFIG_DIR"] = str(Path(profile_home) / "glab-cli")
+    return env
+
+
 def _assignee_profile_home(assignee: str | None) -> str | None:
     """Home whose ``gh`` login must read the contract repo — the assignee's, resolved
     exactly as the dispatcher resolves the worker's home — or None (unassigned) so the
@@ -112,14 +161,17 @@ def collect_acceptance(contract: str, published_pr: str | None,
                            "Use kanban_block if human input is needed; receipts remain on the task event log."}
     try:
         profile_home = _assignee_profile_home(assignee)
-        declared = _PR.fullmatch(contract)
+        declared = parse_publication(contract)
         url = contract if declared else published_pr
-        match = _PR.fullmatch(url or "")
-        if not match or (not declared and match[1] != contract) or (declared and published_pr and published_pr != contract):
+        publication = parse_publication(url)
+        if not publication or (not declared and publication[1] != contract) or (declared and published_pr and published_pr != contract):
             receipt["detail"] = "Supply metadata.published_pr matching the persisted completion contract."
             return receipt
-        repo, number = match[1], int(match[2])
+        provider, repo, number = publication
+        receipt["provider"] = provider
         receipt["pr_url"] = url
+        if provider == "gitlab":
+            return _collect_gitlab_acceptance(receipt, repo, number, profile_home)
         owner, name = repo.split("/")
         query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
@@ -179,15 +231,56 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt["ok"] = receipt["classification"] == "success"
         return receipt
     except _GateAuthError as exc:
-        login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"
+        provider = receipt.get("provider", "github")
+        forge, cli = ("GitLab", "glab") if provider == "gitlab" else ("GitHub", "gh")
+        login = f"assignee profile {assignee!r}'s {cli} login" if assignee else f"the ambient {cli} login"
         receipt.update(classification="auth",
-                       detail=f"GitHub refused the acceptance read ({exc}) as {login}; "
-                              "fix that profile's GitHub credentials/access to the repository, then retry completion.")
+                       detail=f"{forge} refused the acceptance read ({exc}) as {login}; "
+                              f"fix that profile's {forge} credentials/access to the repository, then retry completion.")
         return receipt
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
-        # Never persist gh stderr (credentials/host details); the failed phase is actionable.
-        receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
+        # Never persist CLI stderr (credentials/host details); the failed phase is actionable.
+        provider = receipt.get("provider", "github")
+        forge, cli = ("GitLab", "glab") if provider == "gitlab" else ("GitHub", "gh")
+        receipt.update(classification="infra", detail=f"{forge} acceptance evidence unavailable or incomplete; check {cli} authentication/API access and retry.")
         return receipt
+
+
+def _collect_gitlab_acceptance(receipt: dict, repo: str, number: int,
+                               profile_home: str | None) -> dict:
+    project = quote(repo, safe="")
+    endpoint = f"projects/{project}/merge_requests/{number}"
+    mr = _glab_api(endpoint, profile_home=profile_home)
+    sha, branch = mr["sha"], mr["target_branch"]
+    receipt["head_sha"] = sha
+    if not re.fullmatch(r"[0-9a-f]{40}", sha) or mr["state"] not in {"opened", "merged"}:
+        raise ValueError("MR is closed or current head is unavailable")
+    pipelines = _glab_api(endpoint + "/pipelines?per_page=100", profile_home=profile_home)
+    current = [pipeline for pipeline in pipelines if pipeline.get("sha") == sha]
+    if not current:
+        receipt.update(classification="missing", detail="No pipeline exists for the current MR head.")
+        return receipt
+    pipeline = max(current, key=lambda item: int(item.get("id", 0)))
+    status = pipeline.get("status")
+    classification = {
+        "success": "success", "failed": "failure", "canceled": "failure",
+        "running": "pending", "pending": "pending", "created": "pending",
+        "preparing": "pending", "scheduled": "pending",
+        "waiting_for_resource": "pending", "manual": "pending",
+    }.get(status, "infra")
+    receipt["checks"].append({
+        "name": "gitlab-pipeline", "id": pipeline.get("id"),
+        "url": pipeline.get("web_url"), "head_sha": pipeline.get("sha"),
+        "classification": classification, "conclusion": status,
+    })
+    reread = _glab_api(endpoint, profile_home=profile_home)
+    if (reread.get("sha") != sha or reread.get("target_branch") != branch or
+            reread.get("state") not in {"opened", "merged"}):
+        receipt.update(classification="stale", detail="MR head/base changed while collecting evidence; retry.")
+        return receipt
+    receipt["classification"] = classification
+    receipt["ok"] = classification == "success"
+    return receipt
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

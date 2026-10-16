@@ -476,6 +476,7 @@ def _apply_output_hooks(
             conversation_history=list(messages),
             model=agent.model,
             platform=platform,
+            is_gateway_session=bool(getattr(agent, "_gateway_session_key", None)),
         )
     return final_response, transformed, pre_transform
 
@@ -804,6 +805,7 @@ def finalize_turn(
             turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=_platform,
+            is_gateway_session=bool(getattr(agent, "_gateway_session_key", None)),
         )
 
     agent._turn_preflight_display_snapshot = None

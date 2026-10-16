@@ -8,7 +8,9 @@ for must still be returned.  Previously any of those raised straight out of
 traceback and lost the whole turn.
 """
 
-from unittest.mock import patch
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -42,6 +44,7 @@ class _StubAgent(StatusOutputMixin):
         self.session_id = "sess-1"
         self.quiet_mode = True
         self.platform = "cli"
+        self._gateway_session_key: str | None = None
         self._interrupt_requested = False
         self._interrupt_message = None
         self._tool_guardrail_halt_decision = None
@@ -103,6 +106,21 @@ class _StubAgent(StatusOutputMixin):
 
     def _sync_external_memory_for_turn(self, **k):
         pass
+
+
+@pytest.fixture(autouse=True)
+def _stub_conversation_loop_module(monkeypatch):
+    """Keep finalizer tests off Hermes bootstrap and the live runtime manifest.
+
+    ``finalize_turn`` only needs the conversation-loop logger at this seam; importing
+    the full loop also imports ``hermes_bootstrap``, which probes the installed
+    ``~/.hermes/manifest.json`` before the test can exercise the stub agent.
+    """
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.conversation_loop",
+        SimpleNamespace(logger=MagicMock()),
+    )
 
 
 def _run(
@@ -196,5 +214,27 @@ def test_persist_disabled_turn_skips_session_end_hook(
         )
 
     assert ("on_session_end" in calls) == ("on_session_end" in expected_calls)
+
+
+def test_lifecycle_hooks_carry_gateway_ownership_marker(monkeypatch):
+    agent = _StubAgent(raise_in=())
+    agent._gateway_session_key = "gateway-session-1"
+    captured = {}
+
+    def capture(name, _logger, **kwargs):
+        captured[name] = kwargs
+        return []
+
+    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
+        _run(
+            agent,
+            final_response="done",
+            api_call_count=1,
+            turn_exit_reason="text_response(stop)",
+        )
+
+    assert captured["post_llm_call"]["platform"] == "cli"
+    assert captured["post_llm_call"]["is_gateway_session"] is True
+    assert captured["on_session_end"]["is_gateway_session"] is True
 
 

@@ -408,6 +408,12 @@ class GatewaySessionCommandsMixin:
             handoff, _ = split_user_originated_turn(history[last_user_idx])
         except ValueError as exc:
             return t("gateway.retry.unsafe", error=exc)
+        # Answer the refusals the re-sent turn would hit BEFORE the transcript rewrite: /retry
+        # passes the post-command gates as a canonical command, the plain-text re-send does not,
+        # and a refusal after the rewrite leaves the transcript shorter and loses the user's turn.
+        readmission_reply = self._retry_readmission_reply(source, last_user_msg)
+        if readmission_reply is not None:
+            return readmission_reply
 
         if handoff is not None:
             # Composite carrier (one row = retained summary + live ask): the carrier-aware rewind
@@ -437,6 +443,22 @@ class GatewaySessionCommandsMixin:
             raw_message=event.raw_message, channel_prompt=event.channel_prompt)
         carry_callback(event, turn)
         return await self._handle_message(turn)
+
+    def _retry_readmission_reply(self, source: SessionSource, resend_text: str) -> Optional[str]:
+        """Refusal the /retry re-send would meet in ``_handle_message``, if any — checked before the
+        transcript rewrite so a refused /retry leaves the transcript untouched.  Mirrors the gates
+        the re-sent plain-text turn passes after canonical command dispatch: the emergency-stop
+        pause (canonical commands pass it, plain turns do not), the external-drain new-turn refusal
+        and the active-session cap.  Not race-free — a drain can engage or the cap can fill between
+        this check and the re-send — but every refusal known up front is answered with the
+        transcript intact."""
+        resend = MessageEvent(text=resend_text, message_type=MessageType.TEXT, source=source)
+        paused_notice = self._hm_estop_gate(resend, source, False)
+        if paused_notice is not None:
+            return paused_notice
+        if getattr(self, "_external_drain_active", False):
+            return t("gateway.busy.draining_maintenance")
+        return self._active_session_limit_message(self._session_key_for_source(source))
 
     def _record_model_friction(self, signal: str, source, session_id: str, turns: int = 1) -> None:
         """Slash dispatch does not install the routed profile's scope, so a multiplexed runner

@@ -538,7 +538,8 @@ export interface BackfillRequest {
   /** Apply the converted older page to the session's message store. The
    *  callback owns WHERE the messages live (session-state cache vs the global
    *  draft atom) and must merge via `mergeOlderTranscriptPage`. */
-  applyOlderPage: (olderPage: ChatMessage[]) => void
+  /** Return false for overlap-only pages; void callbacks remain supported. */
+  applyOlderPage: (olderPage: ChatMessage[]) => boolean | void
 }
 
 // One fetch per stored session at a time. Keyed by stored id (not runtime id)
@@ -565,63 +566,80 @@ export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<b
   }
 
   const run = (async () => {
-    const tail = transcriptTailState(storedSessionId, profile)
+    // Concurrent retention/streaming may rewind the older-page offset while an
+    // HTTP read is in flight. Retry from the new generation instead of making
+    // one click silently fail. Offset drift can also return only rows already
+    // in memory; skip a few overlapping pages inside the same click.
+    // This is bounded: no polling or unbounded requests during a busy turn.
+    const MAX_READS_PER_CLICK = 4
 
-    if (!tail?.possiblyTruncated) {
-      return false
-    }
+    for (let attempt = 0; attempt < MAX_READS_PER_CLICK; attempt += 1) {
+      const tail = transcriptTailState(storedSessionId, profile)
 
-    let page
-
-    try {
-      page = await getOlderSessionMessages(storedSessionId, tail.profile, tail.nextOffset)
-    } catch {
-      // Non-fatal: the action stays available and the next click retries.
-      return false
-    }
-
-    // A route can stay put while rewind or revalidation replaces its tail.
-    // This page belongs to the exact tail generation we fetched against, not
-    // merely the same stored id. Never graft it onto a newer display history.
-    if (!request.isCurrent() || transcriptTailState(storedSessionId, profile) !== tail) {
-      return false
-    }
-
-    // A response without pagination metadata is a legacy backend that ignored
-    // the paging query and returned the FULL transcript one-shot. The merge
-    // below prepends whatever prefix the store is missing, and the recorded
-    // state marks the session fully loaded so the REST action retires.
-    recordTranscriptBackfillPage(storedSessionId, page, profile)
-    const olderRows = unhideOpeningUserRows(page.messages)
-    request.applyOlderPage(toChatMessages(olderRows))
-
-    // #96875: paging can reach the top while the opening USER turn is still
-    // missing — the durable row is compaction-projected to display_kind=hidden
-    // (dropped at hydration) or sits before the last reachable `latest` page.
-    // Once the tail bookkeeping reports the session fully loaded and the page
-    // that landed carries no user turn, fetch the oldest display rows once and
-    // prepend the opening user turn. Best-effort: a failure keeps the older
-    // page that already landed.
-    const openingTurnLoaded = olderRows.some(message => message.role === 'user' && message.display_kind !== 'hidden')
-
-    if (!openingTurnLoaded && !transcriptTailState(storedSessionId, profile)?.possiblyTruncated) {
-      try {
-        const origin = await getSessionMessages(storedSessionId, tail.profile, {
-          includeCompacted: true,
-          limit: 20,
-          offset: 0,
-          order: 'oldest'
-        })
-
-        if (request.isCurrent()) {
-          request.applyOlderPage(toChatMessages(unhideOpeningUserRows(origin.messages)))
-        }
-      } catch {
-        // Origin fetch is best-effort; the already-applied older page stays.
+      if (!tail?.possiblyTruncated || !request.isCurrent()) {
+        return false
       }
+
+      let page
+
+      try {
+        page = await getOlderSessionMessages(storedSessionId, tail.profile, tail.nextOffset)
+      } catch {
+        // Non-fatal: the action stays available and the next click retries.
+        return false
+      }
+
+      if (!request.isCurrent()) {
+        return false
+      }
+
+      // An in-flight read is only valid for the exact tail generation it
+      // started against. A new generation can still be fetched safely after
+      // checking current session ownership again on the next iteration.
+      if (transcriptTailState(storedSessionId, profile) !== tail) {
+        continue
+      }
+
+      recordTranscriptBackfillPage(storedSessionId, page, profile)
+      const olderRows = unhideOpeningUserRows(page.messages)
+      const applied = request.applyOlderPage(toChatMessages(olderRows)) !== false
+      const remaining = transcriptTailState(storedSessionId, profile)?.possiblyTruncated
+
+      if (!applied && remaining) {
+        // The page overlapped live rows inserted while streaming. Its offset
+        // was advanced above; try the next older page within the same click.
+        continue
+      }
+
+      // #96875: paging can reach the top while the opening USER turn is still
+      // missing due to compaction projection. Preserve the one-off origin
+      // recovery on the final page, even after overlapping-only reads.
+      const openingTurnLoaded = olderRows.some(message => message.role === 'user' && message.display_kind !== 'hidden')
+      let originApplied = false
+
+      if (!openingTurnLoaded && !remaining) {
+        const originTail = transcriptTailState(storedSessionId, profile)
+
+        try {
+          const origin = await getSessionMessages(storedSessionId, tail.profile, {
+            includeCompacted: true,
+            limit: 20,
+            offset: 0,
+            order: 'oldest'
+          })
+
+          if (request.isCurrent() && transcriptTailState(storedSessionId, profile) === originTail) {
+            originApplied = request.applyOlderPage(toChatMessages(unhideOpeningUserRows(origin.messages))) !== false
+          }
+        } catch {
+          // Origin fetch is best-effort; the already-applied older page stays.
+        }
+      }
+
+      return applied || originApplied
     }
 
-    return true
+    return false
   })().finally(() => {
     inflightByStoredSessionId.delete(inflightKey)
   })

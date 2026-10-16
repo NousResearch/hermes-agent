@@ -8,6 +8,7 @@ import {
   advanceTranscriptWindow,
   alignToBranchGroup,
   MAX_SESSION_WINDOWS,
+  nextTranscriptWindowPages,
   selectTranscriptWindow,
   TRANSCRIPT_WINDOW_BUDGET,
   TRANSCRIPT_WINDOW_MIN_MESSAGES,
@@ -94,6 +95,43 @@ describe('selectTranscriptWindow', () => {
     // Paging terminates at the full transcript — never a dead end.
     expect(window.windowed).toBe(false)
     expect(window.messages).toHaveLength(messages.length)
+  })
+
+  it('does not treat a no-op 30-message floor as a successful Show earlier page', () => {
+    const messages = transcript(60, RENDER_WEIGHT_CHARS * 130)
+    const first = selectTranscriptWindow(messages, 1)
+
+    expect(first.messages).toHaveLength(TRANSCRIPT_WINDOW_MIN_MESSAGES)
+    // The old fixed +1 page could not reveal any older row with heavy tools.
+    expect(selectTranscriptWindow(messages, 2).messages[0]?.id).toBe(first.messages[0]?.id)
+
+    const nextPages = nextTranscriptWindowPages(messages, first, 1)
+    expect(nextPages).not.toBeNull()
+    expect(nextPages!).toBeGreaterThan(2)
+    expect(selectTranscriptWindow(messages, nextPages!).messages.length).toBeGreaterThan(first.messages.length)
+
+    // Streaming replaces the latest parts while keeping the message identity.
+    const active = [...messages]
+    const latest = active.at(-1)!
+
+    active[active.length - 1] = {
+      ...latest,
+      parts: [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 140) }]
+    }
+    const activePage = selectTranscriptWindow(active, 1)
+    const activeNext = nextTranscriptWindowPages(active, activePage, 1)
+
+    expect(activeNext).not.toBeNull()
+    expect(selectTranscriptWindow(active, activeNext!).messages[0]?.id).not.toBe(activePage.messages[0]?.id)
+  })
+
+  it('does not promise progress when the source window is complete or its anchor is evicted', () => {
+    const messages = transcript(4, 100)
+    expect(nextTranscriptWindowPages(messages, selectTranscriptWindow(messages), 1)).toBeNull()
+
+    const heavy = transcript(40, RENDER_WEIGHT_CHARS * 130)
+    const old = selectTranscriptWindow(heavy)
+    expect(nextTranscriptWindowPages(heavy.slice(11), old, 1)).toBeNull()
   })
 
   it('never cuts inside a branch group, so branches keep their fork point', () => {

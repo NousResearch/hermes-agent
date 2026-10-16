@@ -108,6 +108,48 @@ export function selectTranscriptWindow(messages: readonly ChatMessage[], pages =
 }
 
 /**
+ * Advance the live store window far enough to make at least one older message
+ * reachable. A fixed 30-message floor can dominate the weight budget: with
+ * enormous tool results, pages 1 and 2 both select the same last 30 messages.
+ * A Show earlier click must not claim a successful page without changing the
+ * selected source window (the list otherwise parks its commit guard forever).
+ *
+ * Only the explicit paging path pays this O(visible window) weight walk; live
+ * streaming continues to use advanceTranscriptWindow's sticky cut.
+ */
+export function nextTranscriptWindowPages(
+  messages: readonly ChatMessage[],
+  current: TranscriptWindow,
+  pages: number
+): number | null {
+  if (!current.windowed || current.messages.length === 0) {
+    return null
+  }
+
+  const firstId = current.messages[0].id
+  const firstIndex = messages.findIndex(message => message.id === firstId)
+
+  // The store no longer has the previous window's anchor (retention/rewind);
+  // never promise a page that cannot be proven to extend the visible source.
+  if (firstIndex <= 0) {
+    return null
+  }
+
+  // A budget strictly greater than the weight through the current first row
+  // forces the fresh window selection to reach at least its predecessor.
+  let weightThroughFirst = 0
+
+  for (let i = messages.length - 1; i >= firstIndex; i--) {
+    weightThroughFirst += messageStoreWeight(messages[i].parts)
+  }
+
+  const nextPages = Math.max(Math.max(1, pages) + 1, Math.floor(weightThroughFirst / TRANSCRIPT_WINDOW_BUDGET) + 1)
+  const next = selectTranscriptWindow(messages, nextPages)
+
+  return next.messages[0]?.id !== firstId ? nextPages : null
+}
+
+/**
  * How far past the budget a window may grow before the cut moves again.
  * Half a page: each re-cut trims about this much, so streaming causes one
  * re-cut per ~half page of new content instead of one per flush.

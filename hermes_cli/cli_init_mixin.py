@@ -134,6 +134,10 @@ class CLIInitMixin:
         self.final_response_markdown = _frm if _frm in {"render", "strip", "raw"} else "strip"
 
         self._inline_diffs_enabled = display.get("inline_diffs", True)
+        # Dim result preview under each completed tool row (0 = off) and the reasoning style.
+        self._tool_output_preview = max(0, _int_or(display.get("tool_output_preview", 3), 3))
+        _rs = str(display.get("cli_reasoning_style", "full")).strip().lower()
+        self.cli_reasoning_style = _rs if _rs in {"full", "collapsed"} else "full"
 
         # Per-turn accounting: CLI-only chrome riding the tool-progress feed.
         self._turn_summary_enabled = bool(display.get("turn_summary", True))

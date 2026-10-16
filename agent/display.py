@@ -1246,16 +1246,21 @@ def _bridge_row_suffixes(rows: int, result: Any, call_suffix: str) -> list[str]:
     return suffixes
 
 
-def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
+def cute_tool_rows(tool_name: str, args: dict, result: str | None = None) -> tuple[list[str], list[str], bool]:
+    """``(rows, failure_suffixes, is_failure)`` behind a completion label: each row is
+    ``┊ {emoji} {verb:9} {detail}`` (one per bridge sub-call), without duration or skin prefix."""
     args = redact_tool_args_for_display(tool_name, args) or args
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     render = _CUTE_LINES.get(tool_name)
     rows = _cute_bridge_rows(tool_name, args)
     if rows is None:
         body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
-        rows, suffixes = [body], [failure_suffix if is_failure else ""]
-    else:
-        suffixes = _bridge_row_suffixes(len(rows), result, failure_suffix if is_failure else "")
+        return [body], [failure_suffix if is_failure else ""], is_failure
+    return rows, _bridge_row_suffixes(len(rows), result, failure_suffix if is_failure else ""), is_failure
+
+
+def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
+    rows, suffixes, _ = cute_tool_rows(tool_name, args, result)
     rows = [*rows[:-1], f"{rows[-1]}  {duration:.1f}s"]
     prefix = get_skin_tool_prefix()
     return "\n  ".join(f"{row}{suffix}".replace("┊", prefix, 1) for row, suffix in zip(rows, suffixes))

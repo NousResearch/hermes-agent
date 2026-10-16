@@ -255,6 +255,9 @@ class CLIStreamMixin:
         self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):
             return
+        self._capture_reasoning(text)
+        if self._reasoning_collapsed():
+            return  # display.cli_reasoning_style: collapsed -> one "✻ Thought" line when the block ends
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
             w = self._scrollback_box_width()
@@ -292,8 +295,10 @@ class CLIStreamMixin:
             _cprint(line)
 
     def _close_reasoning_box(self) -> None:
-        """Close the live reasoning box if it's open (renders the buffered reasoning tail)."""
+        """Close the live reasoning box if it's open (renders the buffered reasoning tail); in
+        collapsed style print the block's one-line summary instead."""
         from cli import _DIM, _RST, _cprint
+        self._finish_reasoning_capture()
         if not getattr(self, "_reasoning_box_opened", False):
             return
         buf = getattr(self, "_reasoning_buf", "")
@@ -428,6 +433,7 @@ class CLIStreamMixin:
         # Close a still-open reasoning box on the first content token so the answer streams
         # token-by-token; _close_reasoning_box renders the reasoning tail first, so ordering holds.
         self._close_reasoning_box()
+        self._flush_explore_group()
 
         # Open the response box header on the very first visible text
         if not self._stream_box_opened:
@@ -498,6 +504,7 @@ class CLIStreamMixin:
         """Emit any remaining partial line from the stream buffer and close the box."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
         from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
+        self._flush_explore_group()
         # Still inside a "reasoning block" at end-of-stream = false positive (the model
         # mentioned a tag in prose and never closed it): recover the buffer as regular text.
         if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
@@ -644,8 +651,10 @@ class CLIStreamMixin:
         console.print(*args, **kwargs)
 
     def _on_tool_gen_start(self, tool_name: str) -> None:
-        """Model began generating tool-call arguments: close open boxes once, then print a status
-        line so a large payload (e.g. 45 KB write_file) doesn't look like a frozen screen.
+        """Model began generating tool-call arguments: close open boxes once, then show
+        "preparing <tool>…" so a large payload (e.g. 45 KB write_file) doesn't look like a frozen
+        screen. With the TUI up it goes to the live spinner (the completion row follows in
+        scrollback; a separate "preparing" row per call was noise), else it prints a line.
 
         Fires once per tool CALL, so a batch of parallel calls to the same tool printed the same
         line N times (#10478); repeats within one generation batch are coalesced. The set is
@@ -655,13 +664,19 @@ class CLIStreamMixin:
             self._flush_stream()
             self._stream_box_opened = False
         self._close_reasoning_box()
+        self._tool_activity_started(tool_name)
         announced = self.__dict__.setdefault("_tool_gen_announced", set())
         if tool_name in announced:
             return
         announced.add(tool_name)
         from agent.display import bridge_generating_phrase, get_tool_emoji
         what = bridge_generating_phrase(tool_name) or tool_name
-        _cprint(f"  ┊ {t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)}")
+        line = t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)
+        if getattr(self, "_app", None) is not None:
+            self._spinner_text = line
+            self._invalidate()
+            return
+        _cprint(f"  ┊ {line}")
 
     def _on_tool_progress(self, event_type: str, function_name: str | None = None, preview: str | None = None, function_args: dict | None = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
@@ -669,7 +684,7 @@ class CLIStreamMixin:
         Drives the TUI spinner (tool.started stamps the elapsed timer); in "all"/"new"/"verbose"
         progress modes tool.completed also commits a stacked scrollback line (tool history).
         """
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home
+        from cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home, logger
         # MoA reference outputs (display-only events from the MoA facade): render each answer
         # as a labelled thinking-style block BEFORE the aggregator acts.
         if event_type == "moa.reference":
@@ -716,26 +731,19 @@ class CLIStreamMixin:
                     self._note_focus_hidden_line(function_name or "")
                 except Exception:
                     pass
-            # "verbose" must commit the same line as "all": non-streaming calls (MoA aggregator,
-            # copilot-acp) never emit the "preparing" line, so nothing else builds history.
-            if function_name and self.tool_progress_mode in {"new", "all", "verbose"}:
+            if function_name:
                 duration = kwargs.get("duration", 0.0)
                 # Pop stored args from tool.started for this function
                 stored = self._pending_tool_info.get(function_name)
                 stored_args = stored.pop(0) if stored else {}
                 if stored is not None and not stored:
                     del self._pending_tool_info[function_name]
-                # "new" mode: skip consecutive repeats of the same tool
-                if self.tool_progress_mode == "new" and function_name == self._last_scrollback_tool:
-                    self._invalidate()
-                    return
-                self._last_scrollback_tool = function_name
+                # Row + result preview in "new"/"all"/"verbose" (logged for Ctrl+O in every mode).
                 try:
-                    from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    self._tool_activity_completed(function_name, stored_args, duration or 0.0,
+                                                  kwargs.get("result"), bool(kwargs.get("is_error")))
                 except Exception:
-                    pass
+                    logger.debug("Tool row render failed for %s", function_name, exc_info=True)
                 # One-time /verbose hint on the first long tool in the noisiest mode; latched
                 # on self and persisted to config.yaml.
                 try:
@@ -758,6 +766,7 @@ class CLIStreamMixin:
             return
         if function_name and not function_name.startswith("_"):
             from agent.display import get_tool_preview_max_len, tool_row_emoji
+            self._tool_activity_started(function_name)
             label = preview or function_name
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
@@ -798,10 +807,12 @@ class CLIStreamMixin:
                 except Exception:
                     pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
+        rendered: list[str] = []
         try:
             from agent.display import render_edit_diff_with_delta
             render_edit_diff_with_delta(
                 function_name, function_result, function_args=function_args, snapshot=snapshot,
-                print_fn=_cprint)
+                print_fn=rendered.append)
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
+        self._on_inline_diff(function_name, "\n".join(rendered))

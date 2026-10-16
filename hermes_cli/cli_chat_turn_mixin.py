@@ -624,7 +624,9 @@ class CLIChatTurnMixin:
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
-            if reasoning:
+            if reasoning and self._reasoning_collapsed():
+                self._print_collapsed_reasoning_recap(reasoning)
+            elif reasoning:
                 w = self._scrollback_box_width()
                 r_label = f" {t('cli.chat.reasoning_label')} "
                 r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"

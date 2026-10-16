@@ -1962,9 +1962,9 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
-        # Ctrl+T/F6 + Ctrl+R/F7 dock, Alt+Up queue recall.
-        from hermes_cli import cli_subagent_monitor, cli_transcript
-        for bind in (cli_subagent_monitor.bind_keys, cli_transcript.bind_queue_recall):
+        # Ctrl+T/F6 + Ctrl+R/F7 dock, Alt+Up queue recall, Ctrl+O transcript viewer.
+        from hermes_cli import cli_subagent_monitor, cli_transcript, cli_transcript_viewer
+        for bind in (cli_subagent_monitor.bind_keys, cli_transcript.bind_queue_recall, cli_transcript_viewer.bind_keys):
             bind(self, kb)
         return kb
 

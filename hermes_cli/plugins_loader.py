@@ -154,8 +154,13 @@ def run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[],
 def _evict_modules(module_name: str) -> None:
     """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-        del sys.modules[name]
+    # ``list(sys.modules)`` is an atomic C-level snapshot; a comprehension walks the live dict
+    # key by key, so a concurrent loader importing on another thread (multi-home hosts run one
+    # per profile) raises "dictionary changed size during iteration" and the plugin is randomly
+    # dropped (#132259). ``pop`` tolerates a peer removing an entry between snapshot and delete.
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(prefix):
+            sys.modules.pop(name, None)
 
 
 def _serialized_replacement(method):

@@ -16,6 +16,7 @@ import contextlib
 import functools
 import json
 import logging
+import re
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
@@ -25,6 +26,56 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
 _log = logging.getLogger(__name__)
+
+# ``drain_reason`` a graceful restart publishes for its after-turn wait (#139041). The owner still
+# runs its in-flight turns, so a client may attach to answer a parked approval/clarify; new input is
+# committed queued for the next owner and never claimed here. ``stop()`` withdraws it.
+RESTART_WAIT_REASON = "restart_wait"
+
+
+def open_restart_wait(runner) -> None:
+    """Publish the restart's after-turn wait (``drain_reason``) unless a drain already named its own."""
+    descriptor = getattr(runner, "session_runtime_descriptor", None)
+    if descriptor is not None and not descriptor.get("drain_reason"):
+        descriptor["drain_reason"] = RESTART_WAIT_REASON
+
+
+def restart_wait_open(runner) -> bool:
+    """True while *runner* is in a restart's after-turn wait (draining, not yet stopping)."""
+    descriptor = getattr(runner, "session_runtime_descriptor", None) or {}
+    return (bool(getattr(runner, "_draining", False)) and bool(getattr(runner, "_running", False))
+            and descriptor.get("drain_reason") == RESTART_WAIT_REASON)
+
+
+# The reads a client needs during that wait to find and open the conversation parked on
+# approval/clarify: Desktop's session picker, the session detail and its transcript pages, and the
+# health probes. GET only and still authenticated; every write and every other route keeps the
+# drain's refusal. The prompt itself (approval.pending / *.respond) rides the WebSocket.
+_RESTART_WAIT_READS = re.compile(
+    r"/api/(?:health|status|profiles/sessions(?:/sidebar)?"
+    r"|sessions/[^/]+(?:/messages(?:/around)?|/timeline)?)")
+
+
+def restart_wait_read(runner, method, path) -> bool:
+    """True for an allowlisted read request while *runner* is in a restart's after-turn wait."""
+    return (method == "GET" and bool(_RESTART_WAIT_READS.fullmatch(path or ""))
+            and restart_wait_open(runner))
+
+# The WebSocket verbs an interactive client may still call during that wait: attach to and read the
+# parked session, answer its prompt (or interrupt the turn so the restart can finish) and commit
+# queued input for the next owner. Every other verb (config.set, session.save, rollback.restore,
+# process.kill, reload.*, ...) would run on an owner that is shutting down, so it is refused with
+# ``runtime_draining`` exactly like the REST writes above.
+RESTART_WAIT_WS_METHODS = frozenset({
+    "ping", "runtime.describe", "session.resume", "session.detach", "session.events.since",
+    "session.info", "session.list", "prompt.submit", "prompt.receipt", "session.interrupt",
+    "approval.pending", "approval.received", "approval.respond", "clarify.respond",
+})
+
+
+def ws_method_refused_while_draining(runner, method) -> bool:
+    """True when an interactive WebSocket verb must be refused because *runner* is draining."""
+    return bool(getattr(runner, "_draining", False)) and method not in RESTART_WAIT_WS_METHODS
 
 _DRAIN_REQUEST_FILENAME = ".drain_request.json"
 # Drain-gated lifecycle actions complete in minutes; an hour bounds the wedge a leaked

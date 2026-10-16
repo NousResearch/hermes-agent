@@ -49,7 +49,8 @@ async def test_reattach_after_restart_posts_the_unknown_recovery_notice(monkeypa
         await first.wait_closed()
         await asyncio.wait_for(agent._event_task, 5)  # the pump records the transport loss
         await agent._client()
-        (call,) = agent._conn.session_update.await_args_list[before:]
+        (call,) = [call for call in agent._conn.session_update.await_args_list[before:]
+                   if call.kwargs["update"].session_update == "agent_message_chunk"]
         assert call.kwargs["session_id"] == "s"
         assert "/discard lost-1" in call.kwargs["update"].content.text
     finally:

@@ -74,6 +74,15 @@ def cli_turn(message_id):
     return bound[1]
 
 
+def rebind_api_text(message_id, text):
+    """This admission's ``api_text`` with its ``@`` references expanded, for the rest of this execution
+    (``session_context_refs.turn_references``). The committed row keeps what the CLI sent, so a retry
+    expands it afresh rather than twice."""
+    bound = _cli_turn.get()
+    if bound is not None and message_id is not None and str(message_id) == bound[0]:
+        _cli_turn.set((bound[0], {**bound[1], 'api_text': text}))
+
+
 def one_turn_runtime(override, model, runtime_kwargs, config):
     """``(model, runtime_kwargs)`` of a committed ``model_override`` for this one turn, resolved by the
     same ``switch_model`` pipeline ``/model`` uses against the session's current route. Nothing is

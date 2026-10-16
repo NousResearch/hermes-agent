@@ -142,6 +142,27 @@ def test_target_worktree_owns_admission_and_fork_comparison(installation, monkey
     assert {str(p.relative_to(root)): p.read_bytes() for p in (root / ".git").rglob("*") if p.is_file()} == before
 
 
+def test_bare_git_off_path_reads_through_the_updaters_git(installation, monkeypatch, tmp_path):
+    """Desktop passes a bare ``git`` when it found none; a Windows install's only git is PM's
+    store copy, off PATH outside ``hermes update``. The check must read HEAD through that git."""
+    import shutil
+
+    from hermes_cli import update_pause_record
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, _base, head, responses, _requests, _git = installation
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    store_git = shutil.which("git")
+    empty = tmp_path / "no-git-on-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(update_pause_record, "_git_executable", lambda: store_git)
+    status = check_for_updates(install_root=root, home=home, git="git", force=True)
+    assert status.get("error") is None, status
+    assert status["currentSha"] == head
+    assert status["behind"] == 0
+
+
 @pytest.mark.parametrize("tip_kind,compare,expected", [
     ("head", None, 0), ("base", None, 0),
     ("unknown", {"ahead_by": 61}, 61), ("unknown", {"ahead_by": 0}, 0),

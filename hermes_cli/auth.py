@@ -631,8 +631,8 @@ def _lock_holder_hint(lock_path: Path) -> str:
             return ""
         except OSError:
             pass  # exists but is not signalable (e.g. EPERM): still a live holder
-    return (f"another hermes process (pid {pid}) probably still holds it "
-            "(e.g. a dashboard or a slow credential refresh)")
+    # No example holder: many stores use this lock; the caller's timeout_message names which one.
+    return f"another hermes process (pid {pid}) probably still holds it"
 
 
 def _stamp_lock_holder_pid(lock_file: Any) -> None:

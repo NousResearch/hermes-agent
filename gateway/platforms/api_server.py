@@ -3071,6 +3071,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
+        from gateway.platforms.api_server_bot_chat import create_peer_bot_chat
+        if (bot_chat := await create_peer_bot_chat(self, body)) is not None:
+            return bot_chat  # the owner minted the canonical Bot Chat (#139370)
         db = await self._ensure_session_db_async()
         if db is None:
             return self._session_db_unavailable()
@@ -3421,11 +3424,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # through the same door as ``bot_relay.deliver`` and the receipt is its admission's.
         if getattr(self.gateway_runner, "session_authority", None) is not None:
             from gateway.platforms.api_server_bot_chat import admit_peer_turn
-            from gateway.session_authorities import active_authority
-            authority = active_authority(self.gateway_runner)
-            if authority is None:
-                return None
-            return await admit_peer_turn(authority, session_id, message, author)
+            return await admit_peer_turn(self.gateway_runner, session_id, message, author)
         db = await self._ensure_session_db_async()
         if db is None:
             return None

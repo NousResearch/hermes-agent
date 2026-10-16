@@ -36,8 +36,8 @@ def _mcp_field(obj, snake: str, camel: str, default=None):
     never loads the much larger config-driven MCP client module."""
     return getattr(obj, snake, getattr(obj, camel, default))
 
-def _action_result_from(name: str, ok: bool, message: str, meta: Dict[str, Any],
-                        structured: Dict[str, Any], *, requested_delivery: Optional[str] = None) -> ActionResult:
+def _action_result_from(name: str, ok: bool, message: str, meta: dict[str, Any],
+                        structured: dict[str, Any], *, requested_delivery: Optional[str] = None) -> ActionResult:
     """Build an ActionResult, lifting cua-driver's structured verdict. structuredContent is canonical, the flattened
     ``meta`` copy the fallback. Every structured field is additive: a driver that omits one leaves the attribute
     ``None`` so old drivers see unchanged behavior.
@@ -63,7 +63,7 @@ def _action_result_from(name: str, ok: bool, message: str, meta: Dict[str, Any],
         code=_typed(_raw("code") or _raw("reason_code"), str),
     )
 
-def _z_index_uninformative(windows: List[Dict[str, Any]]) -> bool:
+def _z_index_uninformative(windows: list[dict[str, Any]]) -> bool:
     """True when every window shares the same z_index (common on Linux/X11)."""
     return len({w.get("z_index", 0) for w in windows}) <= 1
 
@@ -74,12 +74,12 @@ def _parse_xprop_net_active_window(stdout: str) -> Optional[int]:
     match = re.search(r"window id # (0x[0-9a-fA-F]+)", text) or re.search(r"(0x[0-9a-fA-F]+)", text)
     return int(match.group(1), 16) if match else None
 
-def _is_real_app_window(w: Dict[str, Any]) -> bool:
+def _is_real_app_window(w: dict[str, Any]) -> bool:
     """Return False for desktop/shell helper windows that capture as empty."""
     title = w.get("title", "")
     return not any(title.startswith(p) or title.lower().startswith(p.lower()) for p in _NON_APP_WINDOW_TITLE_PREFIXES)
 
-def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
+def _parse_elements_from_tree(markdown: str) -> list[UIElement]:
     """Parse UIElements from get_window_state AX-tree markdown — last-resort fallback for drivers without
     ``structuredContent.elements``. Bounds are always ``(0, 0, 0, 0)`` (the markdown carries none), fine for
     element-index clicks since the driver resolves the frame.
@@ -94,7 +94,7 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
         for m in _ELEMENT_LINE_RE.finditer(markdown)
     ]
 
-def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[UIElement]:
+def _parse_elements_from_structured(raw_elements: list[dict[str, Any]]) -> list[UIElement]:
     """Read the canonical ``structuredContent.elements`` array: ``element_index``, ``role``, ``label`` and, when
     AT-SPI / AXFrame returned usable bounds, ``frame`` ``{x, y, w, h}`` — so real pixel bounds survive (the
     markdown path loses them). Malformed entries are skipped.
@@ -102,13 +102,13 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
     Surface 2 of NousResearch/hermes-agent#47072: read the canonical ``structuredContent.elements`` array
     cua-driver-rs emits on every ``get_window_state`` response (trycua/cua#1961).
     """
-    elements: List[UIElement] = []
+    elements: list[UIElement] = []
     for raw in raw_elements:
         idx = raw.get("element_index") if isinstance(raw, dict) else None
         if not isinstance(idx, int):
             continue
         role, label, frame, token = (raw.get(k) for k in ("role", "label", "frame", "element_token"))
-        bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        bounds: tuple[int, int, int, int] = (0, 0, 0, 0)
         with contextlib.suppress(TypeError, ValueError):
             if isinstance(frame, dict) and frame:
                 bounds = tuple(int(frame.get(k, 0)) for k in ("x", "y", "w", "h"))  # type: ignore[assignment]
@@ -120,12 +120,12 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
         ))
     return elements
 
-def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
+def _image_dimensions_from_bytes(raw: bytes) -> tuple[int, int]:
     """Best-effort PNG/JPEG dimension sniff; ``(0, 0)`` when unreadable or non-positive."""
     dims = image_dimensions_from_bytes(raw)
     return dims if dims and dims[0] > 0 and dims[1] > 0 else (0, 0)
 
-def _split_tree_text(full_text: str) -> Tuple[str, str]:
+def _split_tree_text(full_text: str) -> tuple[str, str]:
     """Split get_window_state text into (summary_line, tree_markdown)."""
     summary, _, tree = full_text.partition("\n")
     return summary, tree
@@ -133,9 +133,9 @@ def _split_tree_text(full_text: str) -> Tuple[str, str]:
 _MODIFIER_NAMES = frozenset({"cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"})
 _KEY_ALIASES = {"command": "cmd", "alt": "option", "control": "ctrl"}
 
-def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
+def _parse_key_combo(keys: str) -> tuple[Optional[str], list[str]]:
     """Parse 'cmd+s' / 'ctrl-alt-t' into (key, modifiers); last non-modifier wins."""
-    modifiers: List[str] = []
+    modifiers: list[str] = []
     key = None
     for part in (p.strip().lower() for p in re.split(r'[+\-]', keys) if p.strip()):
         normalized = _KEY_ALIASES.get(part, part)
@@ -145,17 +145,17 @@ def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
             key = part
     return key, modifiers
 
-def _tool_envelope(data: Any, images: List[str], structured: Any, is_error: bool,
-                   image_mime_types: Optional[List[str]] = None) -> Dict[str, Any]:
+def _tool_envelope(data: Any, images: list[str], structured: Any, is_error: bool,
+                   image_mime_types: Optional[list[str]] = None) -> dict[str, Any]:
     """The normalised tool-result dict every transport emits: ``{data, images, [image_mime_types,] structuredContent,
     isError}``. ``image_mime_types`` is only present when the transport can report it (MCP image parts)."""
-    out: Dict[str, Any] = {"data": data, "images": images}
+    out: dict[str, Any] = {"data": data, "images": images}
     if image_mime_types is not None:
         out["image_mime_types"] = image_mime_types
     out["structuredContent"], out["isError"] = structured, is_error
     return out
 
-def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
+def _extract_tool_result(mcp_result: Any) -> dict[str, Any]:
     """Flatten an mcp CallToolResult into ``{data, images, image_mime_types, structuredContent, isError}``. ``data``
     is the joined text parts (parsed as JSON when it looks like JSON); ``image_mime_types`` is parallel to
     ``images`` with ``""`` where the part carried no mimeType (older drivers — callers then sniff the base64 prefix).
@@ -166,9 +166,9 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
     fall back to base64-prefix sniffing.
     """
     data: Any = None
-    images: List[str] = []
-    image_mime_types: List[str] = []
-    text_chunks: List[str] = []
+    images: list[str] = []
+    image_mime_types: list[str] = []
+    text_chunks: list[str] = []
     for part in getattr(mcp_result, "content", []) or []:
         ptype = getattr(part, "type", None)
         if ptype == "text":
@@ -187,7 +187,7 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
         # Identity, not truthiness: mocks/proxies synthesize truthy attributes.
         _mcp_field(mcp_result, "is_error", "isError", False) is True, image_mime_types)
 
-def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+def _image_from_tool_result(out: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
     """Pull ``(b64, mime_type)`` out of a flattened tool result. cua-driver delivers screenshots as an MCP ``image``
     part (``out["images"]``) or as ``screenshot_png_b64`` in structuredContent (newer builds, CLI transport);
     checking both keeps capture() robust to the driver moving it."""
@@ -222,12 +222,12 @@ def _is_placeholder_id(value: Any) -> bool:
     parsed = _int_or_none(value)
     return parsed is not None and parsed <= 0
 
-def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _ingest_windows(raw_windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Normalise cua-driver ``list_windows`` entries, dropping unusable ones. Every downstream call needs integer
     ``pid`` and ``window_id``; on X11 the PID comes from the optional ``_NET_WM_PID`` property, so root/panel/popup
     windows report ``pid: null`` — skip those instead of aborting the enumeration. ``z_index``: higher = closer to
     front; Wayland's null (undefined stacking) sorts lowest so real windows stay above the desktop."""
-    windows: List[Dict[str, Any]] = []
+    windows: list[dict[str, Any]] = []
     for w in raw_windows:
         if not isinstance(w, dict):  # untrusted compatibility envelopes
             continue
@@ -246,7 +246,7 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         })
     return windows
 
-def _windows_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _windows_from_tool_result(out: dict[str, Any]) -> list[dict[str, Any]]:
     """Return list_windows payloads across cua-driver result shapes: structuredContent.windows, then ``windows`` /
     ``_legacy_windows`` in the text payload, then on the envelope itself."""
     candidates = ((out.get("structuredContent"), ("windows",)),
@@ -260,8 +260,8 @@ def _windows_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
                     return value
     return []
 
-def _apps_from_windows(windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    apps: List[Dict[str, Any]] = []
+def _apps_from_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    apps: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
     for summary in _ingest_windows(windows):
         name, key = summary["app_name"], (summary["app_name"], summary["pid"])

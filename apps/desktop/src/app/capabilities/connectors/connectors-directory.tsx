@@ -69,6 +69,7 @@ export function ConnectorsDirectory({
           <div className="flex shrink-0 items-center gap-3 border-b border-(--ui-stroke-tertiary) pb-1.5">
             <SearchField
               containerClassName="min-w-0 flex-1"
+              inputClassName="flex-1"
               onChange={query => set({ query })}
               placeholder={copy.searchPlaceholder(cards.length)}
               value={filter.query}

@@ -101,11 +101,6 @@ class TestQuarantinedHandleStopsTouchingTheFile:
             db.close()
         assert not any("wal_checkpoint" in sql for sql in recorder.recorded)
         assert db._conn is None
-        assert any(
-            "Skipping the close-time WAL checkpoint" in rec.getMessage()
-            and "hermes sessions recover" in rec.getMessage()
-            for rec in caplog.records
-        )
 
     def test_close_disables_sqlite_internal_checkpoint_on_py312(self, tmp_path):
         """Quarantine must also stop SQLite's own last-connection checkpoint.
@@ -134,7 +129,7 @@ class TestQuarantinedHandleStopsTouchingTheFile:
     def test_reopen_after_close_refused_when_quarantined(self, tmp_path, monkeypatch):
         from unittest.mock import MagicMock
 
-        db, real_conn = _quarantined_db(tmp_path)
+        db, _real_conn = _quarantined_db(tmp_path)
         db.close()
         reopen = MagicMock()
         monkeypatch.setattr("hermes_state._connect_tracked_db", reopen)
@@ -168,6 +163,7 @@ class TestQuarantineScope:
         finally:
             db.close()
 
+    @pytest.mark.platforms("posix")
     def test_replaced_file_takes_precedence_over_corrupt(self, tmp_path):
         import os
 

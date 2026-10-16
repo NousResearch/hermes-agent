@@ -1,0 +1,18 @@
+name: dashboard-auth-feishu
+repo: https://github.com/xielevi/hermes-dashboard-auth-feishu
+sha: 724715f6b87cec86f147b0ff9854abd343c00013
+description: "Feishu / Lark OAuth sign-in for the web dashboard, admitted by tenant + open_id allow-list. Registers the `feishu` dashboard auth provider once plugins.entries.dashboard-auth-feishu.settings (app_id, tenant_key, owner_open_ids) and an app secret are configured. Disclosure — calls only the fixed Feishu or Lark authorize, token and user_info endpoints; reads HERMES_DASHBOARD_FEISHU_APP_SECRET or, as a fallback, the Feishu gateway's FEISHU_APP_SECRET, plus HERMES_DASHBOARD_FEISHU_SESSION_KEY; stores tenant, open_id and display name per sign-in in a 0600 SQLite file under plugin-data (no upstream tokens); a refused sign-in logs the tenant_key and open_id Feishu returned (identifiers only, for first-time setup); every admitted identity gets full dashboard access; upstream PKCE is not used (confidential client with single-use cookie-bound state); pending logins are in memory, so one dashboard worker only; WebSockets opened before logout may stay open until the session key is rotated and the dashboard restarted."
+maintainer: xielevi
+tier: community
+category: general
+title: Feishu / Lark Dashboard Login
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/xielevi/hermes-dashboard-auth-feishu#readme
+version: "1.0.1"
+known_issues:
+  - "Lark endpoints are implemented but not live-tested; Feishu is tested end to end."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

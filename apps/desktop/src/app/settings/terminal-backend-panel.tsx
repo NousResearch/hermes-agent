@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { getTerminalBackends, selectTerminalBackend } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -15,6 +16,8 @@ interface TerminalBackendPanelProps {
   /** Re-read the parent toolset list after a backend change so any derived
    *  pills stay in sync. */
   onConfiguredChange?: () => void
+  /** Capabilities can edit a profile other than the app-wide active one. */
+  profile?: ProfileScope
 }
 
 function StatusPill({ backend }: { backend: TerminalBackendInfo }) {
@@ -48,7 +51,7 @@ function StatusPill({ backend }: { backend: TerminalBackendInfo }) {
  * immediately and every later session inherits a backend with no terminal or
  * file tools, so one ambient click must not do that silently.
  */
-export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPanelProps) {
+export function TerminalBackendPanel({ onConfiguredChange, profile }: TerminalBackendPanelProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets.terminalBackend
   const [data, setData] = useState<TerminalBackendsResponse | null>(null)
@@ -59,13 +62,13 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
     setLoading(true)
 
     try {
-      setData(await getTerminalBackends())
+      setData(await getTerminalBackends(profile))
     } catch (err) {
       notifyError(err, copy.failedLoad)
     } finally {
       setLoading(false)
     }
-  }, [copy.failedLoad])
+  }, [copy.failedLoad, profile])
 
   useEffect(() => {
     void refresh()
@@ -93,7 +96,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
         }
       }
 
-      await selectTerminalBackend(backend.name)
+      await selectTerminalBackend(backend.name, profile)
       // Mirror the backend write locally so the active highlight tracks the
       // new selection without a refetch (probes are unchanged by a select).
       setData(current =>

@@ -29,13 +29,11 @@ And at the compressor boundary:
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from hermes_state import SessionDB
-
 
 @pytest.fixture
 def db(tmp_path: Path) -> SessionDB:
@@ -43,22 +41,18 @@ def db(tmp_path: Path) -> SessionDB:
     d.create_session("sess1", source="test")
     return d
 
-
 def _seed(db: SessionDB, n: int = 6) -> None:
     for i in range(n):
         role = "user" if i % 2 == 0 else "assistant"
         db.append_message("sess1", role=role, content=f"turn {i}")
-
 
 SUMMARY = [
     {"role": "user", "content": "[CONTEXT COMPACTION] summary of earlier turns"},
     {"role": "assistant", "content": "Continuing from the summary."},
 ]
 
-
 def _recall(db: SessionDB, query: str, include_inactive: bool = False):
     return db.search_messages(query, include_inactive=include_inactive)
-
 
 def _rows(db: SessionDB):
     """All rows of the fixture session with lifecycle flags via the public API.
@@ -76,7 +70,6 @@ def _rows(db: SessionDB):
             "content": r.get("content"),
         })
     return out
-
 
 class TestTailCountArchivesAsRewindSemantics:
     def test_tail_originals_hidden_from_recall(self, db: SessionDB) -> None:
@@ -138,6 +131,71 @@ class TestTailCountArchivesAsRewindSemantics:
             f"{[h.get('snippet') for h in _recall(db, 'turn 1')]}"
         )
 
+    def test_explicit_carried_messages_leave_summarized_tool_results_discoverable(self, db: SessionDB) -> None:
+        """A non-contiguous carried set must not classify a summarized tool block as rewind-only.
+
+        Micro-compaction rewrites a prefix plus assistant/tool exchange plus suffix into
+        a prefix plus summary marker plus suffix. The carried rows therefore live on BOTH
+        sides of the removed exchange; using a positional tail count hid the removed
+        tool result as active=0, compacted=0 (#118481).
+        """
+        db.append_message("sess1", role="user", content="question 0")
+        db.append_message(
+            "sess1",
+            role="assistant",
+            content="",
+            tool_calls=[{
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }],
+        )
+        db.append_message(
+            "sess1",
+            role="tool",
+            content="tool result that was summarized",
+            tool_call_id="call-1",
+            tool_name="read_file",
+        )
+        db.append_message("sess1", role="user", content="question 1")
+        db.append_message("sess1", role="assistant", content="answer 1")
+
+        carried = [
+            message for message in db.get_messages_as_conversation("sess1")
+            if message.get("content") in {"question 0", "question 1", "answer 1"}
+        ]
+        assert carried and all("_row_id" not in message for message in carried), (
+            "this regression must exercise the row-id-less resume fallback"
+        )
+
+        db.archive_and_compact(
+            "sess1",
+            [
+                {"role": "user", "content": "question 0"},
+                {"role": "assistant", "content": "[CONTEXT COMPACTION] summarized tool exchange"},
+                {"role": "user", "content": "question 1"},
+                {"role": "assistant", "content": "answer 1"},
+            ],
+            carried_messages=carried,
+        )
+
+        rows = _rows(db)
+        summarized_tool = [r for r in rows if r["content"] == "tool result that was summarized"]
+        assert len(summarized_tool) == 1
+        assert summarized_tool[0]["active"] == 0
+        assert summarized_tool[0]["compacted"] == 1, (
+            "summarized tool results must stay discoverable as compacted history"
+        )
+
+        carried_original = [
+            r for r in rows
+            if r["content"] == "question 1" and r["active"] == 0
+        ]
+        assert len(carried_original) == 1
+        assert carried_original[0]["compacted"] == 0, (
+            "only exact carried-forward originals should be hidden as superseded duplicates"
+        )
+
     def test_default_zero_keeps_archive_everything(self, db: SessionDB) -> None:
         """Without tail_count the historical behavior is untouched."""
         _seed(db)
@@ -168,7 +226,6 @@ class TestTailCountArchivesAsRewindSemantics:
         ]
 
     def test_message_count_reflects_active_set(self, db: SessionDB) -> None:
-        import json as _json
 
         _seed(db)
         compacted = [*SUMMARY, {"role": "user", "content": "turn 4"},
@@ -190,69 +247,36 @@ class TestTailCountArchivesAsRewindSemantics:
             assert int(mc) == 4
 
 
+
+
 class TestCompressTagsCarriedTail:
     def test_compress_marks_carried_forward_tail_dicts(self):
         """compress() must tag its carried-forward tail dicts so the caller
-        can pass an accurate tail_count to the commit (#86366)."""
-        from agent.context_compressor import (
-            _COMPACTION_TAIL_MARKER,
-            ContextCompressor,
-        )
+        can pass an accurate tail_count to archive_and_compact (#86366);
+        untagged, the tail originals are recalled as compacted history."""
         from unittest.mock import patch
 
-        compressor = ContextCompressor.__new__(ContextCompressor)
+        from agent.context_compressor import _COMPACTION_TAIL_MARKER, ContextCompressor
 
-        long_history = []
-        for i in range(12):
-            role = "user" if i % 2 == 0 else "assistant"
-            long_history.append({
-                "role": role,
-                "content": f"filler turn {i} " + "x" * 400,
-            })
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            compressor = ContextCompressor(
+                model="test/model", protect_first_n=2, protect_last_n=2, quiet_mode=True,
+            )
+            _ = compressor.context_length
 
-        captured: dict = {}
+        history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"filler turn {i} " + "x" * 400}
+            for i in range(12)
+        ]
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            out = compressor.compress(list(history))
 
-        class _DB:
-            def archive_and_compact(self, session_id, messages, **kwargs):
-                captured["messages"] = messages
-                captured["tail_count"] = kwargs.get("tail_count", 0)
-                return len(messages)
-
-        with (
-            patch.object(compressor, "_session_db", _DB(), create=True),
-            patch.object(compressor, "_session_id", "sessX", create=True),
-            patch.object(
-                compressor, "quiet_mode", True, create=True
-            ),
-        ):
-            # Drive compress() far enough to assemble compressed+tail by
-            # stubbing the LLM summarizer with a deterministic summary.
-            with (
-                patch.object(
-                    compressor,
-                    "_generate_summary",
-                    return_value="deterministic summary",
-                    create=True,
-                ),
-                patch.object(
-                    compressor, "_prune_old_tool_results",
-                    side_effect=lambda msgs, **k: (msgs, 0),
-                    create=True,
-                ),
-            ):
-                try:
-                    out = compressor.compress(list(long_history))
-                except Exception:
-                    pytest.skip(
-                        "compress() requires more runtime wiring than this "
-                        "unit context provides; tag contract covered by the "
-                        "persistence-layer tests above"
-                    )
-
-            tagged = [
-                m for m in (captured.get("messages") or [])
-                if isinstance(m, dict) and m.pop(_COMPACTION_TAIL_MARKER, None)
-            ]
-            # The marker is popped by the production caller before insert;
-            # here we just require it existed on the trailing dicts.
-            assert out is not None
+        assert len(out) < len(history)
+        tagged = [m for m in out if isinstance(m, dict) and m.get(_COMPACTION_TAIL_MARKER)]
+        assert tagged, "carried-forward tail rows were not tagged"
+        # The tag marks exactly the verbatim tail: the trailing run of the output,
+        # each row a copy of an original from the end of the history.
+        assert out[-len(tagged):] == tagged
+        originals = {m["content"] for m in history[-len(tagged):]}
+        assert {m["content"] for m in tagged} <= originals
+        assert not any(m.get(_COMPACTION_TAIL_MARKER) for m in out[:2])

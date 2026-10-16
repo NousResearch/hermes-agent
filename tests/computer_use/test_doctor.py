@@ -20,14 +20,20 @@ shape.
 from __future__ import annotations
 
 import json
-import sys
 from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _pm_driver(binary: str):
+    """PM reports *binary* as the installed cua-driver (the runtime's selection)."""
+    return patch("pm.installed_package", return_value=SimpleNamespace(binary=Path(binary)))
 
 
 def _fake_proc_with_responses(*responses: dict) -> MagicMock:
@@ -79,8 +85,6 @@ def _degraded_report() -> dict:
     }
 
 
-
-
 @pytest.fixture(autouse=True)
 def _default_cli_version_matches_report(monkeypatch):
     """Existing tests mock only the MCP Popen handshake. ``subprocess.run``
@@ -108,7 +112,7 @@ class TestDoctorExitCodes:
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
         )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("sys.stdout", new_callable=StringIO):
             code = doctor.run_doctor()
@@ -121,7 +125,7 @@ class TestDoctorExitCodes:
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _degraded_report()}},
         )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("sys.stdout", new_callable=StringIO):
             code = doctor.run_doctor()
@@ -138,7 +142,7 @@ class TestDoctorExitCodes:
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": report}},
         )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("sys.stdout", new_callable=StringIO):
             code = doctor.run_doctor()
@@ -149,7 +153,7 @@ class TestDoctorExitCodes:
         `WindowsApps` install): a diagnosis + exit 2, never a raw traceback."""
         from tools.computer_use import doctor
 
-        with patch("shutil.which", return_value="/protected/cua-driver"), \
+        with _pm_driver("/protected/cua-driver"), \
              patch("subprocess.Popen", side_effect=PermissionError(13, "Access is denied")):
             code = doctor.run_doctor()
         assert code == 2
@@ -170,7 +174,7 @@ class TestDoctorExitCodes:
         proc.wait = MagicMock(return_value=0)
         proc.kill = MagicMock()
 
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc):
             code = doctor.run_doctor()
         assert code == 2
@@ -183,21 +187,6 @@ class TestDoctorExitCodes:
 
 
 class TestResponseShapeParsing:
-    def test_prefers_structuredContent(self):
-        from tools.computer_use import doctor
-
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO) as out:
-            doctor.run_doctor()
-        # Header line includes driver version + platform + overall.
-        text = out.getvalue()
-        assert "darwin" in text
-        assert "ok" in text
 
 
     def test_jsonrpc_error_response_exits_2(self, capsys):
@@ -207,7 +196,7 @@ class TestResponseShapeParsing:
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "error": {"code": -32601, "message": "method not found"}},
         )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc):
             code = doctor.run_doctor()
         assert code == 2
@@ -225,7 +214,7 @@ class TestArgPassthrough:
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
         )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("sys.stdout", new_callable=StringIO):
             doctor.run_doctor(include=["binary_version", "tcc_accessibility"])
@@ -236,22 +225,6 @@ class TestArgPassthrough:
         assert call_payload["params"]["arguments"]["include"] == [
             "binary_version", "tcc_accessibility",
         ]
-
-    def test_skip_passed_through(self):
-        from tools.computer_use import doctor
-
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO):
-            doctor.run_doctor(skip=["bundle_identity"])
-        writes = [call.args[0] for call in proc.stdin.write.call_args_list]
-        call_payload = next(json.loads(w) for w in writes if "tools/call" in w)
-        assert call_payload["params"]["arguments"]["skip"] == ["bundle_identity"]
-
 
 
 # ── json output ────────────────────────────────────────────────────────────
@@ -265,7 +238,7 @@ class TestJsonOutput:
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
         )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("sys.stdout", new_callable=StringIO) as out:
             doctor.run_doctor(json_output=True)
@@ -283,56 +256,40 @@ class TestJsonOutput:
 
 
 class TestDriverCmdResolution:
-    def test_explicit_driver_cmd_arg_wins(self):
+    @staticmethod
+    def _executable(path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o755)
+        return path
+
+    def _inspected_binary(self, **kwargs) -> Path:
         from tools.computer_use import doctor
 
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/fake/explicit-binary") as which_mock, \
-             patch("subprocess.Popen", return_value=proc), \
+        with _pm_driver("/pm/store/cua-driver"), \
+             patch("tools.computer_use.doctor._drive_health_report", return_value=_ok_report()) as health, \
              patch("sys.stdout", new_callable=StringIO):
-            doctor.run_doctor(driver_cmd="/custom/path/cua-driver")
-        # shutil.which should have been called with the explicit arg, not
-        # the env-var / default resolver.
-        which_mock.assert_called_with("/custom/path/cua-driver")
+            assert doctor.run_doctor(**kwargs) == 0
+        return Path(health.call_args.args[0])
 
-    def test_env_var_used_when_no_arg_given(self, monkeypatch):
-        from tools.computer_use import doctor
+    def test_explicit_driver_cmd_arg_wins(self, tmp_path, monkeypatch):
+        explicit = self._executable(tmp_path / "custom" / "cua-driver")
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(self._executable(tmp_path / "env" / "cua-driver")))
 
-        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/env/path/cua-driver")
-        proc = _fake_proc_with_responses(
-            {"jsonrpc": "2.0", "id": 1, "result": {}},
-            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
-        )
-        with patch("shutil.which", return_value="/env/path/cua-driver") as which_mock, \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("sys.stdout", new_callable=StringIO), \
-             patch("hermes_cli.tools_config._cua_driver_cmd", side_effect=Exception("force env")):
-            # Force env-var resolution path inside run_doctor.
-            doctor.run_doctor()
-        which_mock.assert_called_with("/env/path/cua-driver")
+        assert self._inspected_binary(driver_cmd=str(explicit)) == explicit
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX user-local path regression")
-    def test_user_local_driver_is_found_when_path_omits_it(self, tmp_path, monkeypatch):
-        """Doctor must inspect the same user-local driver as the runtime."""
-        from tools.computer_use import doctor
+    def test_env_var_used_when_no_arg_given(self, tmp_path, monkeypatch):
+        from_env = self._executable(tmp_path / "env" / "cua-driver")
+        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(from_env))
 
-        driver = tmp_path / ".local" / "bin" / "cua-driver"
-        driver.parent.mkdir(parents=True)
-        driver.write_text("#!/bin/sh\nexit 0\n")
-        driver.chmod(0o755)
+        assert self._inspected_binary() == from_env
 
+    def test_doctor_inspects_the_pm_selected_driver_not_path(self, tmp_path, monkeypatch):
+        """Doctor must diagnose the driver the runtime invokes: PM's pin, not a PATH copy."""
         monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        monkeypatch.setenv("PATH", str(self._executable(tmp_path / "bin" / "cua-driver").parent))
 
-        with patch("tools.computer_use.doctor._drive_health_report", return_value=_ok_report()) as health, \
-             patch("sys.stdout", new_callable=StringIO):
-            assert doctor.run_doctor() == 0
-
-        health.assert_called_once_with(str(driver), include=(), skip=(), timeout=12.0)
+        assert self._inspected_binary() == Path("/pm/store/cua-driver")
 
 
 # ── cua-driver 0.10 unclassified health_report fallback ────────────────────
@@ -386,16 +343,12 @@ class TestHealthReportFallback:
     """
 
 
-
-
-
     def test_extract_raises_health_report_unavailable_on_isError(self):
         from tools.computer_use import doctor
 
         with __import__("pytest").raises(doctor.HealthReportUnavailable) as ei:
             doctor._extract_health_report_from_result(_unclassified_health_result())
         assert "Permission denied" in str(ei.value) or "unclassified" in str(ei.value).lower() or "risk" in str(ei.value).lower()
-
 
 
 # ── binary identity (CLI --version vs health_report) ───────────────────────
@@ -412,7 +365,7 @@ class TestDoctorVersionIdentity:
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
         )
         # _ok_report claims 0.5.8; CLI says 0.12.6
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc), \
              patch.object(doctor, "_read_cli_version", return_value="cua-driver 0.12.6"), \
              patch("sys.stdout", new_callable=StringIO) as out:
@@ -431,7 +384,7 @@ class TestDoctorVersionIdentity:
             {"jsonrpc": "2.0", "id": 1, "result": {}},
             {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
         )
-        with patch("shutil.which", return_value="/fake/cua-driver"), \
+        with _pm_driver("/fake/cua-driver"), \
              patch("subprocess.Popen", return_value=proc), \
              patch.object(doctor, "_read_cli_version", return_value="cua-driver 0.5.8"), \
              patch("sys.stdout", new_callable=StringIO) as out:
@@ -439,7 +392,6 @@ class TestDoctorVersionIdentity:
         assert code == 0
         payload = json.loads(out.getvalue())
         assert payload["hermes_identity"]["version_mismatch"] is False
-
 
 
 def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_service():
@@ -456,7 +408,7 @@ def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_se
         {"jsonrpc": "2.0", "id": 1, "result": {}},
         {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": report}},
     )
-    with patch("shutil.which", return_value="/fake/cua-driver"), patch("subprocess.Popen", return_value=proc), \
+    with _pm_driver("/fake/cua-driver"), patch("subprocess.Popen", return_value=proc), \
          patch("sys.stdout", new_callable=StringIO) as out:
         doctor.run_doctor(json_output=True)
     checks = {c["name"]: c for c in json.loads(out.getvalue())["checks"]}

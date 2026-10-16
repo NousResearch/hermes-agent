@@ -26,6 +26,7 @@ import { vi } from 'vitest'
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
   content: string
+  display_kind?: string
   role: string
 }
 
@@ -175,7 +176,58 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     return stored ? sessions.get(stored) || null : null
   }
 
+  // `profiles.configure`: CAS-checked ui_meta writes, with an optional one-shot conflict.
+  const configureProfiles = (params: Record<string, unknown>) => {
+    if (options.conflictOnce && !conflicted) {
+      conflicted = true
+      const { key, value } = options.conflictOnce
+      uiMeta[key] = value
+      uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
+
+      return {
+        applied: {
+          ui_meta: false,
+          ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key], expected: uiMetaRevisions[key] - 1 } },
+          ui_meta_revisions: { ...uiMetaRevisions }
+        }
+      }
+    }
+
+    const expected = params.ui_meta_expected_revisions as Record<string, number> | undefined
+    const incoming = (params.ui_meta || {}) as Record<string, unknown>
+
+    if (expected) {
+      for (const key of Object.keys(incoming)) {
+        if ((uiMetaRevisions[key] || 0) !== expected[key]) {
+          return {
+            applied: {
+              ui_meta: false,
+              ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key] || 0, expected: expected[key] } }
+            }
+          }
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(incoming)) {
+      if (value === null) {
+        delete uiMeta[key]
+      } else {
+        uiMeta[key] = value
+      }
+
+      uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
+    }
+
+    return { applied: { ui_meta: true, ui_meta_revisions: { ...uiMetaRevisions } } }
+  }
+
   const handle = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+    // A legacy Desktop room: no hosted-room driver, nonpersistent owner.
+    if (method === 'groups.capabilities') {
+      return { driver: false, persistent_process: false }
+    }
+
     if (method === 'profiles.list') {
       return {
         profiles: [{ name: 'default', ui_meta: { ...uiMeta }, ui_meta_revisions: { ...uiMetaRevisions } }]
@@ -183,48 +235,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     }
 
     if (method === 'profiles.configure') {
-      if (options.conflictOnce && !conflicted) {
-        conflicted = true
-        const { key, value } = options.conflictOnce
-        uiMeta[key] = value
-        uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
-
-        return {
-          applied: {
-            ui_meta: false,
-            ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key], expected: uiMetaRevisions[key] - 1 } },
-            ui_meta_revisions: { ...uiMetaRevisions }
-          }
-        }
-      }
-
-      const expected = params.ui_meta_expected_revisions as Record<string, number> | undefined
-      const incoming = (params.ui_meta || {}) as Record<string, unknown>
-
-      if (expected) {
-        for (const key of Object.keys(incoming)) {
-          if ((uiMetaRevisions[key] || 0) !== expected[key]) {
-            return {
-              applied: {
-                ui_meta: false,
-                ui_meta_conflicts: { [key]: { actual: uiMetaRevisions[key] || 0, expected: expected[key] } }
-              }
-            }
-          }
-        }
-      }
-
-      for (const [key, value] of Object.entries(incoming)) {
-        if (value === null) {
-          delete uiMeta[key]
-        } else {
-          uiMeta[key] = value
-        }
-
-        uiMetaRevisions[key] = (uiMetaRevisions[key] || 0) + 1
-      }
-
-      return { applied: { ui_meta: true, ui_meta_revisions: { ...uiMetaRevisions } } }
+      return configureProfiles(params)
     }
 
     if (method === 'session.create') {
@@ -446,6 +457,8 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
 
   return {
+    // Real value: approval.respond forwards it as its client deadline (#60654).
+    APPROVAL_RESPOND_TIMEOUT_MS: 300_000,
     atom: nanostores.atom,
     // Feature-detected SDK members: the modules read them off the namespace
     // and fall back when absent, but vitest rejects a namespace access with
@@ -454,6 +467,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     blobatarSvg: undefined,
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
+    gatewayActivationEpoch: () => 0,
     host,
     CapabilitiesView: undefined,
     MessageTextContent: undefined,

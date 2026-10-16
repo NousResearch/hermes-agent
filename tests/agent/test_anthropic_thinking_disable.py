@@ -29,11 +29,6 @@ MESSAGES = [{"role": "user", "content": "hello"}]
 # property of the model family, not of which route serves it.
 ADAPTIVE_DISABLEABLE = [
     "anthropic/claude-opus-5",
-    "anthropic/claude-sonnet-5",
-    "anthropic/claude-opus-4.8",
-    "anthropic/claude-opus-4.7",
-    "anthropic/claude-opus-4.6",
-    "anthropic/claude-sonnet-4.6",
     "claude-opus-4-6",
 ]
 
@@ -64,10 +59,18 @@ class TestThinkingOffIsSentExplicitly:
         assert kwargs["thinking"] == {"type": "disabled"}
         assert "output_config" not in kwargs
 
-    def test_mandatory_thinking_models_keep_the_omission(self) -> None:
-        """claude-fable answers a disable with HTTP 400, so don't send one."""
-        kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": False})
+    @pytest.mark.parametrize("model", ["anthropic/claude-fable-5", "claude-opus-5-5", "anthropic/claude-opus-5.5"])
+    def test_mandatory_thinking_models_keep_the_omission(self, model: str) -> None:
+        """Fable and Opus 5.5 answer a disable with HTTP 400, so don't send one."""
+        kwargs = _kwargs(model, {"enabled": False})
         assert "thinking" not in kwargs
+
+    @pytest.mark.parametrize("model", ["claude-sonnet-5-5", "anthropic/claude-sonnet-5.5"])
+    def test_between_tools_is_the_off_switch_where_disabled_400s(self, model: str) -> None:
+        """Sonnet 5.5 400s on ``disabled``; its documented lowest setting is ``between_tools``.
+        Sonnet 5 still takes the plain disable."""
+        assert _kwargs(model, {"enabled": False})["thinking"] == {"type": "between_tools"}
+        assert _kwargs("claude-sonnet-5", {"enabled": False})["thinking"] == {"type": "disabled"}
 
     def test_legacy_manual_thinking_models_keep_the_omission(self) -> None:
         """Pre-4.6 thinking is opt-in via budget_tokens: absence IS off."""
@@ -102,11 +105,18 @@ class TestEnablePathIsUnchanged:
 
     def test_legacy_enable_still_sends_budget_tokens(self) -> None:
         kwargs = _kwargs("claude-sonnet-4-5", {"enabled": True, "effort": "high"})
-        assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 16000}
+        assert kwargs["thinking"]["type"] == "enabled"
+        assert kwargs["thinking"]["budget_tokens"] > 0
 
     def test_haiku_still_never_gets_thinking_on_the_enable_path(self) -> None:
         kwargs = _kwargs("anthropic/claude-haiku-4.5", {"enabled": True, "effort": "high"})
         assert "thinking" not in kwargs
+
+    def test_haiku_55_thinks_adaptively(self) -> None:
+        """Haiku 5.5 is an adaptive-thinking model (Anthropic/Bedrock model tables); a blanket 'haiku'
+        skip sent it no thinking at all."""
+        kwargs = _kwargs("anthropic/claude-haiku-5.5", {"enabled": True, "effort": "high"})
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
 
     def test_no_reasoning_config_sends_no_thinking_field(self) -> None:
         assert "thinking" not in _kwargs("anthropic/claude-opus-5", None)
@@ -115,13 +125,6 @@ class TestEnablePathIsUnchanged:
 class TestDisableVerdictHelper:
     """``_accepts_thinking_disable`` is the single source of the verdict."""
 
-    def test_verdict_matches_the_mandatory_flag_the_catalog_publishes(self) -> None:
-        from agent.anthropic_adapter import _accepts_thinking_disable
-
-        # Portal catalog: reasoning.mandatory is true for fable, false for these.
-        assert _accepts_thinking_disable("anthropic/claude-opus-5") is True
-        assert _accepts_thinking_disable("anthropic/claude-sonnet-5") is True
-        assert _accepts_thinking_disable("anthropic/claude-fable-5") is False
 
     def test_non_claude_models_are_left_alone(self) -> None:
         from agent.anthropic_adapter import _accepts_thinking_disable

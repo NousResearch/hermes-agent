@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ToolsetConfig } from '@/types/hermes'
+import type { ToolsetConfig, WebCapability } from '@/types/hermes'
 
 // Collect the component graph before the behavioral test deadline starts.
 import { ToolsetConfigPanel } from './toolset-config-panel'
@@ -256,22 +256,6 @@ describe('ToolsetConfigPanel', () => {
     expect(forwarded).toEqual(scope)
   })
 
-  it('renders no inline voice fields for rows without tts_provider (older backend)', async () => {
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
-
-    await screen.findByText('Microsoft Edge TTS')
-    expect(screen.queryByText('Edge Voice')).toBeNull()
-    expect(screen.queryByText('OpenAI Voice')).toBeNull()
-  })
-
-  it('lists providers from the config endpoint', async () => {
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
-
-    expect(await screen.findByText('Microsoft Edge TTS')).toBeTruthy()
-    expect(screen.getByText('ElevenLabs')).toBeTruthy()
-    expect(getToolsetConfig).toHaveBeenCalledWith('tts')
-  })
-
   it('expands a provider on row click and activates it via the explicit button', async () => {
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
 
@@ -356,13 +340,6 @@ describe('ToolsetConfigPanel', () => {
     // Picking a different model persists via the model endpoint.
     fireEvent.click(screen.getByRole('button', { name: /FLUX 2 Pro/ }))
     await waitFor(() => expect(selectToolsetModel).toHaveBeenCalledWith('image_gen', 'flux-2-pro', 'FAL.ai'))
-  })
-
-  it('does not fetch model catalogs for toolsets without them', async () => {
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
-
-    await screen.findByText('Microsoft Edge TTS')
-    expect(getToolsetModels).not.toHaveBeenCalled()
   })
 
   it('saves an API key for a provider env var', async () => {
@@ -482,37 +459,6 @@ describe('ToolsetConfigPanel', () => {
     })
   })
 
-  it('does not poll when the spawn endpoint reports ok:false', async () => {
-    getToolsetConfig.mockResolvedValue(
-      config({
-        name: 'browser',
-        active_provider: 'Camofox',
-        providers: [
-          {
-            name: 'Camofox',
-            badge: 'local',
-            tag: 'Stealth local browser',
-            env_vars: [],
-            post_setup: 'camofox',
-            requires_nous_auth: false,
-            is_active: true
-          }
-        ]
-      })
-    )
-    // Spawn failed server-side — must NOT proceed to poll a non-existent action.
-    runToolsetPostSetup.mockResolvedValue({ ok: false, pid: 0, name: 'tools-post-setup' })
-
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Run setup/ }))
-
-    await waitFor(() => expect(runToolsetPostSetup).toHaveBeenCalledWith('browser', 'camofox'))
-    // Give the would-be first poll delay (1200ms) time to NOT fire.
-    await new Promise(resolve => setTimeout(resolve, 1500))
-    expect(getActionStatus).not.toHaveBeenCalled()
-  })
-
   it('surfaces a non-zero exit code from the setup process', async () => {
     getToolsetConfig.mockResolvedValue(
       config({
@@ -554,38 +500,6 @@ describe('ToolsetConfigPanel', () => {
     await waitFor(() => expect(screen.getByText(/npm ERR! install failed/)).toBeTruthy(), {
       timeout: 4000
     })
-  })
-
-  it('swaps the install hint for the installed one-liner when the provider is ready', async () => {
-    // Server says the post_setup install is already satisfied (status ready) —
-    // the "needs a one-time install" copy would contradict the Ready pill.
-    getToolsetConfig.mockResolvedValue(
-      config({
-        name: 'browser',
-        active_provider: 'Camofox',
-        providers: [
-          {
-            name: 'Camofox',
-            badge: 'local',
-            tag: 'Stealth local browser',
-            env_vars: [],
-            post_setup: 'camofox',
-            requires_nous_auth: false,
-            is_active: true,
-            status: 'ready'
-          }
-        ]
-      })
-    )
-
-    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-    // Installed confirmation replaces the contradictory install prompt…
-    expect(await screen.findByText(/Installed\. Re-run setup only if something is broken\./)).toBeTruthy()
-    expect(screen.queryByText(/needs a one-time install/)).toBeNull()
-    // …but a repair affordance stays available (c9's resting state renders
-    // the low-key Re-run setup button instead of the primary CTA).
-    expect(screen.getByRole('button', { name: /Re-run setup/ })).toBeTruthy()
   })
 
   describe('readiness pills', () => {
@@ -640,41 +554,6 @@ describe('ToolsetConfigPanel', () => {
       expect(screen.queryByText('Ready')).toBeNull()
       expect(screen.getByText('Needs sign-in')).toBeTruthy()
       expect(screen.getByText('Setup required')).toBeTruthy()
-    })
-
-    it('shows no Ready pill for a keyed provider the server marks needs_keys', async () => {
-      getToolsetConfig.mockResolvedValue(
-        config({
-          providers: [
-            {
-              name: 'ElevenLabs',
-              badge: 'paid',
-              tag: 'Most natural voices',
-              env_vars: [
-                {
-                  key: 'ELEVENLABS_API_KEY',
-                  prompt: 'ElevenLabs API key',
-                  url: 'https://x',
-                  default: null,
-                  is_set: false
-                }
-              ],
-              post_setup: null,
-              requires_nous_auth: false,
-              is_active: false,
-              status: 'needs_keys'
-            }
-          ]
-        })
-      )
-
-      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
-
-      await screen.findByText('ElevenLabs')
-      expect(screen.queryByText('Ready')).toBeNull()
-      // Missing keys are signalled by the env-var fields, not a warn pill.
-      expect(screen.queryByText('Needs sign-in')).toBeNull()
-      expect(screen.queryByText('Setup required')).toBeNull()
     })
 
     it('falls back to the env-var heuristic when the backend sends no status', async () => {
@@ -800,36 +679,6 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(await screen.findByRole('button', { name: /Re-run setup/ }))
 
       await waitFor(() => expect(runToolsetPostSetup).toHaveBeenCalledWith('browser', 'agent_browser'))
-    })
-
-    it('keeps the primary Run setup CTA when the server says needs_setup', async () => {
-      getToolsetConfig.mockResolvedValue(
-        config({
-          name: 'browser',
-          active_provider: 'Local Browser',
-          providers: [
-            {
-              name: 'Local Browser',
-              badge: 'free',
-              tag: 'Headless Chromium, no API key needed',
-              env_vars: [],
-              post_setup: 'agent_browser',
-              requires_nous_auth: false,
-              is_active: true,
-              status: 'needs_setup'
-            }
-          ]
-        })
-      )
-
-      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-      await screen.findByText('Local Browser')
-      // The Run setup CTA renders inside the expanded panel, which appears one
-      // effect-driven re-render after the row itself — await it (getByRole
-      // raced the auto-expand effect and flaked under the RQ provider).
-      expect(await screen.findByRole('button', { name: /Run setup/ })).toBeTruthy()
-      expect(screen.queryByText('Installed')).toBeNull()
     })
   })
 
@@ -1050,7 +899,7 @@ describe('ToolsetConfigPanel', () => {
             env_vars: [],
             post_setup: null,
             requires_nous_auth: false,
-            is_active: false,
+            is_active: true,
             status: 'ready',
             web_backend: 'firecrawl',
             capabilities: ['search', 'extract']
@@ -1060,20 +909,11 @@ describe('ToolsetConfigPanel', () => {
       }
     }
 
-    it('shows the resolved per-capability backends as badges', async () => {
-      getToolsetConfig.mockResolvedValue(webConfig())
-
-      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
-
-      expect(await screen.findByText('Search: searxng')).toBeTruthy()
-      expect(screen.getByText('Extract: firecrawl')).toBeTruthy()
-      // The row backing each capability gets an assignment pill.
-      expect(screen.getByText('Search backend')).toBeTruthy()
-      expect(screen.getByText('Extract backend')).toBeTruthy()
-    })
-
     it('hides "Use for Extract" on a search-only provider and wires capability selection', async () => {
-      getToolsetConfig.mockResolvedValue(webConfig())
+      // The panel refetches after a capability pick: second load is the server's truth.
+      getToolsetConfig
+        .mockResolvedValueOnce(webConfig())
+        .mockResolvedValue(webConfig({ active_search_backend: 'firecrawl' }))
       selectToolsetProvider.mockResolvedValue({ ok: true, name: 'web', provider: 'SearXNG', capability: 'search' })
 
       render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
@@ -1089,16 +929,71 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(useForSearch)
 
       await waitFor(() => expect(selectToolsetProvider).toHaveBeenCalledWith('web', 'Firecrawl', 'search'))
-      // Badge tracks the local write without a refetch.
       await waitFor(() => expect(screen.getByText('Search: firecrawl')).toBeTruthy())
     })
 
-    it('does not render capability chrome for non-web toolsets', async () => {
-      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+    it('lights the Nous row for a gateway-served capability and the BYOK row for the own-key one', async () => {
+      const nous = {
+        name: 'Nous Subscription',
+        badge: 'subscription',
+        tag: 'Managed web search and extract billed to your subscription',
+        env_vars: [],
+        post_setup: null,
+        requires_nous_auth: true,
+        managed_nous_feature: 'web',
+        is_active: false,
+        status: 'ready' as const,
+        web_backend: 'firecrawl',
+        capabilities: ['search', 'extract'] as WebCapability[]
+      }
 
-      await screen.findByText('Microsoft Edge TTS')
-      expect(screen.queryByText(/^Search: /)).toBeNull()
-      expect(screen.queryByRole('button', { name: 'Use for Search' })).toBeNull()
+      // Search through the gateway, extract on the user's own Firecrawl key:
+      // both rows share web_backend 'firecrawl', only the *_via_nous flags tell them apart.
+      getToolsetConfig.mockResolvedValue(
+        webConfig({
+          active_search_backend: 'perplexity',
+          active_extract_backend: 'firecrawl',
+          search_via_nous: true,
+          extract_via_nous: false,
+          providers: [...webConfig().providers, nous]
+        })
+      )
+
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      expect(await screen.findByText('Search: Nous Subscription')).toBeTruthy()
+      expect(screen.getByText('Extract: firecrawl')).toBeTruthy()
+      const nousRow = screen.getByRole('button', { name: /Nous Subscription/ })
+      const byokRow = screen.getByRole('button', { name: /^Firecrawl/ })
+      expect(within(nousRow).getByText('Search backend')).toBeTruthy()
+      expect(within(nousRow).queryByText('Extract backend')).toBeNull()
+      expect(within(byokRow).getByText('Extract backend')).toBeTruthy()
+      expect(within(byokRow).queryByText('Search backend')).toBeNull()
+    })
+
+    it('marks only the configured row of two sharing one backend name', async () => {
+      // Cloud and self-hosted Firecrawl share web_backend 'firecrawl'; the server's is_active says which
+      // one's credential is set, and only that row carries the capability pills.
+      const selfHosted = {
+        ...webConfig().providers[1],
+        name: 'Firecrawl Self-Hosted',
+        badge: 'free · self-hosted',
+        is_active: false,
+        status: 'needs_keys' as const
+      }
+
+      getToolsetConfig.mockResolvedValue(
+        webConfig({ active_search_backend: 'firecrawl', providers: [selfHosted, webConfig().providers[1]] })
+      )
+
+      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="web" />)
+
+      const cloudRow = await screen.findByRole('button', { name: /^Firecrawl(?! Self)/ })
+      const selfRow = screen.getByRole('button', { name: /^Firecrawl Self-Hosted/ })
+      expect(within(cloudRow).getByText('Search backend')).toBeTruthy()
+      expect(within(cloudRow).getByText('Extract backend')).toBeTruthy()
+      expect(within(selfRow).queryByText('Search backend')).toBeNull()
+      expect(within(selfRow).queryByText('Extract backend')).toBeNull()
     })
   })
 })

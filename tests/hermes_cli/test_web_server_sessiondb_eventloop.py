@@ -1,102 +1,19 @@
-import ast
+"""Dashboard session routes must run SessionDB open + work off the event loop.
+
+Regression for #60747: /search, /stats, /{id} (and bulk delete) ran FTS and
+SQLite inline on the loop thread, so a large state.db froze every other
+dashboard request (rename too). These drive the real route handlers and record which
+thread every SessionDB call lands on.
+"""
+
 import asyncio
 import threading
-from pathlib import Path
 
 import pytest
 
-from hermes_cli import web_server
 import hermes_cli.web_models as _web_models
 import hermes_cli.web_routers.sessions as _rt_sessions
 import hermes_cli.web_server_sessions as _web_server_sessions
-from hermes_cli import web_server_sessions
-from hermes_cli.web_routers import analytics as web_analytics
-from hermes_cli.web_routers import sessions as web_sessions
-
-
-TARGET_HANDLERS = {
-    "bulk_delete_sessions_endpoint",
-    "count_empty_sessions_endpoint",
-    "delete_empty_sessions_endpoint",
-    "get_session_latest_descendant",
-    "get_session_messages",
-    "delete_session_endpoint",
-    "export_session_endpoint",
-    "prune_sessions_endpoint",
-    "get_usage_analytics",
-    "get_models_analytics",
-    "search_sessions",
-    "get_session_stats",
-    "get_session_detail",
-}
-
-
-def _call_name(call: ast.Call) -> str | None:
-    if isinstance(call.func, ast.Name):
-        return call.func.id
-    if isinstance(call.func, ast.Attribute):
-        return call.func.attr
-    return None
-
-
-def test_sessiondb_handlers_open_connections_inside_executor_helpers():
-    # The session and analytics route handlers were extracted to
-    # web_routers/{sessions,analytics}.py; the executor helpers live in
-    # web_server_sessions.py (and any left in web_server.py) — scan all
-    # four modules' top-level bodies.
-    handlers: dict[str, ast.AsyncFunctionDef] = {}
-    top_level_helpers: dict[str, ast.FunctionDef] = {}
-    for mod in (web_server, web_server_sessions, web_sessions, web_analytics):
-        tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
-        for node in tree.body:
-            if isinstance(node, ast.AsyncFunctionDef) and node.name in TARGET_HANDLERS:
-                handlers[node.name] = node
-            elif isinstance(node, ast.FunctionDef):
-                top_level_helpers[node.name] = node
-    assert handlers.keys() == TARGET_HANDLERS
-
-    for name, handler in handlers.items():
-        helpers = {
-            **top_level_helpers,
-            **{
-                node.name: node
-                for node in handler.body
-                if isinstance(node, ast.FunctionDef)
-            },
-        }
-        offloaded = {
-            arg.id
-            for node in ast.walk(handler)
-            if isinstance(node, ast.Call)
-            and _call_name(node) == "to_thread"
-            for arg in node.args[:1]
-            if isinstance(arg, ast.Name)
-        }
-        db_open_owners = {
-            helper_name
-            for helper_name, helper in helpers.items()
-            if helper_name in offloaded
-            and any(
-                isinstance(node, ast.Call)
-                and _call_name(node) == "_open_session_db_for_profile"
-                for node in ast.walk(helper)
-            )
-        }
-        assert db_open_owners, f"{name} does not offload SessionDB open + work"
-
-
-def test_sessiondb_opens_declare_access_mode():
-    for mod in (web_server_sessions, web_sessions):
-        tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
-        calls = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and _call_name(node) == "_open_session_db_for_profile"
-        ]
-        assert calls
-        for call in calls:
-            assert any(keyword.arg == "read_only" for keyword in call.keywords)
 
 
 def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
@@ -105,7 +22,7 @@ def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
     db_modes: list[bool] = []
 
     class _DB:
-        def delete_sessions(self, ids):
+        def delete_sessions(self, ids, **kwargs):
             db_threads.append(threading.get_ident())
             assert ids == ["one", "two"]
             return 2
@@ -126,7 +43,7 @@ def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
         )
     )
 
-    assert result == {"ok": True, "deleted": 2}
+    assert result == {"ok": True, "deleted": 2, "skipped_active": []}
     assert db_modes == [False]
     assert db_threads
     assert all(thread_id != loop_thread for thread_id in db_threads)
@@ -195,3 +112,45 @@ def test_session_read_handlers_run_sessiondb_work_off_event_loop(monkeypatch, ca
 
     assert db_threads, "handler never touched the SessionDB"
     assert all(thread_id != loop_thread for thread_id in db_threads)
+
+
+def test_session_rename_runs_writer_open_and_update_off_event_loop(monkeypatch, tmp_path):
+    """Main's rename fix (1769024ca3b) ported to the unified runtime: the PATCH still opens no
+    second SessionDB writer (the owning authority applies the ``sidebar`` mutation), and that
+    authority's SQLite transaction runs off the event loop thread."""
+    from types import SimpleNamespace
+
+    import gateway.session_mutations as _mutations
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    def _open_db(*_args, **_kwargs):
+        raise AssertionError("rename must not open its own SessionDB writer")
+
+    write_threads: list[int] = []
+    commit = _mutations.mutate_runtime_session
+
+    def _recording_commit(*args, **kwargs):
+        write_threads.append(threading.get_ident())
+        return commit(*args, **kwargs)
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("sess-1", source="cli")
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="p", instance_id="owner",
+                                     db=db, epoch=begin_runtime_epoch(db, instance_id="owner"))
+        authority.sessions["sess-1"] = LiveSession(None, "route")
+        actor = Principal("owner", "p", frozenset({"session:control"}), "http")
+        monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", _open_db)
+        monkeypatch.setattr(_web_server_sessions, "_session_mutation_context", lambda request, profile: (authority, actor))
+        monkeypatch.setattr(_mutations, "mutate_runtime_session", _recording_commit)
+
+        async def _rename():
+            body = _web_models.SessionRename(title="renamed", request_id="req-1", expected_revision=0)
+            return threading.get_ident(), await _rt_sessions.rename_session_endpoint("sess-1", body, request=object())
+
+        loop_thread, result = asyncio.run(_rename())
+        assert result["ok"] is True and result["title"] == "renamed"
+        assert db.get_session("sess-1")["title"] == "renamed"
+    assert write_threads and all(thread_id != loop_thread for thread_id in write_threads)

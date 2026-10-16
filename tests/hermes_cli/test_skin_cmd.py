@@ -7,7 +7,7 @@ The whole point is that changing one token never disturbs the rest of the look
 import os
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli import skin_cmd
 from hermes_constants import get_hermes_home
@@ -99,6 +99,7 @@ def test_set_persists_the_skin_durably():
     assert [p.name for p in _skins().iterdir() if p.name.endswith(".tmp")] == []
 
 
+@pytest.mark.require_symlinks
 def test_set_preserves_a_symlinked_skin_file():
     """Guard on the conversion, not a behavior change.
 

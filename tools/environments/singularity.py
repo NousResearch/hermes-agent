@@ -11,10 +11,10 @@ import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
+from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _popen_bash
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import bash_argv, run_capture
@@ -53,12 +53,8 @@ def _ensure_singularity_available() -> str:
     return exe
 
 
-def _load_snapshots() -> dict:
-    return _load_json_store(_snapshot_store())
-
-
-def _save_snapshots(data: dict) -> None:
-    _save_json_store(_snapshot_store(), data)
+def _update_snapshots(update: Callable[[dict], None]) -> None:
+    _update_json_store(_snapshot_store(), update)
 
 
 def _get_scratch_dir() -> Path:
@@ -215,6 +211,5 @@ class SingularityEnvironment(BaseEnvironment):
             self._instance_started = False
 
         if self._persistent and self._overlay_dir:
-            snapshots = _load_snapshots()
-            snapshots[self._task_id] = str(self._overlay_dir)
-            _save_snapshots(snapshots)
+            overlay_dir = str(self._overlay_dir)
+            _update_snapshots(lambda snapshots: snapshots.update({self._task_id: overlay_dir}))

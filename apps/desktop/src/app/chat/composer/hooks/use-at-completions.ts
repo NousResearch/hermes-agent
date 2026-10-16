@@ -46,7 +46,7 @@ function mergeCompletionEntries(
 ): CompletionEntry[] {
   const seenHandles = new Set<string>()
 
-  return [...preferred, ...fallback].filter(entry => {
+  return [...preferred, ...fallback].filter((entry, index) => {
     const key = normalize(entry.text)
 
     if (!/^@[^:\s]+$/.test(key) || SIMPLE_CONTEXT_REFS.has(key)) {
@@ -57,7 +57,9 @@ function mergeCompletionEntries(
     // already lists (a bot's raw profile name under its title slug). The
     // gateway's own row for that name is the same routable identity offered
     // a second time — keep the contributed row, drop this one.
-    if (claimedHandles?.has(key)) {
+    // Claims suppress only fallback rows, never the contribution that owns
+    // them. An unrenamed bot's insert is itself one of its claimed handles.
+    if (index >= preferred.length && claimedHandles?.has(key)) {
       return false
     }
 

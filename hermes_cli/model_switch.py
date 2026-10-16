@@ -1812,8 +1812,12 @@ def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
 def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
     """Apply the canonical shape to an in-memory ``model:`` dict (``None`` = key removed) for
     callers that save a whole config document they are already mutating."""
+    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg))
+
+
+def _merge_selection_updates(model_cfg: Any, updates: dict[str, Any]) -> dict:
     model_cfg = dict(model_cfg) if isinstance(model_cfg, dict) else {}
-    for key, value in model_selection_config_updates(result, model_cfg).items():
+    for key, value in updates.items():
         if value is None:
             model_cfg.pop(key, None)
         else:
@@ -1828,13 +1832,24 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     Build the complete selection from one raw snapshot, preserving sibling settings and secret
     references, then publish once. Per-key publication can leave a mixed route after a failed
     write or an overlapping selection. ``should_clear_context_pin`` can do cold-start disk I/O
-    — async callers run this on a worker thread."""
+    — async callers run this on a worker thread.
+
+    The replace deletes keys missing from the snapshot, so every route decision (and its disk
+    I/O) is made from a pre-read BEFORE the snapshot; read -> merge -> replace is then a pure
+    in-memory section. Only when another writer changed ``model:`` in between are the updates
+    recomputed against the fresh block. ``_CONFIG_LOCK`` is in-process only: a cross-process
+    config lock, once one exists, must wrap the same section."""
     from pathlib import Path
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     path = Path(config_path) if config_path else get_config_path()
+    planned_from = read_user_config_raw(path).get("model")
+    updates = model_selection_config_updates(result, planned_from)
     with _CONFIG_LOCK:
         config = read_user_config_raw(path)
-        config["model"] = apply_model_selection(config.get("model"), result)
+        model_cfg = config.get("model")
+        if model_cfg != planned_from:
+            updates = model_selection_config_updates(result, model_cfg)
+        config["model"] = _merge_selection_updates(model_cfg, updates)
         atomic_config_replace(path, config)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)

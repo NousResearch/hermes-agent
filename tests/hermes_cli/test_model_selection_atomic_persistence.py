@@ -61,7 +61,7 @@ def profile_config(tmp_path, monkeypatch):
     path.write_text(_SEED, encoding="utf-8")
     yield path
     assert (
-        default_config.read_text(encoding="utf-8") == "model: default-profile-model\n"
+        default_config.read_text(encoding="utf-8-sig") == "model: default-profile-model\n"
     )
 
 
@@ -75,7 +75,7 @@ def test_persist_publishes_only_a_complete_model_route(profile_config, monkeypat
         result = replace(source, target)
         if Path(target) == profile_config:
             published.append(
-                yaml.safe_load(profile_config.read_text(encoding="utf-8"))["model"]
+                yaml.safe_load(profile_config.read_text(encoding="utf-8-sig"))["model"]
             )
         return result
 
@@ -93,7 +93,7 @@ def test_failed_route_publication_leaves_original_bytes(profile_config, monkeypa
 
     def reject_new_provider(source, target):
         if Path(target) == profile_config:
-            pending = yaml.safe_load(Path(source).read_text(encoding="utf-8"))
+            pending = yaml.safe_load(Path(source).read_text(encoding="utf-8-sig"))
             if pending["model"]["provider"] == _RESULT.target_provider:
                 raise OSError("synthetic publication failure")
         return replace(source, target)
@@ -103,6 +103,38 @@ def test_failed_route_publication_leaves_original_bytes(profile_config, monkeypa
         persist_model_selection(_RESULT, profile_config)
 
     assert profile_config.read_bytes() == original
+
+
+def test_setting_saved_while_route_is_decided_survives(profile_config, monkeypatch):
+    """Another process saving a setting during the (I/O-capable) route decision is not erased."""
+    from hermes_cli import model_switch, route_identity
+
+    decide = route_identity.should_clear_context_pin
+    writer = (
+        "import sys, utils\n"
+        "utils.atomic_roundtrip_yaml_update(sys.argv[1], 'display.theme', 'dark')\n"
+    )
+    wrote = []
+
+    def decide_while_other_process_saves(*args):
+        if not wrote:
+            wrote.append(True)
+            subprocess.run(
+                [sys.executable, "-c", writer, str(profile_config)],
+                cwd=Path(model_switch.__file__).resolve().parents[1],
+                check=True,
+                capture_output=True,
+                timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        return decide(*args)
+
+    monkeypatch.setattr(route_identity, "should_clear_context_pin", decide_while_other_process_saves)
+    persist_model_selection(_RESULT, profile_config)
+
+    saved = yaml.safe_load(profile_config.read_text(encoding="utf-8-sig"))
+    assert wrote and saved["display"]["theme"] == "dark"
+    assert saved["model"] == _EXPECTED
 
 
 def test_same_route_preserves_raw_references_and_siblings(profile_config):
@@ -118,7 +150,7 @@ def test_same_route_preserves_raw_references_and_siblings(profile_config):
     )
     persist_model_selection(same_route, profile_config)
 
-    text = profile_config.read_text(encoding="utf-8")
+    text = profile_config.read_text(encoding="utf-8-sig")
     assert yaml.safe_load(text) == yaml.safe_load(seed)
     assert "# Keep this header" in text
     assert '"keep-this" # Keep this slot' in text
@@ -160,7 +192,7 @@ def test_overlapping_process_selection_cannot_leave_a_mixed_route(
 
     monkeypatch.setattr(utils, "atomic_replace", interleave)
     persist_model_selection(_RESULT, profile_config)
-    block = yaml.safe_load(profile_config.read_text(encoding="utf-8"))["model"]
+    block = yaml.safe_load(profile_config.read_text(encoding="utf-8-sig"))["model"]
     assert block == {
         **_EXPECTED,
         "default": "other-model",
@@ -184,7 +216,7 @@ def test_unreadable_config_is_not_replaced(profile_config, content):
 def test_missing_config_gets_the_complete_route(profile_config):
     profile_config.unlink()
     persist_model_selection(_RESULT, profile_config)
-    assert yaml.safe_load(profile_config.read_text(encoding="utf-8")) == {
+    assert yaml.safe_load(profile_config.read_text(encoding="utf-8-sig")) == {
         "model": {
             key: value for key, value in _EXPECTED.items() if key != "model_slots"
         },

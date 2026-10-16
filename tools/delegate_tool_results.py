@@ -185,7 +185,7 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         # remote backends whose container UID must be able to read it.
         # ``summary`` is already the forced, structure-preserving projection (_trim_summary_with_footer); a
         # second whole-text pass here would eat JSON delimiters and corrupt a valid structured answer.
-        write_text_exclusive(path, summary, private=False)
+        write_text_exclusive(path, getattr(summary, "forced", summary), private=False)
         return str(path)
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)

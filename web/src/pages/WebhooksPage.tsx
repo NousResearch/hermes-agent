@@ -26,6 +26,7 @@ import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 
@@ -67,6 +68,7 @@ export default function WebhooksPage() {
   const [restarting, setRestarting] = useState(false);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
+  const { profile: scopedProfile } = useProfileScope();
 
   // New subscription modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -505,6 +507,7 @@ export default function WebhooksPage() {
               <span>
                 {restartError ??
                   "Webhooks are enabled, but the gateway still needs a restart before the receiver can come online."}
+                {scopedProfile && ` This restarts the gateway for profile "${scopedProfile}".`}
               </span>
             </div>
             <Button

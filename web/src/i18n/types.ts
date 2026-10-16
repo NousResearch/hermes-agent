@@ -631,6 +631,10 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+    inheritFromDefault?: string;
+    inheritFromDefaultHint?: string;
+    useDefaultTheme?: string;
+    useDefaultThemeHint?: string;
     /** Font-override section (optional — locales fall back to English). */
     fontTitle?: string;
     fontDefault?: string;

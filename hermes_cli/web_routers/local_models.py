@@ -542,15 +542,18 @@ def _nvidia_smi_facts() -> dict:
 
 @router.get("/api/local-models/hardware")
 def local_models_hardware():
-    """The budget as plain facts, polled by the pane and statusbar. Sync def: shells out to nvidia-smi — threadpool."""
+    """The active engine's hardware, polled by the pane and statusbar in a threadpool."""
     budget = hardware.probe_budget()
     ram_total, ram_avail = hardware._ram_bytes()
     out = {
         "uma": budget.uma, "vram_total_bytes": budget.total_device_bytes, "vram_usable_bytes": budget.usable_vram_bytes,
         "ram_total_bytes": ram_total, "ram_available_bytes": ram_avail, "vram_label": _human_gb(budget.total_device_bytes),
-        "gpu_name": None, "gpu_util_percent": None, "vram_used_bytes": None,
+        "gpu_name": budget.gpu_name or None, "gpu_util_percent": None, "vram_used_bytes": None,
     }
-    out.update(_quiet(_nvidia_smi_facts, {}))
+    # nvidia-smi can see a different card on mixed AMD/NVIDIA hosts; only its active CUDA
+    # backend's live counters belong in this response.
+    if hardware._nvidia_device_selected():
+        out.update(_quiet(_nvidia_smi_facts, {}))
     return out
 
 

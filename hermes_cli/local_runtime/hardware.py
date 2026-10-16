@@ -316,6 +316,29 @@ def _configured_engine():
     return installed_engine(section.get("backend") or "auto")
 
 
+def _nvidia_device_selected() -> bool:
+    """Whether the active llama.cpp engine will place model layers on an NVIDIA device.
+
+    A machine can have both NVIDIA and AMD GPUs. ``nvidia-smi`` reports the NVIDIA card even when
+    the managed server is using a HIP or Vulkan build on a different adapter. In that case the
+    engine's device probe is authoritative and selects its largest discrete GPU.
+    """
+    with suppress(Exception):
+        from hermes_cli.local_runtime.bootstrap import serving_engine
+
+        engine = serving_engine()
+        if engine is not None:
+            return engine.backend == "cuda"
+
+    with suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.local_runtime.binaries import resolve_backend
+
+        section = load_config_readonly().get("local_runtime") or {}
+        return resolve_backend(section.get("backend") or "auto") == "cuda"
+    return False
+
+
 def _engine_device_pool() -> tuple[int, bool | None] | None:
     """(engine_total_bytes, None) from the installed runtime's own --list-devices, or None. The
     fallback when the driver API is unreachable: asks the exact binary that will do the
@@ -447,14 +470,16 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     large. The managed server unloads/relaunches itself, so capacity is real.
     """
     ram_total, ram_avail = _ram_bytes()
-    vram = _nvidia_vram()
+    nvidia_selected = _nvidia_device_selected()
+    vram = _nvidia_vram() if nvidia_selected else None
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
     # but nvcuda loads via the system loader). Crossing the carve-out costs nothing — it is an OS
     # accounting knob, not a GPU limit. Deliberately NOT clamped to OS RAM: carved-out memory is
     # invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that capacity.
-    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
+    unified = (_unified_pool_bytes(vram[0] if vram else 0, ram_total)
+               if nvidia_selected else None)
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "
@@ -514,7 +539,7 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
     """
     if capacity.uma:
         return None
-    vram = _nvidia_vram()
+    vram = _nvidia_vram() if _nvidia_device_selected() else None
     if vram is not None:
         total, free = vram[0], vram[1]
     else:

@@ -68,27 +68,20 @@ _HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{get_version_info().base_version
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 _BOOL_WORDS = frozenset({"1", "0", "true", "false", "yes", "no", "on", "off"})
 
-# Model picker Block Kit action IDs. The picker is a two-step drill-down:
-# provider static_select → model static_select, plus Back/Cancel buttons.
-_MODEL_PICKER_PROVIDER_ACTION = "hermes_model_provider"
-_MODEL_PICKER_MODEL_ACTION = "hermes_model_model"
-_MODEL_PICKER_BACK_ACTION = "hermes_model_back"
-_MODEL_PICKER_CANCEL_ACTION = "hermes_model_cancel"
-# Rendered when a live-looking picker message can no longer resolve (gateway
-# restart, aged-out state entry, or a value the stored state no longer
-# covers): the message is rewritten to this so the control visibly dies.
-
-
-def _model_picker_expired_notice() -> str:
-    return t("platform.shared.model_picker_expired")
-
-
-_MODEL_PICKER_ACTION_IDS = (
-    _MODEL_PICKER_PROVIDER_ACTION,
-    _MODEL_PICKER_MODEL_ACTION,
-    _MODEL_PICKER_BACK_ACTION,
-    _MODEL_PICKER_CANCEL_ACTION,
-)
+try:  # sibling module; support package and flat plugin-dir imports
+    from .adapter_model_picker import (
+        _MODEL_PICKER_PROVIDER_ACTION, _MODEL_PICKER_MODEL_ACTION,
+        _MODEL_PICKER_BACK_ACTION, _MODEL_PICKER_CANCEL_ACTION,
+        _MODEL_PICKER_ACTION_IDS, _model_picker_expired_notice,
+        handle_model_picker_action,
+    )
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_model_picker import (  # type: ignore
+        _MODEL_PICKER_PROVIDER_ACTION, _MODEL_PICKER_MODEL_ACTION,
+        _MODEL_PICKER_BACK_ACTION, _MODEL_PICKER_CANCEL_ACTION,
+        _MODEL_PICKER_ACTION_IDS, _model_picker_expired_notice,
+        handle_model_picker_action,
+    )
 
 
 def _slack_unfurl_kwargs(extra: Optional[dict[str, Any]]) -> dict[str, bool]:
@@ -1064,6 +1057,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._channel_teams: dict[str, set] = {}
         # user target (team_id:user_id) → opened DM conversation ID (D...)
         self._dm_conversation_cache: dict[str, str] = {}
+        # Only verified inbound DM events bind a D... channel to its user.  A
+        # proactive send to an unknown D... cannot guess the recipient.
+        self._enterprise_dm_users: dict[tuple[str, str], str] = {}
+        self._enterprise_private_channels: dict[tuple[str, str], bool] = {}
         # Dedup for Socket Mode reconnect replays; TTL must outlast the worst-case
         # redelivery gap (max_size bounds memory, so a long window is safe).
         # Dedup cache: prevents duplicate bot responses when Socket Mode reconnects redeliver events
@@ -1881,6 +1878,8 @@ class SlackAdapter(BasePlatformAdapter):
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Post a seed message and return its ``ts`` as the handoff ``thread_id``. Slack threads
         anchor to a parent message, not a channel-level object. Returns ``None`` on failure."""
+        if not self._enterprise_write_allowed(parent_chat_id):
+            return None
         if not self._app:
             return None
         try:
@@ -1916,6 +1915,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._app = self._app_token = self._proxy_url = self._bot_user_id = None
         self._team_clients, self._team_bot_user_ids = {}, {}
         self._channel_team, self._dm_conversation_cache = {}, {}
+        getattr(self, "_enterprise_dm_users", {}).clear()
+        getattr(self, "_enterprise_private_channels", {}).clear()
         self._release_platform_lock()
         logger.info("[Slack] Disconnected")
 
@@ -2000,6 +2001,10 @@ class SlackAdapter(BasePlatformAdapter):
             dm_id = ((response or {}).get("channel") or {}).get("id")
             if dm_id:
                 self._dm_conversation_cache[cache_key] = dm_id
+                resolved_team = team_id or self.scope_id_for_chat(cid)
+                if resolved_team:
+                    self._enterprise_dm_users[(str(resolved_team), str(dm_id))] = cid
+                    self._trim_oldest_dict_entries(self._enterprise_dm_users, self._DM_CONVERSATION_CACHE_MAX)
                 self._trim_oldest_dict_entries(
                     self._dm_conversation_cache, self._DM_CONVERSATION_CACHE_MAX)
                 if team_id:
@@ -2191,8 +2196,38 @@ class SlackAdapter(BasePlatformAdapter):
             return True
         return False
 
-    def _outbound_blocked(self, chat_id: str, what: str) -> Optional[SendResult]:
+    def _enterprise_write_allowed(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> bool:
+        from gateway.enterprise_permissions import allows, enforcement_enabled
+        if not enforcement_enabled(self.config.extra):
+            return True
+        team_id = self._metadata_team_id(metadata) or self.scope_id_for_chat(chat_id) or ""
+        target = str(chat_id or "")
+        if target.startswith(("U", "W")):
+            kind, resource = "user", target
+        elif target.startswith("D"):
+            kind, resource = "user", self._enterprise_dm_users.get((team_id, target), "")
+        elif target.startswith("C") or (target.startswith("G") and (team_id, target) in self._enterprise_private_channels):
+            kind, resource = "channel", target
+        else:
+            return False
+        return allows(self.config.extra, platform="slack", scope_id=team_id,
+                      kind=kind, resource_id=resource, action="write")
+
+    def _enterprise_interaction_allowed(self, team_id: str, user_id: str, channel_id: str) -> bool:
+        from gateway.enterprise_permissions import allows_inbound, enforcement_enabled
+        if not enforcement_enabled(self.config.extra):
+            return True
+        kind = "dm" if channel_id.startswith("D") else "channel" if channel_id.startswith("C") else (
+            "channel" if (team_id, channel_id) in self._enterprise_private_channels else "unsupported")
+        return allows_inbound(self.config.extra, platform="slack", scope_id=team_id,
+                              user_id=user_id, chat_id=channel_id, chat_kind=kind)
+
+    def _outbound_blocked(self, chat_id: str, what: str,
+                          metadata: Optional[dict[str, Any]] = None) -> Optional[SendResult]:
         """Failed SendResult when ``chat_id`` is ignored or the app is not connected, else None."""
+        if not self._enterprise_write_allowed(chat_id, metadata):
+            logger.info("[Slack] Enterprise write permission denied for %s %s", what, chat_id)
+            return SendResult(success=False, error="enterprise_write_denied")
         if self._suppressed_ignored(chat_id, what):
             return SendResult(success=False, error="ignored_channel")
         if not self._app:
@@ -2222,7 +2257,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a message to a Slack channel or DM."""
-        blocked = self._outbound_blocked(chat_id, "outbound generic send to")
+        blocked = self._outbound_blocked(chat_id, "outbound generic send to", metadata)
         if blocked:
             return blocked
         chat_id = await self._dm_target(chat_id, metadata)
@@ -2332,11 +2367,16 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, user_id: str, content: str, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a Slack ephemeral message visible only to one user."""
-        blocked = self._outbound_blocked(chat_id, "outbound generic ephemeral notice to")
+        blocked = self._outbound_blocked(chat_id, "outbound generic ephemeral notice to", metadata)
         if blocked:
             return blocked
         if not chat_id or not user_id:
             return SendResult(success=False, error="chat_id and user_id are required")
+        from gateway.enterprise_permissions import allows
+        if not allows(self.config.extra, platform="slack",
+                      scope_id=self._metadata_team_id(metadata) or self.scope_id_for_chat(chat_id) or "",
+                      kind="user", resource_id=user_id, action="write"):
+            return SendResult(success=False, error="enterprise_write_denied")
         try:
             formatted = self.format_message(content)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
@@ -2389,7 +2429,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Edit a previously sent Slack message."""
-        blocked = self._outbound_blocked(chat_id, "message edit in")
+        blocked = self._outbound_blocked(chat_id, "message edit in", metadata)
         if blocked:
             return blocked
         try:
@@ -2432,6 +2472,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a bot message (used to clean up temporary progress bubbles)."""
+        if not self._enterprise_write_allowed(chat_id):
+            return False
         if not self._app:
             return False
         try:
@@ -2479,6 +2521,9 @@ class SlackAdapter(BasePlatformAdapter):
         """Stream a frame via Slack's native streaming APIs.
         First frame for a (chat, draft_id) starts the stream; later frames append the delta.
         ``content`` is the full accumulated text (append-only within one text segment)."""
+        blocked = self._outbound_blocked(chat_id, "native stream in", metadata)
+        if blocked:
+            return blocked
         if not self._app:
             return SendResult(success=False, error="Not connected")
         if self._native_stream_unsupported:
@@ -2717,6 +2762,8 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a thread status via assistant.threads.setStatus.
         Needs assistant:write or chat:write scope; auto-clears on reply."""
+        if not self._enterprise_write_allowed(chat_id, metadata):
+            return
         if self._suppressed_ignored(chat_id, "typing/status in", level=logging.DEBUG):
             return
         if not self._app:
@@ -2760,6 +2807,8 @@ class SlackAdapter(BasePlatformAdapter):
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
         """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        if not self._enterprise_write_allowed(chat_id, {"slack_team_id": team_id} if team_id else None):
+            return
         try:
             _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
@@ -2936,7 +2985,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Upload a local file to Slack (raises FileNotFoundError when missing)."""
-        blocked = self._outbound_blocked(chat_id, "file upload in")
+        blocked = self._outbound_blocked(chat_id, "file upload in", metadata)
         if blocked:
             return blocked
         if not os.path.exists(file_path):
@@ -2951,6 +3000,9 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[dict[str, Any]], kind: str, filename: str, not_found_error: str,
         failure_notice: str) -> SendResult:
         """Shared body of ``send_video``/``send_document``: upload with retry, notice on failure."""
+        blocked = self._outbound_blocked(chat_id, "file upload in", metadata)
+        if blocked:
+            return blocked
         if not self._app:
             return SendResult(success=False, error="Not connected")
         if not os.path.exists(file_path):
@@ -2972,6 +3024,9 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send a batch of images as one message via ``files_upload_v2(file_uploads=...)`` (10 per
         call, Slack cap) instead of N posts; falls back to the base per-image loop on failure."""
+        blocked = self._outbound_blocked(chat_id, "multi-image upload in", metadata)
+        if blocked:
+            return blocked
         if self._suppressed_ignored(chat_id, "multi-image upload in"):
             return SendResult(success=False, error="ignored_channel")
         if not self._app:
@@ -3232,6 +3287,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, channel: str, timestamp: str, emoji: str, team_id: str, *, remove: bool) -> bool:
         """reactions.add / reactions.remove; True on success. Failures (already reacted,
         missing scope) are debug-logged only."""
+        if not self._enterprise_write_allowed(channel, {"slack_team_id": team_id} if team_id else None):
+            return False
         if not self._app:
             return False
         try:
@@ -3465,6 +3522,9 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send an image to Slack by uploading the URL as a file."""
+        blocked = self._outbound_blocked(chat_id, "image upload in", metadata)
+        if blocked:
+            return blocked
         if not self._app:
             return SendResult(success=False, error="Not connected")
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
@@ -3857,6 +3917,8 @@ class SlackAdapter(BasePlatformAdapter):
         team_id = self._channel_team.get(channel_id) or ""
         if not team_id and self._team_clients:
             team_id = next(iter(self._team_clients))
+        if not self._enterprise_interaction_allowed(str(team_id), str(user_id), str(channel_id)):
+            return
         client = self._team_clients.get(team_id) if team_id else None
         action = "removed" if removed else "added"
         # Hooks fire before the opt-in gate so consumers see every human
@@ -4618,6 +4680,25 @@ class SlackAdapter(BasePlatformAdapter):
         # the runner's own auth check only runs after MessageEvent is built.
         if self._early_reject_unauthorized(user_id, channel_id, is_dm):
             return
+        from gateway.enterprise_permissions import allows_inbound
+        enterprise_chat_kind = (
+            "dm" if is_one_to_one_dm else "channel"
+            if channel_id.startswith("C") or (channel_id.startswith("G") and channel_type == "group")
+            else "unsupported"
+        )
+        if not allows_inbound(
+            self.config.extra, platform="slack", scope_id=str(team_id or ""),
+            user_id=str(user_id or ""), chat_id=str(channel_id or ""),
+            chat_kind=enterprise_chat_kind,
+        ):
+            logger.info("[Slack] Enterprise read permission denied for channel=%s user=%s", channel_id, user_id)
+            return
+        if team_id and channel_type == "im" and channel_id and user_id:
+            self._enterprise_dm_users[(str(team_id), str(channel_id))] = str(user_id)
+            self._trim_oldest_dict_entries(self._enterprise_dm_users, self._DM_CONVERSATION_CACHE_MAX)
+        if team_id and channel_id.startswith("G") and channel_type == "group":
+            self._enterprise_private_channels[(str(team_id), str(channel_id))] = True
+            self._trim_oldest_dict_entries(self._enterprise_private_channels, self._CHANNEL_TEAM_MAX)
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.
@@ -4903,6 +4984,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, text: str, blocks: list, metadata: Optional[dict[str, Any]], *,
         sanitize: bool = True, team_scoped: bool = True):
         """chat.postMessage with ``blocks`` (threaded via metadata); returns the raw response."""
+        if not self._enterprise_write_allowed(chat_id, metadata):
+            raise PermissionError("enterprise_write_denied")
         kwargs: dict[str, Any] = {
             "channel": chat_id, "text": text,
             "blocks": sanitize_blocks(blocks) if sanitize else blocks}
@@ -5199,6 +5282,8 @@ class SlackAdapter(BasePlatformAdapter):
         section_text: str,
     ) -> None:
         """Replace the picker message body with a plain section (no controls)."""
+        if not self._enterprise_write_allowed(channel_id, {"slack_team_id": team_id} if team_id else None):
+            return
         try:
             await self._get_client(channel_id, team_id=team_id or None).chat_update(
                 channel=channel_id,
@@ -5212,195 +5297,8 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Failed to update model picker message: %s", e)
 
     async def _handle_model_picker_action(self, ack, body, action) -> None:
-        """Handle a model picker Block Kit interaction.
-
-        Dispatches on the action_id: provider static_select advances to the
-        model stage, model static_select runs ``on_model_selected``, Back
-        returns to the provider stage, Cancel dismisses the picker.
-        """
-        await ack()
-
-        team_id = self._event_team_id({}, body)
-        action_id = action.get("action_id", "")
-        message = body.get("message", {})
-        msg_ts = message.get("ts", "")
-        channel_id = body.get("channel", {}).get("id", "")
-        user_name = body.get("user", {}).get("name", "unknown")
-        user_id = body.get("user", {}).get("id", "")
-
-        if not self._is_interactive_user_authorized(
-            user_id,
-            channel_id=channel_id,
-            user_name=user_name,
-            team_id=team_id,
-        ):
-            logger.warning(
-                "[Slack] Unauthorized model picker click by %s (%s) - ignoring",
-                user_name, user_id,
-            )
-            return
-
-        # Look up the picker state. The send path may have stored it under a
-        # bare ts (metadata-poor send, no team id) while this click event
-        # carries a team id — that mismatch must not swallow a legitimate
-        # interaction (mirrors _handle_approval_action's dual-key lookup).
-        marker = self._workspace_message_marker(team_id, msg_ts)
-        if msg_ts in self._model_picker_state:
-            marker = msg_ts
-        state = self._model_picker_state.get(marker)
-        if not state:
-            logger.debug("[Slack] Model picker state not found for marker=%s", marker)
-            # Gateway restarted or the entry aged out of the bounded dict —
-            # there is no gateway-side registry to fall back on, so this
-            # dict is the picker's only state. Kill the live-looking
-            # control visibly instead of silently swallowing clicks
-            # (mirrors the clarify handler's expiry notice).
-            await self._update_picker_message(
-                channel_id, team_id, msg_ts, _model_picker_expired_notice()
-            )
-            return
-
-        providers = state.get("providers", [])
-        on_model_selected = state.get("on_model_selected")
-
-        # Cancel → dismiss.
-        if action_id == _MODEL_PICKER_CANCEL_ACTION:
-            self._model_picker_state.pop(marker, None)
-            await self._update_picker_message(
-                channel_id, team_id, msg_ts, t("platform.slack.picker.cancelled")
-            )
-            return
-
-        # Provider selected → advance to model stage. The option value is a
-        # list index into the stored providers slice (never the raw slug —
-        # custom slugs can exceed Slack's 75-char option value cap).
-        if action_id == _MODEL_PICKER_PROVIDER_ACTION:
-            selected = action.get("selected_option", {})
-            idx_token = selected.get("value", "")
-            try:
-                idx = int(idx_token)
-                provider = providers[idx] if idx >= 0 else None
-            except (ValueError, IndexError, TypeError):
-                provider = None
-            if provider is None:
-                # Message and stored state are out of sync (stale payload,
-                # re-seeded entry) — the picker can no longer resolve, so
-                # kill it visibly like the expiry path.
-                logger.warning("[Slack] Invalid provider picker index token: %r", idx_token)
-                self._model_picker_state.pop(marker, None)
-                await self._update_picker_message(
-                    channel_id, team_id, msg_ts, _model_picker_expired_notice()
-                )
-                return
-            provider_slug = provider.get("slug", "")
-            if not provider.get("models"):
-                await self._update_picker_message(
-                    channel_id, team_id, msg_ts,
-                    t("platform.slack.picker.no_models_for_provider", provider=provider_slug),
-                )
-                self._model_picker_state.pop(marker, None)
-                return
-
-            state["stage"] = "model"
-            state["selected_provider_slug"] = provider_slug
-            blocks = self._build_model_picker_model_blocks(providers, provider_slug)
-            try:
-                await self._get_client(channel_id, team_id=team_id or None).chat_update(
-                    channel=channel_id,
-                    ts=msg_ts,
-                    text=t("platform.slack.picker.fallback_model", provider=provider.get('name', provider_slug)),
-                    blocks=sanitize_blocks(blocks),
-                )
-            except Exception as e:
-                logger.warning("[Slack] Failed to update model picker (provider→model): %s", e)
-            return
-
-        # Back → return to provider stage.
-        if action_id == _MODEL_PICKER_BACK_ACTION:
-            state["stage"] = "provider"
-            state["selected_provider_slug"] = ""
-            try:
-                from hermes_cli.providers import get_label
-                provider_label = get_label(
-                    state.get("current_provider", "")
-                )
-            except Exception:
-                provider_label = state.get("current_provider", "")
-            blocks = self._build_model_picker_provider_blocks(
-                providers, state.get("current_model", ""), provider_label
-            )
-            try:
-                await self._get_client(channel_id, team_id=team_id or None).chat_update(
-                    channel=channel_id,
-                    ts=msg_ts,
-                    text=t("platform.slack.picker.fallback_provider"),
-                    blocks=sanitize_blocks(blocks),
-                )
-            except Exception as e:
-                logger.warning("[Slack] Failed to update model picker (back): %s", e)
-            return
-
-        # Model selected → run the switch.
-        if action_id == _MODEL_PICKER_MODEL_ACTION and state.get("stage") == "model":
-            selected = action.get("selected_option", {})
-            idx_token = selected.get("value", "")
-            provider_slug = state.get("selected_provider_slug", "")
-            provider = next((p for p in providers if p["slug"] == provider_slug), None)
-            models = (provider or {}).get("models", [])
-            try:
-                idx = int(idx_token)
-                model_id = models[idx] if idx >= 0 else None
-            except (ValueError, IndexError, TypeError):
-                model_id = None
-            if model_id is None:
-                # Message and stored state are out of sync — kill the picker
-                # visibly instead of leaving a dead control.
-                logger.warning("[Slack] Invalid model picker index token: %r", idx_token)
-                self._model_picker_state.pop(marker, None)
-                await self._update_picker_message(
-                    channel_id, team_id, msg_ts, _model_picker_expired_notice()
-                )
-                return
-
-            if not on_model_selected:
-                self._model_picker_state.pop(marker, None)
-                await self._update_picker_message(
-                    channel_id, team_id, msg_ts, _model_picker_expired_notice()
-                )
-                return
-
-            # Pop the state up-front (double-click guard, mirrors approval).
-            self._model_picker_state.pop(marker, None)
-            await self._update_picker_message(
-                channel_id, team_id, msg_ts, t("platform.slack.picker.switching", model=model_id)
-            )
-
-            switch_failed = False
-            try:
-                confirmation = await on_model_selected(
-                    state["chat_id"], model_id, provider_slug
-                )
-                # The gateway reports a failed in-place swap as a localized
-                # error-prefixed return string, not an exception (#50163).
-                # Compare against the same i18n prefix so both failure
-                # shapes get the failed header.
-                try:
-                    _error_prefix = t("gateway.model.error_prefix", error="").strip()
-                except Exception:
-                    _error_prefix = "Error:"
-                if _error_prefix and str(confirmation).startswith(_error_prefix):
-                    switch_failed = True
-            except Exception as exc:
-                logger.error("[Slack] Model picker callback failed: %s", exc, exc_info=True)
-                confirmation = t("platform.slack.picker.switch_failed", error=str(exc))
-                switch_failed = True
-
-            header = t("platform.slack.picker.switch_failed_header" if switch_failed
-                       else "platform.slack.picker.switched_header")
-            await self._update_picker_message(
-                channel_id, team_id, msg_ts, f"{header}\n\n{confirmation}"
-            )
-            return
+        """Handle a model picker Block Kit interaction."""
+        return await handle_model_picker_action(self, ack, body, action)
 
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
@@ -5520,6 +5418,10 @@ class SlackAdapter(BasePlatformAdapter):
         team_id = self._event_team_id({}, body)
         action_id, value, message, msg_ts, channel_id, user_name, user_id = (
             self._interaction_fields(body, action))
+        if not self._enterprise_interaction_allowed(str(team_id), str(user_id), str(channel_id)):
+            return None
+        if not self._enterprise_write_allowed(str(channel_id), {"slack_team_id": str(team_id)}):
+            return None
         auth_kwargs: dict[str, Any] = {"channel_id": channel_id, "user_name": user_name}
         if team_scoped:
             auth_kwargs["team_id"] = team_id
@@ -5544,6 +5446,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, channel_id: str, msg_ts: str, original_text: str, decision_text: str,
         placeholder: str, label: str, team_id: Optional[str] = None, sanitize: bool = True) -> None:
         """Rewrite a button prompt to show the outcome and drop the buttons."""
+        if not self._enterprise_write_allowed(channel_id, {"slack_team_id": team_id} if team_id else None):
+            return
         updated_blocks = [
             {"type": "section", "text": {"type": "mrkdwn", "text": original_text or placeholder}},
             {"type": "context", "elements": [{"type": "mrkdwn", "text": decision_text}]}]
@@ -6044,10 +5948,19 @@ class SlackAdapter(BasePlatformAdapter):
         allowed_channels = self._slack_allowed_channels()
         return bool(allowed_channels) and not str(channel_id).startswith("D") and channel_id not in allowed_channels
 
+    def _slash_permission_gated(self, command: dict) -> bool:
+        from gateway.enterprise_permissions import allows_inbound
+        channel_id = str(command.get("channel_id") or "")
+        return not allows_inbound(
+            self.config.extra, platform="slack", scope_id=str(command.get("team_id") or ""),
+            user_id=str(command.get("user_id") or ""), chat_id=channel_id,
+            chat_kind="dm" if channel_id.startswith("D") else "channel" if channel_id.startswith("C") else "unsupported",
+        )
+
     async def _handle_hermes_command(self, ack, command: dict) -> None:
         """Bolt listener for every native slash: ack within 3s, then run. A gated channel gets a
         bare ack, never a "Running /x" promise the gate in _handle_slash_command will break."""
-        if self._slash_channel_gated(command.get("channel_id", "")):
+        if self._slash_channel_gated(command.get("channel_id", "")) or self._slash_permission_gated(command):
             await ack()
         else:
             slash = (command.get("command") or "").lstrip("/")
@@ -6064,10 +5977,13 @@ class SlackAdapter(BasePlatformAdapter):
             self._remember_channel_team(channel_id, team_id)
         text = self._slash_command_text(command)
         thread_id = self._slash_thread_id(command)
-        if self._slash_channel_gated(channel_id):
+        if self._slash_channel_gated(channel_id) or self._slash_permission_gated(command):
             logger.debug("[Slack] Ignoring slash command in ignored/non-allowed channel: %s", channel_id)
             return
         is_dm = str(channel_id).startswith("D")
+        if is_dm and team_id and user_id:
+            self._enterprise_dm_users[(str(team_id), str(channel_id))] = str(user_id)
+            self._trim_oldest_dict_entries(self._enterprise_dm_users, self._DM_CONVERSATION_CACHE_MAX)
         if is_dm and self._slack_disable_dms():
             logger.info(
                 "[Slack] Ignoring slash command from DM because Slack DMs are disabled: channel=%s user=%s",
@@ -6728,6 +6644,11 @@ async def _standalone_send(
     caption=None):
     """Out-of-process delivery (``standalone_sender_fn``) for cron/tool processes not co-located
     with the gateway: text via ``chat.postMessage`` (aiohttp), media via ``files_upload_v2``."""
+    from gateway.enterprise_permissions import enforcement_enabled
+    if enforcement_enabled(getattr(pconfig, "extra", {}) or {}):
+        # This path has no authenticated workspace/conversation provenance.  A
+        # bare C/G/D ID cannot safely select a grant in a multi-workspace bot.
+        return send_error("enterprise_write_denied: standalone Slack destination has no verified workspace")
     del force_document  # signature parity with other standalone senders
     media_files = media_files or []
     # Under multiplex os.environ may hold ANOTHER profile's token: read via the secret scope.

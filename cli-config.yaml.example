@@ -1464,6 +1464,21 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#       # Optional exact-ID read/write grants (workspace-scoped). Missing grants
+#       # deny access when enabled; see the Slack messaging guide.
+#       enterprise_permissions:
+#         enabled: false
+#         grants:
+#           - {scope_id: T_WORKSPACE, kind: user, id: U_MEMBER, read: true, write: true}
+#           - {scope_id: T_WORKSPACE, kind: channel, id: C_CHANNEL, read: true, write: false}
+#   teams:
+#     extra:
+#       enterprise_permissions:
+#         enabled: false
+#         grants:
+#           - {scope_id: TENANT_ID, kind: user, id: AAD_USER_ID, read: true, write: true}
+#           - {scope_id: TENANT_ID, kind: group_chat, id: CHAT_ID, read: true, write: false}
+#           - {scope_id: TENANT_ID, kind: channel, id: CHANNEL_CONVERSATION_ID, read: true, write: true}
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

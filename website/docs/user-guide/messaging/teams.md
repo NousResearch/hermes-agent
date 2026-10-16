@@ -192,6 +192,24 @@ platforms:
     require_mention: false   # true once the app has RSC message-read consent
 ```
 
+### Enterprise resource permissions (opt-in)
+
+`platforms.teams.extra.enterprise_permissions` grants **read** (accept messages and attachments) and **write** (send or upload) separately for tenant-scoped users, group chats, and channels. IDs must come from Teams activities, not display names. A group or channel message needs read grants for both its sender and the conversation; a personal chat needs the sender grant. Missing grants deny access once enabled.
+
+```yaml
+platforms:
+  teams:
+    extra:
+      enterprise_permissions:
+        enabled: true
+        grants:
+          - {scope_id: TENANT_ID, kind: user, id: AAD_USER_ID, read: true, write: true}
+          - {scope_id: TENANT_ID, kind: group_chat, id: CHAT_ID, read: true, write: false}
+          - {scope_id: TENANT_ID, kind: channel, id: CHANNEL_CONVERSATION_ID, read: true, write: true}
+```
+
+This is additional to Teams' existing user allowlist and app consent. Proactive sends without a previously verified conversation type are denied in enforced mode. Leave `enabled: false` (the default) for existing behavior.
+
 ---
 
 ## Features

@@ -196,6 +196,9 @@ async def _standalone_send(
     (``hermes cron``). ``TEAMS_SERVICE_URL`` is allowlisted and ``chat_id`` charset-checked
     (SSRF/path traversal). ``media_files`` / ``force_document`` are signature parity only — text-only."""
     extra = getattr(pconfig, "extra", {}) or {}
+    from gateway.enterprise_permissions import enforcement_enabled
+    if enforcement_enabled(extra):
+        return send_error("enterprise_write_denied: standalone Teams destination has no verified conversation kind")
     client_id, client_secret, tenant_id = _credentials(pconfig)
     if not (client_id and client_secret and tenant_id):
         return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")
@@ -372,6 +375,9 @@ class TeamsAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=1000)
         # chat_id → ConversationReference so proactive cards use the right conversation type.
         self._conv_refs: dict[str, Any] = {}
+        # Verified inbound activity supplies tenant, chat type and personal user;
+        # an unobserved proactive target is not guessed into a permission kind.
+        self._enterprise_conversations: dict[str, tuple[str, str, str]] = {}
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
@@ -446,6 +452,7 @@ class TeamsAdapter(BasePlatformAdapter):
         if self._runner:
             await self._runner.cleanup()
         self._runner = self._app = None
+        self._enterprise_conversations.clear()
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
@@ -528,6 +535,21 @@ class TeamsAdapter(BasePlatformAdapter):
             user_name=getattr(from_account, "name", None) or "",
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
             message_id=msg_id)
+        from gateway.enterprise_permissions import allows_inbound
+        if not allows_inbound(
+            self.config.extra, platform="teams", scope_id=str(source.scope_id or source.guild_id or ""),
+            user_id=str(user_id or ""), chat_id=str(conv_id or ""),
+            chat_kind={"personal": "dm", "groupChat": "group_chat", "channel": "channel"}.get(
+                getattr(conv, "conversation_type", None) or "", "unsupported"),
+        ):
+            logger.info("[teams] Enterprise read permission denied for conversation=%s user=%s", conv_id, user_id)
+            return
+        if conv_id:
+            self._enterprise_conversations[str(conv_id)] = (
+                str(source.scope_id or source.guild_id or ""),
+                {"group": "group_chat", "channel": "channel", "dm": "user"}.get(source.chat_type, ""),
+                str(user_id) if source.chat_type == "dm" else str(conv_id),
+            )
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
@@ -610,6 +632,8 @@ class TeamsAdapter(BasePlatformAdapter):
 
     async def _send_via_conv_ref(self, chat_id: str, activity: Any, fallback: Any) -> Any:
         """Send ``activity`` through the cached ConversationReference, else ``App.send(fallback)``."""
+        if not self._enterprise_write_allowed(chat_id):
+            raise PermissionError("enterprise_write_denied")
         conv_ref = self._conv_refs.get(chat_id)
         if conv_ref:
             result = await self._app.activity_sender.send(activity, conv_ref)
@@ -646,6 +670,26 @@ class TeamsAdapter(BasePlatformAdapter):
         denied = self._card_action_denied(ctx.activity.from_)
         if denied:
             return self._invoke_message(denied)
+        from gateway.enterprise_permissions import allows_inbound
+        conv = ctx.activity.conversation
+        clicker = ctx.activity.from_
+        clicker_id = getattr(clicker, "aad_object_id", None) or getattr(clicker, "id", "")
+        chat_type = _CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "unsupported")
+        if not allows_inbound(
+            self.config.extra, platform="teams",
+            scope_id=str(getattr(conv, "tenant_id", None) or self._tenant_id or ""),
+            user_id=str(clicker_id), chat_id=str(getattr(conv, "id", None) or ""),
+            chat_kind={"group": "group_chat", "channel": "channel", "dm": "dm"}.get(chat_type, "unsupported"),
+        ):
+            return self._invoke_message(t("platform.shared.not_authorized"))
+        from gateway.enterprise_permissions import allows, enforcement_enabled
+        if enforcement_enabled(self.config.extra):
+            scope_id = str(getattr(conv, "tenant_id", None) or self._tenant_id or "")
+            kind = {"group": "group_chat", "channel": "channel", "dm": "user"}.get(chat_type, "")
+            resource_id = str(clicker_id) if chat_type == "dm" else str(getattr(conv, "id", None) or "")
+            if not allows(self.config.extra, platform="teams", scope_id=scope_id,
+                          kind=kind, resource_id=resource_id, action="write"):
+                return self._invoke_message(t("platform.shared.not_authorized"))
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
@@ -705,9 +749,19 @@ class TeamsAdapter(BasePlatformAdapter):
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
 
+    def _enterprise_write_allowed(self, chat_id: str) -> bool:
+        from gateway.enterprise_permissions import allows, enforcement_enabled
+        if not enforcement_enabled(self.config.extra):
+            return True
+        scope_id, kind, resource_id = self._enterprise_conversations.get(str(chat_id), ("", "", ""))
+        return allows(self.config.extra, platform="teams", scope_id=scope_id,
+                      kind=kind, resource_id=resource_id, action="write")
+
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
     ) -> SendResult:
+        if not self._enterprise_write_allowed(chat_id):
+            return SendResult(success=False, error="enterprise_write_denied")
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         last_message_id = None
@@ -729,6 +783,8 @@ class TeamsAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=last_message_id)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
+        if not self._enterprise_write_allowed(chat_id):
+            return
         if self._app:
             with suppress(Exception):
                 await self._app.send(chat_id, TypingActivityInput())
@@ -739,6 +795,8 @@ class TeamsAdapter(BasePlatformAdapter):
         """Send any media file/URL as a Teams attachment (shared by send_image/video/voice/document).
         Remote ``http(s)://`` URLs are attached by reference; local paths (optional ``file://`` prefix)
         are base64-encoded into a data URI. MIME is guessed from the path, else ``default_mime``."""
+        if not self._enterprise_write_allowed(chat_id):
+            return SendResult(success=False, error="enterprise_write_denied")
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         try:

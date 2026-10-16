@@ -391,6 +391,23 @@ In channels, always @mention the bot to start a conversation. Once the bot is ac
 
 Beyond the required environment variables from Step 8, you can customize Slack bot behavior through `~/.hermes/config.yaml`.
 
+### Enterprise resource permissions (opt-in)
+
+`platforms.slack.extra.enterprise_permissions` grants **read** (accept messages and attachments) and **write** (send, edit, react, or upload) independently. Grants use Slack's immutable workspace, member, and channel IDs—not display names. When enabled, missing or malformed grants deny access. A message in a channel needs both a read grant for its sender and a read grant for the channel. A 1:1 DM needs a read grant for its sender; sending to that DM needs a write grant for the recipient. Group DMs are not supported by this five-resource policy and are denied while enforcement is enabled.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      enterprise_permissions:
+        enabled: true
+        grants:
+          - {scope_id: T_WORKSPACE, kind: user, id: U_MEMBER, read: true, write: true}
+          - {scope_id: T_WORKSPACE, kind: channel, id: C_CHANNEL, read: true, write: false}
+```
+
+This is an additional boundary, not a replacement for Slack's existing user/channel allowlists or Slack app scopes. Background sends without a verified workspace and destination type are denied in enforced mode. Leave `enabled: false` (the default) for existing behavior.
+
 ### Thread & Reply Behavior
 
 ```yaml

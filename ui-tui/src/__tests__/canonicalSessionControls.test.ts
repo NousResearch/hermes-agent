@@ -362,3 +362,34 @@ it('an empty route_info still falls back to the session.info read', async () => 
   expect(request).toHaveBeenCalledWith('session.info', { session_id: 'owner' })
   expect(getUiState().info).toMatchObject({ model: 'picked', reasoning_effort: 'high', execution_generation: 5 })
 })
+
+it('a provider-changing switch paints the receipt provider with the model, without a follow-up read', async () => {
+  patchUiState({ info: { ...info, provider: 'azure-foundry', reasoning_effort: 'xhigh' } })
+  const { request, slash } = harness()
+  const painted: Array<Record<string, unknown> | undefined> = []
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      return { revision: 8, execution_generation: 4, info, messages: [] } as any
+    }
+
+    if (method === 'session.mutate') {
+      return {
+        model: 'claude-opus-5-5',
+        provider: 'anthropic',
+        execution_generation: 5,
+        route_info: { reasoning_effort: 'high' }
+      }
+    }
+
+    return {}
+  })
+  const unsubscribe = $uiState.listen(state => painted.push(state.info as Record<string, unknown> | undefined))
+  slash('/model claude-opus-5-5 --provider anthropic --reasoning high --tui-session')
+  await flush()
+  await flush()
+  unsubscribe()
+  expect(request).not.toHaveBeenCalledWith('session.info', expect.anything())
+  expect(getUiState().info).toMatchObject({ model: 'claude-opus-5-5', provider: 'anthropic', reasoning_effort: 'high' })
+  // No intermediate state ever shows the new model beside the previous provider.
+  expect(painted.some(state => state?.model === 'claude-opus-5-5' && state?.provider === 'azure-foundry')).toBe(false)
+})

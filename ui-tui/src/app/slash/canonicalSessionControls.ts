@@ -254,12 +254,16 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx): boo
   // The owner's reply carries the new route's effort/tier (`route_info`), so the statusbar paints
   // model and effort in one update instead of the new model beside the previous route's effort.
   const route = modelRouteInfo(result.route_info)
+  // The committed receipt always names the selected provider; paint it with the model so a
+  // provider-changing switch never shows the new model beside the previous provider.
+  const provider = typeof result.provider === 'string' && result.provider ? { provider: result.provider } : null
 
   patchUiState(state => ({
     ...state,
     info: {
       ...state.info,
       ...route,
+      ...provider,
       model: result.model,
       execution_generation: Math.max(state.info?.execution_generation ?? 0, result.execution_generation ?? 0),
       skills: state.info?.skills ?? {},
@@ -272,7 +276,8 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx): boo
 }
 
 // Route fields the statusbar shows beside the model (`gateway/session_mutations.py`
-// MODEL_ROUTE_INFO_KEYS, plus `provider` from a full `session.info`).
+// MODEL_ROUTE_INFO_KEYS, plus `provider` from a full `session.info`; the direct reply's provider
+// comes from the receipt's top-level `provider` in applyModelResult).
 const MODEL_ROUTE_INFO_KEYS = ['provider', 'reasoning_effort', 'reasoning_effort_wire', 'service_tier', 'fast'] as const
 
 function modelRouteInfo(raw: unknown): null | Record<string, unknown> {

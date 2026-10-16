@@ -96,17 +96,9 @@ def _publish_subagent(turn, event_type, payload) -> None:
         if executing.get(session_id) == generation:
             turn._publish_execution(event_type, payload)
             return
-        if stream is None or not _is_active_session_subagent(turn, payload, event_type):
-            return
+    if stream is not None and _is_active_session_subagent(turn, payload, event_type):
         # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
-        saved = getattr(stream, "execution", None)
-        if isinstance(saved, dict):
-            stream.execution = {}
-        try:
-            stream.publish(session_id, payload, event_type=event_type)
-        finally:
-            if isinstance(saved, dict):
-                stream.execution = saved
+        stream.publish(session_id, payload, event_type=event_type, execution={})
 
 
 def publish_progress(turn, event_type, name, preview, kwargs) -> None:

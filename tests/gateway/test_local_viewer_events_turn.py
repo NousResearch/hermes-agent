@@ -428,9 +428,17 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     assert published[6][1]['status'] == 'completed' and published[6][1]['summary'] == 'all clear'
 
     # Registered background child descending from the turn's agent publishes without borrowing the next turn's execution identity; unregistered or foreign-parent children (even with matching owner_agent_session_id) are rejected.
+    class _RecordingEvents(SessionEvents):
+        # Records every write of the shared stamp after construction: unlocked readers must never see it change.
+        def __setattr__(self, name, value):
+            if name == 'execution' and hasattr(self, 'execution'):
+                self.__dict__.setdefault('stamp_writes', []).append(value)
+            super().__setattr__(name, value)
+
     stream_frames = []
-    live.event_stream = SessionEvents()
+    live.event_stream = _RecordingEvents()
     live.event_stream.execution = {'admission_id': 'turn-b', 'execution_generation': 2}
+    live.event_stream.stamp_writes = []
     live.event_stream.observers.add(stream_frames.append)
     turn._approval_owner[0].executing = {'s': 2}
     stale_relay = _build_child_progress_callback(0, 'stale goal', parent, subagent_id='sa-stale')
@@ -453,19 +461,24 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     params = stream_frames[0]['params']
     assert params['type'] == 'subagent.complete' and 'admission_id' not in params and 'execution_generation' not in params
     assert live.event_stream.execution == {'admission_id': 'turn-b', 'execution_generation': 2}
+    assert live.event_stream.stamp_writes == []
 
-    # In-turn event with no live viewer: recorded once with the turn's identity, never retried as an out-of-turn frame.
+    # In-turn event with no live viewer: the real publish_execution records it in replay and reports no delivery; it is stored once, with the turn's identity.
+    from gateway.session_authority import SessionAuthority
     authority = turn._approval_owner[0]
     authority.executing = {'s': 1}
-    publish_calls = []
-    turn._publish_execution = lambda kind, payload: publish_calls.append(kind) or False
+    live.event_stream = SessionEvents()
+    live.event_stream.execution = {'admission_id': 'turn-a', 'execution_generation': 1}
+    turn._publish_execution = lambda kind, payload: SessionAuthority.publish_execution(authority, 's', 1, kind, payload)
     _register_subagent({'subagent_id': 'sa-0-abc12345', 'agent': owned_child, 'owner_agent_session_id': 's'})
     try:
-        stream_frames.clear()
         relay('subagent.start')
     finally:
         _unregister_subagent('sa-0-abc12345')
-    assert publish_calls == ['subagent.start'] and stream_frames == []
+    replay = live.event_stream.since(live.event_stream.epoch, 0)['events']
+    assert [(f['type'], f.get('execution_generation')) for f in replay] == [('subagent.start', 1)]
+    stream_frames = []
+    live.event_stream.observers.add(stream_frames.append)
 
     # Out of turn, a queued grandchild's spawn_requested is admitted only through a registered descendant parent.
     authority.executing = {'s': 2}

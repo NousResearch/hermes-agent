@@ -14,7 +14,9 @@ import contextlib
 import contextvars
 import logging
 import os
+import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -1275,10 +1277,38 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
 
 _LIVE_SEND_CONFIRM_TIMEOUT_SECS = 60
 
+# Throttled-send retry (the WeChat/iLink adapter's rate-limit breaker). Once enough sends land inside
+# the adapter's sliding window it opens an adapter-wide breaker and rejects EVERY send for the
+# cooldown window. A no_agent cron job has no next run, so without a wait-and-retry the push is lost
+# for good: the 2026-09-20 11:50 建行时光好礼 reminder died on the breaker while a job 7 minutes later
+# delivered fine.
+_RATE_LIMIT_SEND_MAX_RETRIES = 2
+_RATE_LIMIT_SEND_MAX_WAIT_SECONDS = 75.0
+# The adapter reports the remaining cooldown to the second ("cooldown active for 30.0s"); retrying
+# exactly when it expires races the breaker's own clock, so pad it.
+_RATE_LIMIT_COOLDOWN_PAD_SECONDS = 2.0
+
+
+def _rate_limit_retry_wait(exc: BaseException) -> Optional[float]:
+    """Seconds to wait before retrying a throttled send, or ``None`` when this is not a throttle.
+
+    Only throttle-shaped failures are retried. A genuine error (bad token, unknown chat) must keep
+    failing fast instead of burning the delivery window on a hopeless retry.
+    """
+    text = str(exc)
+    match = re.search(r"cooldown active for ([\d.]+)s", text)
+    if match:
+        return min(float(match.group(1)) + _RATE_LIMIT_COOLDOWN_PAD_SECONDS,
+                   _RATE_LIMIT_SEND_MAX_WAIT_SECONDS)
+    if "rate limited" in text.lower():
+        return 5.0
+    return None
+
 
 def _live_send_text(
     t: _TargetDelivery, text_to_send: str, route_thread_id: Optional[str], route_metadata: dict, *,
     target_errors: list, delivery_errors: list, unverified_targets: list,
+    _rate_limit_retries: int = _RATE_LIMIT_SEND_MAX_RETRIES,
 ) -> tuple[bool, bool, Any]:
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
@@ -1341,6 +1371,22 @@ def _live_send_text(
     except Exception as ex:
         # Real send error (not a slow confirmation): fall through to standalone. The router raises
         # a failed SendResult's error string, so this is where send_path_degraded arrives.
+        # Throttled (not broken): ride out the adapter's rate-limit breaker and send again. A
+        # one-shot cron job has no next run, so a bare re-raise loses the push for good.
+        retry_wait = _rate_limit_retry_wait(ex)
+        if retry_wait is not None and _rate_limit_retries > 0:
+            logger.warning(
+                "Job '%s': live send to %s throttled (%s); retrying in %.1fs (%d retry/retries left)",
+                job["id"], t.where, ex, retry_wait, _rate_limit_retries - 1)
+            time.sleep(retry_wait)
+            # Nothing was delivered, so this is a clean retry: no target/delivery error is recorded
+            # for the throttled attempt, or the eventual failure would report one error per attempt.
+            return _live_send_text(
+                t, text_to_send, route_thread_id, route_metadata,
+                target_errors=target_errors, delivery_errors=delivery_errors,
+                unverified_targets=unverified_targets,
+                _rate_limit_retries=_rate_limit_retries - 1,
+            )
         t.live_error = str(ex)
         target_errors.append(f"live adapter send failed: {ex}")
         raise

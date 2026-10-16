@@ -1,0 +1,13 @@
+Verdict: CONFIRMED
+
+PASS — no unresolved material correctness, security, data-loss, concurrency or contract finding.
+
+Reviewed initial head c9668e6dbb0f0b80d2a9e0bac27843f1da3b9e90 against f86276d2ebc; briefly confirmed only the blocking-finding correction in c163267a360d67c4783441a67d2475fa3e263c27.
+
+Resolved P1 — tui_gateway/plugin_updates.py:49-51 previously imported _ok/_err from methods_tools, where they do not exist; every update failed before its catalog guard. The corrected commit late-imports the bound server facade helpers. The existing RPC test now asserts precise 4020 refusal and a successful unchanged catalog response through server.handle_request. This satisfies the minimal fix contract while preserving profile scope, first-owner consent, coalescing and response IDs.
+
+Nothing found in: hidden staging exclusion across runtime/CLI discovery; 120-second Desktop update timeout with unknown-outcome reporting; profile/plugin-keyed update joining and consent preservation; additive available_tools hook compatibility; TypeSafe router_model mapping and managed-writer migration; staged Toolaria preservation of original output when retrieval is absent/unknown. Home Assistant remains outside installation/configuration scope following its authorized removal.
+
+Evidence boundaries: source/diff review in a separate detached reviewer worktree, including both handoff companion artifacts and narrow supporting source. No reviewer tests, installs, service restarts, active-state writes, merge or deployment. Author reports corrected RPC/concurrency 6/6, existing transaction suite 16/16 and staged checks 11/11; these were not rerun by the reviewer. CI, live core and GUI rollout acceptance are not established by this review.
+
+Model: explicitly tool-selected gpt-6.1-sol; independent provider/runtime-model introspection is unavailable.

@@ -5,4 +5,4 @@
 - [x] Make slow updates truthful and prevent duplicate concurrent updates.
 - [x] Diagnose restricted-session rescuer and apply smallest supported fix.
 - [x] Run relevant suites and actual isolated paths; record exact results.
-- [ ] Complete one Sol review, push branch/PR, link issue and update handoff/report.
+- [x] Complete one Sol review, push branch/PR, link issue and update handoff/report.

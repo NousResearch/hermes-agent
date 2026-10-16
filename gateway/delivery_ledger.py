@@ -204,8 +204,14 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             adapter_profile TEXT
         )"""
     )
-    if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}
+    if "adapter_profile" not in cols:
         add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
+    if "reply_to" not in cols:
+        # The inbound message the final answers. A redelivered (recovered) reply is sent as a
+        # platform reply to it, so the user can tell which question a late answer belongs to.
+        # Rows written before this column exists redeliver without an anchor.
+        add_column_if_missing(conn, "delivery_obligations", "reply_to", "reply_to TEXT")
 
 
 def _transaction():
@@ -268,18 +274,21 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
 
 
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
-    """Record a final response as owed to the platform (state='pending')."""
+                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
+                      reply_to: Optional[str] = None) -> None:
+    """Record a final response as owed to the platform (state='pending'). ``reply_to`` is the
+    inbound message id the final answers; redelivery uses it as the reply anchor."""
     now, (pid, started) = time.time(), _owner_stamp()
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
-                owner_pid, owner_started_at, adapter_profile)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+                owner_pid, owner_started_at, adapter_profile, reply_to)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
-             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default",
+             str(reply_to) if reply_to else None))
         # Same transaction, same connection: the cron ledgers prune this way too
         # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
         _prune_unlocked(conn, now)
@@ -305,6 +314,17 @@ def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: s
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
              content, now, now, str(adapter_profile).strip() if adapter_profile else "default",
              session_key, content, since))
+
+
+def get_reply_to(obligation_id: str) -> Optional[str]:
+    """Inbound message id the obligation answers (None when unknown or on any read error)."""
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            row = conn.execute("SELECT reply_to FROM delivery_obligations WHERE obligation_id=?",
+                               (obligation_id,)).fetchone()
+        return str(row[0]) if row and row[0] else None
+    except Exception:
+        return None
 
 
 def mark_attempting(obligation_id: str) -> None:

@@ -25,6 +25,7 @@ import {
   cronNextRunOverdueMs,
   cronSchedulerStaleAgeS,
   cronJobFormFromJob,
+  cronJobModelDisplay,
   cronLastResult,
   focusCronField,
   type CronJobFormState,
@@ -496,13 +497,6 @@ function getJobMode(job: CronJob): string {
   if (job.no_agent) return "no_agent";
   if (job.script) return "script+agent";
   return "agent";
-}
-
-function getModelDisplay(job: CronJob): string {
-  const provider = asText(job.provider);
-  const model = asText(job.model);
-  if (provider && model) return `${provider}/${model}`;
-  return model || provider;
 }
 
 function getJobProfile(job: CronJob): string {
@@ -1138,7 +1132,7 @@ export default function CronPage() {
           const profile = getJobProfile(job);
           const jobKey = getJobKey(job);
           const mode = getJobMode(job);
-          const modelDisplay = getModelDisplay(job);
+          const modelDisplay = cronJobModelDisplay(job);
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];

@@ -196,3 +196,20 @@ export function cronAgoLabel(seconds: number): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
+
+/**
+ * Model label for a job card: `provider/model` when both are stored, whichever single field is
+ * set otherwise, and "" for `no_agent` jobs. Script-only runs never reach a model — the
+ * scheduler short-circuits before provider resolution — so a legacy persisted pin must not
+ * render as an operational dependency (#132850); the `no_agent` mode badge already marks the
+ * job as script-only.
+ */
+export function cronJobModelDisplay(
+  job: Pick<CronJob, "provider" | "model" | "no_agent">,
+): string {
+  if (job.no_agent) return "";
+  const provider = asString(job.provider);
+  const model = asString(job.model);
+  if (provider && model) return `${provider}/${model}`;
+  return model || provider;
+}

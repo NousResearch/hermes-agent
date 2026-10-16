@@ -121,6 +121,7 @@ export async function resolveVenvHermesCommand(
   kind: 'python'
   root: string
   shell: false
+  readyFile: true
 } | null> {
   const {
     isWindows,
@@ -179,6 +180,7 @@ export async function resolveVenvHermesCommand(
     env: buildDesktopBackendEnv(),
     kind: 'python',
     root,
-    shell: false
+    shell: false,
+    readyFile: true
   }
 }

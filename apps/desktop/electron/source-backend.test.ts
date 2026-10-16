@@ -233,3 +233,26 @@ test('Windows console selection uses only the selected interpreter directory', (
     fs.rmSync(temp, { recursive: true, force: true })
   }
 })
+
+test('local source backends opt into the ready-file port channel (#96280)', (): void => {
+  const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-ready-file-'))
+  const root: string = path.join(temp, 'repo')
+  const python: string = path.join(temp, 'python3')
+
+  try {
+    fs.mkdirSync(path.join(root, 'hermes_cli'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'hermes_cli', 'main.py'), '')
+
+    // The Windows uv venv launcher trampoline never forwards the grandchild's
+    // stdout to Electron's pipe, so the HERMES_BACKEND_READY sentinel is
+    // unobservable there. Every local descriptor Electron spawns must opt
+    // into the ready-file channel (HERMES_DESKTOP_READY_FILE) — the stdout
+    // watcher stays as the fallback.
+    const source: SourceBackend | null = createSourcePythonBackend(root, python, ['serve'])
+
+    assert.ok(source)
+    assert.equal(source.readyFile, true)
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true })
+  }
+})

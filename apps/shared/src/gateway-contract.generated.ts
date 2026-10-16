@@ -4625,6 +4625,20 @@ export interface SessionStats {
   provider: string
   fallback_model?: string | null
 }
+export interface RollbackSessionDiffParams {
+  session_id: string
+  profile?: string | null
+}
+/** ``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the session's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint). ``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body. */
+export interface RollbackSessionDiffResult {
+  enabled: boolean
+  success?: boolean
+  stat?: string
+  diff?: string
+  diff_lines?: number
+  empty?: boolean
+  error?: string | null
+}
 export interface SessionAutomationParams {
   session_id: string
   kind: 'goal' | 'loop' | 'heartbeat'
@@ -6670,6 +6684,8 @@ export interface CanonicalRpcMethods {
   /** Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input. */
   'prompt.resolve_unknown': { params: PromptResolveUnknownParams; result: AdmissionStatus }
   'prompt.submit': { params: CanonicalSubmitParams; result: AdmissionStatus }
+  /** The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer. */
+  'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
@@ -6725,6 +6741,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.receipt',
   'prompt.resolve_unknown',
   'prompt.submit',
+  'rollback.session_diff',
   'runtime.describe',
   'session.automation',
   'session.create',

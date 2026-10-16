@@ -103,3 +103,45 @@ async def test_loop_and_heartbeat_ticks_are_claimed_on_the_owner(owner):
 async def test_unknown_calls_are_refused(owner):
     assert (await owner.call('goal', '_save'))['message'] == 'invalid_params'
     assert (await owner.call('cron', 'state'))['message'] == 'invalid_params'
+
+
+@pytest.mark.asyncio
+async def test_cli_driven_loop_changes_repaint_the_other_viewers(owner):
+    """A classic-CLI viewer drives its /loop through this verb; an Ink or Desktop viewer of the same
+    session paints the loop bar from ``session.control.update``, so every mutation publishes it (reads don't)."""
+    updates = []
+    owner.authority.sessions[owner.ref.session_id].event_stream.observers.add(
+        lambda frame: frame['params']['type'] == 'session.control.update' and updates.append(frame['params']['payload']))
+    await owner.call('loop', 'set', 'check the queue', interval_seconds=60)
+    await owner.call('loop', 'fire_tick')
+    assert [u['control']['loop']['awaiting_response'] for u in updates] == [False, True]
+    await owner.call('loop', 'state')
+    await owner.call('loop', 'goal_blocks_tick')
+    assert len(updates) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind, call', [('goal', 'is_waiting'), ('loop', 'goal_blocks_tick')])
+async def test_a_read_that_clears_a_goal_barrier_repaints_the_other_viewers(owner, kind, call):
+    """``is_waiting`` / ``goal_blocks_tick`` drop a satisfied barrier (the goal resumes, the loop defers to
+    it): that write must reach the other viewers even though an unchanged poll stays quiet."""
+    import asyncio
+    import sys
+    child = await asyncio.create_subprocess_exec(sys.executable, '-c', 'import sys; sys.stdin.read()',
+                                                 stdin=asyncio.subprocess.PIPE)
+    try:
+        await owner.call('goal', 'set', 'wait for the child')
+        await owner.call('goal', 'wait_on', child.pid)
+        await owner.call('loop', 'set', 'check the queue', interval_seconds=60)
+        updates = []
+        owner.authority.sessions[owner.ref.session_id].event_stream.observers.add(
+            lambda frame: frame['params']['type'] == 'session.control.update'
+            and updates.append(frame['params']['payload']))
+        await owner.call(kind, call)
+        assert updates == []  # barrier still holds: nothing changed, nothing published
+    finally:
+        child.stdin.close()
+        await asyncio.wait_for(child.wait(), 10)
+    await owner.call(kind, call)
+    assert len(updates) == 1 and 'wait_barrier' not in updates[0]['control']['goal']
+    assert updates[0]['control']['loop']['deferred_by_goal'] is True

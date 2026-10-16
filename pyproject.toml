@@ -43,8 +43,9 @@ dependencies = [
   # a corporate/internal root installed on the machine just works. certifi
   # above stays a direct pin because httpx/requests/openai each depend on
   # it regardless; it is no longer OUR trust source.
-  # ssl_verify uses truststore's private original SSLContext for explicit CA overrides.
-  # Keep this exact until that path has a public-API replacement.
+  # ssl_verify uses truststore's private original SSLContext for explicit CA
+  # overrides, and memoizes the OpenSSL backend's per-connection CA reload.
+  # Keep this exact until those paths have a public-API replacement.
   "truststore==0.10.4; python_version >= '3.14'",
   "python-dotenv==1.2.2; python_version >= '3.14'",
   "fire==0.7.1; python_version >= '3.14'",

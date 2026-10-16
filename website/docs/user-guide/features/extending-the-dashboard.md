@@ -852,6 +852,15 @@ if an authenticated API route serves the same file.
 </html>
 ```
 
+The page intentionally uses the browser's default styling. These desktop and
+mobile-viewport previews render the exact HTML above in isolated Chromium, with
+an illustrative outer frame. They are not authenticated Dashboard screenshots
+or physical-device acceptance tests.
+
+![Desktop preview of the fixed HTML example, showing the Plugin Notes heading and one read-only paragraph.](/img/dashboard-plugins/page-desktop.png)
+
+![Mobile-viewport preview of the same unmodified HTML example; no Dashboard theme or interactive controls are injected.](/img/dashboard-plugins/page-mobile.png)
+
 The endpoint is `GET /api/plugins/my-plugin/page` on your existing Dashboard
 origin (with its existing deployment prefix, if any). On a **cookie-authenticated
 Dashboard**, sign in normally, then open that URL in the same browser. An

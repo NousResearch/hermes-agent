@@ -318,12 +318,12 @@ def test_download_unknown_model_404s(client):
     assert r.status_code == 404
 
 
-def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatch, tmp_path):
+def test_truncated_download_retains_resume_without_publishing(client, monkeypatch, tmp_path):
     """Catalog sizes are advisory (upstream re-uploads may make them
     stale — a mismatch against the CATALOG must not fail a download).
     The server's own declared length is the only completeness check:
-    fewer bytes than the server promised means a dropped connection, so
-    the job errors and nothing is staged."""
+    fewer bytes than the server promised means a dropped connection. A
+    bounded failure parks the job with Resume and never stages a partial."""
 
     from hermes_cli.web_routers import local_models as lm
     from hermes_cli.local_runtime.bootstrap import models_dir
@@ -356,18 +356,19 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
     job_id = r.json()["job_id"]
     assert job_id
 
-    deadline = time.time() + 10
-    status = None
-    while time.time() < deadline:
+    from tests.waiting import wait_until
+
+    def settled():
         status = client.get(f"/api/local-models/jobs/{job_id}").json()
-        if status["status"] in ("done", "error"):
-            break
-        time.sleep(0.05)
-    assert status is not None and status["status"] == "error"
+        return status if status["status"] != "running" else None
+
+    status = wait_until(settled, timeout=10)
+    assert status["status"] == "paused" and status["can_resume"]
     assert 'bytes=0-0' in requests and any(value != 'bytes=0-0' for value in requests)
     assert 'IncompleteRead' in status['error']
     assert not destination.exists()
-    assert job_id not in lm._RUNNING
+    assert job_id in lm._RUNNING
+    assert list((tmp_path / "partials").glob('*.ranges'))
     assert not list(models_dir().glob('*.part'))
 
 

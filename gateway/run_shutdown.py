@@ -22,9 +22,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from agent.i18n import t
+from gateway import ingress_observer
 from gateway.config import Platform
 from gateway.restart import (
-    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, LAUNCHD_STOP_CLEANUP_RESERVE_S,
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
@@ -1945,7 +1946,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         logger.info("Shutdown phase: cron interrupt notices done at +%.2fs", ctx.elapsed())
 
     async def _stop_finalize_agents_and_adapters(self, ctx: GatewayShutdownMixin._StopContext) -> None:
-        """Detached restart launch, agent finalization, idle-cache cleanup, adapter teardown."""
+        """Detached restart launch, agent finalization, idle-cache cleanup, adapter teardown, then
+        the bounded ingress-observer drain."""
         if self._restart_requested and self._restart_detached:
             with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart: %s"):
                 await self._launch_detached_restart_command()
@@ -1967,16 +1969,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         cancel_completion_batches = getattr(self, "_cancel_process_completion_batch_tasks", None)
         if cancel_completion_batches is not None:
             await cancel_completion_batches()
-        for platform, adapter in list(self.adapters.items()):
-            await self._bounded_adapter_teardown(adapter, platform)
-        # Disconnect secondary-profile adapters (multiplex mode).
-        _profile_adapters = getattr(self, "_profile_adapters", {})
-        for _prof, _amap in list(_profile_adapters.items()):
-            for platform, adapter in list(_amap.items()):
-                await self._bounded_adapter_teardown(adapter, platform, profile=_prof)
-            _amap.clear()
-        _profile_adapters.clear()
+        await self._teardown_all_adapters()
         logger.info("Shutdown phase: all adapters disconnected at +%.2fs", ctx.elapsed())
+        # A disconnect that finished queued its epoch's end on a daemon thread the process exit kills. Wait
+        # only within the watchdog leash (launchd-clamped) left after the reserve for the cleanup to come.
+        await ingress_observer.drain(_effective_watchdog_leash(self) - ctx.elapsed() - LAUNCHD_STOP_CLEANUP_RESERVE_S)
 
     async def _stop_release_runtime_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Cancel background tasks, flush pending messages, clear per-session state, final tool kill."""

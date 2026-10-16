@@ -542,12 +542,14 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
     import shutil
 
     from model_tools import _tool_defs_cache_key
+    from tests.waiting import wait_for_ctime_tick
 
     cfg = tmp_path / "config.yaml"
     cfg.write_text("mcp_servers:\n  aa: {command: a}\n", encoding="utf-8")
     with patch("hermes_cli.config.get_config_path", return_value=cfg):
         before = _tool_defs_cache_key(None, None, False)
         st = cfg.stat()
+        wait_for_ctime_tick(tmp_path, st.st_ctime_ns)
         other = tmp_path / "other.yaml"
         other.write_text("mcp_servers:\n  bb: {command: b}\n", encoding="utf-8")
         shutil.copy2(other, cfg)

@@ -13,7 +13,7 @@ import re
 import secrets
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -84,7 +84,8 @@ def _pairing_store(profile: Optional[str] = None):
 @router.get("/api/pairing")
 async def list_pairing(profile: Optional[str] = None):
     store = _pairing_store(profile)
-    return {"pending": store.list_pending(), "approved": store.list_approved()}
+    # Pairing edits wait on a cross-process lock (gateway, CLI): never on the server's event loop.
+    return {"pending": await asyncio.to_thread(store.list_pending), "approved": store.list_approved()}
 
 
 @router.post("/api/pairing/approve")
@@ -99,7 +100,10 @@ async def approve_pairing(body: PairingApprove):
         raise HTTPException(status_code=400, detail="platform and request_id or code are required")
 
     by_request_id = bool(body.request_id) or store.looks_like_request_id(target)
-    result = store.approve_request(platform, target) if by_request_id else store.approve_code(platform, target.upper())
+    if by_request_id:
+        result = await asyncio.to_thread(store.approve_request, platform, target)
+    else:
+        result = await asyncio.to_thread(store.approve_code, platform, target.upper())
     if result:
         return {"ok": True, "user": result}
     # Lockout only gates the code path — a stale request id must not surface
@@ -119,14 +123,14 @@ async def revoke_pairing(body: PairingRevoke):
     platform = (body.platform or "").lower().strip()
     if not platform or not body.user_id:
         raise HTTPException(status_code=400, detail="platform and user_id are required")
-    if store.revoke(platform, body.user_id):
+    if await asyncio.to_thread(store.revoke, platform, body.user_id):
         return {"ok": True}
     raise HTTPException(status_code=404, detail=f"User {body.user_id} not found in approved list for {platform}.")
 
 
 @router.post("/api/pairing/clear-pending")
 async def clear_pending_pairing(profile: Optional[str] = None):
-    return {"ok": True, "cleared": _pairing_store(profile).clear_pending()}
+    return {"ok": True, "cleared": await asyncio.to_thread(_pairing_store(profile).clear_pending)}
 
 
 # --- Webhooks: same JSON store as the CLI (hermes_cli.webhook); the adapter
@@ -651,7 +655,7 @@ async def run_import_upload(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not create import staging directory: {exc}")
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     target = staging_dir / f"dashboard-import-{stamp}-{secrets.token_hex(4)}-{_safe_backup_upload_name(file.filename)}"
     total = await stream_upload_to_path(
         file, target, too_large="Archive is too large",

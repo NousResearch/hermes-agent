@@ -77,7 +77,7 @@ def _doctor_tool(name: str) -> tuple[str | None, str]:
 def _run_ok(cmd: list[str], timeout: int, **kw) -> bool:
     """True when *cmd* exits 0 within *timeout*; a timeout counts as failure."""
     try:
-        return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw).returncode == 0
+        return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw).returncode == 0  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     except subprocess.TimeoutExpired:
         return False
 
@@ -414,7 +414,7 @@ def _plural(n: int) -> str:
     return "vulnerability" if n == 1 else "vulnerabilities"
 
 
-def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues: list[str]) -> None:
+def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual_issues: list[str]) -> None:
     """Run one `npm audit --json` and report; any failure is silently skipped.
 
     Every row here audits a tree whose versions come from a COMMITTED lockfile
@@ -431,7 +431,7 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
         audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
                                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
-                                      env=with_hermes_node_path())
+                                      env=with_hermes_node_path(), check=False)
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
         counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
@@ -440,16 +440,18 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         if total == 0:
             check_ok(f"{label} deps", "(no known vulnerabilities)")
         elif critical > 0 or high > 0:
-            detail = "build-time tooling" if workspace_scoped else "runtime dependency tree"
             remedy = ("fix is an upstream lockfile bump — a local manual fix does not persist"
                       " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
             if workspace_scoped:
-                check_info("  ^ build-time tooling (not runtime); if manual npm remediation "
+                check_info("  ^ workspace audit includes runtime and build dependencies; if manual npm remediation "
                            "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
             else:
-                check_info(f"  ^ {detail}; report/pin the fix in package-lock.json — see #116774")
-            issues.append(f"{label} has {total} npm {_plural(total)}")
+                check_info("  ^ runtime dependency tree; report/pin the fix in package-lock.json — see #116774")
+            manual_issues.append(
+                f"{label} has {total} npm {_plural(total)}; wait for an upstream lockfile fix, then update "
+                "your installation (Docker: pull a rebuilt image; recreating the same image restores the same dependencies)"
+            )
         else:
             check_ok(f"{label} deps", f"({moderate} moderate {_plural(moderate)})")
     except Exception:
@@ -480,14 +482,18 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
         except Exception:
             whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
         for npm_dir, label, audit_extra in (
-            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
+            # NOT agent-browser: it is now a pm-managed precompiled binary
+            # (see AgentBrowser in pm/packages.py) with no node_modules/lockfile
+            # of its own to audit. This row is the root package.json itself
+            # (js-yaml, semver, eslint tooling). See #122223.
+            (PROJECT_ROOT, "Root npm package", ["--workspaces=false"]),
             (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
             (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
             (whatsapp_bridge_dir, "WhatsApp bridge", []),
         ):
             # Workspace-scoped audits check the root node_modules; standalone dirs check their own.
             if ((PROJECT_ROOT if audit_extra else npm_dir) / "node_modules").exists():
-                _audit_one(npm_bin, npm_dir, label, audit_extra, f.issues)
+                _audit_one(npm_bin, npm_dir, label, audit_extra, f.manual_issues)
     if _is_termux():
         check_info("Termux compatibility fallbacks:")
         for note in _TERMUX_INSTALL_ALL_FALLBACK_NOTES:

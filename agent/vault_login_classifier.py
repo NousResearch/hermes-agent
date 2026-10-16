@@ -76,7 +76,7 @@ class LoginControl:
     max_length: Optional[int] = None
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "LoginControl":
+    def from_dict(cls, raw: dict[str, Any]) -> LoginControl:
         form_index = raw.get("formIndex", raw.get("form_index"))
         max_length = raw.get("maxLength", raw.get("max_length"))
         return cls(
@@ -168,9 +168,7 @@ def select_password_fill(
     passwords = [c for c in classified if c.token == "current-password"]
     if not passwords or not password:
         return []
-    best_password = sorted(
-        passwords, key=lambda c: (-c.score, c.control.index)
-    )[0]
+    best_password = min(passwords, key=lambda c: (-c.score, c.control.index))
     return [
         {
             "index": best_password.control.index,

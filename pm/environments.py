@@ -382,7 +382,7 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     try:
         for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
             key, _, value = line.partition("=")
-            if key.strip() != "version":
+            if key.strip() not in ("version", "version_info"):  # venv / uv, virtualenv
                 continue
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")

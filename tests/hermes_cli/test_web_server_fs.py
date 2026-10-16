@@ -292,6 +292,9 @@ def test_fs_media_shell_paths_deliver_files_and_preserve_access_checks(client, t
         assert response.status_code == expected, response.text
         assert "must-not-be-delivered" not in response.text
 
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    SessionDB(db_path=get_hermes_home() / "state.db").close()  # read-only lookups need an initialized store
     invalid_session = client.get(endpoint, params={
         "path": shell_path(target), "profile": "default", "session_id": "missing-session",
     })

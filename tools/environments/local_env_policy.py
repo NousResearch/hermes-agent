@@ -170,7 +170,7 @@ def _registered_adapter_secret_env() -> frozenset:
     return _registry_adapter_secret_env() | _home_adapter_secret_env()
 
 
-def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = None) -> bool:
+def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None) -> bool:
     """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
     platform's environment resolves names: exact plus case-folded. On Windows the environment
     block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with

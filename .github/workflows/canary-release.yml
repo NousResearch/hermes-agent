@@ -5,6 +5,10 @@ name: Canary Release
 # its protected head is live; only a published canary makes a quiet day a no-op.
 # workflow_dispatch fires one on demand at any time.
 #
+# Publisher-only. The job reads the Nous public channel archive and rejects a
+# record whose repository is not this one, so a fork schedule is a daily
+# failure rather than a quiet no-op. Forks do not cut or prune canaries.
+#
 # Source identity is the exact stable version plus build metadata:
 # v<stable>+canary.<YYYYMMDDTHHMMSSZ>. It compares equal to the stable; only
 # the protected R2 canary head moves subscribers. A dispatch queued behind a
@@ -28,8 +32,9 @@ jobs:
   tag:
     name: Tag, draft, and start the canary build
     runs-on: ubuntu-24.04
-    # A dispatch from a feature branch would tag unmerged code as the canary.
-    if: github.ref_name == github.event.repository.default_branch
+    # Upstream only: a fork has no authority over the public channel archive.
+    # A dispatch from a feature branch would also tag unmerged code as the canary.
+    if: github.repository == 'NousResearch/hermes-agent' && github.ref_name == github.event.repository.default_branch
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

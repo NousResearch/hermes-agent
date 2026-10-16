@@ -182,7 +182,7 @@ export function FoundryFields({
           size="sm"
         >
           {busy === 'save' && <Loader2 className="animate-spin" />}
-          {copy.saveAndUse}
+          {t.common.save}
         </Button>
       </div>
       <p>{copy.profileHint}</p>

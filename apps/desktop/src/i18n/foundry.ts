@@ -17,7 +17,6 @@ export interface FoundryTranslations {
   searchDeployments: string
   noDeployments: string
   scope: string
-  saveAndUse: string
   saved: string
   loadFailed: string
   profileHint: string
@@ -44,7 +43,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: 'Search deployments…',
     noDeployments: 'No matching deployments.',
     scope: 'Token scope',
-    saveAndUse: 'Save and use',
     saved: 'Foundry saved for this profile.',
     loadFailed: 'Could not load Foundry settings.',
     profileHint: 'Sets the provider and deployment for new chats in the selected profile.'
@@ -70,7 +68,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: 'Bereitstellungen suchen…',
     noDeployments: 'Keine passenden Bereitstellungen.',
     scope: 'Token-Gültigkeitsbereich',
-    saveAndUse: 'Speichern und verwenden',
     saved: 'Foundry für dieses Profil gespeichert.',
     loadFailed: 'Foundry-Einstellungen konnten nicht geladen werden.',
     profileHint: 'Legt Anbieter und Bereitstellung für neue Chats im ausgewählten Profil fest.'
@@ -96,7 +93,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: 'Rechercher des déploiements…',
     noDeployments: 'Aucun déploiement correspondant.',
     scope: 'Étendue du jeton',
-    saveAndUse: 'Enregistrer et utiliser',
     saved: 'Foundry enregistré pour ce profil.',
     loadFailed: 'Impossible de charger les paramètres Foundry.',
     profileHint: 'Définit le fournisseur et le déploiement des nouvelles conversations du profil sélectionné.'
@@ -122,7 +118,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: 'Buscar implementaciones…',
     noDeployments: 'No hay implementaciones coincidentes.',
     scope: 'Ámbito del token',
-    saveAndUse: 'Guardar y usar',
     saved: 'Foundry guardado para este perfil.',
     loadFailed: 'No se pudo cargar la configuración de Foundry.',
     profileHint: 'Establece el proveedor y la implementación para los nuevos chats del perfil seleccionado.'
@@ -145,7 +140,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: '搜索部署…',
     noDeployments: '没有匹配的部署。',
     scope: '令牌范围',
-    saveAndUse: '保存并使用',
     saved: '已为此配置文件保存 Foundry。',
     loadFailed: '无法加载 Foundry 设置。',
     profileHint: '为所选配置文件的新聊天设置提供商和部署。'
@@ -168,7 +162,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: '搜尋部署…',
     noDeployments: '沒有相符的部署。',
     scope: '權杖範圍',
-    saveAndUse: '儲存並使用',
     saved: '已為此設定檔儲存 Foundry。',
     loadFailed: '無法載入 Foundry 設定。',
     profileHint: '為所選設定檔的新聊天設定提供者和部署。'
@@ -193,7 +186,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: 'デプロイを検索…',
     noDeployments: '一致するデプロイはありません。',
     scope: 'トークンスコープ',
-    saveAndUse: '保存して使用',
     saved: 'このプロファイルの Foundry を保存しました。',
     loadFailed: 'Foundry の設定を読み込めませんでした。',
     profileHint: '選択したプロファイルの新しいチャットで使用するプロバイダーとデプロイを設定します。'
@@ -218,7 +210,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: 'Поиск развёртываний…',
     noDeployments: 'Подходящих развёртываний нет.',
     scope: 'Область токена',
-    saveAndUse: 'Сохранить и использовать',
     saved: 'Foundry сохранён для этого профиля.',
     loadFailed: 'Не удалось загрузить настройки Foundry.',
     profileHint: 'Задаёт поставщика и развёртывание для новых чатов выбранного профиля.'
@@ -242,7 +233,6 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     searchDeployments: 'البحث عن عمليات النشر…',
     noDeployments: 'لا توجد عمليات نشر مطابقة.',
     scope: 'نطاق الرمز',
-    saveAndUse: 'حفظ واستخدام',
     saved: 'تم حفظ Foundry لهذا الملف التعريفي.',
     loadFailed: 'تعذر تحميل إعدادات Foundry.',
     profileHint: 'يحدد الموفر والنشر للمحادثات الجديدة في الملف التعريفي المحدد.'

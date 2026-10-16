@@ -101,14 +101,8 @@ function FoundryCard({
     setBusy(action)
 
     try {
-      // Blank input keeps the stored key; GET never returns a secret to the renderer.
-      const payload: FoundryUpdate =
-        form.auth.kind === 'api_key'
-          ? { ...form, auth: { kind: 'api_key', api_key: form.auth.api_key?.trim() || undefined } }
-          : form
-
       if (action === 'save') {
-        const saved = await saveFoundrySettings(payload, scope)
+        const saved = await saveFoundrySettings(form, scope)
 
         if (!mounted.current) {
           return
@@ -121,7 +115,7 @@ function FoundryCard({
         onConfigSaved?.()
         notify({ kind: 'success', message: copy.saved })
       } else {
-        const result = await validateFoundrySettings(payload, scope)
+        const result = await validateFoundrySettings(form, scope)
 
         if (!mounted.current) {
           return

@@ -15,6 +15,8 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 
+import { rankSearchOption } from './searchable-select'
+
 // cmdk highlights its first row whenever nothing is selected, which would make
 // Enter swap free text for that row. A value no row carries keeps the list
 // unhighlighted until the user actually arrows or points into it.
@@ -58,24 +60,22 @@ export function ComboboxInput({
 }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
   const [active, setActive] = useState(IDLE)
   const anchorRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const commandRef = useRef<HTMLDivElement>(null)
   const listId = useId()
 
-  const query = (search ? searchQuery : value).trim().toLowerCase()
+  const query = value.trim().toLowerCase()
   const isExact = options.some(option => option.toLowerCase() === query)
 
   const visible =
-    query && (search || !isExact) ? options.filter(option => option.toLowerCase().includes(query)) : options
+    query && !search && !isExact ? options.filter(option => option.toLowerCase().includes(query)) : options
   // An empty menu is just a floating border; stay closed until something matches.
-  const expanded = open && !disabled && (search ? options.length > 0 : visible.length > 0)
+  const expanded = open && !disabled && visible.length > 0
 
   const openList = (next: boolean) => {
     setOpen(next)
-    setSearchQuery('')
     setActive(IDLE)
   }
 
@@ -160,15 +160,15 @@ export function ComboboxInput({
         }}
         variant="menu"
       >
-        <Command onValueChange={setActive} ref={commandRef} shouldFilter={false} value={active} variant="menu">
-          {search && (
-            <CommandInput
-              autoFocus
-              placeholder={search.placeholder}
-              value={searchQuery}
-              onValueChange={setSearchQuery}
-            />
-          )}
+        <Command
+          filter={rankSearchOption}
+          onValueChange={setActive}
+          ref={commandRef}
+          shouldFilter={Boolean(search)}
+          value={active}
+          variant="menu"
+        >
+          {search && <CommandInput autoFocus placeholder={search.placeholder} />}
           <CommandList id={listId}>
             {search && <CommandEmpty>{search.emptyMessage}</CommandEmpty>}
             {visible.map(option => (

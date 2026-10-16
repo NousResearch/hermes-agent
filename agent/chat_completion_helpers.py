@@ -34,6 +34,7 @@ from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
+from agent.codex_request_kwargs import build_codex_kwargs
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
@@ -1431,40 +1432,6 @@ def _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config):
         guardrail_config=getattr(agent, "_bedrock_guardrail_config", None), reasoning_config=reasoning_config)
 
 
-def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
-    from agent.codex_responses_adapter import classify_responses_route
-    from agent.native_compaction import native_compaction_context_management
-    is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
-    # Native server-side compaction (gpt-5.6 on direct OpenAI / ChatGPT Codex routes
-    # only) — None on every other route/model, leaving the request unchanged.
-    context_management = native_compaction_context_management(agent, is_codex_backend=is_codex_backend,
-        is_xai_responses=is_xai_responses, is_github_responses=is_github_responses)
-    # xAI's /responses endpoint 400s on ``pattern``/``format`` schema keywords and on
-    # ``enum`` values containing ``/`` — strip them (#27197). Deep-copy first: the
-    # sanitizers mutate in place and tools_for_api aliases agent.tools (#27907).
-    if is_xai_responses:
-        try:
-            import copy as _copy
-            from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
-            tools_for_api = _copy.deepcopy(tools_for_api)
-            tools_for_api, _ = strip_pattern_and_format(tools_for_api)
-            tools_for_api, _ = strip_slash_enum(tools_for_api)
-        except Exception as exc:
-            logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
-    ephemeral_out = _consume_ephemeral_max_output(agent)
-    return agent._get_transport().build_kwargs(model=agent.model,
-        messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
-        reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
-        cache_scope_id=cache_scope_id, base_url=agent.base_url,
-        max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
-        timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
-        provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
-        is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
-        github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
-        replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-        context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
-
-
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
@@ -1568,7 +1535,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch
     # (memoized on the agent); anthropic/bedrock above don't use it.
     cache_scope_id = _prompt_cache_scope_for_agent(agent)
-    builder = _build_codex_kwargs if agent.api_mode == "codex_responses" else _build_chat_completions_kwargs
+    builder = build_codex_kwargs if agent.api_mode == "codex_responses" else _build_chat_completions_kwargs
     return builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
 
 

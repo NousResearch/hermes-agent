@@ -1412,12 +1412,8 @@ def _apply_agent_section(agent, _agent_cfg):
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
-    # Responses `text.verbosity`: "" / unknown value = not sent (never flips the provider default).
-    _verbosity = str(_agent_section.get("text_verbosity") or "").strip().lower()
-    if _verbosity and _verbosity not in {"low", "medium", "high"}:
-        logger.warning("Unknown agent.text_verbosity %r; expected low, medium or high — ignoring", _verbosity)
-        _verbosity = ""
-    agent.text_verbosity = _verbosity or None
+    from agent.responses_request_config import apply_responses_request_config
+    apply_responses_request_config(agent, _agent_section)
 
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.

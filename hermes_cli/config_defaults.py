@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_auxiliary import auxiliary_task_defaults
+
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -17,17 +19,6 @@ DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
 
-def _aux(timeout, *, reasoning_effort=True, **extra):
-    """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
-
-    reasoning_effort=False omits that key (MoA blocks configure depth per slot);
-    ``extra`` keys are appended after the standard ones.
-    """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
-    if reasoning_effort:
-        d["reasoning_effort"] = ""
-    d.update(extra)
-    return d
 
 
 DEFAULT_CONFIG = {
@@ -158,6 +149,11 @@ DEFAULT_CONFIG = {
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.
         "text_verbosity": "",
+        # Encrypted-reasoning replay window for proxy/aggregator Responses routes (those whose
+        # issuer kind starts with "other:"). Only this many of the most recent assistant turns send
+        # their sealed reasoning blobs, so one rejected blob costs that many turns instead of the
+        # whole session. 0 = send none. First-party issuers always replay in full.
+        "codex_proxy_replay_turns": 2,
         # System-prompt guidance telling the model to call tools instead of describing actions.
         # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
         # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).
@@ -756,20 +752,20 @@ DEFAULT_CONFIG = {
         # overrides provider; api_key falls back to OPENAI_API_KEY; reasoning_effort:
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
-        "vision": _aux(120, download_timeout=30),
+        "vision": auxiliary_task_defaults(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
         # are ignored. Compression: raise timeout for local models. no_progress_timeout:
         # seconds a streamed call goes without a substantive chunk before it fails fast into
         # retry/fallback; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
-        "compression": _aux(120, no_progress_timeout=None),
-        "skills_hub": _aux(30),
-        "approval": _aux(30),   # classifier — a fast/cheap model is recommended
+        "compression": auxiliary_task_defaults(120, no_progress_timeout=None),
+        "skills_hub": auxiliary_task_defaults(30),
+        "approval": auxiliary_task_defaults(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
         # chat_completions | anthropic_messages | codex_responses.
         "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""},
-        "mcp": _aux(30),
+        "mcp": auxiliary_task_defaults(30),
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
         "title_generation": {
             "enabled": True,
@@ -785,19 +781,19 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",
             "language": "",
         },
-        "memory_query_rewrite": _aux(8, reasoning_effort=False),
-        "tts_audio_tags": _aux(30),
-        "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
+        "memory_query_rewrite": auxiliary_task_defaults(8, reasoning_effort=False),
+        "tts_audio_tags": auxiliary_task_defaults(30),
+        "voice_chat": {**auxiliary_task_defaults(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
         # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
         # kanban_decomposer emits a JSON graph of child tasks (more tokens).
-        "triage_specifier": _aux(120),
-        "kanban_decomposer": _aux(180),
-        "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
-        "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
+        "triage_specifier": auxiliary_task_defaults(120),
+        "kanban_decomposer": auxiliary_task_defaults(180),
+        "profile_describer": auxiliary_task_defaults(60),   # 1-2 sentence profile blurb; short, cheap
+        "goal_judge": auxiliary_task_defaults(60),          # /goal satisfaction + contract drafting; JSON calls
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
         # of skills); route cheaper via `hermes model` → auxiliary → Curator.
-        "curator": _aux(600),
-        "monitor": _aux(60),   # important-mail 0-10 scorer; high-volume, small model fine
+        "curator": auxiliary_task_defaults(600),
+        "monitor": auxiliary_task_defaults(60),   # important-mail 0-10 scorer; high-volume, small model fine
         # Post-turn self-improvement fork (save memory / patch skill). "auto" = main model replaying
         # the full conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
         # enabled=false skips auto spawns (/refine still works). An explicit max_input_tokens caps
@@ -808,11 +804,11 @@ DEFAULT_CONFIG = {
         # conversation's reasoning config verbatim so its request bytes keep the parent's warm
         # prompt-cache prefix (#30532). Set provider/model below to route the review to another model
         # if you want a different effort level; a one-time warning says so when the key is set.
-        "background_review": {"enabled": True, **_aux(120)},
+        "background_review": {"enabled": True, **auxiliary_task_defaults(120)},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
-        "moa_reference": _aux(900, reasoning_effort=False),
-        "moa_aggregator": _aux(900, reasoning_effort=False),
+        "moa_reference": auxiliary_task_defaults(900, reasoning_effort=False),
+        "moa_aggregator": auxiliary_task_defaults(900, reasoning_effort=False),
     },
 
     "display": {

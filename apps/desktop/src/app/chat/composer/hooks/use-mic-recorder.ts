@@ -4,6 +4,16 @@ import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
 
 type BrowserAudioContext = typeof AudioContext
 
+/** How long start() waits for a suspended meter context to reach 'running'.
+ *  Past this the take records on, but its meter is unverified: a suspended
+ *  analyser reads flat, so `heardSpeech=false` is no proof of silence. */
+const METER_RESUME_TIMEOUT_MS = 300
+
+/** Ignore over-threshold frames this long after capture opens (mic pop, start chime). */
+export const SPEECH_SETTLE_MS = 300
+/** Unbroken over-threshold time before a take counts as speech (filters clicks). */
+export const SPEECH_ONSET_MS = 150
+
 export interface MicRecorderOptions {
   onLevel?: (level: number) => void
   onError?: (error: Error) => void
@@ -27,6 +37,10 @@ export interface MicRecording {
   /** The level meter failed during this take, so `heardSpeech` is unknown
    *  rather than false. */
   meterFailed?: boolean
+  /** The meter's AudioContext was not running when capture began, so the
+   *  opening of the take went unmetered and `heardSpeech` is unknown rather
+   *  than false. Unlike `meterFailed`, the device is not considered broken. */
+  meterUnverified?: boolean
 }
 
 export interface MicRecorderErrorCopy {
@@ -96,8 +110,11 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
   const meterFailedRef = useRef(false)
+  const meterUnverifiedRef = useRef(false)
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
+  // Start of the current unbroken run of over-threshold frames (null = quiet).
+  const loudSinceRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
 
   const cleanup = () => {
@@ -123,7 +140,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
   useEffect(() => () => cleanup(), [])
 
-  const startMeter = (stream: MediaStream, options: MicRecorderOptions) => {
+  const startMeter = async (stream: MediaStream, options: MicRecorderOptions) => {
     const audioWindow = window as Window & { webkitAudioContext?: BrowserAudioContext }
     const AudioContextCtor = window.AudioContext || audioWindow.webkitAudioContext
 
@@ -183,10 +200,6 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         }
       })
 
-      if (audioContext.state === 'suspended') {
-        audioContext.resume().catch(failIfCurrent)
-      }
-
       const tick = () => {
         analyser.getByteTimeDomainData(data)
 
@@ -209,9 +222,24 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         const idleSilenceMs = options.idleSilenceMs ?? 0
 
         if (speechThreshold > 0 && options.onSilence && !silenceTriggeredRef.current) {
-          if (normalized >= speechThreshold) {
+          // A USB mic pops (and a start chime rings) the instant capture opens, and
+          // a desk mic hears clicks: brief spikes over the threshold. Counting one
+          // loud frame as speech started the end-of-utterance clock before the user
+          // spoke, so the take ended as just the transient ("[clicking]") and the
+          // real sentence was lost. Speech = sustained loudness, past the open settle.
+          const loud = normalized >= speechThreshold && now - startedAtRef.current >= SPEECH_SETTLE_MS
+
+          if (loud) {
+            loudSinceRef.current ??= now
+          } else {
+            loudSinceRef.current = null
+          }
+
+          if (loud && (heardSpeechRef.current || now - loudSinceRef.current! >= SPEECH_ONSET_MS)) {
             heardSpeechRef.current = true
             silenceStartedAtRef.current = null
+          } else if (loud) {
+            // Onset still forming: neither speech yet nor silence.
           } else if (heardSpeechRef.current && silenceMs > 0) {
             silenceStartedAtRef.current ??= now
 
@@ -233,6 +261,26 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       }
 
       tick()
+
+      // Capture is already rolling; a suspended analyser reads flat, so speech
+      // right after the mic opens would read as silence and the take would be
+      // dropped unheard. Wait (bounded) for the context to run — past the
+      // bound the take is kept, but flagged so STT judges it instead.
+      if (audioContext.state !== 'running') {
+        let timer: number | undefined
+
+        await Promise.race([
+          audioContext.resume().catch(failIfCurrent),
+          new Promise<void>(resolve => {
+            timer = window.setTimeout(resolve, METER_RESUME_TIMEOUT_MS)
+          })
+        ])
+        window.clearTimeout(timer)
+
+        if (audioContextRef.current === audioContext && (audioContext.state as AudioContextState) !== 'running') {
+          meterUnverifiedRef.current = true
+        }
+      }
     } catch {
       failMeter()
     }
@@ -311,8 +359,10 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     recorderRef.current = recorder
     heardSpeechRef.current = false
     meterFailedRef.current = false
+    meterUnverifiedRef.current = false
     silenceTriggeredRef.current = false
     silenceStartedAtRef.current = null
+    loudSinceRef.current = null
     startedAtRef.current = Date.now()
 
     recorder.ondataavailable = event => {
@@ -327,6 +377,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       const durationMs = Date.now() - startedAtRef.current
       const heardSpeech = heardSpeechRef.current
       const meterFailed = meterFailedRef.current
+      const meterUnverified = meterUnverifiedRef.current
 
       chunksRef.current = []
       cleanup()
@@ -344,7 +395,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         audio: new Blob(chunks, { type: recordingType }),
         durationMs,
         heardSpeech,
-        meterFailed
+        meterFailed,
+        meterUnverified
       })
     }
 
@@ -359,7 +411,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
     recorder.start()
     setRecording(true)
-    startMeter(stream, options)
+    await startMeter(stream, options)
   }
 
   const stop: MicRecorderHandle['stop'] = () =>

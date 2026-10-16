@@ -13,6 +13,11 @@
 //   is flowing — and HELD through playback. Calibrating while the speaker is
 //   audible bakes bleed into the floor and makes the trigger unreachable
 //   (echoCancellation does not reliably cancel same-app playback on Windows).
+// - The trigger is live from the first frame: the floor starts from a seeded
+//   quiet-room default and is refined by real below-trigger samples. A
+//   calibration window that had to pass before the trigger armed was a deaf
+//   spot right after every re-arm — speech inside it neither tripped nor was
+//   kept out of the floor.
 // - During playback the trigger is additionally clamped up to a minimum so
 //   bleed alone can't trip it, and capped so speech always remains reachable.
 // - A short grace window after playback onset suppresses the start transient.
@@ -26,11 +31,13 @@
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
 import { $voiceSilenceMs } from '@/store/voice-prefs'
 
-const CALIBRATION_MS = 400
 const SUSTAINED_MS = 300
 const SUSTAINED_MAJORITY = 0.8
 const MIN_TRIGGER_LEVEL = 0.075 // matches the voice loop's silenceLevel
 const FLOOR_MULTIPLIER = 3.5
+// Quiet-room floor (noise-suppressed mic) the trigger starts from before any
+// real quiet sample exists; x FLOOR_MULTIPLIER it lands under MIN_TRIGGER_LEVEL.
+const SEED_QUIET_FLOOR = 0.02
 // Playback clamps, scaled from the Python constants (int16 RMS 1500 / 4000
 // ≈ byte-domain level 0.14 / 0.37 with the /42 normalization below).
 const PLAYBACK_MIN_TRIGGER_LEVEL = 0.14
@@ -215,6 +222,13 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
       startSegment()
 
       context = new AudioContext()
+
+      // Same trap as the recorder's meter: a suspended analyser reads flat,
+      // so the monitor would be deaf until something else resumed audio.
+      if (context.state === 'suspended') {
+        void context.resume().catch(() => undefined)
+      }
+
       const analyser = context.createAnalyser()
       analyser.fftSize = 256
       context.createMediaStreamSource(stream).connect(analyser)
@@ -222,9 +236,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
       const data = new Uint8Array(analyser.fftSize)
       const floorSamples: number[] = []
       const recentAbove: { above: boolean; at: number }[] = []
-      let calibratedSince: number | null = null
-      let floorLocked = false
-      let quietFloor = 0
+      let quietFloor = SEED_QUIET_FLOOR
       let segmentStartedAt = Date.now()
       let wasPlaying = false
       let playbackSeen = false
@@ -263,19 +275,6 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
         const playing = callbacks.isPlaying ? callbacks.isPlaying() : true
 
         if (!tripped) {
-          // Quiet-floor calibration: quiet-phase samples only. The floor is
-          // HELD while audio plays — never recalibrated against speaker bleed.
-          if (!floorLocked) {
-            if (!playing) {
-              calibratedSince ??= now
-              pushFloorSample(level)
-            }
-
-            if (playing || (calibratedSince !== null && now - calibratedSince >= CALIBRATION_MS)) {
-              floorLocked = true
-            }
-          }
-
           // Grace only when playback starts after a real gap, so flapping of
           // the playing flag between sentences can't chain grace windows.
           if (playing && !wasPlaying) {
@@ -301,12 +300,14 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
             trigger = Math.min(Math.max(trigger, playbackMinTrigger), TRIGGER_CEILING_LEVEL)
           }
 
-          // Track ambient drift while quiet and below trigger.
-          if (floorLocked && !playing && level < trigger) {
+          // Calibrate / track ambient drift from quiet-phase, below-trigger
+          // samples only: the floor is HELD while audio plays (never learned
+          // from speaker bleed), and speech never raises its own bar.
+          if (!playing && level < trigger) {
             pushFloorSample(level)
           }
 
-          const above = floorLocked && level >= trigger && now >= graceUntil
+          const above = level >= trigger && now >= graceUntil
 
           recentAbove.push({ above, at: now })
 

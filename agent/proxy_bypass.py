@@ -15,6 +15,8 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+import socket
+import time
 from urllib.parse import urlsplit
 
 PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
@@ -81,6 +83,56 @@ def loopback_connect_kwargs(url: str) -> dict:
     targets loopback (skip the library's system-proxy auto-detection), else ``{}`` so remote
     endpoints keep the default proxy behaviour."""
     return {"proxy": None} if is_loopback_host(split_host_port(url)[0]) else {}
+
+
+# A dead LOCAL proxy must not freeze all LLM traffic. HTTP(S)_PROXY is captured into the
+# process environment at launch and is never refreshed afterwards: once a local proxy
+# (Clash / mihomo / V2Ray on 127.0.0.1) exits, the stale `127.0.0.1:<port>` keeps routing
+# every request to a refused port (WinError 10061 / ECONNREFUSED) until the whole app
+# restarts, and the failure surfaces on whichever provider is active so it reads as
+# "provider X is broken". Probe loopback proxies with a short-lived cache and let callers
+# fall back to a DIRECT connection when the port refuses connections. Remote proxies are
+# never probed — no behaviour change, no added latency for corporate/gateway proxies.
+_PROXY_LIVENESS_CACHE: dict[str, tuple[float, bool]] = {}
+_PROXY_LIVENESS_TTL_SECONDS = 10.0
+_PROXY_LIVENESS_TIMEOUT_SECONDS = 0.35
+
+
+def proxy_is_loopback(proxy_url: str | None) -> bool:
+    """True when a configured proxy points at a loopback host (127.0.0.1 / localhost / ::1).
+
+    Only such proxies are safe to probe — a remote/corporate proxy must be left untouched."""
+    host, _port = split_host_port(proxy_url)
+    return is_loopback_host(host)
+
+
+def proxy_endpoint_alive(proxy_url: str | None, *, enabled: bool = True) -> bool:
+    """True when a loopback proxy's port accepts TCP connections right now (cached ~10s).
+
+    Remote proxies and disabled probing always return True (untouched, no added latency).
+    When the loopback port refuses connections the cache records False for the TTL, so a
+    dying-then-restarted proxy is re-detected within the window instead of pinning a result."""
+    if not enabled or not proxy_is_loopback(proxy_url):
+        return True
+    now = time.monotonic()
+    cached = _PROXY_LIVENESS_CACHE.get(proxy_url)
+    if cached and now - cached[0] < _PROXY_LIVENESS_TTL_SECONDS:
+        return cached[1]
+    alive = True
+    try:
+        _host, port = split_host_port(proxy_url)
+        if port is not None:
+            with socket.create_connection((_host, port), timeout=_PROXY_LIVENESS_TIMEOUT_SECONDS):
+                pass
+    except Exception:
+        alive = False
+    _PROXY_LIVENESS_CACHE[proxy_url] = (now, alive)
+    return alive
+
+
+def reset_proxy_liveness_cache() -> None:
+    """Drop cached liveness results (used by tests to force a re-probe)."""
+    _PROXY_LIVENESS_CACHE.clear()
 
 
 def loopback_request_kwargs(url: str) -> dict:

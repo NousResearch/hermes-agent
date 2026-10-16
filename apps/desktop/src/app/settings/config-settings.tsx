@@ -11,6 +11,7 @@ import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
+import { $historyArrowsEnabled, setHistoryArrowsEnabled } from '@/store/composer-input-history'
 import { confirm } from '@/store/confirm'
 import {
   $dataUrlReadMaxMb,
@@ -113,6 +114,7 @@ function ConfigSettingsInner({
 
   const disableF12 = useStore($disableF12)
   const alwaysExternalLinks = useStore($alwaysExternalLinks)
+  const historyArrowsEnabled = useStore($historyArrowsEnabled)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -487,10 +489,20 @@ function ConfigSettingsInner({
           <OnboardingSettings />
         </>
       )}
-      {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
-          where image-attachment behavior already lives, so this sits above the
-          schema fields for that section. */}
-      {showAttachments ? <AttachmentSizeSetting /> : null}
+      {/* Device-local composer behavior (not config.yaml): the arrow-recall
+          toggle sits with the attach cap, the Chat section's other
+          this-computer-only preference. */}
+      {showAttachments ? (
+        <>
+          <ToggleRow
+            checked={historyArrowsEnabled}
+            description={c.historyArrowsDesc}
+            label={c.historyArrowsTitle}
+            onChange={setHistoryArrowsEnabled}
+          />
+          <AttachmentSizeSetting />
+        </>
+      ) : null}
       {/* Shared metrics are two coupled opt-ins with a consent side effect, so they
           go through their own RPC rather than the generic field autosave. */}
       {showSharedMetrics ? <SharedMetricsSettings /> : null}

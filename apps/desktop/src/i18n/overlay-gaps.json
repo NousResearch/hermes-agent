@@ -1224,6 +1224,8 @@
   "settings.config.builtinOnly": ["ar"],
   "settings.config.disableF12Desc": ["ar","ja","zh-hant"],
   "settings.config.disableF12Title": ["ar","ja","zh-hant"],
+  "settings.config.historyArrowsDesc": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "settings.config.historyArrowsTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.config.keepAwakeAlways": ["ar"],
   "settings.config.keepAwakeDesc": ["ar"],
   "settings.config.keepAwakeOff": ["ar"],

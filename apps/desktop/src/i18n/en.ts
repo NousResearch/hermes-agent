@@ -1222,6 +1222,9 @@ export const en: Translations = {
       alwaysExternalLinksTitle: 'Always open links in external browser',
       alwaysExternalLinksDesc:
         'Open every link you click in your system browser instead of the in-app browser. "Open in in-app browser" in the right-click menu still works.',
+      historyArrowsTitle: 'Recall previous messages with ↑ and ↓',
+      historyArrowsDesc:
+        'Up and Down bring back messages you already sent in this chat. Turn this off to keep the arrows for moving the caret — the / and @ popovers and queued-turn editing still use them.',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',

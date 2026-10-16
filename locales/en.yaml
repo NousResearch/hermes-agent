@@ -1,3 +1,14 @@
+qqbot:
+  owner: "Owner"
+  administrator: "Administrator"
+  unknown: "unknown"
+  attachment_label: "[Attachment {index}]"
+  attachment_type: "Type: {value}"
+  attachment_filename: "Filename: {value}"
+  attachment_dimensions: "Dimensions: {width}x{height}"
+  attachment_size: "Size: {value}"
+  attachment_url: "URL: {value}"
+
 approval:
   dangerous_header: "⚠️  DANGEROUS COMMAND: {description}"
   choose_long: "      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny"

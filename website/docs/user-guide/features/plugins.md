@@ -90,7 +90,11 @@ Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the m
 
 The model-facing tool description belongs in `schema["description"]`. The optional `ctx.register_tool(description=...)` value is separate `ToolEntry` registry metadata: when omitted, it defaults to the schema description, but Hermes does not copy it back into a schema that lacks `description`. Prefer defining the text once in the schema. If you provide both values, keep them synchronized; the model sees the schema value.
 
-Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
+### Project-local plugins (`./.hermes/plugins/`) {#project-local-plugins}
+
+The gateway does not load project-local plugins. Every Hermes session (`hermes`, `hermes --tui`, the Desktop app, messaging and cron) runs in the one gateway, which discovers plugins once for the whole process and never from the folder you started a session in. Setting `HERMES_ENABLE_PROJECT_PLUGINS=true` therefore has no effect on sessions: when a CLI or TUI session on the gateway's machine starts with it set in a folder whose `./.hermes/plugins/` has plugins, Hermes shows a warning at the start of that session and writes the same line to `gateway.log`.
+
+To use a plugin, install it as a user plugin (`~/.hermes/plugins/` or `hermes plugins install`) and enable it with `hermes plugins enable <name>`.
 
 ## What plugins can do
 
@@ -126,7 +130,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 |--------|------|----------|
 | Bundled | `<repo>/plugins/` | Ships with Hermes — see [Built-in Plugins](./built-in-plugins.md) |
 | User | `~/.hermes/plugins/` | Personal plugins |
-| Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
+| Project | `.hermes/plugins/` | Not loaded by the gateway that runs sessions; see [Project-local plugins](#project-local-plugins) |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
 | Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](../../getting-started/nix-setup.md#plugins) |
 
@@ -938,7 +942,9 @@ In CLI mode:
 In gateway mode:
 
 - `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
+- Exception: a hook or tool running for a classic CLI session (`hermes chat`, whose turns run in the gateway) may omit both `session_key` and `origin`, as it could in the CLI. The text is committed to that session's queue and runs as its next turn; it no longer interrupts a running one. The turn and its reply are in the session's transcript, but the attached classic CLI does not display them. `allow_gateway_injection` is still required.
 - Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot change that route through `session_key`.
+- The session must belong to the plugin's own profile: the key of another profile's chat or local session gets `False` right away, with the reason in the gateway log.
 - Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
 - Routes that relied only on an adapter-time or upstream authorisation decision are rejected unless Hermes can revalidate them from current core allowlists, pairing, or explicit allow-all configuration.
 - Injected text is always conversational input. It cannot invoke slash commands, approve tools, or resolve pending confirmation and clarification prompts.
@@ -951,7 +957,7 @@ Starting a session with `origin` (gateway mode only):
 
 - `origin` uses the same shape as a stored session origin (`SessionSource.to_dict()`): `platform` and `chat_id` are required; `chat_type`, `thread_id`, `user_id`, `user_name`, `chat_name` and the other origin fields are optional. Use it when no session exists yet — for example, a bot-authored forum post, which platforms like Discord never deliver back to the bot as an inbound message.
 - The session is created in **the plugin's own profile** (the profile whose plugin manager loaded it) through the normal session path, with a fresh prompt and an empty history, and the reply is delivered to that chat/thread. If the chat already has a session in that profile, the text joins it exactly like a human message would (the busy-session queue applies), so a human follow-up in the same thread continues the same session.
-- Under the gateway's session authority (every gateway-owned session), the plugin turn is committed to that session's durable FIFO and borrows the connector provenance of a human message already admitted there. An `origin` whose chat has **no session yet** is therefore refused (`False` at dispatch, logged as "has no session under the session authority yet"): Hermes never mints platform provenance for a chat the platform did not deliver. Have the first message in that chat come from the platform (or a human), then inject with `origin` or `session_key`.
+- Under the gateway's session authority (every gateway-owned session), the plugin turn is committed to that session's durable FIFO and borrows the connector provenance of a human message already admitted there. An `origin` whose chat has **no human message admitted yet** (no session, or a session with no committed human turn) is therefore refused: `inject_message` returns `False` right away and the gateway log says "has no human message admitted yet". Hermes never mints platform provenance for a chat the platform did not deliver. Have the first message in that chat come from the platform (or a human), then inject with `origin` or `session_key`.
 - A plugin can never target another profile. `False` is returned (with the reason in the gateway log) when the origin names a different `profile`, when the gateway's own profile routing sends that chat to a different profile, when the plugin's profile is not served by this gateway, or when that profile has no connected adapter for `platform` — another profile's bot is never borrowed. On a multiplexed gateway the turn runs under the plugin's profile home and secrets.
 - Authorisation is not bypassed: the origin's user must pass the gateway's current allowlists, pairing, or allow-all configuration for that profile, the same check as the `session_key` path. Choose a `user_id` that is authorised, or the request is dropped at dispatch and logged.
 - The same text rules apply: no slash commands, approvals, or prompt resolution. The permission below is read from the plugin's own profile `config.yaml`.
@@ -976,6 +982,17 @@ Only grant gateway injection to plugins you trust. Hermes checks this host API p
 :::note
 This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.
 :::
+
+## Plugin code inside the gateway
+
+Hooks, tools and injected turns of every chat and every local session (CLI, TUI, Desktop) run in the one gateway process, not in the client you launched. Some process-level habits from the classic CLI do not carry over:
+
+- `os.getcwd()` is the gateway's own directory, shared by every session; Hermes never changes it. Use `ctx.session_cwd()` for the working directory of the session the hook or tool runs for: the workspace a CLI/TUI/Desktop session was started in, or the profile's terminal cwd for a chat (`""` when there is none). Pass it as `cwd=` to subprocesses. It reads the session from the running turn, so it works in code that runs for a session: turn hooks, tool handlers and approval hooks. Ingress hooks such as `pre_gateway_dispatch` run before the message is admitted to any session; there it returns the profile's terminal cwd, or `""` when none is configured.
+- `ctx.session_surface()` names the calling session's client: `"cli"`, `"tui"`, `"desktop"`, `"acp"`, or the messaging platform (`"telegram"`, …); `""` outside a session.
+- `print()` output goes to the gateway's `gateway-stdio.log`, not to your terminal. Use `logging` instead.
+- `input()` gets end-of-file: the gateway has no terminal. Ask through a tool result or a slash command.
+
+In the classic CLI process itself (for example a plugin slash command), `ctx.session_cwd()` is the launch directory and `ctx.session_surface()` is `"cli"`.
 
 ## Calling MCP servers from plugins
 

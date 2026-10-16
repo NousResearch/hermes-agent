@@ -60,9 +60,13 @@ def drop_capture_lease(paths=None):
                 del _leases[path]
 
 
-def _media_root():
+def native_inputs_root():
+    """This profile's content-addressed store of retained native inputs (``<root>/<sha256>/<name>``)."""
     from gateway.platforms.base import get_document_cache_dir
     return get_document_cache_dir().resolve() / 'native-inputs'
+
+
+_media_root = native_inputs_root
 
 
 # Public ``prompt.submit`` attachments: a local client stages image bytes in the
@@ -132,31 +136,57 @@ def admit_attachments(attachments, *, admitted=None):
     return {'attachments_v1': {'media': capture_native_media(paths), 'media_types': mimes}}
 
 
-def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload):
+def ingress_fingerprint(payload, raw=None):
+    """SHA-256 of a delivery as received: its prepared payload and the provider payload the hook also
+    sees (``raw_message``: a webhook's parsed, route-script-transformed body; None on relay, whose
+    wire fields are all in the payload). Transport headers (delivery id, signature, attempt counters,
+    timestamps) never reach the hook and are not hashed. Media count by bytes: a redelivery
+    re-captures them under a fresh staging name (``reconcile_native_retry``)."""
+    envelope = {**payload['native_text_v1']}
+    envelope.pop('ingress_sha256', None)
+    if 'media' in envelope:
+        envelope['media'] = [[media['sha256'], media['size']] for media in envelope['media']]
+    received = {**payload, 'native_text_v1': envelope}
+    if raw is not None:
+        received = {'payload': received, 'raw_message': raw}
+    canonical = json.dumps(received, sort_keys=True, separators=(',', ':'), default=repr)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload, raw=None):
     """A redelivered native message (lost provider ACK, Relay buffer replay) re-downloads its media
     under a fresh disposable staging name, so its captured path differs from the committed one.
     Retry identity is the committed bytes, not that name: when this exact identity already holds
     the same digests and sizes in the same order, the committed references stand in for the fresh
     capture (whose now-unowned copy is collected) and the admission digest decides the rest, so
-    changed bytes or any other changed field still conflict."""
-    fresh = payload.get('native_text_v1', {}).get('media')
-    if not fresh:
-        return payload
+    changed bytes or any other changed field still conflict. A delivery committed in
+    ``pre_gateway_dispatch``-rewritten form resolves to its committed payload when the resend matches
+    the fingerprint recorded at ingress (``ingress_fingerprint``); a changed resend, or a row
+    committed before fingerprints, is compared exactly as above."""
+    fresh = payload.get('native_text_v1', {}).get('media') or []
     with db._read_ctx() as conn:
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
-    committed = json.loads(row[1]).get('native_text_v1', {}).get('media') if row is not None else None
-    if not committed or [(r['sha256'], r['size']) for r in committed] != [(r['sha256'], r['size']) for r in fresh]:
-        return payload
-    if row[0] != 'terminal':
+    retained = json.loads(row[1]) if row is not None else {}
+    recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
+    if recorded is not None and recorded == ingress_fingerprint(payload, raw):
+        resolved = retained
+    else:
+        committed = retained.get('native_text_v1', {}).get('media')
+        if not fresh or not committed or [(r['sha256'], r['size']) for r in committed] != [
+                (r['sha256'], r['size']) for r in fresh]:
+            return payload
+        resolved = {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
+    committed = resolved['native_text_v1'].get('media', [])
+    if committed and row[0] != 'terminal':
         # A live row still executes these bytes, so they must verify (a terminal one is digest evidence).
         restore_native_media(committed)
     kept = {reference['path'] for reference in committed}
     unowned = [reference for reference in fresh if reference['path'] not in kept]
-    drop_capture_lease({reference['path'] for reference in unowned})
-    release_unheld_media(db, unowned, retain_history=False)
-    return {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
-
+    if unowned:
+        drop_capture_lease({reference['path'] for reference in unowned})
+        release_unheld_media(db, unowned, retain_history=False)
+    return resolved
 
 def _attachment_hashes(paths):
     hashes = []

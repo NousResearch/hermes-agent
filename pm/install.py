@@ -366,9 +366,11 @@ def _entry_current(package, lockfile, facts, store, entry, previous, version, pi
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
     source_facts, source_store = copy_from
     source = source_facts.get(package.name)
+    # A WindowsApps source may be readable but not executable by this process.
+    # Check its identity and bytes here; _install probes the writable copy.
     if (not source_facts.installed(package.name, version, source_store.root,
                                    _identity(lockfile, package.name, target))
-            or not _entry_verified(package, source, source_store, target)):
+            or source.get("digest") != tree_digest(source_store.entry(source["entry"]))):
         raise InstallError(package.name, "bundled copy source failed verification")
     shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
     if tree_digest(staged) != source["digest"]:

@@ -387,3 +387,43 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     listing = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True,
                              text=True, stdin=subprocess.DEVNULL, check=True).stdout
     assert str(tree) not in listing and not tree.exists()
+
+
+def test_prune_releases_relative_gitdir_worktree_registration_of_idle_entry(tmp_path):
+    """Relative linked-worktree gitdirs are resolved from the worktree before pruning."""
+    def git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+                       stdin=subprocess.DEVNULL, env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+                                                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x",
+                                                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"})
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git("init", "-q", cwd=repo)
+    (repo / "f").write_text("x", encoding="utf-8")
+    git("add", "f", cwd=repo)
+    git("commit", "-q", "-m", "init", cwd=repo)
+    git("config", "worktree.useRelativePaths", "true", cwd=repo)
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    tree = scratch / "lane" / "relative-wt"
+    tree.parent.mkdir()
+    git("worktree", "add", "-q", "--detach", str(tree), cwd=repo)
+    gitfile = tree / ".git"
+    gitdir = Path(gitfile.read_text(encoding="utf-8").removeprefix("gitdir:").strip())
+    if not gitdir.is_absolute():
+        gitdir = (tree / gitdir).resolve()
+    relative_gitdir = os.path.relpath(gitdir, tree)
+    gitfile.write_text(f"gitdir: {relative_gitdir}\n", encoding="utf-8")
+    assert gitfile.read_text(encoding="utf-8").startswith("gitdir: ..")
+    assert (tree / relative_gitdir).is_dir()
+    subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=tree, check=True,
+                   capture_output=True, stdin=subprocess.DEVNULL)
+    ancient = time.time() - 30 * 3600
+    for dirpath, dirnames, filenames in os.walk(tree.parent):
+        for name in dirnames + filenames:
+            os.utime(os.path.join(dirpath, name), (ancient, ancient), follow_symlinks=False)
+    os.utime(tree.parent, (ancient, ancient))
+    assert prune_scratch_dir(scratch) == 1
+    listing = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True,
+                             text=True, stdin=subprocess.DEVNULL, check=True).stdout
+    assert str(tree) not in listing and not tree.exists()

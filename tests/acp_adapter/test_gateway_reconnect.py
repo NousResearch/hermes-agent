@@ -82,7 +82,8 @@ async def test_editor_reconnects_to_a_restarted_gateway_without_resending(monkey
         assert owners[1].calls == ["runtime.describe", "session.resume", "prompt.submit"]
         assert owners[0].calls.count("prompt.submit") == 1
         assert agent._snapshots["s"]["replay_epoch"] == "second"
-        texts = [call.kwargs["update"].content.text for call in agent._conn.session_update.await_args_list]
+        texts = [call.kwargs["update"].content.text for call in agent._conn.session_update.await_args_list
+                 if call.kwargs["update"].session_update == "agent_message_chunk"]
         assert texts.count("AFTER-RESTART") == 1
     finally:
         await agent.aclose()

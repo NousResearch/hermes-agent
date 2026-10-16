@@ -1,4 +1,9 @@
-"""Regression tests for sudo detection and sudo password handling."""
+"""Regression tests for the terminal tool (sudo handling, workdir validation, and timeout classification)."""
+
+import json
+import subprocess
+
+import pytest
 
 from tools import terminal_tool
 from tools import terminal_tool_sudo
@@ -122,3 +127,110 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_is_timeout_error_recognizes_builtin_timeout():
+    assert terminal_tool._is_timeout_error(TimeoutError()) is True
+
+
+def test_is_timeout_error_recognizes_subprocess_timeout_expired():
+    exc = subprocess.TimeoutExpired("sleep 10", timeout=5)
+    assert terminal_tool._is_timeout_error(exc) is True
+
+
+def test_is_timeout_error_recognizes_timeout_messages():
+    assert terminal_tool._is_timeout_error(RuntimeError("connection timeout")) is True
+    assert terminal_tool._is_timeout_error(RuntimeError("request timed out")) is True
+    assert terminal_tool._is_timeout_error(RuntimeError("timeout: 5 seconds")) is True
+
+
+def test_is_timeout_error_does_not_flag_unrelated_errors():
+    assert terminal_tool._is_timeout_error(RuntimeError("something went wrong")) is False
+    assert terminal_tool._is_timeout_error(RuntimeError("timeout must be positive")) is False
+
+
+class _FakeTimeoutEnv:
+    def __init__(self, exc):
+        self.exc = exc
+        self.cwd = None
+        self.calls = 0
+
+    def execute(self, *args, **kwargs):
+        self.calls += 1
+        raise self.exc
+
+
+def _run_terminal_with_timeout_exc(monkeypatch, tmp_path, exc):
+    fake_env = _FakeTimeoutEnv(exc)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setattr(terminal_tool.time, "sleep", lambda _x: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_acquire_env",
+        lambda plan, task_id: fake_env,
+    )
+    raw = terminal_tool.registry.dispatch("terminal", {"command": "sleep 10", "timeout": 5})
+    assert isinstance(raw, str)
+    return json.loads(raw), fake_env.calls
+
+
+def test_terminal_tool_timeout_error_returns_124_without_retry(monkeypatch, tmp_path):
+    result, calls = _run_terminal_with_timeout_exc(monkeypatch, tmp_path, TimeoutError())
+    assert result["exit_code"] == 124
+    assert "timed out after 5 seconds" in result["error"].lower()
+    assert calls == 1
+
+
+def test_terminal_tool_subprocess_timeout_expired_returns_124_without_retry(monkeypatch, tmp_path):
+    exc = subprocess.TimeoutExpired("sleep 10", timeout=5)
+    result, calls = _run_terminal_with_timeout_exc(monkeypatch, tmp_path, exc)
+    assert result["exit_code"] == 124
+    assert "timed out after 5 seconds" in result["error"].lower()
+    assert calls == 1
+
+
+@pytest.mark.parametrize("message", ["connection timeout", "request timed out", "timeout: 5 seconds"])
+def test_terminal_tool_backend_timeout_returns_124_without_retry(monkeypatch, tmp_path, message):
+    result, calls = _run_terminal_with_timeout_exc(monkeypatch, tmp_path, RuntimeError(message))
+    assert result["exit_code"] == 124
+    assert calls == 1
+
+
+def test_terminal_tool_non_timeout_error_exhausts_existing_retries(monkeypatch, tmp_path):
+    result, calls = _run_terminal_with_timeout_exc(monkeypatch, tmp_path, ValueError("timeout must be positive"))
+    assert result["exit_code"] == -1
+    assert "ValueError: timeout must be positive" in result["error"]
+    assert calls == 4
+
+
+class _FakeTransientEnv:
+    def __init__(self):
+        self.calls = 0
+        self.cwd = None
+
+    def execute(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls <= 3:
+            raise RuntimeError("connection reset")
+        return {"output": "ok", "returncode": 0}
+
+
+def test_terminal_tool_retries_non_timeout_transient_error(monkeypatch, tmp_path):
+    fake_env = _FakeTransientEnv()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setattr(terminal_tool.time, "sleep", lambda _x: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_acquire_env",
+        lambda plan, task_id: fake_env,
+    )
+
+    raw = terminal_tool.registry.dispatch("terminal", {"command": "printf ok", "timeout": 5})
+    assert isinstance(raw, str)
+    result = json.loads(raw)
+
+    assert result["output"] == "ok"
+    assert result["exit_code"] == 0
+    assert fake_env.calls == 4

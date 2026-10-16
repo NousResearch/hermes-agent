@@ -357,8 +357,8 @@ class SessionMaintenanceMixin:
                     (spill_dir / name).unlink(missing_ok=True)
                 except OSError as exc:
                     logger.debug("Spillover unlink failed for %s: %s", name, exc)
-        except Exception as exc:
-            logger.debug("Spillover cleanup after session delete failed: %s", exc)
+        except Exception:  # best-effort post-commit cleanup; the orphan sweep retries
+            logger.debug("Spillover cleanup after session delete failed", exc_info=True)
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str | None = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,

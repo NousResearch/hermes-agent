@@ -56,7 +56,7 @@ def _spillover_retention_hours() -> int:
         days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
         if not math.isfinite(days):  # YAML ``.inf`` / ``.nan`` parse as floats; int() would raise
             return SPILLOVER_MAX_AGE_HOURS
-    except Exception:
+    except Exception:  # health: allow BLE001 -- any config read/parse failure means the legacy floor
         return SPILLOVER_MAX_AGE_HOURS
     # ``retention_days: 0`` is legal (ended sessions pruned at once) but session prune never
     # touches OPEN sessions, while a zero-hour spill cutoff deletes the file the first spill
@@ -74,15 +74,16 @@ _SPILLOVER_NAME_RE = re.compile(r"spillover/([A-Za-z0-9_.-]+)")
 _ARCHIVE_PATH_RE = re.compile(r"(?:^|[/\\])(?:spillover|hermes-results)[/\\][^/\\]+$")
 
 
-def expired_archive_hint(path: str) -> str | None:
-    """Hint for a read_file miss on a persisted-tool-result path: the archive was pruned, so the
-    model gets "expired" instead of a generic not-found it might mistake for a typo (#126351)."""
+def expired_archive_fields(path: str) -> dict:
+    """Extra read_file not-found fields for a persisted-tool-result path: the archive was pruned,
+    so the model gets "expired" instead of a generic miss it might take for a typo (#126351)."""
     if not isinstance(path, str) or not _ARCHIVE_PATH_RE.search(path):
-        return None
-    return ("This was a persisted tool result archive and it has expired (pruned with its "
+        return {}
+    return {"expired": True, "hint": (
+            "This was a persisted tool result archive and it has expired (pruned with its "
             "session or by the cache sweep); the full output is no longer recoverable. Inspect "
             "the current state before re-running the original tool — the call that produced it "
-            "may already have taken effect.")
+            "may already have taken effect.")}
 
 
 def spillover_names_in_text(*texts) -> set:
@@ -114,7 +115,7 @@ def referenced_spillover_names(spill_dir) -> set | None:
             ).fetchall()
         finally:
             conn.close()
-    except Exception:
+    except (sqlite3.Error, OSError):
         return None
     if len(rows) > 20000:  # truncated reference set: treat as unknown, never guess
         return None

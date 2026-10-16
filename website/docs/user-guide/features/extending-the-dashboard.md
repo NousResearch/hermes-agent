@@ -852,14 +852,8 @@ if an authenticated API route serves the same file.
 </html>
 ```
 
-The page intentionally uses the browser's default styling. These desktop and
-mobile-viewport previews render the exact HTML above in isolated Chromium, with
-an illustrative outer frame. They are not authenticated Dashboard screenshots
-or physical-device acceptance tests.
-
-![Desktop preview of the fixed HTML example, showing the Plugin Notes heading and one read-only paragraph.](/img/dashboard-plugins/page-desktop.png)
-
-![Mobile-viewport preview of the same unmodified HTML example; no Dashboard theme or interactive controls are injected.](/img/dashboard-plugins/page-mobile.png)
+The minimal page intentionally uses the browser's default styling. It renders
+the **Plugin Notes** heading and a read-only paragraph, not a chat interface.
 
 The endpoint is `GET /api/plugins/my-plugin/page` on your existing Dashboard
 origin (with its existing deployment prefix, if any). On a **cookie-authenticated
@@ -908,6 +902,27 @@ Directory separation protects against replacement of the Dashboard build, not
 future SDK/API incompatibilities or deletion of the plugin itself. Keep trusted
 HTML free of interpolated untrusted content, and do not expand this example into
 an unrestricted filesystem server.
+
+#### Application example: full chat interface
+
+These application-example views show an existing, separate chat frontend using
+the plugin-persistence approach—not the output of the minimal HTML recipe above.
+**The complete frontend is not included in this PR.** Deployment-specific labels
+have been anonymized.
+
+Both images are isolated Chromium renders with synthetic session and connection
+data, not authenticated production screenshots or physical-device acceptance
+tests. No real backend, model or tool was used to produce them.
+
+![Desktop application example: full chat interface with session navigation, welcome screen and message composer in the Ember theme.](/img/dashboard-plugins/page-desktop.png)
+
+*Desktop application example. The complete frontend is not included in this PR;
+this is an anonymized, isolated render, not the minimal HTML recipe.*
+
+![Mobile application example: the same full chat interface with compact navigation, welcome screen and message composer.](/img/dashboard-plugins/page-mobile.png)
+
+*Mobile application example. The complete frontend is not included in this PR;
+this is an anonymized, isolated render, not physical-device acceptance evidence.*
 
 ### Custom CSS per plugin
 

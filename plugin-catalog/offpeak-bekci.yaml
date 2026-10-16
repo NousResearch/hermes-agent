@@ -1,6 +1,6 @@
 name: offpeak-bekci
 repo: https://github.com/onkanat/hermes-offpeak-bekci
-sha: 15dcd63e45326d98b7a3a99caaa87c4be3269023
+sha: 555dff262a37a35f615dc03f82320db3bf34ccca
 title: Off-Peak Bekçi
 description: >-
   Ollama Cloud off-peak penceresini görünür kılar: masaüstü durum çubuğu rozeti pencerenin
@@ -39,12 +39,12 @@ description: >-
 maintainer: onkanat
 tier: community
 category: desktop
-version: "0.1.0"
+version: "0.1.1"
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/onkanat/hermes-offpeak-bekci#readme
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/onkanat/hermes-offpeak-bekci/15dcd63e45326d98b7a3a99caaa87c4be3269023/docs/rozet.png
+  - https://raw.githubusercontent.com/onkanat/hermes-offpeak-bekci/555dff262a37a35f615dc03f82320db3bf34ccca/docs/rozet.png
 capabilities:
   provides_tools: []
   provides_hooks:

@@ -218,22 +218,22 @@ def _replace_media_refs(text: str, replacements: list[tuple[int, int, str]]) -> 
     return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+\n", "\n", text)).strip()
 
 
-def _load_nostr_auth():
-    """Import sibling nostr_auth loader-agnostically (the test loader imports this file as a bare module)."""
+def _load_sibling(name: str):
+    """Import a sibling module loader-agnostically (the test loader imports this file as a bare module)."""
+    import importlib.util
     try:
-        from . import nostr_auth  # type: ignore[no-redef]
-        return nostr_auth
-    except ImportError:
-        import importlib.util
-        path = Path(__file__).with_name("nostr_auth.py")
-        spec = importlib.util.spec_from_file_location("plugin_adapter_buzz_nostr_auth", path)
+        return importlib.import_module(f".{name}", __package__)
+    except (ImportError, TypeError):  # TypeError: no parent package at all
+        path = Path(__file__).with_name(f"{name}.py")
+        spec = importlib.util.spec_from_file_location(f"plugin_adapter_buzz_{name}", path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
 
 
-_nostr_auth = _load_nostr_auth()
+_nostr_auth = _load_sibling("nostr_auth")
+_typing, _presence = _load_sibling("typing_indicator"), _load_sibling("presence")
 
 # bech32 (BIP-173) npub <-> hex so mention detection and allow-lists accept either form.
 from gateway.authz_mixin import (
@@ -549,12 +549,10 @@ class BuzzAdapter(BasePlatformAdapter):
         self._poll_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
         self._ws_ready: Optional[asyncio.Event] = None
+        # The authenticated socket while it is up (send_typing publishes on it); chat_id -> last typing publish.
+        self._ws, self._typing_sent = None, {}
         self._membership_since = self._poll_count = 0
         # Channels the relay permanently rejected ("restricted"); persists across reconnects so we never re-subscribe.
-        # channel_id -> { "chat_type", "last_ts", "seen": OrderedDict[event_id, None], "event_meta":
-        # OrderedDict[event_id, (author_pubkey, content_snippet)], } event_meta backs NIP-10 reply-parent
-        # resolution for require_mention (thread replies to our own messages count as addressed — #75826).
-        # "restricted: not a channel member").
         self._restricted_channels: set = set()
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None], "event_meta":
         #   OrderedDict[event_id, (author_pubkey, snippet)]}; event_meta backs NIP-10 reply-parent resolution.
@@ -702,6 +700,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         with contextlib.suppress(Exception):
             self._release_platform_lock()
+        await _presence.publish_offline(self, _nostr_auth.sign_event)  # while the socket is still open
         await cancel_task(self._ws_task)
         self._ws_task = None
         await cancel_task(self._poll_task)
@@ -849,7 +848,9 @@ class BuzzAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=event_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Buzz has no typing indicator API — no-op."""
+        """Typing bubble: a signed ephemeral kind-20002 event on the authenticated WebSocket, throttled per
+        chat; best-effort, never raises (``typing_indicator.publish``)."""
+        await _typing.publish(self, _nostr_auth.sign_event, str(chat_id), metadata or {})
 
     async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Best-effort reaction via buzz-cli; failures are logged, never raised."""
@@ -962,8 +963,6 @@ class BuzzAdapter(BasePlatformAdapter):
                 name = self._channel_names[chat_id] = str(data["name"])
         return {"name": name or chat_id, "type": state["chat_type"] if state else "group", "chat_id": chat_id}
 
-    # ── Inbound: WebSocket transport (NIP-42) — same _handle_event() as the poll loop ──────
-
     # ── Inbound: WebSocket transport (NIP-42 authenticated) ────────────── Push transport contributed in PR
     # #73636 by @ScaleLeanChris, adapted to dispatch through the same _handle_event() machinery as the poll
     # loop so de-dupe, mention gating, DM latching, and the allow-list behave identically on both
@@ -1000,8 +999,6 @@ class BuzzAdapter(BasePlatformAdapter):
         message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=_WS_AUTH_TIMEOUT))
         if not isinstance(message, list) or len(message) < 2 or message[0] != "AUTH":
             raise ConnectionError("Buzz relay did not send a NIP-42 AUTH challenge")
-        # BUZZ_AUTH_TAG is per-identity: a scoped profile without one fails closed to "" rather than borrowing
-        # the default profile's env tag. Resolved lazily so a re-auth on a bare adapter stays scope-correct.
         # BUZZ_AUTH_TAG is per-identity NIP-OA owner attestation, so it must resolve through the profile
         # secret scope (#98738): inside a scoped multiplex profile a missing tag fails closed to "" instead
         # of attaching the default profile's tag from os.environ, while single-profile and unscoped
@@ -1119,17 +1116,20 @@ class BuzzAdapter(BasePlatformAdapter):
                         reconnecting = False
                         self._mark_connected()
                     backoff = 1.0
+                    self._ws = websocket
                     # Whichever side notices the dead socket first ends the connection: the read loop's idle
                     # bound, or a discovery send() raising ConnectionClosed while the read is still parked.
                     tasks = {
                         asyncio.create_task(self._ws_read_loop(websocket, subscriptions)),
                         asyncio.create_task(self._ws_discovery_loop(websocket, subscriptions)),
+                        asyncio.create_task(_presence.heartbeat_loop(self, websocket, _nostr_auth.sign_event)),
                     }
                     try:
                         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                         for finished in done:
                             finished.result()
                     finally:
+                        self._ws = None
                         for task in tasks:
                             task.cancel()
                         await asyncio.gather(*tasks, return_exceptions=True)

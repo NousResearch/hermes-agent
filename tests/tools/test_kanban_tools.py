@@ -80,9 +80,11 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "task" in d
     assert d["task"]["id"] == worker_env
     assert d["task"]["status"] == "running"
-    # Compact show is bounded structured state, not the prompt-sized worker_context blob.
+    # Compact default avoids duplicating the dispatcher context into every
+    # model turn; complete task body and bounded tail stay in the response.
     assert "worker_context" not in d
-    assert "runs" in d and d["history"]["detail"] == "compact"
+    assert d["history"]["detail"] == "compact"
+    assert "runs" in d
 
 
 def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):

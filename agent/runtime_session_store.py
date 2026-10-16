@@ -80,9 +80,11 @@ class _OwnerLink:
         except Exception as exc:  # health: allow BLE001 -- handed to the caller, which raises it (ConnectionClosed included)
             self.replies.put(exc)
 
-    def call(self, request_id, message, timeout):
+    def send(self, request_id, message):
         self.awaiting = request_id
         self.ws.send(message)
+
+    def receive(self, timeout):
         try:
             reply = self.replies.get(timeout=timeout)
         except queue.Empty:
@@ -155,12 +157,23 @@ class WorkerRPC:
             logger.warning('synchronous_rpc_on_event_loop: %s on thread %s; caller: %s',
                            method, threading.current_thread().name, _caller_summary())
             raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
+        from websockets.exceptions import ConnectionClosed
         with self.lock:
             self.request_id += 1
             request_id = self.request_id
+            message = json.dumps({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
             try:
-                response = self._connection().call(request_id, json.dumps(
-                    {'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params}), 20)
+                link = self._connection()
+                try:
+                    link.send(request_id, message)
+                except ConnectionClosed:
+                    # websockets raises this from send only before a complete frame is written (closed
+                    # on entry, or the socket write failed): the owner closed the link after the idle
+                    # check and never saw this request, so redial and send it once more.
+                    self._drop()
+                    link = self._connection()
+                    link.send(request_id, message)
+                response = link.receive(20)
             except BaseException:
                 # Outcome unknown once sent: surface the error and never resend; the next call redials.
                 self._drop()

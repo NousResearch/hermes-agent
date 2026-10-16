@@ -57,10 +57,11 @@ def owner(monkeypatch, tmp_path):
     import hermes_cli.gateway_runtime_discovery as discovery
 
     state = SimpleNamespace(connections=0, tickets=0, requests=[], drop=None, closed=threading.Event(),
-                            pongs=[], flooded=threading.Event(), relay=None)
+                            pongs=[], flooded=threading.Event(), relay=None, live=None)
 
     def handler(ws):
         state.connections += 1
+        state.live = ws
         ws.close_timeout = 1
         for raw in ws:
             request = json.loads(raw)
@@ -148,6 +149,61 @@ def test_in_flight_call_on_a_dropped_connection_fails_and_is_not_resent(owner, t
     assert owner.requests == ['worker.persist', 'worker.persist']
     assert rpc('worker.persist') == {'n': 3}
     assert owner.connections == 2
+
+
+def _owner_closes_before_the_frame_is_written(owner, monkeypatch):
+    """Boundary hook on the library's send: while ``owner.sabotage`` is set, the idle check has already
+    passed when the owner's close lands (and the worker observes it), just before websockets writes."""
+    from websockets.protocol import State
+    from websockets.sync import client
+    real, dialed = client.connect, []
+
+    def connect(*args, **kwargs):
+        ws = real(*args, **kwargs)
+        dialed.append(ws)
+        real_send = ws.send
+
+        def send(message, *a, **k):
+            if owner.sabotage:
+                owner.sabotage -= 1
+                wait_until(lambda: owner.connections == len(dialed), timeout=5)
+                owner.live.close()
+                wait_until(lambda: ws.protocol.state is State.CLOSED, timeout=5)
+            return real_send(message, *a, **k)
+        ws.send = send
+        return ws
+    monkeypatch.setattr(client, 'connect', connect)
+
+
+def test_owner_close_between_the_idle_check_and_the_send_redials_and_sends_once(owner, tmp_path, monkeypatch):
+    """websockets raises ConnectionClosed from send only before the frame is written: nothing reached
+    the owner, so the call redials once with a fresh ticket instead of failing as outcome-unknown."""
+    from agent.runtime_session_store import WorkerRPC
+    owner.sabotage = 0
+    _owner_closes_before_the_frame_is_written(owner, monkeypatch)
+    rpc = WorkerRPC(tmp_path)
+    assert rpc('worker.persist') == {'n': 1}
+    owner.sabotage = 1
+    assert rpc('worker.persist') == {'n': 2}
+    assert owner.requests == ['worker.persist', 'worker.persist']
+    assert (owner.connections, owner.tickets) == (2, 2)
+    assert rpc('worker.persist') == {'n': 3}
+    assert owner.connections == 2
+
+
+def test_a_redial_whose_send_also_fails_is_not_retried_again(owner, tmp_path, monkeypatch):
+    from websockets.exceptions import ConnectionClosed
+    from agent.runtime_session_store import WorkerRPC
+    owner.sabotage = 0
+    _owner_closes_before_the_frame_is_written(owner, monkeypatch)
+    rpc = WorkerRPC(tmp_path)
+    assert rpc('worker.persist') == {'n': 1}
+    owner.sabotage = 2
+    with pytest.raises(ConnectionClosed):
+        rpc('worker.persist')
+    assert owner.requests == ['worker.persist']
+    assert (owner.connections, owner.tickets) == (2, 2)
+    assert rpc.link is None
 
 
 def test_idle_broadcasts_past_the_receive_high_water_mark_keep_the_connection(owner, tmp_path):

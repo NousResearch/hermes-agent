@@ -1,7 +1,7 @@
 name: scalekit
 title: Scalekit
 repo: https://github.com/scalekit-inc/hermes-tools
-sha: 577c426729ef8755b3b56cac8668814aaec7259b
+sha: ff6e65128c558ccbf3e34c365aec6b4fbf80fd7b
 description: >-
   Call any Scalekit connector from Hermes: 500+ connectors and 20,000+ tools.
   Disclosure — HTTP calls go to the Scalekit environment URL you paste; the
@@ -15,11 +15,12 @@ category: tools
 requires_hermes: ">=0.19.0"
 docs_url: https://github.com/scalekit-inc/hermes-tools#readme
 version: "0.1.0"
+image: https://raw.githubusercontent.com/scalekit-inc/hermes-tools/ff6e65128c558ccbf3e34c365aec6b4fbf80fd7b/screenshots/catalog-card.png
 screenshots:
-  - https://raw.githubusercontent.com/scalekit-inc/hermes-tools/577c426729ef8755b3b56cac8668814aaec7259b/screenshots/01-plugin-installed-and-enabled.png
-  - https://raw.githubusercontent.com/scalekit-inc/hermes-tools/577c426729ef8755b3b56cac8668814aaec7259b/screenshots/02-list-connections.png
-  - https://raw.githubusercontent.com/scalekit-inc/hermes-tools/577c426729ef8755b3b56cac8668814aaec7259b/screenshots/03-github-connected.png
-  - https://raw.githubusercontent.com/scalekit-inc/hermes-tools/577c426729ef8755b3b56cac8668814aaec7259b/screenshots/04-github-profile.png
+  - https://raw.githubusercontent.com/scalekit-inc/hermes-tools/ff6e65128c558ccbf3e34c365aec6b4fbf80fd7b/screenshots/01-plugin-installed-and-enabled.png
+  - https://raw.githubusercontent.com/scalekit-inc/hermes-tools/ff6e65128c558ccbf3e34c365aec6b4fbf80fd7b/screenshots/02-list-connections.png
+  - https://raw.githubusercontent.com/scalekit-inc/hermes-tools/ff6e65128c558ccbf3e34c365aec6b4fbf80fd7b/screenshots/03-github-connected.png
+  - https://raw.githubusercontent.com/scalekit-inc/hermes-tools/ff6e65128c558ccbf3e34c365aec6b4fbf80fd7b/screenshots/04-github-profile.png
 capabilities:
   provides_tools:
     - scalekit_authorize

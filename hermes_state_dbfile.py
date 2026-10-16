@@ -752,7 +752,7 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
     from hermes_state import _connect_tracked_db
     stats: dict[str, Any] = dict.fromkeys((
         "page_count", "page_size", "freelist_count", "logical_size_bytes", "wal_size_bytes", "journal_mode",
-        "messages", "sessions", "fts_tables", "fts_storage_version", "fts_rebuild_pending",
+        "messages", "sessions", "fts_tables", "fts_storage_version", "fts_storage_upgrade_pending", "fts_rebuild_pending",
         "fts_rebuild_high_water", "fts_rebuild_progress", "fts_rebuild_deferral"))
     # WAL sidecar size needs no connection at all.
     with contextlib.suppress(OSError):
@@ -798,6 +798,8 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
                 _FTS_TABLE_NAMES).fetchall()}
             stats["fts_tables"] = {t: (t in names) for t in _FTS_TABLE_NAMES}
+            from hermes_state_fts import SessionFtsSetupMixin
+            stats["fts_storage_upgrade_pending"] = SessionFtsSetupMixin._db_needs_fts_storage_upgrade(conn.cursor())
         # Raw state_meta reads — cheap, and independent of SessionDB.
         stats["fts_storage_version"] = _meta_int("fts_storage_version")
         stats["fts_rebuild_high_water"] = high_water = _meta_int("fts_rebuild_high_water")

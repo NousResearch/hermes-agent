@@ -358,6 +358,10 @@ def test_s6_runtime_ensure_starts_the_registered_gateway_slot(tmp_path, monkeypa
 
     monkeypatch.setattr(service_manager, "_s6_running", lambda: True)
     monkeypatch.setattr(service_manager, "S6ServiceManager", FakeS6ServiceManager)
+    read_text = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda path, *args, **kwargs: (
+        str(home) if str(path).replace("\\", "/") == "/run/s6/container_environment/HERMES_HOME"
+        else read_text(path, *args, **kwargs)))
     monkeypatch.setattr(service, "_systemd", lambda *_args: pytest.fail("s6 must not probe systemd"))
 
     found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)

@@ -149,7 +149,7 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
     return found[0] if found else None
 
 
-def _s6(home: Path) -> ExistingService:
+def _s6(home: Path) -> ExistingService | None:
     """Find the container gateway slot that owns ``home``.
 
     TUI clients call ``ensure_gateway_runtime`` inside the Docker image too.
@@ -157,8 +157,25 @@ def _s6(home: Path) -> ExistingService:
     through the Linux systemd probe and treating s6 as inaccessible.
     """
     from hermes_cli.service_manager import S6ServiceManager
+    from hermes_cli.gateway_runtime_multiplex import implied_host_root
 
-    profile = home.name if home.parent.name == "profiles" else "default"
+    # with-contenv is also the service run script's authority. The initiating
+    # client may have selected a named profile or a different install root.
+    try:
+        container_home = Path("/run/s6/container_environment/HERMES_HOME").read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeError):
+        raise RuntimeStartError("service_identity_unverified") from None
+    if not container_home:
+        raise RuntimeStartError("service_identity_unverified")
+    root = Path(container_home).resolve()
+    home = home.resolve()
+    if home != root and home.parent != root / "profiles":
+        raise RuntimeStartError("profile_mismatch")
+    # A normal named profile belongs to the root multiplexer. Returning None
+    # lets ensure select its host, including a first boot with no saved verdict.
+    if home != root and implied_host_root(home) == root:
+        return None
+    profile = "default" if home == root else home.name
     manager = S6ServiceManager()
     service_name = f"gateway-{profile}"
     if not (manager.scandir / service_name).is_dir():

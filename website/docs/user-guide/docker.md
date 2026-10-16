@@ -86,6 +86,8 @@ This behavior applies to the s6-based image only. Earlier (tini-based) images st
 See the [Where the logs go](#where-the-logs-go) section below for the full routing map (per-profile gateways, dashboard, boot reconciler, container-wide `docker logs`).
 :::
 
+The TUI uses this same supervised gateway as its local backend, including when no messaging platform is configured. An interactive `--tui` launch starts the registered s6 gateway automatically and waits for it to become ready. Normal named profiles attach to the root gateway that serves them. Profiles explicitly configured with `gateway.standalone: true` use their own registered slot. Client startup does not install a service or bypass s6 with an unmanaged process.
+
 :::note Tool-loop hard stops for unattended gateways
 Unattended gateway and cron sessions enable tool-loop hard stops by default through `non_interactive_hard_stop_enabled`. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only. To opt an unattended deployment out in the profile's `config.yaml`:
 

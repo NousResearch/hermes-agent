@@ -195,4 +195,7 @@ def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
         return "stale"
     if is_run and check.get("status") != "completed":
         return "pending"
-    return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")
+    # `skipped` (a path-filtered job) and `neutral` satisfy a required check in GitHub's
+    # own branch-protection rules; treating them as `infra` parks a mergeable PR forever.
+    return {"success": "success", "skipped": "success", "neutral": "success",
+            "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")

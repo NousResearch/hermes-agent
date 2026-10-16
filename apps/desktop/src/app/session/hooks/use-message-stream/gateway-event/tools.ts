@@ -6,6 +6,16 @@ import { toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { connectorText, recordOf } from '@/lib/connector-tools'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import {
+  $computerUseBySession,
+  clearComputerUseState,
+  extractComputerUseArgs,
+  extractToolFailure,
+  setComputerUseCompleted,
+  setComputerUseDrafting,
+  setComputerUseError,
+  setComputerUseRunning
+} from '@/store/computer-use'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
@@ -69,6 +79,50 @@ function appliedLayout(name: string | undefined, result: ToolCallMessagePart['re
   return undefined
 }
 
+type ToolPayload = GatewayEventContext['payload']
+
+function trackComputerUseStart(sessionId: string, payload: ToolPayload, interrupted: boolean) {
+  if (payload?.name === 'computer_use') {
+    // Stop already retired the pill; a start the backend flushed before it
+    // noticed the interrupt must not bring it back.
+    if (!interrupted) {
+      setComputerUseRunning(sessionId, extractComputerUseArgs(payload))
+    }
+
+    return
+  }
+
+  // The model drafted computer_use but called something else.
+  if (payload?.name && $computerUseBySession.get()[sessionId]?.phase === 'drafting') {
+    clearComputerUseState(sessionId)
+  }
+}
+
+function settleComputerUse(sessionId: string, payload: ToolPayload) {
+  if (payload?.name !== 'computer_use') {
+    return
+  }
+
+  const current = $computerUseBySession.get()[sessionId]
+  const { toolId } = extractComputerUseArgs(payload)
+
+  // Only the call the pill is showing may settle it. An earlier call's late
+  // completion, or one for a call Stop already retired, leaves the store alone.
+  if (!current || (current.toolId !== undefined && current.toolId !== toolId)) {
+    return
+  }
+
+  const failure = extractToolFailure(payload)
+
+  if (failure) {
+    setComputerUseError(sessionId, failure.message)
+  } else {
+    setComputerUseCompleted(sessionId, {
+      durationSeconds: typeof payload?.duration_s === 'number' ? payload.duration_s : undefined
+    })
+  }
+}
+
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
@@ -98,6 +152,10 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
     setSessionDraftingTool(sessionId, typeof payload?.name === 'string' ? payload.name : '')
 
+    if (payload?.name === 'computer_use') {
+      setComputerUseDrafting(sessionId)
+    }
+
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
     }
@@ -112,6 +170,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
     flushQueuedDeltas(sessionId)
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
+    trackComputerUseStart(sessionId, payload, sessionInterrupted(sessionId))
 
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
@@ -133,6 +192,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 
       noteToolOutcome(ctx, sessionId, state?.cwd ?? '', pendingProduction)
+      settleComputerUse(sessionId, payload)
 
       if (isActiveEvent) {
         setPetActivity({ toolRunning: false })

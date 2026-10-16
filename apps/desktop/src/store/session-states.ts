@@ -40,6 +40,7 @@ import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
+import { clearAllComputerUseStates, clearComputerUseState } from './computer-use'
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
@@ -914,6 +915,7 @@ export function dropSessionState(runtimeId: string) {
   clearWatchdog(runtimeId)
   clearEventSilence(runtimeId)
   clearSessionProviderWait(runtimeId)
+  clearComputerUseState(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
   // A runtime that never bound a stored id never will now (#73890).
@@ -951,6 +953,7 @@ export function clearAllSessionStates() {
   settledExpiry.clear()
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()
+  clearAllComputerUseStates()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
   forgetPendingRuntimeTabs()

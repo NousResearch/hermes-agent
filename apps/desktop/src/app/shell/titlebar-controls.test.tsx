@@ -206,3 +206,30 @@ describe('titlebar app-action cluster', () => {
     expect(within(right).queryByLabelText('Open settings')).toBeNull()
   })
 })
+
+describe('titlebar computer use status', () => {
+  it('mounts the centered status cluster on standard routes', () => {
+    const { container } = renderControls('/')
+    expect(container.querySelector('[data-titlebar-cluster="center-hud"]')).not.toBeNull()
+  })
+
+  it('keeps the status cluster on chrome-owning routes', () => {
+    const dispose = registry.register({
+      area: 'titleBar.left',
+      id: 'test-chrome-hud',
+      render: () => <span>chrome</span>
+    })
+
+    try {
+      const { container } = renderControls('/kanban')
+      expect(container.querySelector('[data-titlebar-cluster="center-hud"]')).not.toBeNull()
+    } finally {
+      act(() => dispose())
+    }
+  })
+
+  it('leaves overlay routes to their own chrome', () => {
+    const { container } = renderControls('/settings')
+    expect(container.querySelector('[data-titlebar-cluster="center-hud"]')).toBeNull()
+  })
+})

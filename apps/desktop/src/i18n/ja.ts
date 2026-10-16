@@ -228,7 +228,34 @@ export const jaOverrides = {
     unmuteHaptics: '触覚フィードバックをオン',
     openSettings: '設定を開く',
     openStarmap: 'メモリグラフを開く',
-    resetHudLayout: 'HUD のサイズと位置をリセット'
+    resetHudLayout: 'HUD のサイズと位置をリセット',
+    computerUse: {
+      name: 'Computer Use',
+      preparing: '準備中…',
+      active: 'デスクトップを操作中',
+      failed: 'アクションに失敗しました',
+      dismiss: '閉じる',
+      screen: '画面',
+      desktop: 'デスクトップ',
+      typedChars: count => `${count} 文字`,
+      actions: {
+        capture: 'キャプチャ',
+        click: 'クリック',
+        double_click: 'ダブルクリック',
+        right_click: '右クリック',
+        middle_click: '中クリック',
+        drag: 'ドラッグ',
+        scroll: 'スクロール',
+        type: '入力',
+        key: 'キー',
+        set_value: '値を設定',
+        wait: '待機',
+        list_apps: 'アプリ一覧',
+        list_windows: 'ウィンドウ一覧',
+        focus_app: 'アプリにフォーカス',
+        launch: '起動'
+      }
+    }
   },
 
   language: {

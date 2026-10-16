@@ -9,6 +9,7 @@ import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgent
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import { clearComputerUseState } from '@/store/computer-use'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
@@ -313,6 +314,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       clearAllPrompts(sessionId)
       clearSettledClarifyRequest(sessionId)
       clearActiveSessionTodos(sessionId)
+      clearComputerUseState(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)
     }

@@ -34,7 +34,34 @@ export const zhHantChrome = {
     unmuteHaptics: '開啟觸感回饋',
     openSettings: '開啟設定',
     openStarmap: '開啟記憶圖譜',
-    resetHudLayout: '重設 HUD 大小和位置'
+    resetHudLayout: '重設 HUD 大小和位置',
+    computerUse: {
+      name: 'Computer Use',
+      preparing: '準備中…',
+      active: '正在操作桌面',
+      failed: '動作失敗',
+      dismiss: '關閉',
+      screen: '螢幕',
+      desktop: '桌面',
+      typedChars: count => `${count} 個字元`,
+      actions: {
+        capture: '擷取',
+        click: '點按',
+        double_click: '按兩下',
+        right_click: '按右鍵',
+        middle_click: '按中鍵',
+        drag: '拖曳',
+        scroll: '捲動',
+        type: '輸入',
+        key: '按鍵',
+        set_value: '設定值',
+        wait: '等待',
+        list_apps: '列出 App',
+        list_windows: '列出視窗',
+        focus_app: '聚焦 App',
+        launch: '啟動'
+      }
+    }
   },
 
   sidebar: {

@@ -53,7 +53,7 @@ def managed_policy(authority, ref):
     return policy
 
 
-def _bootstrap(authority, ref, row, policy, scope):
+def _bootstrap(authority, ref, row, policy, scope, text=None):
     from gateway.session_ingress import row_turn_author
     from gateway.session_policy import launch_key
     from gateway.session_policy_credentials import recover_config_secrets
@@ -77,7 +77,7 @@ def _bootstrap(authority, ref, row, policy, scope):
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
             'policy': asdict(hydrated), 'api_key': launch_key(authority, policy),
-            'text': row['payload']['text'], 'route': live.route,
+            'text': row['payload']['text'] if text is None else text, 'route': live.route,
             **({'attachments_v1': row['payload']['attachments_v1']} if 'attachments_v1' in row['payload'] else {}),
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
             'turn_author': row_turn_author(policy, row),
@@ -451,6 +451,12 @@ def _interrupted_before_bootstrap(authority, row):
 
 async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
+    # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
+    from gateway.session_context_refs import managed_turn_text, refused_turn_result
+    text, refusal = await managed_turn_text(authority, row, policy)
+    if refusal is not None:
+        authority.pending_results[row['admission_id']] = {'result': refused_turn_result(row, refusal), 'usage': {}}
+        return refusal
     try:
         env = await asyncio.to_thread(_worker_env, authority)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
@@ -488,7 +494,7 @@ async def execute_managed(authority, ref, row, policy):
                     admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello))
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
-        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope)
+        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope, text)
         worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
         await asyncio.to_thread(worker.send, frame)
         worker.writer.start()

@@ -20,6 +20,41 @@ from utils import base_url_host_matches, base_url_hostname, is_truthy_value
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
 
+# The launch flags that pick the model route: ``/new`` starts on the profile's default route.
+_ROUTE_FLAGS = ("model", "provider", "api_key", "base_url")
+
+
+def _gateway_launch(cli):
+    """This run's explicit launch flags as gateway ``session.create`` policy (main handed them to AIAgent)."""
+    explicit_model = getattr(cli, "_explicit_model_override", False)
+    provider = getattr(cli, "_explicit_provider", None)
+    return {"model": cli.model if explicit_model else None,
+            "provider": provider if explicit_model and provider not in {None, "", "auto"} else None,
+            "api_key": getattr(cli, "_explicit_api_key", None),
+            "base_url": getattr(cli, "_explicit_base_url", None),
+            # Only a typed -t; the gateway resolves the profile default and the coding posture (#138670).
+            "toolsets": getattr(cli, "enabled_toolsets", None) if getattr(cli, "_explicit_toolsets", False) else None,
+            "reasoning": getattr(cli, "_explicit_reasoning", None),
+            "max_turns": getattr(cli, "_explicit_max_turns", None),
+            "checkpoints": getattr(cli, "_explicit_checkpoints", False) or None,
+            "pass_session_id": getattr(cli, "pass_session_id", False) or None,
+            "ignore_rules": getattr(cli, "ignore_rules", False) or None,
+            "run_budget": getattr(cli, "_explicit_run_budget", None),
+            "verbose": getattr(cli, "verbose", False) or None,
+            "skills": _explicit_launch_skills(cli)}
+
+
+def _explicit_launch_skills(cli):
+    """The `-s/--skills` names, which the gateway renders into the session once at creation (the CLI's
+    own prompt never reaches it). ``skills.auto_load`` names are left out: the gateway's agent loads those."""
+    requested = getattr(cli, "_preload_skills_requested", None) or []
+    if not requested:
+        return None
+    from agent.skill_commands import resolve_auto_load_skills
+    from cli import CLI_CONFIG
+    auto = set() if getattr(cli, "ignore_rules", False) else set(resolve_auto_load_skills(CLI_CONFIG))
+    return [name for name in requested if name not in auto] or None
+
 
 class CLIInitMixin:
     """HermesCLI constructor phases: display options, model/provider routing, turn limits, toolsets, checkpoints, prompt/reasoning, runtime state, session store and UI state."""
@@ -159,6 +194,9 @@ class CLIInitMixin:
             _moa_provider_override or provider or _startup_provider_override or _nested_provider
             or _cfg_provider or "auto"
         )
+        # Only a provider the command line chose is gateway launch policy: the config default is the
+        # gateway's to resolve, and a resume compares launch policy against the session's frozen route.
+        self._explicit_provider = _moa_provider_override or provider or _startup_provider_override or None
         # `--provider <custom>` without `-m` uses that entry's default_model, else the global
         # default goes to the custom endpoint and the compressor gets the wrong context length.
         # Explicit `-m` still wins. See #86978.
@@ -215,6 +253,9 @@ class CLIInitMixin:
     def _init_toolsets(self, toolsets):
         from cli import CLI_CONFIG, validate_toolset
         self.enabled_toolsets = toolsets
+        # Only a picked list rides session.create; _build_cli_from_args clears this unless -t was typed (the
+        # gateway resolves the profile default and coding posture itself; a stale explicit name is refused, #138670).
+        self._explicit_toolsets = toolsets is not None
         from agent.skill_utils import parse_config_string_list
 
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
@@ -249,6 +290,8 @@ class CLIInitMixin:
         self.pass_session_id = pass_session_id
         # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
         self.ignore_rules = ignore_rules or is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+        # The env opt-in is creation policy only: a resume checks just a typed --ignore-rules (the thin client's rule).
+        self._explicit_ignore_rules = bool(ignore_rules)
 
     def _init_prompt_and_reasoning(self, reasoning):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""
@@ -367,20 +410,7 @@ class CLIInitMixin:
         store = getattr(self, "_session_db", None)
         if getattr(self, "_gateway_session_open", False) or not isinstance(store, GatewaySessionStore):
             return
-        launch = {"model": self.model if getattr(self, "_explicit_model_override", False) else None,
-                  "provider": (self.requested_provider if getattr(self, "_explicit_model_override", False)
-                               and self.requested_provider not in {None, "", "auto"} else None),
-                  "api_key": getattr(self, "_explicit_api_key", None),
-                  "base_url": getattr(self, "_explicit_base_url", None),
-                  "toolsets": self.enabled_toolsets,
-                  # Main handed these to AIAgent; the gateway's agent gets them as creation policy.
-                  "reasoning": getattr(self, "_explicit_reasoning", None),
-                  "max_turns": getattr(self, "_explicit_max_turns", None),
-                  "checkpoints": getattr(self, "_explicit_checkpoints", False) or None,
-                  "pass_session_id": getattr(self, "pass_session_id", False) or None,
-                  "ignore_rules": getattr(self, "ignore_rules", False) or None,
-                  "run_budget": getattr(self, "_explicit_run_budget", None),
-                  "verbose": getattr(self, "verbose", False) or None}
+        launch = _gateway_launch(self)
         # A resumed row this gateway has not imported yet (a legacy / in-process session) is imported
         # under the active-session registry lock, which refuses while ANY live lease holds the id —
         # including this process's own, claimed before the first turn. Hand the slot over around the
@@ -390,6 +420,8 @@ class CLIInitMixin:
             self._release_active_session()
         sid = store.open_session(self, launch)
         self._gateway_session_open = True
+        from hermes_cli.gateway_tools import bind_session
+        bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy
         if sid and sid != self.session_id:
             self.session_id = sid
             getattr(self, "_write_terminal_breadcrumb", lambda: None)()
@@ -399,7 +431,8 @@ class CLIInitMixin:
     def _new_session_id(self, now, *, branch_of=None, title=None):
         """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway
         store it is a session the gateway created: /new is a fresh ``session.create`` on the profile's
-        default model (an explicit -m was for the previous session only), /branch the child of
+        default model (an explicit -m was for the previous session only) with the run's other launch
+        flags, /branch the child of
         ``session.mutate branch``. Before this CLI opened its gateway session (or off the gateway) it is
         main's local mint, which ``_ensure_gateway_session`` replaces on first use, as at startup."""
         from hermes_cli.gateway_session_store import GatewaySessionStore
@@ -408,10 +441,19 @@ class CLIInitMixin:
             from hermes_state_ids import new_session_id
             return new_session_id(now)
         if branch_of:
-            return store.branch(branch_of, title)
-        sid = store.create({"toolsets": getattr(self, "enabled_toolsets", None),
-                            "pass_session_id": getattr(self, "pass_session_id", False) or None,
-                            "ignore_rules": getattr(self, "ignore_rules", False) or None}, record_cwd=False)
+            child = store.branch(branch_of, title)
+            # Main's with_session_yolo: a live /yolo carries onto the branch. The gateway's child starts
+            # without the parent's toggle, so set it there too (/branch moves the CLI's own flag over).
+            # Approvals run on the gateway, so this write is not toggle_session_yolo's best-effort persist:
+            # a failure raises before the child shows YOLO locally.
+            from tools.approval import enable_session_yolo, is_session_yolo_enabled
+            if is_session_yolo_enabled(branch_of):
+                store.set_session_yolo(child, True)
+                enable_session_yolo(child)
+            return child
+        # The run's other launch flags hold for every session it opens, as main's one AIAgent did across /new.
+        launch = {key: value for key, value in _gateway_launch(self).items() if key not in _ROUTE_FLAGS}
+        sid = store.create(launch, record_cwd=False)
         self.session_id = sid
         return sid
 

@@ -137,7 +137,8 @@ def _bypass_policy(params, *, private_secrets):
     from gateway.session_policy import build_policy
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     if not params.get('model'):
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', field='model',
+                                detail='a bypass launch has no profile to inherit a model from')
     defaults = copy.deepcopy(DEFAULT_CONFIG)
     if not isinstance(defaults.get('model'), dict):  # code default is the empty string
         defaults['model'] = {}
@@ -176,7 +177,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         config = _load_gateway_config()
         raw_model = params.get('model')
         params = resolve_launch_route(params, config)
-        policy = build_policy(params, config, private_secrets=private_secrets)
+        # A client's session.create is the one caller whose named folder may select the coding posture.
+        policy = build_policy(params, config, private_secrets=private_secrets, workspace_posture=True)
         if isinstance(raw_model, str) and params.get('model') != raw_model:
             # Owner-stamped provenance (not a create field): a remote client cannot re-resolve the
             # typed `-m` alias against its own home, so resume compares a repeat against this.
@@ -187,7 +189,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             policy = replace(policy, model=_resolve_gateway_model(policy.config()))
     request_id = params.get('request_id', uuid.uuid4().hex)
     if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', field='request_id',
+                                detail='must be a non-empty string of at most 256 characters')
     from dataclasses import asdict
     from gateway.session import SessionEntry
     from gateway.session_lifecycle import _now
@@ -200,7 +203,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         saved = local_receipt(authority.db, sid)
         original = restore_policy(saved['policy'])
         if original.request_json != policy.request_json:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', field='request_id',
+                                    detail='a resumed request_id must carry the same frozen request')
         if original.credential_ref is not None or params.get('api_key') is not None:
             import hmac
             key = launch_key(authority, original)
@@ -211,7 +215,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     if launch_skills(params) and skills_prompt is None:
         # `-s` is rendered off-loop by the RPC handler (render_launch_skills); a caller that
         # skipped it must not mint a session silently missing its preload.
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('invalid_params', field='skills',
+                                detail='the caller must render -s skills before minting the session')
     policy = replace(policy, skills_prompt=skills_prompt)
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets)
     from gateway.session_local_recovery import local_source

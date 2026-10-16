@@ -149,11 +149,24 @@ def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -
 
 
 def session_owner_details(session_id: str, entry: dict[str, Any]) -> str:
-    """The ``Details:`` line shared by every owner-refusal message."""
+    """The ``Details:`` line shared by every owner-refusal message.
+
+    Two things make a holder actionable in a bug report, and neither was in this line: its pid
+    (nothing else names the process, so the holder cannot be found in a log or with ``ps``) and a
+    correct reading of ``started_at``. That field is written when the entry is BUILT -- the claim --
+    so a re-claim resets it: one stored session was reported as "opened by desktop 26m ago" and then
+    as "opened by desktop 1h30m ago" within two hours, and both readings sent triage looking for a
+    chat of that age instead of at the lease that was refusing.
+
+    ``surface`` stays as the registry's own label. Several legitimate holders can record the same
+    one, so it is not an identity by itself; the pid is.
+    """
     surface = str(entry.get("surface") or "another surface")
+    pid = _registry_pid(entry.get("pid"))
+    holder = f"{surface} pid {pid}" if pid > 0 else surface
     started = _optional_float(entry.get("started_at"))
-    age = f" {format_age(time.time() - started)} ago" if started else ""
-    return f"Details: session {session_id} opened by {surface}{age}."
+    age = f" for {format_age(time.time() - started)}" if started else ""
+    return f"Details: session {session_id} is held by {holder}{age}."
 
 
 def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:

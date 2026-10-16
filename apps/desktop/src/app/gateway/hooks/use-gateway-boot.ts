@@ -1487,7 +1487,15 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.connectingGateway'),
           progress: 95
         })
-        publish(conn)
+
+        // A profile picked while the primary lookup was in flight already
+        // published its own descriptor with its socket (T19, #134889). Record
+        // the primary, but keep $connection on the pick so socket, profile and
+        // connection agree.
+        if (currentProfileSelectionRevision() === selectionRevision) {
+          publish(conn)
+        }
+
         recordPrimaryConnection(conn)
 
         // Seed the workspace BEFORE the gateway opens: every session-restore

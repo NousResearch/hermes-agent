@@ -167,5 +167,9 @@ it('a profile picked while boot is still connecting survives the primary adoptio
   expect($desktopBoot.get().running).toBe(false)
   expect($activeGatewayProfile.get()).toBe('coder')
   expect(isActivePrimary()).toBe(false)
+  // Socket, profile and connection descriptor agree on the pick
+  // (apps/desktop/AGENTS.md): boot records the primary, it doesn't publish it.
+  expect($connection.get()?.connectionId).toBe('coder-remote')
+  expect($connection.get()?.profile).toBe('coder')
   expect(scopes).toEqual(['coder'])
 })

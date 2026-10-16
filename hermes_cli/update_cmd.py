@@ -1825,6 +1825,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("  (removed .git/index.lock left by a git that was killed)")
     _check.clear_git_debris(_m().PROJECT_ROOT)
 
+    from hermes_cli.update_cmd_common import foreign_install_shadow_warning
+
+    _shadow_warning = foreign_install_shadow_warning()
+    if _shadow_warning:
+        print(_shadow_warning)
+        print()
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 

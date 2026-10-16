@@ -449,6 +449,8 @@ class ClientLifecycleMixin:
         # No SDK retry loop: the outer loop owns retries/rotation/fallback, and SDK retries stretch a hung
         # request ~3x past our stale detector.
         request_kwargs["max_retries"] = 0
+        from agent.opencode_gemini import main_go_gemini_base
+        request_kwargs["_go_gemini_route"] = main_go_gemini_base(self, request_kwargs.get("base_url"))
         is_copilot = base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
         if is_copilot and self._api_kwargs_have_image_parts(api_kwargs or {}):
             from hermes_cli.copilot_auth import copilot_request_headers

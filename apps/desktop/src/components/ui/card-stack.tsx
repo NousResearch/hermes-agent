@@ -133,7 +133,7 @@ function StackCard({
   const [dragging, setDragging] = useState(false)
   const locked = useRef(false)
   const node = useRef<HTMLDivElement>(null)
-  const content = useRef<HTMLDivElement>(null)
+  const surface = useRef<HTMLDivElement>(null)
 
   const pointer = useRef<{
     id: number
@@ -149,11 +149,16 @@ function StackCard({
   const y = useMotionValue(0)
 
   useLayoutEffect(() => {
-    if (index !== 0 || !content.current) {
+    if (index !== 0 || !surface.current) {
       return
     }
 
-    const element = content.current
+    // Measure the surface, not its content child: a consumer-supplied clamp
+    // (e.g. `.notification-collapsed-clamp` max-height) lands here, and a
+    // parent's max-height never shrinks a child's offsetHeight — measuring
+    // the child would reserve the unclamped height and push the stack's
+    // "+N more" row back off screen.
+    const element = surface.current
     const measure = () => onMeasure(element.offsetHeight + 2)
     measure()
     const observer = new ResizeObserver(measure)
@@ -312,9 +317,10 @@ function StackCard({
             animate(x, 0, reduced ? { duration: 0 } : RETURN)
           }
         }}
+        ref={surface}
         style={{ x, y, touchAction: onSwipe ? 'pan-y' : undefined }}
       >
-        <div ref={content}>{children(action)}</div>
+        <div>{children(action)}</div>
       </motion.div>
     </motion.div>
   )

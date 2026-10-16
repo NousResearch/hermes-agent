@@ -39,6 +39,7 @@ import {
   openCanonicalClarify,
   settleSharedPrompt
 } from './gatewayCanonicalEvents.js'
+import { reportGatewayStartTimeout } from './gatewayStartTimeout.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
@@ -55,8 +56,6 @@ import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 import {
   backendReconnecting,
-  backendSlowStart,
-  backendSlowStartStatus,
   describeRpcError,
   describeTurnFailure,
   isBareErrorText,
@@ -1284,31 +1283,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'gateway.start_timeout': {
-        // Still waiting (the ready timer does not give up) — say so, and point
-        // at /logs for the interpreter/cwd/stderr detail instead of printing
-        // paths here. Only failure-looking stderr lines are echoed inline so
-        // "wrong python" / "missing dep" stay diagnosable at a glance.
-        const { stderr_tail: stderrTail } = ev.payload ?? {}
-
-        setStatus(backendSlowStartStatus())
-        turnController.pushActivity(backendSlowStart(), 'warn')
-
-        const STDERR_LINE_CAP = 120
-        const STDERR_LINES_MAX = 4
-
-        const tailLines = (stderrTail ?? '')
-          .split('\n')
-          .map(l => l.trim())
-          .filter(l => l && stderrLooksLikeProblem(l))
-          .slice(-STDERR_LINES_MAX)
-
-        for (const line of tailLines) {
-          turnController.pushActivity(line.slice(0, STDERR_LINE_CAP), 'error')
-        }
+      case 'gateway.start_timeout':
+        reportGatewayStartTimeout(ev.payload?.stderr_tail, setStatus)
 
         return
-      }
 
       case 'gateway.protocol_error':
         setStatus(t('gatewayMsg.status.protocolWarning'))

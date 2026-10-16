@@ -4604,22 +4604,29 @@ class BasePlatformAdapter(FollowupAdmissionMixin, ABC):
                 # The handler raised, so no drain task exists yet and the carriers still hold
                 # only this turn's callback.
                 review_delivery_complete = self._take_review_delivery_callback(event, interrupt_event)
-            await self._release_turn_marker(event)
-            event._turn_marker_handoff = False  # a later run of this object clears its own marker
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
-            # alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
-            if callable(review_delivery_complete):
-                from agent.review_admission import REASON_PENDING_HANDOFF
+            try:
+                await self._release_turn_marker(event)
+                event._turn_marker_handoff = False  # a later run of this object clears its own marker
+                # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
+                # alive.
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                await self._fire_post_delivery_callback(session_key, interrupt_event)
+            finally:
+                # A /stop, /new or teardown cancel that lands at one of the awaits above raises
+                # there; the completion still runs, or the turn's review token
+                # (agent/review_admission.py) outlives the task and every later automatic review
+                # on the session is refused as live_turn_active. Still behind the marker release
+                # and the post-delivery callback, where the completion always ran.
+                if callable(review_delivery_complete):
+                    from agent.review_admission import REASON_PENDING_HANDOFF
 
-                with contextlib.suppress(Exception):
-                    delattr(interrupt_event, "_gateway_review_delivery_outgoing")
-                await self._complete_review_delivery(
-                    review_delivery_complete,
-                    delivery_succeeded=bool(processing_ok and not pending_handoff),
-                    cause=REASON_PENDING_HANDOFF if pending_handoff else None,
-                )
+                    with contextlib.suppress(Exception):
+                        delattr(interrupt_event, "_gateway_review_delivery_outgoing")
+                    await self._complete_review_delivery(
+                        review_delivery_complete,
+                        delivery_succeeded=bool(processing_ok and not pending_handoff),
+                        cause=REASON_PENDING_HANDOFF if pending_handoff else None,
+                    )
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)

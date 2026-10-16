@@ -750,40 +750,59 @@ class GatewayACPAgent(acp.Agent):
                     payload["tool_call_id"], name, result=result if isinstance(result, str) else None,
                     function_args=args))
             return
-        if kind == "message.delta":
-            text = _text(payload)
-            self._streamed[aid] = self._streamed.get(aid, "") + text
-            if text and self._conn:
-                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(text))
-        elif kind == "message.interim":
-            # Commentary the owner could not stream (``already_streamed`` false) reaches viewers
-            # only here; streamed commentary is already on screen. Either way it is its own segment.
-            self._close_segment(aid)
-            text = _text(payload)
-            if not payload.get("already_streamed") and text.strip():
-                self._segments.setdefault(aid, []).append(text)
-                if self._conn:
-                    await self._conn.session_update(session_id=editor_id,
-                                                    update=acp.update_agent_message_text(text + "\n\n"))
-        elif kind == "message.complete":
-            if aid in self._settling or aid in self._receipted:
-                # A retry's terminal receipt claimed this reply; it is shown once, from there.
-                self._streamed.pop(aid, None)
-                self._segments.pop(aid, None)
-                return
-            self._settling.add(aid)
-            try:
-                remainder = self._final_remainder(aid, payload)
-                if remainder and self._conn:
-                    await self._conn.session_update(session_id=editor_id,
-                                                    update=acp.update_agent_message_text(remainder))
-                async with self._changed:
-                    self._terminals[aid] = payload
-                    if len(self._terminals) > 256:
-                        self._terminals.pop(next(iter(self._terminals)))
-                    self._changed.notify_all()
-            finally:
-                self._settling.discard(aid)
+        projection = self._MESSAGE_PROJECTIONS.get(kind)
+        if projection is not None:
+            await projection(self, aid, editor_id, payload)
+
+    async def _project_message_delta(self, aid, editor_id, payload):
+        text = _text(payload)
+        self._streamed[aid] = self._streamed.get(aid, "") + text
+        if text and self._conn:
+            await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(text))
+
+    async def _project_reasoning_delta(self, aid, editor_id, payload):
+        # Published only while the session streams reasoning (``show_reasoning``).
+        text = _text(payload)
+        if text and self._conn:
+            await self._conn.session_update(session_id=editor_id, update=acp.update_agent_thought_text(text))
+
+    async def _project_message_interim(self, aid, editor_id, payload):
+        # Commentary the owner could not stream (``already_streamed`` false) reaches viewers
+        # only here; streamed commentary is already on screen. Either way it is its own segment.
+        self._close_segment(aid)
+        text = _text(payload)
+        if not payload.get("already_streamed") and text.strip():
+            self._segments.setdefault(aid, []).append(text)
+            if self._conn:
+                await self._conn.session_update(session_id=editor_id,
+                                                update=acp.update_agent_message_text(text + "\n\n"))
+
+    async def _project_message_complete(self, aid, editor_id, payload):
+        if aid in self._settling or aid in self._receipted:
+            # A retry's terminal receipt claimed this reply; it is shown once, from there.
+            self._streamed.pop(aid, None)
+            self._segments.pop(aid, None)
+            return
+        self._settling.add(aid)
+        try:
+            remainder = self._final_remainder(aid, payload)
+            if remainder and self._conn:
+                await self._conn.session_update(session_id=editor_id,
+                                                update=acp.update_agent_message_text(remainder))
+            async with self._changed:
+                self._terminals[aid] = payload
+                if len(self._terminals) > 256:
+                    self._terminals.pop(next(iter(self._terminals)))
+                self._changed.notify_all()
+        finally:
+            self._settling.discard(aid)
+
+    _MESSAGE_PROJECTIONS = {
+        "message.delta": _project_message_delta,
+        "reasoning.delta": _project_reasoning_delta,
+        "message.interim": _project_message_interim,
+        "message.complete": _project_message_complete,
+    }
 
     async def _project_session_state(self, kind, sid, editor_id, payload):
         if kind == "session.usage":

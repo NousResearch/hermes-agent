@@ -127,6 +127,22 @@ def test_thinking_and_reaction_publish_and_reasoning_waits_for_the_session_flag(
                          ('reaction', {'kind': 'vibe'}), ('reasoning.delta', {'text': 'step 1'})]
 
 
+@pytest.mark.parametrize(('source', 'display', 'flag', 'streams'), [
+    ('acp', {}, None, True),  # an editor cannot config.set: the launch's display default applies
+    ('acp', {'display': {'show_reasoning': False}}, None, False),
+    ('acp', {}, False, False),  # a viewer's explicit config.set still wins
+    ('cli', {}, None, False),  # other local viewers keep asking for it
+])
+def test_an_acp_launch_streams_reasoning_unless_turned_off(tmp_path, source, display, flag, streams):
+    from gateway import local_viewer_events
+    from gateway.session_policy import build_policy, policy_scope
+    live = SimpleNamespace(tool_progress_mode=None, **({} if flag is None else {'show_reasoning': flag}))
+    turn = _turn(Platform.LOCAL, [], live=live)
+    policy = build_policy({'source': source, 'cwd': str(tmp_path), 'model': 'fixture'}, display)
+    with policy_scope(policy):
+        assert local_viewer_events.show_reasoning(turn) is streams
+
+
 @pytest.mark.parametrize('classic', [True, False])
 def test_progress_projects_reasoning_available_and_moa(monkeypatch, classic):
     from gateway import session_cli_turn

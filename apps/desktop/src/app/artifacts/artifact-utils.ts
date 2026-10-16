@@ -28,6 +28,13 @@ export interface ArtifactLoadResult {
   failures: ArtifactLoadFailure[]
 }
 
+interface ArtifactLoadOptions {
+  maxPageJsonChars?: number
+  onProgress?: (result: ArtifactLoadResult) => void
+  signal?: AbortSignal
+  yieldToMainThread?: () => Promise<void>
+}
+
 const ARTIFACT_MESSAGE_PAGE_SIZE = 100
 const MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS = 32_000_000
 
@@ -539,7 +546,7 @@ export async function loadArtifactsForSessions(
     session: SessionInfo,
     page: { limit: number; offset: number }
   ) => Promise<Pick<SessionMessagesResponse, 'messages' | 'pagination'>>,
-  options: { maxPageJsonChars?: number } = {}
+  options: ArtifactLoadOptions = {}
 ): Promise<ArtifactLoadResult> {
   const artifacts: ArtifactRecord[] = []
   const failures: ArtifactLoadFailure[] = []
@@ -549,12 +556,16 @@ export async function loadArtifactsForSessions(
   // be tens of megabytes, so retaining complete transcripts exhausts the
   // Desktop renderer even when transport requests are paginated.
   for (const session of sessions) {
+    options.signal?.throwIfAborted()
+
     try {
       const sessionArtifacts = new Map<string, ArtifactRecord>()
       let offset = 0
 
       while (true) {
+        options.signal?.throwIfAborted()
         const page = await loadPage(session, { limit: ARTIFACT_MESSAGE_PAGE_SIZE, offset })
+        options.signal?.throwIfAborted()
         const pageJsonChars = (JSON.stringify(page.messages) ?? '').length
 
         if (pageJsonChars > maxPageJsonChars) {
@@ -579,8 +590,14 @@ export async function loadArtifactsForSessions(
 
       artifacts.push(...sessionArtifacts.values())
     } catch (error) {
+      // An abort is not a failed session: stop instead of recording it.
+      options.signal?.throwIfAborted()
       failures.push({ error, session })
     }
+
+    options.onProgress?.({ artifacts: [...artifacts], failures: [...failures] })
+    await options.yieldToMainThread?.()
+    options.signal?.throwIfAborted()
   }
 
   return { artifacts, failures }

@@ -548,12 +548,19 @@ async def recover_bot_deliveries(authority):
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue
-            record.update(_result(authority, record))
-            if record['status'] in {'queued', 'claimed'}:
-                _watch_reply(authority, home, record['delivery_id'],
-                             record.get('retry_admission_id') or record['admission_id'])
-            if record['status'] not in {'queued', 'claimed'}:
-                await _maybe_retry(authority, home, path, record)
+            try:
+                record.update(_result(authority, record))
+                if record['status'] in {'queued', 'claimed'}:
+                    _watch_reply(authority, home, record['delivery_id'],
+                                 record.get('retry_admission_id') or record['admission_id'])
+                if record['status'] not in {'queued', 'claimed'}:
+                    await _maybe_retry(authority, home, path, record)
+            except RuntimeStoreError as exc:
+                # One receipt the store cannot answer must not stop the owner (and, multiplexed, every
+                # profile with it): log it, leave the file for the next start, recover the rest.
+                logging.getLogger(__name__).error('Bot delivery %s not recovered: %s',
+                                                  record.get('delivery_id'), exc.reason)
+                continue
             await write_receipt(home, record)
             remember_receipt(authority, home, record)
         row = authority.db.get_session_by_title('Bot Chat')

@@ -88,6 +88,25 @@ def test_a_pending_receipt_behind_an_expired_deleted_chat_becomes_ambiguous(tmp_
         db.close()
 
 
+def test_one_unanswerable_receipt_does_not_stop_the_others(tmp_path, caplog):
+    from gateway.session_bot import recover_bot_deliveries
+    db = _receipt_then_deleted(tmp_path, status="queued", days_ago=8)
+    db.create_session("live", source="cli")
+    bad = "b" * 32
+    with _locked(tmp_path) as root:  # a live session missing its admission: a real storage fault
+        _write(root / f"{bad}.json", dict(status="queued", delivery_id=bad, profile_home=str(tmp_path),
+                                          session_id="live", admission_id="missing", principal_id="owner",
+                                          message="ping"))
+    try:
+        asyncio.run(recover_bot_deliveries(SimpleNamespace(db=db, waiters={})))
+        assert _receipt(tmp_path)["status"] == "ambiguous"
+        assert f"Bot delivery {bad} not recovered: storage_unavailable" in caplog.text
+        with _locked(tmp_path) as root:
+            assert _read(root / f"{bad}.json")["status"] == "queued"
+    finally:
+        db.close()
+
+
 def test_the_runtime_api_starts_after_a_deleted_bot_chat_expired(tmp_path, monkeypatch):
     import gateway.run_api
     from gateway.run_runtime import start_gateway_runtime_api

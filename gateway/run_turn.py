@@ -2032,9 +2032,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 await _stts_finally.wait_complete(timeout=2.0)
 
         tracking_task.cancel()
+        await self._settle_carried_completions(turn_ctx.agent_holder[0], final=True)  # uncarried -> next turn
         if session_key:
-            # Release the slot only if this run's generation still owns it (/stop or /new may have
-            # installed its own state).
+            # Release the slot only if this run's generation still owns it (/stop, /new may replace it).
             self._release_running_agent_state(session_key, run_generation=turn_ctx.run_generation)
         if self._draining:
             self._update_runtime_status("draining")

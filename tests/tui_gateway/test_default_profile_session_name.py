@@ -81,11 +81,11 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
     assert captured.profile_name == "default"
 
     monkeypatch.setattr(server, "_session_db", owner_db)
-    record = {"cwd": str(tmp_path), "pending_title": "branch"}
+    record = {"cwd": str(tmp_path), "pending_title": None}
     server._seed_branch_row(record, "seeded-row", "parent-row", [{"role": "user", "content": "hi"}], "desktop",
                             str(default_home))
     assert captured.profile_name == "default"
-    assert captured.title_source == "derived"
+    assert captured.title_source == "branch"
     assert record["pending_title"] is None
 
 

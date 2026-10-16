@@ -42,6 +42,36 @@ import { type ControlMasterHolders, sharedControlMasterHolders } from './ssh-con
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
+// Ceiling for env-overridden budgets, matching backend-probes.ts: a typo
+// can't hang boot for minutes, and 120s absorbs even lossy cold links.
+const MAX_SSH_BUDGET_TIMEOUT_MS = 120_000
+
+/**
+ * Resolve an SSH budget (ms) from the environment, following the
+ * resolveProbeTimeoutMs pattern in backend-probes.ts. Unset or invalid values
+ * keep the default. The budget is passed to ssh as `-o ConnectTimeout` on the
+ * command line, so the user's SSH config file cannot raise it (#132508) — the
+ * env override is the only knob.
+ */
+function resolveSshBudgetMs(
+  env: NodeJS.ProcessEnv,
+  name: 'HERMES_SSH_CONNECT_TIMEOUT_MS' | 'HERMES_SSH_FORWARD_TIMEOUT_MS',
+  fallback: number
+): number {
+  const raw = env[name]
+
+  if (raw == null || raw === '') {
+    return fallback
+  }
+
+  const n = Number.parseInt(String(raw), 10)
+
+  if (!Number.isFinite(n) || n <= 0) {
+    return fallback
+  }
+
+  return Math.min(n, MAX_SSH_BUDGET_TIMEOUT_MS)
+}
 
 // Remote-side watchdog for probe commands, in seconds. runSsh SIGKILLs the
 // LOCAL ssh child on timeout, but the remote command keeps running as an
@@ -732,9 +762,11 @@ class SshConnection {
     this.sshBinary = opts.sshBinary || 'ssh'
 
     this._log = typeof opts.rememberLog === 'function' ? opts.rememberLog : () => {}
-    this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
+    this._connectTimeoutMs = opts.connectTimeoutMs
+      ?? resolveSshBudgetMs(process.env, 'HERMES_SSH_CONNECT_TIMEOUT_MS', DEFAULT_CONNECT_TIMEOUT_MS)
     this._execTimeoutMs = opts.execTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS
-    this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
+    this._forwardTimeoutMs = opts.forwardTimeoutMs
+      ?? resolveSshBudgetMs(process.env, 'HERMES_SSH_FORWARD_TIMEOUT_MS', DEFAULT_FORWARD_TIMEOUT_MS)
     this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
     this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
     this._controlKeepaliveTimer = null
@@ -1421,6 +1453,7 @@ export {
   pickLocalPort,
   redactSecrets,
   REMOTE_PROBE_TIMEOUT_SECS,
+  resolveSshBudgetMs,
   runSsh,
   SSH_ERROR,
   SshConnection,

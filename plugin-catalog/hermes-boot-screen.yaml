@@ -8,14 +8,7 @@ name: hermes-boot-screen
 repo: https://github.com/OMOX563/hermes-boot-screen
 sha: "4bdfb3c67cd8341c3018631214b8c42d7cf50cb7"
 title: "Hermes Boot Screen"
-description: >-
-  Six-act boot animation for the Hermes desktop app — black-screen brand reveal,
-  over-exposed whiteout bridge, a technical-dossier plate, an authorization
-  handshake with identity confirmation, and a welcome finale — with audio cues,
-  theme-aware light/dark plates and Esc/Enter/Space controls. Desktop-only:
-  desktop/plugin.js inside the plugin SDK surface; no agent tools, hooks,
-  middleware or env vars. Fully English UI. Adapted from
-  6shenhonghong9/dsh-startup-screen (MIT).
+description: "Six-act boot animation for the Hermes desktop app — black-screen brand reveal, over-exposed whiteout bridge, a technical-dossier plate, an authorization handshake with identity confirmation, and a welcome finale — with audio cues, theme-aware light/dark plates and Esc/Enter/Space controls. Desktop-only: desktop/plugin.js inside the plugin SDK surface; no agent tools, hooks, middleware or env vars. Fully English UI. Adapted from 6shenhonghong9/dsh-startup-screen (MIT). Disclosure — on every Desktop launch (default: once per session) it covers the whole window with a full-screen animation that plays audio and spoken narration and waits for Enter/Space/click on two steps (Esc skips); while it is up it captures Enter/Space/Esc at the document level. Turn it off or switch to daily in its Startup Animation settings page."
 maintainer: OMOX563
 tier: community
 category: desktop

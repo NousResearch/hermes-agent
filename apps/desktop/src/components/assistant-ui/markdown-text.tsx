@@ -516,8 +516,8 @@ const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
 }
 
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
-  'aui-md prose w-full min-w-0 max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
-  'prose-p:leading-(--dt-line-height) prose-li:leading-(--dt-line-height)',
+  'aui-md prose w-full min-w-0 max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--conversation-message-line-height) text-foreground',
+  'prose-p:leading-(--conversation-message-line-height) prose-li:leading-(--conversation-message-line-height)',
   'prose-headings:text-foreground prose-strong:text-foreground',
   // Typography styles `pre` as a dark slab: light text (`--tw-prose-pre-code`,
   // gray-200) on a dark bg. We strip its bg for our own light code card but its
@@ -577,7 +577,7 @@ function MarkdownParagraph({
 
   // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which must
   // out-specify Tailwind Typography's `prose` margins — so no `my-*` here.
-  const paragraphClass = cn('wrap-anywhere leading-(--dt-line-height)', className)
+  const paragraphClass = cn('wrap-anywhere leading-(--conversation-message-line-height)', className)
 
   // A paragraph that is one directive renders as the card alone; one that
   // ends in a directive renders as its sentence followed by the card.
@@ -702,7 +702,7 @@ function MarkdownTextSurface({
           <ol className={cn('my-1 gap-0', className)} dir={boxDir} {...props} />
         ),
         li: ({ children, className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+          <li className={cn('leading-(--conversation-message-line-height)', className)} {...props}>
             {decorateText ? decorateText(children) : children}
           </li>
         ),

@@ -9,6 +9,12 @@ import './store/translucency'
 import './store/user-bubble-transparency'
 // Side-effect: restores chat typography before the first conversation paints.
 import './store/chat-text-scale'
+// Side-effect: applies the persisted conversation line & paragraph spacing on
+// load. Both stores sit below the lazy Settings boundary (`wiring.tsx` imports
+// `../settings` with `lazy()`), so without these imports the transcript renders
+// at 100% until the user happens to open Appearance.
+import './store/chat-line-spacing'
+import './store/chat-paragraph-spacing'
 // Dev-only render/state churn counters. MUST precede the `react-dom` import
 // below: react-dom captures the devtools hook at module init, so bippy has to
 // install during THIS import's evaluation or every commit goes unseen

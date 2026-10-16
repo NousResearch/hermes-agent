@@ -469,7 +469,8 @@ __all__ = [
     "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
     "route_reasoning_carriers",
     "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
-    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
+    "tool_call_id_variants", "tool_result_id_variants", "trailing_prefill_replay_supported",
+    "uniquify_tool_call_ids",
 ]
 
 
@@ -724,6 +725,20 @@ def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
     if RD not in carriers and carriers and _profile_declares_native_details(provider_lower):
         carriers = carriers | {RD}
     return carriers
+
+
+def trailing_prefill_replay_supported(api_mode: Any, provider: Any, base_url: Any, api_key: Any = "") -> bool:
+    """True when the route continues a trailing reasoning-only assistant turn instead of rejecting or
+    ignoring it. Only Ollama is known to: its OpenAI adapter maps ``reasoning`` to Thinking and its
+    renderers reopen the analysis channel for a trailing thinking-only turn. Probes the server type,
+    so call it only when a prefill stub is actually trailing."""
+    if (api_mode or "chat_completions") != "chat_completions" or not base_url:
+        return False
+    if R not in route_reasoning_carriers(provider, base_url):
+        return False
+    from agent.model_metadata import _is_ollama_server
+
+    return _is_ollama_server(str(base_url), api_key or "")
 
 
 def _profile_declares_native_details(provider_lower: str) -> bool:

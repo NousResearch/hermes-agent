@@ -195,7 +195,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> st
     collision_note = getattr(sc, "skill_command_collision_note", None)
     if collision_note is None:
         return ""
-    names = sorted(s["name"] for s in module_loader("tools.skills_tool")._find_all_skills())
+    names = sorted(s["name"] for s in module_loader("tools.skills_tool").find_all_skills())
     return "; ".join(filter(None, map(collision_note, names)))
 
 

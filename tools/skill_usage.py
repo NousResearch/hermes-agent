@@ -176,7 +176,7 @@ def _read_hub_installed_names() -> set[str]:
             except (OSError, ValueError):
                 continue
             if (resolved / "SKILL.md").exists():
-                names.add(_read_skill_name(resolved / "SKILL.md", fallback=resolved.name))
+                names.add(read_skill_name(resolved / "SKILL.md", fallback=resolved.name))
         return names
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read hub lock file: %s", e)
@@ -217,7 +217,7 @@ def _iter_skill_mds(base: Path, *, local_only: bool) -> Iterator[tuple[str, Path
     external skill dirs mounted below the tree (curation must not touch them)."""
     for skill_md in base.rglob("SKILL.md"):
         if not (is_excluded_skill_path(skill_md) or (local_only and is_external_skill_path(skill_md))):
-            yield _read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
+            yield read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
 
 
 def _scan_local_skills(keep: Callable[[str, Path, set[str], dict[str, Any]], bool]) -> list[str]:
@@ -243,7 +243,7 @@ def list_archived_skill_names() -> list[str]:
     return sorted({p.name for p in root.iterdir() if p.is_dir()}) if root.exists() else []
 
 
-def _read_skill_name(skill_md: Path, fallback: str) -> str:
+def read_skill_name(skill_md: Path, fallback: str) -> str:
     """The frontmatter ``name:`` field of a SKILL.md (first 4000 chars), else *fallback*."""
     try:
         lines = [line.strip() for line in skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000].split("\n")]
@@ -255,6 +255,9 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
     block = block[:block.index("---")] if "---" in block else block
     values = (line.split(":", 1)[1].strip().strip("\"'") for line in block if line.startswith("name:"))
     return next((v for v in values if v), fallback)
+
+
+_read_skill_name = read_skill_name  # original private spelling, kept as an alias
 
 
 def is_agent_created(skill_name: str) -> bool:
@@ -663,7 +666,7 @@ def restore_skill(skill_name: str) -> tuple[bool, str]:
     candidates = [p for p in dirs if p.name == skill_name] or sorted(
         (p for p in dirs if p.name.startswith(prefix) and len(p.name) - len(prefix) == 14
          and p.name[len(prefix):].isdigit()), reverse=True) or [
-        p for p in dirs if (p / "SKILL.md").is_file() and _read_skill_name(p / "SKILL.md", fallback=p.name) == skill_name]
+        p for p in dirs if (p / "SKILL.md").is_file() and read_skill_name(p / "SKILL.md", fallback=p.name) == skill_name]
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"
     if (dest := _skills_dir() / skill_name).exists():
@@ -672,7 +675,7 @@ def restore_skill(skill_name: str) -> tuple[bool, str]:
 
 
 def _match_skill_dir(skill_mds: Iterable[Path], skill_name: str) -> Optional[Path]:
-    return next((p.parent for p in skill_mds if _read_skill_name(p, fallback=p.parent.name) == skill_name), None)
+    return next((p.parent for p in skill_mds if read_skill_name(p, fallback=p.parent.name) == skill_name), None)
 
 
 def _find_skill_dir(skill_name: str) -> Optional[Path]:
@@ -721,7 +724,7 @@ def _external_skill_names() -> set:
             continue
         for skill_md in base.rglob("SKILL.md"):
             if not is_excluded_skill_path(skill_md):
-                names.add(_read_skill_name(skill_md, fallback=skill_md.parent.name))
+                names.add(read_skill_name(skill_md, fallback=skill_md.parent.name))
     return names
 
 

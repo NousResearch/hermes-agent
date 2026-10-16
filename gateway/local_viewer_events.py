@@ -62,10 +62,32 @@ def show_reasoning(turn) -> bool:
     return getattr(live, "show_reasoning", None) is True
 
 
+def _publish_subagent(turn, event_type, payload) -> None:
+    owner = getattr(turn, "_approval_owner", None)
+    if owner is not None:
+        authority, session_id, generation = owner
+        executing = getattr(authority, "executing", None)
+        if isinstance(executing, dict) and executing.get(session_id) != generation:
+            # A background delegate_task outlives the spawning turn's running claim.
+            live = authority.sessions.get(session_id)
+            if live is not None and hasattr(live, "event_stream"):
+                live.event_stream.publish(session_id, payload, event_type=event_type)
+                return
+    turn._publish_execution(event_type, payload)
+
+
 def publish_progress(turn, event_type, name, preview, kwargs) -> None:
-    """``reasoning.available`` and the MoA facade events from the agent's progress callback. A
-    classic CLI renders MoA references whatever its reasoning display (main's ``_on_tool_progress``);
-    other viewers get them, like the TUI gateway's own emitters, only with reasoning shown."""
+    """``subagent.*``, ``reasoning.available`` and the MoA facade events from the agent's progress
+    callback. A classic CLI renders MoA references whatever its reasoning display (main's
+    ``_on_tool_progress``); other viewers get them, like the TUI gateway's own emitters, only with
+    reasoning shown."""
+    if isinstance(event_type, str) and event_type.startswith("subagent."):
+        if event_type == "subagent.text":
+            return
+        from tui_gateway.tool_progress import _subagent_payload
+        _publish_subagent(turn, event_type, _subagent_payload(
+            event_type, name, preview, kwargs, show_reasoning=show_reasoning(turn)))
+        return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
         return
     from gateway.session_cli_turn import classic_cli_turn

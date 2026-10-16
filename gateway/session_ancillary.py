@@ -205,7 +205,7 @@ async def read(connection, ref, params, *, kind):
         _require_current_route(authority, ref)
         if kind == 'control':
             return {'control': control_snapshot(authority, ref)}
-        agent, records = _owner_objects(authority, ref)
+        agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
         if kind == 'subagents':
             return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
                                   for record in records], 'delegations': []}
@@ -312,7 +312,7 @@ def _require_current_route(authority, ref):
             raise RuntimeStoreError('stale_generation')
 
 
-def _owner_objects(authority, ref):
+def _owner_objects(authority, ref, *, include_fallback_evicted=False):
     """``(agent, subagent records)`` of this in-process session. Process-local registries cannot
     describe (or stop) another interpreter's live objects: a managed worker is refused rather than
     answered with an empty success."""
@@ -320,7 +320,8 @@ def _owner_objects(authority, ref):
     if managed_policy(authority, ref) is not None:
         raise RuntimeStoreError('unsupported_projection')
     agent = authority.agent(ref)
-    return agent, subagent_records(agent)
+    session_id = physical_target(authority, ref) if include_fallback_evicted else None
+    return agent, subagent_records(agent, session_id=session_id, include_fallback_evicted=include_fallback_evicted)
 
 
 def physical_target(authority, ref):
@@ -362,15 +363,32 @@ def control_snapshot(authority, ref):
             'updated_at': _snapshot_updated_at(*states)}
 
 
-def subagent_records(parent):
+def _has_fallback_evicted_ancestor(agent, target_sid, registry):
+    if not target_sid:
+        return False
+    current = agent
+    for _ in range(getattr(registry, '_MAX_ANCESTOR_HOPS', 16)):
+        ref = getattr(current, '_delegate_parent_ref', None) if current is not None else None
+        current = ref() if callable(ref) else None
+        if current is None:
+            return False
+        if getattr(current, '_evicted_on_fallback', False) is True and getattr(current, 'session_id', None) == target_sid:
+            return True
+    return False
+
+
+def subagent_records(parent, session_id=None, *, include_fallback_evicted=True):
     registry = sys.modules.get('tools.delegate_tool_registry')
-    if parent is None or registry is None:
+    target_sid = (session_id or getattr(parent, 'session_id', None)) if include_fallback_evicted else None
+    if registry is None or (parent is None and not target_sid):
         return []
     with registry._active_subagents_lock:
-        # Deliberately no durable-ID fallback: equal IDs cannot transfer a live
-        # old parent's transcript to a replacement execution object.
+        # Deliberately no unconditional durable-ID fallback: equal IDs cannot transfer a live
+        # old parent's transcript or control to a replacement execution object. Only a parent
+        # evicted by this session's own fallback keeps its children visible in the read-only roster.
         return [dict(record) for record in registry._active_subagents.values()
-                if registry._is_descendant_of(record.get('agent'), parent)]
+                if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
+                or _has_fallback_evicted_ancestor(record.get('agent'), target_sid, registry)]
 
 
 def subagent_tail(records, subagent_id):

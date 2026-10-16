@@ -324,15 +324,21 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     finally:
         execution_result.reset(token)
 
-    captured['result'].update(warning='History changed during this turn', response_previewed=True)
+    from agent.billing_links import build_billing_block
+    assert captured['result']['billing_block'] == {'provider': 'openrouter', 'url': 'https://openrouter.ai/credits'}
+    billing = build_billing_block(
+        provider='openrouter', base_url='https://openrouter.ai/api/v1', model='gpt-x', message='Out of credits'
+    ).to_dict()
+    captured['result'].update(billing_block=billing, warning='History changed during this turn', response_previewed=True)
     complete = completion_payload(
         {'admission_id': 'a1', 'request_id': 'r1'}, {'outcome': 'failed'}, delivered['final_response'], captured)
-    assert complete['billing'] == {'provider': 'openrouter', 'url': 'https://openrouter.ai/credits'}
+    assert complete['billing'] == billing
     assert complete['failure_reason'] == 'billing'
     assert complete['warning'] == 'History changed during this turn'
     assert complete['response_previewed'] is True
     assert complete['response_transformed'] is True
-    EVENTS['message.complete'].payload.model_validate(complete)
+    EVENTS['message.complete'].payload.model_validate(
+        {k: v for k, v in complete.items() if k not in ('content', 'admission_id', 'outcome')})
 
 
 def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():

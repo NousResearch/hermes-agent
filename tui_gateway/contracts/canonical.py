@@ -220,6 +220,30 @@ canonical_method("session.stats", params=SessionStatsParams, result=SessionStats
                  doc="The session.usage dict on demand: what main's classic CLI read off its agent.")
 
 
+class RollbackSessionDiffParams(Params):
+    session_id: str
+    profile: str | None = None
+
+
+class RollbackSessionDiffResult(Result):
+    """``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the
+    session's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).
+    ``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body."""
+
+    enabled: bool
+    success: bool = False
+    stat: str = ""
+    diff: str = ""
+    diff_lines: int = 0
+    empty: bool = False
+    error: str | None = None
+
+
+canonical_method("rollback.session_diff", params=RollbackSessionDiffParams, result=RollbackSessionDiffResult,
+                 doc="The classic CLI's /diff session: everything changed since the session's earliest "
+                     "retained checkpoint, as data for its terminal renderer.")
+
+
 class SessionAutomationParams(Params):
     session_id: str
     kind: Literal["goal", "loop", "heartbeat"]

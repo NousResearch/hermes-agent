@@ -22,6 +22,11 @@ def store_error_response(_openai_error, exc):
     (SQLite writer patience exhausted, I/O) is ``storage_unavailable``."""
     from aiohttp import web
     reason = exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable'
+    if reason == 'admission_queued':
+        # Accepted and still queued for the next owner, so not retryable: no Retry-After, and
+        # x-should-retry tells the OpenAI/Anthropic SDKs not to retry the 503 on their own.
+        return web.json_response(_openai_error(str(exc), err_type='server_error', code=reason), status=503,
+                                 headers={'x-should-retry': 'false'})
     status = _STORE_ERROR_STATUS.get(reason, 409)
     return web.json_response(_openai_error(reason, code=reason), status=status,
                              headers={'Retry-After': '1'} if status == 503 else None)

@@ -73,8 +73,10 @@ output_path, exit_code_path, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
 env = dict(os.environ, PYTHONUNBUFFERED="1")
 with open(output_path, "wb") as f:
     rc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).wait(timeout=3600)
-with open(exit_code_path, "w", encoding="utf-8") as f:
+# Temp + replace: the gateway watcher polls the exit code and reads an empty file as failure.
+with open(exit_code_path + ".tmp", "w", encoding="utf-8") as f:
     f.write(str(rc))
+os.replace(exit_code_path + ".tmp", exit_code_path)
 """.strip()
 
 
@@ -145,7 +147,9 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         f" > {shlex.quote(str(output_path))} 2>&1; "
         # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
-        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
+        # Temp + mv: the gateway watcher polls the exit code and reads an empty file as failure.
+        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path) + '.tmp')}"
+        f" && mv -f {shlex.quote(str(exit_code_path) + '.tmp')} {shlex.quote(str(exit_code_path))}")
     # Preferred: setsid creates a new session, fully detached; fallback start_new_session=True
     # calls os.setsid() in the child.
     setsid_bin = shutil.which("setsid")

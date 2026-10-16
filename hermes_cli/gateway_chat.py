@@ -221,6 +221,30 @@ async def run_gateway_chat(args, emitter=None):
 
 
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."
+# A refused resume flag as the user typed it, and the slash command that changes it on the resumed session.
+_RESUME_FLAG_HINTS = {"model": ("-m/--model", "/model"), "provider": ("--provider", "/model"),
+                      "base_url": ("--base-url", "/model"), "reasoning": ("--reasoning", "/reasoning"),
+                      "yolo": ("--yolo", "/yolo"), "toolsets": ("-t/--toolsets", None),
+                      "skills": ("-s/--skills", None), "verbose": ("-v/--verbose", None), "cwd": ("--in", None)}
+
+
+def resume_policy_error(keys):
+    """The resume refusal naming each flag that differs from the session's frozen launch, and the way forward."""
+    hints = [_RESUME_FLAG_HINTS.get(key, ("--" + key.replace("_", "-"), None)) for key in keys]
+    flags = ", ".join(dict.fromkeys(flag for flag, _ in hints))
+    switch = " or ".join(dict.fromkeys(command for _, command in hints if command))
+    one = len(hints) == 1
+    them = "it" if one else "them"
+    after = f" and use {switch} after resuming to switch" if switch else f", or start a new session to use {them}"
+    return GatewayClientError(f"{_RESUME_POLICY_MISMATCH} {flags} {'differs' if one else 'differ'} from this "
+                              f"session's launch: resume without {them}{after}.")
+
+
+def exit_on_resume_refusal(exc):
+    """A refused resume is a usage error on every classic path (interactive startup's copy): ``Error:``, exit 2."""
+    if isinstance(exc, GatewayClientError) and str(exc).startswith(_RESUME_POLICY_MISMATCH):
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 def _launch_flags(args):
@@ -266,11 +290,10 @@ def check_resume_policy(args, snapshot):
         from hermes_constants import get_hermes_home
         flags = {key: requested[key] for key in ("model", "provider", "base_url", "api_key") if key in requested}
         requested["model"] = resolve_launch_route(flags, load_user_config_effective(get_hermes_home() / "config.yaml"))["model"]
-    for key, value in requested.items():
-        if key == "api_key":
-            continue  # never durable; a repeated key is not a policy change
-        if frozen.get(key) != value:
-            raise GatewayClientError(_RESUME_POLICY_MISMATCH)
+    # api_key is never durable; a repeated key is not a policy change.
+    differs = [key for key, value in requested.items() if key != "api_key" and frozen.get(key) != value]
+    if differs:
+        raise resume_policy_error(differs)
 
 
 def _register_terminal_process() -> None:

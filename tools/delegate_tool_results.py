@@ -7,6 +7,8 @@ import json
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
+from agent.redact import redact_for_egress
+from tools.delegation_redaction import redact_child_result
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -66,7 +68,7 @@ def _extract_output_tail(result: dict[str, Any], *, max_entries: int = 12, max_c
             break
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        content = _stringify_tool_content(msg.get("content") or "")
+        content = redact_for_egress(_stringify_tool_content(msg.get("content") or ""))
         tool_name = name_by_call_id.get(msg.get("tool_call_id") or "", "tool")
         tail.append({"tool": tool_name, "preview": content[:max_chars], "is_error": _looks_like_error_output(content)})
     tail.reverse()
@@ -85,7 +87,7 @@ def _sanitize_tool_target(key: str, value: Any) -> Any:
         return cleaned or None
     if not isinstance(value, str) or not value:
         return None
-    bounded = value[:1024]
+    bounded = redact_for_egress(value)[:1024]
     if key in _TOOL_INPUT_URL_KEYS:
         try:
             parsed = urlsplit(bounded)
@@ -117,7 +119,7 @@ def _sanitize_targets(mapping: dict[str, Any]) -> dict[str, Any]:
 def _input_summary(keys: Any, targets: Any) -> dict[str, Any]:
     """``{argument_keys, targets}`` with bounded, sanitized contents (empty on bad shapes)."""
     return {
-        "argument_keys": [str(key)[:128] for key in keys[:64]] if isinstance(keys, list) else [],
+        "argument_keys": [redact_for_egress(str(key))[:128] for key in keys[:64]] if isinstance(keys, list) else [],
         "targets": _sanitize_targets(targets) if isinstance(targets, dict) else {},
     }
 
@@ -129,7 +131,7 @@ def _summarize_tool_arguments(arguments: Any) -> dict[str, Any]:
         parsed = None
     if not isinstance(parsed, dict):
         return _input_summary([], {})
-    return _input_summary(sorted(str(key)[:128] for key in parsed), parsed)
+    return _input_summary(sorted(str(key) for key in parsed), parsed)
 
 def _subagent_stop_tool_call_history(tool_trace: Any) -> list[dict[str, Any]]:
     """Detached, metadata-only tool history for lifecycle hooks (input summaries re-sanitized)."""
@@ -178,7 +180,7 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         from tools.spill_safety import write_text_exclusive
         # Exclusive symlink-refusing create; not private because cache/delegation is bind-mounted read-only into
         # remote backends whose container UID must be able to read it.
-        write_text_exclusive(path, summary, private=False)
+        write_text_exclusive(path, redact_for_egress(summary), private=False)
         return str(path)
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)
@@ -188,6 +190,7 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     """``(model_text, spill_path)`` for one over-budget summary: a ~75% head / ~25% tail window snapped to line
     boundaries (so the opening AND the closing outcomes/files-changed/issues both survive), the full text spilled
     to disk, and a footer giving the exact ``read_file offset=`` for the omitted middle."""
+    summary = redact_for_egress(summary)
     original_len = len(summary)
     head_budget = int(cap * 0.75)
     tail_budget = cap - head_budget
@@ -395,8 +398,11 @@ def _finalize_child_results(
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
-        _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
+        for entry in results:
+            child = child_by_index.get(entry.get("task_index"))
+            entry.update(redact_child_result(entry, getattr(child, "_delegate_output_schema", None)))
+        _apply_summary_budget(results, parent_agent)
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
 

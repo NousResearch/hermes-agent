@@ -230,11 +230,15 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _telegramize_command_mentions
         return _telegramize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
-    def _checkpoint_manager(self):
-        """A CheckpointManager from gateway config, or None when checkpoints are disabled."""
+    def _checkpoint_manager(self, source=None):
+        """A CheckpointManager from a local session's frozen policy, else gateway config; None when disabled."""
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
+        from gateway.session_authorities import active_authority
+        from gateway.session_policy import policy_for_source
         from tools.checkpoint_manager import CheckpointManager
-        cp = _checkpoint_agent_kwargs(_load_gateway_config())
+        policy = policy_for_source(self, source) if source is not None else None
+        cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
+                                      else _load_gateway_config())
         if not cp["checkpoints_enabled"]:
             return None
         # AIAgent kwargs are ``checkpoint_<field>``; CheckpointManager takes the bare field names.
@@ -718,7 +722,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from tools.checkpoint_manager import format_checkpoint_list
-        mgr = self._checkpoint_manager()
+        mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
         cwd = self._terminal_cwd()
@@ -769,7 +773,7 @@ class GatewaySlashCommandsMixin(
         cwd = self._terminal_cwd()
         if mode == "session":
             # Cumulative checkpoint-baseline diff.
-            mgr = self._checkpoint_manager()
+            mgr = self._checkpoint_manager(event.source)
             if mgr is None:
                 return t("gateway.diff.not_enabled")
             if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree

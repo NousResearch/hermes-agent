@@ -33,7 +33,7 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
 # Async-result cards a gateway producer may name on its own internal event (with a display_text),
 # the same rows the in-process TUI persisted. A closed set: never a client-chosen presentation.
-PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete"})
+PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
 MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
 
 # Longer than any marker could plausibly be, even with stray punctuation.

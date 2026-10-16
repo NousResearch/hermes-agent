@@ -106,6 +106,10 @@ def admission_display(payload):
     return card
 
 
+def _route_identity(source):
+    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+
+
 def snapshot_automation(authority, adapter, event, identity):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
@@ -131,11 +135,15 @@ def snapshot_automation(authority, adapter, event, identity):
     # Recheck only the source/provenance: a completed input's retained media is already released.
     restored = restore_native({'text': event.text, 'native_text_v1': {
         key: value for key, value in envelope.items() if key != 'media'}}, runner)
-    if (restored.source.to_dict() != event.source.to_dict()
+    # Synthetic wakes clear ``message_id`` (#52694, #123097) while the committed human source keeps
+    # it, so compare the routing/provenance identity, never the platform reply anchor.
+    if (_route_identity(restored.source) != _route_identity(event.source)
             or runner._adapter_for_source(restored.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
+    # Never anchor the wake to the stale human message; ``to_dict`` already omits a null anchor.
+    source.pop('message_id', None)
     # Producer timestamps and platform reply IDs change on retry. Neither belongs
     # in the identity/fingerprint of the same immutable completion.
     envelope = {'source': source, 'route': entry.session_key,

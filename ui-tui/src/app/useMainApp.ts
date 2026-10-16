@@ -52,10 +52,10 @@ import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
-import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow, type UiState } from './interfaces.js'
 import { requestLiveSessions } from './liveSessions.js'
+import { applyControlSnapshot } from './loopStatus.js'
 import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
@@ -693,15 +693,15 @@ export function useMainApp(gw: GatewayClient) {
     let stopped = false
     applyAgentSnapshot(ui.sid)
     applyProcessSnapshot(ui.sid)
-    applyGoalSnapshot(ui.sid)
-    // Goal state changes only on /goal and after a judged turn, both of which push
+    applyControlSnapshot(ui.sid)
+    // Goal/loop state changes only on their slash commands, a judged turn or a loop wakeup, all of which push
     // `session.control.update`; read it once per session instead of polling state.db.
     gw.request<{ control: SessionControlSnapshot }>('session.control.read', { session_id: ui.sid })
       .then(raw => {
         const result = asRpcResult<{ control: SessionControlSnapshot }>(raw)
 
         if (!stopped && result && getUiState().sid === ui.sid) {
-          applyGoalSnapshot(ui.sid, result.control?.goal ?? null)
+          applyControlSnapshot(ui.sid, result.control)
         }
       })
       .catch(() => {})

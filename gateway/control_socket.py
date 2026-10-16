@@ -128,15 +128,30 @@ def _detect_supervisor() -> str:
     return "external" if "--external-supervisor" in sys.argv else "manual"
 
 
+def launch_supervisor(identity: dict[str, Any]) -> Optional[str]:
+    """What launched the gateway behind an ``identify`` answer (``manual``, ``desktop``, ``systemd``, ...).
+
+    The session runtime protocol folds ``manual`` and ``desktop`` into ``supervisor: "none"``, so the
+    launch value rides in ``launch_supervisor``. A gateway that predates that field and answers
+    ``"none"`` is ambiguous: None (unknown), never ``manual``.
+    """
+    for key in ("launch_supervisor", "supervisor"):
+        value = identity.get(key)
+        if isinstance(value, str) and value and value != "none":
+            return value
+    return None
+
+
 def build_identify_payload() -> dict[str, Any]:
     """Default ``identify`` answer, built from gateway.status primitives."""
     from gateway.status import _build_pid_record, _get_code_identity_fields, _profile_label_for_home, read_runtime_status
     record = _build_pid_record()
+    supervisor = _detect_supervisor()
     payload: dict[str, Any] = {
         "protocol": CONTROL_PROTOCOL_VERSION,
         **{k: record.get(k) for k in ("kind", "pid", "start_time", "hermes_home")},
         "profile": _profile_label_for_home(record.get("hermes_home") or ""),
-        "supervisor": _detect_supervisor(), **_get_code_identity_fields()}
+        "supervisor": supervisor, "launch_supervisor": supervisor, **_get_code_identity_fields()}
     with contextlib.suppress(Exception):
         # served_profiles (multiplex mode) is stamped into runtime status by the runner.
         served = (read_runtime_status() or {}).get("served_profiles")

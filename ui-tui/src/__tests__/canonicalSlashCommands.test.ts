@@ -196,6 +196,22 @@ it("/usage renders main's session totals from session.stats and /tools lists the
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
 })
 
+it('/tools enable|disable refuses on the shared gateway instead of listing the unchanged tools', async () => {
+  const { page, request, slash, sys } = harness()
+
+  slash('/tools disable web')
+  slash('/tools enable browser')
+  await flush()
+
+  expect(sys.mock.calls.map(([text]) => String(text))).toEqual([
+    '/tools disable is not available on the shared gateway yet',
+    '/tools enable is not available on the shared gateway yet'
+  ])
+  expect(page).not.toHaveBeenCalled()
+  expect(request.mock.calls.map(([method]) => method)).not.toContain('tools.show')
+  expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
+})
+
 it('/status reads through the gateway', async () => {
   const { page, request, slash } = harness()
 

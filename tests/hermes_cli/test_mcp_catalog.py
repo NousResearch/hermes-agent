@@ -468,14 +468,15 @@ class TestInstall:
 
         assert load_config()["mcp_servers"]["demo"]["tools"]["include"] == []
 
-    def test_probe_fail_reinstall_preserves_manual_exclude(self, catalog_dir):
-        """A failed probe during reinstall keeps a hand-written
-        tools.exclude on a manifest with no tool defaults, instead of
-        installing with no filter."""
+    @pytest.mark.parametrize("probed", [None, [], [("tool_a", "Allowed"), ("danger_delete", "Excluded")]])
+    def test_reinstall_preserves_manual_exclude(self, catalog_dir, monkeypatch, probed):
+        """Reinstall keeps manual exclusions regardless of probe availability."""
         body = _basic_manifest()
         _write_manifest(catalog_dir, "demo", body)
         import hermes_cli.mcp_catalog as mc
         from hermes_cli.config import load_config, save_config
+
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
 
         cfg = load_config()
         cfg.setdefault("mcp_servers", {})["demo"] = {

@@ -22,10 +22,22 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-_QUERY_TIMEOUT = 10    # brv query — should be fast
+# brv is a Node/oclif CLI whose cold start alone takes ~22s on low-power platforms (Termux), so a
+# desktop-calibrated query budget times out before the CLI even boots (#139954).
+_QUERY_TIMEOUT_S = 90
 _CURATE_TIMEOUT = 120  # brv curate — may involve LLM processing
 _MIN_QUERY_LEN = 10    # noise filters
 _MIN_OUTPUT_LEN = 20
+
+
+def _resolve_query_timeout(config: dict[str, Any]) -> int:
+    """Per-call query/status budget from ``memory.byterover.query_timeout_s``; positive ints only
+    (missing/garbage/non-positive falls back to the default)."""
+    try:
+        value = int(config.get("query_timeout_s", _QUERY_TIMEOUT_S))
+    except (TypeError, ValueError):
+        return _QUERY_TIMEOUT_S
+    return value if value > 0 else _QUERY_TIMEOUT_S
 
 _BOOL_WORDS = {**dict.fromkeys(("1", "true", "yes", "on"), True), **dict.fromkeys(("0", "false", "no", "off"), False)}
 
@@ -101,7 +113,7 @@ def _brv_child_env(brv_path: str) -> dict[str, str]:
     return env
 
 
-def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT, cwd: str | None = None) -> dict:
+def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT_S, cwd: str | None = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     global _cached_brv_path
     brv_path = _resolve_brv_path()
@@ -152,6 +164,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def __init__(self, config: Optional[dict[str, Any]] = None):
         self._config = dict(config) if config is not None else _load_plugin_config()
         self._auto_extract = _coerce_bool(self._config.get("auto_extract"), True)
+        self._query_timeout_s = _resolve_query_timeout(self._config)
         self._cwd, self._session_id, self._turn_count = "", "", 0
         self._sync_thread: Optional[threading.Thread] = None
 
@@ -169,6 +182,8 @@ class ByteRoverMemoryProvider(MemoryProvider):
              "env_var": "BRV_API_KEY", "url": "https://app.byterover.dev"},
             {"key": "auto_extract", "description": "Automatically curate completed turns and compression/memory hooks",
              "default": "true", "choices": ["true", "false"]},
+            {"key": "query_timeout_s", "description": "Per-call budget (seconds) for brv query/status; raise it on "
+             "platforms where the CLI's cold start is slow (e.g. Termux)", "default": "90"},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -182,7 +197,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
                 "Use brv_query to search past knowledge, brv_curate to store important facts, brv_status to check state.")
 
     def _query(self, query: str) -> dict:
-        return _run_brv(["query", "--", query.strip()[:5000]], timeout=_QUERY_TIMEOUT, cwd=self._cwd)
+        return _run_brv(["query", "--", query.strip()[:5000]], timeout=self._query_timeout_s, cwd=self._cwd)
 
     def _curate(self, content: str) -> dict:
         return _run_brv(["curate", "--", content], timeout=_CURATE_TIMEOUT, cwd=self._cwd)
@@ -207,7 +222,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
         return self._auto_extract
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Run brv query synchronously (blocks up to _QUERY_TIMEOUT) so context is ready before the first LLM call."""
+        """Run brv query synchronously (blocks up to the query timeout) so context is ready before the first LLM call."""
         if not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""
         result = self._query(query)
@@ -273,7 +288,7 @@ def _format_query_output(output: str) -> dict:
 _TOOLS = {
     "brv_query": ("query", "Query failed", lambda p, q: p._query(q), _format_query_output),
     "brv_curate": ("content", "Curate failed", lambda p, c: p._curate(c), lambda _: {"result": "Memory curated successfully."}),
-    "brv_status": (None, "Status check failed", lambda p, _: _run_brv(["status"], timeout=15, cwd=p._cwd), lambda out: {"status": out}),
+    "brv_status": (None, "Status check failed", lambda p, _: _run_brv(["status"], timeout=p._query_timeout_s, cwd=p._cwd), lambda out: {"status": out}),
 }
 
 

@@ -17,6 +17,11 @@ const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 /** String Terminator (ESC \) - alternative to BEL for terminating OSC */
 export const ST = ESC + '\\'
 
+/** Remove terminal control characters before embedding untrusted text in output. */
+export function sanitizeOsc8Url(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+}
+
 /** Generate an OSC sequence: ESC ] p1;p2;...;pN <terminator>
  * Uses ST terminator for Kitty (avoids beeps), BEL for others */
 export function osc(...parts: (string | number)[]): string {
@@ -634,6 +639,7 @@ export function link(url: string, params?: Record<string, string>): string {
     return LINK_END
   }
 
+  url = sanitizeOsc8Url(url)
   const p = { id: osc8Id(url), ...params }
 
   const paramStr = Object.entries(p)

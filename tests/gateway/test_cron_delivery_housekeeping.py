@@ -161,6 +161,60 @@ def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite
     ]
 
 
+def test_multiplex_housekeeping_routes_desktop_served_satellite_with_only_local_adapter(
+    tmp_path, monkeypatch
+):
+    """#139825: a profile also chatted with from Hermes Desktop holds ``{LOCAL: adapter}`` in
+    ``_profile_adapters``. LOCAL carries no platform credential, so the drain must still hand
+    that profile the routed primary view instead of its own credentialless map."""
+    from gateway.config import Platform
+
+    root_adapters = {"discord": object()}
+    secondary_home = tmp_path / "secondary"
+    runner = SimpleNamespace(
+        config=SimpleNamespace(multiplex_profiles=True),
+        adapters=root_adapters,
+        _profile_adapters={"secondary": {Platform.LOCAL: object()}},
+    )
+    calls = []
+    routed = object()
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_handoff_watch_scopes",
+        lambda _runner: [("secondary", secondary_home)],
+    )
+
+    @contextmanager
+    def fake_scope(_home):
+        yield
+
+    class FakeSharedRouteAdapters:
+        def __new__(cls, adapters, routes):
+            calls.append(("routed", adapters, routes))
+            return routed
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+    monkeypatch.setattr(sched_preflight, "SharedRouteAdapters", FakeSharedRouteAdapters)
+    monkeypatch.setattr(sched_preflight, "_primary_profile_routes_for_current_home",
+        lambda: ["route-to-secondary"],
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "drain_delivery_queue",
+        lambda adapters, _loop: calls.append(("drain", adapters)),
+    )
+
+    gateway_run._drain_restart_safe_cron_deliveries(
+        root_adapters, object(), runner
+    )
+
+    assert calls == [
+        ("routed", root_adapters, ["route-to-secondary"]),
+        ("drain", routed),
+    ]
+
+
 def test_primary_drain_delivers_credentialless_satellite_queue_row_through_primary_adapter(
     tmp_path, monkeypatch,
 ):

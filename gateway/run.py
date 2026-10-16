@@ -4503,7 +4503,8 @@ def _housekeeping_checkpoint_prune() -> None:
 
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
-    profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
+    profile (no credential-bearing adapter of its own) drains through the primary's adapters routed by
+    its own profile routes."""
     from cron import scheduler as cron_scheduler
     from cron import scheduler_preflight as sched_preflight
 
@@ -4519,7 +4520,10 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
         if profile_adapters is None:
             continue
         with _profile_runtime_scope(profile_home or get_hermes_home()):
-            if profile_name is not None and not profile_adapters and adapters:
+            # A Desktop-served profile's map is {LOCAL: adapter}; LOCAL carries no platform
+            # credential, so it stays a credentialless satellite (#139825).
+            if (profile_name is not None
+                    and not sched_preflight.has_credential_platform(profile_adapters) and adapters):
                 routes = sched_preflight._primary_profile_routes_for_current_home()
                 if routes:
                     profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)

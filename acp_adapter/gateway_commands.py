@@ -13,7 +13,7 @@ from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 _READS = frozenset({'context', 'usage', 'status', 'version'})
 _MUTATIONS = frozenset({'model', 'compress', 'new', 'branch'})
 _PROMPTS = frozenset({'steer', 'queue'})
-COMMANDS = _READS | _MUTATIONS | _PROMPTS | {'help', 'tools'}
+COMMANDS = _READS | _MUTATIONS | _PROMPTS | {'discard', 'help', 'tools'}
 
 
 async def run_command(agent, session_id, command, arg):
@@ -26,6 +26,8 @@ async def run_command(agent, session_id, command, arg):
         raise GatewayClientError('use_acp_fork_session')
     if command == 'help':
         return help_text(), None
+    if command == 'discard':
+        return await _discard_unknown(agent, session_id, arg), None
     if command in _PROMPTS:
         if not arg:
             return f"Usage: /{command} <{'guidance' if command == 'steer' else 'prompt'}>", None
@@ -39,6 +41,23 @@ async def run_command(agent, session_id, command, arg):
         info = await client.rpc('session.info', session_id=session_id)
         return (_tools_text(info) if command == 'tools' else _model_text('Current model', info)), None
     return await _mutate(agent, client, session_id, command, arg), None
+
+
+async def _discard_unknown(agent, session_id, admission_id):
+    """Acknowledge one exact lost turn and refresh its FIFO snapshot."""
+    if not admission_id:
+        return 'Usage: /discard <lost admission id>'
+    client = await agent._client()
+    snapshot = await client.rpc('session.resume', session_id=session_id)
+    agent._snapshots[session_id] = snapshot
+    lost = next((row for row in snapshot.get('pending', [])
+                 if row.get('admission_id') == admission_id and row.get('status') == 'unknown'), None)
+    if lost is None:
+        return f'No unknown (lost) admission with id {admission_id}; refresh the session and try again.'
+    await client.rpc('prompt.resolve_unknown', session_id=session_id, admission_id=admission_id,
+                     execution_generation=lost['execution_generation'])
+    agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+    return 'Discarded the lost turn. Queued messages can continue.'
 
 
 async def _steer(agent, session_id, text):

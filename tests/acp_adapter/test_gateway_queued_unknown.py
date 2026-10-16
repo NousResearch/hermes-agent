@@ -1,6 +1,6 @@
 """Editor prompts fail recoverably when their FIFO becomes unknown."""
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import acp
 import pytest
@@ -53,27 +53,30 @@ async def test_editor_refuses_new_prompt_until_lost_turn_is_resolved():
 
 
 @pytest.mark.asyncio
-async def test_resumed_unknown_turn_names_the_existing_discard_recovery():
-    # ACP has no discard affordance: the resume notice and the refusal must name the exact
-    # admission and the classic chat control (``/discard`` -> prompt.resolve_unknown) that clears it.
+async def test_resumed_unknown_turn_can_be_discarded_without_leaving_the_editor():
+    # The editor needs the same fenced recovery as classic chat.  It must use the
+    # unknown row's generation, not the session's current generation.
     agent = GatewayACPAgent()
     agent._gateway = AsyncMock()
-    agent._conn = AsyncMock()
     lost = 'admission-lost-0123456789abcdef'
+    unknown = {'session_id': 's', 'messages': [], 'prompts': [],
+               'pending': [{'admission_id': lost, 'status': 'unknown', 'execution_generation': 4}]}
+    cleared = {**unknown, 'pending': []}
+    agent._snapshots['s'] = unknown
     agent._gateway.rpc.side_effect = lambda method, **params: {
-        'session.info': {}, 'session.resume': {
-            'session_id': 's', 'messages': [], 'prompts': [],
-            'pending': [{'admission_id': lost, 'status': 'unknown', 'execution_generation': 4}]},
+        'session.resume': unknown if len(agent._gateway.rpc.await_args_list) == 1 else cleared,
+        'prompt.resolve_unknown': {'admission_id': lost, 'status': 'terminal', 'outcome': 'interrupted'},
     }[method]
-    await agent.load_session(cwd='/', session_id='s')
-    notice = agent._conn.session_update.await_args.kwargs['update'].content.text
-    with pytest.raises(GatewayClientError) as refused:
-        await agent.prompt([acp.text_block('new input')], 's')
-    for text in (notice, str(refused.value)):
-        assert 'chat --cli --resume s' in text and f'/discard {lost}' in text, text
-        assert 'do not resend' in text
-    assert 'nothing was submitted' in str(refused.value)
-    assert [call.args[0] for call in agent._gateway.rpc.await_args_list] == ['session.info', 'session.resume']
+
+    response = await agent.prompt([acp.text_block(f'/discard {lost}')], 's')
+
+    assert response.stop_reason == 'end_turn'
+    assert agent._snapshots['s']['pending'] == []
+    assert agent._gateway.rpc.await_args_list == [
+        call('session.resume', session_id='s'),
+        call('prompt.resolve_unknown', session_id='s', admission_id=lost, execution_generation=4),
+        call('session.resume', session_id='s'),
+    ]
 
 
 @pytest.mark.asyncio

@@ -87,7 +87,10 @@ def _slash_command(text):
         return None
     from hermes_cli.commands import resolve_command
     command = resolve_command(name)
-    return command.name if command is not None else None
+    if command is not None:
+        return command.name
+    from acp_adapter.gateway_commands import COMMANDS
+    return name if name in COMMANDS else None
 
 
 def _submit_fingerprint(session_id, text, attachments):
@@ -552,14 +555,14 @@ class GatewayACPAgent(acp.Agent):
         held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
-        if self._has_unknown(session_id):
-            raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         from acp_adapter.content import _content_blocks_to_openai_user_content
         text, attachments = _stage_user_content(_content_blocks_to_openai_user_content(prompt))
+        command = _slash_command(text) if not attachments else None
+        if self._has_unknown(session_id) and command != 'discard':
+            raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
         # prompt (slash work included) retires the retained identity, so a later repeat is new work.
         retained = self._unacked.pop(session_id, None)
-        command = _slash_command(text) if not attachments else None
         if command is not None:
             from acp_adapter.gateway_commands import run_command
             parts = text.strip().split(None, 1)
@@ -659,19 +662,12 @@ class GatewayACPAgent(acp.Agent):
             self._settling.discard(admission_id)
 
     def _unknown_recovery(self, session_id, admission_id=None, *, submitted=True):
-        """The refusal for a FIFO blocked by a lost turn, naming the existing recovery control.
-
-        ACP has no discard affordance; the classic chat's fenced ``/discard`` (``prompt.resolve_unknown``)
-        acknowledges the exact lost admission without replaying it, and the queue then continues."""
-        from hermes_constants import profile_name_for_home
+        """The refusal for a FIFO blocked by a lost turn, naming its fenced ACP recovery."""
         lost = [row["admission_id"] for row in self._snapshots.get(session_id, {}).get("pending", [])
                 if row.get("status") == "unknown"] or [admission_id]
-        profile = profile_name_for_home(self._home)
-        command = "hermes" + (f" -p {profile}" if profile not in (None, "default") else "")
         state = ("your input is accepted and kept" if submitted else "nothing was submitted")
         return (f"unknown_execution: do not resend accepted input; a turn in this session was lost when the "
-                f"gateway restarted and its outcome is unknown ({state}). Resolve it in a terminal with "
-                f"`{command} chat --cli --resume {session_id}` then "
+                f"gateway restarted and its outcome is unknown ({state}). Resolve it here with "
                 + " and ".join(f"`/discard {lost_id}`" for lost_id in lost) + ", then continue here.")
 
     def _has_unknown(self, session_id):

@@ -741,8 +741,12 @@ class SignalAdapter(BasePlatformAdapter):
             recent.popitem(last=False)
 
     def _consume_sent_timestamp(self, ts) -> bool:
-        """Pop a timestamp if it matches one we sent. Returns True on echo."""
-        return bool(ts) and self._recent_sent_timestamps.pop(ts, None) is not None
+        """Return True while a timestamp matches an outbound echo watermark."""
+        recent = self._recent_sent_timestamps
+        cutoff = time.monotonic() - self._recent_sent_ttl_seconds
+        while recent and next(iter(recent.values())) < cutoff:
+            recent.popitem(last=False)
+        return bool(ts) and ts in recent
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Typing indicator (called every ~2s by base.py's ``_keep_typing``). Only the first consecutive

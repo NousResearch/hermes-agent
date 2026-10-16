@@ -933,11 +933,11 @@ class TestSignalQuoteExtraction:
 
 
     @pytest.mark.asyncio
-    async def test_track_sent_timestamp_keeps_reply_detection_cache_after_echo_discard(self, monkeypatch):
+    async def test_track_sent_timestamp_keeps_reply_detection_cache_after_echo_match(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         adapter._track_sent_timestamp({"timestamp": 111222333})
-        # Echo suppression consumes the entry from the recent-sent ring; the
-        # separate reply-detection cache must still retain it.
+        # Echo suppression recognizes the timestamp independently from the
+        # quote/reply cache, which must also retain it.
         adapter._consume_sent_timestamp(111222333)
 
         assert "111222333" in adapter._sent_message_timestamps
@@ -1291,18 +1291,18 @@ class TestSignalSyncMessageHandling:
 
 
     @pytest.mark.asyncio
-    async def test_note_to_self_echo_of_own_reply_is_suppressed(self, monkeypatch):
+    async def test_duplicate_note_to_self_echoes_of_own_reply_are_suppressed(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
-        # Simulate that the bot just sent a reply with timestamp 3000000000
-        adapter._track_sent_timestamp({"timestamp": 3000000000})
+        adapter._rpc = AsyncMock(return_value={"timestamp": 3000000000})
+        adapter._stop_typing_indicator = AsyncMock()
+        assert (await adapter.send(adapter.account, "this is the bot's own reply echo")).success
         called = []
 
         async def fake_handle(event):
             called.append(event)
 
         adapter.handle_message = fake_handle
-
-        await adapter._handle_envelope({
+        envelope = {
             "envelope": {
                 "sourceNumber": "+155****4567",
                 "sourceUuid": "uuid-self",
@@ -1316,11 +1316,13 @@ class TestSignalSyncMessageHandling:
                     }
                 },
             }
-        })
+        }
 
-        assert called == [], "Echo of bot's own reply must be suppressed"
-        # Consumed: timestamp must be removed from the ring
-        assert 3000000000 not in adapter._recent_sent_timestamps
+        await adapter._handle_envelope(envelope)
+        await adapter._handle_envelope(envelope)
+
+        assert called == [], "Every delivery of the bot's own reply echo must be suppressed"
+        assert 3000000000 in adapter._recent_sent_timestamps
 
     @pytest.mark.asyncio
     async def test_group_sync_sent_promoted_to_inbound(self, monkeypatch):
@@ -1366,6 +1368,39 @@ class TestSignalSyncMessageHandling:
 class TestRecentSentTimestampRing:
     """Verify the LRU+TTL behaviour of the echo-suppression ring."""
 
+
+    @pytest.mark.asyncio
+    async def test_expired_echo_watermark_does_not_suppress_later_owner_message(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        adapter._recent_sent_ttl_seconds = 100.0
+        import gateway.platforms.signal as sig_mod
+        fake_now = [1000.0]
+        monkeypatch.setattr(sig_mod.time, "monotonic", lambda: fake_now[0])
+        adapter._track_sent_timestamp({"timestamp": 3000000000})
+        called = []
+
+        async def fake_handle(event):
+            called.append(event)
+
+        adapter.handle_message = fake_handle
+        fake_now[0] = 1100.1
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "sourceUuid": "uuid-self",
+                "timestamp": 3000000000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationNumber": "+155****4567",
+                        "timestamp": 3000000000,
+                        "message": "later owner message",
+                    }
+                },
+            }
+        })
+
+        assert [event.text for event in called] == ["later owner message"]
+        assert 3000000000 not in adapter._recent_sent_timestamps
 
     def test_ttl_evicts_stale_entries(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)

@@ -91,6 +91,24 @@ def _normalize_provider(provider: str) -> str:
             or auth_mod._plugin_aliases().get(normalized) or normalized)
 
 
+def _resolve_removal_provider(raw: str) -> str:
+    """Resolve the pool a destructive auth operation targets, by its displayed name.
+
+    ``auth list`` renders pools under their stored ``credential_pool`` keys, which can include a
+    plugin-alias name (e.g. a stale ``env:``-seeded row). Normalizing such input first would
+    silently retarget the canonical provider's pool instead of the displayed one (#139655), so an
+    exact stored-pool match wins; only unmatched input falls back to alias normalization."""
+    normalized = _normalize_provider(raw)
+    stripped = (raw or "").strip()
+    if not stripped or stripped == normalized:
+        return normalized
+    stored_pools = auth_mod.read_credential_pool()
+    for candidate in (stripped, stripped.lower()):
+        if candidate in stored_pools:
+            return candidate
+    return normalized
+
+
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
     """Move a keyed provider's old ``custom:`` pool into its runtime slug."""
     with auth_mod._auth_store_lock():
@@ -566,7 +584,7 @@ def _print_oauth_heal_notices() -> None:
 
 
 def auth_remove_command(args) -> None:
-    provider = _normalize_provider(getattr(args, "provider", ""))
+    provider = _resolve_removal_provider(getattr(args, "provider", ""))
     target = getattr(args, "target", None)
     target = getattr(args, "index", None) if target is None else target
     pool = load_pool(provider)
@@ -796,8 +814,11 @@ def _interactive_auth() -> None:
         handler()
 
 
-def _pick_provider(prompt: str = "Provider") -> str:
-    """Prompt for a provider name with auto-complete hints."""
+def _pick_provider(prompt: str = "Provider", normalize: bool = True) -> str:
+    """Prompt for a provider name with auto-complete hints.
+
+    ``normalize=False`` hands the raw input to the caller so destructive commands can resolve
+    stored-pool keys before any alias remapping (see ``_resolve_removal_provider``)."""
     from providers import unlisted_provider_names
     known = sorted((set(PROVIDER_REGISTRY) - unlisted_provider_names()) | {"openrouter"})
     custom_display = [entry["name"] for entry in _get_custom_provider_entries()]
@@ -807,6 +828,8 @@ def _pick_provider(prompt: str = "Provider") -> str:
     raw = _ask(f"{prompt}: ", line_input)
     if raw is None:
         raise SystemExit()
+    if not normalize:
+        return (raw or "").strip()
     return _normalize_provider(raw)
 
 
@@ -840,7 +863,8 @@ def _interactive_add() -> None:
 
 
 def _interactive_remove() -> None:
-    provider = _pick_provider("Provider to remove credential from")
+    raw_provider = _pick_provider("Provider to remove credential from", normalize=False)
+    provider = _resolve_removal_provider(raw_provider)
     pool = load_pool(provider)
     if not pool.has_credentials():
         print(f"No credentials for {provider}.")

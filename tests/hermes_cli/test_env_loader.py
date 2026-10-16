@@ -1,4 +1,5 @@
 import codecs
+from types import SimpleNamespace
 import os
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -622,3 +623,59 @@ def test_dotenv_published_dashboard_session_token_still_reloads(tmp_path, monkey
     (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=second\n", encoding="utf-8")
     load_hermes_dotenv(hermes_home=home)
     assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "second"
+
+def _profile_source_report(ok, values=None, name="command"):
+    values = values or {}
+    return SimpleNamespace(
+        sources=[SimpleNamespace(name=name, result=SimpleNamespace(ok=ok), skipped_existing=[])],
+        provenance={key: SimpleNamespace(authoritative=False, source=name) for key in values},
+    )
+
+
+def test_profile_secret_snapshot_keeps_last_good_values_on_source_failure(monkeypatch, tmp_path):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    reports = iter([_profile_source_report(True, {"HERMES_CUSTOM_CPA_API_KEY": "first-secret"}), _profile_source_report(False)])
+    monkeypatch.setattr(env_loader, "_load_secrets_config", lambda _: {"command": {"enabled": True}})
+    def apply_report(*args, **kwargs):
+        report = next(reports)
+        if report.provenance:
+            kwargs["environ"]["HERMES_CUSTOM_CPA_API_KEY"] = "first-secret"
+        return report
+
+    monkeypatch.setattr("agent.secret_sources.registry.apply_all", apply_report)
+    monkeypatch.setattr("agent.secret_scope.load_env_file", lambda _: {})
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME", {})
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_NAMES_BY_HOME", {})
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    monkeypatch.setattr(env_loader.os, "environ", {"HERMES_CUSTOM_CPA_API_KEY": "first-secret"})
+
+    env_loader._hydrate_profile_secret_sources(home)
+    env_loader._APPLIED_HOMES.clear()
+    env_loader._hydrate_profile_secret_sources(home)
+
+    assert env_loader.get_secret_source_values(home) == {"HERMES_CUSTOM_CPA_API_KEY": "first-secret"}
+
+
+def test_profile_secret_snapshot_clears_when_config_is_removed(monkeypatch, tmp_path):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    configs = iter([{"command": {"enabled": True}}, {}])
+    report = _profile_source_report(True, {"HERMES_CUSTOM_CPA_API_KEY": "first-secret"})
+    monkeypatch.setattr(env_loader, "_load_secrets_config", lambda _: next(configs))
+    monkeypatch.setattr("agent.secret_sources.registry.apply_all", lambda *args, **kwargs: report)
+    monkeypatch.setattr("agent.secret_scope.load_env_file", lambda _: {})
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME", {})
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_NAMES_BY_HOME", {})
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    monkeypatch.setattr(env_loader.os, "environ", {"HERMES_CUSTOM_CPA_API_KEY": "first-secret"})
+
+    env_loader._hydrate_profile_secret_sources(home)
+    env_loader._APPLIED_HOMES.clear()
+    env_loader._hydrate_profile_secret_sources(home)
+
+    assert env_loader.get_secret_source_values(home) == {}

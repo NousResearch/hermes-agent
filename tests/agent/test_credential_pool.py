@@ -2152,3 +2152,11 @@ def test_an_exhaustion_newer_than_the_reset_still_binds(tmp_path, monkeypatch):
     live._persist()
     assert _disk_entry(tmp_path)["last_status"] == "exhausted"
     assert live.select() is None
+
+def test_seed_custom_pool_skips_unresolved_template_api_key(monkeypatch):
+    import agent.credential_pool as credential_pool
+
+    monkeypatch.setattr(credential_pool, "_get_custom_provider_config", lambda _: {"api_key": "${OPENAI_API_KEY}", "base_url": "https://example.test"})
+    entries = []
+    credential_pool._seed_custom_pool("cpa", entries)
+    assert all("${" not in str(entry) for entry in entries)

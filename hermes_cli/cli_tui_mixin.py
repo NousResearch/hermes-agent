@@ -16,10 +16,10 @@ import time
 
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
+from hermes_cli.prompt_history import CredentialSafeFileHistory
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from pathlib import Path
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     ConditionalContainer,
@@ -2228,7 +2228,8 @@ class CLITuiMixin:
             multiline=True,
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
-            history=FileHistory(str(self._history_file)),
+            # Credential-bearing prompts stay out of the on-disk history (hermes_cli/prompt_history.py).
+            history=CredentialSafeFileHistory(str(self._history_file)),
             # The completer does blocking work (fuzzy @-file indexing shells out to rg/fd with a
             # 2s timeout; path completion hits os.listdir/stat), so complete_while_typing inline
             # would stall the render loop per keystroke (WSL2/slow FS). ThreadedCompleter moves

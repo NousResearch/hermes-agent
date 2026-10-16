@@ -1,8 +1,9 @@
 """Live hardware budget probe.
 
 Budget-source rule: discrete cards may trust the device query (measured honest within rounding);
-unified-memory devices must budget from OS free physical memory minus headroom — their device
-queries have been observed off by 3x in both directions. Every probe here must work under a
+unified-memory devices budget from OS free physical memory minus headroom, plus confirmed
+Windows BIOS reservations — their device queries have been observed off by 3x in both directions.
+Every probe here must work under a
 stripped PATH — gateway and service sessions don't inherit the interactive environment.
 """
 
@@ -20,9 +21,10 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hermes_cli.local_runtime.devices import GGML_DEVICE_GPU
+from hermes_cli.local_runtime.devices import GGML_DEVICE_GPU, GGML_DEVICE_IGPU
 from hermes_cli.local_runtime.estimator import HardwareBudget
 from hermes_platform.host.facts import gpu_class
+from hermes_platform.host.gpu_adapters import Adapter
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,7 @@ _POOL_RAM_FRACTION = 0.75
 # cuDeviceGetAttribute enum: device is integrated with host memory.
 _CU_DEVICE_ATTRIBUTE_INTEGRATED = 18
 _NVIDIA_VENDOR_ID = 0x10DE
+_AMD_VENDOR_ID = 0x1002
 # Engines whose devices the ggml probe reports; the CPU, CUDA and Metal builds answer elsewhere.
 _GPU_ENGINE_BACKENDS = ("vulkan", "hip")
 
@@ -360,7 +363,8 @@ def _accelerator_device(*, fresh: bool = False) -> dict | None:
     otherwise; among discrete devices the largest. Cached per engine binary like
     ``_device_pool_view`` (a hit lasts the process, a miss retries after the TTL): the hardware
     endpoint polls this every few seconds and each probe initializes the GPU driver. ``fresh`` skips
-    the cache read for a launch-time free-memory answer.
+    the cache read for a launch-time free-memory answer. A failed fresh read returns None without
+    discarding a known device's capacity.
     """
     with suppress(Exception):  # a probe miss must never block budgeting
         from hermes_cli.local_runtime.devices import probe_devices
@@ -374,7 +378,8 @@ def _accelerator_device(*, fresh: bool = False) -> dict | None:
             return cached[1]
         devices = probe_devices(engine.binary.parent, engine.backend)
         device = max(devices, key=lambda d: (d["type"] == GGML_DEVICE_GPU, d["total"]), default=None)
-        _accelerator_cache[key] = (now, device)
+        if device is not None or cached is None or cached[1] is None:
+            _accelerator_cache[key] = (now, device)
         return device
     return None
 
@@ -420,8 +425,8 @@ def _gpu_engine_runs_the_model() -> bool:
     return False
 
 
-def _windows_igpu_bytes(device: dict | None) -> int | None:
-    """What Windows lets the integrated GPU allocate (Task Manager's GPU memory), or None.
+def _windows_igpu_adapter(device: dict | None) -> Adapter | None:
+    """The unambiguous DXGI adapter used by the GPU engine, or None.
 
     The adapter is the one the engine named, else the only non-NVIDIA hardware adapter when a
     Vulkan/HIP engine will run the model; the CPU engine (chosen, or the only build for a Snapdragon)
@@ -430,12 +435,59 @@ def _windows_igpu_bytes(device: dict | None) -> int | None:
     """
     from hermes_platform.host.gpu_adapters import windows_gpu_adapters
 
-    hardware = [a for a in windows_gpu_adapters() if not a.software]
+    hardware = list(dict.fromkeys(a for a in windows_gpu_adapters() if not a.software))
     named = [a for a in hardware if device is not None and a.description == device["description"]]
     candidates = named or [a for a in hardware if a.vendor_id != _NVIDIA_VENDOR_ID]
     if len(candidates) != 1 or (device is None and not _gpu_engine_runs_the_model()):
         return None
-    return candidates[0].memory_bytes
+    return candidates[0]
+
+
+def _windows_igpu_bytes(device: dict | None) -> int | None:
+    """What Windows lets the integrated GPU allocate (Task Manager's GPU memory), or None."""
+    adapter = _windows_igpu_adapter(device)
+    return adapter.memory_bytes if adapter is not None else None
+
+
+def _windows_reserved_igpu_budget(
+    device: dict | None, ram_total: int, ram_avail: int, *,
+    planning: bool, own_bytes: int = 0,
+) -> HardwareBudget | None:
+    """Budget a large AMD BIOS reservation separately from the OS-visible shared allowance."""
+    if sys.platform != "win32" or device is None or device["type"] != GGML_DEVICE_IGPU:
+        return None
+    adapter = _windows_igpu_adapter(device)
+    if (adapter is None or adapter.vendor_id != _AMD_VENDOR_ID
+            or adapter.description != device["description"] or ram_total <= 0
+            or adapter.dedicated_bytes < ram_total * _POOL_RAM_FRACTION):
+        return None
+
+    # Dedicated memory is removed from OS RAM; shared memory is a subset of it, not another pool.
+    dedicated = adapter.dedicated_bytes
+    shared = min(ram_total, adapter.shared_bytes)
+    total = dedicated + shared
+    margin = max(_MARGIN_FLOOR, int(dedicated * _MARGIN_FRACTION))
+    usable = max(0, dedicated - margin) + int(shared * (1 - _UMA_HEADROOM_FRACTION))
+    if not planning:
+        fresh = _accelerator_device(fresh=True)
+        if (fresh is None or fresh["description"] != device["description"]
+                or fresh["type"] != GGML_DEVICE_IGPU):
+            logger.warning("reserved iGPU live budget unavailable: device probe changed or failed")
+            return None
+        free = fresh.get("free")
+        if not isinstance(free, int) or not 0 <= free <= fresh["total"]:
+            logger.warning("reserved iGPU live budget unavailable: invalid free-memory reading")
+            return None
+        # Only use ggml's aggregate heaps to measure occupancy, never as additive capacity.
+        others = max(0, fresh["total"] - free - max(0, own_bytes))
+        available = dedicated + min(shared, max(0, ram_avail))
+        usable = min(usable, max(0, available - others - _LAUNCH_HEADROOM))
+    logger.debug("Windows reserved iGPU budget: %.1f GiB dedicated, %.1f GiB shared, %.1f GiB usable",
+                 dedicated / _GIB, shared / _GIB, usable / _GIB)
+    return HardwareBudget(
+        usable_vram_bytes=usable, total_device_bytes=total, ram_available_bytes=0,
+        uma=True, gpu_name=adapter.description, platform=sys.platform, lazy_reads=False,
+    )
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
@@ -482,6 +534,9 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             return HardwareBudget(usable_vram_bytes=max(0, total - margin), total_device_bytes=total,
                                   ram_available_bytes=ram_total if planning else ram_avail,
                                   uma=False, gpu_name=device["description"], platform=sys.platform)
+        reserved = _windows_reserved_igpu_budget(device, ram_total, ram_avail, planning=planning)
+        if reserved is not None:
+            return reserved
         # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory, capped at what
         # Windows lets an integrated GPU allocate (18 GB of 31.5 on an Arc B390). llama.cpp loads
         # lazy tensors up front on an AMD/Intel integrated GPU, where reading them on demand halved
@@ -508,11 +563,17 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
 
     ``own_bytes`` is what the managed server holds now and frees before the new instance loads.
     A stopped server's memory reads as free by the time its process has exited (measured on
-    Windows: free memory was fully back at the first reading after exit). None for unified memory
-    (its live budget is already free memory) and when the device query fails, so callers keep the
-    capacity plan.
+    Windows: free memory was fully back at the first reading after exit). None for ordinary unified
+    memory (its live budget is already free memory) and when the device query fails, so callers keep
+    the capacity plan. Windows BIOS-reserved iGPUs also need the driver's occupancy reading.
     """
     if capacity.uma:
+        if sys.platform == "win32" and capacity.gpu_name:
+            reserved = _windows_reserved_igpu_budget(
+                _accelerator_device(), *_ram_bytes(), planning=False, own_bytes=own_bytes)
+            if reserved is not None and reserved.gpu_name == capacity.gpu_name:
+                return replace(capacity, usable_vram_bytes=min(
+                    capacity.usable_vram_bytes, reserved.usable_vram_bytes))
         return None
     vram = _nvidia_vram()
     if vram is not None:

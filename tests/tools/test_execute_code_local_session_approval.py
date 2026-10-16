@@ -33,6 +33,15 @@ def _policy(source: str, cwd: str) -> LocalSessionPolicy:
                               toolsets=(), config_json="{}", request_json="{}", terminal_json="{}")
 
 
+def _viewer_session():
+    """The live session with its viewer attached, holding ``session:approve`` (what ``session.resume`` records)."""
+    from types import SimpleNamespace
+    from gateway.session_authority import LiveSession
+    live = LiveSession(None, SESSION_KEY)
+    live.subscribers["viewer"] = SimpleNamespace(capabilities=frozenset({"session:read", "session:approve"}))
+    return live
+
+
 @pytest.fixture
 def turn(monkeypatch, tmp_path):
     """Bind one gateway turn: the gateway's process-wide ask marker, manual mode, the session's
@@ -51,7 +60,9 @@ def turn(monkeypatch, tmp_path):
 
     cleanups = []
 
-    def start(*, platform: str = "local", source: str | None = None, **set_answers):
+    def start(*, platform: str = "local", source: str | None = None, viewer: bool = True, **set_answers):
+        """``viewer``: the turn is one the session's viewer submitted (``execute_admission`` binds it);
+        ``False`` is a plugin injection or another producer admission into the session."""
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")  # start_gateway() sets it process-wide
         for name in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION"):
             monkeypatch.delenv(name, raising=False)
@@ -59,6 +70,10 @@ def turn(monkeypatch, tmp_path):
         vars_tokens = set_session_vars(platform=platform, session_key=SESSION_KEY, session_id=SESSION_KEY)
         key_token = approval_context.set_current_session_key(SESSION_KEY)
         policy_token = _ACTIVE_POLICY.set(_policy(source, str(tmp_path)) if source else None)
+        if viewer:
+            from gateway.session_ingress import viewer_turn
+            viewer_token = viewer_turn.set(_viewer_session())
+            cleanups.append(lambda: viewer_turn.reset(viewer_token))
         A.register_gateway_notify(SESSION_KEY, notify)
         cleanups.append(lambda: (A.unregister_gateway_notify(SESSION_KEY), _ACTIVE_POLICY.reset(policy_token),
                                  approval_context.reset_current_session_key(key_token),
@@ -152,6 +167,21 @@ def _side_task(cwd):
     finally:
         approval_context.reset_current_session_key(key_token)
         clear_session_vars(tokens)
+
+
+@pytest.mark.platforms("posix")
+@LOCAL_SOURCES
+def test_injected_turn_keeps_whole_script_gate(child_env, turn, source):
+    """A plugin ``inject_message`` turn (or any other producer admission) into a local session is not
+    one its viewer submitted: a script whose subprocess call no terminal() guard sees is approved as a
+    whole, and with nobody approving it never runs."""
+    victim = child_env / "victim"
+    victim.mkdir()
+    prompts = turn(source=source, viewer=False)  # every prompt is denied
+    _code, result = _run_unguarded_rm(victim)
+    assert result.get("error") == _DENIED_SCRIPT, result
+    assert "ran" not in result.get("output", "") and victim.is_dir()
+    assert [p["pattern_key"] for p in prompts] == ["execute_code"]
 
 
 @pytest.mark.platforms("posix")

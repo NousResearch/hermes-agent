@@ -1200,12 +1200,14 @@ _EXECUTE_CODE_DESCRIPTION = (
 )
 
 
-def _is_local_foreground_turn() -> bool:
-    """A local session's own foreground turn: its frozen launch policy is local-interactive, it is not a
-    delegate_task child (sync or async; they inherit the parent's policy), and the turn's approval notifier is
-    registered under the bound session key (side tasks bind their own task key with none)."""
+def _is_local_viewer_turn() -> bool:
+    """A local session's turn its viewer submitted: its frozen launch policy is local-interactive, the admission
+    is the viewer's own prompt (not a plugin injection or another producer admission), it is not a delegate_task
+    child (sync or async; they inherit the parent's policy), and the turn's approval notifier is registered
+    under the bound session key (side tasks bind their own task key with none)."""
     from agent.delegation_context import is_delegated_child_process_context
-    return (approval_context._is_local_interactive_session() and not is_delegated_child_process_context()
+    return (approval_context._is_local_interactive_session() and approval_context.is_viewer_submitted_turn()
+            and not is_delegated_child_process_context()
             and _gateway_notify_cb(get_current_session_key()) is not None)
 
 
@@ -1254,9 +1256,10 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # on every execute_code call. Ask-mode still takes this path even with INTERACTIVE set (how gateway/smart tests
     # and messaging ask-mode drive whole-script approval); when that leaks into a CLI with no notify callback, the
     # engine falls through to the CLI Dangerous Command panel instead of a silent pending_approval.
-    # A gateway-run local CLI/TUI/Desktop session keeps that interactive-CLI rule: the script's terminal() calls reach
-    # the session's own prompt per call, so no whole-script prompt (cron/-q resolved above; messaging/API unchanged).
-    if (not is_gateway and not is_ask) or _is_local_foreground_turn():
+    # A gateway-run local CLI/TUI/Desktop session's own turns keep that interactive-CLI rule: the script's terminal()
+    # calls reach the session's own prompt per call, so no whole-script prompt. Injected and automation turns keep the
+    # gate (cron/-q resolved above; messaging/API unchanged).
+    if (not is_gateway and not is_ask) or _is_local_viewer_turn():
         return _approved()
 
     session_key = get_current_session_key()

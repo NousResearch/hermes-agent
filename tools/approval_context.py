@@ -96,6 +96,18 @@ def _is_local_interactive_session() -> bool:
     return policy is not None and policy.source in _LOCAL_INTERACTIVE_SOURCES
 
 
+def is_viewer_submitted_turn() -> bool:
+    """True while the executing turn is one its session's viewer submitted through ``session.submit``, as
+    the gateway's FIFO drain recorded for this admission. A plugin ``inject_message`` turn, a delegation
+    completion, a background-process or watch notice, a /loop tick, a heartbeat or a hosted-room task is
+    not."""
+    try:
+        from gateway.session_ingress import viewer_turn
+    except ImportError:  # install without the gateway package: no admission is executing
+        return False
+    return viewer_turn.get() is not None
+
+
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
     return _approval_session_key.set(session_key or "")

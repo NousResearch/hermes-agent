@@ -71,3 +71,53 @@ async def test_resume_latest_matches_the_owners_local_rows_by_creating_surface(t
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_usage_cannot_replace_the_insert_stamp(tmp_path, monkeypatch):
+    """Auxiliary usage creates a missing row as created_source='unknown'.
+
+    The agent's own token accounting passes its surface, so it is not that writer.
+    session.create stamps the surface in the insert; a later record_auxiliary_usage
+    must leave it, and session.resume latest='cli' still finds the row.
+    """
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='chat', source='cli',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        authority.db.record_auxiliary_usage(sid, 'compression', model='m', input_tokens=4, output_tokens=1)
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        authority.sessions.clear()
+        resumed = await _call(owner, 'session.resume', latest='cli')
+        assert isinstance(resumed, dict) and resumed['session_id'] == sid, resumed
+        row = authority.db.get_session(sid)
+        assert (row['source'], row['created_source']) == ('local', 'cli')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_worker_create_after_peer_refresh_still_resumes(tmp_path, monkeypatch):
+    """The peer refresh rewrites source to local and worker_create is refused.
+    The insert stamp must already hold cli, or latest cannot see the row."""
+    from hermes_state_runtime import RuntimeStoreError
+    from hermes_state_worker_lifecycle import worker_create
+
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='chat', source='cli',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            authority.db._execute_write(lambda conn: worker_create(authority.db, conn, sid, {'source': 'cli'}))
+        authority.sessions.clear()
+        resumed = await _call(owner, 'session.resume', latest='cli')
+        assert isinstance(resumed, dict) and resumed['session_id'] == sid, resumed
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

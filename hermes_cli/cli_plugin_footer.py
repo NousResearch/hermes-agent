@@ -250,10 +250,13 @@ def apply_result(cli, monitor, item: dict, result: Any) -> None:
             monitor.notice = url  # no graphical browser here: show the link instead
     body = result.get("run_in_terminal")
     if body is not None:
-        if callable(body):
-            run_in_terminal(cli, monitor, item, body)
-        else:
+        if not callable(body):
             monitor.notice = f"⚠ {item['plugin']}: run_in_terminal must be callable"
+        elif getattr(body, "__hermes_plugin_host_ref__", None) is not None:
+            # A callable from the plugin host would run in that process, which has no terminal.
+            monitor.notice = f"⚠ {item['plugin']}: run_in_terminal needs plugins.isolation: in_process"
+        else:
+            run_in_terminal(cli, monitor, item, body)
 
 
 def open_url(url: str) -> bool:

@@ -269,3 +269,28 @@ def test_unload_removes_the_item_and_bad_registrations_are_refused(footer_plugin
     assert [i["key"] for i in get_plugin_footer_items()] == ["bad-footer:ok"]
     handle.dispose()
     assert get_plugin_footer_items() == []
+
+
+def test_action_results_are_validated_before_they_touch_the_terminal_or_browser(monkeypatch):
+    """Only http(s) URLs open; a run_in_terminal callable from the plugin host (another process,
+    no terminal) or without an interactive app is refused with a notice instead of running."""
+    from hermes_cli import cli_plugin_footer
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+
+    opened, ran = [], []
+    monkeypatch.setattr(cli_plugin_footer, "open_url", lambda url: opened.append(url) or True)
+    cli = _cli()
+    monitor = SubagentMonitor(cli)
+    item = {"key": "p:x", "plugin": "p"}
+    cli_plugin_footer.apply_result(cli, monitor, item, {"open_url": "file:///etc/passwd"})
+    assert opened == [] and "http(s)" in monitor.notice
+    cli_plugin_footer.apply_result(cli, monitor, item, {"open_url": "https://example.invalid/x"})
+    assert opened == ["https://example.invalid/x"]
+
+    def host_body():
+        ran.append("host")
+    host_body.__hermes_plugin_host_ref__ = 7
+    cli_plugin_footer.apply_result(cli, monitor, item, {"run_in_terminal": host_body})
+    assert ran == [] and "in_process" in monitor.notice
+    cli_plugin_footer.apply_result(cli, monitor, item, {"run_in_terminal": lambda: ran.append("local")})
+    assert ran == [] and "interactive terminal" in monitor.notice  # no running app here

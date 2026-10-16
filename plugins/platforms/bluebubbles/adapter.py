@@ -23,7 +23,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
-from .media_cache import ext_for_mime
+from gateway.platforms.media_cache import ext_for_mime
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from utils import TRUTHY_STRINGS
 
@@ -608,3 +608,92 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if self.send_read_receipts and session_chat_id:  # fire-and-forget read receipt
             asyncio.create_task(self.mark_read(session_chat_id))
         return _ok()
+
+
+# --- Plugin hooks (registered via register(ctx) below) ---
+
+_INSTALL_HINT = "BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured"
+
+
+def _is_connected(config) -> bool:
+    """Server URL + password present in ``PlatformConfig.extra`` (the env table seeds it) or the env."""
+    extra = getattr(config, "extra", None) or {}
+    if extra.get("server_url") and extra.get("password"):
+        return True
+    import hermes_cli.gateway as gateway_mod
+    return all((gateway_mod.get_env_value(n) or "").strip() for n in ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"))
+
+
+async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Optional[str] = None,
+                           media_files: Optional[list] = None, force_document: bool = False, **_kw) -> dict[str, Any]:
+    """Out-of-process send (cron without a co-resident gateway): one-shot adapter connect → send →
+    disconnect against the BlueBubbles REST API. Text only; ``thread_id``/``media_files``/
+    ``force_document`` are signature parity (send_message drops media with a warning)."""
+    from gateway.platforms._shared import send_error
+    if not check_bluebubbles_requirements():
+        return send_error("BlueBubbles requirements not met (need aiohttp + httpx).")
+    try:
+        adapter = BlueBubblesAdapter(PlatformConfig(extra=dict(getattr(pconfig, "extra", None) or {})))
+        if not await adapter.connect():
+            return send_error("BlueBubbles: failed to connect to server")
+        try:
+            result = await adapter.send(chat_id, message)
+        finally:
+            await adapter.disconnect()
+        if not result.success:
+            return send_error(f"BlueBubbles send failed: {result.error}")
+        return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
+    except Exception as e:
+        logger.debug("BlueBubbles standalone send failed", exc_info=True)
+        return send_error(f"BlueBubbles send failed: {e}")
+
+
+def interactive_setup() -> None:
+    """Configure BlueBubbles iMessage gateway (``hermes setup`` / ``hermes gateway setup``)."""
+    from hermes_cli.setup import _info, print_header, print_success, prompt, prompt_yes_no
+    from hermes_cli.setup_platforms import _prompt_allowlist, _save_port, declines_reconfigure, save_prompted
+    print_header("BlueBubbles (iMessage)")
+    if declines_reconfigure("BlueBubbles", "Reconfigure BlueBubbles?", "BLUEBUBBLES_SERVER_URL"):
+        return
+    _info("Connects Hermes to iMessage via BlueBubbles — a free, open-source",
+          "macOS server that bridges iMessage to any device.",
+          "   Requires a Mac running BlueBubbles Server v1.0.0+",
+          "   Download: https://bluebubbles.app/", None,
+          "In BlueBubbles Server → Settings → API, note your Server URL and Password.", None)
+    for label, env_var, secret, what, transform in (
+        ("BlueBubbles server URL (e.g. http://192.168.1.10:1234)", "BLUEBUBBLES_SERVER_URL", False, "Server URL",
+         lambda v: v.rstrip("/")),
+        ("BlueBubbles server password", "BLUEBUBBLES_PASSWORD", True, "Password", None),
+    ):
+        if not save_prompted(env_var, label, password=secret, transform=transform,
+                              skip_msg=f"{what} is required — skipping BlueBubbles setup"):
+            return
+    print_success("BlueBubbles credentials saved")
+    _info(None, "🔒 Security: Restrict who can message your bot",
+          "   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)", None)
+    _prompt_allowlist("BLUEBUBBLES_ALLOWED_USERS", "Allowed iMessage addresses (comma-separated, leave empty for open access)",
+                      "BlueBubbles allowlist configured", "⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
+    _info(None, "📬 Home Channel: phone or email for cron job delivery and notifications.",
+          "   You can also set this later with /set-home in your iMessage chat.")
+    save_prompted("BLUEBUBBLES_HOME_CHANNEL", "Home channel address (leave empty to set later)")
+    _info(None, "Advanced settings (defaults are fine for most setups):")
+    if prompt_yes_no("Configure webhook listener settings?", False):
+        _save_port("BLUEBUBBLES_WEBHOOK_PORT", prompt("Webhook listener port (default: 8645)"), "8645")
+    _info(None, "Requires the BlueBubbles Private API helper for typing indicators,",
+          "read receipts, and tapback reactions. Basic messaging works without it.",
+          "   Install: https://docs.bluebubbles.app/helper-bundle/installation")
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="bluebubbles", label="BlueBubbles (iMessage)", adapter_factory=BlueBubblesAdapter,
+        check_fn=check_bluebubbles_requirements, is_connected=_is_connected,
+        required_env=["BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"], install_hint=_INSTALL_HINT,
+        setup_fn=interactive_setup,
+        allowed_users_env="BLUEBUBBLES_ALLOWED_USERS", allow_all_env="BLUEBUBBLES_ALLOW_ALL_USERS",
+        cron_deliver_env_var="BLUEBUBBLES_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,  # out-of-process cron / send_message
+        # 0 = send_message does not pre-chunk: the adapter's send() splits per paragraph and
+        # truncates itself (MAX_MESSAGE_LENGTH), exactly as the former core sender did.
+        max_message_length=0, pii_safe=True, emoji="💬", allow_update_command=True)

@@ -1,5 +1,6 @@
 """Tests for agent.error_classifier — structured API error classification."""
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -585,6 +586,38 @@ class TestClassifyApiError:
         )
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
+
+    @pytest.mark.parametrize("reason", ["QUOTA_EXHAUSTED", "INSUFFICIENT_G1_CREDITS_BALANCE"])
+    def test_google_429_billing_reason_is_terminal_billing(self, reason):
+        """Google reuses 429 + RESOURCE_EXHAUSTED for an account ceiling; only
+        ``google.rpc.ErrorInfo.reason`` says so. The native route's message
+        ("Gemini HTTP 429 (RESOURCE_EXHAUSTED): ...") is itself a rate-limit
+        phrase, so without the structured read every billing 429 burned the
+        retry budget as a throttle (ported from can1357/oh-my-pi#13092)."""
+        body = {"error": {"code": 429, "message": "Your project has exceeded its monthly spending cap.",
+                          "status": "RESOURCE_EXHAUSTED",
+                          "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}]}}
+        result = classify_api_error(
+            MockAPIError("Gemini HTTP 429 (RESOURCE_EXHAUSTED): exceeded", status_code=429, body=body),
+            provider="gemini",
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+
+    def test_google_429_throttle_reason_stays_rate_limit_with_retry_info(self):
+        """The other direction: a per-minute throttle whose prose ("Quota exceeded
+        ... per_minute") reads as a quota wall with no transient signal must not
+        bench a healthy key as billing; RetryInfo.retryDelay feeds ``reset_at``."""
+        body = {"error": {"code": 429,
+                          "message": "Quota exceeded for aiplatform.googleapis.com/generate_content_requests_per_minute.",
+                          "status": "RESOURCE_EXHAUSTED",
+                          "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "RATE_LIMIT_EXCEEDED"},
+                                      {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "27s"}]}}
+        result = classify_api_error(MockAPIError(body["error"]["message"], status_code=429, body=body), provider="gemini")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is not False
+        assert 20 < result.error_context["reset_at"] - time.time() <= 27
 
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return

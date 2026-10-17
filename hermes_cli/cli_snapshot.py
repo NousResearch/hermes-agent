@@ -7,6 +7,7 @@ import os
 
 from hermes_cli.cli_commands_session_tools import _pr, _t
 from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_profile_lifecycle import _confirmed, _failure
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +60,8 @@ def restore_snapshot_command(cli, parts):
 def _pause_owner(home, control_home, identity):
     from gateway.control_socket import pause_gateway_for_update, request_unserve_profile
     from hermes_cli.data_cleanup_holders import pause_acked
-    from hermes_cli.gateway_profile_lifecycle import _confirmed
-    if control_home != home:
+    satellite = control_home != home
+    if satellite:
         ack = request_unserve_profile(control_home, home.name)
         accepted = _confirmed(ack, "unserved", home.name) or (
             isinstance(ack, dict) and ack.get("pending") and not ack.get("error"))
@@ -69,7 +70,7 @@ def _pause_owner(home, control_home, identity):
     if not accepted:
         # Stopping the host gateway would take down every profile it multiplexes.
         retry = (f"Park the profile with `hermes -p {home.name} gateway stop` and retry."
-                 if control_home != home else "Stop the gateway and retry.")
+                 if satellite else "Stop the gateway and retry.")
         raise GatewayClientError(f"Gateway refused the snapshot maintenance handoff; nothing was restored. {retry}")
 
 
@@ -78,7 +79,6 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     from hermes_cli.backup import restore_quick_snapshot
     from hermes_cli.data_cleanup_holders import manual_gateway_identity
     from hermes_cli.gateway_connection import GatewayConnection
-    from hermes_cli.gateway_profile_lifecycle import _confirmed, _failure
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint
     from hermes_cli.profiles_remove import wait_profile_unowned
     from hermes_constants import get_hermes_home

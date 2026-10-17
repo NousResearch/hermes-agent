@@ -1,7 +1,7 @@
 """A channel whose release predates the gateway runtime holds the install where it is (#140729).
 
 The channel picked that release, the user did not ask to go back: ``hermes update`` reports that
-the install is ahead of the release and exits like an up-to-date run, instead of refusing the
+the build is newer than the release and holds there, exiting 0, instead of refusing the
 downgrade on every attempt. An explicit ``--branch`` to a pre-runtime commit is still refused.
 """
 import argparse
@@ -110,9 +110,11 @@ def test_a_channel_release_older_than_the_runtime_holds_the_install_and_exits_cl
     out = capsys.readouterr().out
     assert git(source.root, "rev-parse", "HEAD") == source.installed
     assert "Refusing" not in out and "Downgrading is unsupported" not in out
-    assert f"ahead of the {name} release {source.release[:12]}" in out
+    assert f"This build is newer than the {name} release {source.release[:12]}" in out
     assert "hermes update --set-channel main" in out
     assert len(source.completed) == 1 and source.completed[0]["expected_sha"] == source.installed
+    # A held install is not up to date with its channel: the closing line says it was held.
+    assert source.completed[0]["completion_message"] == f"✓ Holding at this build until a newer {name} release ships."
 
 
 def test_the_same_release_still_applies_while_no_store_holds_runtime_history(source, monkeypatch, capsys):
@@ -123,7 +125,7 @@ def test_the_same_release_still_applies_while_no_store_holds_runtime_history(sou
     update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--yes"]), False)
 
     assert git(source.root, "rev-parse", "HEAD") == source.release
-    assert "ahead of the" not in capsys.readouterr().out
+    assert "newer than the" not in capsys.readouterr().out
     assert source.completed[0]["expected_sha"] == source.release
 
 
@@ -135,7 +137,7 @@ def test_an_explicit_branch_to_a_pre_runtime_commit_is_still_refused(source, mon
 
     out = capsys.readouterr().out
     assert stopped.value.code == 1 and git(source.root, "rev-parse", "HEAD") == source.installed
-    assert "Downgrading is unsupported" in out and "ahead of the" not in out
+    assert "Downgrading is unsupported" in out and "newer than the" not in out
     assert source.completed == []
 
 
@@ -147,8 +149,9 @@ def _stable_publishes(monkeypatch, commit):
 def _assert_held_at_head(source, out, channel="stable"):
     assert git(source.root, "rev-parse", "HEAD") == source.installed
     assert "Refusing" not in out and "Downgrading is unsupported" not in out
-    assert f"ahead of the {channel} release" in out
+    assert f"This build is newer than the {channel} release" in out
     assert len(source.completed) == 1 and source.completed[0]["expected_sha"] == source.installed
+    assert source.completed[0]["completion_message"] == f"✓ Holding at this build until a newer {channel} release ships."
 
 
 @pytest.mark.parametrize("argv", [

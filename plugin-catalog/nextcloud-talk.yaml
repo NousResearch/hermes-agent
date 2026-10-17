@@ -1,0 +1,23 @@
+name: nextcloud-talk
+title: Nextcloud Talk
+repo: https://github.com/Cliff3c/hermes-nextcloud-talk
+sha: 0df0679d1ed28c2087774fea9ae646a858e7ed70
+subdir: plugin
+description: "Signed Nextcloud Talk bot webhooks and text replies for Hermes, with JSON/XML OCS support. Disclosure — runs an HTTP webhook listener (default 0.0.0.0:8788, HMAC-verified with the bot secret) and sends messages and optional Basic-auth room lookups to your Nextcloud server; registers the `nextcloud_talk` gateway platform."
+maintainer: Cliff3c
+tier: community
+category: platform
+version: "0.2.1"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - NC_TALK_BASE_URL
+    - NC_TALK_BOT_SECRET
+known_issues:
+  - Text only; attachments, reactions and inbound reply-context reconstruction are not implemented.
+  - Dedupe is in-memory and does not survive restart; uncertain sends are not automatically retried.
+  - Valid empty OCS acknowledgements confirm delivery without returning a message ID.
+requires_hermes: ">=0.21.3"

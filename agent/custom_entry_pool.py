@@ -10,7 +10,7 @@ declared credential. The built-in provider itself still loads, and persists, the
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 _DECLARED_CREDENTIAL_KEYS = ("api_key", "key_env", "api_key_env", "key_cmd")
 
@@ -61,13 +61,28 @@ def custom_entry_for_endpoint(
     if not base_url:
         return None
     url = cp._norm_url(base_url)
-    aliases = cp._requested_custom_name_aliases(provider_name) if provider_name else set()
-    if aliases:
-        for norm_name, entry in cp._iter_custom_providers(config):
-            if aliases & cp._custom_entry_name_aliases(norm_name, entry):
-                entry_url = cp._norm_url(entry.get("base_url"))
-                return None if entry_url and entry_url != url else (norm_name, entry)
+    if (named := named_custom_entry(provider_name, config)) is not None:
+        entry_url = cp._norm_url(named[1].get("base_url"))
+        return None if entry_url and entry_url != url else named
     return next(((n, e) for n, e in cp._iter_custom_providers(config) if url and cp._norm_url(e.get("base_url")) == url), None)
+
+
+def named_custom_entry(provider_name: Optional[str], config: Optional[dict] = None) -> Optional[tuple[str, dict[str, Any]]]:
+    """``(normalized_name, entry)`` of the configured custom entry ``provider_name`` names, else None."""
+    from agent import credential_pool as cp
+    aliases = cp._requested_custom_name_aliases(provider_name) if provider_name else set()
+    return next(((n, e) for n, e in cp._iter_custom_providers(config) if aliases & cp._custom_entry_name_aliases(n, e)), None) if aliases else None
+
+
+def pool_for_aux_provider(provider: Optional[str], pool_key: str, load: Callable[[str], Any]) -> Any:
+    """``load(pool_key)`` for an auxiliary pool read (the key peek, credential recovery). A pinned
+    ``custom:<name>`` normalizes to its entry's slug, which may also be a same-named built-in's pool,
+    so it gets the entry-scoped view; a bare built-in name keeps its whole pool."""
+    pool = load(pool_key)
+    if pool is None or not str(provider or "").strip().lower().startswith("custom:"):
+        return pool
+    match = named_custom_entry(provider)
+    return entry_scoped_pool(pool, pool_key, match[1] if match else None)
 
 
 def load_runtime_pool(provider: Optional[str], base_url: Optional[str], requested_provider: Optional[str] = None) -> Any:

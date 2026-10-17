@@ -350,3 +350,58 @@ def test_a_genuinely_bare_custom_snapshot_still_takes_the_first_entry_on_its_url
     from agent.custom_entry_pool import load_runtime_pool
 
     assert MANUAL_KEY in {e.access_token for e in load_runtime_pool("custom", ENDPOINT).entries()}
+
+
+def _pin_title_generation(home, provider):
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["auxiliary"] = {"title_generation": {"provider": provider, "model": "m"}}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+
+def test_aux_task_pinned_to_the_entry_sends_its_key_env(tmp_path, monkeypatch):
+    """``auxiliary.title_generation.provider: custom:deepseek`` through ``call_llm``: the pool peek
+    read the built-in's whole ``deepseek`` pool and its env row beat the entry's key_env."""
+    from unittest.mock import MagicMock, patch
+
+    home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
+    _pin_title_generation(home, "custom:deepseek")
+    from agent import auxiliary_client as ac
+
+    monkeypatch.setattr(ac, "_client_cache", {})
+    with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        mock_openai.return_value.base_url = ENDPOINT
+        mock_openai.return_value.chat.completions.create.return_value = MagicMock()
+        ac.call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}])
+    sent = {(c.kwargs.get("base_url"), c.kwargs.get("api_key")) for c in mock_openai.call_args_list}
+    assert sent == {(ENDPOINT, ENTRY_KEY)}
+
+
+def test_aux_task_pinned_to_the_builtin_keeps_its_env_key(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
+    from agent import auxiliary_client as ac
+
+    monkeypatch.setattr(ac, "_client_cache", {})
+    with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        ac._get_cached_client("deepseek", "m")
+    assert mock_openai.call_args.kwargs["api_key"] == BUILTIN_KEY
+
+
+def test_aux_auth_failure_on_the_entry_never_rotates_the_builtin_pool(tmp_path, monkeypatch):
+    """A 401 from the entry's endpoint says nothing about the built-in's env-seeded row (the
+    ladder's pool-recovery rung, from the pinned ``custom:<name>`` route to the rotation)."""
+    from types import SimpleNamespace
+
+    _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
+    from agent import auxiliary_client as ac
+    from agent.credential_pool import load_pool
+
+    load_pool("deepseek")
+    pool_provider = ac._recoverable_pool_provider("custom:deepseek", SimpleNamespace(base_url=ENDPOINT, api_key=ENTRY_KEY))
+    assert pool_provider
+    err = type("AuthError", (Exception,), {"status_code": 401})("Error code: 401")
+    assert ac._recover_provider_pool(pool_provider, err, failed_api_key=ENTRY_KEY) is False
+    assert ac._recover_provider_pool(pool_provider, err) is False
+    builtin = [e for e in load_pool("deepseek").entries() if e.source == "env:DEEPSEEK_API_KEY"]
+    assert builtin and all(e.last_status != "exhausted" for e in builtin)

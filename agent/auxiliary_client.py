@@ -120,6 +120,7 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
+from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
@@ -3683,8 +3684,8 @@ def _recoverable_pool_provider(
                     "endpoint mismatch, not a dead key; skipping credential rotation",
                     normalized, base_url_hostname(base), base_url_hostname(rt_base))
         return None
-    if normalized not in {"", "auto", "custom"}:
-        return normalized
+    if normalized not in {"", "auto", "custom"}:  # a pinned ``custom:<name>`` keeps its entry's identity
+        return pinned if (pinned := str(resolved_provider or "").strip().lower()).startswith("custom:") else normalized
     known = _provider_for_host(base, _POOL_PROVIDER_BY_HOST)
     if known is not None:
         return known
@@ -3715,7 +3716,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     """
     normalized = _normalize_aux_provider(provider)
     try:
-        pool = load_pool(normalized)
+        pool = pool_for_aux_provider(provider, normalized, load_pool)
     except Exception as load_exc:
         logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
         return False
@@ -4777,7 +4778,6 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
     if not custom_key:
         with contextlib.suppress(Exception):
             from agent.credential_pool import custom_provider_pool_key_candidates
-            from agent.custom_entry_pool import entry_scoped_pool
             pool_name = custom_entry.get("provider_key") or custom_entry.get("name") or provider
             for pool_key in custom_provider_pool_key_candidates(custom_base, pool_name):
                 try:
@@ -6045,11 +6045,11 @@ def _get_cached_client(
             del _client_cache[cache_key]
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
-    # and retry an exhausted key.
+    # and retry an exhausted key. A pinned ``custom:<name>`` peeks only its entry's rows.
     effective_api_key = api_key
     if not effective_api_key:
-        _pe = _peek_pool_entry(_normalize_aux_provider(provider))
-        if _pe is not None:
+        _pool = pool_for_aux_provider(provider, _normalize_aux_provider(provider), lambda k: _load_pool_with_credentials(k, " (peek)"))
+        if _pool is not None and (_pe := _peek_pool_entry(provider, _pool)) is not None:
             effective_api_key = _pool_runtime_api_key(_pe) or api_key
     client, default_model = resolve_provider_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,

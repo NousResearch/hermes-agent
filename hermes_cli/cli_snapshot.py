@@ -82,6 +82,7 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     from gateway.control_socket import request_serve_profile_hot
     from hermes_cli.backup import restore_quick_snapshot
     from hermes_cli.gateway_connection import GatewayConnection
+    from hermes_cli.gateway_profile_lifecycle import _confirmed, _failure
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint
     from hermes_cli.profiles_remove import wait_profile_unowned
     from hermes_constants import get_hermes_home
@@ -108,8 +109,10 @@ def _restore_gateway_snapshot(cli, store, snap_id):
     finally:
         if unserved:
             ack = request_serve_profile_hot(control_home, home.name)
-            if ack is None or ack.get("error"):
+            if not _confirmed(ack, "served", home.name):
                 logger.warning("Profile re-serve after snapshot restore: %s", ack)
+                print(f"  Profile '{home.name}' is not served again yet: {_failure(ack)}. "
+                      "The host retries on its next rescan (within 30s).")
         store.snapshots.clear()
         store.current = None
         store.connection = GatewayConnection.shared()

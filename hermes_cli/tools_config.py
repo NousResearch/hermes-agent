@@ -769,7 +769,19 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: set[
     if isinstance(agent_cfg, dict) and agent_cfg.get("disabled_toolsets") and newly_enabled:
         from agent.skill_utils import parse_config_string_list
         parsed_disabled = parse_config_string_list(agent_cfg["disabled_toolsets"])
-        remaining = [ts for ts in parsed_disabled if ts not in newly_enabled]
+        # Also clear entries whose tools are entirely covered by a newly enabled toolset: Blank Slate writes
+        # subset toolsets like `search` (only web_search), which have no checklist row, so enabling `web`
+        # left web_search stripped with no supported way to undo it (#134593).
+        from toolsets import resolve_toolset
+        covered: set[str] = set()
+        for ts in newly_enabled:
+            covered.update(resolve_toolset(ts))  # [] for unknown names; never raises
+
+        def _covered(ts: str) -> bool:
+            tools = set(resolve_toolset(ts))
+            return bool(tools) and tools <= covered
+
+        remaining = [ts for ts in parsed_disabled if ts not in newly_enabled and not _covered(ts)]
         if remaining != parsed_disabled:
             agent_cfg["disabled_toolsets"] = remaining
     save_config(config)

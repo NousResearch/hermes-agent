@@ -1,6 +1,6 @@
 {
   "meta": {
-    "source": "hermes-agent-dev skill, cross-cutting-profile-scope-patterns.json (validated pattern set)",
+    "source": "cross-cutting-profile-scope-patterns.json (validated pattern set)",
     "selection": "patterns with a scope_hint that hit <= 50 sites on main; the >50 ones are review greps, not lint",
     "class_legend": {
       "C1": "secret/home read outside the turn scope",

@@ -75,3 +75,49 @@ def test_auth_credentials_choice_falls_back_to_numbered_prompt(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": "2")
 
     assert main_mod._prompt_auth_credentials_choice("Credentials:") == "reauth"
+
+
+def test_xai_reauth_cancel_keeps_existing_main_route(tmp_path, monkeypatch):
+    """A re-auth whose model picker is cancelled must not rewrite the main route:
+    the provider/base_url write belongs to _activate_provider_model, which runs
+    only after a completed model selection."""
+    import yaml
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    cfg = home / "config.yaml"
+    cfg.write_text(
+        "model:\n  default: gpt-5.5\n  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from hermes_cli import main as main_mod
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    token = set_hermes_home_override(str(home))
+    try:
+        monkeypatch.setattr("hermes_cli.auth.get_xai_oauth_auth_status", lambda: {"logged_in": True})
+        # radio: reauthenticate
+        monkeypatch.setattr("hermes_cli.setup._curses_prompt_choice",
+                            lambda title, choices, default, description=None: 1)
+        monkeypatch.setattr("hermes_cli.auth._save_xai_oauth_tokens", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.auth.unsuppress_credential_source", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "hermes_cli.auth._xai_oauth_device_code_login",
+            lambda **k: {
+                "tokens": {"access_token": "a", "refresh_token": "r"},
+                "base_url": "https://api.x.ai/v1",
+            },
+        )
+        # user cancels the model picker
+        monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *a, **k: None)
+
+        main_mod._model_flow_xai_oauth({}, "gpt-5.5", args=argparse.Namespace())
+
+        route = yaml.safe_load(cfg.read_text())["model"]
+        assert route["provider"] == "openai-codex", route
+        assert route["base_url"] == "https://chatgpt.com/backend-api/codex", route
+        assert route["default"] == "gpt-5.5", route
+    finally:
+        reset_hermes_home_override(token)

@@ -199,3 +199,33 @@ async def test_a_sqlite_failure_keeps_the_wire_error_and_logs_its_cause(tmp_path
         assert 'sqlite3.OperationalError: database is locked' in caplog.text
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_retrying_client_cannot_flood_the_log_with_storage_failures(tmp_path, caplog):
+    """Clients retry on ``storage_unavailable``: each failure keeps one short line, the traceback comes
+    once per method and error class, and a client-sized ``session_id`` is never copied whole."""
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        epoch = begin_runtime_epoch(db, instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
+                                     db=db, epoch=epoch)
+
+        class Connection(AuthorityConnection):
+            def handlers(self):
+                async def probe(ref, params):
+                    raise sqlite3.OperationalError('database is locked')
+                return {'session.retry_probe': probe}
+
+        connection = Connection(authority, object(), {'user_id': 'human'})
+        with caplog.at_level('WARNING', logger='gateway.session_controls'):
+            for _ in range(3):
+                reply = await connection.dispatch({'id': 9, 'method': 'session.retry_probe', 'params': {
+                    'session_id': 'x' * 100_000}})
+                assert reply['error']['code'] == 5001
+        failures = [record for record in caplog.records if 'storage failure' in record.getMessage()]
+        assert [bool(record.exc_info) for record in failures] == [True, False, False]
+        assert all(len(record.getMessage()) < 300 for record in failures), failures[0].getMessage()[:300]
+        assert all('database is locked' in record.getMessage() for record in failures)
+    finally:
+        db.close()

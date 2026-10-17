@@ -61,10 +61,24 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
         logger.debug(line, *args)
 
 
+# (method, error class) pairs whose traceback this process already logged.
+_STORAGE_TRACEBACKS = set()
+
+
 def _log_storage_failure(profile, method, session_id, exc: sqlite3.Error) -> None:
-    """Keep SQLite's diagnostic at the gateway while its wire error stays retryable."""
-    logger.warning('%s storage failure for profile=%s session_id=%r: %s',
-                   method, _profile_label(profile), session_id, exc, exc_info=True)
+    """Keep SQLite's diagnostic at the gateway while its wire error stays retryable.
+
+    Clients retry on ``storage_unavailable``, so, like ``_log_refusal``, a retrying client must not
+    flood the log: every failure keeps one line with its cause, the traceback comes once per method
+    and error class, and the client-supplied ``session_id`` is capped."""
+    key = (method, type(exc).__name__)
+    first = key not in _STORAGE_TRACEBACKS
+    _STORAGE_TRACEBACKS.add(key)
+    shown = repr(session_id)
+    if len(shown) > 64:
+        shown = f'{shown[:48]}… ({len(shown)} chars)'
+    logger.warning('%s storage failure for profile=%s session_id=%s: %s',
+                   method, _profile_label(profile), shown, exc, exc_info=first)
 
 
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.

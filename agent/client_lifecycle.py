@@ -82,7 +82,26 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
-        agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
+        # Vertex Claude uses AnthropicVertex (ADC); a direct Anthropic client
+        # would POST to .../publishers/anthropic/v1/messages and 404.
+        if fb_provider == "vertex":
+            from agent.anthropic_vertex_adapter import (
+                build_anthropic_vertex_client,
+                get_anthropic_vertex_config,
+            )
+            try:
+                _project_id, _vx_region = get_anthropic_vertex_config()
+            except Exception:  # noqa: BLE001
+                _project_id, _vx_region = None, None
+            _project_id = _project_id or getattr(agent, "_vertex_project_id", None)
+            _vx_region = _vx_region or getattr(agent, "_vertex_region", None) or "global"
+            agent._vertex_project_id = _project_id
+            agent._vertex_region = _vx_region
+            agent._anthropic_client = build_anthropic_vertex_client(
+                _project_id, _vx_region, timeout=timeout,
+            )
+        else:
+            agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
         agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return

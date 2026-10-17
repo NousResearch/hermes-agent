@@ -40,6 +40,7 @@ interface SubmitHarnessOptions {
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
+  draftScopeKey?: string | null
   submitOnHide?: boolean
   surfaceId?: string | null
   text?: string
@@ -57,6 +58,7 @@ function renderSubmitHook({
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
+  draftScopeKey,
   submitOnHide = false,
   surfaceId,
   text = '',
@@ -65,7 +67,8 @@ function renderSubmitHook({
 }: SubmitHarnessOptions = {}) {
   const resolvedSurfaceId = surfaceId === undefined ? `test-surface-${++surfaceSequence}` : surfaceId
   const draftRef = { current: text }
-  const draftScopeRef = { current: sessionKey }
+  const draftScopeRef = { current: draftScopeKey === undefined ? sessionKey : draftScopeKey }
+  const queueKeyRef = { current: sessionKey }
   const editor = window.document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
@@ -115,7 +118,7 @@ function renderSubmitHook({
     () =>
       useComposerSubmit({
         activeQueueSessionKey: sessionKey,
-        activeQueueSessionKeyRef: { current: sessionKey },
+        activeQueueSessionKeyRef: queueKeyRef,
         attachments,
         busy,
         busyInputMode,
@@ -145,6 +148,8 @@ function renderSubmitHook({
   )
 
   return {
+    draftScopeRef,
+    queueKeyRef,
     loadIntoComposer,
     stashAt,
     clearDraft,
@@ -170,6 +175,35 @@ describe('useComposerSubmit external request routing', () => {
     cleanup()
     clearQueuedPrompts('stored-session')
     vi.restoreAllMocks()
+  })
+
+  it.each(['interrupt', 'steer'] as const)('restores a refused %s into the fresh-chat draft, not a phantom queue', async mode => {
+    const freshKey = '__new__:rejected-busy-test'
+    const h = renderSubmitHook({ busy: true, busyInputMode: mode, sessionKey: freshKey, text: 'keep the new draft' })
+    const carrier = mode === 'steer' ? h.onSteerHidden : h.onSteer
+    carrier.mockResolvedValue(false)
+
+    await act(async () => h.hook.result.current.submitDraft())
+
+    expect(getQueuedPrompts(freshKey)).toEqual([])
+    expect(h.stashAt).toHaveBeenCalledWith(freshKey, 'keep the new draft', [])
+    expect(h.loadIntoComposer).toHaveBeenCalledWith('keep the new draft', [])
+  })
+
+  it('does not repaint the next session when a fresh-chat correction rejects after navigation', async () => {
+    const freshKey = '__new__:original'
+    const h = renderSubmitHook({ busy: true, sessionKey: freshKey, text: 'restore only original' })
+    let respond!: (accepted: boolean) => void
+    h.onSteer.mockImplementation(() => new Promise<boolean>(resolve => { respond = resolve }))
+
+    act(() => h.hook.result.current.submitDraft())
+    h.draftScopeRef.current = '__new__:different'
+    h.queueKeyRef.current = '__new__:different'
+    await act(async () => respond(false))
+
+    expect(h.stashAt).toHaveBeenCalledWith(freshKey, 'restore only original', [])
+    expect(h.loadIntoComposer).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(freshKey)).toEqual([])
   })
 
   it.each(['interrupt', 'steer'] as const)('keeps a rejected %s draft in the local queue without submit admission', async mode => {

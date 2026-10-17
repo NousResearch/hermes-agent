@@ -1,6 +1,4 @@
 import { useStore } from '@nanostores/react'
-
-import { $busyInputMode } from '@/app/chat/composer/busy-input-mode'
 import { useContext, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -22,6 +20,9 @@ import {
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
+import { $busyInputConfig, configuredBusyInputMode } from '@/store/busy-input-mode'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 import {
   $bindings,
   $capture,
@@ -69,7 +70,10 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
   const { t } = useI18n()
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const bindings = useStore($bindings)
-  const busyInputMode = useStore($busyInputMode)
+  const config = useStore($busyInputConfig)
+  const connection = useStore($connection)
+  const profile = useStore($activeGatewayProfile)
+  const busyInputMode = configuredBusyInputMode(config, connection, profile)
   const readonlyList = useMemo(() => readonlyKeybindsFor(busyInputMode), [busyInputMode])
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())

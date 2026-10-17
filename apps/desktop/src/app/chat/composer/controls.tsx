@@ -2,9 +2,10 @@ import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { Tip, TipHintLabel, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
@@ -91,13 +92,6 @@ export function ComposerControls({
   const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
   const sendLabel = composerSendLabel(busy && !cardWaiting, busyAction, c)
 
-  const primaryKeybindAction = cardWaiting
-    ? 'composer.send'
-    : busyAction === 'queue'
-      ? 'composer.send' // Fallback Queue can be triggered by Enter even in Steer/Interrupt mode.
-      : busyAction === 'steer'
-        ? 'composer.steer'
-        : 'composer.send'
 
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
@@ -144,7 +138,7 @@ export function ComposerControls({
       )}
       {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}
       {showQueueButton ? (
-        <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />} placement="control">
+        <Tip label={<TipHintLabel hint={formatCombo('mod+enter')} text={c.queueMessage} />} placement="control">
           <Button
             aria-label={c.queueMessage}
             className={GHOST_ICON_BTN}
@@ -166,7 +160,7 @@ export function ComposerControls({
             showStop ? (
               <TipKeybindLabel actionId="composer.cancel" text={c.stop} />
             ) : (
-              <TipKeybindLabel actionId={primaryKeybindAction} text={sendLabel} />
+              <TipHintLabel hint={canSubmit ? formatCombo('enter') : undefined} text={sendLabel} />
             )
           }
           placement="control"

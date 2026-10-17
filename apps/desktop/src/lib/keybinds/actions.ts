@@ -8,6 +8,7 @@
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import { isMacPlatform } from '@/lib/platform'
+import type { BusyInputMode } from '@/store/busy-input-mode'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
@@ -381,7 +382,7 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
  * The composer still owns keydown dispatch; this list is for UI affordances.
  * Keep this resolver compatible with the enter_sends axis in #117752.
  */
-export function readonlyKeybindsFor(mode: 'interrupt' | 'steer' | 'queue'): readonly KeybindReadonly[] {
+export function readonlyKeybindsFor(mode: BusyInputMode): readonly KeybindReadonly[] {
   return KEYBIND_READONLY
     .filter(entry => mode !== 'interrupt' || entry.id !== 'composer.steer')
     .map(entry => {

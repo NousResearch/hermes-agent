@@ -28,7 +28,7 @@ export function HelpHint({
   alternateAction = 'composer.queue'
 }: {
   busy?: boolean
-  enterAction?: HintActionId
+  enterAction?: HintActionId | null
   alternateAction?: HintActionId
 }) {
   const { t } = useI18n()
@@ -39,7 +39,7 @@ export function HelpHint({
   // missing or the turn is compacting, an Enter may queue instead of steer.
   const actionRows = busy
     ? [
-        { id: enterAction, combos: ['enter'] },
+        ...(enterAction ? [{ id: enterAction, combos: ['enter'] }] : []),
         { id: alternateAction, combos: ['mod+enter'] }
       ]
     : [{ id: 'composer.send', combos: ['enter'] }]

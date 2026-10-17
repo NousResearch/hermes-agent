@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
 
 import { $registryVersion } from '@/contrib/registry'
-import { $busyInputMode } from '@/app/chat/composer/busy-input-mode'
+import { $busyInputConfig, configuredBusyInputMode } from '@/store/busy-input-mode'
 import { $bindings, bindingsFor } from '@/store/keybinds'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 
 import { readonlyKeybindsFor } from './actions'
 import { formatCombo } from './combo'
@@ -13,7 +15,10 @@ import { formatCombo } from './combo'
 // tooltip shows just the text label with no trailing hint.
 export function useKeybindHint(actionId: string): string | null {
   const bindings = useStore($bindings)
-  const busyInputMode = useStore($busyInputMode)
+  const config = useStore($busyInputConfig)
+  const connection = useStore($connection)
+  const profile = useStore($activeGatewayProfile)
+  const busyInputMode = configuredBusyInputMode(config, connection, profile)
 
   // `bindingsFor`, not a raw `bindings[id]`: $bindings is seeded at module init
   // from the actions known THEN, so a plugin action contributed later isn't in

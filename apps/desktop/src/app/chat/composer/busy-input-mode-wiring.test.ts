@@ -1,53 +1,28 @@
-/**
- * A guard on the seam the two halves of this change meet at: the config
- * refresh path publishing into `$busyInputMode`, and `useComposerSubmit`
- * branching on a `busyInputMode` argument. Both halves are unit-tested
- * in isolation, so a wiring break (value parsed correctly but nobody reading
- * the atom; hook honouring a mode nobody can set) would leave both suites
- * green while the feature silently no-ops.
- */
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { describe, expect, it } from 'vitest'
+import { $busyInputConfig, busyInputOwnerKey, configuredBusyInputMode } from '@/store/busy-input-mode'
 
-import { $busyInputMode, busyModeHasCarrier, normalizeBusyInputMode, setBusyInputModeFromConfig } from './busy-input-mode'
+import { busyModeHasCarrier, normalizeBusyInputMode } from './busy-input-mode'
 
-const CONFIG_KEY = 'display.busy_input_mode'
+afterEach(() => $busyInputConfig.set(null))
 
-describe('display.busy_input_mode wiring', () => {
-  it('carries the config value into the atom the composer subscribes to', () => {
-    setBusyInputModeFromConfig('steer')
+describe('display.busy_input_mode config scope', () => {
+  const connection = { connectionId: 'gateway-a' }
+  const profile = 'default'
 
-    expect(normalizeBusyInputMode($busyInputMode.get())).toBe('steer')
+  it('reflects the active backend owner without a second global atom', () => {
+    $busyInputConfig.set({ owner: busyInputOwnerKey(connection.connectionId, profile), connection, mode: 'steer' })
+    expect(configuredBusyInputMode($busyInputConfig.get(), connection, profile)).toBe('steer')
+    expect(configuredBusyInputMode($busyInputConfig.get(), connection, 'other')).toBe('interrupt')
+    expect(configuredBusyInputMode($busyInputConfig.get(), { connectionId: 'gateway-b' }, profile)).toBe('interrupt')
   })
 
-  it('falls back to the framework default for absent and malformed values', () => {
-    // Absent: a config written before the key existed must keep working.
-    setBusyInputModeFromConfig(undefined)
-    expect($busyInputMode.get()).toBe('interrupt')
-
-    // Malformed: a typo must not silently turn a busy Enter into a redirect
-    // the user never asked for.
-    setBusyInputModeFromConfig('stre')
-    expect($busyInputMode.get()).toBe('interrupt')
-  })
-
-  it('notifies subscribers on change, so a settings save takes effect live', () => {
-    const seen: string[] = []
-    // A nanostores subscription fires immediately with the current value, then
-    // on each change — that is what a live settings save relies on.
-    const stop = $busyInputMode.subscribe(value => seen.push(value))
-
-    setBusyInputModeFromConfig('queue')
-    setBusyInputModeFromConfig('steer')
-    stop()
-
-    expect(seen).toEqual(['interrupt', 'queue', 'steer'])
-  })
-
-  // The key as the backend schema spells it, so a rename on either side of the
-  // seam is caught here rather than by a user reporting the setting vanished.
-  it('keeps the config key aligned with the backend schema name', () => {
-    expect(CONFIG_KEY).toBe('display.busy_input_mode')
+  it('tracks config changes and shares the backend normalizer', () => {
+    $busyInputConfig.set({ owner: busyInputOwnerKey(connection.connectionId, profile), connection, mode: 'queue' })
+    expect(configuredBusyInputMode($busyInputConfig.get(), connection, profile)).toBe('queue')
+    $busyInputConfig.set({ owner: busyInputOwnerKey(connection.connectionId, profile), connection, mode: 'steer' })
+    expect(configuredBusyInputMode($busyInputConfig.get(), connection, profile)).toBe('steer')
+    expect(normalizeBusyInputMode(' Stre ')).toBe('interrupt')
   })
 })
 

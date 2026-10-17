@@ -6,7 +6,6 @@ import { I18nProvider } from '@/i18n'
 import { $hudMode } from '@/store/hud'
 import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
 
-import { setBusyInputModeFromConfig } from './busy-input-mode'
 import { ComposerControls } from './controls'
 
 vi.mock('./model-pill', () => ({ ModelPill: () => null }))
@@ -60,7 +59,6 @@ async function expectShortcutTooltip(label: string, shortcut: string) {
 afterEach(() => {
   cleanup()
   $hudMode.set(false)
-  setBusyInputModeFromConfig('interrupt')
 })
 
 // The HUD is a Spotlight bar a few hundred pixels wide: the voice controls
@@ -144,10 +142,17 @@ describe('narrow tiles', () => {
 
 describe('ComposerControls shortcut tooltips', () => {
   it('labels busy Send with the effective configured action', async () => {
-    setBusyInputModeFromConfig('steer')
     renderControls({ busy: true, busyAction: 'steer' })
 
     await expectShortcutTooltip('Steer the current run', '↵')
+  })
+
+  it('does not advertise Enter when a session is still loading its busy policy', async () => {
+    renderControls({ busy: true, busyAction: 'queue', canSubmit: false })
+    fireEvent.pointerMove(screen.getByLabelText('Queue message'), { pointerType: 'mouse' })
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip.textContent).toContain('Queue message')
+    expect(tooltip.textContent).not.toContain('↵')
   })
 
   it('shows Stop only when the composer is empty mid-turn', async () => {

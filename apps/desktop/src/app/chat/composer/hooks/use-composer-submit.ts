@@ -445,18 +445,24 @@ export function useComposerSubmit({
   // A correction whose RPC rejects (socket dropped, session gone mid-turn)
   // must not vanish with the already-cleared draft. Capture the target scope at
   // dispatch time so a late rejection cannot enqueue into a newly focused chat.
-  const queueRejectedCorrection = (frozen: ComposerTransportPayload, rejectedScope: string | null) => {
+  const queueRejectedCorrection = (
+    frozen: ComposerTransportPayload,
+    queueKey: string | null,
+    restoreScope: string | null
+  ) => {
     const hasTerminalTransport = frozen.displayText !== frozen.transportText
 
-    if (rejectedScope && serverOwnsComposerQueue(sessionId ?? rejectedScope)) {
+    // A sessionless chat may already have a per-lifecycle __new__: key. It is
+    // a draft bucket, not a queue that a worker will ever drain.
+    if (queueKey && !isFreshDraftScope(queueKey) && serverOwnsComposerQueue(sessionId ?? queueKey)) {
       dispatchSubmit(frozen.transportText, [], undefined, {
         ...(hasTerminalTransport ? { displayText: frozen.displayText } : {}),
         fromQueue: true,
         sessionId: sessionId ?? null,
-        storedSessionId: rejectedScope
+        storedSessionId: queueKey
       })
-    } else if (rejectedScope) {
-      enqueueQueuedPrompt(rejectedScope, {
+    } else if (queueKey && !isFreshDraftScope(queueKey)) {
+      enqueueQueuedPrompt(queueKey, {
         text: frozen.displayText,
         attachments: [],
         ...(hasTerminalTransport
@@ -464,14 +470,22 @@ export function useComposerSubmit({
           : {})
       })
     } else {
-      loadIntoComposer(frozen.displayText, [])
-      stashAt(rejectedScope, frozen.displayText, [])
+      // Store against the draft that actually supplied the words. A delayed
+      // rejection after navigation must never overwrite another chat's editor.
+      stashAt(restoreScope, frozen.displayText, [])
+
+      if (draftScopeRef.current === restoreScope && activeQueueSessionKeyRef.current === queueKey) {
+        loadIntoComposer(frozen.displayText, [])
+      }
     }
   }
 
   const steerDraft = (mode: 'interrupt' | 'steer' = 'interrupt', text = pathifyRefs(draftRef.current).trim()) => {
     if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
-      queueCurrentDraft()
+      // A slash command is never a queued model prompt, even if this helper is called directly.
+      if (text && !SLASH_COMMAND_RE.test(text)) {
+        queueCurrentDraft()
+      }
 
       return
     }
@@ -490,10 +504,11 @@ export function useComposerSubmit({
       return
     }
 
+    const rejectedQueueKey = activeQueueSessionKeyRef.current
+    const restoreScope = draftScopeRef.current
+
     triggerHaptic('submit')
     clearDraft()
-
-    const submittedScope = activeQueueSessionKeyRef.current
 
     // The draft is already cleared, so a refused or failed redirect must keep
     // the only copy (#68927): the canonical gateway queue when the server owns
@@ -501,7 +516,7 @@ export function useComposerSubmit({
     // queue yet (a new chat is busy before its first session exists). Keep the
     // frozen transport for the queue; restoring to the composer keeps the chip
     // form so the user can re-send it as-is.
-    const keep = () => queueRejectedCorrection(frozen, submittedScope)
+    const keep = () => queueRejectedCorrection(frozen, rejectedQueueKey, restoreScope)
 
     // Also recover callbacks that throw synchronously before returning a promise.
     try {
@@ -539,12 +554,13 @@ export function useComposerSubmit({
       return
     }
 
-    const rejectedScope = activeQueueSessionKeyRef.current
+    const rejectedQueueKey = activeQueueSessionKeyRef.current
+    const restoreScope = draftScopeRef.current
 
     triggerHaptic('submit')
     clearDraft()
 
-    const rejected = () => queueRejectedCorrection(frozen, rejectedScope)
+    const rejected = () => queueRejectedCorrection(frozen, rejectedQueueKey, restoreScope)
 
     // Preserve synchronous dispatch while recovering from both sync throws
     // and async refusals without losing the draft.

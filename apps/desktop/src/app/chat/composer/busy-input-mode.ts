@@ -1,4 +1,7 @@
-import { atom } from 'nanostores'
+import type { BusyInputMode } from '@/store/busy-input-mode'
+
+export { normalizeBusyInputMode } from '@/store/busy-input-mode'
+export type { BusyInputMode } from '@/store/busy-input-mode'
 
 /**
  * `display.busy_input_mode` — what a submission typed while the agent is
@@ -21,21 +24,7 @@ import { atom } from 'nanostores'
  * silently changing what Enter does for everyone else.
  */
 
-export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 export type BusyComposerAction = 'redirect' | 'queue' | 'steer' | 'stop'
-
-const BUSY_INPUT_MODES: ReadonlySet<BusyInputMode> = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
-
-/** Coerce a config.yaml value into a mode; unknown values fall back to `interrupt`. */
-export const normalizeBusyInputMode = (value: unknown): BusyInputMode => {
-  if (typeof value !== 'string') {
-    return 'interrupt'
-  }
-
-  const mode = value.trim().toLowerCase() as BusyInputMode
-
-  return BUSY_INPUT_MODES.has(mode) ? mode : 'interrupt'
-}
 
 /**
  * One-message keyboard override while a turn is running. Queue and steer are
@@ -110,16 +99,3 @@ export function busyModeHasCarrier(mode: BusyInputMode, carriers: {
   return mode === 'steer' ? carriers.onSteerHidden : carriers.onSteer
 }
 
-/**
- * The resolved mode as a plain atom, mirroring the other display.* knobs the
- * composer reads (`store/display-timestamps.ts`, `store/reasoning-disclosure.ts`).
- * Reading it from a store rather than from the config query keeps ChatBar free
- * of a QueryClient dependency — the composer mounts inside panes and test
- * harnesses that only provide the app's nanostore context.
- */
-export const $busyInputMode = atom<BusyInputMode>('interrupt')
-
-/** Publish the config value into the atom. Called by the config refresh path. */
-export const setBusyInputModeFromConfig = (value: unknown): void => {
-  $busyInputMode.set(normalizeBusyInputMode(value))
-}

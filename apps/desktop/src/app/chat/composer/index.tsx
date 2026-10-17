@@ -441,8 +441,10 @@ export function ChatBar({
 
   // The hotkey help must show the action that can actually execute, not an
   // unreachable Steer when the gateway has no steer carrier or is compacting.
-  const enterHintAction = cardWaiting
-    ? 'composer.send'
+  const enterHintAction = !canSubmit
+    ? null
+    : queueEdit || cardWaiting || (hasText && !isSteerableText && attachments.length === 0)
+      ? 'composer.send'
     : busyAction === 'queue'
       ? 'composer.queue'
       : busyAction === 'steer'

@@ -9,6 +9,9 @@ true; pm owns HOW (uv sync inside the venv package).
 from __future__ import annotations
 
 import importlib.util
+import logging
+import os
+import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -65,6 +68,30 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     # still resolve an anchor so availability checks work).
     "vision": "PIL",
 }
+
+
+_LOG = logging.getLogger(__name__)
+_S6_DASHBOARD_SERVICE = Path("/run/service/dashboard")
+_S6_SVC = "/command/s6-svc"
+
+
+def _restart_hosted_dashboard() -> None:
+    """Release the dashboard's old generation after a lazy dependency swap.
+
+    The hosted dashboard is a separately supervised process.  A gateway can
+    select a new dependency generation while that dashboard keeps its boot-time
+    lease forever, so let s6 restart it into the selected generation.  This is
+    intentionally best-effort: a completed dependency transaction remains
+    usable when the container supervisor is unavailable.
+    """
+    if os.environ.get("HERMES_DASHBOARD", "").lower() not in {"1", "true", "yes"}:
+        return
+    if not _S6_DASHBOARD_SERVICE.is_dir() or not Path(_S6_SVC).is_file():
+        return
+    try:
+        subprocess.run([_S6_SVC, "-t", str(_S6_DASHBOARD_SERVICE)], check=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _LOG.warning("could not restart hosted dashboard after dependency selection: %s", exc)
 
 
 def _anchors(extra: str) -> tuple[str, ...]:
@@ -216,6 +243,7 @@ def ensure_import(extra: str) -> None:
     from pm.client import sync_venv
 
     sync_venv([extra])
+    _restart_hosted_dashboard()
     # The sync published a new generation. Swap this process onto it when nothing
     # already imported would change underneath it (adopt_selected); otherwise only
     # a restart can load it.

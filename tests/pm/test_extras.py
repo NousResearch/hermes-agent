@@ -161,6 +161,36 @@ def test_ensure_import_syncs_when_missing(monkeypatch, synced, tmp_path):
     assert synced == [["fal"]]
 
 
+def test_ensure_import_restarts_hosted_dashboard_after_selecting_dependencies(monkeypatch, synced, tmp_path):
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(extras, "available", lambda e: False)
+    restarts = []
+    monkeypatch.setattr(extras, "_restart_hosted_dashboard", lambda: restarts.append(True))
+
+    extras.ensure_import("fal")
+
+    assert synced == [["fal"]]
+    assert restarts == [True]
+
+
+def test_restart_hosted_dashboard_signals_s6_only_when_enabled(monkeypatch, tmp_path):
+    service = tmp_path / "dashboard"
+    service.mkdir()
+    s6_svc = tmp_path / "s6-svc"
+    s6_svc.touch()
+    monkeypatch.setenv("HERMES_DASHBOARD", "true")
+    monkeypatch.setattr(extras, "_S6_DASHBOARD_SERVICE", service)
+    monkeypatch.setattr(extras, "_S6_SVC", str(s6_svc))
+    commands = []
+    monkeypatch.setattr(extras.subprocess, "run", lambda command, **kwargs: commands.append((command, kwargs)))
+
+    extras._restart_hosted_dashboard()
+
+    assert commands == [([str(s6_svc), "-t", str(service)], {"check": True, "timeout": 10})]
+
+
 def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch, synced):
     import builtins
 

@@ -104,6 +104,7 @@ class SessionAuthority:
         # session -> (generation, {admission_id: delivered}): queued admissions prompt.steer_queued handed
         # to that running claim (gateway/session_queued_controls.py); its settlement decides each one.
         self.steer_transfers = {}
+        self.launch_sources = {}  # session -> its frozen launch source (session_queued_controls)
         # session -> generation of the last Stop delivered to a live agent. A repeated
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.

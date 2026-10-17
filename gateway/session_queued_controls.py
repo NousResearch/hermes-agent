@@ -8,7 +8,7 @@ A steer is a TRANSFER to the running claim, not an outcome: the row goes queued 
 completes with the text delivered, ``interrupted`` otherwise; queued again in its own FIFO place when
 the text never reached the claim's agent). The fence is ``authority.steer_transfers``, changed only
 under the session's ``event_stream.lock`` (the lock the drain clears ``executing`` under): no storage
-wait ever happens under that lock, which loop-side receipts, attaches and publication take.
+write ever waits under that lock, which loop-side receipts, attaches and publication take.
 """
 import asyncio
 from dataclasses import asdict
@@ -24,9 +24,10 @@ from hermes_state_runtime import (
 _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
+# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).
 # cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they
 # do not name, so a transfer or replacement would strand them: never offered, refused by name.
-_INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'acp'})
+_INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})
 
 
 def handlers(connection):
@@ -36,8 +37,9 @@ def handlers(connection):
 
 def _interactive(authority, session_id):
     """The session's frozen launch source (a local session's row records it) names a local surface.
-    Callers hold the stream lock: a plain read (``get_session`` flushes token counts, a write)."""
-    sources = authority.__dict__.setdefault('_launch_sources', {})
+    Callers hold the stream lock: one plain read per session, cached (``get_session`` flushes token
+    counts, a write). Under WAL it takes the lock-free reader pool, as ``_pending_rows`` does there."""
+    sources = authority.launch_sources
     if session_id not in sources:
         with authority.db._read_ctx() as conn:
             found = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()

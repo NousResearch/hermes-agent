@@ -404,9 +404,10 @@ def test_only_interactive_local_sessions_are_offered_queued_controls(tmp_path, m
     row = {'status': 'queued', 'target_session_id': 's', 'payload': {'text': 'hello'}}
     with db:
         assert session_queued_controls.queued_controls(authority, row) == [], 'no launch policy: not interactive'
-        for source, offered in (('gui', True), ('tui', True), ('cli', True), ('acp', True), ('cron', False),
-                                ('kanban', False), ('a2a', False), ('bot_room', False)):
-            authority._launch_sources = {}
+        # ``desktop``: a Desktop chat migrated from main keeps main's source label.
+        for source, offered in (('gui', True), ('desktop', True), ('tui', True), ('cli', True), ('acp', True),
+                                ('cron', False), ('kanban', False), ('a2a', False), ('bot_room', False)):
+            authority.launch_sources = {}
             interactive(db, source=source)
             controls = session_queued_controls.queued_controls(authority, row)
             assert controls == (['steer', 'replace'] if offered else []), (source, controls)

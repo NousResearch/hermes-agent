@@ -1,5 +1,7 @@
 """Pin x delegation.fallback_providers decision table for child agents (#80450, #65038)."""
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -89,6 +91,71 @@ def test_launch_reasoning_override_reaches_aia_agent(configured, override, expec
     child_args = _spawn_kwargs(parent, {"reasoning_effort": configured}, **kwargs)
 
     assert child_args["reasoning_config"] == expected
+    assert parent.reasoning_config == {"enabled": True, "effort": "medium"}
+
+
+def test_concurrent_production_builds_keep_effort_separate_from_stock_default():
+    """Overlapping real child builds pass independent reasoning configs to AIAgent."""
+    from tools.delegate_tool import _build_child_agent
+
+    barrier = threading.Barrier(3)
+    seen = []
+    seen_lock = threading.Lock()
+
+    def construct_child(**kwargs):
+        barrier.wait(timeout=5)
+        with seen_lock:
+            seen.append(kwargs["reasoning_config"])
+        child = MagicMock()
+        child._session_init_model_config = {}
+        return child
+
+    parent = _parent()
+    parent.reasoning_config = {"enabled": True, "effort": "medium"}
+    runtime = {
+        "provider": "test-provider", "model": "test-model", "base_url": "https://example.test",
+        "api_key": "fixture-key", "requested_provider": "test-provider",
+        "reasoning_config": parent.reasoning_config,
+    }
+    patches = (
+        patch("tools.delegate_tool._load_config", return_value={"reasoning_effort": "low"}),
+        patch(
+            "tools.delegate_tool._resolve_child_runtime",
+            side_effect=lambda *_args, **_kwargs: {**runtime, "reasoning_config": dict(runtime["reasoning_config"])},
+        ),
+        patch("tools.delegate_tool._resolve_child_toolsets", return_value=(["file"], [])),
+        patch("tools.delegate_tool._build_child_system_prompt", return_value="child prompt"),
+        patch("tools.delegate_tool._resolve_workspace_hint", return_value=None),
+        patch("tools.delegate_tool._build_child_progress_callback", return_value=None),
+        patch("tools.delegate_tool._open_child_session_db", return_value=None),
+        patch("tools.delegate_tool._get_max_spawn_depth", return_value=1),
+        patch("tools.delegate_tool._get_orchestrator_enabled", return_value=False),
+        patch("tools.delegate_tool._apply_child_cache_ttl"),
+        patch("tools.delegate_tool._apply_child_compression_cap"),
+        patch("tools.delegate_tool._resolve_child_credential_pool", return_value=None),
+        patch("tools.delegate_tool._attach_child"),
+        patch("tools.delegate_tool._safe_progress"),
+        patch("hermes_cli.lifecycle.invoke_hook"),
+        patch("run_agent.AIAgent", side_effect=construct_child),
+    )
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], \
+            patches[7], patches[8], patches[9], patches[10], patches[11], patches[12], patches[13], \
+            patches[14], patches[15]:
+        def build(index, effort):
+            kwargs = {}
+            if effort is not None:
+                kwargs["reasoning_config_override"] = {"enabled": True, "effort": effort}
+            return _build_child_agent(
+                task_index=index, goal=f"task-{index}", context=None, toolsets=["file"], model=None,
+                max_iterations=10, task_count=1, parent_agent=parent, **kwargs,
+            )
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(build, 0, "high"), pool.submit(build, 1, "xhigh"), pool.submit(build, 2, None)]
+            for future in futures:
+                future.result(timeout=10)
+
+    assert sorted(item["effort"] for item in seen) == ["high", "medium", "xhigh"]
     assert parent.reasoning_config == {"enabled": True, "effort": "medium"}
 
 

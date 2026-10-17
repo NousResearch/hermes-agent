@@ -125,6 +125,36 @@ class TestRunJobScript:
         assert success is False
         assert expected in output
 
+    def test_missing_module_names_the_package_and_the_interpreter(self, cron_env):
+        """#140534: a script importing a package the runtime does not carry failed with a bare
+        ``ModuleNotFoundError`` — no pointer to the ``--interpreter`` setting that fixes it."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "probe_missing.py"
+        script.write_text("import hermes_probe_module_absent_140534\n")
+
+        success, output = _run_job_script(str(script))
+        assert success is False
+        assert "ModuleNotFoundError" in output
+        assert "'hermes_probe_module_absent_140534' is not part of Hermes' runtime" in output
+        assert "--interpreter" in output
+
+    @pytest.mark.platforms("posix")
+    def test_missing_module_hint_is_silent_when_the_job_pins_an_interpreter(self, cron_env, tmp_path):
+        """The hint describes the runtime boundary: under the job's own venv the missing module is
+        the user's to install, so the failure keeps the script's stderr only."""
+        from cron.scheduler_script import _run_job_script
+
+        python = tmp_path / "python3"
+        python.symlink_to(sys.executable)
+        script = cron_env / "scripts" / "probe_pinned.py"
+        script.write_text("import hermes_probe_module_absent_140534\n")
+
+        success, output = _run_job_script(str(script), interpreter=str(python))
+        assert success is False
+        assert "ModuleNotFoundError" in output
+        assert "not part of Hermes' runtime" not in output
+
     def test_script_stdout_non_utf8_decoded_lossily(self, cron_env):
         """A stray non-UTF-8 byte in script stdout must not fail the run (#105582).
 

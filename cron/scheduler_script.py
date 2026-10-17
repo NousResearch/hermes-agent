@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import logging
 import os
+import re
 import shutil
 import signal
 import stat
@@ -429,6 +430,28 @@ def _script_argv(
     return [python_exe, str(path)], env_overlay, None
 
 
+_MISSING_MODULE_RE = re.compile(r"ModuleNotFoundError: No module named '([^']+)'")
+
+
+def _missing_module_hint(stderr: str, interpreter: Optional[str]) -> str:
+    """The one-line pointer a cron script's import failure needs.
+
+    A ``ModuleNotFoundError`` from a script the job pinned to no interpreter is the runtime
+    boundary, not a bug in the script: the Hermes runtime only carries its own dependencies and
+    scripts used to inherit the user's Python (#140534). Name the package and the setting that
+    fixes it; with an ``interpreter`` the script already ran on the user's own venv, so the
+    missing module is theirs to install and the hint would be noise."""
+    if isinstance(interpreter, str) and interpreter.strip():
+        return ""
+    match = _MISSING_MODULE_RE.search(stderr or "")
+    if match is None:
+        return ""
+    return (
+        f"'{match.group(1)}' is not part of Hermes' runtime. Install it in a Python of your own and "
+        "pin that interpreter with `hermes cron edit <job_id> --interpreter <path/to/python>`."
+    )
+
+
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, interpreter: Optional[str] = None,
@@ -530,6 +553,9 @@ def _run_job_script(
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
                 parts.append(f"stdout:\n{stdout}")
+            hint = _missing_module_hint(stderr, interpreter)
+            if hint:
+                parts.append(hint)
             return False, "\n".join(parts)
         return True, stdout
     except Exception as exc:

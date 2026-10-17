@@ -351,7 +351,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     [listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
-  const cancelRun = useCallback(async () => {
+  const cancelRun = useCallback(async (options?: { throwOnFailure?: boolean }) => {
     const sessionId = runtimeIdRef.current
 
     // Frontend busy clears immediately; gateway wind-down can lag (#83855).
@@ -386,6 +386,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
       )
     } catch (err) {
+      if (options?.throwOnFailure) {
+        throw err
+      }
       notifyError(err, copy.stopFailed)
     }
   }, [bindRecoveredRuntime, copy.stopFailed, requestSessionGateway, update])

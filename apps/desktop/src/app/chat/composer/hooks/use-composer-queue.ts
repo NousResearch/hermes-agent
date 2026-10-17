@@ -93,7 +93,7 @@ interface UseComposerQueueArgs {
  * edge-independent auto-drain with bounded retries. It consumes the draft API
  * (draftRef/clearDraft/loadIntoComposer/focusInput) and writes the
  * coordinator-owned `queueEditRef` so the draft engine can read the edit state
- * without a back-reference. Behaviour-identical to the inline original.
+ * without a back-reference. Manual per-entry sends preserve queue parking.
  */
 export function useComposerQueue({
   activeQueueSessionKey,
@@ -407,19 +407,33 @@ export function useComposerQueue({
   const drainNextQueued = useCallback(async () => (await runDrain(pickDrainHead)) === true, [pickDrainHead, runDrain])
 
   const sendQueuedNow = useCallback(
-    (id: string) => {
-      if (!activeQueueSessionKey || id === queueEdit?.entryId) {
+    async (id: string): Promise<boolean> => {
+      if (
+        !activeQueueSessionKey ||
+        id === queueEdit?.entryId ||
+        !getQueuedPrompts(activeQueueSessionKey).some(entry => entry.id === id)
+      ) {
+        // A stale row removed in another window must not interrupt a turn.
         return false
       }
 
-      // The first per-row request wins until dispatched or explicitly halted.
       const previous = pendingManualSendRef.current
 
-      if (previous && getQueueParkRevision(previous.sessionKey) === previous.parkRevision) {
-        return false
+      if (
+        previous &&
+        previous.sessionKey === activeQueueSessionKey &&
+        getQueueParkRevision(previous.sessionKey) === previous.parkRevision
+      ) {
+        // Cancellation is already in flight; let the user reselect the row.
+        previous.entryId = id
+        triggerHaptic('selection')
+
+        return true
       }
 
       pendingManualSendRef.current = null
+      // Also park an initially unparked idle queue. This is a one-shot, and
+      // leaving auto-drain enabled would race the selected row.
       parkQueuedPrompts(activeQueueSessionKey)
 
       const pending = {
@@ -433,10 +447,7 @@ export function useComposerQueue({
         pendingManualSendRef.current = pending
         triggerHaptic('selection')
 
-        // A transient idle render is not proof that the cancellation succeeded.
-        // On rejection, leave the selected entry in its parked queue.
         const onCancelFailed = () => {
-          // A later explicit Stop or new request already superseded this callback.
           if (
             pendingManualSendRef.current !== pending ||
             getQueueParkRevision(pending.sessionKey) !== pending.parkRevision
@@ -445,11 +456,13 @@ export function useComposerQueue({
           }
 
           pendingManualSendRef.current = null
-          notify({ kind: 'error', title: t.composer.queueStuckTitle, message: t.composer.queueStuckBody })
+          notify({ kind: 'error', title: t.desktop.stopFailed, message: t.composer.queueStuckTitle })
         }
 
         try {
-          void Promise.resolve(onCancel())
+          // Ordinary Stop catches and notifies. The strict variant must reject
+          // on an RPC failure instead of acknowledging a failed interruption.
+          void Promise.resolve(onCancel({ throwOnFailure: true }))
             .then(() => {
               if (pendingManualSendRef.current === pending) {
                 pending.cancelAcknowledged = true
@@ -459,6 +472,7 @@ export function useComposerQueue({
             .catch(onCancelFailed)
         } catch {
           onCancelFailed()
+
           return false
         }
 
@@ -466,18 +480,24 @@ export function useComposerQueue({
       }
 
       // An older drain may still be settling when the UI first renders idle.
-      // Retain the user's selected item until that lock is released.
       if (drainingQueueRef.current || sessionsLoading) {
         pendingManualSendRef.current = pending
+
         return true
       }
 
       drainFailuresRef.current.delete(id)
       clearQueuedPromptDrainFailures(activeQueueSessionKey, id)
 
-      return runDrain(entries => entries.find(e => e.id === id), false)
+      try {
+        return (await runDrain(entries => entries.find(entry => entry.id === id), false)) === true
+      } catch {
+        notify({ kind: 'error', title: t.composer.queueStuckTitle, message: t.composer.queueStuckBody })
+
+        return false
+      }
     },
-    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain, sessionsLoading, t.composer]
+    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain, sessionsLoading, t.composer, t.desktop.stopFailed]
   )
 
   // Deliver a queued entry as a mid-turn redirect — the queue-panel sibling of
@@ -514,9 +534,9 @@ export function useComposerQueue({
 
       const accepted = await Promise.resolve(onSteer(resolved.transportText))
 
-      // Rejected (turn already settling, gateway said no): leave the entry
-      // queued exactly where it was — the settle drain picks it up, so the
-      // words are never lost. Only a delivered redirect consumes the entry.
+      // Rejected (turn already settling, gateway said no): keep this queued
+      // entry. Auto-drain picks it up only when the queue is not parked.
+      // Only a delivered redirect consumes the entry.
       if (!accepted) {
         return false
       }

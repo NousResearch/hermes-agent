@@ -8,6 +8,7 @@ import {
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getFrozenQueuedTransport,
+  getQueueParkRevision,
   getQueuedPrompts,
   isQueueParked,
   migrateQueuedPrompts,
@@ -278,6 +279,18 @@ describe('parked queue sessions', () => {
     unparkQueuedPrompts(SESSION_KEY)
 
     expect(isQueueParked(SESSION_KEY)).toBe(false)
+  })
+
+  it('internal fallback enqueue preserves the existing park and revision', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
+    parkQueuedPrompts(SESSION_KEY)
+    const revision = getQueueParkRevision(SESSION_KEY)
+
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'hidden note', displayKind: 'hidden' }, { resumeQueue: false })
+
+    expect(isQueueParked(SESSION_KEY)).toBe(true)
+    expect(getQueueParkRevision(SESSION_KEY)).toBe(revision)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['first', 'hidden note'])
   })
 
   it('queueing a fresh prompt lifts the park', () => {

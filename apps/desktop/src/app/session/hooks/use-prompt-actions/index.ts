@@ -704,7 +704,7 @@ export function usePromptActions({
     [copy.sttDisabled, sttEnabled]
   )
 
-  const cancelRun = useCallback(async () => {
+  const cancelRun = useCallback(async (options?: { throwOnFailure?: boolean }) => {
     // Read from the ref, not the closure-captured `activeSessionId`. The
     // actions bag is a stable ref mutated in place (Object.assign on each
     // ContribWiring render), and ChatRoutesSurface is memoized on that stable
@@ -727,6 +727,10 @@ export function usePromptActions({
     if (!sessionId) {
       releaseBusy()
       setMessages(finalizeStoppedMessages($messages.get()))
+
+      if (options?.throwOnFailure) {
+        throw new Error('No active session to interrupt')
+      }
 
       return
     }
@@ -785,6 +789,9 @@ export function usePromptActions({
       releaseBusy()
     } catch (err) {
       releaseBusy()
+      if (options?.throwOnFailure) {
+        throw err
+      }
       notifyError(err, copy.stopFailed)
     }
   }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])

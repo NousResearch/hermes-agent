@@ -13,6 +13,7 @@ from . import (
     i18n,
     liveness,
     machine,
+    mcp_apps,
     profiles_vault_complete_foreign_subagents,
     projects_pets,
     prompt_voice,

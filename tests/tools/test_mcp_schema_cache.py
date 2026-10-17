@@ -116,7 +116,7 @@ class TestWriteThroughPreservesSchema:
         "required": ["query", "model"],
     }
 
-    def _cache_write_through(self, tmp_path, monkeypatch):
+    def _cache_write_through(self, tmp_path, monkeypatch, tools=None):
         import json
         from unittest.mock import MagicMock, patch
 
@@ -133,7 +133,7 @@ class TestWriteThroughPreservesSchema:
                      "_mcp_tool_server_names", "_server_trust_levels", "_tool_read_only_hints"):
             monkeypatch.setattr(mt, attr, {})
         server = mt.MCPServerTask("probe_srv")
-        server._tools = [
+        server._tools = tools or [
             Tool(name="zhida", description="知乎直答", inputSchema=self._SCHEMA)
         ]
         server.session = MagicMock()
@@ -162,3 +162,25 @@ class TestWriteThroughPreservesSchema:
         assert schema is not None, "lazy path did not register the tool"
         assert set(schema["parameters"].get("properties", {})) == {"query", "model"}
         assert schema["parameters"].get("required") == ["query", "model"]
+
+    def test_cache_keeps_mcp_app_ui_so_app_only_tools_stay_off_the_lazy_path(self, tmp_path, monkeypatch):
+        """MCP Apps: a ``visibility: ["app"]`` tool never reaches the model, cached or live. The
+        cache row keeps ``_meta.ui`` (the deprecated flat ``ui/resourceUri`` folded in), or a lazy
+        startup would advertise the app-only tool until the first live connect."""
+        from unittest.mock import patch
+
+        from mcp.types import Tool
+
+        from tools.registry import ToolRegistry
+
+        uri = "ui://probe_srv/view.html"
+        entry = self._cache_write_through(tmp_path, monkeypatch, tools=[
+            Tool(name="view", inputSchema={"type": "object"}, _meta={"ui/resourceUri": uri}),
+            Tool(name="refresh", inputSchema={"type": "object"},
+                 _meta={"ui": {"resourceUri": uri, "visibility": ["app"]}}),
+        ])
+        assert {row["name"]: row.get("ui") for row in msc.tools_from_cache_entry(entry)} == {
+            "view": {"resourceUri": uri}, "refresh": {"resourceUri": uri, "visibility": ["app"]}}
+        with patch("tools.registry.registry", ToolRegistry()):
+            names = _mcp_registration._register_from_cache_sync("probe_srv", {}, entry)
+        assert "mcp__probe_srv__view" in names and "mcp__probe_srv__refresh" not in names, names

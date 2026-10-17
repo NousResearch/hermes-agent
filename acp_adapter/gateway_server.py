@@ -347,7 +347,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             self._editor_mcp[session_id] = resume_params['editor']
         from acp_adapter.server import _history_replay_updates
         if self._conn:
-            for update in _history_replay_updates(snapshot["messages"]):
+            # The editor replays the live transcript in stored order, as main's ACP did; archived rows
+            # (summarized away by a compression) are display-only.
+            live = sorted((m for m in snapshot["messages"] if not m.get("archived")), key=lambda m: m.get("row_id") or 0)
+            for update in _history_replay_updates(live):
                 await self._conn.session_update(session_id=held_id, update=update)
         for pending in snapshot.get("prompts", []):
             self._permission(session_id, pending)

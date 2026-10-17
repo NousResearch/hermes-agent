@@ -223,7 +223,7 @@ class GatewaySessionStore:
         from hermes_state_rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)
-        durable = list(snapshot.get("messages") or [])
+        durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)

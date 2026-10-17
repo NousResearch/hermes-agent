@@ -122,6 +122,11 @@ def _rewind(db, conn, session_id, payload):
     from hermes_state_local_lineage import local_physical_target
     physical = local_physical_target(conn, session_id)
     require_idle(db, conn, list({session_id, physical}))
+    # Only a live row is a turn to rewind to. A row a compression archived (still shown in history) or
+    # an earlier rewind removed would deactivate every live row after it, the whole live conversation.
+    if conn.execute('SELECT 1 FROM messages WHERE id=? AND session_id=? AND active=1',
+                    (payload['target_message_id'], physical)).fetchone() is None:
+        raise RuntimeStoreError('invalid_params')
     # A composite compaction carrier (summary + the next ask in one row) keeps its handoff, as
     # main's rewind does; the receipt reports the live ask, so /retry resubmits it, not the summary.
     live = _carrier_live_view(db, conn, physical, payload['target_message_id'])

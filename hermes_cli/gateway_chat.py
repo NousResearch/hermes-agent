@@ -236,7 +236,9 @@ async def run_gateway_chat(args, emitter=None):
         view.resume_footer = oneshot and not quiet
         if (getattr(args, "resume", None) or title or latest) and not quiet:
             for row in snapshot.get("messages", []):
-                if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str):
+                # A micro-compaction merge (model_only) is not printed: its original prompts are.
+                merged = isinstance(row.get("display_metadata"), dict) and row["display_metadata"].get("model_only")
+                if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
         return await view.run(query, oneshot=oneshot)
 

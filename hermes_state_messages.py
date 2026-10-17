@@ -24,7 +24,7 @@ from hermes_state_common import (
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_identity import (
-    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
+    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -1200,23 +1200,43 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         """Fixed-width durable identity for indexed display-generation lookup."""
         return hashlib.sha256(repr(key).encode("utf-8", "surrogatepass")).digest()
 
-    def _dedupe_display_generations(self, rows):
+    def _dedupe_display_generations(self, rows, *, drop_removed: bool = False):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
-        the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``."""
+        the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``.
+
+        *drop_removed*: *rows* also hold the removed rows (``active=0, compacted=0``: rewound, or replaced by a
+        newer copy) and ``compacted``. A message whose newest copy is removed is not shown, so a rewind in a
+        compression child never brings back the parent's copy. Copies share the display key or ``message_uid``
+        (a micro-compaction merge also stands for the rows it absorbed)."""
         seen: dict[tuple[Any, ...], Any] = {}
         first_id: dict[tuple[Any, ...], int] = {}
+        removed: dict[Any, bool] = {}  # copy identity -> its newest copy is removed (rows come in id order)
+        identities: dict[tuple[Any, ...], list[Any]] = {}
         for row in rows:
+            copies = None
+            if drop_removed:
+                key = self._display_dedupe_key(row)
+                copies = [key, *(("uid", uid) for uid in (row["message_uid"],
+                                                          *_uid_list(row["absorbed_message_uids"])) if uid)]
+                gone = not row["active"] and not row["compacted"]
+                removed.update(dict.fromkeys(copies, gone))
+                if gone:
+                    continue
             if self._is_model_only_row(row):
                 continue
-            key = self._display_dedupe_key(row)
+            key = copies[0] if copies else self._display_dedupe_key(row)
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
+                identities[key] = copies
             first_id[key] = min(first_id.get(key, row["id"]), row["id"])
         # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
         # copy in a newer generation has a higher id than messages emitted after the original.
-        return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
+        keys = sorted(seen, key=first_id.__getitem__)
+        if drop_removed:
+            keys = [key for key in keys if not any(removed[copy] for copy in identities[key])]
+        return [seen[key] for key in keys]
 
     def _reconcile_display_orders(self, conn, session_id: str) -> None:
         """Re-fold split display generations by the recomputed display key.
@@ -1409,8 +1429,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
             # canonical multi-segment projection in get_messages_as_conversation(include_ancestors=True).
             # (display_order is per-segment and not comparable across segments, so the per-segment
             # display_order paging below does not apply across a lineage.)
+            display = include_compacted and not include_inactive  # removed rows too: see drop_removed
             rows = self._dedupe_display_generations(self._read_all(
-                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)})" + active_clause + " ORDER BY id ASC", session_ids))
+                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
+                + ("" if display else active_clause) + " ORDER BY id ASC", session_ids), drop_removed=display)
             rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
         elif include_compacted and not include_inactive and self._ensure_display_order(session_id):
             # _read_retrying_ioerr: mode=ro pooled readers see a transient IOERR mid-checkpoint (#100871).
@@ -1506,11 +1528,13 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
                 seen.add(current)
             return best if best is not None else session_id
 
-    def _fetch_conversation_rows(self, session_ids: list[str], active_clause: str, *, with_session_id: bool):
+    def _fetch_conversation_rows(self, session_ids: list[str], active_clause: str, *, with_session_id: bool,
+                                 with_compacted: bool = False):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
-        and would break tool-call adjacency)."""
+        and would break tool-call adjacency). ``with_compacted``: also the ``compacted`` column."""
         return self._read_all(
-            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS} "
+            f"SELECT {'session_id, ' if with_session_id else ''}{'compacted, ' if with_compacted else ''}"
+            f"{self._CONVERSATION_ROW_COLUMNS} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
             f"{active_clause} ORDER BY id", tuple(session_ids))
 
@@ -1523,11 +1547,13 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
         cannot merge with an original user turn; the stored transcript is never mutated."""
+        display = include_compacted and not include_inactive  # removed rows too: see drop_removed
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False)
+            "" if display else self._active_clause(include_inactive, include_compacted), with_session_id=False,
+            with_compacted=display)
         if include_compacted:
-            rows = self._dedupe_display_generations(rows)
+            rows = self._dedupe_display_generations(rows, drop_removed=display)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
             include_summary_markers=repair_alternation)
@@ -1661,7 +1687,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         always included them) disagreed with this one about the same session (#92080).
         """
         rows = self._fetch_conversation_rows(
-            self._resume_lineage_ids(session_id), _DISPLAY_ACTIVE_CLAUSE, with_session_id=True)
+            self._resume_lineage_ids(session_id), "", with_session_id=True, with_compacted=True)
         # The model projection stays active-only: it is the compressed working context. The gateway's
         # first-turn ``session_meta`` marker (tools/model/platform bookkeeping) is transcript logging,
         # never LLM input: a resuming surface that fed it to the agent would count it in the history
@@ -1671,7 +1697,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
             session_id=session_id,
             include_ancestors=False, repair_alternation=True, include_row_ids=True, include_summary_markers=True)
         display_history = self._rows_to_conversation(
-            self._dedupe_display_generations(rows), session_id=session_id,
+            self._dedupe_display_generations(rows, drop_removed=True), session_id=session_id,
             include_ancestors=True, repair_alternation=False, include_row_ids=True)
         return model_history, display_history
 
@@ -1743,8 +1769,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin):
         session_ids = self._resume_lineage_ids(session_id)
         if len(session_ids) <= 1:
             return []
-        rows = self._dedupe_display_generations(
-            self._fetch_conversation_rows(session_ids, _DISPLAY_ACTIVE_CLAUSE, with_session_id=True))
+        rows = self._dedupe_display_generations(self._fetch_conversation_rows(
+            session_ids, "", with_session_id=True, with_compacted=True), drop_removed=True)
         ancestor_ids = {int(row["id"]) for row in rows if row["session_id"] != session_id and row["id"] is not None}
         if not ancestor_ids:
             return []

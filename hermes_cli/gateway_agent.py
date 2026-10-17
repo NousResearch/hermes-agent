@@ -500,7 +500,8 @@ class GatewayAgent:
         compressor.compression_count += 1
         compressor.last_prompt_tokens = -1
         self._turn_base_usage_anchor = None
-        return [{k: v for k, v in m.items() if k != "row_id"} for m in after.get("messages") or []], system_message
+        return [{k: v for k, v in m.items() if k != "row_id"} for m in after.get("messages") or []
+                if not m.get("archived")], system_message
 
     def steer(self, text):
         return self._correct("steer", text)

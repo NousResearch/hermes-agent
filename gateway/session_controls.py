@@ -103,6 +103,13 @@ def display_projection(history, profile_home):
     return server._history_to_messages(rows, profile_home=profile_home)
 
 
+def model_only(row):
+    """A live row the model reads but nobody typed as one message (a micro-compaction merge): never rendered."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+    metadata = row.get('display_metadata')
+    return isinstance(metadata, dict) and bool(metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY))
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -612,7 +619,9 @@ class AuthorityConnection:
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         display = {}
         if params.get('display_projection'):
-            display['display_messages'] = display_projection(snapshot.history, self.authority.profile_id)
+            # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
+            display['display_messages'] = display_projection(
+                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
                 'running': snapshot.handle.execution_state == 'running',

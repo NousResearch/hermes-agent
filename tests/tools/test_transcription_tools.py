@@ -459,6 +459,83 @@ class TestLocalModelLoading:
     not __import__("importlib").util.find_spec("faster_whisper"),
     reason="faster_whisper not installed",
 )
+class TestLocalWhisperDevicePinning:
+    """``_load_local_whisper_model`` pin vs force-CPU interaction.
+
+    The Apple Silicon force-CPU default must not swallow an explicit
+    ``stt.local`` pin, and a pinned device that fails to load must still get
+    the graceful CUDA → CPU fallback instead of hard-failing transcription
+    (the load happens outside the outer CPU retry in transcription_tools).
+    Everything is monkeypatched, so these run on every lane.
+    """
+
+    def _force_cpu(self, monkeypatch, attempts, fail_devices=(), cpu_model=None):
+        import tools.transcription_local as tl
+
+        monkeypatch.setattr(tl, "_should_force_faster_whisper_cpu", lambda: True)
+        cpu_model = cpu_model if cpu_model is not None else object()
+
+        def fake_create(model_name, device, compute_type):
+            attempts.append((device, compute_type))
+            if device in fail_devices:
+                raise RuntimeError("Unable to load libcublas.dylib (error 1)")
+            if device == "cpu":
+                return cpu_model
+            return object()
+
+        monkeypatch.setattr(tl, "_create_whisper_model", fake_create)
+        return cpu_model
+
+    def test_pinned_cuda_that_fails_to_load_falls_back_to_cpu(self, monkeypatch):
+        import tools.transcription_local as tl
+
+        attempts = []
+        cpu_model = self._force_cpu(monkeypatch, attempts, fail_devices=("cuda",))
+        assert tl._load_local_whisper_model(
+            "base", device="cuda", compute_type="float16") is cpu_model
+        # The degradation target is int8: it is the compute type guaranteed to
+        # load on any CPU, so a GPU-oriented float16 pin can't turn the
+        # fallback into a second hard failure.
+        assert attempts == [("cuda", "float16"), ("cpu", "int8")]
+
+    def test_pinned_cuda_that_loads_is_honored_under_force_cpu(self, monkeypatch):
+        import tools.transcription_local as tl
+
+        attempts = []
+        model = self._force_cpu(monkeypatch, attempts)
+        assert tl._load_local_whisper_model(
+            "base", device="cuda", compute_type="float16") is not None
+        assert attempts == [("cuda", "float16")]
+
+    def test_pinned_cpu_config_passes_through_single_attempt(self, monkeypatch):
+        import tools.transcription_local as tl
+
+        attempts = []
+        self._force_cpu(monkeypatch, attempts)
+        tl._load_local_whisper_model("base", device="cpu", compute_type="float32")
+        assert attempts == [("cpu", "float32")]
+
+    def test_device_only_pin_still_carries_int8_default(self, monkeypatch):
+        import tools.transcription_local as tl
+
+        attempts = []
+        self._force_cpu(monkeypatch, attempts)
+        tl._load_local_whisper_model("base", device="cpu", compute_type="auto")
+        assert attempts == [("cpu", "int8")]
+
+    def test_unpinned_force_cpu_default_unchanged(self, monkeypatch):
+        import tools.transcription_local as tl
+
+        attempts = []
+        self._force_cpu(monkeypatch, attempts)
+        tl._load_local_whisper_model("base", device="auto", compute_type="auto")
+        assert attempts == [("cpu", "int8")]
+
+
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("faster_whisper"),
+    reason="faster_whisper not installed",
+)
 class TestTranscribeLocalExtended:
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""

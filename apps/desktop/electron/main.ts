@@ -15164,8 +15164,8 @@ async function probeSshProfileInventory(connection) {
   )
 
   try {
-    await ssh.open()
-    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
+    const platform = await ssh.open().then(() => detectRemotePlatform(ssh, sshConfig.remoteHermesPath || ''))
+    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh, platform)
 
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)
@@ -15175,7 +15175,7 @@ async function probeSshProfileInventory(connection) {
     // install id at all, so two addresses for one machine never collapse into one roster row
     // (#88828 wired this for remote/local only, through /api/status).
     connectionInstallIds.set(connection.id, {
-      id: await remoteLifecycle.readRemoteInstallId(ssh),
+      id: await remoteLifecycle.readRemoteInstallId(ssh, platform),
       ts: Date.now()
     })
   } catch (error: any) {

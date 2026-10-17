@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 import { resolveReadyTimeoutMs } from './remote-lifecycle'
 import { WINDOWS_CHECKOUT_LOCK_PS, WINDOWS_MARKER_JUDGE_PS } from './remote-update-marker-programs'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
+import { WINDOWS_NO_REPARSE_PS, windowsHelperArgv, windowsRuntimeProgramArgv } from './windows-runtime-command'
 
 const LOCKFILE_SCHEMA_VERSION = 2
 const PROTOCOL_VERSION = 1
@@ -36,14 +37,15 @@ function stripPowerShellNoise(stdout) {
     .filter(line => line.trim() && !line.trimStart().startsWith('#< CLIXML'))
 }
 
-// Keep long probes out of the remote command line. Windows' default OpenSSH
-// command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
-// SshConnection.exec already supports streaming stdin to the remote command.
+// A bare -Command expression is evaluated by an outer PowerShell SSH shell.
+// Encode only the bootstrap; long Unicode payloads still travel on stdin.
 function powerShellStdinCommand() {
-  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
+  return powerShellCommand(
+    '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$payload=[Console]::In.ReadToEnd();$script=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($payload));& ([scriptblock]::Create($script))'
+  )
 }
 
-async function probeWindowsRemote(ssh, explicitHermesPath = '') {
+async function probeWindowsFiles(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
   const script = [
@@ -58,11 +60,11 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     'while($true){',
     'try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop}catch [Management.Automation.ItemNotFoundException]{if(-not $allowMissing -and $first){throw "Path was not found: $candidate"};$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false;continue}',
     'if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "Path contains a link or reparse point: $current"}',
-    '$parent=$item.Parent.FullName;if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
+    '$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
     '}',
     '}',
     `$explicit=${explicit}`,
-    'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
+    'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $true}',
     // HERMES_HOME is only trusted when it names a directory on the REMOTE: a stale User-scope
     // value (older install.ps1 persisted one) or a client path leaked over SSH otherwise fails
     // assertSafeRemoteHome as "Unsafe remote Hermes home" (#118988).
@@ -86,13 +88,13 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '$candidates+=$fallbackHomeCandidate',
     '$candidates+=$fallbackProfileCandidate',
     '$hermes=$null',
-    'foreach($candidate in $candidates){Assert-NoReparse $candidate $true;$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe");Assert-NoReparse $candidatePython $true;try{$item=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $item.PSIsContainer){$hermes=$item.FullName;break}}catch [Management.Automation.ItemNotFoundException]{continue}}',
+    'foreach($candidate in $candidates){Assert-NoReparse $candidate $true;$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe");Assert-NoReparse $candidatePython $true;try{$item=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $item.PSIsContainer){$pair=Test-Path -LiteralPath $candidatePython -PathType Leaf;if($pair -or (Split-Path -Leaf (Split-Path -Parent $candidate)) -ieq "bin"){$hermes=$item.FullName;break}}}catch [Management.Automation.ItemNotFoundException]{continue}}',
     'if(-not $hermes){throw "Hermes is not installed on the remote Windows host."}',
     'Assert-NoReparse $hermes $false',
     'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not an executable file."}',
     '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
-    'Assert-NoReparse $python $false',
-    '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
+    'if(Test-Path -LiteralPath $python -PathType Leaf){Assert-NoReparse $python $false}else{$python=""}',
+    '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;launcherPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join('\r\n')
 
   // Windows OpenSSH may serialize PowerShell's progress stream as
@@ -113,6 +115,56 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   }
 
   return parsed
+}
+
+async function probeWindowsRemote(ssh, explicitHermesPath = '') {
+  const parsed = await probeWindowsFiles(ssh, explicitHermesPath)
+
+  // Resolve only after the OS-only marker gate: never import a changing checkout.
+  if (parsed.launcherPath) {
+    await assertWindowsRemoteInstallUpdateClear(ssh, parsed.hermesHome)
+
+    return resolveWindowsLauncher(ssh, parsed)
+  }
+
+  return parsed
+}
+
+async function resolveWindowsLauncher(ssh: any, runtime: any) {
+  const script = [
+    '$ProgressPreference="SilentlyContinue"',
+    '$ErrorActionPreference="Stop"',
+    WINDOWS_NO_REPARSE_PS,
+    `Assert-NoReparse ${psLiteral(runtime.hermesPath)} $false`,
+    `$lines=@(& ${psLiteral(runtime.hermesPath)} '--print-runtime-command');$code=$LASTEXITCODE`,
+    'if($code -ne 0){throw "The Hermes launcher does not support --print-runtime-command; refresh the Windows installation launcher."}',
+    '$command=$lines[-1]|ConvertFrom-Json',
+    'if($command -isnot [array] -or $command.Count -lt 2 -or -not [IO.Path]::IsPathRooted([string]$command[0])){throw "Invalid Hermes runtime command"}',
+    'foreach($part in $command){if($part -isnot [string] -or $part.Contains([char]0)){throw "Invalid Hermes runtime argument"}}',
+    'Assert-NoReparse ([string]$command[0]) $false',
+    '[ordered]@{python=[string]$command[0];runtimeCommand=@($command)}|ConvertTo-Json -Depth 5 -Compress'
+  ].join('\r\n')
+
+  let resolved
+
+  try {
+    const output = await ssh.exec(powerShellStdinCommand(), { stdinData: `${encodedPowerShell(script)}\r\n` })
+    resolved = JSON.parse(stripPowerShellNoise(output).pop() || 'null')
+
+    if (!Array.isArray(resolved?.runtimeCommand) || !resolved.runtimeCommand.every(part => typeof part === 'string' && !part.includes('\0')) || typeof resolved.python !== 'string' || !/^[a-z]:[\\/]/i.test(resolved.python)) {
+      throw new Error('Invalid Windows launcher runtime response.')
+    }
+
+    windowsRuntimeProgramArgv({ ...runtime, ...resolved }, 'pass')
+  } catch (cause: any) {
+    if (TRANSPORT_KINDS.has(cause?.kind)) {throw cause}
+    const error: any = new Error('Refresh the remote Windows Hermes launcher: its boot-selecting runtime could not be resolved.')
+    error.kind = 'update-required'
+    error.cause = cause
+    throw error
+  }
+
+  return { ...runtime, ...resolved }
 }
 
 // The checkouts whose update lock guards a dead marker (update_lock._reclaim_dead):
@@ -157,7 +209,7 @@ public static class HermesMarkerNoFollow {
     'while($true){',
     'try{$item=Get-Item -LiteralPath $current -Force -ErrorAction Stop}catch [Management.Automation.ItemNotFoundException]{if(-not $allowMissing -and $first){throw "Path was not found: $candidate"};$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false;continue}',
     'if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw "Path contains a link or reparse point: $current"}',
-    '$parent=$item.Parent.FullName;if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
+    '$parent=[IO.Path]::GetDirectoryName($current);if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
     '}',
     '}',
     `$hermesHome=${psLiteral(hermesHome)}`,
@@ -285,7 +337,7 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
 }
 
 function helperCommand(runtime, operation, args = []) {
-  const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation, ...args]
+  const argv = windowsHelperArgv(runtime, operation, args)
 
   const script = [
     '$ProgressPreference="SilentlyContinue"',
@@ -311,13 +363,15 @@ async function helper(ssh, runtime, operation, args = [], stdinData?) {
   return parsed
 }
 
-function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
-  const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', 'spawn']
-  const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
+function atomicWindowsSpawnCommand(runtime, reservation: any = {}, payload?: string) {
+  const argv = windowsHelperArgv(runtime, 'spawn')
+  const helper = operation => windowsHelperArgv(runtime, operation)
+  const invokeSpawn = `${payload == null ? '' : `${psLiteral(payload)} | `}& ${argv.map(psLiteral).join(' ')}`
 
   const script = [
     '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
+    '$OutputEncoding=[Text.UTF8Encoding]::new($false)',
     WINDOWS_MARKER_JUDGE_PS,
     WINDOWS_CHECKOUT_LOCK_PS,
     `$hermesHome=${psLiteral(runtime.hermesHome)}`,
@@ -343,8 +397,8 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
         `& ${helper('remove-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}|Out-Null}`
       : '',
     reservation.ownershipId
-      ? `  $spawnLines=@(& ${argv.map(psLiteral).join(' ')}); $spawnExit=$LASTEXITCODE`
-      : `  & ${argv.map(psLiteral).join(' ')}`,
+      ? `  $spawnLines=@(${invokeSpawn}); $spawnExit=$LASTEXITCODE`
+      : `  ${invokeSpawn}`,
     reservation.ownershipId
       ? '  if($spawnExit -ne 0){exit $spawnExit}'
       : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
@@ -362,7 +416,8 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
 }
 
 async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
-  const output = await ssh.exec(atomicWindowsSpawnCommand(runtime, reservation), { stdinData })
+  const encoded = atomicWindowsSpawnCommand(runtime, reservation, stdinData).split(' ').at(-1)
+  const output = await ssh.exec(powerShellStdinCommand(), { stdinData: `${encoded}\r\n` })
 
   const lines = stripPowerShellNoise(output)
 
@@ -636,6 +691,12 @@ async function connectWindowsRemote(deps) {
   await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
   const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
 
+  if (runtime.runtimeCommand && inspection.runtimeBootstrapOwnership !== 1) {
+    const error: any = new Error('The remote Windows SSH helper must be updated with boot-selecting runtime ownership support before connecting.')
+    error.kind = 'update-required'
+    throw error
+  }
+
   if (!inspection.supported) {
     const error: any = new Error('Update Hermes on the remote Windows host before connecting with Desktop SSH.')
     error.kind = 'update-required'
@@ -836,6 +897,7 @@ function buildWindowsInteractiveCommand(remoteCwd = '') {
 
 export {
   assertWindowsRemoteInstallUpdateClear,
+  atomicWindowsSpawn,
   atomicWindowsSpawnCommand,
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
@@ -844,6 +906,8 @@ export {
   helper,
   helperCommand,
   powerShellCommand,
+  powerShellStdinCommand,
+  probeWindowsFiles,
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,

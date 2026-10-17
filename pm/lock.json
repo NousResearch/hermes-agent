@@ -78,31 +78,31 @@
     "cua-driver": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "f827a393c0dae24943ddb454d85abb6b592d8636e6a99f6c349f81f5f516975f",
-          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-darwin-universal.tar.gz"
+          "sha256": "84c4cb9abd3f92324a34a191a77c58027881454168a6a84fc6d6767b3760de2f",
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.35.2/cua-driver-rs-0.35.2-darwin-universal.tar.gz"
         },
         "darwin-x64": {
-          "sha256": "f827a393c0dae24943ddb454d85abb6b592d8636e6a99f6c349f81f5f516975f",
-          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-darwin-universal.tar.gz"
+          "sha256": "84c4cb9abd3f92324a34a191a77c58027881454168a6a84fc6d6767b3760de2f",
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.35.2/cua-driver-rs-0.35.2-darwin-universal.tar.gz"
         },
         "linux-arm64": {
-          "sha256": "6b3a308c6741dd8291aad22a308bd2ec8eb52eab64687be007ac86ceaf7e3307",
-          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-linux-arm64-binary.tar.gz"
+          "sha256": "484d5c5cffa9c32d09244d4dfee078a1c4e8a175e1173f9129ec3bd113e45deb",
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.35.2/cua-driver-rs-0.35.2-linux-arm64-binary.tar.gz"
         },
         "linux-x64": {
-          "sha256": "cf29bfaad16737e31e72f38dad2a6424f24b21a4ac2edea885e83cb9d5034135",
-          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-linux-x86_64-binary.tar.gz"
+          "sha256": "3a47b35ae8e083af8975c62f873a142f4a47c248c630a0eebfdf90de14d6fccf",
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.35.2/cua-driver-rs-0.35.2-linux-x86_64-binary.tar.gz"
         },
         "win32-arm64": {
-          "sha256": "79caf7e4f55cdab08533abf7ead4038132aa070040669238d806d057f648cc5f",
-          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-windows-arm64-binary.zip"
+          "sha256": "8a4e07c5debd614c53e9689e718074fe0f4e7247a2b4d8527406f59f49cd8025",
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.35.2/cua-driver-rs-0.35.2-windows-arm64-binary.zip"
         },
         "win32-x64": {
-          "sha256": "d63f6a78e65afc06524048f5557fed36cdf01f0a8a680236e93c9a2fb3587f44",
-          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.21.0/cua-driver-rs-0.21.0-windows-x86_64-binary.zip"
+          "sha256": "0eb49cb651986d2888294484be84c25a33e1cd31396e57c457f501358decdd4e",
+          "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.35.2/cua-driver-rs-0.35.2-windows-x86_64-binary.zip"
         }
       },
-      "version": "0.21.0"
+      "version": "0.35.2"
     },
     "dmgbuild": {
       "artifacts": {

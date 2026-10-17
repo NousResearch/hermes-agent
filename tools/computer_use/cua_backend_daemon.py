@@ -76,7 +76,10 @@ def _embedded_daemon_spawn_command(driver_cmd: str, serve_args: list[str], *, pl
     if not resolved_app:
         raise RuntimeError("CuaDriver.app is required for private computer-use sessions on macOS. Run `hermes computer-use install` to restore it.")
     _validate_cua_driver_app_signature(resolved_app)
-    return ["/usr/bin/open", "-n", "-g", "-a", resolved_app, "--args", *serve_args]
+    # LaunchServices makes this an independent signed app, not a child of
+    # an embedding host. The MCP proxy still uses --embedded to fail closed.
+    app_args = [arg for arg in serve_args if arg != "--embedded"]
+    return ["/usr/bin/open", "-n", "-g", "-a", resolved_app, "--args", *app_args]
 
 def _wait_or_kill(process: Any) -> None:
     """Wait 5s for a graceful exit, then terminate (2s), then kill."""
@@ -131,6 +134,8 @@ class _EmbeddedCuaDaemon:
 
     def child_env(self) -> dict[str, str]:
         env = {**_cb().cua_driver_child_env(), "CUA_DRIVER_PERMISSION_MODE": self.permission_mode}
+        if sys.platform == "darwin":
+            env.pop("CUA_DRIVER_EMBEDDED", None)
         if self.permission_mode == "unrestricted":
             env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] = "1"
         return env

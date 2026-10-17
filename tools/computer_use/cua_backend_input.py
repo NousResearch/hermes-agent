@@ -39,8 +39,23 @@ class _InputMixin:
                 if self._active_window_id is None:
                     return _refuse(tool, f"No active window_id for {what}.")
                 args.update(extra() if callable(extra) else extra, window_id=self._active_window_id)
-                return None
+                return self._bind_element_address(tool, args)
         return _refuse(tool, missing_msg) if missing_msg else None
+
+    def _bind_element_address(self, tool: str, args: dict[str, Any]) -> Optional[ActionResult]:
+        """Use a captured token when the live driver has retired integer addressing."""
+        index = args.get("element_index")
+        if index is None or self._session.supports_input_property(tool, "element_index"):
+            return None
+        if not self._session.supports_input_property(tool, "element_token"):
+            return None  # Older schemas still use the integer/capability path.
+        token = self._snapshot_tokens.get(index)
+        if not token:
+            return _refuse(tool, "No current element token; capture the exact window again before acting.",
+                           code="element_token_unavailable")
+        args.pop("element_index")
+        args["element_token"] = token
+        return None
 
     def _apply_delivery(self, action: str, args: dict[str, Any], delivery_mode: Optional[str]) -> Optional[ActionResult]:
         """Attach delivery_mode to an input-action args dict. Background is the default and needs no flag.
@@ -168,4 +183,6 @@ class _InputMixin:
             return refusal
         if element is None:
             return _refuse("set_value", "set_value requires element= (element index).")
-        return self._action("set_value", {**args, "element_index": element, "value": value})
+        args.update(element_index=element, value=value)
+        refusal = self._bind_element_address("set_value", args)
+        return refusal if refusal is not None else self._action("set_value", args)

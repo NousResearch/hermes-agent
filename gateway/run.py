@@ -779,7 +779,7 @@ def _approval_send_outcome(future, timeout: float) -> str:
         return "sent"
     # P5(b): a connector DECLINE is not a lane failure. The connector authorized the destination and refused it;
     # re-sending the same content as plain text into that same chat is the exfiltration the egress guard exists
-    # to stop. `failed` is the cue to fall back, so a decline needs its own verdict — callers must surface it 
+    # to stop. `failed` is the cue to fall back, so a decline needs its own verdict — callers must surface it
     # and send nothing further.
     #
     # CLASSIFY THE STRUCTURED RESPONSE, NOT THE ERROR STRING. The adapter
@@ -4015,6 +4015,13 @@ class GatewayRunner(
             profile=source_profile,
             async_delivery=_async_delivery,
             cron_session="", session_history_delivery=_history_delivery, **_api_vars)
+
+    def _set_turn_session_env(self, context: SessionContext, run_generation: int) -> list:
+        """Bind ordinary tool identity and the originating logical Stop generation together."""
+        from gateway.session_context import set_session_run_generation
+        tokens = self._set_session_env(context)
+        set_session_run_generation(run_generation)
+        return tokens
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

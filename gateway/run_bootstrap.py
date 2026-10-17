@@ -719,8 +719,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         release_supervised_dashboard(held_dashboard)
         return False
     if replace and not fail_closed_if_deleted_holders(get_hermes_home()):
-        release_supervised_dashboard(held_dashboard)
-        return False
+        return False  # Deleted-sidecar refusal leaves the dashboard held down.
 
     from gateway.status import remove_pid_file, release_gateway_runtime_lock
     if not _start_gateway_reserve_profiles(profile_homes):

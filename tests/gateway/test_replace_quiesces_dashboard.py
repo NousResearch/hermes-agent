@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 import gateway.session_db_writers as writers
 
 
@@ -94,3 +96,35 @@ def test_hold_supervised_dashboard_ignores_run_only_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(writers.subprocess, "run", fake_run)
     assert writers.hold_supervised_dashboard_down() == []
     assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("holders_gone", [False, True])
+async def test_replace_dashboard_release_requires_clean_holders(monkeypatch, tmp_path, holders_gone):
+    from unittest.mock import AsyncMock
+    from gateway import code_skew, run, run_bootstrap as bootstrap, status
+    from gateway.config import GatewayConfig
+    from hermes_cli import resource_limits
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(bootstrap, "_start_gateway_resolve_terminal_cwd", lambda: None)
+    monkeypatch.setattr(bootstrap, "_start_gateway_early_environment_probe", lambda: None)
+    monkeypatch.setattr(resource_limits, "apply_nofile_soft_limit", lambda: None)
+    monkeypatch.setattr(code_skew, "record_boot_fingerprint", lambda: None)
+    monkeypatch.setattr(run, "_host_attach_or_none", AsyncMock(return_value=None))
+    monkeypatch.setattr(status, "get_running_pid", lambda: None)
+    calls = []
+    held = [tmp_path / "dashboard"]
+    monkeypatch.setattr(writers, "quiesce_session_db_writers_for_replace",
+                        lambda home: calls.append("held") or held)
+    monkeypatch.setattr(writers, "fail_closed_if_deleted_holders",
+                        lambda home: calls.append("checked") or holders_gone)
+    monkeypatch.setattr(writers, "release_supervised_dashboard",
+                        lambda services: calls.append(("released", services)))
+    monkeypatch.setattr(bootstrap, "_start_gateway_reserve_profiles",
+                        lambda homes: calls.append("reserved") or False)
+    assert await bootstrap.start_gateway(GatewayConfig(), replace=True) is False
+    expected = ["held", "checked"]
+    if holders_gone:
+        expected += ["reserved", ("released", held)]
+    assert calls == expected

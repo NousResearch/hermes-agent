@@ -729,7 +729,8 @@ class MemoryManager:
         return result
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        message = _redact_for_provider(message)
+        # The keyword payload is scrubbed with the message: previous_message is earlier user text too.
+        message, kwargs = _redact_for_provider(message, kwargs)
 
         def _tick(p: MemoryProvider) -> None:
             # A provider written before the author kwargs declares (turn_number, message) only; it still gets its tick.

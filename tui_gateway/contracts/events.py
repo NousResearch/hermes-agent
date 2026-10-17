@@ -823,6 +823,8 @@ event("sessions.changed", ChangeSignalPayload, doc="state.db moved; refetch the 
 event("platforms.changed", ChangeSignalPayload, doc="gateway_state.json moved; refetch platform status.")
 event("projects.changed", ChangeSignalPayload, doc="projects.db moved; refetch the project list + tree.")
 event("pairing.changed", ChangeSignalPayload, doc="Pairing state moved; refetch pairing.")
+event("skills.changed", ChangeSignalPayload,
+      doc="A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway.")
 event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox envelope is queued; drain it.")
 
 

@@ -31,11 +31,14 @@ from tools.skill_provenance import is_background_review
 logger = logging.getLogger(__name__)
 
 # Per-session discovery cache: {cache_key: (signature, timestamp, skills_list)}. Signature =
-# per-dir max mtime of the dir and its immediate children (add/remove inside a category does
-# NOT bump the root mtime) + the disabled set (config-only change, no mtime) + platform; the
-# TTL bounds staleness from in-place SKILL.md edits, which no directory signature can see.
+# every catalog directory's mtime and child-dir names, walked like the catalog itself (an install
+# under an existing category such as ``mlops/training/`` moves only that dir's mtime) + the disabled
+# set (config-only change, no mtime) + platform; the TTL bounds staleness from in-place SKILL.md
+# edits, which no directory signature can see.
 _SKILLS_CACHE: dict = {}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
+# Deepest directory the signature descends to below a root (a skill sits at <cat>/<sub>/<skill>/).
+_SIGNATURE_MAX_DEPTH = 6
 
 
 def clear_skills_cache() -> None:
@@ -43,23 +46,42 @@ def clear_skills_cache() -> None:
     _SKILLS_CACHE.clear()
 
 
+def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
+    """Append ``(dir, mtime_ns, child dir names)`` for *root* and the dirs below it the catalog walks
+    (``iter_skill_index_files``: no excluded dirs, no support dirs of a skill), depth-bounded. The child
+    names, not only mtimes: an install and an uninstall inside one coarse mtime tick (1-2 s on some
+    filesystems) leave every mtime equal, and the change must still show. ~1 ms for 170 dirs."""
+    from agent.skill_utils import EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS
+    try:
+        mtime = os.stat(root).st_mtime_ns
+        with os.scandir(root) as it:
+            entries = list(it)
+    except OSError:
+        return
+    names, is_skill = [], False
+    for entry in entries:
+        with suppress(OSError):
+            if entry.is_dir():
+                names.append(entry.name)
+            elif entry.name == "SKILL.md":
+                is_skill = True
+    names.sort()
+    sig.append((str(root), mtime, tuple(names)))
+    if depth <= 0:
+        return
+    for name in names:
+        if name not in EXCLUDED_SKILL_DIRS and not (is_skill and name in SKILL_SUPPORT_DIRS):
+            _dir_tree_signature(os.path.join(root, name), sig, depth - 1)
+
+
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
-    """O(#dirs + #categories) stat-based change signature; platform is read via
+    """Stat-based change signature over every directory the catalog walks; platform is read via
     ``agent.skill_utils.sys`` so test patches are honored."""
     from agent import skill_utils as _skill_utils
     platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
-    sig = []
+    sig: list = []
     for d in dirs_to_scan:
-        try:
-            m = d.stat().st_mtime
-        except OSError:
-            continue
-        with suppress(OSError), os.scandir(d) as it:
-            for entry in it:
-                with suppress(OSError):
-                    if entry.is_dir(follow_symlinks=False):
-                        m = max(m, entry.stat(follow_symlinks=False).st_mtime)
-        sig.append((str(d), m))
+        _dir_tree_signature(str(d), sig)
     return (tuple(sig), frozenset(disabled), platform)
 
 

@@ -1140,13 +1140,13 @@ class CLITuiMixin:
         run_in_terminal(_suspend)
 
     def _tui_handle_ctrl_d(self, event):
-        """Ctrl+D deletes under the cursor (readline); exits only on empty input, like bash/zsh.
-        Pending attached images count as input so the user doesn't lose them silently."""
+        """Ctrl+D deletes under the cursor (readline); exits only on empty input (pending images count),
+        like bash/zsh. Mid-turn it detaches: the gateway finishes the turn, Ctrl+C stops it (LC-6b)."""
         buf = event.app.current_buffer
         if buf.text:
             buf.delete()
         elif not self._attached_images:
-            self._should_exit = True
+            self._should_exit, self._detach_on_exit = True, bool(self._agent_running)
             event.app.exit()
 
     def _tui_recall_without_recollapse(self, buf, move):

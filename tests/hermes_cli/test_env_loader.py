@@ -587,6 +587,50 @@ def test_other_profile_home_does_not_bridge_process_config(tmp_path, monkeypatch
     assert os.getenv("TERMINAL_ENV") == "docker"
 
 
+def test_dispatcher_kanban_workspace_survives_dotenv_and_config_bridge(tmp_path, monkeypatch):
+    """A worker's exact dispatcher pin outranks persisted profile cwd values."""
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    workspace = tmp_path / "task-worktree"
+    workspace.mkdir()
+    home = _seed_terminal_home(
+        tmp_path,
+        monkeypatch,
+        config_yaml=f"terminal:\n  backend: docker\n  cwd: {configured}\n",
+        env_text=f"TERMINAL_CWD={configured}\n",
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+
+    assert os.environ["TERMINAL_CWD"] == str(workspace.resolve())
+
+
+def test_mismatched_kanban_workspace_does_not_bypass_dotenv_config(tmp_path, monkeypatch):
+    """Partial or forged Kanban markers keep the documented config precedence."""
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    workspace = tmp_path / "task-worktree"
+    workspace.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    home = _seed_terminal_home(
+        tmp_path,
+        monkeypatch,
+        config_yaml=f"terminal:\n  backend: docker\n  cwd: {configured}\n",
+        env_text=f"TERMINAL_CWD={configured}\n",
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_123")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("TERMINAL_CWD", str(other))
+
+    load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+
+    assert os.environ["TERMINAL_CWD"] == str(configured)
+
+
 def test_parent_injected_dashboard_session_token_survives_dotenv(tmp_path, monkeypatch):
     """A parent that spawns `hermes dashboard` mints HERMES_DASHBOARD_SESSION_TOKEN and keeps it for
     its own /api probes; a persisted token in ~/.hermes/.env must not replace it, or the parent gets

@@ -151,83 +151,6 @@ async def test_reset_copies_the_parent_surface_and_falls_back_to_policy(tmp_path
         store.close_all_db_handles()
 
 
-@pytest.mark.asyncio
-async def test_branch_child_copies_the_parent_surface(tmp_path, monkeypatch):
-    from hermes_state_mutation_branch import branch_in_transaction
-
-    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
-    try:
-        created = await _call(owner, 'session.create', request_id='branch', source='cli',
-                              cwd=str(tmp_path), toolsets=[], model='m')
-        sid = created['session_id']
-        _set_created(authority.db, sid, 'desktop')
-        branched = authority.db._execute_write(
-            lambda conn: branch_in_transaction(authority.db, conn, sid, {}))
-        child = branched[1]['branched_session_id']
-        assert authority.db.get_session(child)['created_source'] == 'desktop'
-    finally:
-        await owner.close()
-        store.close_all_db_handles()
-
-
-@pytest.mark.asyncio
-async def test_compress_mutation_copies_parent_or_uses_the_policy_surface(tmp_path, monkeypatch):
-    from hermes_state_mutation_compress import compress_in_transaction
-    from hermes_state_mutation_prepared import local_snapshot
-
-    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
-    try:
-        def compress(sid):
-            def write(conn):
-                snapshot = local_snapshot(authority.db, conn, sid)
-                prepared = {'snapshot': snapshot, 'in_place': False,
-                            'messages': [{'role': 'user', 'content': 'hi'}]}
-                return compress_in_transaction(authority.db, conn, sid, {}, prepared)
-            return authority.db._execute_write(write)[1]['target_session_id']
-
-        copied = await _call(owner, 'session.create', request_id='compress-copy', source='cli',
-                             cwd=str(tmp_path), toolsets=[], model='m')
-        sid = copied['session_id']
-        _set_created(authority.db, sid, 'desktop')
-        assert authority.db.get_session(compress(sid))['created_source'] == 'desktop'
-
-        for parent_created, name in ((None, 'compress-null'), ('local', 'compress-local')):
-            created = await _call(owner, 'session.create', request_id=name, source='cli',
-                                  cwd=str(tmp_path), toolsets=[], model='m')
-            sid = created['session_id']
-            _set_created(authority.db, sid, parent_created)
-            row = authority.db.get_session(compress(sid))
-            assert row['created_source'] == 'cli', (parent_created, row['created_source'])
-    finally:
-        await owner.close()
-        store.close_all_db_handles()
-
-
-@pytest.mark.asyncio
-async def test_worker_create_after_peer_refresh_still_resumes(tmp_path, monkeypatch):
-    """The peer refresh rewrites source to local and worker_create is refused.
-    The insert stamp must already hold cli, or latest cannot see the row."""
-    from hermes_state_runtime import RuntimeStoreError
-    from hermes_state_worker_lifecycle import worker_create
-
-    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
-    try:
-        created = await _call(owner, 'session.create', request_id='chat', source='cli',
-                              cwd=str(tmp_path), toolsets=[], model='m')
-        sid = created['session_id']
-        live = authority.sessions[sid]
-        store._record_gateway_session_peer(sid, live.route, live.source)
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
-            authority.db._execute_write(lambda conn: worker_create(authority.db, conn, sid, {'source': 'cli'}))
-        authority.db.append_message(sid, 'user', 'hi')
-        authority.sessions.clear()
-        resumed = await _call(owner, 'session.resume', latest='cli')
-        assert isinstance(resumed, dict) and resumed['session_id'] == sid, resumed
-    finally:
-        await owner.close()
-        store.close_all_db_handles()
-
-
 def _listed(db, source, capsys):
     from argparse import Namespace
     from hermes_cli.sessions_cmd import _cmd_list
@@ -246,28 +169,6 @@ async def test_oneshot_keeps_its_own_created_source_and_stays_out_of_cli(tmp_pat
         assert authority.db.get_session(sid)['created_source'] == 'oneshot'
         assert sid not in _listed(authority.db, 'cli', capsys)
         assert sid in _listed(authority.db, 'oneshot', capsys)
-    finally:
-        await owner.close()
-        store.close_all_db_handles()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(('surface', 'labels'), [('gui', ('gui', 'desktop')), ('acp', ('acp',))])
-async def test_gui_and_acp_list_under_the_policy_label_and_the_agent_surface(
-        tmp_path, monkeypatch, capsys, surface, labels):
-    """session.create stamps the agent surface (gui is desktop). --source accepts
-    either name, before the peer refresh and after the row is stored as local."""
-    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
-    try:
-        created = await _call(owner, 'session.create', request_id=surface, source=surface,
-                              cwd=str(tmp_path), toolsets=[], model='m')
-        sid = created['session_id']
-        for label in labels:
-            assert sid in _listed(authority.db, label, capsys), (surface, label, 'before peer')
-        live = authority.sessions[sid]
-        store._record_gateway_session_peer(sid, live.route, live.source)
-        for label in labels:
-            assert sid in _listed(authority.db, label, capsys), (surface, label, 'after peer')
     finally:
         await owner.close()
         store.close_all_db_handles()

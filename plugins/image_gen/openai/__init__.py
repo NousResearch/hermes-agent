@@ -76,6 +76,12 @@ def _resolve_endpoint() -> tuple[str, str]:
     return base_url, api_key
 
 
+def _configured_n() -> int:
+    """``image_gen.openai.n``: images per request (each billed); 1 unless set above it."""
+    value = load_image_gen_config("openai").get("n")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 1 else 1
+
+
 def _build_client(openai: Any, base_url: str, api_key: str) -> Any:
     """``openai.OpenAI`` on Hermes' env-only-proxy httpx client, so a local/custom endpoint never
     routes through a macOS system proxy whose ExceptionsList httpx cannot see (#64888). The project
@@ -178,7 +184,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.
         # A custom (non-catalog) model id carries no quality tier: gateways reject unknown enum values.
-        request: dict[str, Any] = dict(model=meta["api_model"], prompt=prompt, size=size, n=1)
+        request: dict[str, Any] = dict(model=meta["api_model"], prompt=prompt, size=size, n=_configured_n())
         if meta["quality"] is not None:
             request["quality"] = meta["quality"]
         if is_edit:
@@ -200,18 +206,23 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         data = getattr(response, "data", None) or []
         if not data:
             return fail("OpenAI returned no image data", "empty_response")
+        image_refs = []
+        for entry in data:
+            image_ref, err = materialize_image(
+                getattr(entry, "b64_json", None), getattr(entry, "url", None),
+                prefix=f"openai_{tier_id}", label="OpenAI", provider="openai",
+                model=tier_id, prompt=prompt, aspect=aspect, log=logger)
+            if err:
+                return err
+            image_refs.append(image_ref)
         first = data[0]
-        image_ref, err = materialize_image(
-            getattr(first, "b64_json", None), getattr(first, "url", None),
-            prefix=f"openai_{tier_id}", label="OpenAI", provider="openai",
-            model=tier_id, prompt=prompt, aspect=aspect, log=logger)
-        if err:
-            return err
         extra: dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        if len(image_refs) > 1:
+            extra["additional_images"] = image_refs[1:]
         if getattr(first, "revised_prompt", None):
             extra["revised_prompt"] = first.revised_prompt
         return success_response(
-            image=image_ref, model=tier_id, prompt=prompt, aspect_ratio=aspect, provider="openai",
+            image=image_refs[0], model=tier_id, prompt=prompt, aspect_ratio=aspect, provider="openai",
             modality="image" if is_edit else "text", extra=extra)
 
 

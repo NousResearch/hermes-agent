@@ -194,6 +194,13 @@ def _plugin_provider_name() -> Optional[str]:
     return configured
 
 
+def _configured_fal_num_images() -> Optional[int]:
+    """``image_gen.fal.num_images`` when above 1 (every image is billed), else None: the catalog default."""
+    from plugins.image_gen._common import load_image_gen_config
+    value = load_image_gen_config("fal").get("num_images")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 1 else None
+
+
 def _resolve_fal_model() -> tuple:
     """Return ``(model_id, meta)`` for the configured FAL model, falling back to DEFAULT_MODEL (warned) when unknown."""
     # FAL_IMAGE_MODEL is an undocumented escape hatch (backward-compat for tests/scripts).
@@ -437,7 +444,8 @@ def image_generate_tool(
     modality = "image" if use_edit else "text"
     overrides: dict[str, Any] = {
         "num_inference_steps": num_inference_steps, "guidance_scale": guidance_scale,
-        "num_images": num_images, "output_format": output_format}
+        "num_images": num_images if num_images is not None else _configured_fal_num_images(),
+        "output_format": output_format}
     debug_call_data = {
         "model": model_id,
         "parameters": {"prompt": prompt, "aspect_ratio": aspect_ratio, **overrides, "seed": seed,
@@ -475,11 +483,14 @@ def image_generate_tool(
                     len(formatted_images), generation_time, upscaled_count, endpoint, modality)
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
-        return finish(generation_time, {
+        response = {
             "success": True,
             "image": formatted_images[0]["url"],
             "modality": modality,
-            "upscaled": bool(formatted_images[0].get("upscaled"))})
+            "upscaled": bool(formatted_images[0].get("upscaled"))}
+        if len(formatted_images) > 1:
+            response["additional_images"] = [img["url"] for img in formatted_images[1:]]
+        return finish(generation_time, response)
     except Exception as e:
         error_msg = f"Error generating image: {e!s}"
         logger.error("%s", error_msg, exc_info=True)
@@ -944,8 +955,9 @@ def _build_dynamic_image_schema() -> dict[str, Any]:
     honor are NOT advertised (the handler still accepts them for replay compat)."""
     base_desc = (
         "Generate high-quality images from text prompts{edit_clause}. "
-        "Returns the result in the `image` field — a URL or an absolute "
-        "file path; reference it in your response using the current "
+        "Returns the result in the `image` field, and any further images "
+        "in `additional_images` — each a URL or an absolute file path; "
+        "reference every one in your response using the current "
         "platform's file-delivery convention."
     )
     info = _active_image_capabilities()

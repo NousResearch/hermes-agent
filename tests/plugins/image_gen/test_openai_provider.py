@@ -378,3 +378,34 @@ class TestGenerate:
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 
+
+
+class TestMultiImage:
+    """``image_gen.openai.n`` asks the endpoint (OpenAI or any compatible gateway) for N images;
+    every one is billed, so every one is cached and returned, not just ``data[0]``."""
+
+    def test_configured_n_is_sent_and_every_image_returned(self, provider, tmp_path):
+        import hermes_yaml as yaml
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {"openai": {"n": 3}}}))
+        fake_client = MagicMock()
+        item = SimpleNamespace(b64_json=_b64_png(), url=None, revised_prompt=None)
+        fake_client.images.generate.return_value = SimpleNamespace(data=[item, item, item])
+
+        with _patched_openai(fake_client):
+            result = provider.generate("three cats")
+
+        assert fake_client.images.generate.call_args.kwargs["n"] == 3
+        assert result["success"] is True
+        paths = [result["image"], *result["additional_images"]]
+        assert len(set(paths)) == 3
+        assert all(Path(p).exists() for p in paths)
+
+    def test_unset_n_requests_a_single_image(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat")
+
+        assert fake_client.images.generate.call_args.kwargs["n"] == 1
+        assert "additional_images" not in result

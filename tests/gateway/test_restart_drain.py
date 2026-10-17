@@ -30,7 +30,7 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     monkeypatch.setattr(
         "gateway.restart.is_container_restart_context", lambda: False
     )
-    runner, _adapter = make_restart_runner()
+    runner, adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
     event = MessageEvent(
         text="/restart",
@@ -45,7 +45,8 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     result = await runner._handle_message(event)
 
     expected = t("gateway.draining", count=1)
-    assert result == expected
+    assert result == ""
+    assert adapter.sent == [expected]
     # Guard against the silent-degradation regression in #22266: if the i18n
     # catalog cannot be resolved (e.g. workers losing the locales path)
     # then ``t("gateway.draining", count=1)`` returns the bare key

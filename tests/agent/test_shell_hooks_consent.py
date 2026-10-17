@@ -7,7 +7,12 @@ hooks_auto_accept: config key).
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -45,7 +50,7 @@ class TestTTYPromptFlow:
             mock_stdin.isatty.return_value = True
             registered = shell_hooks.register_from_config(
                 {"hooks": {"on_session_start": [{"command": str(script)}]}},
-                accept_hooks=False,
+                accept_hooks=False, interactive=True,
             )
         assert len(registered) == 1
 
@@ -64,7 +69,7 @@ class TestTTYPromptFlow:
             mock_stdin.isatty.return_value = True
             registered = shell_hooks.register_from_config(
                 {"hooks": {"on_session_start": [{"command": str(script)}]}},
-                accept_hooks=False,
+                accept_hooks=False, interactive=True,
             )
         assert registered == []
         assert shell_hooks.allowlist_entry_for(
@@ -83,7 +88,7 @@ class TestTTYPromptFlow:
             mock_stdin.isatty.return_value = True
             shell_hooks.register_from_config(
                 {"hooks": {"on_session_start": [{"command": str(script)}]}},
-                accept_hooks=False,
+                accept_hooks=False, interactive=True,
             )
 
         # Reset registration set but keep the allowlist on disk.
@@ -96,7 +101,7 @@ class TestTTYPromptFlow:
             mock_stdin.isatty.return_value = True
             registered = shell_hooks.register_from_config(
                 {"hooks": {"on_session_start": [{"command": str(script)}]}},
-                accept_hooks=False,
+                accept_hooks=False, interactive=True,
             )
         assert len(registered) == 1
 
@@ -135,6 +140,97 @@ class TestNonTTYFlow:
             )
         assert len(registered) == 1
 
+
+
+# ── Never prompt outside a foreground CLI command (#120356, #127822) ──────
+
+
+def _tty_stdin_that_nobody_answers(monkeypatch) -> list:
+    """A hidden console (Windows ``.vbs`` launcher) or ``NUL`` makes ``isatty()`` True with no
+    person behind it; record every ``input()`` instead of blocking on it."""
+    asked: list = []
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", lambda *a: asked.append(a) or "y")
+    return asked
+
+
+def _write_config_with_hook(tmp_path: Path) -> Path:
+    script = _write_hook_script(tmp_path)
+    home = Path(os.environ["HERMES_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        f"hooks:\n  on_session_start:\n    - command: {json.dumps(str(script))}\n", encoding="utf-8")
+    return script
+
+
+class TestNeverPromptOutsideForegroundCLI:
+    def test_default_registration_declines_without_reading_a_tty_stdin(self, tmp_path, monkeypatch, caplog):
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        asked = _tty_stdin_that_nobody_answers(monkeypatch)
+
+        with caplog.at_level(logging.WARNING, logger="agent.shell_hooks"):
+            registered = shell_hooks.register_from_config(
+                {"hooks": {"on_session_start": [{"command": str(script)}]}})
+
+        assert asked == []
+        assert registered == []
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
+        assert str(shell_hooks.allowlist_path()) in caplog.text  # names the profile home to approve in
+
+    def test_opt_in_still_approves_without_a_prompt(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        asked = _tty_stdin_that_nobody_answers(monkeypatch)
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+
+        registered = shell_hooks.register_from_config(
+            {"hooks": {"on_session_start": [{"command": str(script)}]}})
+
+        assert asked == []
+        assert len(registered) == 1
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is not None
+
+    def test_gateway_registration_on_the_event_loop_never_prompts(self, tmp_path, monkeypatch, caplog):
+        """The P0 shape: gateway startup and every secondary-profile load register from the loop
+        thread; a prompt there froze the loop until the liveness watchdog exited 75."""
+        from gateway.run_startup import GatewayStartupMixin
+        from hermes_cli import plugins
+
+        script = _write_config_with_hook(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        asked = _tty_stdin_that_nobody_answers(monkeypatch)
+
+        async def _boot() -> None:
+            asyncio.get_running_loop()  # registered from the loop thread, as startup does
+            GatewayStartupMixin._register_config_hooks("registration failed", level=logging.ERROR)
+
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(_boot())
+
+        assert asked == []
+        assert "registration failed" not in caplog.text
+        assert "not allowlisted" in caplog.text and str(script) in caplog.text
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
+        assert plugins._plugin_manager._hooks.get("on_session_start", []) == []
+
+    def test_force_reload_reregistration_never_prompts(self, tmp_path, monkeypatch, caplog):
+        from hermes_cli import plugins
+
+        script = _write_config_with_hook(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        asked = _tty_stdin_that_nobody_answers(monkeypatch)
+
+        with caplog.at_level(logging.WARNING, logger="agent.shell_hooks"):
+            shell_hooks.re_register_config_hooks()
+
+        assert asked == []
+        assert "not allowlisted" in caplog.text
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
 
 
 # ── Allowlist + revoke + mtime ────────────────────────────────────────────

@@ -1121,8 +1121,10 @@ class GatewayStartupMixin:
     def _register_config_hooks(fail_fmt: str, *fail_args, level: int = logging.DEBUG) -> None:
         """Register declarative shell hooks + outbound webhooks from the CURRENT scope's config.
 
-        Gateway has no TTY, so consent must come from --accept-hooks, HERMES_ACCEPT_HOOKS, or
-        hooks_auto_accept: true; ``accept_hooks=False`` lets register_from_config resolve env + config.
+        The gateway never prompts (register_from_config defaults to ``interactive=False``), even
+        when a hidden console makes stdin look like a TTY, so consent must come from the allowlist,
+        --accept-hooks, HERMES_ACCEPT_HOOKS, or hooks_auto_accept: true; ``accept_hooks=False`` lets
+        register_from_config resolve env + config.
         Never raises (logged at ``level``).
         """
         try:

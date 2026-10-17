@@ -33,6 +33,7 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_key_rotation import _pool_runtime_api_key, pool_retry_key, swap_retry_key
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
@@ -1063,12 +1064,6 @@ def _peek_pool_entry(provider: str, pool: Any = None) -> Optional[Any]:
     except Exception as exc:
         logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
     return None
-
-
-def _pool_runtime_api_key(entry: Any) -> str:
-    # runtime_api_key handles provider-specific fallback (e.g. agent_key for nous); None entry → "".
-    key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-    return str(key or "").strip()
 
 
 def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
@@ -7530,7 +7525,7 @@ def _prepare_aux_request(
 
 class _LadderStep(NamedTuple):
     """A provider request the ladder asks its driver to perform. kind: "call" (client, kwargs) |
-    "retry_same_provider" (provider, model) | "fallback" (fb_client, fb_model, fb_label)."""
+    "retry_same_provider" (provider, model[, failed_key, retry_key]) | "fallback" (fb_client, fb_model, fb_label)."""
     kind: str
     args: tuple
 
@@ -7788,15 +7783,16 @@ def _ladder_credential_rungs(
         if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
+            _retry_key = pool_retry_key(pool_provider, _client_api_key)
             try:
-                return (yield _LadderStep(
-                    "retry_same_provider", (resolved_provider, route.resolved_model))), None
+                return (yield _LadderStep("retry_same_provider",
+                                          (resolved_provider, route.resolved_model, _client_api_key, _retry_key))), None
             except Exception as retry2_err:
-                # Rotated key also hit a wall: mark it now so concurrent processes skip it,
-                # then fall through to the provider fallback.
+                # Rotated key also hit a wall: mark the key the retry sent so concurrent processes
+                # skip it, then fall through to the provider fallback.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err)
+                    _recover_provider_pool(pool_provider, retry2_err, failed_api_key=_retry_key)
                     first_err = retry2_err
                 else:
                     raise
@@ -8129,8 +8125,9 @@ def _ladder_step_call(
     if step.kind == "call":
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
-        retry_provider, retry_model = step.args
-        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        retry_provider, retry_model, *rotation = step.args
+        retry = dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        return "retry", (), swap_retry_key(retry, *rotation) if rotation else retry
     return "fallback", step.args, candidate_kwargs
 
 

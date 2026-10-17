@@ -424,7 +424,6 @@ def _build_children(
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
-    from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
     overrides = _credential_overrides(creds, routing_cfg)
     children = []
@@ -450,19 +449,27 @@ def _build_children(
         if _t_images:
             with _quiet("Could not attach images to child %d", i):
                 child._delegate_images = _t_images
-        # Tee progress events into the live transcript (wrapper keeps the
-        # _flush contract and swallows writer failures).
-        _writer = live_writers[i] if i < len(live_writers) else None
-        if _writer is not None:
-            child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
-            child._live_transcript_path = str(_writer.path)
-        if live_deleg_id:
-            child._delegation_id = live_deleg_id
-            _ident_ref = getattr(child, "_progress_identity_ref", None)
-            if isinstance(_ident_ref, dict):
-                _ident_ref["delegation_id"] = live_deleg_id
+        _attach_live_delegation(child, live_deleg_id, live_writers[i] if i < len(live_writers) else None)
         children.append((i, t, child))
     return children, None
+
+
+def _attach_live_delegation(child: Any, delegation_id: Optional[str], writer: Any) -> None:
+    """Stamp one built child with its batch: the live transcript (``subagent.tail`` reads
+    ``_live_transcript_path``) and the ``delegation_id`` every relayed ``subagent.*`` event carries
+    (the UIs group a batch by it). Shared by ``delegate_task`` and the public lifecycle API, so a
+    lifecycle launch displays exactly like a ``delegate_task`` child."""
+    from tools.delegation_live_log import wrap_progress_callback
+    # Tee progress events into the live transcript (wrapper keeps the
+    # _flush contract and swallows writer failures).
+    if writer is not None:
+        child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), writer)
+        child._live_transcript_path = str(writer.path)
+    if delegation_id:
+        child._delegation_id = delegation_id
+        _ident_ref = getattr(child, "_progress_identity_ref", None)
+        if isinstance(_ident_ref, dict):
+            _ident_ref["delegation_id"] = delegation_id
 
 
 def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:

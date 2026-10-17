@@ -359,6 +359,7 @@ class ToolStartPayload(Payload):
     args_text: str | None = None
     preview: str | None = None
     labels: list[ToolLabel] | None = None
+    card: str | None = None  # "delegate" when the tool declared a ui_card; Desktop renders the delegation card
 
 
 event("tool.start", ToolStartPayload, doc="A tool call began (stable id + full args).")
@@ -378,6 +379,7 @@ class ToolCompletePayload(Payload):
     todos: list[JsonValue] | None = None
     revision: int | None = None
     labels: list[ToolLabel] | None = None
+    card: str | None = None  # "delegate" when the tool declared a ui_card; Desktop renders the delegation card
 
 
 event("tool.complete", ToolCompletePayload, doc="A tool call finished: parsed result, summary, optional diff / todo snapshot.")

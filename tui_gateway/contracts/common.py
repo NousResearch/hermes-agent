@@ -173,6 +173,7 @@ class TranscriptMessage(OpenModel):
     context: str | None = None
     args: dict[str, JsonValue] | None = None
     labels: list[ToolLabel] | None = None
+    card: str | None = None  # "delegate" when the tool declared a ui_card; Desktop renders the delegation card
     reasoning: str | None = None
 
 

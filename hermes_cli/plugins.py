@@ -454,16 +454,16 @@ class PluginContext:
     def register_tool(
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
-        description: str = "", emoji: str = "", override: bool = False,
+        description: str = "", emoji: str = "", override: bool = False, ui_card: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
-        needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
-        any enabled plugin could silently replace a privileged built-in like ``write_file``.
+        needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` in config.yaml
+        (mirrors the ``ctx.llm`` override trust gate, #23194) — otherwise any enabled plugin could
+        silently replace a privileged built-in like ``write_file``.
 
-        ``override=True`` against a built-in tool requires the operator to opt in via
-        ``plugins.entries.<plugin_id>.allow_tool_override: true`` in config.yaml — mirrors the trust gate
-        pattern used for ``ctx.llm`` provider/model overrides (#23194).
+        ``ui_card="delegate"`` makes Hermes Desktop render the call as a delegation card (live and after a
+        transcript reload) and keeps its lifecycle visible under ``display.tool_progress=off``.
         """
         if override and not self._tool_override_allowed(name):
             raise PluginToolOverrideError(
@@ -481,7 +481,7 @@ class PluginContext:
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
             requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope,
+            override=override, scope=scope, ui_card=ui_card,
         )
         registered = registry.snapshot_registration(name, scope=scope)
         handle = None

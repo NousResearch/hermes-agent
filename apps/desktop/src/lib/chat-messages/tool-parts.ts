@@ -3,6 +3,7 @@ import type { ToolLabel } from '@hermes/shared'
 import { TOOL_LABELS_ARG } from '@/lib/connector-tools'
 import { firstStringField, normalize } from '@/lib/text'
 import { isTodoToolName, parseTodos } from '@/lib/todos'
+import { learnToolCard } from '@/lib/tool-render-class'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage, StoredToolCallLabels } from '@/types/hermes'
 
@@ -349,6 +350,9 @@ export function upsertToolPart(
 ): ChatMessagePart[] {
   const stableId = toolId(payload)
   const name = payload?.name || 'tool'
+
+  learnToolCard(name, payload?.card)
+
   // A completion can be the first tool event observed after reconnect, so it
   // also constitutes a text/reasoning -> tool boundary when no start arrived.
   const next = completeOpenStreamParts(parts, occurredAt)
@@ -829,6 +833,20 @@ function storedToolResultMetadata(toolMessage: SessionMessage): ToolResultMetada
   return typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : undefined
 }
 
+// The card kind a tool row carries: the gateway projection's `card`, else the
+// stamp stored with the result (`display_metadata.tool_result_metadata.card`),
+// which is what the REST transcript prefetch serves on a cold load.
+function storedToolCard(toolMessage: SessionMessage): unknown {
+  if (typeof toolMessage.card === 'string') {
+    return toolMessage.card
+  }
+
+  const display = parseMaybeJsonObject(toolMessage.display_metadata)
+  const metadata = parseMaybeJsonObject(display.tool_result_metadata)
+
+  return metadata.card
+}
+
 export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
@@ -857,6 +875,8 @@ export function applyStoredToolResultToParts(
 ): ChatMessagePart[] | null {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
+
+  learnToolCard(toolName, storedToolCard(toolMessage))
 
   const content =
     toolMessage.content !== undefined
@@ -893,6 +913,9 @@ export function applyStoredToolResultToParts(
 
 export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: number): ChatMessagePart {
   const name = toolMessage.tool_name || toolMessage.name || 'tool'
+
+  learnToolCard(name, storedToolCard(toolMessage))
+
   const context = textFromUnknown(toolMessage.context || toolMessage.text || toolMessage.content || '')
   // Prefer the full arguments when the gateway projection carries them:
   // `context` is an 80-char display preview, and the expanded tool row

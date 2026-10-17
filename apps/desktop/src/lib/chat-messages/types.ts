@@ -85,6 +85,8 @@ export type GatewayEventPayload = {
   message?: string
   id?: string
   name?: string
+  /** Gateway-stamped card kind for a tool call (`ui_card=` on the tool), e.g. 'delegate'. */
+  card?: string
   tool_id?: string
   tool_call_id?: string
   args?: unknown

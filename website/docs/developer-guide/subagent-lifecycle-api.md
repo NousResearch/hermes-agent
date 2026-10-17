@@ -58,9 +58,32 @@ This API is lifecycle-managed asynchronous execution. Child construction and
 completion use the same host-owned path as `delegate_task`, including parent
 tool-resolution restoration, memory notification, serialized `subagent_stop`
 hooks, resource cleanup, and child-cost rollup. It does not change the
-synchronous `delegate_task` tool, batch delegation, or its gateway/TUI display.
-The initial implementation retains metadata and terminal results in-process for
-one hour.
+synchronous `delegate_task` tool. The initial implementation retains metadata
+and terminal results in-process for one hour.
+
+## Batches and display
+
+`launch_batch(requests)` starts several children as one delegation and returns
+their handles in request order. Every request is validated and routed before
+any child is built, so one bad request starts nothing. `launch(request)` is a
+batch of one.
+
+Children of either call display the way `delegate_task` children do: the host
+mints one `delegation_id` per batch and stamps `task_index` / `task_count` on
+every relayed `subagent.*` event (the Agents panel groups the batch by it), and
+each child gets a live transcript under `cache/delegation/live/<delegation_id>/`
+(the composer's transcript tail). A plugin cannot pass those values itself; the
+host owns the batch identity.
+
+The inline delegation card in the transcript is keyed on the tool call, not on
+the children: register the tool that launches them with
+`ctx.register_tool(..., ui_card="delegate")`. The gateway then emits that
+tool's lifecycle even with `display.tool_progress: off` and tags its
+`tool.start` / `tool.complete` events (and rehydrated history rows) with
+`card: "delegate"`, which Desktop renders with the same card as `delegate_task`.
+The card reads `tasks[].goal` from the call's arguments and `results[].status`
+(`completed`, `succeeded`, `ok`; `running`, `queued`, `dispatched` for a child
+still working; anything else fails) and `results[].summary` from its result.
 After a process restart, `reconnect` returns `RECONNECT_UNAVAILABLE` and never
 starts a replacement child. Running Python threads also cannot survive process
 exit; callers must treat those handles as interrupted by process exit.

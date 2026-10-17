@@ -52,12 +52,21 @@ function resultRows(result: unknown): Record<string, unknown>[] {
   return results.map(parseMaybeObject)
 }
 
-// The delegate tool settles result rows with statuses like 'ok', 'error',
-// 'timeout', 'failed'/'failure' (tools/delegate_tool.py). Anything that is
-// not a success must render as failed — mapping unknown statuses to
-// 'completed' hid timed-out children behind a green check (#73728, #85492).
+// Two producers feed this: the delegate tool (statuses like 'ok', 'error',
+// 'timeout', 'failed'/'failure' — tools/delegate_tool.py) and plugin fan-out
+// tools (succeeded/running/failed/cancelled/unknown). Anything that is not a
+// success must render as failed — mapping unknown statuses to 'completed' hid
+// timed-out children behind a green check (#73728, #85492). A row still
+// 'running' in a settled result was handed off, so it parks rather than fails.
+const COMPLETED_ROW_STATUSES = new Set(['', 'ok', 'completed', 'succeeded'])
+const PARKED_ROW_STATUSES = new Set(['running', 'queued', 'dispatched', 'pending'])
+
 function settledRowStatus(status: string): DelegateRowStatus {
-  return status === '' || status === 'ok' || status === 'completed' ? 'completed' : 'failed'
+  if (COMPLETED_ROW_STATUSES.has(status)) {
+    return 'completed'
+  }
+
+  return PARKED_ROW_STATUSES.has(status) ? 'dispatched' : 'failed'
 }
 
 function dispatchedGoals(result: unknown): string[] {

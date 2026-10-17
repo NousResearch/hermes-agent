@@ -3663,15 +3663,6 @@ def _usage_exit(usage: str, examples: list[str], extra: Optional[list[str]] = No
     sys.exit(1)
 
 
-def _run_write_command(fn, *args) -> None:
-    """Run a config writer, surfacing the fail-closed write guard's RuntimeError as a clean CLI
-    error instead of a traceback."""
-    try:
-        fn(*args)
-    except RuntimeError as exc:
-        _exit_invalid(f"✗ {exc}")
-
-
 _USAGE_GET = ("Usage: hermes config get <key> [--json] [--raw]", [
     "hermes config get model", "hermes config get terminal.backend",
     "hermes config get skills.config --json"], None)
@@ -3697,14 +3688,16 @@ def _cmd_config_set(args):
     value = getattr(args, 'value', None)
     if not key or value is None:
         _usage_exit(*_USAGE_SET)
-    _run_write_command(set_config_value, key, value, bool(getattr(args, 'force', False)))
+    from hermes_cli.config_write_guards import run_write_command
+    run_write_command("set", set_config_value, key, value, bool(getattr(args, 'force', False)))
 
 
 def _cmd_config_unset(args):
     key = getattr(args, 'key', None)
     if not key:
         _usage_exit(*_USAGE_UNSET)
-    _run_write_command(unset_config_value, key)
+    from hermes_cli.config_write_guards import run_write_command
+    run_write_command("unset", unset_config_value, key)
 
 
 def _tools_suffix(info: dict[str, Any], fmt: str) -> str:

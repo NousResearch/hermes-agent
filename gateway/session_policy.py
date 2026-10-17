@@ -20,6 +20,23 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
                    'platform_toolsets')
+# A Bot Chat an earlier build committed frozen follows its profile once a client opens it (``follow_bot_chat``).
+# The marker sits in the policy's own config, so no other receipt changes shape (an older owner restores
+# them all, and reads this chat as frozen), and the creation request, the exact-retry identity, stays as sent.
+FOLLOW_ADOPTED = 'follow_adopted'
+# A launch field's state as a committed session edit left it, in the policy's own config: ``True`` the
+# session chose it (``/reasoning <level>``, a model pick carrying one), ``False`` a reset gave it back to
+# the profile. Either wins over the creation request (the launch identity, never rewritten) and the older
+# pick receipts.
+SESSION_PINS = 'session_pins'
+
+
+def session_pinned(config, field, launched):
+    """Whether *field* is the session's own choice: its last committed session edit, else *launched*."""
+    pins = config.get(SESSION_PINS)
+    return pins[field] if isinstance(pins, dict) and isinstance(pins.get(field), bool) else launched
+
+
 def pin_reasoning_effort(config, effort):
     """Write an explicit session reasoning level into *config*: it wins over a per-model default
     (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one."""
@@ -120,9 +137,10 @@ class LocalSessionPolicy:
         if live:
             frozen, request = config.get('model') or {}, json.loads(self.request_json)
             pick = frozen.get('selection_profile')
-            held = pick is not None and pick == list(profile_target(live))
+            held = pick is not None and pick == list(profile_target(live)) and entry_serves(frozen, live)
             pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
-            pinned |= {'reasoning_effort', 'reasoning_overrides'} if 'reasoning' in request else set()
+            chosen = session_pinned(config, 'reasoning', 'reasoning' in request)
+            pinned |= {'reasoning_effort', 'reasoning_overrides'} if chosen else set()
             pinned |= {'service_tier'} if 'service_tier' in request else set()
             for key in FOLLOW_SECTIONS:
                 if key in pinned:
@@ -155,7 +173,8 @@ class LocalSessionPolicy:
 
     @property
     def follows_profile(self):
-        return json.loads(self.request_json).get('follow_profile_config') is True
+        return (json.loads(self.request_json).get('follow_profile_config') is True
+                or json.loads(self.config_json).get(FOLLOW_ADOPTED) is True)
 
     def read_profile(self, authority):
         """The owning profile's current config for a following session, else None; inside this policy's
@@ -289,6 +308,29 @@ def bound_route_holds(bound, bound_config, block, config):
     return same_route({**bound, 'base_url': url} if url else bound, block, config)
 
 
+def entry_serves(block, config):
+    """False when *block* pins a ``base_url`` that the config entry its credential comes from no longer
+    serves in *config*: its named provider (``providers:`` / ``custom_providers:``), or the alias its
+    ``api_key_from`` points into. That entry's key (inline, ``key_env``, ``key_cmd``) authenticates the
+    entry's own endpoint, so a pick held on the old one ends rather than carry the new key there."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    block = block if isinstance(block, dict) else {}
+    url = normalize_route_base_url(block.get('base_url'))
+    if not url:
+        return True
+    from gateway.session_route_identity import _named_entry
+    provider = str(block.get('provider') or '').strip()
+    entries = [_named_entry(provider, config)] if provider else []
+    source = block.get('api_key_from')
+    if isinstance(source, list) and len(source) > 1:
+        alias = config
+        for part in source[:-1]:
+            alias = alias.get(part) if isinstance(alias, dict) else None
+        entries.append(alias)
+    return all(normalize_route_base_url(entry.get('base_url')) == url for entry in entries
+               if isinstance(entry, dict) and str(entry.get('base_url') or '').strip())
+
+
 def _held_pick(frozen, live):
     """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
     ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
@@ -344,9 +386,11 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     validate_editor(source, params.get('editor'))
     launch_skills(params)
     config = present_sections(json.loads(json.dumps(config)))
-    if params.get('follow_profile_config') is True and 'model' in params:
-        # The pick's provenance, recorded before the launch route folds in: it holds while the profile
-        # still targets this, and a later profile edit supersedes it.
+    picked_route = {'model', 'provider', 'base_url'} & set(_without_auto_pick(params))
+    if params.get('follow_profile_config') is True and picked_route:
+        # Any explicit route pick (a model, a provider, an endpoint) records its provenance before the
+        # launch route folds in: it holds while the profile still targets this, and a later profile edit
+        # supersedes it. Without it the first turn's followed route replaces the pick.
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
     # The posture is opt-in (``session.create`` only) and needs a folder the client named: the daemon's own

@@ -27,8 +27,9 @@ async def headless(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    # A following Bot Chat reads the profile config by path.
     monkeypatch.setattr(run, '_load_gateway_config',
-                        lambda: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
+                        lambda *_path: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
     from hermes_state import SessionDB
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     store._db = SessionDB(db_path=tmp_path / 'state.db')

@@ -4,6 +4,7 @@ Source and supported launch settings are frozen per route, never process env.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from contextlib import contextmanager
@@ -210,6 +211,28 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
         commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
         staged = restore_local_session(authority, staged['session_id'])
     return staged
+
+
+def staged_creation_follows(authority, actor, request_id):
+    """Whether a retry of *request_id* may ask to follow the profile.
+
+    True when nothing is staged under that identity, or the staged request already follows.
+    False only when an older build committed the session without ``follow_profile_config`` and
+    stopped before its title. The next attempt reuses the identity, and a different request is
+    refused for good. The retry then carries the frozen request.
+    """
+    if not isinstance(request_id, str) or not request_id:
+        return True
+    from gateway.session_local_recovery import local_identity
+    from hermes_state_local import local_receipt
+    sid = local_identity(authority.profile_id, actor.subject, request_id)
+    if authority.db.get_session(sid) is None:
+        return True
+    try:
+        request = json.loads(local_receipt(authority.db, sid)['policy']['request_json'])
+    except (KeyError, TypeError, ValueError, RuntimeStoreError):
+        return True
+    return isinstance(request, dict) and request.get('follow_profile_config') is True
 
 
 def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,

@@ -338,15 +338,16 @@ class SessionKernel:
 
     def teardown(self) -> None:
         self.stop_event.set()
+        if self.alive():
+            from tools.code_execution_tool import _kill_process_group
+            _kill_process_group(self.proc, escalate=True)
+        # After the tree-kill: the runner's watchdog exits on pipe EOF, so closing earlier orphans the cell's subprocesses.
         if self.death_pipe_w is not None:
             try:
                 os.close(self.death_pipe_w)
             except OSError:
                 pass
             self.death_pipe_w = None
-        if self.alive():
-            from tools.code_execution_tool import _kill_process_group
-            _kill_process_group(self.proc, escalate=True)
         sock, self.server_sock = self.server_sock, None
         try:
             if sock is not None:

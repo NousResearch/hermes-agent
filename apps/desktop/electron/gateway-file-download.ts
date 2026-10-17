@@ -429,7 +429,9 @@ export function destroyStalledBody(res: StallWatchableBody, idleMs: number): voi
   }
 
   const watch = (): void => {
-    if (watching || res.destroyed) { return }
+    if (watching || res.destroyed) {
+      return
+    }
     watching = true
     // Added after the consumer's own listener, so this never switches a reader's mode.
     res.on('data', arm)
@@ -437,10 +439,16 @@ export function destroyStalledBody(res: StallWatchableBody, idleMs: number): voi
   }
 
   res.on('newListener', (event: string) => {
-    if (event === 'data' || event === 'readable') { queueMicrotask(watch) }
+    if (event === 'data' || event === 'readable') {
+      queueMicrotask(watch)
+    }
   })
   res.on('pause', stop)
-  res.on('resume', () => { if (watching) { arm() } })
+  res.on('resume', () => {
+    if (watching) {
+      arm()
+    }
+  })
   res.once('end', stop)
   res.once('close', stop)
 }

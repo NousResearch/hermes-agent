@@ -23,7 +23,14 @@ const WAIT = { timeout: 10_000 }
 // or vitest's 5 s default fires first on a loaded runner (the waits never get their 10 s).
 const MOUNTED_TEST_TIMEOUT = 3 * WAIT.timeout
 
-const liveRow = { id: 'live', session_id: 'live', title: 'Current conversation', started_at: 2, message_count: 1, running: false }
+const liveRow = {
+  id: 'live',
+  session_id: 'live',
+  title: 'Current conversation',
+  started_at: 2,
+  message_count: 1,
+  running: false
+}
 
 function detachFixture() {
   const home = mkdtempSync(join(tmpdir(), 'ink-switcher-close-'))
@@ -40,9 +47,17 @@ function detachFixture() {
       const token = subscriptions.get(sid) ?? `sub-${subscriptions.size + 1}`
       subscriptions.set(sid, token)
 
-      const result = canonicalResult(method, { session_id: sid, stored_session_id: sid, subscription_id: token,
-        authority_epoch: 1, execution_generation: 0, messages: [], pending: [], running: false,
-        info: { model: 'test', tools: {}, skills: {} } })
+      const result = canonicalResult(method, {
+        session_id: sid,
+        stored_session_id: sid,
+        subscription_id: token,
+        authority_epoch: 1,
+        execution_generation: 0,
+        messages: [],
+        pending: [],
+        running: false,
+        info: { model: 'test', tools: {}, skills: {} }
+      })
 
       return new Promise(resolve => pending.push({ resolve: () => resolve(result) }))
     }
@@ -50,7 +65,9 @@ function detachFixture() {
     if (wire.method === 'session.detach') {
       const detached = subscriptions.get(sid) === wire.params.subscription_id
 
-      if (detached) {subscriptions.delete(sid)}
+      if (detached) {
+        subscriptions.delete(sid)
+      }
 
       return Promise.resolve({ ...wire.params, detached })
     }
@@ -61,19 +78,35 @@ function detachFixture() {
   let lifecycle!: ReturnType<typeof useSessionLifecycle>
 
   function Harness() {
-    lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { isCanonical: true, request }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
-      setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
-      setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
+    lifecycle = useSessionLifecycle({
+      colsRef: { current: 80 },
+      composerActions: { setComposerTokens: vi.fn() },
+      gw: { isCanonical: true, request },
+      rpc: request,
+      scrollRef: { current: null },
+      panel: vi.fn(),
+      sys: vi.fn(),
+      setHistoryItems: vi.fn(),
+      setLastUserMsg: vi.fn(),
+      setSessionStartedAt: vi.fn(),
+      setStickyPrompt: vi.fn(),
+      setVoiceProcessing: vi.fn(),
+      setVoiceRecording: vi.fn()
+    } as any)
 
     return <Text>switcher close</Text>
   }
 
-  const instance = renderSync(<Harness />, { stdin: new PassThrough() as any,
+  const instance = renderSync(<Harness />, {
+    stdin: new PassThrough() as any,
     stdout: Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false }) as any,
-    stderr: new PassThrough() as any, patchConsole: false })
+    stderr: new PassThrough() as any,
+    patchConsole: false
+  })
 
-  return { request, lifecycle: () => lifecycle,
+  return {
+    request,
+    lifecycle: () => lifecycle,
     async attach(sid: string) {
       lifecycle.resumeById(sid)
       await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0), WAIT)
@@ -85,7 +118,8 @@ function detachFixture() {
       resetUiState()
       vi.unstubAllEnvs()
       rmSync(home, { recursive: true, force: true })
-    } }
+    }
+  }
 }
 
 const detaches = (request: ReturnType<typeof vi.fn>) =>
@@ -160,8 +194,12 @@ function mountSwitcher(onClose: (id: string) => Promise<null | { closed?: boolea
     />
   )
 
-  const instance = renderSync(element, { stdin: stdin as any, stdout: stdout as any,
-    stderr: new PassThrough() as any, patchConsole: false })
+  const instance = renderSync(element, {
+    stdin: stdin as any,
+    stdout: stdout as any,
+    stderr: new PassThrough() as any,
+    patchConsole: false
+  })
 
   const closeLive = async () => {
     await vi.waitFor(() => expect(out.text).toContain('Current conversation'), WAIT)
@@ -177,27 +215,35 @@ function mountSwitcher(onClose: (id: string) => Promise<null | { closed?: boolea
   return { closeLive, instance, out }
 }
 
-it('reports no close instead of blaming main when the canonical row is not held', async () => {
-  const onClose = vi.fn(async () => null)
-  const m = mountSwitcher(onClose)
+it(
+  'reports no close instead of blaming main when the canonical row is not held',
+  async () => {
+    const onClose = vi.fn(async () => null)
+    const m = mountSwitcher(onClose)
 
-  try {
-    await m.closeLive()
-    expect(m.out.text).toContain('error: this view is not attached to that session')
-    expect(m.out.text).not.toContain('already closed')
-  } finally {
-    m.instance.unmount()
-  }
-}, MOUNTED_TEST_TIMEOUT)
+    try {
+      await m.closeLive()
+      expect(m.out.text).toContain('error: this view is not attached to that session')
+      expect(m.out.text).not.toContain('already closed')
+    } finally {
+      m.instance.unmount()
+    }
+  },
+  MOUNTED_TEST_TIMEOUT
+)
 
-it('keeps main\'s "already closed" for a receipt that refuses the close', async () => {
-  const onClose = vi.fn(async () => ({ closed: false }))
-  const m = mountSwitcher(onClose)
+it(
+  'keeps main\'s "already closed" for a receipt that refuses the close',
+  async () => {
+    const onClose = vi.fn(async () => ({ closed: false }))
+    const m = mountSwitcher(onClose)
 
-  try {
-    await m.closeLive()
-    expect(m.out.text).toContain('error: session was already closed')
-  } finally {
-    m.instance.unmount()
-  }
-}, MOUNTED_TEST_TIMEOUT)
+    try {
+      await m.closeLive()
+      expect(m.out.text).toContain('error: session was already closed')
+    } finally {
+      m.instance.unmount()
+    }
+  },
+  MOUNTED_TEST_TIMEOUT
+)

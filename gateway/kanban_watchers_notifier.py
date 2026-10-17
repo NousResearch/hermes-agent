@@ -313,8 +313,11 @@ class _Collector:
             return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-            thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
+            thread_id=sub.get("thread_id") or "",
+            kinds=sub.get("event_kinds") or TERMINAL_KINDS,
         )
+        if sub.get("event_kinds") == list(_kbn().FAILURE_ALERT_EVENT_KINDS):
+            events = _kbn().coalesce_failure_alert_events(events)
         if not events:
             return None
         task = self.kb.get_task(conn, sub["task_id"])

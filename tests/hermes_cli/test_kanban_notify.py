@@ -100,6 +100,62 @@ def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
         "chat_type": "thread", "existing": "keep", "parent_chat_id": "parent", "guild_id": "guild",
     }
 
+
+
+def test_child_task_inherits_parent_delivery_mode(kanban_home):
+    """Graph children inherit the parent's ACK edge AND its delivery_mode."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kbn.add_notify_sub(
+            conn, task_id=parent, platform="telegram", chat_id="chat1",
+            thread_id="42", user_id="u1", user_id_alt="alt-u1", notifier_profile="default",
+            delivery_mode="notify+wake",
+        )
+        child = kb.create_task(
+            conn, title="review child", assignee="ccreviewer", parents=[parent],
+        )
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "42"
+    assert subs[0]["user_id"] == "u1"
+    assert subs[0]["user_id_alt"] == "alt-u1"
+    assert subs[0]["notifier_profile"] == "default"
+    assert subs[0]["delivery_mode"] == "notify+wake"
+
+
+def test_child_task_inherits_parent_failure_event_allowlist(kanban_home):
+    """A decomposed maintenance child must retain the parent's quiet-success policy."""
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="maintenance root", assignee=None)
+        kbn.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="chat1",
+            event_kinds=kbn.FAILURE_ALERT_EVENT_KINDS,
+        )
+        child = kb.create_task(
+            conn, title="maintenance child", assignee="worker", parents=[parent],
+        )
+        subs = kbn.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["event_kinds"] == list(kbn.FAILURE_ALERT_EVENT_KINDS)
+
+
 def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
     """chat_type persists, defaults to 'dm', an explicit re-subscribe is
     last-write-wins, and a None re-subscribe leaves it untouched. The
@@ -1178,3 +1234,13 @@ def test_gc_purges_blocked_task_that_never_done(kanban_home):
         assert kbn.list_notify_subs(conn, tid) == []
     finally:
         conn.close()
+
+
+def test_auto_subscribe_event_kinds_reads_config():
+    from hermes_cli import kanban_db_notify as kbn
+
+    assert kbn.auto_subscribe_event_kinds({}) is None
+    assert kbn.auto_subscribe_event_kinds({"kanban": {"auto_subscribe_events": None}}) is None
+    assert kbn.auto_subscribe_event_kinds({"kanban": {"auto_subscribe_events": "blocked"}}) is None
+    assert kbn.auto_subscribe_event_kinds(
+        {"kanban": {"auto_subscribe_events": ["blocked", " gave_up ", "blocked", 3]}}) == ["blocked", "gave_up"]

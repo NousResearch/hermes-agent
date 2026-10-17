@@ -654,6 +654,8 @@ On-demand vulnerability scan against [OSV.dev](https://osv.dev). Covers the Herm
 |------------|-------------|
 | `audit` | Run a one-shot supply-chain audit. |
 
+The report identifies the running Python interpreter and environment, the installed package roots, and plugin requirements files. Each finding includes a link to its OSV advisory, the complete summary, and all reported fixed versions. `--json` preserves this information in `python_environment`, `source_path`, and `advisory_url` alongside the existing fields. A plugin path identifies a dependency declaration, not proof that the package is installed. Other Python environments on disk are not scanned.
+
 `audit` flags:
 
 | Flag | Default | Description |

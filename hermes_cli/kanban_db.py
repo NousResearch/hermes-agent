@@ -274,6 +274,28 @@ def _fire_dispatch_tick_hook(
         _log.debug("kanban dispatch tick hook failed: %s", exc)
 
 
+def _fire_dispatcher_stuck_hook(
+    *, board: Optional[str], bad_ticks: int, held: str, source: str,
+) -> None:
+    """Notify observers of the rate-limited dispatcher health warning.
+
+    Callers invoke this outside their dispatch locks, only at the same cadence
+    as the operator-facing warning. Observer failures never affect dispatch.
+    """
+    if not _kanban_observer_consumed("on_kanban_dispatcher_stuck"):
+        return
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        invoke_hook(
+            "on_kanban_dispatcher_stuck", board=board,
+            profile_name=_hook_profile_name(), bad_ticks=bad_ticks,
+            held=held, source=source,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("kanban dispatcher stuck hook failed: %s", exc)
+
+
 # Claim window before the next tick reclaims a running task; long workers
 # ``heartbeat_claim`` or raise it via HERMES_KANBAN_CLAIM_TTL_SECONDS.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60

@@ -172,7 +172,7 @@ VALID_HOOKS: set[str] = {
     #   profile_name, dry_run, outcome ("ok"|"skipped_locked"|"idle"), result: DispatchResult
     #   (privacy: task ids, assignees, workspace paths).
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
-    "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    "on_kanban_task_updated", "on_kanban_dispatch_tick", "on_kanban_dispatcher_stuck",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
@@ -184,6 +184,10 @@ VALID_HOOKS: set[str] = {
     # reconciled_orphans, crashed, stale, timed_out, auto_blocked, rate_limited, auto_assigned_default,
     # respawn_guarded, skipped_per_profile_capped, skipped_unassigned, skipped_nonspawnable,
     # skipped_locked). Privacy: result carries task ids, assignees, and workspace paths.
+    # on_kanban_dispatcher_stuck fires with the existing dispatcher health-warning rate limit,
+    # outside dispatch locks. Kwargs: board: str | None (None for an embedded multi-board
+    # aggregate), profile_name: str, bad_ticks: int, held: str, source: "gateway" | "daemon".
+    # It is observer-only; return values are ignored.
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each callback isolated by
     # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Telegram
     # "reaction" + "message_edited"; Discord "message_edited", "message_deleted", "thread_created",

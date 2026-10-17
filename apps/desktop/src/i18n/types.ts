@@ -12,6 +12,7 @@ import type { AppTourTranslations } from './types_app_tour'
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
+import type { CatalogTranslations, SkillDeepLinkTranslations } from './types_catalog'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
@@ -97,6 +98,7 @@ export interface Translations extends NoticeTranslations {
     custom: (label: string) => string[]
   }
   connectors: ConnectorCardTranslations
+catalog: CatalogTranslations
   connectorsPage: {
     title: string
     searchPlaceholder: (count: number) => string
@@ -629,6 +631,8 @@ export interface Translations extends NoticeTranslations {
       openFolder: string
       rescan: string
       reveal: string
+      enable: string
+      disable: string
       failed: string
       kinds: { bundled: string; disk: string; runtime: string }
       installModal: {
@@ -1885,17 +1889,7 @@ export interface Translations extends NoticeTranslations {
     }
   }
 
-  skillDeepLink: {
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    installed: string
-    source: string
-  }
+  skillDeepLink: SkillDeepLinkTranslations
   skills: {
     tabSkills: string
     tabToolsets: string
@@ -2020,6 +2014,7 @@ export interface Translations extends NoticeTranslations {
         saved: (name: string) => string
         saveFailed: (name: string) => string
         required: string
+        optional: string
         secretSet: string
         secretStoredAs: (env: string) => string
       }

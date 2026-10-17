@@ -4,6 +4,7 @@ import { enAppTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
+import { enCatalog, enSkillDeepLink } from './en_catalog'
 import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
@@ -38,6 +39,7 @@ export const en: Translations = {
   intro: { stock: {}, custom: () => [] },
   connectors: enConnectorCard,
 
+  catalog: enCatalog,
   // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
   connectorsPage: {
     title: 'Connectors',
@@ -770,6 +772,8 @@ export const en: Translations = {
       openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
+      enable: 'Enable',
+      disable: 'Disable',
       failed: 'failed',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
       installModal: {
@@ -2101,17 +2105,7 @@ export const en: Translations = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    installed: 'Installed',
-    source: 'Source'
-  },
+  skillDeepLink: enSkillDeepLink,
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
@@ -2254,6 +2248,7 @@ export const en: Translations = {
         saved: (name: string) => `${name} settings saved.`,
         saveFailed: (name: string) => `Could not save ${name} settings`,
         required: 'Required',
+        optional: '(optional)',
         secretSet: '•••••••• (set)',
         secretStoredAs: (env: string) =>
           `Stored in the profile's .env as ${env}, never in config.yaml; leave blank to keep the current value.`

@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhFirstRun } from './zh_first_run'
@@ -16,6 +17,8 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+
+  catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -2070,17 +2073,7 @@ export const zhOverrides = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `安装“${name}”？`,
-    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
-    installTo: '安装到',
-    thisComputer: '此电脑',
-    installing: '正在安装…',
-    installComplete: (name: string) => `已安装“${name}”`,
-    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
-    installed: '已安装',
-    source: '来源'
-  },
+  skillDeepLink: zhSkillDeepLink,
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',

@@ -252,6 +252,14 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
 
 def extract_local_skills():
     skills = []
+    try:
+        with open(os.path.join(REPO_ROOT, "apps/shared/src/catalog-curation.json"), encoding="utf-8") as curation_file:
+            curation = json.load(curation_file)
+    except FileNotFoundError:
+        # Curation is optional; a skills-only checkout still produces a catalog.
+        curation = {}
+    artwork = curation.get("artwork", {}).get("skills", {})
+    featured = curation.get("featured", {}).get("skills", [])
 
     for base_dir, source_label in LOCAL_SKILL_DIRS:
         base_path = os.path.join(REPO_ROOT, base_dir)
@@ -333,6 +341,9 @@ def extract_local_skills():
                 "envVars": env_vars,
                 "commands": commands,
                 "docsPath": _docs_page_path(rel, source_label),
+                **({"image": "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/img/catalog/" + artwork[rel_id]} if rel_id in artwork else {}),
+                # 1-based curated hero rank; the site and the app rotate through these.
+                **({"featured": featured.index(rel_id) + 1} if rel_id in featured else {}),
                 "installIdentifier": install_identifier,
                 "installCmd": f"hermes skills install {install_identifier}",
             })

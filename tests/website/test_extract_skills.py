@@ -48,6 +48,32 @@ def test_local_skills_publish_exact_install_target(mod, tmp_path, monkeypatch, d
     expected = f"{prefix}/creative/nested/example"
     assert entry["installIdentifier"] == expected
     assert entry["installCmd"] == f"hermes skills install {expected}"
+    assert "image" not in entry
+
+
+@pytest.mark.parametrize("directory", ["skills", "optional-skills"])
+def test_local_skills_publish_mapped_artwork_only(mod, tmp_path, monkeypatch, directory):
+    for name in ("illustrated", "plain"):
+        skill = tmp_path / directory / "creative" / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\nExample.")
+    manifest = tmp_path / "apps/shared/src/catalog-curation.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({
+        "artwork": {"skills": {"creative/illustrated": "art.jpg"}},
+        "featured": {"skills": ["creative/plain", "creative/illustrated"]},
+    }))
+    monkeypatch.setattr(mod, "REPO_ROOT", str(tmp_path))
+
+    entries = {entry["name"]: entry for entry in mod.extract_local_skills()}
+
+    assert entries["illustrated"]["image"] == (
+        "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/img/catalog/art.jpg"
+    )
+    assert "image" not in entries["plain"]
+    # Curated hero ranks follow the manifest's order, 1-based.
+    assert entries["plain"]["featured"] == 1
+    assert entries["illustrated"]["featured"] == 2
 
 
 def test_unified_skills_keep_source_identifiers_and_match_cli_install_targets(mod, tmp_path, monkeypatch):

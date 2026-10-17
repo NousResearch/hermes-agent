@@ -6,8 +6,9 @@ with no new output, this promotes the session to ``notify_on_complete`` (wiring 
 the process was started silently) and tells the model to stop checking: the exit arrives as a message.
 
 Only where a completion can actually reach this agent: one-shot runners (``hermes -z``), cron, Kanban
-workers, stateless HTTP sessions and delegated subagents keep the old result, since nothing would
-deliver the notice there. ``terminal.process_wait_auto_notify: false`` restores the old behaviour
+workers, stateless HTTP sessions, delegated subagents and profiles with
+``display.background_process_notifications: off`` keep the old result, since nothing would start a
+turn for the notice there. ``terminal.process_wait_auto_notify: false`` restores the old behaviour
 everywhere.
 """
 
@@ -64,26 +65,47 @@ def _count_unchanged(session) -> int:
 def _can_deliver_completion() -> bool:
     """Whether a completion notice for this session can reach the agent that is waiting.
 
-    Finite turns (``hermes chat -q`` / ``-z``, as ``delegate_task`` decides inline execution) end
+    Finite turns (non-interactive ``hermes chat -q`` / ``-z``, as ``delegate_task`` decides inline execution) end
     the run when the turn ends, so a promised notice would never arrive."""
     from agent.delegation_context import is_delegated_child_context
     from gateway.session_context import async_delivery_supported, get_session_env
     from gateway.session_finite import finite_turn_required
+    from tools.process_registry import ProcessRegistry
     finite = finite_turn_required()
     if finite is True or (finite is None and get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1"):
         return False
-    return async_delivery_supported() and not is_delegated_child_context()
+    if not async_delivery_supported() or is_delegated_child_context():
+        return False
+    # ``off`` drains the completion but never starts the agent turn (CLI, TUI and gateway alike).
+    try:
+        mode = ProcessRegistry._config_value("display", "background_process_notifications", "concise")
+    except Exception:
+        logger.debug("background_process_notifications unreadable; assuming on", exc_info=True)
+        return True
+    return mode is not False and str(mode or "").strip().lower() != "off"
+
+
+def _claim_notify_if_running(registry, session) -> bool:
+    """Set ``notify_on_complete`` unless the exit already won; False means it did.
+
+    ``_move_to_finished`` claims the finish under ``registry._lock`` and reads the flag afterwards to
+    decide whether to queue the completion, so flipping it under the same lock while the session is
+    still in ``_running`` guarantees the exit publication sees it."""
+    with registry._lock:
+        if session._finish_claimed or session.id not in registry._running:
+            return False
+        session.notify_on_complete = True
+        return True
 
 
 def _promote(registry, session) -> None:
-    """Turn on completion delivery for a process spawned without it, on every surface.
+    """Wire completion delivery for a process just claimed by ``_claim_notify_if_running``.
 
     CLI, TUI/Desktop and ``hermes chat -q`` drain ``completion_queue``, which the exit path fills
     whenever the flag is set. The messaging gateway delivers only through a per-process watcher, so a
     process started silently also needs the chat routing stamped and a watcher armed."""
     from tools.terminal_tool_background import _register_completion_watcher, _stamp_gateway_routing
     from gateway.session_context import get_session_env
-    session.notify_on_complete = True
     if not session.watcher_platform:
         _stamp_gateway_routing(session, get_session_env)
     # watcher_interval is set only by _register_completion_watcher: 0 means no watcher yet.
@@ -118,6 +140,11 @@ def apply_wait_poll_policy(action: str, session_id: str, result: dict) -> dict:
     if session.exited or _count_unchanged(session) < _PROMOTE_AFTER or not _can_deliver_completion():
         return result
     if not session.notify_on_complete:
+        if not _claim_notify_if_running(process_registry, session):
+            # Exited between the wait/poll and this check, before the flag was set: no completion
+            # was queued, so hand back the exit itself instead of promising a message.
+            _forget(session.id)
+            return process_registry.poll(session_id) if action == "poll" else process_registry.wait(session_id, timeout=5)
         _promote(process_registry, session)
     note = _STOP_NOTE.format(sid=session.id)
     result["notify_on_complete"] = True

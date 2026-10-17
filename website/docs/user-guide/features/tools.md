@@ -254,10 +254,12 @@ arrives later as its own message, so the agent can do other work or end its turn
 spending a model call on every unchanged check. New output, the process exiting, or any other
 action on that process resets the count.
 
-This applies where a completion can reach the agent: the interactive CLI, the TUI and desktop app,
-`hermes chat -q`, and messaging chats. One-shot `hermes -z` runs, cron jobs, Kanban workers,
-stateless API requests and delegated subagents cannot receive a later completion, so they keep the
-previous behaviour. To keep plain polling everywhere, set:
+This applies where a completion can reach the agent: the interactive CLI (including interactive
+`hermes chat -q`), the TUI and desktop app, and messaging chats. Non-interactive `hermes chat -q`,
+one-shot `hermes -z`, cron jobs, Kanban workers, stateless API requests and delegated subagents keep the
+previous behaviour because they cannot receive a later completion, as does any profile with
+`display.background_process_notifications: off` (completions never start an agent turn there). To keep
+plain polling everywhere, set:
 
 ```yaml
 terminal:

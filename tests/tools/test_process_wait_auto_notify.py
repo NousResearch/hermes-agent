@@ -40,3 +40,23 @@ def test_opt_out_keeps_plain_polling(sleeper):
         assert result["status"] == "timeout"
         assert "Poll again later" in result["timeout_note"] and "notify_on_complete" not in result
     assert session.notify_on_complete is False
+
+
+def test_exit_racing_promotion_is_never_lost(sleeper, monkeypatch):
+    """The process exits after the policy saw it running but before it promotes: the exit was
+    published while notify_on_complete was still off, so the result must report the exit rather
+    than promise a completion message nobody will queue."""
+    import tools.process_registry_wait_policy as policy
+
+    _home, session = sleeper
+    _wait(session.id)
+    real_can_deliver = policy._can_deliver_completion
+
+    def exit_lands_now():
+        pr.process_registry._finish_exited(session, 0)
+        return real_can_deliver()
+
+    monkeypatch.setattr(policy, "_can_deliver_completion", exit_lands_now)
+    result = _wait(session.id)
+    queued = [e for e in list(pr.process_registry.completion_queue.queue) if e.get("session_id") == session.id]
+    assert queued or result["status"] == "exited", result

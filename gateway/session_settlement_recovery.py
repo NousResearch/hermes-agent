@@ -3,12 +3,14 @@ import asyncio
 import logging
 import sqlite3
 
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch
+from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_steer_transfers
 
 logger = logging.getLogger(__name__)
 
 
 def _mark_unknown(authority, row):
+    transfers = _transfers(authority, authority.sessions.get(row['target_session_id']), row)
+
     def write(conn):
         _epoch(conn, authority.epoch)
         current = _admission(conn, row['admission_id'])
@@ -19,9 +21,21 @@ def _mark_unknown(authority, row):
         if current['status'] != 'started':
             raise RuntimeStoreError('stale_generation')
         conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],))
+        # A steer it carried is never replayed: interrupted if delivered, else queued again.
+        settle_steer_transfers(conn, epoch=authority.epoch, generation=row['generation'],
+                               transfers=transfers, outcome='unknown')
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return 'unknown'
     return authority.db._execute_write(write)
+
+
+def _transfers(authority, live, row):
+    """The steers handed to this claim (``prompt.steer_queued``), read once its execution returned."""
+    if live is None:
+        return None
+    from gateway.session_queued_controls import steer_transfers
+    with live.event_stream.lock:
+        return steer_transfers(authority, row['target_session_id'], row['generation'])
 
 
 async def recover_failed_settlement(authority, row):
@@ -63,6 +77,8 @@ def completion_payload(row, settled, response, captured):
             complete['billing'] = captured_result['billing_block']
         if isinstance(captured_result.get('failure_reason'), str) and captured_result['failure_reason']:
             complete['failure_reason'] = captured_result['failure_reason']
+        if isinstance(captured_result.get('last_reasoning'), str) and captured_result['last_reasoning'].strip():
+            complete['reasoning'] = captured_result['last_reasoning'].strip()
     # The committed row addresses of the turn: a viewer binds the streamed reply to
     # its stored row, so a transcript read racing this frame never paints it twice.
     # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
@@ -119,10 +135,11 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
     # already have dropped it from ``authority.sessions``.
     with live.event_stream.lock:
         live.settling[admission_id] = row
+    transfers = _transfers(authority, live, row)
     try:
         settlement['settled'], settlement['response'] = finish_result(
             authority.db, epoch=authority.epoch, row=row, response=response, outcome=outcome,
-            result=captured, prepared=prepared)
+            result=captured, prepared=prepared, transfers=transfers)
         checkpoint = _retry_checkpoint(authority, live, ref, row, settlement['settled'], captured)
         with live.event_stream.lock:
             live.retry_checkpoint = checkpoint

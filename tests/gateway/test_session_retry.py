@@ -161,6 +161,18 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
                 await live.claim_gate.acquire()
                 try:
                     response = await rpc('prompt.retry', session_id=sid, retry_token=token)
+                    assert 'result' in response, response
+                    admission_id = response['result']['admission_id']
+                    snapshot = await rpc('session.resume', session_id=sid)
+                    retry_row = next(row for row in snapshot['result']['pending']
+                                     if row['admission_id'] == admission_id)
+                    assert retry_row['controls'] == []
+                    for method, extra in (
+                        ('prompt.steer_queued', {}),
+                        ('prompt.replace_queued', {'submission_id': 'replace-retry', 'text': 'fresh input'}),
+                    ):
+                        refused = await rpc(method, session_id=sid, admission_id=admission_id, **extra)
+                        assert refused['error']['message'] == 'unsupported_control', refused
                     queued = await rpc('prompt.submit', session_id=sid, input_id='follower', text='new intent')
                     assert 'result' in queued, queued
                     assert live.retry_checkpoint['spent']

@@ -30,7 +30,8 @@ def worker_create(db, conn, session_id, payload):
     config = payload.get('model_config')
     if config is not None and (not isinstance(config, dict) or set(config) - _CONSTRUCTOR_CONFIG):
         raise RuntimeStoreError('invalid_params')
-    insert_session_row_in_transaction(db, conn, session_id, **payload)
+    # Workers echo routing labels; only the owner may establish creation provenance.
+    insert_session_row_in_transaction(db, conn, session_id, created_source=row['created_source'], **payload)
     return {'value': session_id}
 
 
@@ -194,18 +195,23 @@ WORKER_LIFECYCLE_HANDLERS = {
 }
 
 
+_CREATOR_SOURCE = object()
+
+
 def insert_session_row_in_transaction(
         self, conn, session_id, source, model=None, model_config=None,
         system_prompt=None, user_id=None, session_key=None, chat_id=None,
         chat_type=None, thread_id=None, parent_session_id=None, cwd=None,
         profile_name=None, git_repo_root=None, origin_json=None, display_name=None,
-        transport_profile=None):
+        transport_profile=None, *, created_source=_CREATOR_SOURCE):
     """Connection-taking body of the keep-existing constructor upsert.
 
     The ordinary constructor should delegate here too. Worker identity is
     validated before entry; this helper never opens or commits a DB.
     """
     from hermes_state_sessions import _UPSERT_KEEP_EXISTING_SQL
+    if created_source is _CREATOR_SOURCE:
+        created_source = source
     from hermes_state_mutation_retirement import RETIRED_PREFIX
     # A delayed constructor/accounting backfill must not recreate a deleted session
     # beside its durable tombstone (the exact delete retry would then report a stale
@@ -262,7 +268,7 @@ def insert_session_row_in_transaction(
                END,
 """ + _UPSERT_KEEP_EXISTING_SQL,
         (
-            session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, model,
+            session_id, source, created_source, user_id, session_key, chat_id, chat_type, thread_id, model,
             json.dumps(model_config) if model_config else None, system_prompt_hash,
             parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
             display_name, time.time(),

@@ -723,9 +723,13 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
         return []
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
     cwd = resolve_context_cwd(include_session_override=not launch_artifact)
-    return [_pb.build_context_files_prompt(
+    from agent.delegation_context import owned_kanban_task
+    options = dict(
         cwd=cwd, skip_soul=soul_loaded, context_length=ctx_len,
-        allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
+        allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))
+    if owned_kanban_task():
+        options["include_profile_agents"] = True
+    return [_pb.build_context_files_prompt(**options)]
 
 
 def _join_tier(parts: list[Optional[str]]) -> str:

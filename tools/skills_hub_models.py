@@ -47,6 +47,21 @@ class SkillBundle:
     trust_level: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self):
+        # Python can import a shipped .pyc instead of the reviewed .py next to it (an unchecked-hash pyc is
+        # accepted without consulting the source), so the scanner would vet code that never runs. Bytecode is
+        # interpreter-generated, never authored content: drop it for every source, before quarantine and hashing.
+        dropped = [p for p in self.files if _is_bytecode_path(p)]
+        for rel_path in dropped:
+            del self.files[rel_path]
+        if dropped:
+            logger.warning("Skill %s: dropped shipped Python bytecode %s", self.name or self.identifier, dropped)
+
+
+def _is_bytecode_path(rel_path: str) -> bool:
+    parts = rel_path.replace("\\", "/").split("/")
+    return "__pycache__" in parts or parts[-1].lower().endswith((".pyc", ".pyo"))
+
 
 def _skill_meta_to_dict(meta: SkillMeta) -> dict:
     return dict(vars(meta))

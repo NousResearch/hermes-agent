@@ -258,3 +258,85 @@ def test_named_anthropic_fallback_pool_survives_agent_init(
         _credential_pool=pool, _get_transport=lambda: None, _is_openrouter_url=lambda: False)
     _finalize_routing(agent, runtime["api_mode"], pool)
     assert agent._credential_pool is pool
+
+
+@pytest.mark.parametrize("surface", ["shared", "cli", "cron", "tui"])
+@pytest.mark.parametrize("mode, model, path", [
+    ("chat_completions", "deepseek-v4-flash", "chat/completions"),
+    ("codex_responses", "grok-4.5", "responses"),
+])
+@pytest.mark.parametrize("pool_style", ["durable", "legacy"])
+@pytest.mark.parametrize("explicit_mode", [False, True])
+@pytest.mark.parametrize("suffix", ["", "/", "/v1"])
+def test_named_openai_fallback_keeps_auth_through_rotation(
+    tmp_path, monkeypatch, surface, mode, model, path, pool_style, explicit_mode, suffix,
+):
+    import httpx
+    from openai import OpenAI
+    from agent.agent_init import _apply_openai_header_policy, _finalize_routing
+    from agent.credential_pool import PooledCredential, credential_pool_entry_serves_endpoint
+    from hermes_cli.auth import write_credential_pool
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider, base_url = "opencode-go-bridge", f"https://opencode.ai/zen/go{suffix}"
+    pool_key = provider if pool_style == "durable" else f"custom:{provider}"
+    rows = [PooledCredential(
+        provider=pool_key, id=f"fixture-{i}", label="fixture", auth_type="api_key", priority=i,
+        source="manual:fixture", access_token=f"fixture-pool-key-{i}", base_url=base_url,
+    ) for i in range(2)]
+    write_credential_pool(pool_key, [row.to_dict() for row in rows])
+    entry = {"provider": provider, "model": model}
+    if explicit_mode:
+        entry["api_mode"] = mode
+    config = {
+        "model": {"provider": "openai-codex", "default": "primary-model"},
+        "providers": {provider: {
+            "base_url": base_url, "api_mode": mode,
+            "extra_headers": {"X-Relay-Access": "fixture-access"}, "ssl_verify": False,
+        }},
+        "fallback_providers": [entry],
+    }
+    runtime = _resolve_startup(config, surface, tmp_path, monkeypatch)
+    pool = runtime["credential_pool"]
+    assert pool.provider == pool_key
+    assert runtime["api_mode"] == mode
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider, agent.model, agent.api_mode = runtime["provider"], model, mode
+    agent.api_key, agent.base_url = runtime["api_key"], runtime["base_url"]
+    agent._credential_pool, agent._transport_cache = pool, {}
+    monkeypatch.setattr(agent, "_get_transport", lambda: None)
+    agent._client_kwargs = {"api_key": agent.api_key, "base_url": agent.base_url}
+    _apply_openai_header_policy(agent, agent._client_kwargs)
+    _finalize_routing(agent, mode, pool)
+    requests = []
+
+    def reply(request):
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    def request_with_current_credentials(**kwargs):
+        client_kwargs = {k: v for k, v in agent._client_kwargs.items() if k != "ssl_verify"}
+        assert agent._client_kwargs.get("ssl_verify") is False
+        client_kwargs["http_client"] = httpx.Client(transport=httpx.MockTransport(reply))
+        with OpenAI(**client_kwargs) as client:
+            if mode == "codex_responses":
+                client.responses.create(model=model, input="offline")
+            else:
+                client.chat.completions.create(model=model, messages=[{"role": "user", "content": "offline"}])
+
+    request_with_current_credentials()
+    assert (
+        str(requests[-1].url), requests[-1].headers.get("X-Relay-Access"), agent._credential_pool,
+    ) == (f"https://opencode.ai/zen/go/v1/{path}", "fixture-access", pool)
+    assert credential_pool_entry_serves_endpoint(rows[1], agent.base_url)
+    monkeypatch.setattr(agent, "_replace_primary_openai_client", request_with_current_credentials)
+    assert agent._swap_credential(rows[1])
+    assert (
+        str(requests[-1].url), requests[-1].headers.get("X-Relay-Access"),
+        requests[-1].headers.get("Authorization"), agent.base_url, agent._credential_pool,
+    ) == (
+        f"https://opencode.ai/zen/go/v1/{path}", "fixture-access",
+        "Bearer fixture-pool-key-1", "https://opencode.ai/zen/go/v1", pool,
+    )

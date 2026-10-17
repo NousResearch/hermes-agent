@@ -976,6 +976,9 @@ class ClientLifecycleMixin:
         rotation; the caller treats a refused swap as "no entry")."""
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        if self.api_mode in ("chat_completions", "codex_responses") and isinstance(runtime_base, str):
+            from hermes_cli.config_providers import custom_provider_openai_base_url
+            runtime_base = custom_provider_openai_base_url(runtime_base.rstrip("/"))
         from hermes_cli.providers import is_actual_route
         actual_route = is_actual_route(getattr(self, "provider", ""), runtime_base)
         if actual_route:

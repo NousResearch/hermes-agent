@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
+from hermes_cli.config_providers import _entries_for_route, custom_provider_route_matches
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
@@ -586,9 +587,9 @@ def _keyed_custom_pool_matches(
                 aliases.add(f"{CUSTOM_POOL_PREFIX}{provider_key}")
             configured_url = _norm_url(entry.get("base_url"))
             if provider_norm == "custom":
-                return runtime_url == configured_url
+                return custom_provider_route_matches(configured_url, runtime_url)
             runtime_aliases = _requested_custom_name_aliases(provider_norm)
-            return bool(runtime_aliases & aliases) and runtime_url == configured_url
+            return bool(runtime_aliases & aliases) and custom_provider_route_matches(configured_url, runtime_url)
     except Exception:
         return False
     return False
@@ -615,7 +616,7 @@ def _legacy_custom_pool_matches(
             runtime_aliases = {_normalize_custom_pool_name(provider_norm)}
             if provider_norm.startswith(CUSTOM_POOL_PREFIX):
                 runtime_aliases.add(_normalize_custom_pool_name(provider_norm[len(CUSTOM_POOL_PREFIX):]))
-            return bool(runtime_aliases & aliases) and runtime_url == configured_url
+            return bool(runtime_aliases & aliases) and custom_provider_route_matches(configured_url, runtime_url)
     except Exception:
         return False
     return False
@@ -632,7 +633,7 @@ def credential_pool_entry_serves_endpoint(entry: Any, base_url: Any) -> bool:
     if not isinstance(entry_url, str) or not entry_url:
         return True
     from hermes_cli.route_identity import normalize_route_base_url
-    return normalize_route_base_url(entry_url) == normalize_route_base_url(base_url)
+    return custom_provider_route_matches(normalize_route_base_url(entry_url), normalize_route_base_url(base_url))
 
 
 def credential_pool_matches_provider(

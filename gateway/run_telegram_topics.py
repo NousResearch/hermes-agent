@@ -9,6 +9,13 @@ logger = logging.getLogger("gateway.run")
 
 
 class GatewayTelegramTopicsMixin:
+    async def _hm_admit_topic_event(self, event: MessageEvent):
+        """Consume topic metadata after authorization, before any agent-turn path."""
+        admitted = await self._hm_admit_event(event)
+        if admitted is not None and await self._handle_telegram_forum_topic_name(admitted[0]):
+            return None
+        return admitted
+
     async def _handle_telegram_forum_topic_name(self, event: MessageEvent) -> bool:
         """Persist an authorized Telegram topic create/rename as the canonical session title."""
         metadata = getattr(event, "metadata", None) or {}

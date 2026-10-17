@@ -174,6 +174,10 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Trusted author of the CURRENT inbound message ({"id", "name"}), separate from ``source``:
+    # an observe-mode group source is sender-less by design, yet actor-bound tools still need the
+    # turn's real invoker (#140059). None when the event carries no per-message author.
+    turn_actor: Optional[dict] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1338,8 +1342,22 @@ class SessionStore(
             return entry.session_id if entry else None
 
 
+def turn_actor_from_event(event: Any) -> Optional[dict]:
+    """The current inbound message's trusted author, from the platform event itself.
+
+    Adapters that share one sender-less session source across participants (Telegram observe
+    mode) still stamp the triggering update's sender on ``event.user_id``; that value is never
+    model- or user-derived, so it is the identity actor-bound tools may rely on (#140059).
+    """
+    actor_id = str(getattr(event, "user_id", None) or "").strip()
+    if not actor_id:
+        return None
+    return {"id": actor_id, "name": getattr(event, "user_name", None) or None}
+
+
 def build_session_context(
-    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
+    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None,
+    *, turn_actor: Optional[dict] = None,
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
     connected = config.get_connected_platforms()
@@ -1350,6 +1368,7 @@ def build_session_context(
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
         home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
+        turn_actor=turn_actor,
     )
     if session_entry:
         context.session_key = session_entry.session_key

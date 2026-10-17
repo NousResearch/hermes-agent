@@ -26,9 +26,15 @@ def github(tmp_path, monkeypatch):
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
                 value = [[]]
+            elif "/check-suites" in self.path:
+                # The suite fails by default, so a skipped required run (a failed
+                # `needs` upstream) stays retryable infra in the sweep below.
+                value = [{"total_count": 1, "check_suites": [
+                    {"id": 7, "status": "completed", "conclusion": "failure"}]}]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
+                       "check_suite": {"id": 7},
                        "html_url": "https://github.com/acme/repo/actions/runs/42"}
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
@@ -82,8 +88,9 @@ def test_pr_completion_requires_current_required_evidence(github):
             github.update(conclusion=conclusion, head="a" * 40)
             tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
             ok = kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
-            # `skipped`/`neutral` satisfy a required check in GitHub's branch-protection rules.
-            assert ok is (conclusion in ("success", "skipped", "neutral"))
+            # A skipped/neutral run in this failing suite is a skipped `needs` dependent,
+            # so only a genuinely successful run completes the card here.
+            assert ok is (conclusion == "success")
             task = kb.get_task(conn, tid)
             assert (task.status == "done") is ok
             receipts = [json.loads(r[0]) for r in conn.execute(
@@ -233,22 +240,22 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
 
 
-# --- #140025: a skipped/neutral required check satisfies the gate, as in branch protection ---
+# --- #140025: a skipped/neutral run passes only when its own check suite passed ---
 
-def test_classify_counts_skipped_and_neutral_required_checks_as_passing():
-    """GitHub's own branch-protection rules let a required check with conclusion `skipped`
-    (a path-filtered job that skips by design) or `neutral` pass. Classifying them as
-    retryable `infra` parks a mergeable, green PR's card forever: every rerun skips again."""
+def test_classify_leaves_skipped_and_neutral_to_the_suite_check():
+    """`_classify` cannot tell a job skipped by design from a job skipped because a job
+    it `needs` failed — both report `skipped`. It hands both to collect_acceptance as
+    retryable `infra`, and only a suite-conclusion check upgrades them to success (pinned
+    in test_kanban_pr_acceptance_skipped.py at the collect_acceptance level)."""
     from hermes_cli.kanban_pr_acceptance import _classify
     sha = "a" * 40
-    for conclusion in ("skipped", "neutral", "success"):
-        run = {"id": 42, "head_sha": sha, "status": "completed", "conclusion": conclusion}
-        assert _classify(run, sha, conclusion, True) == "success"
-    run = {"id": 42, "head_sha": sha, "status": "completed", "conclusion": "failure"}
-    assert _classify(run, sha, "failure", True) == "failure"
-    for conclusion in ("cancelled", "timed_out", "action_required", "startup_failure", None):
+    run = {"id": 42, "head_sha": sha, "status": "completed", "conclusion": "success"}
+    assert _classify(run, sha, "success", True) == "success"
+    for conclusion in ("skipped", "neutral", "cancelled", "timed_out", "action_required", "startup_failure", None):
         run = {"id": 42, "head_sha": sha, "status": "completed", "conclusion": conclusion}
         assert _classify(run, sha, conclusion, True) == "infra"
+    run = {"id": 42, "head_sha": sha, "status": "completed", "conclusion": "failure"}
+    assert _classify(run, sha, "failure", True) == "failure"
     # An in-flight check is still pending no matter its eventual conclusion.
     run = {"id": 42, "head_sha": sha, "status": "in_progress", "conclusion": None}
     assert _classify(run, sha, None, True) == "pending"

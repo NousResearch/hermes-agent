@@ -152,6 +152,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
         outcomes = []
+        suites: dict[int, dict] | None = None
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
@@ -165,6 +166,14 @@ def collect_acceptance(contract: str, published_pr: str | None,
                 is_run = "conclusion" in check
                 outcome = check.get("conclusion") if is_run else check["state"]
                 classification = _classify(check, sha, outcome, is_run)
+                if classification == "infra" and is_run and outcome in _PASS_IF_SUITE_PASSED:
+                    # A job skipped by design (path filter, `if:` false) sits in a suite
+                    # that concluded success/skipped; a job skipped because a job it
+                    # `needs` failed sits in a failing suite and must stay retryable.
+                    if suites is None:  # one extra read, only when a required run skipped
+                        suites = _check_suites(repo, sha, profile_home)
+                    if _suite_passed(check, suites):
+                        classification = "success"
                 outcomes.append(classification)
                 receipt["checks"].append({"name": context, "id": check["id"],
                     "url": check.get("html_url") or check.get("target_url"),
@@ -195,7 +204,26 @@ def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
         return "stale"
     if is_run and check.get("status") != "completed":
         return "pending"
-    # `skipped` (a path-filtered job) and `neutral` satisfy a required check in GitHub's
-    # own branch-protection rules; treating them as `infra` parks a mergeable PR forever.
-    return {"success": "success", "skipped": "success", "neutral": "success",
-            "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")
+    # `skipped`/`neutral` are not classified here: a run skipped by design and a run
+    # skipped because a job it `needs` failed both report `skipped`, so collect_acceptance
+    # tells them apart by the run's own check suite before accepting either.
+    return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")
+
+
+_PASS_IF_SUITE_PASSED = frozenset({"skipped", "neutral"})
+_PASSING_SUITE_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
+
+
+def _check_suites(repo: str, sha: str, profile_home: str | None) -> dict[int, dict]:
+    pages = _api(f"repos/{repo}/commits/{sha}/check-suites?per_page=100",
+                 paginate=True, profile_home=profile_home)
+    suites = [suite for page in pages for suite in page["check_suites"]]
+    if len({s["id"] for s in suites}) != pages[0]["total_count"]:
+        raise ValueError("Incomplete check-suite pagination")
+    return {suite["id"]: suite for suite in suites}
+
+
+def _suite_passed(run: dict, suites: dict[int, dict]) -> bool:
+    suite = suites.get((run.get("check_suite") or {}).get("id"))
+    return (suite is not None and suite.get("status") == "completed"
+            and suite.get("conclusion") in _PASSING_SUITE_CONCLUSIONS)

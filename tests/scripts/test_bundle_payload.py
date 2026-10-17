@@ -68,3 +68,39 @@ def test_both_launchers_keep_active_home_and_call_declared_function(tmp_path, ta
                             env={**os.environ, "HERMES_HOME": str(tmp_path / "custom/profiles/memory")}, capture_output=True, text=True, check=False)
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout) == [str(tmp_path / "custom/profiles/memory"), ["two words", "$(nope)", ""]]
+
+
+def _git_repo(path):
+    """A one-commit checkout: ``snapshot`` archives its HEAD with a real ``git archive``."""
+    repo = path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("payload\n", encoding="utf-8")
+    for args in (["init", "-q", "-b", "main"], ["add", "-A"],
+                 ["-c", "user.email=test@example.invalid", "-c", "user.name=test",
+                  "commit", "-qm", "init"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
+@pytest.mark.platforms("posix")
+def test_snapshot_replaces_a_read_only_destination(tmp_path):
+    """A payload a previous prepare left behind is read-only, so the destination clear inside
+    :func:`snapshot` has to survive it: ``bake_bytecode`` chmods the baked pycs 0444 (on Windows
+    that is ``FILE_ATTRIBUTE_READONLY`` and ``os.unlink`` fails with ``WinError 5``) and a
+    packaged tree can arrive with 0555 dirs, where POSIX unlinking needs a writable parent. The
+    call-site shape mirrors ``tests/test_utils_rmtree_readonly.py``; regression coverage for
+    #137713.
+    """
+    repo = _git_repo(tmp_path)
+    destination = tmp_path / "agent-payload"
+    cache = destination / "hermes-agent" / "acp_adapter" / "__pycache__"
+    cache.mkdir(parents=True)
+    baked = cache / "auth.cpython-314.pyc"
+    baked.write_text("baked", encoding="utf-8")
+    baked.chmod(0o444)
+    cache.chmod(0o555)
+
+    snapshot(repo, "HEAD", destination)
+
+    assert not baked.exists()
+    assert (destination / "README.md").read_text(encoding="utf-8-sig") == "payload\n"

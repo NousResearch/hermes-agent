@@ -216,12 +216,16 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
 })
 
 describe('stopped reply marker', () => {
-  it('marks a reply the user stopped', async () => {
+  it('renders a reply the user stopped as a regular message, with no stopped marker', async () => {
     const base = assistantMessage()
     const stopped = { ...base, metadata: { ...base.metadata, custom: { interrupted: true } } } as ThreadMessage
-    render(<Harness assistant={stopped} />)
+    const { container } = render(<Harness assistant={stopped} />)
 
-    expect(await screen.findByText(en.assistant.thread.responseStopped)).toBeTruthy()
+    // The reply's own content still renders like any other message…
+    expect(await screen.findByText('done')).toBeTruthy()
+    // …and no 'Response stopped' notice row is appended.
+    expect(screen.queryByText(en.assistant.thread.responseStopped)).toBeNull()
+    expect(container.querySelector('[data-slot="aui_assistant-message-stopped"]')).toBeNull()
   })
 
   it('leaves a finished reply unmarked', async () => {

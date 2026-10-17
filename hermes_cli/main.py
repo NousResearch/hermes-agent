@@ -39,6 +39,14 @@ import os
 import re
 import sys
 
+# A worker pinned with PYTHONSAFEPATH (cron.scheduler_worker_env) latched it at interpreter
+# start; drop it so this agent's own children keep their normal script-dir/cwd sys.path.
+# Restore the user's own value ("-" absent, "+<value>" set) recorded by the pin helper.
+if _pinned := os.environ.pop("_HERMES_PINNED_SAFEPATH", None):
+    os.environ.pop("PYTHONSAFEPATH", None)
+    if _pinned[0] == "+":
+        os.environ["PYTHONSAFEPATH"] = _pinned[1:]
+
 # Inline path math so ``python hermes_cli/main.py`` (script mode: sys.path[0]
 # is hermes_cli/, not the repo root) can import hermes_cli._startup_fast.
 _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))

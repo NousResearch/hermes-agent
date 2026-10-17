@@ -3,7 +3,10 @@
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Users override via:
 #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-#   pkgs.hermes-agent.override { extraDependencyGroups = [ "voice" ]; }
+#   pkgs.hermes-agent.override { extraDependencyGroups = [ "honcho" ]; }
+# Both extras add to what the package ships. The shipped groups live in
+# defaultDependencyGroups (set by packages.nix for `full`/`messaging`), so a
+# plain override of the extras never drops them.
 {
   lib,
   stdenv,
@@ -39,6 +42,9 @@
   version ? "0.0.0",
   distance ? 0,
   extraPythonPackages ? [ ],
+  # The optional groups this variant ships; packages.nix owns the lists.
+  defaultDependencyGroups ? [ ],
+  # The user's additions on top of defaultDependencyGroups.
   extraDependencyGroups ? [ ],
 }:
 let
@@ -46,6 +52,8 @@ let
   # nixpkgs interpreter. Everything Python-shaped below derives from it.
   pythonLock = callPackage ./pythonLock.nix { };
   python = pythonLock.interpreter;
+
+  packageDependencyGroups = defaultDependencyGroups ++ extraDependencyGroups;
 
   # Install stamp values — written to install-stamp.json so the Python
   # runtime (CLI, TUI) reads one file instead of env vars or .git probes.
@@ -78,14 +86,16 @@ let
   });
 
   mkHermesVenv =
-    extraDependencyGroups:
+    groups:
     callPackage ./python.nix {
       inherit uv2nix pyproject-nix pyproject-build-systems;
       pythonSrc = hermesNpmLib.pythonSrc;
-      dependency-groups = [ "all" ] ++ extraDependencyGroups;
+      # Deduplicated so naming a group the variant already ships leaves the
+      # venv derivation unchanged.
+      dependency-groups = lib.unique ([ "all" ] ++ groups);
     };
 
-  hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
+  hermesVenv = (mkHermesVenv packageDependencyGroups).venv;
 
   pmRuntime = callPackage ./pm-runtime.nix {
     inherit uv2nix pyproject-nix pyproject-build-systems;
@@ -300,7 +310,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   passthru =
     let
-      devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+      devPython = (mkHermesVenv (packageDependencyGroups ++ [ "dev" ])).editableVenv;
     in
     {
       inherit

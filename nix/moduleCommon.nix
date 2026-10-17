@@ -676,12 +676,20 @@ let
     '';
 
   # ── Package resolution ──────────────────────────────────────────────────
+  # The module's lists extend the package's own extras, never replace them.
+  # The shipped variants keep their groups in defaultDependencyGroups, but a
+  # custom `package` built with `.override { extraDependencyGroups = ...; }`
+  # carries its choices in the extras, and a plain attrset override here
+  # would drop them.
   effectivePackage =
     cfg:
     if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ] then
       cfg.package
     else
-      cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
+      cfg.package.override (prev: {
+        extraPythonPackages = (prev.extraPythonPackages or [ ]) ++ cfg.extraPythonPackages;
+        extraDependencyGroups = (prev.extraDependencyGroups or [ ]) ++ cfg.extraDependencyGroups;
+      });
 
   # ── The rendered config.yaml ────────────────────────────────────────────
   # YAML contains JSON, so the output of toJSON is a correct config.yaml.

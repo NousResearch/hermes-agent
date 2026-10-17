@@ -1079,6 +1079,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
             result = {}
+        if run.admission is None:
+            # A steer can land after the finalizer's last drain. This runs on the loop, like the steer
+            # handler, so nothing lands between this drain and the terminal status below (#132359).
+            # An admitted turn has no agent object here; its steers go through the session authority.
+            late_steer = agent._drain_pending_steer()
+            if isinstance(late_steer, str) and late_steer.strip():
+                result = {**result, "pending_steer": "\n".join(filter(None, (result.get("pending_steer"), late_steer)))}
         # The committed outcome decides: a stop issued over WS by another viewer interrupts
         # this run just as much as one issued through this adapter's own /stop.
         status, fields = terminal_run_status(result)

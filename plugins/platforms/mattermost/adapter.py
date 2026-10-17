@@ -15,6 +15,7 @@ import logging
 import mimetypes
 import os
 import re
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote as _unquote
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +48,54 @@ _RECONNECT_BASE_DELAY, _RECONNECT_MAX_DELAY, _RECONNECT_JITTER = 2.0, 60.0, 0.2 
 _POST_WITH_FILE_ERROR = "Failed to post with file"
 _MEDIA_MSG_TYPES = (("image/", MessageType.PHOTO), ("audio/", MessageType.VOICE))  # first match wins
 _INBOUND_CACHE_EXT = {"image/": ".png", "audio/": ".ogg"}  # mime prefix → default extension for cached media
+_VOICE_TRANSCODE_TIMEOUT_SECONDS = 60
+
+
+async def _stop_transcode_process(process: asyncio.subprocess.Process) -> None:
+    """Terminate a ffmpeg child and wait until it cannot retain its temp output."""
+    if process.returncode is None:
+        process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+
+
+async def _transcode_voice_to_mp3(audio_path: str) -> str | None:
+    """Best-effort Ogg/Opus -> MP3 conversion with a cancellable child process."""
+    fd, output_path = tempfile.mkstemp(prefix="mattermost_voice_", suffix=".mp3")
+    os.close(fd)
+    process: asyncio.subprocess.Process | None = None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", audio_path, "-vn", "-codec:a", "libmp3lame", output_path,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        communicate = asyncio.create_task(process.communicate())
+        try:
+            await asyncio.wait_for(asyncio.shield(communicate), timeout=_VOICE_TRANSCODE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            await _stop_transcode_process(process)
+            await communicate
+            logger.warning("Mattermost: ffmpeg timed out converting voice attachment")
+            return None
+        except asyncio.CancelledError:
+            await _stop_transcode_process(process)
+            await communicate
+            raise
+        if process.returncode != 0 or Path(output_path).stat().st_size == 0:
+            return None
+        return output_path
+    except FileNotFoundError:
+        logger.debug("Mattermost: ffmpeg unavailable; uploading original voice attachment")
+        return None
+    except Exception:
+        logger.debug("Mattermost: voice conversion failed; uploading original attachment", exc_info=True)
+        return None
+    finally:
+        if not (process and process.returncode == 0 and Path(output_path).exists() and Path(output_path).stat().st_size):
+            Path(output_path).unlink(missing_ok=True)
 
 
 def _with_mentions_disabled(payload: dict[str, Any]) -> dict[str, Any]:
@@ -312,7 +361,16 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: _Metadata = None, **kwargs: Any) -> SendResult:
-        return await self._send_local_file(chat_id, audio_path, caption, reply_to, metadata=metadata)
+        converted_path = None
+        if Path(audio_path).suffix.lower() in {".ogg", ".opus"}:
+            converted_path = await _transcode_voice_to_mp3(audio_path)
+        try:
+            return await self._send_local_file(
+                chat_id, converted_path or audio_path, caption, reply_to, metadata=metadata,
+            )
+        finally:
+            if converted_path:
+                Path(converted_path).unlink(missing_ok=True)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:

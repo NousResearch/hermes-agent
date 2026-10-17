@@ -20,6 +20,7 @@ import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
   overlayRepoLanes,
+  projectPrimaryWithin,
   type SidebarProjectTree,
   type SidebarSessionGroup,
   type SidebarWorkspaceTree
@@ -68,6 +69,7 @@ export function EnteredProjectContent({
           liveSessions={liveSessions}
           onNewSession={onNewSession}
           onNewSessionSplit={onNewSessionSplit}
+          primaryPath={project.path}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -105,6 +107,7 @@ function RepoFlatSection({
   renderRows,
   onNewSession,
   onNewSessionSplit,
+  primaryPath,
   discoveredWorktrees,
   liveSessions,
   removedSessionIds
@@ -114,6 +117,7 @@ function RepoFlatSection({
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   onNewSessionSplit?: NewSessionSplitHandler
+  primaryPath: null | string
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
@@ -123,6 +127,14 @@ function RepoFlatSection({
   const [open, toggleOpen] = useWorkspaceNodeOpen(repo.id)
   const dismissedWorktrees = useStore($dismissedWorktreeIds)
   const removedWorktrees = useStore($removedWorktreeIds)
+
+  // A repo/lane "+" seeds the session in the project's primary folder when that
+  // folder sits inside the lane's checkout — the repo root is just where git
+  // lives; the declared workspace (context files, file scope) is the subfolder
+  // (#138445). Lanes the primary doesn't sit inside (another repo's folder, a
+  // linked worktree) keep their own path.
+  const laneNewSessionPath = (lanePath: null | string): null | string =>
+    projectPrimaryWithin(primaryPath, lanePath) ?? lanePath
 
   // The repo's session lanes already come fully built from the backend; this
   // only injects empty VISUAL lanes from a live `git worktree list`.
@@ -194,6 +206,7 @@ function RepoFlatSection({
           key={group.id}
           // The kanban bucket is read-only: it aggregates many task worktrees, so
           // "new session here" and "remove worktree" have no single target.
+          newSessionPath={laneNewSessionPath(group.path)}
           onNewSession={group.isKanban ? undefined : onNewSession}
           onNewSessionSplit={group.isKanban ? undefined : onNewSessionSplit}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
@@ -273,7 +286,7 @@ function RepoFlatSection({
                 // Reveal the repo the new session targets if the user had it
                 // collapsed — the session lands in one of its lanes.
                 setWorkspaceNodeOpen(repo.id, true)
-                onNewSession(repo.path)
+                onNewSession(laneNewSessionPath(repo.path))
               }}
               onPointerDown={
                 onNewSessionSplit
@@ -284,11 +297,11 @@ function RepoFlatSection({
                           onNewSessionSplit(placement.dir, {
                             anchor: placement.anchor,
                             before: placement.before,
-                            cwd: repo.path
+                            cwd: laneNewSessionPath(repo.path)
                           })
                         },
                         event,
-                        { cwd: repo.path, label: s.newSessionIn(repo.label) }
+                        { cwd: laneNewSessionPath(repo.path), label: s.newSessionIn(repo.label) }
                       )
                     }
                   : undefined

@@ -117,6 +117,30 @@ const comparisonSegments = (path: string): string[] => {
 /** Canonical per-host comparison key (separator/case/trailing-slash agnostic). */
 const pathKey = (path: null | string | undefined): string => comparisonSegments(path ?? '').join('/')
 
+/**
+ * The primary folder a project declared, when it sits STRICTLY inside `root` —
+ * else null. A repo/branch lane's "+" anchors the new session at the lane's
+ * checkout root, but a project whose only folder is a plain subfolder of that
+ * repo works in the subfolder: its context files (`AGENTS.md`) and file scope
+ * must come from there, not the repo root (#138445). Comparison uses
+ * {@link pathKey}, so separator/case/NFC spelling differences don't defeat the
+ * prefix check; the returned path keeps the primary's own spelling.
+ */
+export function projectPrimaryWithin(
+  primary: null | string | undefined,
+  root: null | string | undefined
+): null | string {
+  const primaryTrimmed = (primary ?? '').trim().replace(/[/\\]+$/, '')
+  const primaryKey = pathKey(primaryTrimmed)
+  const rootKey = pathKey(root)
+
+  if (!primaryKey || !rootKey || primaryKey === rootKey || !primaryKey.startsWith(`${rootKey}/`)) {
+    return null
+  }
+
+  return primaryTrimmed
+}
+
 /** Last path segment. */
 export const baseName = (path: string): string | undefined => segments(path).pop()
 

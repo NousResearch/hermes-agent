@@ -207,6 +207,12 @@ _PREFIX_PATTERNS = [
     r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
+    # Infisical static service token: ``st.<uuid>.<32 hex>.<32 hex>`` (105 chars). The full dotted
+    # shape — not a bare ``st.`` + length — is the discriminator: a broad ``st\.``-prefixed body
+    # rule matched 410 benign strings in a ~503k-file walk (mostly URL hosts like
+    # ``247wallst.com``) while this anchored shape matched zero (#135822).
+    r"st\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"\.[0-9a-fA-F]{32}\.[0-9a-fA-F]{32}",
 ]
 
 # ENV assignment: KEY=value where KEY carries a secret-like name. Uppercase keys

@@ -20,7 +20,9 @@ from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecra
 from tools.debug_helpers import DebugSession
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
 from tools.url_safety import async_is_safe_url
-from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
+from tools.web_tools_rescue import (
+    _empty_search_note, _managed_search_fallback, _rescue_eligible, _rescue_empty_search, _rescue_search, _search_hits,
+)
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
@@ -350,11 +352,13 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 def _memoized_search(provider, query: str, limit: int) -> dict:
     """TTL memo + single-flight around the paid vendor call (tools/web_result_cache.py); sits after every
     safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
-    the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
-    would make the one-shot ring fallback sticky for a whole TTL."""
+    the caller's count is sliced out. Only successful, non-empty, non-rescued responses are cached — caching
+    a rescue would make the one-shot ring fallback sticky for a whole TTL, and an empty success may be a
+    silent upstream block (scraping-based search behind an anti-bot wall) that must not stick either."""
     from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
 
     def _paid_search() -> tuple[dict, bool]:
+        """(response, cacheable)."""
         fetch_limit = bucket_limit(limit)
         try:
             resp = provider.search(query, fetch_limit)
@@ -362,12 +366,29 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             served = _served_after_failure(str(exc), fetch_limit)
             if served is None:
                 raise
-            return served, True
+            return served, False
         if not resp.get("success"):
             served = _served_after_failure(str(resp.get("error", "")), fetch_limit)
             if served is not None:
-                return served, True
-        return resp, False
+                return served, False
+            return resp, False
+        if not _search_hits(resp):
+            return _served_after_empty(resp, fetch_limit), False
+        return resp, True
+
+    def _served_after_empty(resp: dict, fetch_limit: int) -> dict:
+        """A 0-result success is ambiguous: try the one-shot keyless rescue when eligible, else return
+        the empty result marked so the agent does not read it as proof that nothing exists."""
+        outcome = None
+        if _rescue_eligible(provider):
+            rescued, outcome = _rescue_empty_search(provider.name, query, fetch_limit)
+            if rescued is not None:
+                return rescued
+        if not isinstance(resp.get("data"), dict):
+            resp["data"] = {}
+        resp["data"].setdefault("web", [])
+        resp["data"]["note"] = _empty_search_note(provider.name, outcome)
+        return resp
 
     def _served_after_failure(error: str, fetch_limit: int) -> Optional[dict]:
         """Managed Firecrawl for a failed managed Perplexity call, else the one-shot keyless rescue when
@@ -383,8 +404,8 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             # Re-check inside the lock: a concurrent identical call may have stored.
             response_data = search_memo.lookup(provider.name, query, limit)
             if response_data is None:
-                response_data, was_rescued = _paid_search()
-                if not was_rescued:
+                response_data, cacheable = _paid_search()
+                if cacheable:
                     search_memo.store(provider.name, query, limit, response_data)
     return slice_search_response(response_data, limit)
 

@@ -1,8 +1,9 @@
 """Ingress for a parked secondary is never acknowledged and then dropped.
 
 A parked profile (here: its startup Bot recovery failed) comes back through a rescan, so its
-traffic is temporarily unavailable, not an invalid route. A relay frame is not acknowledged, so the
-connector redelivers it. A webhook gets a retryable 503 before its delivery id is recorded, so the
+traffic is temporarily unavailable, not an invalid route. A relay frame is acknowledged and the
+sender told to resend: the park can last until a manual rescan, and the connector drains its buffer
+in order, ack-gated. A webhook gets a retryable 503 before its delivery id is recorded, so the
 provider's retry is processed, not answered as a duplicate.
 """
 import asyncio
@@ -85,9 +86,33 @@ def _close(runner, homes):
         process_ownership.release(home)
 
 
+async def _rescan_retaining_beta(runner, beta, monkeypatch):
+    """A rescan whose serve of beta fails again and whose retirement misses its deadline (a turn
+    outlived its Stop): beta is parked, its retiring authority and reservation are kept."""
+    from gateway import run_runtime
+
+    async def failing(authority):
+        raise OSError('mailbox write failed again')
+
+    async def retained(authority, timeout=None):
+        authority.retiring = True
+        return False
+
+    monkeypatch.setattr(run_runtime, 'recover_bot_mailbox', failing)
+    monkeypatch.setattr(run_runtime, '_retire_profile_authority', retained)
+    result = await runner._apply_profile_changes({}, ['beta'], [], [], reason='control-socket', live={'beta': beta})
+    assert result['parked'] == ['beta'] and runner.session_authorities.for_home(beta).retiring, result
+
+
 @pytest.mark.asyncio
-async def test_a_relay_frame_for_a_parked_profile_is_redelivered_not_acked(tmp_path, monkeypatch):
+@pytest.mark.parametrize('retained', [False, True])
+async def test_a_relay_frame_for_a_parked_profile_is_refused_to_its_sender_not_held(tmp_path, monkeypatch, retained):
+    """website/docs/developer-guide/relay-connector-contract.md §3.2: on reconnect the connector drains
+    its per-instance buffer in order, ack-gated. b1 routes to the parked beta, b2 to the healthy
+    default profile and is sent only once b1 is acknowledged: holding b1 for the park would hold b2.
+    Also when the park retained beta's retiring authority, which refuses every admission."""
     websockets = pytest.importorskip('websockets')
+    from gateway.parked_route_refusal import PARKED_ROUTE_NOTICE
     from gateway.profile_routing import ProfileRoute
     from gateway.relay.adapter import RelayAdapter
     from gateway.relay.descriptor import CapabilityDescriptor
@@ -96,33 +121,45 @@ async def test_a_relay_frame_for_a_parked_profile_is_redelivered_not_acked(tmp_p
     runner = await _runner_with_beta_parked(
         tmp_path, monkeypatch, homes,
         profile_routes=[ProfileRoute(name='to-beta', platform='telegram', profile='beta', chat_id='C')])
+    if retained:
+        await _rescan_retaining_beta(runner, homes[1][1].resolve(), monkeypatch)
     descriptor = CapabilityDescriptor(1, 'telegram', 'Fixture', 4096, False, True, False, 'plain', 'chars')
-    outgoing, ready, adapter = [], asyncio.Queue(), None
-    frame = json.dumps({'type': 'inbound', 'bufferId': 'buf-1', 'event': {
-        'text': 'please do this', 'message_id': 'm1',
-        'source': {'platform': 'telegram', 'chat_id': 'C', 'chat_type': 'group', 'user_id': 'U'}}}) + '\n'
+    acks, sent, outbound, adapter = asyncio.Queue(), [], [], None
+
+    def frame(buffer_id, chat):
+        return json.dumps({'type': 'inbound', 'bufferId': buffer_id, 'event': {
+            'text': f'message for {chat}', 'message_id': buffer_id,
+            'source': {'platform': 'telegram', 'chat_id': chat, 'chat_type': 'group', 'user_id': 'U'}}}) + '\n'
 
     async def connector(ws):
         await ws.recv()  # hello
         await ws.send(json.dumps({'type': 'descriptor', 'descriptor': json.loads(descriptor.to_json())}) + '\n')
-        await ready.put(ws)
-        async for line in ws:
-            outgoing.append(json.loads(line))
 
-    from gateway.platforms import webhook_ingress
-    real_admit, attempts = webhook_ingress.admit_producer, []
-
-    async def recorded(adapter_, event):
+        async def reader():
+            async for line in ws:
+                msg = json.loads(line)
+                if msg.get('type') == 'inbound_ack':
+                    await acks.put(msg['bufferId'])
+                elif msg.get('type') == 'outbound':
+                    outbound.append(msg['action'])
+                    await ws.send(json.dumps({'type': 'outbound_result', 'requestId': msg['requestId'],
+                                              'result': {'success': True, 'message_id': 'notice'}}) + '\n')
+        task = asyncio.create_task(reader())
         try:
-            receipt = await real_admit(adapter_, event)
-        except Exception as exc:
-            attempts.append(exc)
-            raise
-        attempts.append(receipt)
-        return receipt
+            for buffer_id, chat in (('b1', 'C'), ('b2', 'D')):  # in order, ack-gated
+                while True:
+                    sent.append(buffer_id)
+                    await ws.send(frame(buffer_id, chat))
+                    try:
+                        if await asyncio.wait_for(acks.get(), 1.0) == buffer_id:
+                            break
+                    except TimeoutError:
+                        continue  # redeliver the unacknowledged head
+            await ws.wait_closed()
+        finally:
+            task.cancel()
 
-    monkeypatch.setattr(webhook_ingress, 'admit_producer', recorded)
-    acks = lambda: [f for f in outgoing if f.get('type') == 'inbound_ack' and f.get('bufferId') == 'buf-1']
+    told = lambda: [a for a in outbound if a.get('op') == 'send' and a.get('chat_id') == 'C']
     try:
         async with websockets.serve(connector, '127.0.0.1', 0) as relay:
             transport = WebSocketRelayTransport(
@@ -134,19 +171,11 @@ async def test_a_relay_frame_for_a_parked_profile_is_redelivered_not_acked(tmp_p
             runner.adapters[Platform.RELAY] = adapter
             runner._wire_adapter_handlers(adapter)
             assert await adapter.connect()
-            ws = await asyncio.wait_for(ready.get(), 5)
-            await ws.send(frame)
-            await async_wait_until(lambda: attempts, what='the parked delivery reached admission')
-            from gateway.relay.adapter import _PERMANENT_REFUSALS
-            refused = attempts[0]
-            assert getattr(refused, 'reason', None) not in _PERMANENT_REFUSALS, (
-                f'a parked profile was refused for good (the frame is acknowledged and lost): {refused!r}')
-            # The profile is served again and the connector redelivers the unacknowledged frame.
-            await _serve_beta_again(runner, homes[1][1].resolve())
-            await ws.send(frame)
-            await async_wait_until(acks, what='buf-1 acknowledged after the redelivery')
-            assert len(acks()) == 1, 'the parked delivery was acknowledged too'
-            assert _admissions(homes[1][1]) == 1
+            await async_wait_until(lambda: _admissions(homes[0][1]) == 1 and told(),
+                                   what="the healthy profile's b2 admitted and b1's sender told")
+            assert sent.count('b1') == 1, f'the parked profile\'s frame was withheld and redelivered: {sent}'
+            assert [a['content'] for a in told()] == [PARKED_ROUTE_NOTICE]
+            assert _admissions(homes[1][1]) == 0
     finally:
         if adapter is not None:
             await adapter.disconnect()

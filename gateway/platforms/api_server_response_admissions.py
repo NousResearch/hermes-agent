@@ -38,6 +38,9 @@ def find_admission(adapter, durable_key, request_id):
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import get_session_admission, _row
     authority = active_authority(adapter.gateway_runner)
+    if authority is None:
+        from gateway.run_runtime import refuse_parked_scope
+        refuse_parked_scope(adapter.gateway_runner)  # retryable while its profile is parked
     if authority is None or adapter._ensure_session_db() is not authority.db:
         raise RuntimeStoreError('profile_mismatch')
     store = adapter._current_response_store()

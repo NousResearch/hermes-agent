@@ -308,10 +308,25 @@ def worker_exit_code(path, params):
 
 
 def _run_task_turns(agent, frame, history, context):
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
-    if missing and not loaded:
-        raise ValueError('kanban_skills_unavailable')
+    if missing:
+        # Degrade, never abort: a card's skills are durable, unattended state — a typo or a
+        # skill uninstalled after filing must not brick the card into a dispatcher crash-retry
+        # loop (same call as the injected kanban-worker flag, which already degrades). The
+        # warning rides the first prompt so the worker can proceed, self-report, or block.
+        import logging
+        logging.getLogger(__name__).warning(
+            'kanban task %s: continuing without unloadable skill(s): %s%s',
+            context.get('task_id'), format_missing_skills(missing),
+            f" (loaded: {', '.join(loaded)})" if loaded else '')
+        warning = (
+            "[Kanban skills warning: the following task skill(s) could not be loaded and are "
+            f"NOT active for this run: {format_missing_skills(missing)}. Continue without them; "
+            "if they were essential to complete this card, say so and block the task with "
+            "the reason.]"
+        )
+        skills = '\n\n'.join(p for p in (skills, warning) if p)
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history)
 

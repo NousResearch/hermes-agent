@@ -402,9 +402,15 @@ def _script_argv(
 ) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else the job's ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv``
-    / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
-    may raise; callers run this inside their ``try``."""
+    on Windows ``.bat``/``.cmd`` → ``cmd /c`` and ``.ps1`` → ``powershell -File``, else the job's
+    ``interpreter`` when set, else a Python chosen by ``_posix_cron_script_argv`` /
+    ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
+    may raise; callers run this inside their ``try``.
+
+    The Windows-native branches close the gap where a ``.bat``/``.cmd``/``.ps1`` job script
+    fell through to the Python interpreter and failed with ``SyntaxError`` — on Windows, where
+    those extensions are the *native* script form and Git Bash is often absent.
+    """
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -415,6 +421,24 @@ def _script_argv(
                 "or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
+    if sys.platform == "win32" and path.suffix.lower() in {".bat", ".cmd"}:
+        # cmd.exe is guaranteed on Windows (System32); the which() fallback mirrors the
+        # .sh branch's belt-and-braces for stripped-down environments.
+        _cmd = shutil.which("cmd") or "cmd.exe"
+        return [_cmd, "/c", str(path)], {}, None
+    if sys.platform == "win32" and path.suffix.lower() == ".ps1":
+        # -NoProfile: never source the user's profile into a cron run.
+        # -ExecutionPolicy Bypass: the script lives inside HERMES_HOME/scripts/ (validated by
+        # _resolve_script_path), so bypassing the OS policy for THIS file does not widen the
+        # attack surface for anything the user has not already placed under their control.
+        _ps = shutil.which("powershell") or shutil.which("powershell.exe")
+        if _ps is None:
+            return None, {}, (
+                f"Cannot run .ps1 script {path.name!r}: powershell.exe not found. "
+                "Install PowerShell, run the script via a .cmd wrapper, "
+                "or rewrite it as Python (.py)."
+            )
+        return [_ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)], {}, None
     if isinstance(interpreter, str) and interpreter.strip():
         # A user venv gets none of the managed-store overlays: the repo bootstrap / PYTHONPATH
         # exist to run Hermes' own dependency venv and would shadow the user's packages.

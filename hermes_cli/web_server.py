@@ -341,6 +341,14 @@ def _require_token(request: Request) -> None:
     """
     if getattr(request.state, "native_http_principal", None):
         return
+    if getattr(request.state, "gateway_forwarded", False):
+        # Served by a plugin host (PLG-3): the gateway authenticated this
+        # request before forwarding it over the host's private pipe, and
+        # stripped every credential header. The host's own session token is a
+        # different secret, so the loopback check can never pass there. The
+        # host stamps requests with install_gateway_forwarded_stamp(); no
+        # direct caller can reach the host to forge it.
+        return
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None
     else:

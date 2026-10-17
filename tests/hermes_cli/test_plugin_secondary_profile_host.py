@@ -700,3 +700,88 @@ def test_a_miss_rescan_overtaken_by_an_explicit_rescan_caches_nothing_stale(daem
     assert status("late") == 200 and overtook == [1]
     assert not [k for k in web_server_plugin_profiles._unknown_plugins if k[1] == "late"]
     assert status("late") == 200
+
+
+_TOKEN_GUARDED_API = """
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
+
+router = APIRouter()
+
+
+class Config(BaseModel):
+    k: str = ""
+
+
+@router.put("/config")
+async def put_config(request: Request, cfg: Config | None = None):
+    from hermes_cli.web_server import _require_token
+    _require_token(request)
+    return {"ok": True}
+"""
+
+
+@pytest.mark.parametrize("selector", [False, True], ids=["ticket", "selector"])
+def test_gateway_authenticated_request_satisfies_the_hosted_require_token_guard(daemon, selector):
+    """Regression for #140499 (PLG-3 follow-up): a request the gateway authenticated and forwarded to
+    a secondary profile's plugin host satisfies the plugin's documented ``_require_token`` guard.
+    Before, the guard could never pass in the host: the gateway strips credential headers and the
+    host's session token is a different secret, so every mutating dashboard-plugin endpoint 401'd."""
+    from hermes_cli.plugin_isolation import install_gateway_forwarded_stamp
+
+    def hosted_shape(host, plugin, dashboard_dir, api_file, method, path, query, headers, body, **_):
+        # what op_asgi builds: a bare FastAPI over the plugin's router, plus the gateway stamp
+        import importlib.util
+
+        from fastapi import FastAPI
+        from pathlib import Path as _P
+
+        api_path = _P(str(dashboard_dir)) / str(api_file) if not _P(str(api_file)).is_absolute() else _P(str(api_file))
+        spec = importlib.util.spec_from_file_location(f"hermes_dashboard_plugin_{plugin}", api_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        app = FastAPI()
+        app.include_router(module.router)
+        install_gateway_forwarded_stamp(app)
+        from starlette.testclient import TestClient
+        response = TestClient(app).request(method, path, params=query, headers=headers, content=body)
+        return {"status": response.status_code, "headers": [], "body": response.content}
+
+    imported = _install(daemon.beta, NAME)
+    (imported.with_name("plugin_api.py")).write_text(_TOKEN_GUARDED_API)
+    _plugins(daemon.beta, enabled=[NAME])
+    _plugins(daemon.launch)
+    monkeypatched = False
+    try:
+        from unittest.mock import patch
+        with patch.object(PluginHost, "asgi_request", hosted_shape):
+            monkeypatched = True
+            http, _, _ = _as_beta(daemon, selector)
+            response = daemon.client.put(f"/api/plugins/{NAME}/config", json={"k": "v"}, **http)
+            assert (response.status_code, response.json()) == (200, {"ok": True})
+    finally:
+        assert monkeypatched
+
+
+def test_unmarked_requests_still_fail_the_hosted_require_token_guard(daemon):
+    """The stamp requires the forwarder's header: a request that did not arrive through the gateway's
+    authenticated forwarder gets no pass on a hosted app."""
+    from starlette.applications import Starlette
+    from starlette.endpoints import HTTPEndpoint
+    from starlette.responses import JSONResponse as _JSON
+    from starlette.routing import Route
+
+    from hermes_cli.plugin_isolation import GATEWAY_FORWARDED_HEADER, install_gateway_forwarded_stamp
+
+    class ConfigEndpoint(HTTPEndpoint):
+        async def put(self, request):
+            from hermes_cli.web_server import _require_token
+            _require_token(request)
+            return _JSON({"ok": True})
+
+    app = Starlette(routes=[Route("/config", ConfigEndpoint)])
+    install_gateway_forwarded_stamp(app)
+    from starlette.testclient import TestClient
+    client = TestClient(app)
+    assert client.put("/config").status_code == 401
+    assert client.put("/config", headers={GATEWAY_FORWARDED_HEADER: "1"}).json() == {"ok": True}

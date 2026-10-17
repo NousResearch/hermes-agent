@@ -314,6 +314,10 @@ class HostRuntime:
             if router is None:
                 raise AttributeError(f"dashboard api {api_path.name} has no 'router'")
             app = FastAPI()
+            # Requests arrive only through the gateway's authenticated
+            # forwarder; mark them so route-local guards (_require_token) hold.
+            from hermes_cli.plugin_isolation import install_gateway_forwarded_stamp
+            install_gateway_forwarded_stamp(app)
             app.include_router(router)
             self.asgi_apps[str(api_path)] = app
 

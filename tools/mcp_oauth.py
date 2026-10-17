@@ -648,6 +648,18 @@ class HermesTokenStorage:
         """True if we have tokens on disk (may be expired)."""
         return self._tokens_path().exists()
 
+    def credential_stamp(self) -> tuple:
+        """``stat()`` of the token and client files: what any re-authorization rewrites. No bytes read."""
+        stamp = []
+        for path in (self._tokens_path(), self._client_info_path()):
+            try:
+                st = path.stat()
+            except OSError:
+                stamp.append(None)
+            else:
+                stamp.append((st.st_mtime_ns, st.st_size, st.st_ino))
+        return tuple(stamp)
+
 
 # Callback capture: the HTTP listener and the stdin paste reader share one result dict.
 def _authorization_code_result(code: str, state: str | None, iss: str | None = None):

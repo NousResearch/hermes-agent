@@ -345,32 +345,57 @@ def test_in_place_commit_preserves_seeded_telemetry_fields(caplog):
     assert payload["middle_window_tokens"] is not None
 
 
-def test_new_attempt_clears_previous_attempt_telemetry():
-    """A new attempt must not inherit the previous attempt's telemetry (#118580 follow-up).
-
-    The commit-time hold keeps the trio for its own attempt's emit; the next attempt
-    (and any emit before it re-seeds) must start from a clean slate.
-    """
+def test_an_overlapping_blocked_call_keeps_the_running_attempts_telemetry():
+    """A call that stops at the automatic gate must not erase the record of an attempt still summarizing: the
+    previous-attempt clear (#118580) happens only once an attempt owns the lease and dispatches its summary."""
     with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000,
         )
-    compressor.tail_token_budget = 10
-    compressor._last_compression_telemetry = {
-        "event": "compression_attempt", "attempt_id": "prior-attempt", "session_id": "prior-session", "commit_ms": 73,
-    }
-    compressor._active_compression_telemetry = compressor._last_compression_telemetry
-    compressor._compression_telemetry_seed = {"attempt_id": "prior-attempt"}
+    running = {"event": "compression_attempt", "attempt_id": "running-attempt", "method": "llm_summary"}
+    compressor._last_compression_telemetry = compressor._active_compression_telemetry = running
+    compressor._compression_telemetry_seed = {"attempt_id": "running-attempt"}
+    compressor._summary_failure_cooldown_until = time.monotonic() + 600
     agent = _Agent(compressor)
 
-    from agent.conversation_compression import _begin_compression_attempt
+    from agent.conversation_compression import compress_context
 
-    _begin_compression_attempt(agent, force=True, defer_notification=False)
+    with patch.object(type(compressor), "_refresh_durable_guards"):
+        compress_context(agent, [{"role": "user", "content": "hi"}] * 4, "sys", approx_tokens=80_000)
 
-    assert compressor._last_compression_telemetry is None
-    assert compressor._active_compression_telemetry is None
-    assert compressor._compression_telemetry_seed["attempt_id"] == agent._compression_attempt_id
+    assert compressor._last_compression_telemetry is running
+    assert compressor._active_compression_telemetry is running
+    assert compressor._compression_telemetry_seed == {"attempt_id": "running-attempt"}
+
+
+def test_a_lock_contended_call_keeps_the_running_attempts_telemetry(tmp_path):
+    """The lock sit-out shares the gate's rule: the holder's record on a shared compressor must survive, and the
+    contender logs its own ``lock_contended`` record from its seed."""
+    import os
+
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("S", source="cli")
+    assert db.try_acquire_compression_lock("S", "winner", ttl_seconds=60)
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+            session_db=db, session_id="S", skip_context_files=True, skip_memory=True,
+        )
+    compressor = agent.context_compressor
+    running = {"event": "compression_attempt", "attempt_id": "running-attempt", "method": "llm_summary"}
+    compressor._last_compression_telemetry = compressor._active_compression_telemetry = running
+    try:
+        agent._compress_context([{"role": "user", "content": f"m{i}"} for i in range(20)], "sys", force=True)
+        assert agent._compression_skipped_due_to_lock
+        assert compressor._last_compression_telemetry is running
+        assert compressor._active_compression_telemetry is running
+    finally:
+        agent.close()
 
 
 def test_pool_saturation_emit_does_not_inherit_previous_attempt_telemetry(caplog):

@@ -967,7 +967,6 @@ def cmd_check(source: Path, out: Path) -> int:
         for i in range(count):
             entry = data[6 + i * 16 : 6 + (i + 1) * 16]
             w = entry[0] or 256
-            h = entry[1] or 256
             sizes.append(w)
         return sorted(set(sizes))
 

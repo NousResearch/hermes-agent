@@ -75,12 +75,19 @@ export type RepairDecisionInput = {
    * stall is exactly the case the soft-restart path is for.
    */
   primaryBackendAlive: boolean
+  /**
+   * Whether a fresh probe can run the installed runtime's published launcher.
+   * A false result identifies a partial or damaged runtime, so retrying the
+   * same venv cannot recover it and must not consume the soft-restart budget.
+   */
+  runtimeUsable?: boolean
 }
 
 /**
  * Decide the next repair action.
  *
  * Decision matrix:
+ *   runtime unusable                         → hard reinstall immediately
  *   attempt ≤ maxSoftAttempts AND alive   → soft restart (don't reinstall)
  *   attempt ≤ maxSoftAttempts AND dead    → soft restart (process exited,
  *                                            but we don't yet trust that
@@ -98,6 +105,14 @@ export function decideBootstrapRepair(input: RepairDecisionInput): RepairDecisio
   const maxSoftAttempts = input.maxSoftAttempts ?? 3
   const attempt = Math.max(1, Math.floor(input.attempt))
   const alive = Boolean(input.primaryBackendAlive)
+
+  if (input.runtimeUsable === false) {
+    return {
+      hardReinstall: true,
+      attempt,
+      reason: 'installed runtime probe failed; reinstalling immediately instead of restarting the same venv'
+    }
+  }
 
   if (attempt > maxSoftAttempts) {
     return {

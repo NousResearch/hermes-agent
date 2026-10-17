@@ -288,6 +288,26 @@ def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> 
         logger.debug("Could not cache source check: %s", exc)
 
 
+def _release_outside_head_future(co: _Checkout, target: str) -> bool:
+    """True when this checkout provably does not trail ``target``: applying the release leaves
+    the checkout's line entirely (cut from a divergent branch, #140729), never a forward move.
+    Local ancestry first; a target the checkout may still precede (missing objects, shallow
+    history) falls through to the compare API, and an unknown relation stays an update.
+    """
+    forward = _git_run(["merge-base", "--is-ancestor", co.head, target], cwd=co.root, git=co.git)
+    if forward is not None and forward.returncode == 0:
+        return False
+    if forward is not None and forward.returncode == 1:
+        # A shallow boundary makes exit 1 a guess; full history makes it proof.
+        shallow = _git_run(["rev-parse", "--is-shallow-repository"], cwd=co.root, git=co.git)
+        if shallow is not None and shallow.stdout.strip() == "false":
+            return True
+    if co.repository:
+        status = (_github_compare(co.head, target, co.repository) or {}).get("status")
+        return status in ("behind", "diverged")
+    return False
+
+
 def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only: bool = False):
     """Resolve a release channel's target into ``result``; the SourceTarget, or None on error.
 
@@ -309,10 +329,12 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
         # Forward-only pins the target to this checkout's own HEAD, newer than the release.
         # Always present: Desktop names the release only on an explicit False.
         result["aheadOfRelease"] = bool(getattr(source_target, "ahead", False))
-        # A release HEAD already contains moves the checkout back: Desktop names it a rollback,
-        # not a new update. Local ancestry only; an unknown relation stays an update.
-        result["rollback"] = bool(co.head and co.head != target and not co.embedded and _git_ok(
-            ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git))
+        # A release HEAD already contains — or provably does not descend from, however the
+        # release was cut — moves the checkout back: Desktop names it a rollback, not a new
+        # update. Local ancestry first; an unknown relation stays an update.
+        result["rollback"] = bool(co.head and co.head != target and not co.embedded and (
+            _git_ok(["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git)
+            or _release_outside_head_future(co, target)))
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target

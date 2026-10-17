@@ -3137,6 +3137,73 @@ def edit_task(
     return True
 
 
+def edit_task_goal_config(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    goal_mode: Optional[bool] = None,
+    goal_max_turns: Optional[int] = ...,  # sentinel: "not sent"
+) -> tuple[bool, str]:
+    """Edit goal_mode / goal_max_turns on a task that has never been run.
+
+    Returns ``(ok, reason)`` where *ok* is ``True`` on success and
+    *reason* explains the failure when *ok* is ``False``.
+
+    The edit is rejected atomically if the task has any entry in
+    ``task_runs`` (i.e. it has been claimed / started at least once).
+    This prevents changing the execution contract mid-flight.
+    """
+    # Determine what fields were actually passed (use ... sentinel for
+    # goal_max_turns so None is a valid value meaning "clear it").
+    fields_changed: list[str] = []
+    if goal_mode is not None:
+        fields_changed.append("goal_mode")
+    if goal_max_turns is not ...:
+        fields_changed.append("goal_max_turns")
+    if not fields_changed:
+        return True, ""
+
+    with write_txn(conn):
+        # Check that the task exists.
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False, f"task {task_id} not found"
+
+        # Reject if any run has ever started for this task.
+        has_run = conn.execute(
+            "SELECT 1 FROM task_runs WHERE task_id = ? LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if has_run:
+            return (
+                False,
+                "goal configuration cannot be changed after execution has started",
+            )
+
+        sets: list[str] = []
+        vals: list[object] = []
+        if goal_mode is not None:
+            sets.append("goal_mode = ?")
+            vals.append(1 if goal_mode else 0)
+        if goal_max_turns is not ...:
+            sets.append("goal_max_turns = ?")
+            vals.append(int(goal_max_turns) if goal_max_turns is not None else None)
+        if not sets:
+            return True, ""
+        vals.append(task_id)
+        conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+            vals,
+        )
+        _append_event(
+            conn, task_id, "goal_config_edited",
+            {"fields": fields_changed},
+        )
+    return True, ""
+
+
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,

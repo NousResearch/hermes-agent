@@ -286,3 +286,96 @@ class TestCLIJudgeGate:
         )
         assert rc != 0, "blocked verdict must reject the completion"
         assert complete_calls == [], "an unachievable goal must never reach complete_task"
+
+# ---------------------------------------------------------------------------
+# edit_task_goal_config (Issue #119314)
+# ---------------------------------------------------------------------------
+
+class TestEditTaskGoalConfig:
+    """Goal config editing: allowed before first run, rejected after."""
+
+    def test_enable_goal_mode(self, kanban_home):
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            ok, reason = kb.edit_task_goal_config(
+                conn, tid, goal_mode=True, goal_max_turns=10,
+            )
+            task = kb.get_task(conn, tid)
+        assert ok is True
+        assert reason == ""
+        assert task.goal_mode is True
+        assert task.goal_max_turns == 10
+
+    def test_disable_goal_mode(self, kanban_home):
+        with kbc.connect() as conn:
+            tid = kb.create_task(
+                conn, title="t", assignee="w",
+                goal_mode=True, goal_max_turns=5,
+            )
+            ok, _ = kb.edit_task_goal_config(conn, tid, goal_mode=False)
+            task = kb.get_task(conn, tid)
+        assert ok is True
+        assert task.goal_mode is False
+        assert task.goal_max_turns == 5  # unchanged
+
+    def test_change_goal_max_turns(self, kanban_home):
+        with kbc.connect() as conn:
+            tid = kb.create_task(
+                conn, title="t", assignee="w",
+                goal_mode=True, goal_max_turns=5,
+            )
+            ok, _ = kb.edit_task_goal_config(conn, tid, goal_max_turns=20)
+            task = kb.get_task(conn, tid)
+        assert ok is True
+        assert task.goal_max_turns == 20
+
+    def test_clear_goal_max_turns(self, kanban_home):
+        with kbc.connect() as conn:
+            tid = kb.create_task(
+                conn, title="t", assignee="w",
+                goal_mode=True, goal_max_turns=5,
+            )
+            ok, _ = kb.edit_task_goal_config(conn, tid, goal_max_turns=None)
+            task = kb.get_task(conn, tid)
+        assert ok is True
+        assert task.goal_max_turns is None
+
+    def test_rejected_after_first_run(self, kanban_home):
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            # Simulate a claim (creates a task_runs row).
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at) "
+                "VALUES (?, 'w', 'running', ?)",
+                (tid, 1),
+            )
+            conn.commit()
+            ok, reason = kb.edit_task_goal_config(conn, tid, goal_mode=True)
+        assert ok is False
+        assert "execution has started" in reason
+
+    def test_noop_when_nothing_passed(self, kanban_home):
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            ok, reason = kb.edit_task_goal_config(conn, tid)
+        assert ok is True
+
+    def test_task_not_found(self, kanban_home):
+        with kbc.connect() as conn:
+            ok, reason = kb.edit_task_goal_config(
+                conn, "nonexistent", goal_mode=True,
+            )
+        assert ok is False
+        assert "not found" in reason
+
+    def test_recorded_event(self, kanban_home):
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="t", assignee="w")
+            kb.edit_task_goal_config(conn, tid, goal_mode=True)
+            events = conn.execute(
+                "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                "ORDER BY created_at",
+                (tid,),
+            ).fetchall()
+        kinds = [e["kind"] for e in events]
+        assert "goal_config_edited" in kinds

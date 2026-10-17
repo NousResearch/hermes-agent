@@ -549,6 +549,13 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Goal mode configuration — editable only before the task's first run.
+    # ``goal_mode=""`` clears (disables). ``clear_goal_mode=True`` is the
+    # explicit clear signal for the same reason as model_override.
+    goal_mode: Optional[bool] = None
+    goal_max_turns: Optional[int] = None
+    clear_goal_mode: bool = False
+    clear_goal_max_turns: bool = False
 
 
 class BulkTaskBody(BaseModel):
@@ -626,6 +633,20 @@ def _apply_model_override(conn, task_id: str, p) -> bool:
 
 def _apply_reasoning_effort(conn, task_id: str, p) -> bool:
     return kanban_db.set_reasoning_effort(conn, task_id, None if p.clear_reasoning_effort else p.reasoning_effort)
+
+
+def _apply_goal_config(conn, task_id: str, p) -> bool:
+    """Editable only before the first run; ``edit_task_goal_config`` returns ``(ok, reason)``."""
+    gm = False if p.clear_goal_mode else p.goal_mode
+    gt: object = ...  # sentinel: "not sent"
+    if p.clear_goal_max_turns:
+        gt = None
+    elif p.goal_max_turns is not None:
+        gt = p.goal_max_turns
+    ok, reason = kanban_db.edit_task_goal_config(conn, task_id, goal_mode=gm, goal_max_turns=gt)
+    if not ok:
+        raise HTTPException(status_code=409, detail=reason)
+    return ok
 
 
 # Override knobs shared by PATCH and bulk: (payload wants it?, apply, bulk refusal message).
@@ -706,6 +727,9 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 with _map_errors(400, ValueError, RuntimeError):
                     ok = apply(conn, task_id, payload)
                 _require_ok(ok)
+        if (payload.clear_goal_mode or payload.goal_mode is not None
+                or payload.clear_goal_max_turns or payload.goal_max_turns is not None):
+            _apply_goal_config(conn, task_id, payload)
         if payload.priority is not None:
             _set_priority(conn, task_id, payload.priority, board)
         if payload.title is not None or payload.body is not None:

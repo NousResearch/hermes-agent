@@ -951,14 +951,32 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    goal_mode = None
+    if getattr(args, "goal_mode", False):
+        goal_mode = True
+    elif getattr(args, "no_goal", False):
+        goal_mode = False
+    goal_max_turns = ...  # type: ignore[assignment]
+    if getattr(args, "goal_max_turns", None) is not None:
+        goal_max_turns = args.goal_max_turns
+    has_goal_edit = goal_mode is not None or goal_max_turns is not ...
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result)) and not has_goal_edit:
+        return _err("kanban edit: provide --title, --body, --priority, --result, or a goal flag", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
     with kbc.connect_closing() as conn:
+        if has_goal_edit:
+            ok, reason = kb.edit_task_goal_config(
+                conn, args.task_id, goal_mode=goal_mode, goal_max_turns=goal_max_turns,
+            )
+            if not ok:
+                return _err(f"kanban {args.task_id}: {reason}")
+        if all(value is None for value in (title, body, priority, result)):
+            print(f"Edited {args.task_id}")
+            return 0
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
             result=result, summary=summary, metadata=metadata,

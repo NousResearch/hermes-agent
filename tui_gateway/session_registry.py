@@ -217,6 +217,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once. Deferred until the first prompt (or any
     command needing the agent) so the composer isn't blocked on tool discovery / model metadata;
     the ready/error event contract is unchanged."""
+    if session.get("attachment_fence") is not None:
+        return
     ready = session.get("agent_ready")
     if ready is None:
         return
@@ -330,6 +332,7 @@ def _sess_building(params, rid):
     clipboard.paste, image.detach), which only touch creation-time fields and run inline on the socket
     reader thread, where waiting on a cold build stalled every RPC behind it ("text is instant, images hang")."""
     s, err = _sess_nowait(params, rid)
+    err = err or _attachment_execution_error(rid, s)
     if not err:
         _start_agent_build(params.get("session_id") or "", s)
     return (None, err) if err else (s, None)

@@ -173,6 +173,8 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> bool:
     """Only the execution gate can acknowledge a claimed notification turn."""
+    if session.get("attachment_fence") is not None:
+        return False
     try:
         accepted = _run_prompt_submit(rid, sid, session, text, **kwargs)
         if not accepted:

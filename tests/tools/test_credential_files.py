@@ -361,6 +361,22 @@ class TestConfigPathTraversal:
         mounts = get_credential_file_mounts()
         assert mounts == []
 
+    def test_config_cannot_ship_master_stores(self, tmp_path, monkeypatch):
+        """terminal.credential_files gets the skill path's master-store refusal: listing .env or
+        auth.json in config must not sync every provider key into the sandbox, while a
+        per-service token listed beside them still mounts."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / ".env").write_text("OPENAI_API_KEY=sk-proj-REAL\n")
+        (hermes_home / "auth.json").write_text('{"providers":{}}')
+        (hermes_home / "google_token.json").write_text("{}")
+        self._write_config(hermes_home, [".env", "auth.json", "google_token.json"])
+
+        assert [m["container_path"] for m in get_credential_file_mounts()] == [
+            "/root/.hermes/google_token.json"
+        ]
+
     def test_config_legitimate_file_works(self, tmp_path, monkeypatch):
         """Normal files inside HERMES_HOME via config must still mount."""
         hermes_home = tmp_path / ".hermes"

@@ -3,7 +3,9 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 import { HermesGateway } from './client'
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 test.each([60, 120])('compress follow-up spends only the remaining caller budget after %i ms', async elapsed => {
   let now = 1_000
@@ -27,7 +29,12 @@ test.each([60, 120])('compress follow-up spends only the remaining caller budget
   await client.request('session.resume', { session_id: 's', profile: 'sibling' })
   calls.length = 0
   const controller = new AbortController()
-  const compression = client.request('session.compress', { session_id: 's', profile: 'sibling' }, 100, controller.signal)
+  const compression = client.request(
+    'session.compress',
+    { session_id: 's', profile: 'sibling' },
+    100,
+    controller.signal
+  )
 
   if (elapsed < 100) {
     await expect(compression).resolves.toHaveProperty('messages')
@@ -64,12 +71,19 @@ test('the prerequisite attachment shares the caller deadline and cancellation', 
   const controller = new AbortController()
 
   try {
-    await client.request('prompt.submit', { session_id: 's', submission_id: 'one', text: 'hello' }, 100, controller.signal)
+    await client.request(
+      'prompt.submit',
+      { session_id: 's', submission_id: 'one', text: 'hello' },
+      100,
+      controller.signal
+    )
     expect(calls).toEqual([
       { method: 'session.resume', timeout: 100, signal: controller.signal },
       { method: 'prompt.submit', timeout: 40, signal: controller.signal }
     ])
-  } finally { client.close() }
+  } finally {
+    client.close()
+  }
 })
 
 test('a prerequisite attachment resolves the launch profile alias before preparing a mutation', async () => {
@@ -79,17 +93,33 @@ test('a prerequisite attachment resolves the launch profile alias before prepari
     calls.push({ method, params })
 
     if (method === 'session.resume') {
-      return { session_id: 's', revision: 3, execution_generation: 2, replay_epoch: 'named-owner',
-        messages: [], info: { profile_name: 'work', profile_id: '/profiles/work' } } as never
+      return {
+        session_id: 's',
+        revision: 3,
+        execution_generation: 2,
+        replay_epoch: 'named-owner',
+        messages: [],
+        info: { profile_name: 'work', profile_id: '/profiles/work' }
+      } as never
     }
 
-    return { session_id: 's', revision: 4, operation: 'branch', branched_session_id: 'child', copied_messages: 0 } as never
+    return {
+      session_id: 's',
+      revision: 4,
+      operation: 'branch',
+      branched_session_id: 'child',
+      copied_messages: 0
+    } as never
   })
   const client = new HermesGateway()
   await client.connect('ws://localhost/api/ws?native_dial=fixture&ticket=fixture')
 
   try {
-    await expect(client.request('session.branch_stored', { parent_session_id: 's' })).resolves.toMatchObject({ session_id: 'child' })
+    await expect(client.request('session.branch_stored', { parent_session_id: 's' })).resolves.toMatchObject({
+      session_id: 'child'
+    })
     expect(calls[1]).toMatchObject({ method: 'session.mutate', params: { profile: 'work', expected_revision: 3 } })
-  } finally { client.close() }
+  } finally {
+    client.close()
+  }
 })

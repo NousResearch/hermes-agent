@@ -26,15 +26,16 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
-    STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
-    credential_pool_matches_provider,
+    STATUS_EXHAUSTED, credential_pool_entry_serves_endpoint, credential_pool_matches_provider,
 )
 from agent.error_classifier import FailoverReason
-from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+from agent.retry_utils import reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from agent.credential_pool_quota_window import apply_spent_quota_window, is_quota_spent
+from agent.agent_runtime_helpers_reset_headers import _set_reset_from_retry_after, _set_reset_from_vendor_headers
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -998,7 +999,7 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         context_message = str(error_context.get("message") or "").lower()
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
-        )
+        ) or is_quota_spent(error_context)  # a spent plan window: the same account cannot succeed
     if not has_retried_429 and not usage_limit_reached:
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
@@ -3614,54 +3615,6 @@ def _iter_pool_sockets(client: Any):
                     yield sock
 
 
-def _set_reset_from_retry_after(context: dict[str, Any], retry_after: Any) -> None:
-    if "reset_at" in context:
-        return
-    seconds = parse_retry_after_seconds(retry_after)
-    if seconds is not None:
-        context["reset_at"] = time.time() + seconds
-
-
-# OpenAI-style relative windows: "6m0s", "1.5s", "20ms", "1h2m3s" (also a bare number of seconds).
-_DURATION_COMPONENT_RE = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
-_DURATION_UNIT_SECONDS = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
-# Lowest-priority reset sources, after Retry-After and x-ratelimit-reset: OpenAI's per-bucket
-# durations and Anthropic's per-bucket ISO-8601 timestamps. Plain OpenAI/Anthropic 429s often
-# carry only these, and without them the retry status never names the reset window.
-_VENDOR_RESET_HEADERS = (
-    "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens",
-    "anthropic-ratelimit-requests-reset", "anthropic-ratelimit-tokens-reset",
-)
-
-
-def _duration_string_seconds(text: str) -> Optional[float]:
-    raw = text.strip().lower()
-    if not raw:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        pass
-    parts = _DURATION_COMPONENT_RE.findall(raw)
-    if not parts or "".join(n + u for n, u in parts) != raw:
-        return None
-    return sum(float(n) * _DURATION_UNIT_SECONDS[u] for n, u in parts)
-
-
-def _set_reset_from_vendor_headers(context: dict[str, Any], headers: Any) -> None:
-    for name in _VENDOR_RESET_HEADERS:
-        value = headers.get(name)
-        if not isinstance(value, str) or not value.strip():
-            continue
-        seconds = _duration_string_seconds(value)
-        if seconds is None:
-            absolute = _parse_absolute_timestamp(value)
-            seconds = None if absolute is None else absolute - time.time()
-        if seconds is not None and seconds > 0:
-            context["reset_at"] = time.time() + seconds
-            return
-
-
 def extract_api_error_context(error: Exception) -> dict[str, Any]:
     """Extract structured rate-limit details from provider errors."""
     context: dict[str, Any] = {}
@@ -3692,6 +3645,7 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
             context["reset_at"] = ratelimit_reset
         if "reset_at" not in context:
             _set_reset_from_vendor_headers(context, headers)
+        apply_spent_quota_window(context, headers)
     if "message" not in context and str(error).strip():
         context["message"] = str(error).strip()[:500]
     if "reset_at" not in context and isinstance(context.get("message") or "", str):

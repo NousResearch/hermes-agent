@@ -99,11 +99,11 @@ def pip_conf_index_url(env: Mapping[str, str]) -> str | None:
     # Raw: pip does not interpolate, and mirror URLs carry percent-encoded credentials.
     parser = configparser.RawConfigParser()
     try:
-        parser.read(str(path) for path in pip_config_candidates(env))
+        parser.read((str(path) for path in pip_config_candidates(env)), encoding="utf-8-sig")
         if not parser.has_section("global"):
             return None
         return parser.get("global", "index-url", fallback="").strip() or None
-    except configparser.Error:
+    except (configparser.Error, UnicodeError):
         return None
 
 

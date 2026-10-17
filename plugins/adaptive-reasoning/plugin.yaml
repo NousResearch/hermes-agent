@@ -1,0 +1,10 @@
+name: adaptive-reasoning
+version: "1.0.0"
+description: "Adaptive reasoning effort (issues #74725 / #13663) — llm_request middleware classifies each turn's complexity (user-message signals + in-turn tool error rate) and rewrites extra_body.reasoning.effort per API call. Zero core changes."
+author: stan
+kind: standalone
+middleware:
+  - llm_request
+  - llm_execution
+hooks:
+  - post_tool_call

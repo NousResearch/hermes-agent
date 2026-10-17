@@ -42,6 +42,7 @@ function Composer({ session, onSubmit }: ComposerProps) {
       gateway={null}
       onAttachDroppedItems={actions.attachDroppedItems}
       onAttachImageBlob={actions.attachImageBlob}
+      onAttachPastedText={actions.attachPastedText}
       onCancel={vi.fn()}
       onSubmit={onSubmit}
       sessionId={session}
@@ -265,6 +266,46 @@ it('discards a delayed picker result after switching sessions, including a round
   expect(mainComposerScope.$attachments.get()).toEqual([])
   expect(composerPlainText(editor)).toBe('original draft')
 })
+
+it.each(['saved', 'empty', 'failed'] as const)(
+  'discards a delayed large paste after switching sessions when its write is %s',
+  async outcome => {
+    $gatewayState.set('open')
+    let finish!: (path: string | null) => void
+    let fail!: (error: Error) => void
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        savePastedText: vi.fn(
+          () =>
+            new Promise<string | null>((resolve, reject) => {
+              finish = resolve
+              fail = reject
+            })
+        )
+      }
+    })
+    const view = render(<Harness />)
+    const editor = editorIn(view.container)
+    typeDraft(editor, 'original draft')
+    fireEvent.paste(editor, {
+      clipboardData: { items: [], getData: () => 'private source text '.repeat(200) }
+    })
+    view.rerender(<Harness session="references-B" />)
+    typeDraft(editor, 'other draft')
+    await act(async () => {
+      if (outcome === 'failed') {
+        fail(new Error('write failed'))
+      } else {
+        finish(outcome === 'saved' ? '/tmp/pasted.txt' : null)
+      }
+    })
+    expect(mainComposerScope.$attachments.get()).toEqual([])
+    expect(composerPlainText(editor)).toBe('other draft')
+    view.rerender(<Harness session="references-A" />)
+    expect(composerPlainText(editor)).toBe('original draft')
+  }
+)
 
 it('keeps simultaneous composers and their attachment reference names isolated', () => {
   $gatewayState.set('open')

@@ -722,7 +722,8 @@ export function useComposerActions({
    * Hermes-managed composer-pastes file via the main process, then attached
    * through the same `@file:` pipeline as a manually attached text file.
    * Returns false (paste stays inline) when the desktop bridge is missing
-   * or the write fails.
+   * or the write fails. A paste canceled by leaving its draft is consumed so
+   * the caller cannot fall back to inserting it into the next draft.
    */
   const attachPastedText = useCallback(
     async (text: string) => {
@@ -736,7 +737,11 @@ export function useComposerActions({
       try {
         const savedPath = await save(text)
 
-        if (!savedPath || !isCurrent()) {
+        if (!isCurrent()) {
+          return true
+        }
+
+        if (!savedPath) {
           return false
         }
 
@@ -752,6 +757,10 @@ export function useComposerActions({
 
         return true
       } catch (err) {
+        if (!isCurrent()) {
+          return true
+        }
+
         notifyError(err, copy.pasteAttachFailed)
 
         return false

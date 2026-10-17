@@ -31,12 +31,12 @@ it('sends the original positional tokens with a mapping to the renamed gateway a
     path: '/local/before.png'
   }
 
-  const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+  const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     if (method === 'image.attach_bytes') {
       return { attached: true, path: '/gateway/upload_123.png' } as never
     }
 
-    return { accepted: true } as never
+    return { admission_id: params?.submission_id, status: 'started' } as never
   })
 
   let state = createClientSessionState('references-runtime')

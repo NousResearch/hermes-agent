@@ -222,7 +222,7 @@ export function ModelPill({
       </Tip>
       <DropdownMenuContent
         align="end"
-        className="w-max min-w-72 max-w-[calc(100vw-1rem)] p-0"
+        className="w-max min-w-72 max-w-[min(32rem,calc(100vw-1rem))] p-0"
         onCloseAutoFocus={event => {
           if (restoreSelection.current) {
             event.preventDefault()

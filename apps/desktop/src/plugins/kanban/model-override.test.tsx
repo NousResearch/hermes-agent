@@ -56,9 +56,6 @@ describe('override label', () => {
   })
 })
 
-// The override drives the SHARED composer menu through a controller. This is
-// the seam that keeps the two surfaces identical, so exercise the real
-// component rather than a stand-in.
 describe('ModelOverrideField menu width', () => {
   it('uses the same content-driven width with a compact minimum and viewport cap', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -80,10 +77,13 @@ describe('ModelOverrideField menu width', () => {
 
     expect(className).toContain('w-max')
     expect(className).toContain('min-w-72')
-    expect(className).toContain('max-w-[calc(100vw-1rem)]')
+    expect(className).toContain('max-w-[min(32rem,calc(100vw-1rem))]')
   })
 })
 
+// The override drives the SHARED composer menu through a controller. This is
+// the seam that keeps the two surfaces identical, so exercise the real
+// component rather than a stand-in.
 describe('the shared catalog menu, driven by an override controller', () => {
   function renderMenu(value: TaskModelOverride = EMPTY_OVERRIDE) {
     const onChange = vi.fn()

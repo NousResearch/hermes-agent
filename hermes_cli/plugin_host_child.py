@@ -314,6 +314,16 @@ class HostRuntime:
             if router is None:
                 raise AttributeError(f"dashboard api {api_path.name} has no 'router'")
             app = FastAPI()
+
+            @app.middleware("http")
+            async def _mark_dashboard_forwarded(request, call_next):
+                # The dashboard authenticated this request before forwarding it here, so a plugin
+                # handler's ``_require_token`` must accept it (#140499): the host process mints its
+                # own unrelated ``_SESSION_TOKEN``, and behind the auth gate no token is injected at
+                # all, so without this marker the documented route-local guard would always 401.
+                request.state.dashboard_forwarded = True
+                return await call_next(request)
+
             app.include_router(router)
             self.asgi_apps[str(api_path)] = app
 

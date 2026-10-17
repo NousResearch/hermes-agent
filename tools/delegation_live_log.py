@@ -61,8 +61,10 @@ def _best_effort(what: str):
 
 
 def _one_line(text: Any, limit: int) -> str:
-    """Collapse to a single line and truncate with an elided-chars note."""
-    s = " ".join(str(text or "").split())
+    """Redact, collapse to a single line, and truncate with an elided-chars note.
+    Redaction comes first: the cut can drop what a pattern anchors on (a PEM's
+    END line), leaving the part that is kept unmaskable."""
+    s = " ".join(_redact(str(text or "")).split())
     if len(s) > limit:
         s = s[:limit] + f" …(+{len(s) - limit} chars)"
     return s
@@ -165,7 +167,14 @@ class LiveTranscriptWriter:
         self._stream_buf.append(delta)
         self._stream_len += len(delta)
         if self._stream_len >= _STREAM_BUFFER_FLUSH_CHARS:
-            self.flush_stream()
+            text = "".join(self._stream_buf)
+            # Cut after the last whitespace: a token straddling the cap (an echoed
+            # key) stays whole in the next line, where the redactor sees all of it.
+            cut = max(text.rfind(c) for c in " \t\r\n") + 1
+            if not cut or len(text) - cut >= _STREAM_BUFFER_FLUSH_CHARS:
+                cut = len(text)
+            self._stream_buf, self._stream_len = [text[cut:]], len(text) - cut
+            self.assistant_text(text[:cut])
 
     def flush_stream(self) -> None:
         if self._stream_buf:

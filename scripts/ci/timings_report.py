@@ -353,6 +353,27 @@ def fmt_tick(seconds: int) -> str:
 # Stats computation
 # ---------------------------------------------------------------------------
 
+def _workload_note(jobs: list[dict], bl_jobs: list[dict]) -> str:
+    from collections import Counter
+
+    current = Counter(j["name"] for j in jobs)
+    previous = Counter(j["name"] for j in bl_jobs)
+    if current == previous:
+        return ""
+    added = ", ".join(sorted((current - previous).elements())) or "none"
+    removed = ", ".join(sorted((previous - current).elements())) or "none"
+    return (
+        "Different workloads: aggregate deltas are not comparable. "
+        f"Added jobs: {added}. Removed jobs: {removed}."
+    )
+
+
+def _markdown_notice(text: str) -> str:
+    # Job names are data, not links, tags, or new Markdown blocks.
+    escaped = escape(text, quote=False).replace("\r", " ").replace("\n", " ")
+    return escaped.translate(str.maketrans({c: "\\" + c for c in "\\`*_{}[]()#+-.!|~"}))
+
+
 def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
     jobs_all = timings.get("jobs", [])
     jobs = [j for j in jobs_all if not is_skipped(j)]
@@ -402,6 +423,7 @@ def compute_stats(timings: dict, baseline: dict | None = None) -> dict:
 
     return {
         "wall": wall,
+        "workload_note": _workload_note(jobs, bl_jobs) if baseline is not None else "",
         "compute": compute,
         "bl_wall": bl_wall,
         "bl_compute": bl_compute,
@@ -622,15 +644,19 @@ def _gantt_bars(timings: dict, baseline: dict | None) -> str:
 def _stats_cards(stats: dict) -> str:
     wall_text = fmt_dur(stats["wall"])
     wall_delta = ""
-    if stats["bl_wall"] is not None:
+    if stats["bl_wall"] is not None and not stats["workload_note"]:
         d, cls = fmt_delta(stats["wall"], stats["bl_wall"])
         wall_delta = f'<span class="stat-delta {cls}">{d}</span>'
 
     compute_text = fmt_dur(stats["compute"])
     compute_delta = ""
-    if stats["bl_compute"] is not None:
+    if stats["bl_compute"] is not None and not stats["workload_note"]:
         d, cls = fmt_delta(stats["compute"], stats["bl_compute"])
         compute_delta = f'<span class="stat-delta {cls}">{d}</span>'
+
+    if stats["workload_note"]:
+        wall_delta = f'<span class="neutral">Baseline: {fmt_dur(stats["bl_wall"])}</span>'
+        compute_delta = f'<span class="neutral">Baseline: {fmt_dur(stats["bl_compute"])}</span>'
 
     cards = [
         f'<div class="stat-card"><span class="stat-label">Wall Time</span>'
@@ -834,6 +860,8 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
     )
 
     html += '<h2>Global Stats</h2>\n'
+    if stats["workload_note"]:
+        html += f'<p>{escape(stats["workload_note"])}</p>\n'
     html += _stats_cards(stats)
 
     if baseline:
@@ -861,25 +889,27 @@ def generate_summary(timings: dict, baseline: dict | None = None) -> str:
     stats = compute_stats(timings, baseline)
 
     lines = ["## CI Timing Summary\n"]
+    if stats["workload_note"]:
+        lines.append(_markdown_notice(stats["workload_note"]) + "\n")
 
     # Global stats table
     lines.append("| Metric | Current | Baseline | Delta |")
     lines.append("|--------|---------|----------|-------|")
 
     wall_d = ""
-    if stats["bl_wall"] is not None:
+    if stats["bl_wall"] is not None and not stats["workload_note"]:
         d, _ = fmt_delta(stats["wall"], stats["bl_wall"])
         wall_d = d
     lines.append(f"| Wall time | {fmt_dur(stats['wall'])} | {fmt_dur(stats['bl_wall'])} | {wall_d} |")
 
     compute_d = ""
-    if stats["bl_compute"] is not None:
+    if stats["bl_compute"] is not None and not stats["workload_note"]:
         d, _ = fmt_delta(stats["compute"], stats["bl_compute"])
         compute_d = d
     lines.append(f"| Total compute | {fmt_dur(stats['compute'])} | {fmt_dur(stats['bl_compute'])} | {compute_d} |")
 
     wait_d = ""
-    if stats["bl_total_wait"] is not None:
+    if stats["bl_total_wait"] is not None and not stats["workload_note"]:
         d, _ = fmt_delta(stats["total_wait"], stats["bl_total_wait"])
         wait_d = d
     lines.append(f"| Total wait | {fmt_dur(stats['total_wait'])} | {fmt_dur(stats['bl_total_wait'])} | {wait_d} |")
@@ -918,6 +948,12 @@ def generate_review_status(
     if baseline is None:
         severity = "debug"
         summary = f"Wall time {fmt_dur(stats['wall'])} (no baseline yet)."
+    elif stats["workload_note"]:
+        severity = "debug"
+        summary = (
+            f"Wall time {fmt_dur(stats['wall'])} vs {fmt_dur(stats['bl_wall'])}; "
+            "different workloads, aggregate delta not comparable."
+        )
     else:
         wall = stats["wall"]
         bl_wall = stats["bl_wall"] or 0
@@ -941,7 +977,7 @@ def generate_review_status(
         summary = wall_str
 
     # Per-job delta detail (top 5 by absolute change)
-    detail_lines: list[str] = []
+    detail_lines: list[str] = [_markdown_notice(stats["workload_note"])] if stats["workload_note"] else []
     if baseline:
         bl_map = {j["name"]: j for j in baseline.get("jobs", [])}
         deltas: list[tuple[float, str, str]] = []

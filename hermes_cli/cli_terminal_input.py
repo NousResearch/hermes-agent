@@ -362,13 +362,19 @@ def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
 
 
 def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Allowlist of terminals where requesting modified-Enter reporting is safe (aligned with the Ink TUI)."""
+    """Allowlist of terminals where requesting modified-Enter reporting is safe (aligned with the Ink TUI).
+
+    ``otty`` belongs here: it exports ``TERM_PROGRAM=otty`` into every child process and
+    implements the Kitty keyboard protocol, so it re-encodes modified keys only once a pane
+    asks. Without the entry the request is never sent and Shift+Enter arrives as a bare CR,
+    indistinguishable from a plain submit.
+    """
     env = os.environ if env is None else env
     term_program = (env.get("TERM_PROGRAM") or "").strip()
     term = (env.get("TERM") or "").strip().lower()
     return bool(
         env.get("WT_SESSION")
-        or term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode"}
+        or term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode", "otty"}
         or env.get("KITTY_WINDOW_ID") or "kitty" in term
         or term == "xterm-ghostty"
         or term.startswith("tmux") or term_program.lower() == "tmux"

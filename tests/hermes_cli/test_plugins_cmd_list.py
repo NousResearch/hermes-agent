@@ -57,6 +57,22 @@ def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     assert "Search" not in out  # plain mode stays compact, no descriptions
 
 
+def test_cmd_list_survives_corrupt_install_metadata(monkeypatch, capsys):
+    entries = [("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus")]
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+
+    def _corrupt():
+        raise plugins_cmd.PluginOperationError("Could not read plugin install metadata: bad JSON")
+
+    monkeypatch.setattr(plugins_cmd, "_read_install_metadata", _corrupt)
+
+    plugins_cmd.cmd_list(_args(json=True))
+
+    captured = capsys.readouterr()
+    assert [row["name"] for row in json.loads(captured.out)] == ["web-search-plus"]  # stdout stays JSON
+    assert "Could not read plugin install metadata" in captured.err
+
+
 def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path):
     bundled_dir = tmp_path / "bundled"
     user_dir = tmp_path / "user"

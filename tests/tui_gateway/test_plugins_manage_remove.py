@@ -43,3 +43,14 @@ def test_remove_refuses_missing_name_and_unknown_plugin(plugins_home):
     resp = _remove("../not-a-plugin")
     assert "error" in resp
     assert (plugins_home / "plugins" / "demo-plugin").exists()
+
+
+def test_corrupt_install_metadata_still_lists_but_remove_refuses(plugins_home):
+    """An unreadable sidecar hides pin info only: the hub still lists, the write path stays fail-closed."""
+    (plugins_home / "plugins" / ".install-metadata.json").write_text("{broken", encoding="utf-8")
+
+    listed = server.handle_request({"id": "1", "method": "plugins.manage", "params": {"action": "list"}})
+    assert "demo-plugin" in {row["name"] for row in listed["result"]["plugins"]}
+
+    assert "error" in _remove("demo-plugin")
+    assert (plugins_home / "plugins" / "demo-plugin").exists()

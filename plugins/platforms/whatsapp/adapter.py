@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -9,6 +10,7 @@ import platform
 import re
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from functools import wraps
 from pathlib import Path
@@ -344,9 +346,29 @@ def _needs_bridge(method):
     return _guarded
 
 
+def _bridge_timestamp(value: Any) -> float:
+    """Baileys ``messageTimestamp`` (epoch seconds as int, str or a serialized Long ``{low, high}``) as a float; now when unusable."""
+    if isinstance(value, dict):
+        try:
+            value = (int(value.get("high", 0)) << 32) | (int(value.get("low", 0)) & 0xFFFFFFFF)
+        except (TypeError, ValueError):
+            value = None
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return time.time()
+    return ts if ts > 0 else time.time()
+
+
+def _group_log_file_stem(chat_id: str) -> str:
+    """``120363...@g.us`` → ``120363..._g.us``: one file per chat, safe on every filesystem."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", chat_id) or "group"
+
+
 class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """Transport over a local Node.js (Baileys) HTTP bridge; behavior lives in ``WhatsAppBehaviorMixin``. config.extra: bridge_script /
-    bridge_port (3000) / session_path, dm_policy / group_policy (open|allowlist|disabled|pairing), allow_from / group_allow_from, send_read_receipts."""
+    bridge_port (3000) / session_path, dm_policy / group_policy (open|allowlist|disabled|pairing), allow_from / group_allow_from, send_read_receipts,
+    group_log_chats / group_log_dir (opt-in JSON-lines log of every admitted message in the listed groups, addressed to the bot or not)."""
 
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
@@ -381,6 +403,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _, raw_groups = self._select_allowlist(
             extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_GROUP_ALLOWED_USERS"), _wenv)
         self._group_allow_from = self._coerce_allow_list(raw_groups)
+        # Group log (opt-in): every admitted message of the listed groups is appended to a JSON-lines file, addressed to the
+        # bot or not. With require_mention the agent still sees only addressed messages; the log keeps the rest.
+        self._group_log_chats = self._coerce_allow_list(_extra_or_secret(extra, "group_log_chats", "WHATSAPP_GROUP_LOG_CHATS"))
+        self._group_log_dir = Path(extra.get("group_log_dir") or (self._session_path.parent / "group-log"))
         rr = extra.get("send_read_receipts", False)
         self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
         self._mention_patterns = self._compile_mention_patterns()
@@ -1023,9 +1049,62 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] Attached quoted-reply media: {path}", flush=True)
         return accepted
 
+    # ── Group log: opt-in JSON-lines record of admitted group messages, addressed to the bot or not ──
+
+    def _group_log_record(self, data: dict[str, Any]) -> dict[str, Any]:
+        """One log record. Text and ids only: media stays in the bridge cache and no file path is written."""
+        body = str(data.get("body") or "")
+        addressed = (
+            body.strip().startswith("/") or self._message_is_reply_to_bot(data)
+            or self._message_mentions_bot(data) or self._message_matches_mention_patterns(data))
+        record: dict[str, Any] = {
+            "ts": _bridge_timestamp(data.get("timestamp")),
+            "chat_id": str(data.get("chatId") or ""),
+            "message_id": str(data.get("messageId") or ""),
+            "sender_id": str(data.get("senderId") or ""),
+            "sender_name": str(data.get("senderName") or ""),
+            "text": body,
+            "to_bot": bool(addressed),
+        }
+        if data.get("mediaType"):
+            record["media_type"] = str(data.get("mediaType"))
+        if data.get("hasQuotedMessage"):
+            record["reply_to"] = {
+                "message_id": str(data.get("quotedMessageId") or ""),
+                "author_id": self._normalize_whatsapp_id(data.get("quotedParticipant")) or "",
+                "text": str(data.get("quotedText") or "")[:200],
+            }
+        if data.get("fromOwner"):
+            record["from_owner"] = True
+        return record
+
+    def _append_group_log(self, data: dict[str, Any]) -> bool:
+        """Append the record of an admitted message in a logged group. True when a line was written.
+
+        Only groups that are both in ``group_log_chats`` and admitted by the group policy are logged, so the
+        list can never widen intake. Each chat gets its own ``<jid>.jsonl`` (mode 0600, folder 0700)."""
+        chat_id = str(data.get("chatId") or "")
+        if chat_id not in self._group_log_chats or not self._is_group_allowed(chat_id):
+            return False
+        try:
+            self._group_log_dir.mkdir(parents=True, exist_ok=True)
+            with suppress(OSError):
+                os.chmod(self._group_log_dir, 0o700)
+            path = self._group_log_dir / f"{_group_log_file_stem(chat_id)}.jsonl"
+            line = json.dumps(self._group_log_record(data), ensure_ascii=False) + "\n"
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(line)
+            return True
+        except Exception as e:
+            print(f"[{self.name}] Group log write failed for {chat_id}: {e}", flush=True)
+            return False
+
     async def _build_message_event(self, data: dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
+            if data.get("isGroup") and self._group_log_chats:
+                self._append_group_log(data)
             if not self._should_process_message(data):
                 return None
             msg_type = self._classify_bridge_message(data)

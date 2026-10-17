@@ -447,8 +447,12 @@ class LiveTargetHeldError(LiveTargetUnavailableError):
     disposition, so this is a definite no-send too. A refusal without that settlement stays the
     ambiguous outcome."""
 
-    reason = "runtime_coordination_required"
     resend = "after that session closes"
+
+    @property
+    def reason(self) -> str:
+        from tools.bot_failure_reasons import HELD_NOT_SENT
+        return HELD_NOT_SENT
 
 
 def _unavailable_payload(dm_file: str, exc: LiveTargetUnavailableError) -> str:
@@ -473,7 +477,8 @@ def _settled_no_send(dm_file: str, exc: LiveTargetUnavailableError) -> str:
 def _held_disposition(record: dict | None) -> bool:
     """The owner's terminal not-sent receipt for a delivery refused while another writer held the
     chat (``gateway/session_bot.py:_not_sent_record``)."""
-    return bool(record) and record.get("refused") is True and record.get("reason") == LiveTargetHeldError.reason
+    from tools.bot_failure_reasons import HELD_NOT_SENT
+    return bool(record) and record.get("refused") is True and record.get("reason") == HELD_NOT_SENT
 
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
@@ -511,13 +516,14 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None or intent["owner"].get("canonical"):
         from hermes_cli.gateway_client import GatewayRPCError
+        from tools.bot_failure_reasons import HELD_NOT_SENT
         from tools.bot_live_delivery import settle_held_delivery
 
         identity = dict(delivery_id=intent["delivery_id"], author=intent.get("author"))
         try:
             record = deliver_to_live_owner(home, intent["owner"], intent["message"], **identity)
         except GatewayRPCError as exc:
-            if str(exc) != LiveTargetHeldError.reason or exc.data.get("admitted") is not False:
+            if str(exc) != HELD_NOT_SENT or exc.data.get("admitted") is not False:
                 raise
             # Nothing was admitted while that refusal held the owner's lock, but a same-id attempt
             # may have admitted since: only the owner's settle decides, under that same lock.

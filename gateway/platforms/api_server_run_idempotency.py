@@ -9,6 +9,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
+from uuid import UUID, uuid4
 
 from hermes_cli.sqlite_util import add_column_if_missing
 
@@ -19,7 +20,7 @@ logger = logging.getLogger("gateway.platforms.api_server")
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 
 _SELECT_BY_KEY = (
-    "SELECT fingerprint, run_id, status_json, owner_pid, owner_started, updated_at "
+    "SELECT fingerprint, run_id, status_json, owner_pid, owner_started, updated_at, owner_token "
     "FROM run_idempotency WHERE scope=? AND idempotency_key=?")
 _EXTEND_RETENTION_BY_KEY = (
     "UPDATE run_idempotency SET retention_until=MAX(retention_until, ?) "
@@ -31,6 +32,7 @@ _EXTEND_RETENTION_BY_RUN = (
 _MIGRATIONS = {
     "owner_pid": "INTEGER NOT NULL DEFAULT 0",
     "owner_started": "INTEGER NOT NULL DEFAULT 0",
+    "owner_token": "TEXT NOT NULL DEFAULT ''",
     "retention_until": "REAL NOT NULL DEFAULT 0",
     "acknowledged_at": "REAL"}
 
@@ -39,10 +41,11 @@ def _encode_status(status: dict[str, Any]) -> str:
     return json.dumps(status, sort_keys=True, separators=(",", ":"))
 
 
-def _record(run_id, status_json, owner_pid, owner_started, updated_at) -> dict[str, Any]:
+def _record(run_id, status_json, owner_pid, owner_started, updated_at, owner_token) -> dict[str, Any]:
     return {
         "run_id": run_id, "status": json.loads(status_json), "owner_pid": int(owner_pid or 0),
-        "owner_started": int(owner_started or 0), "updated_at": float(updated_at or 0)}
+        "owner_started": int(owner_started or 0), "updated_at": float(updated_at or 0),
+        "owner_token": owner_token}
 
 
 def _outcome(row, fingerprint):
@@ -109,6 +112,33 @@ class RunIdempotencyStore:
         self._conn.commit()
         self._lock = threading.Lock()
         self._tighten_permissions()
+        # PIDs and relative start ticks can repeat in a fresh container. The kernel releases
+        # this unique owner's lock on crash, including SIGKILL; another owner cannot inherit it.
+        self._owner_token = uuid4().hex
+        self._owner_handle = None
+        if self._db_path:
+            from gateway.status import _try_acquire_file_lock
+
+            owners = Path(self._db_path + ".owners")
+            owners.mkdir(mode=0o700, exist_ok=True)
+            path = owners / self._owner_token
+            self._owner_handle = path.open("x+", encoding="utf-8")
+            path.chmod(0o600)
+            if not _try_acquire_file_lock(self._owner_handle):
+                raise RuntimeError("Cannot claim durable run owner lock")
+
+    def owner_alive(self, token: str) -> bool:
+        """Check the actual owner lifetime, rather than a possibly recycled process ID."""
+        if not token:
+            return False
+        if not self._db_path:
+            return token == self._owner_token
+        from gateway.status import _probe_lock_file
+
+        path = Path(self._db_path + ".owners") / UUID(token).hex
+        if not path.exists():
+            return False
+        return _probe_lock_file(path.open("r+", encoding="utf-8"))
 
     def _tighten_permissions(self) -> None:
         for suffix in ("", "-wal", "-shm") if self._db_path else ():
@@ -147,12 +177,12 @@ class RunIdempotencyStore:
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
-                "owner_pid,owner_started,retention_until,created_at,updated_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "owner_pid,owner_started,retention_until,created_at,updated_at,owner_token"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
-                 retention_until, now, now))
+                 retention_until, now, now, self._owner_token))
             self._conn.commit()
-            return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
+            return "created", _record(run_id, encoded, owner_pid, owner_started, now, self._owner_token) | {"status": status}
 
     def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
@@ -194,7 +224,7 @@ class RunIdempotencyStore:
                 self._conn.execute(_EXTEND_RETENTION_BY_RUN, (retention_until, scope, run_id))
                 self._conn.commit()
             row = self._conn.execute(
-                "SELECT status_json, owner_pid, owner_started, updated_at "
+                "SELECT status_json, owner_pid, owner_started, updated_at, owner_token "
                 "FROM run_idempotency WHERE scope=? AND run_id=?",
                 (scope, run_id)).fetchone()
         if row is None:
@@ -233,3 +263,5 @@ class RunIdempotencyStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+            if self._owner_handle is not None:
+                self._owner_handle.close()

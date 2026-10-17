@@ -24,6 +24,7 @@ import re
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
+from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 
 from utils import atomic_json_write, atomic_write_text, fsync_directory
 from pathlib import Path
@@ -173,10 +174,7 @@ def _dir_owner(path: Path) -> str:
 
 
 def _unusable(root: Path, exc: PermissionError) -> MailboxUnusable:
-    if os.name == "nt":
-        remedy = f'from an elevated prompt run: icacls "{root}" /reset /t'
-    else:
-        remedy = f'run: sudo chown -R "$(id -un)" "{root}"'
+    remedy = unusable_dir_remedy(root)
     level = logging.DEBUG if root in _warned_unusable else logging.WARNING
     _warned_unusable.add(root)
     log.log(level, "bot_live_delivery: mailbox directory %s (owner %s) is not usable by this process (%s); "
@@ -188,8 +186,8 @@ def _unusable(root: Path, exc: PermissionError) -> MailboxUnusable:
 def _prepare(root: Path) -> Path:
     """Create/harden the mailbox dir and its ``.lock`` file; returns the lock path."""
     created = not root.is_dir()
-    root.parent.mkdir(parents=True, exist_ok=True)
-    root.mkdir(mode=0o700, exist_ok=True)
+    make_user_dir(root.parent, parents=True, exist_ok=True)
+    make_user_dir(root, mode=0o700, exist_ok=True)
     try:
         root.chmod(0o700)
     except OSError as exc:

@@ -1100,22 +1100,29 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[tuple[Path, bool]], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    lenient_references: bool = False,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
-    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944)."""
+    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944).
+    ``lenient_references`` relaxes only the reference walk for non-shell programs; their own
+    executed text must still fail closed when it cannot be scanned.
+    """
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
     if _direct_lifecycle_scan(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
-        return executed
+        return executed and not lenient_references
 
-    def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
+    def recurse(
+        text: str, cwd: Optional[str], executed: bool, lenient_references: bool = False,
+    ) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
             read_remote_script=read_remote_script, executed=executed,
+            lenient_references=lenient_references,
         )
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
@@ -1126,14 +1133,14 @@ def _contains_unsafe_gateway_action(
     walk_command = strip_inert_heredoc_bodies(command)
 
     for payload in _iter_shell_command_payloads(walk_command):
-        if recurse(payload, cwd, executed):
+        if recurse(payload, cwd, executed, lenient_references):
             return True
 
     # Paths named only inside a masked body are still READ: an interpreter body that hands
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed, via_shell)
+    candidates = [(path, executed and not lenient_references, via_shell)
                   for path, via_shell in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
     if walk_command != command:
         candidates += [(path, False, via_shell)
@@ -1196,7 +1203,10 @@ def _contains_unsafe_gateway_action(
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, strict):
+        if recurse(
+            script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed,
+            lenient_references=candidate_executed and not strict,
+        ):
             return True
     return False
 

@@ -14,7 +14,7 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from hermes_cli.local_runtime.context_policy import (
     FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
@@ -405,7 +405,11 @@ def catalog_by_id() -> dict[str, CatalogEntry]:
 
 
 def find_entry_for_model(model_id: str) -> tuple[CatalogEntry, QuantVariant] | None:
-    """Locate the entry + variant that owns a staged model id."""
+    """Locate the entry + variant that owns a staged model id.
+
+    Identity only: this is what download and delete consult, so an alias (below) never resolves
+    here — deleting a fine-tune must not remove the projector and draft head its base still uses.
+    """
     for entry in CATALOG:
         for variant in entry.variants:
             if variant.model_id == model_id:
@@ -413,6 +417,64 @@ def find_entry_for_model(model_id: str) -> tuple[CatalogEntry, QuantVariant] | N
     return None
 
 
+def catalog_aliases_path() -> Path:
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "catalog_aliases.json"
+
+
+_alias_cache: tuple[tuple[str, int], dict[str, str]] | None = None
+
+
+def load_catalog_aliases() -> dict[str, str]:
+    """Sideloaded model id -> the catalog build whose launch policy it inherits.
+
+    A fine-tune, abliteration or re-quant of a listed model is the same architecture with the
+    same companions (mmproj, MTP head) and sampling defaults, but its file stem matches no
+    catalog variant, so it launches on the generic path: no draft head, no vision, generic
+    buffers and a pessimistic footprint. ``{"<staged id>": "<catalog variant id>"}`` in
+    ``<runtimes_root>/catalog_aliases.json`` closes that gap. Machine-scoped like
+    ``window_overrides.json`` because it names files staged on this machine.
+
+    A missing file means no aliases. An unreadable or malformed one is reported once per change
+    and treated as empty: a swallowed alias would launch the model without the posture the user
+    declared, and that silent downgrade is exactly what the file exists to prevent.
+    """
+    global _alias_cache
+    path = catalog_aliases_path()
+    try:
+        stamp = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        return {}
+    if _alias_cache is not None and _alias_cache[0] == stamp:
+        return _alias_cache[1]
+    aliases: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+            raise ValueError("expected an object mapping model id -> catalog model id")
+        aliases = data
+    except (OSError, ValueError) as exc:
+        logger.warning("catalog aliases ignored: %s is unusable (%s) — fix or delete the file",
+                       path, exc)
+    _alias_cache = (stamp, aliases)
+    return aliases
+
+
 def entry_for_model(model_id: str) -> CatalogEntry | None:
+    """The catalog entry whose launch policy governs a staged model id: its own when the id is a
+    catalog build, else the one its alias names. None for an unknown sideload."""
     hit = find_entry_for_model(model_id)
-    return hit[0] if hit is not None else None
+    if hit is not None:
+        return hit[0]
+    target = load_catalog_aliases().get(model_id)
+    if target is None:
+        return None
+    hit = find_entry_for_model(target)
+    if hit is None:
+        logger.warning("catalog alias %s -> %s ignored: no catalog build has that id "
+                       "(check %s)", model_id, target, catalog_aliases_path())
+        return None
+    return hit[0]

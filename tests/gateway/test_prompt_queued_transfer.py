@@ -131,6 +131,50 @@ async def test_a_steer_settles_steered_only_when_a_drain_of_the_turn_took_it(tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('later', ['alpha\nbeta', 'alpha'])
+async def test_each_transfer_settles_by_its_own_identity_whatever_text_another_carries(tmp_path, monkeypatch, later):
+    """Reviewer repro (round 3): A ('alpha') is consumed by a drain of the turn; B arrives after that last
+    drain carrying A's text inside a multiline prompt, or exactly A's text. A is steered and never runs
+    again; B, which the turn never read, goes back to its queue place and runs once as its own turn."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    agent, ran, taken = BufferedAgent(), [], []
+    claimed, drain, drained, release = (asyncio.Event() for _ in range(4))
+
+    async def execute(authority, ref, row):
+        ran.append(row['payload']['text'])
+        authority.adopt_agent(ref.session_id, row['generation'], agent)
+        if len(ran) > 1:
+            return 'done'
+        claimed.set()
+        await asyncio.wait_for(drain.wait(), 30)
+        taken.append(agent._drain_pending_steer())  # a drain of the turn consumes A
+        drained.set()
+        await asyncio.wait_for(release.wait(), 30)
+        return 'done'  # B was accepted after that last drain
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(claimed.wait(), 30)
+        conn = _connection(authority)
+        a = await _submit(authority, 'a', 'alpha')
+        assert 'error' not in await _call(conn, 'prompt.steer_queued', admission_id=a.admission_id)
+        drain.set()
+        await asyncio.wait_for(drained.wait(), 30)
+        b = await _submit(authority, 'b', later)
+        assert 'error' not in await _call(conn, 'prompt.steer_queued', admission_id=b.admission_id)
+        release.set()
+        await _drained(authority)
+        await async_wait_until(lambda: len(ran) == 2, timeout=30, what='the returned admission ran')
+        await _drained(authority)
+    assert taken == ['alpha']
+    assert ran == ['running', later], 'the consumed prompt never runs again; the unread one runs once'
+    assert _ledger(db) == [('running', 'terminal', 'completed'), ('a', 'terminal', 'steered'),
+                           ('b', 'terminal', 'completed')]
+    assert agent._pending_steer is None
+
+
+@pytest.mark.asyncio
 async def test_a_transfer_stays_listed_as_steering_until_its_claim_settles(tmp_path, monkeypatch):
     """Reviewer repro (returned prompt stays hidden): a pending snapshot taken while a steer is in
     transfer still lists it, marked ``steering``, so no client retires an admission that may go back to

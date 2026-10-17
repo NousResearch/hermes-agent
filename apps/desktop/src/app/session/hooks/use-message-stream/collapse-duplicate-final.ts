@@ -34,7 +34,10 @@ export function collapseDuplicateFinalAfterToolInterim(
   }
 
   const priorIndex = messages.findLastIndex(
-    (message, index) => index < streamIndex && (!message.hidden || message.role === 'user')
+    (message, index) =>
+      index < streamIndex &&
+      message.role !== 'system' &&
+      (!message.hidden || message.role === 'user')
   )
 
   const prior = messages[priorIndex]

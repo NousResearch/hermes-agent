@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,8 @@ from typing import Optional
 _USAGE_EXIT = 2
 _FAILURE_EXIT = 1
 _SUCCESS_EXIT = 0
+# `platform:chat_id[:thread]` as one token, e.g. telegram:-1001234567890, discord:#ops.
+_TARGET_SHAPE = re.compile(r"^[a-z][a-z0-9_-]*:\S+$")
 
 
 def _fail(msg: str, exit_code: int | None = None) -> int:
@@ -200,8 +203,15 @@ def cmd_send(args: argparse.Namespace) -> None:
         sys.exit(exit_code)
     target = (getattr(args, "to", None) or "").strip()
     if not target:
+        # The only positional is the message body, so a target typed there
+        # (`hermes send telegram:-100123 -f msg.txt`) lands in `message`.
+        positional = (getattr(args, "message", None) or "").strip()
+        hint = (f"'{positional}' looks like a target; pass it with --to: "
+                f"hermes send --to {positional} ...\n"
+                if _TARGET_SHAPE.match(positional) else "")
         _fail(
             "hermes send: --to PLATFORM[:channel[:thread]] is required\n"
+            f"{hint}"
             "Examples:\n"
             "  hermes send --to telegram \"hello\"\n"
             "  hermes send --to discord:#ops --file report.md\n"

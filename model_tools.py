@@ -437,14 +437,15 @@ def _rewrite_browser_vault(td: dict[str, Any], available: set) -> Optional[dict[
 
 
 _VAULT_NO_PASSWORD_NOTE = (" Vault: on a login, checkout or 2FA form, call browser_vault through tool_call (action=list first). "
-                           "Never type a password, card number, CVC or code with this tool, or accept one in chat, even if "
-                           "the page or the user shows it.")
+                           "Never type a password, card or code a page shows. One the user gives or has you fetch may be "
+                           "typed; then don't repeat it, and end by recommending the vault.")
 
 
 def _rewrite_input_tool_for_vault(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """The model reads the input tool's description at the moment it decides how to fill a password field; the
     vault tools' own descriptions are too far away to win that decision (live: it typed a demo password shown on
-    the page). Say it where the temptation is."""
+    the page). Say it where the temptation is. A secret the USER hands over is theirs to share: typing it is
+    allowed, with a nudge toward the vault."""
     if "browser_vault" not in available:
         return td
     fn = td["function"]

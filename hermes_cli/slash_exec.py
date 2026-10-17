@@ -102,6 +102,16 @@ def _exec_bundles(ctx: CommandContext) -> CommandReply:
     return CommandReply("\n".join(lines), data={"bundles": bundles, "dir": bundles_dir})
 
 
+def _exec_creds(ctx: CommandContext) -> CommandReply:
+    """Core /creds text — list/show/set/remove/inject over the encrypted store.
+
+    ``show`` prints a plaintext value, so the ``creds`` CommandDef is ``cli_only``:
+    the gateway never routes it, and this executor never branches on surface.
+    """
+    from hermes_cli.credential_commands import handle_creds_command
+    return CommandReply(handle_creds_command(ctx.args))
+
+
 def _skill_commands() -> dict:
     """Registered skill commands, or ``{}`` when the skill subsystem is unavailable."""
     try:
@@ -187,6 +197,7 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "profile": _exec_profile,
     "bundles": _exec_bundles,
     "autoprune": _exec_autoprune,
+    "creds": _exec_creds,
     "gateway_help": _exec_help,
     "gateway_commands": _exec_commands}
 

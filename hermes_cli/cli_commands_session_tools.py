@@ -282,6 +282,14 @@ class CLICommandsSessionToolsMixin:
         _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
                    f"  {_t('profile.home', home=reply.data['home'])}")
 
+    def _handle_creds_command(self, cmd: str):
+        """/creds [set|list|show|remove|clear|inject|unset] — the encrypted credential store."""
+        from hermes_cli.slash_exec import CommandContext, execute_command
+        # Plain print, not _say_block: `show` output is a literal secret value that
+        # rich markup must not reflow, and every other subcommand is plain text.
+        print(execute_command("creds",
+                              CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
+
 
 def _stop_background_work() -> None:
     """``/stop``'s cleanup: kill the background processes, then interrupt the background (async)

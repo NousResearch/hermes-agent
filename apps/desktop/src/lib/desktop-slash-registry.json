@@ -22,6 +22,8 @@
   "/config": "terminal",
   "/context": null,
   "/copy": "terminal",
+  "/credentials": null,
+  "/creds": null,
   "/cron": "terminal",
   "/ctx": null,
   "/curator": "advanced",

@@ -24,6 +24,9 @@ _HERMES_CORE_TOOLS = [
     "todo_list", "memory",
     "session_search",
     "clarify",
+    # Encrypted credential store (agent/credential_store.py): names/metadata only
+    # in context, values resolved through execute_code's `credentials` parameter.
+    "credentials",
     "execute_code", "delegate_task",
     "cronjob_manage",
     "kanban_show", "kanban_list",
@@ -127,6 +130,13 @@ TOOLSETS = {
     "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech"]),
     "todo": _ts("Task planning and tracking for multi-step work", ["todo_list"]),
     "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
+    "credential": _ts(
+        "Encrypted credential store for task/project secrets (API keys, tokens, passwords). "
+        "You get names, timestamps and existence only — values never enter context; pass a "
+        "stored name in execute_code's `credentials` parameter to bind it as a variable. "
+        "Users manage the store with /creds in the CLI.",
+        ["credentials"],
+    ),
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
     "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),

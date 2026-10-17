@@ -104,3 +104,20 @@ async def test_a_live_session_that_already_ran_the_key_still_replays_it(api, own
         status, changed = await _post(client, 'session-b', content='other body')
         assert status == 409 and changed['error']['code'] == 'admission_conflict', changed
     assert calls == ['same body', 'same body']
+
+
+def test_only_a_client_key_pays_for_the_tombstone_scan(api, owner, monkeypatch):
+    """Only a client Idempotency-Key can name a deleted session's admission. A key-less turn's
+    fresh id (or a server-minted run id) never matches one, so the admission's write transaction
+    skips the tombstone scan for it."""
+    import hermes_state_terminal
+    from gateway.session_api_turn import admit_api_turn
+    real = hermes_state_terminal.terminal_api_admissions
+    scanned = []
+    monkeypatch.setattr(hermes_state_terminal, 'terminal_api_admissions',
+                        lambda conn, request_id: scanned.append(request_id) or real(conn, request_id))
+    admit_api_turn(api, session_id='keyless', user_message='hi', conversation_history=[])
+    admit_api_turn(api, session_id='run', active_run_id='run_minted', user_message='hi', conversation_history=[])
+    assert scanned == []
+    admit_api_turn(api, session_id='keyed', request_id='chat:scope:key', user_message='hi', conversation_history=[])
+    assert scanned == ['chat:scope:key']

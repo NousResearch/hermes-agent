@@ -1718,6 +1718,8 @@ slash:
     description: "Afficher des statistiques et analyses d'utilisation"
   reload_mcp:
     description: "Recharger les serveurs MCP depuis la configuration"
+  mcp:
+    description: "Connecter un serveur MCP OAuth depuis le chat (connexion par lien)"
   resume:
     description: "Reprendre une session précédemment nommée"
   sethome:

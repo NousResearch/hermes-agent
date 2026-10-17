@@ -1466,6 +1466,8 @@ slash:
     description: "Показати аналітику використання"
   reload_mcp:
     description: "Перезавантажити MCP-сервери з конфігурації"
+  mcp:
+    description: "Підключити OAuth MCP-сервер із чату (вхід за посиланням)"
   resume:
     description: "Відновити раніше названий сеанс"
   sethome:

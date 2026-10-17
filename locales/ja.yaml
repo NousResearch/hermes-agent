@@ -1466,6 +1466,8 @@ slash:
     description: "使用状況のインサイトと分析を表示"
   reload_mcp:
     description: "設定から MCP サーバーを再読み込み"
+  mcp:
+    description: "チャットから OAuth MCP サーバーに接続（リンクでサインイン）"
   resume:
     description: "以前に名前を付けたセッションを再開"
   sethome:

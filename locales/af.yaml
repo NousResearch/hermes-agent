@@ -1466,6 +1466,8 @@ slash:
     description: "Wys gebruiksinsigte en analise"
   reload_mcp:
     description: "Herlaai MCP-bedieners vanaf konfigurasie"
+  mcp:
+    description: "Koppel 'n OAuth MCP-bediener vanuit die klets (meld aan met 'n skakel)"
   resume:
     description: "Hervat 'n voorheen benoemde sessie"
   sethome:

@@ -1537,6 +1537,8 @@ slash:
     description: "Show usage insights and analytics"
   reload_mcp:
     description: "Reload MCP servers from config"
+  mcp:
+    description: "Connect an OAuth MCP server from chat (sign in by link)"
   resume:
     description: "Resume a previously-named session"
   sethome:

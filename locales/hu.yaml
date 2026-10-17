@@ -1483,6 +1483,8 @@ slash:
     description: "Használati statisztikák és elemzések megjelenítése"
   reload_mcp:
     description: "MCP-szerverek újratöltése a konfigurációból"
+  mcp:
+    description: "OAuth MCP-szerver csatlakoztatása a csevegésből (bejelentkezés linkkel)"
   resume:
     description: "Korábban elnevezett munkamenet folytatása"
   sethome:

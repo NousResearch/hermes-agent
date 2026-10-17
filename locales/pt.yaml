@@ -1466,6 +1466,8 @@ slash:
     description: "Mostrar insights e análises de uso"
   reload_mcp:
     description: "Recarregar os servidores MCP a partir da configuração"
+  mcp:
+    description: "Conectar um servidor MCP com OAuth pelo chat (login por link)"
   resume:
     description: "Retomar uma sessão nomeada anteriormente"
   sethome:

@@ -1466,6 +1466,8 @@ slash:
     description: "Taispeáin léargais úsáide agus anailísíocht"
   reload_mcp:
     description: "Athlódáil freastalaithe MCP ón gcumraíocht"
+  mcp:
+    description: "Ceangail freastalaí MCP OAuth ón gcomhrá (sínigh isteach le nasc)"
   resume:
     description: "Atosaigh seisiún a ainmníodh roimhe seo"
   sethome:

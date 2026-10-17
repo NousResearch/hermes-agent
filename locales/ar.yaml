@@ -1466,6 +1466,8 @@ slash:
     description: "عرض رؤى الاستخدام والتحليلات"
   reload_mcp:
     description: "إعادة تحميل خوادم MCP من الإعدادات"
+  mcp:
+    description: "اتصل بخادم MCP يستخدم OAuth من الدردشة (تسجيل الدخول عبر رابط)"
   resume:
     description: "استئناف جلسة سُمّيت سابقًا"
   sethome:

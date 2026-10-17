@@ -1466,6 +1466,8 @@ slash:
     description: "Kullanım içgörülerini ve analizleri göster"
   reload_mcp:
     description: "MCP sunucularını yapılandırmadan yeniden yükle"
+  mcp:
+    description: "Sohbetten bir OAuth MCP sunucusu bağla (bağlantıyla oturum aç)"
   resume:
     description: "Önceden adlandırılmış bir oturuma devam et"
   sethome:

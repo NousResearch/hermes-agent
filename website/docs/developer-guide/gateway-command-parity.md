@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-102 registry commands: 28 control, 18 read, 56 refused.
+103 registry commands: 28 control, 18 read, 57 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -74,6 +74,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/learn` | control | HermesCLI._handle_learn_command | slash.exec | slash.exec | refused |  |
 | `/login` | control | HermesCLI._handle_login_command | slash.exec | unavailable: settings | refused |  |
 | `/loop` (/proactive) | control | HermesCLI._handle_loop_command | slash.exec | slash.exec | refused |  |
+| `/mcp` | refused | messaging-only: unknown command | slash.exec: refused | unavailable: messaging | refused | messaging-only |
 | `/memory` | read (bare / `pending`) | HermesCLI._handle_memory_command | slash.exec | slash.exec | refused |  |
 | `/moa` | control | HermesCLI._cmd_moa | slash.exec | slash.exec | refused |  |
 | `/model` | refused | HermesCLI._handle_model_switch | canonical route | picker: model | session.mutate model |  |

@@ -1,0 +1,37 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: knowsme
+description: One memory shared by every AI you use. Hermes reads who you are and where your projects stand, and saves what matters for your other AIs.
+source: https://knowsme.dev
+
+# Hosted remote MCP (URL-only, nothing runs locally). Native OAuth 2.1 with
+# PKCE and Dynamic Client Registration (verified live: RFC 9728 protected-
+# resource metadata -> RFC 8414 AS metadata with registration_endpoint). The AS
+# also advertises device_authorization_endpoint and the device_code grant
+# (RFC 8628), so a gateway connects it from chat with `/mcp install knowsme`.
+
+transport:
+  type: http
+  url: https://mcp.knowsme.dev/mcp
+
+auth:
+  type: oauth
+
+# Eight tools: list_memories, recall, search_memories, remember, forget,
+# history, propose_rules, propose_tidy. All are useful to an agent, so the
+# install-time checklist starts with everything pre-checked.
+
+suggest:
+  keywords:
+    - knowsme
+  hosts:
+    - knowsme.dev
+
+post_install: |
+  Sign in to knowsme with your email (free). From a chat (Telegram, Discord
+  and the rest), send `/mcp install knowsme`: Hermes replies with a link, you
+  approve, and it connects. In a terminal, `hermes mcp login knowsme` opens a
+  browser (or add `--flow device`). Hermes then reads your memory at the
+  start of each chat.

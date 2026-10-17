@@ -1466,6 +1466,8 @@ slash:
     description: "顯示用量洞察與分析"
   reload_mcp:
     description: "從設定重新載入 MCP 伺服器"
+  mcp:
+    description: "在聊天中連接 OAuth MCP 伺服器（透過連結登入）"
   resume:
     description: "恢復先前命名的工作階段"
   sethome:

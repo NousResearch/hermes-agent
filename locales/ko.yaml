@@ -1466,6 +1466,8 @@ slash:
     description: "사용량 인사이트와 분석 표시"
   reload_mcp:
     description: "설정에서 MCP 서버 다시 불러오기"
+  mcp:
+    description: "채팅에서 OAuth MCP 서버 연결 (링크로 로그인)"
   resume:
     description: "이전에 이름을 지정한 세션 재개"
   sethome:

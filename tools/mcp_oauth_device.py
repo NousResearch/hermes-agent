@@ -141,7 +141,7 @@ def _positive_seconds(value, label):
     return value
 
 
-async def _authorize(client, provider, cfg):
+async def _authorize(client, provider, cfg, on_code=None):
     from tools.mcp_oauth_provider import google_offline_access_params
     from tools.mcp_tool import sdk_httpx
 
@@ -161,8 +161,14 @@ async def _authorize(client, provider, cfg):
     interval = _positive_seconds(authorization.get("interval", 5), "interval")
     deadline = time.monotonic() + min(_positive_seconds(authorization["expires_in"], "expires_in"),
                                      _positive_seconds(cfg.get("timeout", 300), "timeout"))
-    print(f"\n  MCP OAuth: open {verification} on any device.\n  Code: {authorization['user_code']}\n"
-          "  Waiting for approval...\n", file=sys.stderr, flush=True)
+    if on_code is None:
+        print(f"\n  MCP OAuth: open {verification} on any device.\n  Code: {authorization['user_code']}\n"
+              "  Waiting for approval...\n", file=sys.stderr, flush=True)
+    else:
+        # A chat surface: one tap on the complete URI (RFC 8628 §3.3.1) when the server offers it.
+        complete = authorization.get("verification_uri_complete")
+        link = str(AnyHttpUrl(complete)) if isinstance(complete, str) and complete else str(verification)
+        await on_code(link, authorization["user_code"], max(1, round((deadline - time.monotonic()) / 60)))
     token_data = {"client_id": context.client_info.client_id, "device_code": authorization["device_code"],
                   "grant_type": DEVICE_GRANT, "resource": resource}
     token_data, headers = context.prepare_token_auth(token_data, {})
@@ -201,8 +207,11 @@ async def _authorize(client, provider, cfg):
         raise RuntimeError(f"Device authorization failed: {safe_error}")
 
 
-async def login_device(name, server_url, oauth_config):
-    """Authorize then commit state in the active profile; failed grants preserve old state."""
+async def login_device(name, server_url, oauth_config, on_code=None):
+    """Authorize then commit state in the active profile; failed grants preserve old state.
+
+    ``on_code(link, user_code, minutes)`` replaces the terminal prompt, e.g. to send the link to
+    the chat that asked (gateway ``/mcp``)."""
     from tools.mcp_oauth import _build_client_metadata
     from tools.mcp_oauth_manager import HermesMCPOAuthProvider, get_manager
     from tools.mcp_oauth_provider import prepare_oauth_config
@@ -219,7 +228,7 @@ async def login_device(name, server_url, oauth_config):
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
             await _discover(client, provider)
             await _register(client, provider, cfg)
-            tokens = await _authorize(client, provider, cfg)
+            tokens = await _authorize(client, provider, cfg, on_code)
     except (ValueError, TypeError, KeyError):
         raise RuntimeError("Device OAuth response has invalid fields") from None
     except httpx.HTTPError:

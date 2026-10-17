@@ -259,6 +259,7 @@ platform network disconnect as an event-loop failure.
 | `/bg <prompt>` | Run a prompt in a separate background session |
 | `/btw <question>` | Ask a side question about the current conversation without interrupting it |
 | `/reload-mcp` | Reload MCP servers from config |
+| `/mcp install <name>` | Connect an OAuth MCP server by sign-in link (DM, admins) |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
 | `/<skill-name>` | Invoke any installed skill |

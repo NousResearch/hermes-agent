@@ -1245,6 +1245,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: set[str] | None = None, available_toolsets: set[str] | None = None,
     compact_categories: frozenset[str] | None = None, skills_dir_override: Path | None = None,
+    platform_hint: str | None = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1253,6 +1254,10 @@ def build_skills_system_prompt(
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    ``platform_hint`` is the asking agent's own platform when it is known (a delegate child's
+    ``"subagent"``); env vars and session context only ever reflect the PARENT's channel, so
+    ``skills.platform_disabled.subagent`` and ``session_platforms:`` conditions never applied to
+    children until this was passed explicitly (#140537).
     """
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -1271,7 +1276,7 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not extra_roots:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
+            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories, platform_hint)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1391,9 +1396,11 @@ def _oneshot_prompt_variant() -> bool:
 def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
     available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
+    platform_hint: str | None = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
-    _platform_hint = _current_session_platform_hint()
+    # An explicit hint (the asking agent's platform) wins: env/session context carry the parent's channel.
+    _platform_hint = platform_hint or _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
     # root — the snapshot manifest can't see them change, so they participate in the cache key.

@@ -1218,7 +1218,9 @@ def create_task(
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
-    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+    from hermes_cli.kanban_db_graph import (
+        initial_task_state, inherit_creator_origin, validate_context_isolation,
+    )
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
@@ -1229,11 +1231,7 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
-    if context_isolation not in VALID_CONTEXT_ISOLATIONS:
-        raise ValueError(
-            "context_isolation must be one of "
-            f"{sorted(VALID_CONTEXT_ISOLATIONS)}, got {context_isolation!r}"
-        )
+    validate_context_isolation(context_isolation)
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -3933,34 +3931,6 @@ def schedule_task(
         return True
 
 
-# --- Worker context builder (what a spawned worker sees) ---
-
-def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
-    """Everything a worker should read about its task: header, body,
-    attachments, prior attempts, done-parent handoffs, comments, and unless
-    task isolation is requested, the assignee's recent work. Lists are
-    tail-capped and fields char-capped
-    (``_CTX_MAX_*``) so the prompt stays bounded on pathological boards."""
-    task = get_task(conn, task_id)
-    if not task:
-        raise ValueError(f"unknown task {task_id}")
-    from hermes_cli.kanban_db_context import (
-        _ctx_attachments, _ctx_comments, _ctx_header, _ctx_parent_results, _ctx_prior_attempts,
-        _ctx_role_history,
-    )
-    # One clock reading so every relative age in this rendering agrees.
-    now = int(time.time())
-    lines: list[str] = []
-    _ctx_header(lines, task)
-    _ctx_attachments(lines, list_attachments(conn, task_id))
-    _ctx_prior_attempts(lines, conn, task_id, now)
-    _ctx_parent_results(lines, conn, task_id, now)
-    if task.context_isolation != "task":
-        _ctx_role_history(lines, conn, task, now)
-    _ctx_comments(lines, list_comments(conn, task_id), now)
-    return "\n".join(lines).rstrip() + "\n"
-
-
 # --- Stats + SLA helpers ---
 
 def board_stats(conn: sqlite3.Connection) -> dict:
@@ -4261,6 +4231,7 @@ from hermes_cli.kanban_db_connect import (
     init_db,
     write_txn,
 )
+from hermes_cli.kanban_db_context import build_worker_context
 from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,

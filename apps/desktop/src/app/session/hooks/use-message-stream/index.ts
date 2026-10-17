@@ -957,11 +957,12 @@ export function useMessageStream({
             const finalRowId = persistedTurn?.final_assistant_row_id
 
             const settlesPersistedRow =
-              existing.interim === true &&
-              existing.rowId === undefined &&
               typeof finalRowId === 'number' &&
               Number.isSafeInteger(finalRowId) &&
-              finalRowId > 0
+              finalRowId > 0 &&
+              ((existing.interim === true && existing.rowId === undefined) ||
+                existing.rowId === finalRowId ||
+                currentResponseParts(existing.parts).some(part => part.sourceRowId === finalRowId))
 
             if (
               existing.pending ||

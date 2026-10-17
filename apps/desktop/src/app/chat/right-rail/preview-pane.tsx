@@ -27,7 +27,7 @@ import {
   flushAnnotateStack
 } from '@/lib/preview-annotate'
 import { handoffPreviewAnnotateStack } from '@/lib/preview-annotate/handoff'
-import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
+import { PREVIEW_EXTERNAL_CHANNEL, routePreviewGuestLink } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -1143,8 +1143,10 @@ export function PreviewPane({
     // The guest preload (main.ts installs it on this partition) forwards a
     // clicked `_blank` anchor here. Admission is our side of the contract —
     // http/https only, so a guest page can never reach the local-file
-    // opener — and the open itself goes through the audited
-    // `hermes:openExternal` channel, never a popup side effect.
+    // opener. Where the URL then goes follows `routePreviewGuestLink`: a
+    // remote page being browsed navigates this same guest, a local preview's
+    // outbound link goes through the audited `hermes:openExternal` channel.
+    // Never a popup side effect either way.
     const onGuestExternal = (event: Event) => {
       const detail = event as Event & { args?: unknown[]; channel?: string }
 
@@ -1154,8 +1156,19 @@ export function PreviewPane({
 
       const url = String(detail.args?.[0] ?? '')
 
-      if (admitPreviewExternalUrl(url)) {
-        void window.hermesDesktop?.openExternal?.(url)
+      switch (routePreviewGuestLink(guestPage(webview, targetUrlRef.current).url, url)) {
+        case 'in-app':
+          void webview.loadURL?.(url)?.catch(() => undefined)
+
+          break
+
+        case 'external':
+          void window.hermesDesktop?.openExternal?.(url)
+
+          break
+
+        default:
+          break
       }
     }
 

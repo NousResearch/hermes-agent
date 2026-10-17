@@ -52,6 +52,19 @@ def _token_sid(token) -> str:
         _api(k, 'LocalFree', ctypes.c_void_p, [ctypes.c_void_p])(ctypes.cast(text, ctypes.c_void_p))
 
 
+def _open_process_error_detail(err: int) -> str:
+    """A one-line hint for a failed ``OpenProcess`` in the peer check.
+
+    The client side has no connection token to read (a pipe client cannot impersonate the
+    server), so an elevated gateway is only ever visible as ``OpenProcess`` access denied.
+    Naming that case turns a silent misconfiguration into a one-line diagnosis.
+    """
+    if err == 5:  # ERROR_ACCESS_DENIED
+        return ('access denied — the peer may be running at a higher integrity level '
+                '(e.g. an elevated gateway); start it without administrator rights')
+    return ''
+
+
 def _process_sid(pid: int) -> str:
     k = ctypes.WinDLL('kernel32', use_last_error=True)
     a = ctypes.WinDLL('advapi32', use_last_error=True)
@@ -59,7 +72,8 @@ def _process_sid(pid: int) -> str:
     close = _api(k, 'CloseHandle', wintypes.BOOL, [wintypes.HANDLE])
     process = open_process(0x1000, False, pid)
     if not process:
-        raise PermissionError('cannot verify bootstrap peer process')
+        detail = _open_process_error_detail(ctypes.get_last_error())
+        raise PermissionError('cannot verify bootstrap peer process' + (f' ({detail})' if detail else ''))
     token = wintypes.HANDLE()
     try:
         open_token = _api(a, 'OpenProcessToken', wintypes.BOOL,

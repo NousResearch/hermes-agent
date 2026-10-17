@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 Revisione di auto-miglioramento: {summary}"
     summary_callback: "💾 Revisione di auto-miglioramento: {summary}"
     aux_failure_label: "revisione in background"
+    staged_summary: "consolidamento della revisione in background ({kind} su {label}): {detail}"
+    staged_message: "La revisione in background non può eliminare voci di memoria senza supervisione. Il {kind} proposto è stato messo in attesa di approvazione — rivedilo con /memory pending (approve per applicarlo, discard per scartarlo)."
+    staged_kind:
+      batch: "batch"
+      replace: "sostituzione"
+      remove: "rimozione"
   notice:
     uncompressed_context_overflow: "⚠️ Il contesto della sessione (~{tokens} token) supera la finestra di contesto del modello (~{context_length} token) con la compressione disattivata (compression.enabled: false). Usa /compact per comprimere la cronologia o attiva la compressione in config.yaml."
 explainer:

@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 Selfverbetering-hersiening: {summary}"
     summary_callback: "💾 Selfverbetering-hersiening: {summary}"
     aux_failure_label: "agtergrond-hersiening"
+    staged_summary: "agtergrondersien-konsolidasie ({kind} op {label}): {detail}"
+    staged_message: "Die agtergrondersiening mag nie geheue-inskrywings sonder toesig uitvee nie. Die voorgestelde {kind} is ter goedkeuring geplaas — hersien dit met /memory pending (approve om toe te pas, discard om te laat vaar)."
+    staged_kind:
+      batch: "bondel"
+      replace: "vervanging"
+      remove: "verwydering"
   notice:
     uncompressed_context_overflow: "⚠️ Die sessiekonteks (~{tokens} tokens) oorskry die model se konteksvenster (~{context_length} tokens) terwyl kompressie gedeaktiveer is (compression.enabled: false). Gebruik /compact om die geskiedenis te komprimeer of aktiveer kompressie in config.yaml."
 explainer:

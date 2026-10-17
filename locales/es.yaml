@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 Revisión de automejora: {summary}"
     summary_callback: "💾 Revisión de automejora: {summary}"
     aux_failure_label: "revisión en segundo plano"
+    staged_summary: "consolidación de revisión en segundo plano ({kind} en {label}): {detail}"
+    staged_message: "La revisión en segundo plano no puede borrar entradas de memoria sin supervisión. El {kind} propuesto quedó en espera de tu aprobación — revísalo con /memory pending (aprobar para aplicarlo, descartar para descartarlo)."
+    staged_kind:
+      batch: "lote"
+      replace: "reemplazo"
+      remove: "borrado"
   notice:
     uncompressed_context_overflow: "⚠️ El contexto de la sesión (~{tokens} tokens) supera la ventana de contexto del modelo (~{context_length} tokens) con la compresión desactivada (compression.enabled: false). Usa /compact para comprimir el historial o activa la compresión en config.yaml."
 explainer:

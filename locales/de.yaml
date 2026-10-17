@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 Selbstverbesserungs-Review: {summary}"
     summary_callback: "💾 Selbstverbesserungs-Review: {summary}"
     aux_failure_label: "Hintergrund-Review"
+    staged_summary: "Konsolidierung der Hintergrundprüfung ({kind} auf {label}): {detail}"
+    staged_message: "Die Hintergrundprüfung darf Memory-Einträge nicht unbeaufsichtigt löschen. Der vorgeschlagene {kind} wurde zur Freigabe vorgemerkt — prüfe ihn mit /memory pending (approve zum Anwenden, discard zum Verwerfen)."
+    staged_kind:
+      batch: "Batch"
+      replace: "Austausch"
+      remove: "Löschung"
   notice:
     uncompressed_context_overflow: "⚠️ Der Sitzungskontext (~{tokens} Tokens) überschreitet das Kontextfenster des Modells (~{context_length} Tokens), während die Komprimierung deaktiviert ist (compression.enabled: false). Verwenden Sie /compact, um den Verlauf zu komprimieren, oder aktivieren Sie die Komprimierung in config.yaml."
 explainer:

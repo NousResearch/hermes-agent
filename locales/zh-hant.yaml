@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 自我改進檢閱：{summary}"
     summary_callback: "💾 自我改進檢閱：{summary}"
     aux_failure_label: "背景檢閱"
+    staged_summary: "背景審查合併（{label} 的{kind}）：{detail}"
+    staged_message: "背景審查不得在無人監督時刪除記憶條目。提議的{kind}已暫存待審批——用 /memory pending 查看（approve 套用，discard 捨棄）。"
+    staged_kind:
+      batch: "批次操作"
+      replace: "替換"
+      remove: "刪除"
   notice:
     uncompressed_context_overflow: "⚠️ 工作階段上下文（約 {tokens} 個 token）在壓縮已停用（compression.enabled: false）的情況下超出了模型上下文視窗（約 {context_length} 個 token）。請使用 /compact 壓縮歷史記錄，或在 config.yaml 中啟用壓縮。"
 explainer:

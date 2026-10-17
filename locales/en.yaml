@@ -3554,6 +3554,12 @@ display:
     summary_cli: "  💾 Self-improvement review: {summary}"
     summary_callback: "💾 Self-improvement review: {summary}"
     aux_failure_label: "background review"
+    staged_summary: "background review consolidation ({kind} on {label}): {detail}"
+    staged_message: "Background review may not delete memory entries unattended. The proposed {kind} was staged for your approval — review it with /memory pending (approve to apply, discard to drop)."
+    staged_kind:
+      batch: "batch"
+      replace: "replace"
+      remove: "remove"
   notice:
     uncompressed_context_overflow: "⚠️ Session context (~{tokens} tokens) exceeds the model context window (~{context_length} tokens) with compression disabled (compression.enabled: false). Use /compact to compress history or enable compression in config.yaml."
 

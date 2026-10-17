@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 مراجعة التحسين الذاتي: {summary}"
     summary_callback: "💾 مراجعة التحسين الذاتي: {summary}"
     aux_failure_label: "المراجعة في الخلفية"
+    staged_summary: "دمج المراجعة في الخلفية ({kind} على {label}): {detail}"
+    staged_message: "لا يمكن للمراجعة في الخلفية حذف إدخالات الذاكرة دون إشراف. تم إدراج {kind} المقترح في قائمة الانتظار بانتظار موافقتك — راجعه عبر /memory pending (approve للتطبيق، discard للإسقاط)."
+    staged_kind:
+      batch: "عملية دفعية"
+      replace: "استبدال"
+      remove: "حذف"
   notice:
     uncompressed_context_overflow: "⚠️ سياق الجلسة (~{tokens} رمزًا) يتجاوز نافذة سياق النموذج (~{context_length} رمزًا) مع تعطيل الضغط (compression.enabled: false). استخدم /compact لضغط السجل أو فعّل الضغط في config.yaml."
 explainer:

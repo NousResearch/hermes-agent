@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 自己改善レビュー: {summary}"
     summary_callback: "💾 自己改善レビュー: {summary}"
     aux_failure_label: "バックグラウンドレビュー"
+    staged_summary: "バックグラウンドレビューの統合（{label} への{kind}）：{detail}"
+    staged_message: "バックグラウンドレビューは監視なしにメモリ項目を削除できません。提案された{kind}は承認待ちとしてステージされました — /memory pending で確認してください（approve で適用、discard で破棄）。"
+    staged_kind:
+      batch: "バッチ処理"
+      replace: "置き換え"
+      remove: "削除"
   notice:
     uncompressed_context_overflow: "⚠️ セッションのコンテキスト（約{tokens}トークン）が、圧縮が無効（compression.enabled: false）の状態でモデルのコンテキストウィンドウ（約{context_length}トークン）を超えています。/compact で履歴を圧縮するか、config.yaml で圧縮を有効にしてください。"
 explainer:

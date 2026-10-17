@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 Перевірка самовдосконалення: {summary}"
     summary_callback: "💾 Перевірка самовдосконалення: {summary}"
     aux_failure_label: "фонова перевірка"
+    staged_summary: "консолідація фонової перевірки ({kind} — {label}): {detail}"
+    staged_message: "Фонова перевірка не може видаляти записи пам'яті без нагляду. Запропоновану дію ({kind}) поставлено на очікування вашого схвалення — перегляньте її через /memory pending (approve — застосувати, discard — відхилити)."
+    staged_kind:
+      batch: "пакет"
+      replace: "заміна"
+      remove: "видалення"
   notice:
     uncompressed_context_overflow: "⚠️ Контекст сеансу (~{tokens} токенів) перевищує контекстне вікно моделі (~{context_length} токенів), а стискання вимкнено (compression.enabled: false). Скористайтеся /compact, щоб стиснути історію, або увімкніть стискання в config.yaml."
 explainer:

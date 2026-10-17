@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 Ревью самосовершенствования: {summary}"
     summary_callback: "💾 Ревью самосовершенствования: {summary}"
     aux_failure_label: "фоновое ревью"
+    staged_summary: "консолидация фонового ревью ({kind} — {label}): {detail}"
+    staged_message: "Фоновое ревью не может удалять записи памяти без присмотра. Предложение ({kind}) поставлено на ожидание вашего одобрения — проверьте его через /memory pending (approve — применить, discard — отклонить)."
+    staged_kind:
+      batch: "пакет"
+      replace: "замена"
+      remove: "удаление"
   notice:
     uncompressed_context_overflow: "⚠️ Контекст сеанса (~{tokens} токенов) превышает контекстное окно модели (~{context_length} токенов), а сжатие отключено (compression.enabled: false). Используйте /compact, чтобы сжать историю, или включите сжатие в config.yaml."
 explainer:

@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 自我改进回顾：{summary}"
     summary_callback: "💾 自我改进回顾：{summary}"
     aux_failure_label: "后台审查"
+    staged_summary: "后台审查合并（{label} 的{kind}）：{detail}"
+    staged_message: "后台审查不得在无人监督时删除记忆条目。提议的{kind}已暂存待审批——用 /memory pending 查看（approve 应用，discard 丢弃）。"
+    staged_kind:
+      batch: "批量操作"
+      replace: "替换"
+      remove: "删除"
   notice:
     uncompressed_context_overflow: "⚠️ 会话上下文（约 {tokens} 个 token）在压缩已禁用（compression.enabled: false）的情况下超出了模型上下文窗口（约 {context_length} 个 token）。请使用 /compact 压缩历史记录，或在 config.yaml 中启用压缩。"
 explainer:

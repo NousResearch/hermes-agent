@@ -3763,6 +3763,12 @@ display:
     summary_cli: "  💾 Revue d'auto-amélioration : {summary}"
     summary_callback: "💾 Revue d'auto-amélioration : {summary}"
     aux_failure_label: "revue en arrière-plan"
+    staged_summary: "consolidation de la revue en arrière-plan ({kind} sur {label}) : {detail}"
+    staged_message: "La revue en arrière-plan ne peut pas supprimer des entrées de mémoire sans supervision. L'opération proposée ({kind}) a été mise en attente de ton approbation — examine-la avec /memory pending (approve pour appliquer, discard pour abandonner)."
+    staged_kind:
+      batch: "opération groupée"
+      replace: "action de remplacement"
+      remove: "action de suppression"
   notice:
     uncompressed_context_overflow: "⚠️ Le contexte de session (~{tokens} tokens) dépasse la fenêtre de contexte du modèle (~{context_length} tokens) alors que la compression est désactivée (compression.enabled: false). Utilisez /compact pour compresser l'historique ou activez la compression dans config.yaml."
 explainer:

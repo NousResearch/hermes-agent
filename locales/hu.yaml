@@ -3463,6 +3463,12 @@ display:
     summary_cli: "  💾 Önfejlesztési áttekintés: {summary}"
     summary_callback: "💾 Önfejlesztési áttekintés: {summary}"
     aux_failure_label: "háttér-áttekintés"
+    staged_summary: "háttér-áttekintés konszolidációja ({kind} — {label}): {detail}"
+    staged_message: "A háttér-áttekintés felügyelet nélkül nem törölhet memóriabejegyzéseket. A javasolt {kind} jóváhagyásra vár — nézd át a /memory pending paranccsal (approve az alkalmazáshoz, discard az eldobáshoz)."
+    staged_kind:
+      batch: "kötegelt művelet"
+      replace: "csere"
+      remove: "törlés"
   notice:
     uncompressed_context_overflow: "⚠️ A munkamenet kontextusa (~{tokens} token) meghaladja a modell kontextusablakát (~{context_length} token), miközben a tömörítés ki van kapcsolva (compression.enabled: false). Használd a /compact parancsot az előzmények tömörítéséhez, vagy kapcsold be a tömörítést a config.yaml fájlban."
 explainer:

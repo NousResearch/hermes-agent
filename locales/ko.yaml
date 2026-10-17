@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 자기 개선 리뷰: {summary}"
     summary_callback: "💾 자기 개선 리뷰: {summary}"
     aux_failure_label: "백그라운드 리뷰"
+    staged_summary: "백그라운드 리뷰 통합({label}에 대한 {kind}): {detail}"
+    staged_message: "백그라운드 리뷰는 감독 없이 메모리 항목을 삭제할 수 없습니다. 제안된 {kind}이(가) 승인 대기 중으로 임시 저장되었습니다 — /memory pending으로 확인하세요(approve 적용, discard 폐기)."
+    staged_kind:
+      batch: "일괄 작업"
+      replace: "교체"
+      remove: "삭제"
   notice:
     uncompressed_context_overflow: "⚠️ 세션 컨텍스트(약 {tokens} 토큰)가 압축이 비활성화된 상태(compression.enabled: false)에서 모델 컨텍스트 창(약 {context_length} 토큰)을 초과했어요. /compact로 기록을 압축하거나 config.yaml에서 압축을 활성화해 주세요."
 explainer:

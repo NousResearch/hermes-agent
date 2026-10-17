@@ -1017,3 +1017,60 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestBackgroundReviewGateI18n:
+    """The staged-proposal frame (summary + message) follows display.language; only the
+    user's own entry text inside the detail stays verbatim (#136986)."""
+
+    def _stage_replace(self, store):
+        store.add("memory", "Le importa la estetica")
+        token = set_current_write_origin("background_review")
+        try:
+            return json.loads(memory_tool(
+                action="replace", old_text="Le importa", content="rewritten by fork", store=store))
+        finally:
+            reset_current_write_origin(token)
+
+    def test_staged_frame_is_localized(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_LANGUAGE", "es")
+        from agent import i18n
+        try:
+            result = self._stage_replace(store)
+        finally:
+            i18n.reset_language_cache()
+        from tools.write_approval import MEMORY, get_pending
+        record = get_pending(MEMORY, result["pending_id"])
+        # The frame is Spanish (localized label + op kind); the entry text stays verbatim.
+        assert "Memoria" in record["summary"]
+        assert "reemplazo" in record["summary"]
+        assert "segundo plano" in record["summary"]
+        assert "background review consolidation" not in record["summary"]
+        assert "Le importa" in record["summary"]
+        assert result["message"].startswith("La revisión en segundo plano")
+        assert "unattended" not in result["message"]
+        assert "/memory pending" in result["message"]  # the command itself stays language-neutral
+
+    def test_staged_frame_english_default(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        result = self._stage_replace(store)
+        assert result["message"].startswith("Background review may not delete")
+        from tools.write_approval import MEMORY, get_pending
+        record = get_pending(MEMORY, result["pending_id"])
+        assert record["summary"].startswith("background review consolidation (replace on Memory): ")
+
+    def test_staged_summary_keeps_200_char_clamp(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        long_entry = "x" * 400
+        store.add("memory", long_entry)
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="replace", old_text=long_entry, content="rewritten by fork", store=store))
+        finally:
+            reset_current_write_origin(token)
+        from tools.write_approval import MEMORY, get_pending
+        record = get_pending(MEMORY, result["pending_id"])
+        assert len(record["summary"]) <= 200

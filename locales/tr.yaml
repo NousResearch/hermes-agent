@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 Kendini geliştirme incelemesi: {summary}"
     summary_callback: "💾 Kendini geliştirme incelemesi: {summary}"
     aux_failure_label: "arka plan incelemesi"
+    staged_summary: "arka plan incelemesi birleştirmesi ({label} üzerinde {kind}): {detail}"
+    staged_message: "Arka plan incelemesi gözetimsiz şekilde bellek girdilerini silemez. Önerilen {kind} onayın için beklemede tutuldu — /memory pending ile incele (uygulamak için approve, bırakmak için discard)."
+    staged_kind:
+      batch: "toplu işlem"
+      replace: "değiştirme"
+      remove: "silme"
   notice:
     uncompressed_context_overflow: "⚠️ Oturum bağlamı (~{tokens} token) sıkıştırma devre dışıyken (compression.enabled: false) modelin bağlam penceresini (~{context_length} token) aşıyor. Geçmişi sıkıştırmak için /compact kullanın veya config.yaml içinde sıkıştırmayı etkinleştirin."
 explainer:

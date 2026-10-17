@@ -3446,6 +3446,12 @@ display:
     summary_cli: "  💾 Athbhreithniú féinfheabhsúcháin: {summary}"
     summary_callback: "💾 Athbhreithniú féinfheabhsúcháin: {summary}"
     aux_failure_label: "athbhreithniú cúlra"
+    staged_summary: "comhcheangal na hathbhreithníochta cúla ({kind} ar {label}): {detail}"
+    staged_message: "Ní cheadmhach don athbhreithniú cúil iontrálacha cuimhne a scriosadh gan maoirseacht. Cuireadh an {kind} a mholadh ar feitheamh le do cheadú — féach é le /memory pending (apply le approve, cuir i leataobh le discard)."
+    staged_kind:
+      batch: "baisc"
+      replace: "athsholáthar"
+      remove: "scriosadh"
   notice:
     uncompressed_context_overflow: "⚠️ Sáraíonn comhthéacs an tseisiúin (~{tokens} comhartha) fuinneog chomhthéacs an mhúnla (~{context_length} comhartha) agus an comhbhrú díchumasaithe (compression.enabled: false). Úsáid /compact chun an stair a chomhbhrú nó cumasaigh an comhbhrú i config.yaml."
 explainer:

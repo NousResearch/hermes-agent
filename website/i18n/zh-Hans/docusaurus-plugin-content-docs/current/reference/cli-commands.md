@@ -26,7 +26,7 @@ hermes [global-options] <command> [subcommand/options]
 | `--version`, `-V` | 显示版本并退出。 |
 | `--profile <name>`, `-p <name>` | 选择本次调用使用的 Hermes profile（配置文件）。覆盖 `hermes profile use` 设置的粘性默认值。 |
 | `--resume <session>`, `-r <session>` | 通过 ID 或标题恢复之前的会话。 |
-| `--continue [name]`, `-c [name]` | 恢复最近的会话，或恢复最近一个匹配标题的会话。 |
+| `--continue [name]`, `-c [name]` | 恢复最近的会话，或恢复最近一个匹配标题的会话。另一个 Hermes 窗口正打开着的聊天会被拒绝——但该 profile 的 **Bot Chat** 在 `-Q` 下例外：这一轮会交给打开着它的 Desktop/TUI，并在那里作答（与 Bot Mode 私信和 cron 使用的通道相同），因此外部 agent 的消息会出现在你正在查看的聊天里。 |
 | `--worktree`, `-w` | 在隔离的 git worktree 中启动，用于并行 agent 工作流。 |
 | `--yolo` | 跳过危险命令的审批提示。 |
 | `--pass-session-id` | 在 agent 的 system prompt（系统提示词）中包含会话 ID。 |

@@ -356,3 +356,79 @@ class TestTelegramApprovalCallback:
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
 
+
+
+def _ea_tap(approval_id: int, user_id: str):
+    query = AsyncMock()
+    query.data = f"ea:once:{approval_id}"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.from_user = MagicMock()
+    query.from_user.first_name = "Tapper"
+    query.from_user.id = user_id
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    update = MagicMock()
+    update.callback_query = query
+    return update, query
+
+
+async def _tap(adapter, approval_id, user_id, allowed_users="*"):
+    update, query = _ea_tap(approval_id, user_id)
+    with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": allowed_users}, clear=False):
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+            await adapter._handle_callback_query(update, MagicMock())
+    return query, resolve
+
+
+class TestTelegramExecApprovalAdminGate:
+    """``require_admin_for_exec_approval`` (opt-in, same toggle as Discord): only
+    ``allow_admin_from`` ids may resolve an approval button."""
+
+    SESSION = "agent:main:telegram:group:12345:99"
+
+    @pytest.mark.asyncio
+    async def test_off_by_default_any_admitted_user_resolves(self):
+        adapter = _make_adapter({"allow_admin_from": ["111"]})
+        adapter._approval_state[1] = self.SESSION
+
+        _, resolve = await _tap(adapter, 1, "222")
+
+        resolve.assert_called_once_with(self.SESSION, "once")
+        assert 1 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_non_admin_tap_is_refused_and_leaves_the_prompt_for_an_admin(self):
+        adapter = _make_adapter({"allow_admin_from": ["111"], "require_admin_for_exec_approval": True})
+        adapter._approval_state[1] = self.SESSION
+
+        query, resolve = await _tap(adapter, 1, "222")
+
+        resolve.assert_not_called()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
+        assert adapter._approval_state[1] == self.SESSION
+
+        _, resolve = await _tap(adapter, 1, "111")
+
+        resolve.assert_called_once_with(self.SESSION, "once")
+        assert 1 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_admission_is_still_checked_first(self):
+        adapter = _make_adapter({"allow_admin_from": ["111"], "require_admin_for_exec_approval": True})
+        adapter._approval_state[1] = self.SESSION
+
+        _, resolve = await _tap(adapter, 1, "111", allowed_users="999")
+
+        resolve.assert_not_called()
+        assert adapter._approval_state[1] == self.SESSION
+
+    @pytest.mark.asyncio
+    async def test_toggle_on_with_no_admins_fails_closed(self, caplog):
+        adapter = _make_adapter({"require_admin_for_exec_approval": "true"})
+        adapter._approval_state[1] = self.SESSION
+
+        _, resolve = await _tap(adapter, 1, "111")
+
+        resolve.assert_not_called()
+        assert any("require_admin_for_exec_approval" in r.message for r in caplog.records)

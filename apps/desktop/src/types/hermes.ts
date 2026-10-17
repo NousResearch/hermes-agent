@@ -326,6 +326,7 @@ export interface CustomEndpointValidationResponse {
 
 export interface MessagingEnvVarInfo {
   advanced: boolean
+  default_value?: null | string
   description: string
   /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
   is_list?: boolean
@@ -335,9 +336,11 @@ export interface MessagingEnvVarInfo {
   prompt: string
   redacted_value: null | string
   required: boolean
+  options?: Array<{ label: string; value: string }>
   url: null | string
-  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  /** Plain saved value for nonsecret choices and allowlists. */
   value?: null | string
+  visible_when?: null | { key: string; values: string[] }
 }
 
 export interface MessagingHomeChannel {

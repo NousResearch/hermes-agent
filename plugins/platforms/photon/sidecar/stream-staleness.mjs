@@ -33,6 +33,14 @@ export function createProbeMessageId() {
   return randomUUID();
 }
 
+export function silenceProbeThreshold(localMode, configuredMs) {
+  // The local provider's getMessage is a no-op, not a wire liveness probe.
+  // Quiet local chats therefore cannot establish a half-open gRPC stream.
+  if (localMode) return 0;
+  const threshold = Number(configuredMs);
+  return Number.isFinite(threshold) ? threshold : 10 * 60 * 1000;
+}
+
 /**
  * Classify the rejection of the synthetic-id probe read.
  *

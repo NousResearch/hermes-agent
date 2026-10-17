@@ -11,6 +11,7 @@ import os
 import re
 from typing import Any, List, Optional
 from urllib.parse import urlparse
+from agent.redact import _redact_strict_url_credentials, redact_sensitive_text
 from tools.mcp_tool_common import _exc_str, _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError
 
@@ -93,6 +94,16 @@ def _is_streamable_http_rejection(exc: BaseException) -> bool:
 _HTTP_REJECTION_BODY_CHARS = 300
 
 
+def _redact_http_diagnostic(text: object) -> str:
+    """Mask ordinary secrets and strict URL credentials before an MCP error is surfaced or logged.
+
+    HTTP diagnostics are never live URL-following workflows, so URL credentials must be masked even
+    when the user disables ordinary secret redaction for model-visible text.
+    """
+    value = redact_sensitive_text("" if text is None else str(text))
+    return _redact_strict_url_credentials(value)
+
+
 def _make_http_rejection_recorder(sink: dict):
     """httpx response hook for the owned Streamable HTTP client: remembers the last 4xx/5xx the server
     sent (status, method, URL, head of the body). mcp >= 2.0 folds a non-2xx whose body it cannot
@@ -126,11 +137,11 @@ def _describe_http_failure(exc: BaseException, rejection: dict) -> str:
     opaque = (getattr(getattr(root, "error", None), "code", None) == -32603
               and "server returned an error response" in text.lower())
     if not (opaque and rejection):
-        return text
+        return _redact_http_diagnostic(text)
     detail = f"HTTP {rejection['status']} from {rejection['method']} {rejection['url']}"
     if rejection["body"]:
         detail += f": {rejection['body']}"
-    return f"{text} ({detail})"
+    return _redact_http_diagnostic(f"{text} ({detail})")
 
 
 def _unwrap_exception_group(exc: BaseException) -> BaseException:

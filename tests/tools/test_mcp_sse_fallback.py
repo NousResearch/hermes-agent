@@ -78,6 +78,27 @@ def test_no_fallback_on_reconnect_timeout_or_server_error(monkeypatch, exc, ever
     assert "SSE" not in calls
 
 
+def test_credential_redaction_does_not_wrap_or_reclassify_http_401(monkeypatch):
+    """Redacting a credential-bearing HTTP error must not alter the original auth classification."""
+    from tools.mcp_tool_errors import _classify_mcp_failure
+
+    class UrlRenderingHTTPStatusError(httpx.HTTPStatusError):
+        def __str__(self):
+            return f"401 Unauthorized for {self.request.url}"
+
+    request = httpx.Request("POST", "https://mcp.example.com/mcp?token=SECRETVALUE")
+    error = UrlRenderingHTTPStatusError(
+        "Unauthorized", request=request, response=httpx.Response(401, request=request))
+    task, calls = _task(monkeypatch, error)
+    config = {**_CONFIG, "url": str(request.url)}
+
+    with pytest.raises(httpx.HTTPStatusError) as info:
+        asyncio.run(task._run_http(config))
+
+    assert _classify_mcp_failure(info.value) == "permanent"
+    assert calls == ["HTTP"] or calls == ["legacy HTTP"]
+
+
 def test_both_transports_failing_names_both_and_suggests_config(monkeypatch):
     task, calls = _task(monkeypatch, _http_400(), sse_exc=ConnectionRefusedError("no sse"))
     with pytest.raises(ConnectionError, match="both Streamable HTTP and SSE.*transport: sse"):

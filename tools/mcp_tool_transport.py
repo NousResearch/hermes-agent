@@ -12,7 +12,7 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _redact_http_diagnostic, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
@@ -630,7 +630,16 @@ class MCPServerTransportMixin:
             # transport mismatch — ``_is_streamable_http_rejection`` matches neither), and never
             # with ``strict_redirect_headers`` (SSE cannot enforce that boundary).
             if (self._ever_connected or common[-1] or not _is_streamable_http_rejection(exc)):
-                if http_detail != str(_unwrap_exception_group(exc)):  # opaque SDK error + a recorded rejection
+                root = _unwrap_exception_group(exc)
+                opaque_rejection = (
+                    getattr(getattr(root, "error", None), "code", None) == -32603
+                    and "server returned an error response" in str(root).lower()
+                    and bool(self._http_rejection)
+                )
+                # Use the exception shape, not a comparison with its display string: log-only
+                # redaction can change an ordinary HTTPStatusError's text and must not change
+                # failure classification (e.g. a credential-bearing 401 stays permanent).
+                if opaque_rejection:
                     raise ConnectionError(f"MCP server '{self.name}': Streamable HTTP connect failed "
                                           f"({http_detail})") from exc
                 raise
@@ -649,7 +658,7 @@ class MCPServerTransportMixin:
                 raise ConnectionError(
                     f"MCP server '{self.name}': both Streamable HTTP and SSE transports failed "
                     f"(Streamable HTTP: {http_detail}; SSE: "
-                    f"{_unwrap_exception_group(sse_exc)}). Check the URL points at an MCP "
+                    f"{_redact_http_diagnostic(_unwrap_exception_group(sse_exc))}). Check the URL points at an MCP "
                     "endpoint, or pin `transport: sse` if the server is SSE-only.") from sse_exc
 
     # -------------------------------------------------------------- discovery

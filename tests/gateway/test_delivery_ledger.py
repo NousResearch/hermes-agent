@@ -798,7 +798,9 @@ class TestOwnerAlivePidProbe:
         assert dl._owner_alive(4242, 999) is True
         assert calls == [4242]
 
-    def test_probe_exception_means_dead(self, monkeypatch):
+    def test_probe_exception_means_alive(self, monkeypatch):
+        """Fail-safe: when the liveness probe itself raises, death is unprovable, so the owner is
+        treated as alive — the stale cutoff reclaims a genuinely wedged claim, never an error."""
         from gateway import status
 
         self._no_start_time(monkeypatch)
@@ -807,4 +809,4 @@ class TestOwnerAlivePidProbe:
             raise RuntimeError("probe blew up")
 
         monkeypatch.setattr(status, "_pid_exists", boom)
-        assert dl._owner_alive(12345, 999) is False
+        assert dl._owner_alive(12345, 999) is True

@@ -228,37 +228,36 @@ def _owner_stamp() -> tuple[int, Optional[int]]:
 
 
 def _owner_alive(pid: Any, started_at: Any) -> bool:
-    """True when the recorded owning process still exists (pid + start time)."""
+    """True while the recorded owning process still exists.
+
+    The recorded start-time fingerprint (``started_at``) is never treated as a death signal: a
+    live owner's reading drifts without bound, so a mismatch is as likely drift as PID reuse.
+    Only pid absence proves death here; a genuinely wedged claim is released by the sweep's
+    attempts-cap/stale-cutoff, never by a drifted fingerprint."""
     if not pid:
         return False
     try:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
-    current_start = _start_time(pid)
-    if current_start is None:
-        # Start time unreadable: alive iff the pid exists. Route through the cross-platform probe — on Windows
-        # ``os.kill(pid, 0)`` is NOT a no-op (bpo-14484: it maps to ``GenerateConsoleCtrlEvent(0, pid)`` and could
-        # Ctrl+C the gateway's own console group). ``_pid_exists`` keeps EPERM-means-alive (pid owned by another user).
-        try:
-            from gateway.status import _pid_exists
-        except Exception:
-            if os.name == "nt":
-                return False  # never fall back to a raw sig-0 probe on Windows
-            try:
-                os.kill(pid, 0)  # windows-footgun: ok — POSIX-only fallback branch
-                return True
-            except OSError as exc:  # incl. ProcessLookupError; EPERM means the pid exists
-                return isinstance(exc, PermissionError)
-        try:
-            return bool(_pid_exists(pid))
-        except Exception:
-            return False
     try:
-        from gateway.status import start_time_fingerprints_match
-        return started_at is None or start_time_fingerprints_match(started_at, current_start)
-    except (TypeError, ValueError):
-        return True
+        from gateway.status import _pid_exists
+    except Exception:
+        # Route through a cross-platform probe — on Windows ``os.kill(pid, 0)`` is NOT a no-op
+        # (bpo-14484: it maps to ``GenerateConsoleCtrlEvent(0, pid)`` and could Ctrl+C the
+        # gateway's own console group). ``_pid_exists`` keeps EPERM-means-alive (pid owned by
+        # another user); this raw sig-0 branch is POSIX-only and never runs in-tree.
+        if os.name == "nt":
+            return False
+        try:
+            os.kill(pid, 0)  # windows-footgun: ok — POSIX-only fallback branch
+            return True
+        except OSError as exc:  # incl. ProcessLookupError; EPERM means the pid exists
+            return isinstance(exc, PermissionError)
+    try:
+        return bool(_pid_exists(pid))
+    except Exception:
+        return True  # cannot prove death -> do not reclaim
 
 
 def compute_obligation_id(session_key: str, message_ref: str, content: str) -> str:

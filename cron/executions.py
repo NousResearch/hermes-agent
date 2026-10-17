@@ -143,10 +143,26 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     current = _process_start_time(pid)
     if current is None:
         return True  # cannot compare -> cannot prove death; a misread must not rewrite state
-    # Drifted same-host readings (#117505) are not proof of death; a live misread is still
-    # bounded by the stale-claim sweep below.
+    # Drifted same-host readings (#117505) are not proof of death.
     from gateway.status import start_time_fingerprints_match
-    return start_time_fingerprints_match(started_at, current)
+    if start_time_fingerprints_match(started_at, current):
+        return True
+    # A LIVE pid whose fingerprint has drifted is still not proof of death, and on this
+    # host the drift is unbounded: successive readings of the SAME live process climb
+    # ~2 s per day of owner age (~34 ppm duration-vs-wall-clock error; measured
+    # 2026-10-17 across 2130 rows — 1064 of 1073 live-owner rows mismatched the 2 s
+    # tolerance, pid 53436 spanning +4400 centiseconds in 13 days). So the fixed
+    # tolerance cannot distinguish "drifted" from "recycled", and treating mismatch as
+    # death made the sweep terminalize LIVE runs as 'unknown' mid-flight, after which
+    # their own finish_execution() was a silent no-op and the true outcome was lost.
+    # Fail safe: a not-provably-gone owner stays owned. A genuinely wedged claim is
+    # still released by the stale-bound path below, and a recycled pid therefore costs
+    # at most that bound — never the ledger row's real terminal state.
+    logger.debug(
+        "Owner pid %s is alive but its start fingerprint drifted (recorded=%s now=%s); "
+        "treating the attempt as still owned", pid, started_at, current,
+    )
+    return True
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:
@@ -317,6 +333,12 @@ def finish_execution(
 
     Only the owning process may finish its attempt; receipt recovery for a departed owner
     settles through ``recover_receipted_execution``.
+
+    One exception: an ``unknown`` row is a *reconciliation guess* written by whoever
+    swept it, not the attempt's own verdict. The attempt's owner may replace it with
+    the real outcome (``process_id`` + ``pid`` must still be the owner's), otherwise a
+    false "owner died" sweep silently destroys the true terminal state — which is how
+    live runs were being recorded as ``unknown`` (see ``_owner_is_live``).
     """
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
@@ -327,7 +349,7 @@ def finish_execution(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
                    handoff_started_at=NULL, delivery_outcome=?
-               WHERE id=? AND status IN ('claimed','running')
+               WHERE id=? AND status IN ('claimed','running','unknown')
                  AND process_id=? AND pid=?""",
             (status, now, detail, delivery_outcome, execution_id, *owner),
         )

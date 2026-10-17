@@ -113,8 +113,8 @@ def test_stale_record_is_never_attachable(host_dir, pid, create_time):
 def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkeypatch):
     """WSL can shift psutil.create_time() for the same live PID while /proc start ticks stay fixed.
 
-    The host record must keep recognizing that owner, but a changed stable start fingerprint must
-    still be rejected as PID reuse.
+    The host record must keep recognizing that owner, and a drifted start fingerprint is not proof
+    of PID reuse: the record stays a candidate (not stale) and must prove itself via ``probe_owner``.
     """
     record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
     assert record is not None
@@ -132,7 +132,11 @@ def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkey
         status, "get_process_start_time",
         lambda _pid: record.start_time + status.START_TIME_DRIFT_TOLERANCE + 1,
     )
-    assert hr.record_is_stale(record) is True
+    # A mismatched start fingerprint is drift-or-reuse — not provably either, so the record is
+    # unprovable (never stale), and liveness is not positively proven.
+    assert hr.record_is_stale(record) is False
+    assert hr.liveness_is_proven(record) is False
+
 
 
 @pytest.mark.platforms("posix")

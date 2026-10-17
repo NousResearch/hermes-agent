@@ -4,10 +4,15 @@ Deleting an idle ``cache/scratch/<entry>`` is not enough on its own: a lane's e2
 headless browsers whose cwd was inside the tree (they survived for days with a ``(deleted)``
 cwd), and a repo whose linked worktree lived in the tree keeps a dangling registration until
 someone runs ``git worktree prune``. Both are reaped here, right before ``rmtree``.
+
+A process Hermes itself started is never an orphan, though: an idle entry a registered live
+process still works inside is kept, not reaped (#132401). Ownership comes from the two
+registries Hermes writes, not from a marker file a lane must remember to drop.
 """
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -22,8 +27,8 @@ logger = logging.getLogger(__name__)
 _REAP_GRACE_SECONDS = 3.0
 # ``.git`` files (linked worktrees) are looked for this deep; lanes nest repo/tree/subtree.
 _GIT_FILE_MAX_DEPTH = 4
-# logs/scratch-prune.log: one line per entry deleted and per process signalled (#132401). Same
-# fixed rotation as tool_calls.log.
+# logs/scratch-prune.log: one line per entry deleted, per process signalled, and per
+# entry rescued or vanished mid-prune (#132401). Same fixed rotation as tool_calls.log.
 _PRUNE_LOG_MAX_BYTES = 5 * 1024 * 1024
 _PRUNE_LOG_BACKUPS = 3
 # Paths and process names go in with %r: a control character (a newline in a legal POSIX name)
@@ -92,21 +97,23 @@ def _tree_bytes(path: Path) -> int:
     return total
 
 
-def subtree_touched_since(path: Path, cutoff: float) -> bool:
-    """True when *path* or anything beneath it has an mtime at or after *cutoff*.
+_TOUCHED = "touched"
+_SCAN_FAILED = "scan-failed"
+_IDLE = "idle"
 
-    Stops at the first recent entry, so a live tree costs one hit and only a truly idle
-    tree pays for the full walk (once, right before it is deleted). Symlinks are never
-    followed: a link into the repo would make the target's activity keep the entry alive.
-    An unreadable entry is kept: an incomplete scan cannot establish that it is idle.
-    """
+
+def subtree_touch_state(path: Path, cutoff: float) -> str:
+    """Tri-state form of :func:`subtree_touched_since`: ``touched`` (recent write seen),
+    ``scan-failed`` (unreadable — idle cannot be established, so the entry is kept, but
+    a failed scan is not activity and is never reported as such), or ``idle``.
+    Same walk, same stop-at-first-recent shortcut, same symlink rules."""
     try:
         if os.lstat(path).st_mtime >= cutoff:
-            return True
+            return _TOUCHED
         if not path.is_dir() or path.is_symlink():
-            return False
+            return _IDLE
     except OSError:
-        return True
+        return _SCAN_FAILED
     stack = [str(path)]
     while stack:
         try:
@@ -114,14 +121,27 @@ def subtree_touched_since(path: Path, cutoff: float) -> bool:
                 for child in it:
                     try:
                         if child.stat(follow_symlinks=False).st_mtime >= cutoff:
-                            return True
+                            return _TOUCHED
                     except OSError:
-                        return True
+                        return _SCAN_FAILED
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
         except OSError:
-            return True
-    return False
+            return _SCAN_FAILED
+    return _IDLE
+
+
+def subtree_touched_since(path: Path, cutoff: float) -> bool:
+    """True when *path* or anything beneath it has an mtime at or after *cutoff*.
+
+    Stops at the first recent entry, so a live tree costs one hit and only a truly idle
+    tree pays for the full walk (once, right before it is deleted). Symlinks are never
+    followed: a link into the repo would make the target's activity keep the entry alive.
+    An unreadable entry is kept: an incomplete scan cannot establish that it is idle —
+    so True here means "touched **or** uninspectable", and callers that need to tell the
+    two apart (the mid-prune audit) use :func:`subtree_touch_state` instead.
+    """
+    return subtree_touch_state(path, cutoff) != _IDLE
 
 
 def _under(path: str, root: str) -> bool:
@@ -143,6 +163,63 @@ def _own_lineage() -> set[int]:
     return pids
 
 
+def _registered_live_pids(home: Path) -> set[int]:
+    """Live pids Hermes registered for *home*: the machine spawn ledger (every long-lived entry
+    point and MCP helper, ``hermes_cli.process_identity``) and the background-process checkpoint
+    (``tools.process_registry``, ``processes.json``). A recorded start time that no longer
+    matches is a reused pid, not ownership."""
+    import psutil
+
+    from hermes_cli.process_identity import spawner_is_dead
+    from hermes_constants import get_default_hermes_root
+
+    root = get_default_hermes_root(home=home)
+    sources = [(root / "spawn-ledger.json", "create_time")]
+    sources += [(base / "processes.json", "host_start_time") for base in {home, root}]
+    pids: set[int] = set()
+    for path, stamp_key in sources:
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        for entry in entries if isinstance(entries, list) else []:
+            pid, stamp = (entry.get("pid"), entry.get(stamp_key)) if isinstance(entry, dict) else (None, None)
+            if not isinstance(pid, int) or pid <= 0 or entry.get("pid_scope", "host") != "host":
+                continue
+            # An MCP helper whose recorded spawner is provably gone is an orphan, not owned: the
+            # rule reap_orphaned_mcp_helpers applies. Long-lived entry points (gateway, serve) that
+            # outlive their launcher stay owned; an unprovable spawner keeps ownership.
+            if entry.get("purpose") == "mcp-helper" and spawner_is_dead(entry) is True:
+                continue
+            try:
+                if stamp is None:
+                    alive = psutil.pid_exists(pid)
+                elif stamp_key == "create_time":
+                    alive = abs(psutil.Process(pid).create_time() - float(stamp)) < 2.0
+                else:
+                    from gateway.status import get_process_start_time
+
+                    alive = get_process_start_time(pid) == stamp
+            except (psutil.Error, OSError, TypeError, ValueError):
+                continue
+            if alive:
+                pids.add(pid)
+    return pids
+
+
+def _owned_by_hermes(proc, registered: set[int]) -> bool:
+    """Registered itself, or a descendant of a live registered process (a background shell's
+    child). An orphan whose spawning shell is gone was reparented away from that lineage, so
+    it is not owned and is still reaped."""
+    import psutil
+
+    try:
+        # pid 1 is excluded as an ancestor: a Hermes running as a container init adopts every orphan.
+        return proc.pid in registered or any(p.pid in registered and p.pid != 1 for p in proc.parents())
+    except (psutil.Error, OSError):
+        return False
+
+
 def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logging.Logger = logger) -> int:
     """TERM (then KILL) same-user processes whose cwd is inside an entry about to be
     pruned, or is a path under *scratch_root* that no longer exists. Returns the count.
@@ -150,6 +227,9 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
     Only the cwd is consulted: a process merely holding a file open inside scratch (an
     editor, a log tail) is not ours to kill, but one *living* in a directory we are
     about to delete, or in one already gone, has nothing left to run for.
+
+    A process Hermes owns (:func:`_owned_by_hermes`) is never signalled; each doomed entry it
+    works inside is dropped from *doomed* in place and recorded as kept.
     """
     import psutil
 
@@ -158,9 +238,10 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
     skip = _own_lineage()
     uid = os.getuid() if hasattr(os, "getuid") else None
     victims: list[tuple[psutil.Process, str]] = []
+    # The pruner's own lineage is never signalled, but its cwd still keeps an entry: a live
+    # session that launched this Hermes command may be working inside it.
+    lineage: list[tuple[psutil.Process, str]] = []
     for proc in psutil.process_iter(["pid"]):
-        if proc.pid in skip:
-            continue
         try:
             if uid is not None and proc.uids().real != uid:
                 continue
@@ -174,7 +255,24 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
         if not _under(cwd_path, root):
             continue
         if deleted or not os.path.exists(cwd_path) or any(_under(cwd_path, t) for t in targets):
-            victims.append((proc, cwd_path))
+            (lineage if proc.pid in skip else victims).append((proc, cwd_path))
+    # The owning home comes from the scratch path as configured, not its resolved target:
+    # a cache/scratch symlinked onto another disk still belongs to <home>.
+    registered = _registered_live_pids(Path(scratch_root).absolute().parent.parent) if victims else set()
+    owned = lineage + [(proc, cwd_path) for proc, cwd_path in victims if _owned_by_hermes(proc, registered)]
+    for proc, cwd_path in owned:
+        for entry in [e for e in doomed if _under(cwd_path, os.path.realpath(str(e)))]:
+            doomed.remove(entry)
+            try:
+                name = proc.name()
+            except (psutil.Error, OSError):
+                name = "?"
+            audit.info("scratch prune: kept %r — live Hermes process pid=%d (%r) works inside",
+                       os.fspath(entry), proc.pid, name)
+    # Re-filter against the shrunk *doomed*: an orphan in a kept entry is spared with it (the
+    # reap only exists to clear the way for rmtree); one whose cwd is already gone still goes.
+    victims = [(proc, cwd_path) for proc, cwd_path in victims if (proc, cwd_path) not in owned
+               and (not os.path.exists(cwd_path) or any(_under(cwd_path, os.path.realpath(str(e))) for e in doomed))]
     if not victims:
         return 0
     for proc, cwd_path in victims:
@@ -209,7 +307,7 @@ def _linked_worktree_repos(entry: Path) -> set[str]:
                 for child in it:
                     if child.name == ".git" and child.is_file(follow_symlinks=False):
                         try:
-                            line = Path(child.path).read_text(encoding="utf-8", errors="replace").strip()
+                            line = Path(child.path).read_text(encoding="utf-8-sig", errors="replace").strip()
                         except OSError:
                             continue
                         if line.startswith("gitdir:"):
@@ -245,8 +343,9 @@ def prune_idle_entries(
 ) -> int:
     """Delete top-level entries of *root* with no write anywhere in their subtree for
     *max_idle_hours*, reaping processes and worktree registrations rooted in them first.
-    Each removal and each signalled process is recorded in *log_file*. Returns the count
-    actually removed."""
+    Each removal, each signalled process and each entry rescued mid-prune (touched
+    again after selection) is recorded in *log_file*. Returns the count actually
+    removed."""
     audit = _open_prune_log(log_file)
     try:
         return _prune_idle_entries(root, max_idle_hours, skip_names, audit)
@@ -276,10 +375,51 @@ def _prune_idle_entries(
     repos: set[str] = set()
     removed = 0
     for entry in doomed:
+        # Worktree scan first: a registration whose tree an earlier pass (or hand)
+        # removed is stale even in a rescued entry, and the re-check below sits as
+        # close to the delete as the loop allows.
+        if entry.is_dir() and not entry.is_symlink():
+            repos |= _linked_worktree_repos(entry)
+        # Last-moment re-validation (#132401 C1/F1): ``doomed`` is a snapshot from
+        # before the reap ran, and a writer whose cwd is outside scratch — invisible
+        # to the reap — can land fresh work in that window. The snapshot is a
+        # candidate list, never a verdict: anything touched since selection is
+        # rescued here, not deleted. A re-scan that cannot read the entry is also
+        # fail-closed (the entry is kept), but a failed scan is not activity — the
+        # audit names the failed re-scan instead of inventing a touch that did not
+        # happen, so operators can tell an uninspectable candidate from verified
+        # recent activity (P3 on #134173).
+        # Size is collected before the re-check, not after it: a full-tree walk between
+        # the re-check and rmtree reopens the window for a write landing during that
+        # walk to be destroyed (review F6 on #139850).
         size = _tree_bytes(entry)
+        state = subtree_touch_state(entry, cutoff)
+        if state != _IDLE:
+            # Only a missing path is a vanish: a stat that raises PermissionError means
+            # the entry is there but unreadable, and reporting it as vanished would be
+            # the same invented reason the audit exists to prevent.
+            try:
+                os.lstat(entry)
+                entry_gone = False
+            except FileNotFoundError:
+                entry_gone = True
+            except OSError:
+                entry_gone = False
+            if entry_gone:
+                audit.info("scratch prune: entry %r vanished since selection", os.fspath(entry))
+            elif state == _TOUCHED:
+                audit.info(
+                    "scratch prune: rescued %r — touched since selection, kept",
+                    os.fspath(entry),
+                )
+            else:
+                audit.info(
+                    "scratch prune: kept %r — activity re-scan failed, left untouched",
+                    os.fspath(entry),
+                )
+            continue
         try:
             if entry.is_dir() and not entry.is_symlink():
-                repos |= _linked_worktree_repos(entry)
                 shutil.rmtree(entry, ignore_errors=True)
             else:
                 entry.unlink()
@@ -287,8 +427,18 @@ def _prune_idle_entries(
             audit.info("scratch prune: could not remove %r: %s", os.fspath(entry), exc)
             continue
         # rmtree ignores errors, so only a path that is really gone counts as removed.
-        if os.path.lexists(entry):
+        # Only an explicit lstat proves absence: lexists() swallows OSError from lstat,
+        # so an entry that stayed (rmtree left residue) but cannot be inspected would be
+        # counted and recorded as removed — the same invented reason the vanish rule
+        # above refuses to invent (P2 on #134173).
+        try:
+            os.lstat(entry)
             audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
+            continue
+        except FileNotFoundError:
+            pass
+        except OSError:
+            audit.info("scratch prune: could not confirm removal of %r", os.fspath(entry))
             continue
         audit.info("scratch prune: removed %r (%d bytes)", os.fspath(entry), size)
         removed += 1

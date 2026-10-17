@@ -260,6 +260,37 @@ def cancel_session_input(db, *, epoch: int, admission_id: str) -> dict:
     return db._execute_write(write)
 
 
+def rehome_queued_inputs(db, *, epoch: int, old_session_id: str, new_session_id: str,
+                         principal_prefix: str) -> list[str]:
+    """Re-target the old owner's still-queued ``principal_prefix*`` admissions onto
+    ``new_session_id`` in one transaction (the compression-exhaustion auto-reset). Each row keeps
+    its admission id, request id and seq, so FIFO order and retry dedupe survive; the digest is
+    re-keyed to the new target. Nothing moves while the old FIFO holds an ``unknown`` row (the
+    operator's to resume). Returns the moved admission ids in FIFO order."""
+    for value in (old_session_id, new_session_id, principal_prefix):
+        _text(value)
+    def write(conn):
+        _epoch(conn, epoch)
+        _session(conn, new_session_id)
+        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='unknown'",
+                        (old_session_id,)).fetchone():
+            return []
+        rows = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' "
+                            "AND substr(principal_id,1,?)=? ORDER BY seq",
+                            (old_session_id, len(principal_prefix), principal_prefix)).fetchall()
+        for row in rows:
+            digest = admission_fingerprint(canonical_target=new_session_id, payload={
+                'input': json.loads(row['payload_json']), 'intent': row['intent']})
+            conn.execute("UPDATE session_admissions SET target_session_id=?,lineage_json=?,payload_digest=? "
+                         "WHERE admission_id=? AND status='queued'",
+                         (new_session_id, json.dumps([new_session_id]), digest, row['admission_id']))
+        if rows:
+            for sid in (old_session_id, new_session_id):
+                conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (sid,))
+        return [row['admission_id'] for row in rows]
+    return db._execute_write(write)
+
+
 def recover_session_inputs(db, *, epoch: int) -> int:
     """Never replay started work. Live worker adoption is a separate explicit operation."""
     def write(conn):

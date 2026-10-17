@@ -307,7 +307,6 @@ async def serve_profile_runtime(runner, name, home):
     publish it in the descriptor/ticket store — the steps boot performs per secondary. Raises when
     the profile's store is unusable; the caller parks it (and releases the reservation)."""
     from gateway.session_authorities import owner_scope
-    from gateway.session_bot import recover_bot_deliveries
     from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
     from gateway.session_local_recovery import recover_local_sessions
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
@@ -326,7 +325,7 @@ async def serve_profile_runtime(runner, name, home):
     authority = await _build_profile_authority(runner, name, home, register=False)
     try:
         with owner_scope(authority):
-            await recover_bot_deliveries(authority)
+            await recover_bot_mailbox(authority)
             recover_local_sessions(authority, schedule=True)
             await recover_webhook_finalizations(authority)
         if getattr(runner, 'session_control_server', None) is not None:
@@ -362,15 +361,30 @@ def _authorities(runner):
     return all_authorities(runner)
 
 
+async def recover_bot_mailbox(authority):
+    """Owner-startup Bot Chat recovery, skipped when this token cannot use the mailbox dir.
+
+    An elevated install/update can leave ``runtime/bot_live_delivery`` owned by Administrators with
+    no entry for the user (#139485, #138872): the gateway cannot even open its ``.lock``. Bot Chat
+    deliveries pause (``_locked`` already logged the dir, its owner and the remedy); every other
+    client keeps working instead of the whole gateway refusing to start. Any other failure still
+    aborts startup."""
+    from gateway.session_bot import recover_bot_deliveries
+    from tools.bot_live_delivery import MailboxUnusable
+    try:
+        await recover_bot_deliveries(authority)
+    except MailboxUnusable as exc:
+        logger.warning('Bot Chat recovery skipped for %s: %s', authority.db.db_path, exc)
+
+
 async def start_gateway_runtime_api(runner):
     from gateway.run_api import start_gateway_api
     from gateway.session_authorities import owner_scope
     runner.session_api = await start_gateway_api(runner)
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
-    from gateway.session_bot import recover_bot_deliveries
     for authority in _authorities(runner):
         with owner_scope(authority):
-            await recover_bot_deliveries(authority)
+            await recover_bot_mailbox(authority)
 
 
 async def recover_gateway_native_sessions(runner):

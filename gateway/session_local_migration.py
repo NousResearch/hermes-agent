@@ -54,6 +54,11 @@ def resolve_local_target(authority, actor, sid):
         from hermes_state_local_migration import LEGACY_PREFIX
         bound = conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
             (POLICY_PREFIX + (row.get('chat_id') or sid), LEGACY_PREFIX + (row.get('chat_id') or sid))).fetchone()
+        if bound and row.get('chat_id'):
+            from hermes_state_local import local_lineage_owner
+            # A copied chat_id is not evidence that this row belongs to the owner's lineage.
+            if local_lineage_owner(conn, sid) != row['chat_id']:
+                raise RuntimeStoreError('storage_unavailable')
     if bound or str(row.get('chat_id') or '').startswith('local-'):
         ref = SessionRef(authority.profile_id, row['chat_id'])
         authority.authorize(actor, ref, 'session:read')
@@ -80,8 +85,9 @@ def legacy_launch_params(row):
     billing_base_url = row.get('billing_base_url')
     if 'base_url' not in route and isinstance(billing_base_url, str) and billing_base_url.strip():
         route['base_url'] = billing_base_url.strip()
-        # The reader drops a bare ``custom``/``auto`` billing provider: that endpoint is a custom
-        # route, never one to pair with the profile's provider.
+        # The reader returns a bare ``custom`` billing provider with its endpoint and drops ``auto``:
+        # an endpoint left without a provider is a custom route, never one to pair with the
+        # profile's provider.
         route.setdefault('provider', 'custom')
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
@@ -131,7 +137,7 @@ def adopt_legacy_session(authority, actor, row):
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
     from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
-    validate_legacy_row(authority.db, row)
+    validate_legacy_row(authority.db, row, subject=actor.subject)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from gateway.session_policy import build_policy, bind_launch_key

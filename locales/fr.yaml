@@ -1894,6 +1894,8 @@ slash:
     description: "Tableau de collaboration multi-profils (tâches, liens, commentaires)"
   reload:
     description: "Recharger les variables .env dans la session en cours"
+  discard:
+    description: "Accuser réception d'un tour perdu lors d'un redémarrage du gateway pour que les messages en attente reprennent"
   reload-mcp:
     description: "Recharger les serveurs MCP depuis la configuration"
   reload-skills:

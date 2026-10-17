@@ -1642,6 +1642,8 @@ slash:
     description: "Bacheca di collaborazione multi-profilo (attività, collegamenti, commenti)"
   reload:
     description: "Ricarica le variabili .env nella sessione in esecuzione"
+  discard:
+    description: "Conferma un turno perso al riavvio del gateway così i messaggi in coda ripartono"
   reload-mcp:
     description: "Ricarica i server MCP dalla configurazione"
   reload-skills:

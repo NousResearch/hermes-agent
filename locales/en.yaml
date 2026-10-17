@@ -1713,6 +1713,8 @@ slash:
     description: "Multi-profile collaboration board (tasks, links, comments)"
   reload:
     description: "Reload .env variables into the running session"
+  discard:
+    description: "Acknowledge a turn lost in a gateway restart so queued messages run again"
   reload-mcp:
     description: "Reload MCP servers from config"
   reload-skills:

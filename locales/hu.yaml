@@ -1659,6 +1659,8 @@ slash:
     description: "Többprofilos együttműködési tábla (feladatok, hivatkozások, hozzászólások)"
   reload:
     description: "A .env változók újratöltése a futó munkamenetbe"
+  discard:
+    description: "Az átjáró újraindításakor elveszett kör nyugtázása, hogy a várakozó üzenetek újra fussanak"
   reload-mcp:
     description: "MCP szerverek újratöltése a konfigurációból"
   reload-skills:

@@ -298,10 +298,11 @@ class OpenAIStreamer(StreamingTTSProvider):
     def stream(self, text: str) -> Iterator[bytes]:
         from openai import OpenAI
         from hermes_cli.config import get_env_value
+        from tools.tts_tool_openai import _openai_extra_body, _openai_tts_timeout
         client = OpenAI(
             api_key=(self.section.get("api_key") or resolve_openai_audio_api_key()),
-            base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None))
-        from tools.tts_tool_openai import _openai_extra_body
+            base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None),
+            timeout=_openai_tts_timeout(self.section))
         extra = {"extra_body": body} if (body := _openai_extra_body(self.section)) else {}
         with client.audio.speech.with_streaming_response.create(
             model=self.section.get("model", "gpt-4o-mini-tts"), voice=self.section.get("voice", "alloy"),

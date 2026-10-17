@@ -12,6 +12,7 @@ from pm import install_hint
 import asyncio
 import contextlib
 import datetime
+import functools
 import importlib.util
 import json
 import logging
@@ -50,6 +51,7 @@ from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
 from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
+from tools.tts_tool_integrity import _synthesize_complete_chunk
 
 
 _PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
@@ -424,7 +426,8 @@ def _synthesize_chunks(chunks: list[str], base_path: Path, generated_artifacts: 
     """Synthesize chunks into ``<base>.chunkNNN<ext>`` (or ``base`` alone) -> ``(encoded_paths, results)``.
 
     Every touched path lands in *generated_artifacts* for the caller's sweep. Raises
-    :class:`_ChunkFailed` on a reported failure, ``RuntimeError`` on garbage or missing audio."""
+    :class:`_ChunkFailed` on a reported failure or audio still truncated after one fresh retry
+    (``tts_tool_integrity``), ``RuntimeError`` on garbage or missing audio."""
     provider = single_kwargs["provider"]
     encoded_paths: list[str] = []
     chunk_results: list[dict[str, Any]] = []
@@ -437,21 +440,35 @@ def _synthesize_chunks(chunks: list[str], base_path: Path, generated_artifacts: 
             # nor sweep it; on success the delivery step os.replace()s the audio over it (overwrite).
             chunk_path = chunk_path.with_name(f".{chunk_path.stem}.{uuid.uuid4().hex}{chunk_path.suffix}")
         generated_artifacts.add(str(chunk_path))
-        raw_result = _text_to_speech_single(chunk, str(chunk_path), **single_kwargs)
-        try:
-            chunk_result = json.loads(raw_result)
-        except (json.JSONDecodeError, TypeError):
-            raise RuntimeError(f"TTS chunk {index} returned invalid JSON: {str(raw_result)[:200]}")
-        if not chunk_result.get("success"):
-            error_msg = chunk_result.get("error", "unknown error")
-            raise _ChunkFailed(f"TTS chunk {index} failed ({provider}): {error_msg}")
-        actual_path = str(chunk_result.get("file_path") or chunk_path)
-        if not os.path.isfile(actual_path) or os.path.getsize(actual_path) <= 0:
-            raise RuntimeError(f"TTS chunk {index} produced no final audio: {actual_path}")
-        generated_artifacts.add(actual_path)
+        chunk_result, actual_path = _synthesize_complete_chunk(
+            functools.partial(_synthesize_chunk_once, chunk, chunk_path, index, generated_artifacts, single_kwargs),
+            chunk, index=index, provider=provider, tts_config=single_kwargs["tts_config"])
         encoded_paths.append(actual_path)
         chunk_results.append(chunk_result)
     return encoded_paths, chunk_results
+
+
+def _synthesize_chunk_once(
+    chunk: str, chunk_path: Path, index: int, generated_artifacts: set, single_kwargs: dict[str, Any],
+) -> tuple:
+    """One synthesis request for *chunk* into *chunk_path* -> ``(result, final_audio_path)``."""
+    provider = single_kwargs["provider"]
+    # chunk_path never pre-exists (see _synthesize_chunks), so anything there is a previous attempt's
+    # clipped audio; a provider-reported path elsewhere is left to the caller's artifact sweep.
+    _remove_quietly(str(chunk_path))
+    raw_result = _text_to_speech_single(chunk, str(chunk_path), **single_kwargs)
+    try:
+        chunk_result = json.loads(raw_result)
+    except (json.JSONDecodeError, TypeError):
+        raise RuntimeError(f"TTS chunk {index} returned invalid JSON: {str(raw_result)[:200]}")
+    if not chunk_result.get("success"):
+        error_msg = chunk_result.get("error", "unknown error")
+        raise _ChunkFailed(f"TTS chunk {index} failed ({provider}): {error_msg}")
+    actual_path = str(chunk_result.get("file_path") or chunk_path)
+    if not os.path.isfile(actual_path) or os.path.getsize(actual_path) <= 0:
+        raise RuntimeError(f"TTS chunk {index} produced no final audio: {actual_path}")
+    generated_artifacts.add(actual_path)
+    return chunk_result, actual_path
 
 
 def text_to_speech_tool(

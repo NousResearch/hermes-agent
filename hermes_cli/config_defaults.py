@@ -1096,8 +1096,7 @@ DEFAULT_CONFIG = {
         },
         "openai": {
             "model": "gpt-4o-mini-tts",
-            # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
-            # onyx, sage, shimmer, verse
+            # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova, onyx, sage, shimmer, verse
             "voice": "alloy",
             # Forwarded verbatim in the request body for OpenAI-compatible servers whose cloned
             # voices demand it (400 consent_required otherwise); "" sends nothing.
@@ -1105,6 +1104,7 @@ DEFAULT_CONFIG = {
             # Raw PCM rate for streaming playback. OpenAI emits 24 kHz; a compatible endpoint that
             # reports its rate (X-Audio-Sample-Rate header) overrides this automatically.
             "pcm_sample_rate": 24000,
+            "timeout": 120,  # seconds a speech request may wait on the endpoint (connect, or between bytes) before the SDK retries; DeepInfra too
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",

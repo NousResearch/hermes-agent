@@ -27,6 +27,7 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts"})
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_TTS_TIMEOUT = 120.0  # tts.openai.timeout; a healthy long reply streams well inside it
 # DeepInfra base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
 
@@ -91,6 +92,14 @@ def _openai_extra_body(oai_config: dict[str, Any]) -> dict[str, Any]:
     return extra_body
 
 
+def _openai_tts_timeout(oai_config: dict[str, Any]) -> float:
+    """``tts.openai.timeout`` seconds (default 120), read like ``stt.openai.timeout``: bounds each
+    SDK attempt's connect and every wait between response bytes, so a stalled speech stream fails
+    and the SDK's transport retry fires instead of hanging until a proxy cuts the body (~300 s)."""
+    from tools.transcription_common import _config_number
+    return _config_number(oai_config, "timeout", DEFAULT_OPENAI_TTS_TIMEOUT)
+
+
 def _generate_openai_tts(
     text: str, output_path: str, tts_config: dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
@@ -136,7 +145,8 @@ def _generate_openai_tts(
         create_kwargs["instructions"] = instructions
     if extra_body := _openai_extra_body(oai_config):
         create_kwargs["extra_body"] = extra_body
-    client = _origin()._import_openai_client()(api_key=api_key, base_url=base_url)
+    client = _origin()._import_openai_client()(
+        api_key=api_key, base_url=base_url, timeout=_openai_tts_timeout(oai_config))
     try:
         client.audio.speech.create(**create_kwargs).stream_to_file(output_path)
         return output_path

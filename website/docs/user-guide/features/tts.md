@@ -61,6 +61,7 @@ tts:
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
     pcm_sample_rate: 24000      # Streaming PCM rate expected from the endpoint (auto-overridden by X-Audio-Sample-Rate)
+    timeout: 120                # Seconds a speech request may wait on the endpoint (connect, or between bytes) before retrying
     speed: 1.0                  # 0.25 - 4.0
     # language: "es"            # Sent as lang_code — only for OpenAI-compatible endpoints that support it (e.g. Kokoro)
     # consent_attestation: "I have the speaker's consent"  # Required by some OpenAI-compatible servers for cloned voices

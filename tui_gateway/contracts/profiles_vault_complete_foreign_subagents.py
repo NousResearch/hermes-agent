@@ -649,6 +649,8 @@ class SubagentSnapshot(Result):
     tool_count: int | None = None
     last_tool: str | None = None
     accepting_steer: bool | None = None
+    #: The child's own stored session (``subagent.transcript`` reads it); None until it has one.
+    child_session_id: str | None = None
 
 
 class FailedDelegation(Result):

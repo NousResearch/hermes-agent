@@ -3636,7 +3636,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
-        scoped_spawn_lost_user_bus,
         systemd_user_bus_env,
     )
 
@@ -3800,24 +3799,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
             )
         returncode = process.poll()
         if returncode is not None:
-            with _running_lock:
-                _restart_safe_waiter_job_ids.discard(_inflight_key(job_id))
-            payload_path.unlink(missing_ok=True)
-            from cron.scheduler_diagnostics import external_worker_stderr_tail
-            stderr_tail = external_worker_stderr_tail(stderr_path)
-            stderr_path.unlink(missing_ok=True)
-            if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
-                # systemd-run itself failed before any worker ran, so the captured stderr
-                # holds nothing useful: name the cause, not the exit code.
-                raise RuntimeError(
-                    "restart-safe systemd scope could not be created: the user D-Bus session at "
-                    f"/run/user/{os.getuid()}/bus disappeared after the gateway started. On a "  # windows-footgun: ok — scoped dispatch exists only on Linux
-                    "system-level service install, run `sudo loginctl enable-linger <gateway-user>`; "
-                    "the next fire dispatches without scope isolation."
-                )
-            raise RuntimeError(
-                f"cron external worker exited before ownership acknowledgement "
-                f"(exit {returncode}){stderr_tail}"
+            from cron.scheduler_worker_failure import reconcile_external_worker_exit
+
+            return reconcile_external_worker_exit(
+                process, execution_id=execution_id, job_id=job_id,
+                handoff_files=(payload_path, ack_path, stderr_path),
+                returncode=returncode, dispatch_mode=dispatch.mode, worker_env=worker_env,
             )
         time.sleep(0.05)
 

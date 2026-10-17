@@ -373,6 +373,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
         A failure before the first successful attach is fatal for ``start()``."""
         reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
+        # Failed dials since the last live attach. Separate from the budget counter (which also
+        # counts session drops) so the quiet first redial below leaves budget accounting alone.
+        redial_failures = 0
         import websockets  # deferred: only supervisors that connect pay the import
         from agent.proxy_bypass import loopback_connect_kwargs
         connect_kwargs = {"max_size": 50 * 1024 * 1024, **loopback_connect_kwargs(self.cdp_url)}
@@ -383,11 +386,15 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 if self._fail_start(e):
                     return
                 reconnect_failures += 1
+                redial_failures += 1
                 if self._reconnect_budget_spent(reconnect_failures, e):
                     return
-                logger.warning("CDP supervisor %s: connect failed (attempt %s/%s): %s",
-                               self.task_id, reconnect_failures, MAX_POST_ATTACH_RECONNECT_FAILURES,
-                               _redact_cdp_error_text(e))
+                # The first redial after a live session routinely fails while the endpoint
+                # re-arms (a handshake race; the next dial succeeds): debug it, warn from the second.
+                log = logger.debug if redial_failures == 1 else logger.warning
+                log("CDP supervisor %s: connect failed (attempt %s/%s): %s",
+                    self.task_id, reconnect_failures, MAX_POST_ATTACH_RECONNECT_FAILURES,
+                    _redact_cdp_error_text(e))
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
                 continue
@@ -401,7 +408,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 await self._attach_initial_page()
                 self._set_active(True)
                 last_success_at = time.time()
-                reconnect_failures = 0
+                reconnect_failures = redial_failures = 0
                 backoff = 0.5  # reset after a successful attach
                 self._ready_event.set()
                 await reader_task

@@ -592,8 +592,28 @@ def _resolve_active_context_length() -> int:
                     return cached_ctx
             except Exception:
                 pass
+        # Pass custom_providers so the per-model
+        # `custom_providers[].models.<id>.context_length` override is honored here too.
+        # get_model_context_length applies it at step 0c (_config_override_context_length),
+        # but only when the list is supplied — it defaults to None, so this gate silently
+        # fell back to the generic registry default. Every other consumer of that override
+        # (AIAgent startup, /model switch, resolve_display_context_length, /info) already
+        # passes it; see #15779. A user who pinned e.g. 262144 for an LM Studio model was
+        # gated on the registry value instead, under-reporting the window and flipping
+        # tool-search on earlier than their real context warrants.
+        #
+        # Step 0c is config-only, so this adds no network I/O to the CLI startup path —
+        # the constraint issue #46620 established for this function.
+        custom_providers = None
+        try:
+            from hermes_cli.config import load_config
+            custom_providers = (load_config() or {}).get("custom_providers")
+        except Exception:
+            logger.debug("custom_providers lookup failed for the tool-search context gate; "
+                         "falling back to registry resolution", exc_info=True)
         return int(get_model_context_length(model_id, base_url=base_url, api_key=api_key,
-                                            config_context_length=config_ctx, provider=provider) or 0)
+                                            config_context_length=config_ctx, provider=provider,
+                                            custom_providers=custom_providers) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

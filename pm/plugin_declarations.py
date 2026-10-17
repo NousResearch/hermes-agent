@@ -5,11 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 import tomllib
 
+from pm.filesystem import retry_held
+
 
 def native_manifest_file(plugin_dir: Path) -> Path | None:
     for path in (plugin_dir / "plugin.yaml", plugin_dir / "plugin.yml"):
         try:
-            path.stat()
+            retry_held(path.stat)
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -22,7 +24,7 @@ def read_native_manifest(path: Path) -> dict:
     import hermes_yaml as yaml
 
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+        data = yaml.safe_load(retry_held(lambda: path.read_text(encoding="utf-8-sig")))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ValueError(f"Could not read plugin manifest {path}: {exc}") from exc
     if data is None:

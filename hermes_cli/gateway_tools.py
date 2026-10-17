@@ -216,9 +216,13 @@ def reload_gateway_skills():
         return None
 
 
-def handle_skills_slash(cmd, console):
+def handle_skills_slash(cmd, console, cli=None):
     """Main's ``/skills`` (hub search / install / uninstall write the local skills tree), then the
-    gateway's rescan so an install reaches the skill map the session's turns use."""
+    gateway's rescan so an install reaches the skill map the session's turns use, and ``cli``'s copy of
+    the gateway's skill list is read again."""
     from hermes_cli.skills_hub import handle_skills_slash as local
     local(cmd, console)
     reload_gateway_skills()
+    if cli is not None:
+        from hermes_cli.gateway_plugin_commands import invalidate
+        invalidate(cli)

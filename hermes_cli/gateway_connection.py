@@ -28,6 +28,10 @@ NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 _GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
 
 
+class CallStopped(GatewayClientError):
+    """The caller stopped waiting (:meth:`GatewayConnection.call_until`); the request was sent."""
+
+
 def lost_before(frame, epoch) -> bool:
     """``frame`` is a transport error from a connection older than ``epoch``: a reconnect replaced it,
     so it is no outcome of anything submitted on ``epoch``."""
@@ -110,6 +114,8 @@ class GatewayConnection:
         # waiter or the frame comes first, so an answer faster than the verb's reply is kept.
         self._side: dict[str, queue.Queue] = {}
         self._side_lock = threading.Lock()
+        # The wake events of :meth:`call_until` commands in flight, each on its own socket.
+        self._commands: set[threading.Event] = set()
 
     @classmethod
     def shared(cls):
@@ -264,6 +270,9 @@ class GatewayConnection:
 
     def close(self):
         self._detached = True
+        with self._side_lock:
+            for wake in self._commands:  # their sockets close too
+                wake.set()
         loop, stop = self.loop, self._stop
         if loop is not None and stop is not None and not self.closed:
             try:
@@ -293,9 +302,8 @@ class GatewayConnection:
     def call(self, method, *, timeout=None, **params):
         return self.call_tagged(method, timeout=timeout, **params)[0]
 
-    def call_tagged(self, method, *, timeout=None, **params):
-        """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
-        is tied to that gateway life even if another caller redials before this one reads ``epoch``."""
+    def _send(self, method, budget, params):
+        """``(future, epoch)`` of one request sent on the live socket (see :meth:`call_tagged`)."""
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call() on the gateway loop thread would deadlock")
         self.start()
@@ -303,8 +311,73 @@ class GatewayConnection:
         if live is None or loop is None:
             raise GatewayClientError(NOT_SENT)
         client, epoch = live
+        return asyncio.run_coroutine_threadsafe(client.rpc(method, _timeout=budget, **params), loop), epoch
+
+    def call_until(self, method, wake, **params):
+        """``call`` with no answer deadline, for a verb that lasts as long as the work it runs (a plugin
+        command's handler), on a socket of its own to this connection's gateway: the gateway answers a
+        socket's requests one at a time, in arrival order (``tui_gateway/ws.py``), so a handler still
+        running never holds this connection's reads, prompts and interrupts. One dial and one send,
+        never retried. Waits for the answer or the transport's error, unless *wake* (a
+        ``threading.Event``, set by Ctrl+C or :meth:`close`) is set first: then raises
+        :class:`CallStopped`; the request was sent and its work goes on, but its answer is dropped. The
+        socket closes on any of these, and its thread is gone before this returns."""
+        import concurrent.futures
+        from agent.memory_provider import spawn_context_thread
+        if self._thread is not None and threading.current_thread() is self._thread:
+            raise RuntimeError("GatewayConnection.call_until() on the gateway loop thread would deadlock")
+        self.start()  # this viewer's gateway, dialled (or redialled after a hang-up) as for any call
+        if self.final:
+            raise GatewayClientError(NOT_SENT)
+        answer, sent = concurrent.futures.Future(), threading.Event()
+        answer.add_done_callback(lambda _done: wake.set())
+        thread = spawn_context_thread(lambda: asyncio.run(self._command(method, params, wake, answer, sent)),
+                                      name="hermes-gateway-command")
+        with self._side_lock:
+            self._commands.add(wake)
+        thread.start()
+        try:
+            wake.wait()
+        finally:
+            wake.set()  # also on KeyboardInterrupt: the socket closes
+            thread.join(10)
+            with self._side_lock:
+                self._commands.discard(wake)
+        if answer.done():
+            return answer.result()
+        if sent.is_set():
+            raise CallStopped(method)
+        raise GatewayClientError(NOT_SENT)
+
+    async def _command(self, method, params, wake, answer, sent):
+        """The command socket of :meth:`call_until`: dial, send once, settle ``answer`` with the reply or
+        the transport's error; a set ``wake`` without an answer cancels the dial or the wait."""
+        connect = self._connect
+        if connect is None:
+            from hermes_cli.gateway_client import connect_gateway
+            connect = connect_gateway
+        task = asyncio.current_task()
+        stop = asyncio.ensure_future(asyncio.to_thread(wake.wait))
+        stop.add_done_callback(lambda _stop: answer.done() or task.cancel())
+        try:
+            async with connect() as client:
+                sent.set()  # from here the request may have reached the gateway: never sent again
+                answer.set_result(await client.rpc(method, _timeout=float("inf"), **params))
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # health: allow BLE001 -- every transport failure is the caller's error
+            if not isinstance(exc, GatewayClientError):
+                exc = GatewayClientError(DISCONNECTED if sent.is_set() else NOT_SENT)
+            answer.set_exception(exc)
+        finally:
+            wake.set()  # ends the watcher above
+            await asyncio.gather(stop, return_exceptions=True)
+
+    def call_tagged(self, method, *, timeout=None, **params):
+        """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
+        is tied to that gateway life even if another caller redials before this one reads ``epoch``."""
         budget = DEFAULT_RPC_TIMEOUT if timeout is None else timeout
-        future = asyncio.run_coroutine_threadsafe(client.rpc(method, _timeout=budget, **params), loop)
+        future, epoch = self._send(method, budget, params)
         try:
             return future.result(budget + 5), epoch
         except TimeoutError as exc:

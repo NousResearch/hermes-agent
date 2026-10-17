@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import socket
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -181,6 +182,36 @@ _BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16,
                      "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:")
 
 
+def _parse_ip_host(hostname: str) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Parse hostname if it represents an IPv4/IPv6 address in any valid form
+    (standard dotted, integer, octal, hex, bracketed IPv6), else None for domain names."""
+    if not hostname:
+        return None
+    clean_host = hostname.strip("[]")
+    try:
+        return ipaddress.ip_address(clean_host)
+    except ValueError:
+        pass
+
+    # Try numeric integer / hex / octal parsing (e.g. 2130706433, 0x7f000001, 017700000001)
+    try:
+        val = int(clean_host, 0)
+        if 0 <= val <= 0xFFFFFFFF:
+            return ipaddress.IPv4Address(val)
+    except (ValueError, TypeError):
+        pass
+
+    # Try inet_aton (POSIX/Windows C socket resolver rules for dotted octal/hex like 0177.0.0.1)
+    try:
+        packed = socket.inet_aton(clean_host)
+        if clean_host.count(".") <= 3:
+            return ipaddress.IPv4Address(packed)
+    except (OSError, ValueError):
+        pass
+
+    return None
+
+
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
     """True when a push callback URL is http(s) and not internal/private/loopback."""
     if localhost_mode is None:
@@ -194,16 +225,20 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
         return False
     hostname_lower = hostname.lower()
     if hostname_lower == "localhost":
-        return localhost_mode
+        return bool(localhost_mode)
+
+    ip = _parse_ip_host(hostname_lower)
+    if ip is not None:
+        if ip.is_loopback:
+            return bool(localhost_mode)
+        if ip.is_link_local or ip.is_private or ip.is_reserved or ip.is_unspecified or ip.is_multicast:
+            return False
+        return True
+
     for prefix in _BLOCKED_PREFIXES:
         if hostname_lower.startswith(prefix.lower()):
             return bool(localhost_mode and prefix in ("127.", "::1"))
-    try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            return bool(localhost_mode and ip.is_loopback)
-    except ValueError:
-        pass  # a hostname, not an IP
+
     return True
 
 

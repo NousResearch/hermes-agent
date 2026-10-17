@@ -331,6 +331,25 @@ def _touch_fanout_progress(agent: Any, description: str) -> None:
             touch(description)
 
 
+def _is_synthetic_user_row(message: dict[str, Any]) -> bool:
+    """True for internal user-role scaffolding rows (continuation nudges, summaries).
+
+    Recovery/continuation prompts are appended as ``role="user"``, and the SessionDB
+    projection strips their ``_length_continuation_nudge`` tag, so content is the only
+    durable signal. Reuse the compressor's canonical predicate instead of matching text
+    here, so the two never drift apart. Fail-open: an unimportable predicate must never
+    break a turn (worst case the fan-out cache behaves as before).
+    """
+    try:
+        from agent.context_compressor import ContextCompressor
+    except Exception:  # pragma: no cover - defensive
+        return False
+    try:
+        return bool(ContextCompressor._is_synthetic_compression_user_turn(message))
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]], runtime: dict[str, Any], *, cache_disabled: bool | None = None,
     cache_ttl: str | None = None,
@@ -1292,11 +1311,17 @@ class MoAChatCompletions:
                 fanout_mode = "per_iteration"  # every_n:1 IS per-iteration (mirrors _coerce_fanout)
         sig_messages = turn_prefix = ref_messages
         if fanout_mode == "user_turn" or every_n >= 2:
-            # Last REAL user message: the synthetic _ADVISORY_INSTRUCTION marker must not
-            # count or the prefix would grow (and re-sign) every iteration.
+            # Last REAL user message: synthetic user-role scaffolding must not count.
+            # The synthetic _ADVISORY_INSTRUCTION marker would re-sign the prefix every
+            # iteration; a length-continuation nudge (appended as role="user" after an
+            # output-limit truncation) re-signed it once per continuation, so the whole
+            # advisor fan-out re-ran on the grown context — observed as four fan-outs
+            # (~$0.73 each) for a single user turn.
             last_user = next(
                 (i for i in range(len(ref_messages) - 1, -1, -1)
-                 if ref_messages[i].get("role") == "user" and ref_messages[i].get("content") != _ADVISORY_INSTRUCTION),
+                 if ref_messages[i].get("role") == "user"
+                 and ref_messages[i].get("content") != _ADVISORY_INSTRUCTION
+                 and not _is_synthetic_user_row(ref_messages[i])),
                 None,
             )
             if last_user is not None:

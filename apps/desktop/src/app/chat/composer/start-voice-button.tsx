@@ -7,11 +7,11 @@ import { AudioLines, ChevronDown, iconSize } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 
-import { GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
+import { GHOST_ICON_BTN } from './control-classes'
 import { useVoiceEngineName, VoiceEngineRows } from './voice-engine-rows'
 
 /**
- * The primary "start voice conversation" button, with the engine picker one
+ * The separate "start voice conversation" button, with the engine picker one
  * click away when the layout shows the voice controls unfolded.
  *
  * In the folded layout the picker lives in the voice menu; unfolded there is
@@ -37,7 +37,7 @@ export function StartVoiceButton({
       <Tip label={engine ? `${label} — ${engine}` : label} placement="control">
         <Button
           aria-label={label}
-          className={cn(PRIMARY_ICON_BTN, engine && 'rounded-r-none')}
+          className={cn(GHOST_ICON_BTN, engine && 'rounded-r-none')}
           disabled={disabled}
           onClick={() => {
             triggerHaptic('open')
@@ -46,6 +46,7 @@ export function StartVoiceButton({
           }}
           size="icon"
           type="button"
+          variant="ghost"
         >
           <AudioLines className={iconSize.sm} />
         </Button>

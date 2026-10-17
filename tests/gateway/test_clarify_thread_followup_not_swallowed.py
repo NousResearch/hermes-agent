@@ -19,7 +19,8 @@ adapter's numbered-text fallback (which flips ``awaiting_text`` at send time)
 keep accepting free text.
 """
 
-from unittest.mock import patch
+import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -308,3 +309,66 @@ async def test_prose_still_accepted_after_other_flips_text_capture():
     assert entry.event.is_set()
     assert entry.response == "a carousel actually"
     _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_type", [MessageType.TEXT, MessageType.COMMAND, MessageType.VOICE])
+@pytest.mark.parametrize("mode", ["open", "other", "exact-choice"])
+async def test_busy_clarify_accepts_absolute_path_reply(message_type, mode):
+    """#135505: a path reaches the pending clarify even when tagged COMMAND by an adapter."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _CardAdapter()
+    runner = _make_runner(adapter)
+    answer = "/opt/m/logs phm and mtbf logs"
+    choices = None if mode == "open" else [answer, "another location"]
+    entry = cm.register("cl-path", SESSION_KEY, "Which path?", choices)
+    if mode == "other":
+        cm.mark_awaiting_text(entry.clarify_id)
+    event = _event(answer)
+    event.message_type = message_type
+    if message_type == MessageType.VOICE:
+        event.text = "[voice message]"
+        event.media_urls = ["/tmp/clarify-voice.ogg"]
+        event.media_types = ["audio/ogg"]
+        runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", [answer]))
+    adapter._message_handler = lambda event: _dispatch(runner, event)
+    adapter._active_sessions[SESSION_KEY] = asyncio.Event()
+
+    try:
+        await adapter._handle_message_while_active(event, SESSION_KEY)
+        assert entry.event.is_set()
+        assert entry.response == answer
+        assert adapter.retired == [("cl-path", f"✅ answered: {answer}")]
+        assert adapter._pending_messages == {}
+    finally:
+        _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["/help", "/stop", "/new", "/approve", "/deny", "/help@hermes", "/definitely-not-a-command", "/tmp"])
+@pytest.mark.parametrize("voice", [False, True])
+async def test_clarify_still_leaves_slash_commands_pending(answer, voice):
+    """Recognized and unknown command spellings remain owned by command dispatch."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _CardAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register("cl-command", SESSION_KEY, "Which path?", None)
+    event = _event(answer)
+    if voice:
+        event.text = "[voice message]"
+        event.message_type = MessageType.VOICE
+        event.media_urls = ["/tmp/clarify-voice.ogg"]
+        event.media_types = ["audio/ogg"]
+        runner._transcribe_pending_audio_event_once = AsyncMock(return_value=("", [answer]))
+    try:
+        with pytest.raises(_FellThroughIntercept):
+            await _dispatch(runner, event)
+        assert not entry.event.is_set()
+        assert entry.response is None
+        assert adapter.retired == []
+    finally:
+        _clear_clarify_state()

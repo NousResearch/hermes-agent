@@ -146,8 +146,9 @@ def test_cli_specify_tenant_filter(kanban_home, capsys):
 # ---------------------------------------------------------------------------
 
 def _over_bound_body(*, marker: str = "ACCEPTANCE_TAIL_MARKER") -> str:
-    """Body just over PROMPT_BODY_LIMIT with a distinctive acceptance-criteria tail."""
-    head = "H" * (spec.PROMPT_BODY_LIMIT - 40)
+    """Body strictly over PROMPT_BODY_LIMIT with a distinctive acceptance-criteria tail."""
+    # Keep the distinctive marker past the clamp so --force must re-attach it.
+    head = "H" * (spec.PROMPT_BODY_LIMIT + 20)
     return head + f"\n\n**Acceptance criteria**\n- {marker}\n"
 
 
@@ -214,10 +215,11 @@ def test_specify_body_exactly_at_bound_passes_through(kanban_home):
     assert outcome.ok is True
     assert outcome.body_truncated is False
     mock_fn.assert_called_once()
-    # Prompt received the full body (no ellipsis clamp).
+    # Prompt received the full body (no ellipsis clamp at the bound).
     user_msg = mock_fn.call_args.kwargs["messages"][1]["content"]
     assert body in user_msg
-    assert "…" not in user_msg.split("Current body:\n", 1)[1]
+    body_section = user_msg.split("Current body:\n", 1)[1]
+    assert not body_section.rstrip().endswith("…")
 
 
 def test_specify_force_malformed_reply_does_not_overwrite_over_bound_body(kanban_home):

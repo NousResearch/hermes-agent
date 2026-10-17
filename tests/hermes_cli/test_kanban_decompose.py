@@ -325,7 +325,8 @@ def test_decompose_force_refuses_fanout_when_over_bound(kanban_home):
 def test_decompose_force_single_appends_unseen_tail(kanban_home):
     from hermes_cli.kanban_specify import PROMPT_BODY_LIMIT
     marker = "DECOMP_TAIL_MARKER_7c2e"
-    original = ("E" * (PROMPT_BODY_LIMIT - 30)) + f"\n{marker}\n"
+    # Must be strictly over PROMPT_BODY_LIMIT so force takes the tail-append path.
+    original = ("E" * (PROMPT_BODY_LIMIT + 40)) + f"\n{marker}\n"
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="long", body=original, triage=True)
 

@@ -1025,16 +1025,52 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         except Exception:
             logger.log(logging.WARNING if kind == "complete" else logging.DEBUG, fail_msg, exc_info=True)
 
+    @staticmethod
+    def _relay_turn_active_for(session_ids: list[str]) -> bool:
+        """Whether the agent's turn registry shows a live turn on any of *session_ids*.
+
+        ``agent.relay_runtime`` registers every agent turn (all surfaces, runner-initiated
+        reviews and heartbeat wakes included) in one in-process registry — the same one
+        ``begin_turn`` consults to degrade concurrent turns. An unavailable registry is
+        no opinion: the gate fails open so delivery can never wedge on it.
+        """
+        import contextlib
+        try:
+            from agent import relay_runtime
+        except Exception:
+            return False
+        with contextlib.suppress(Exception):
+            profile_key = relay_runtime.current_profile_key()
+            for session_id in session_ids:
+                if session_id and relay_runtime.SESSION_COORDINATOR.has_active_turn(
+                    profile_key=profile_key, session_id=session_id,
+                ):
+                    return True
+        return False
+
     async def _completion_delivery_ready(self, evt: dict) -> bool:
         """Unavailable owners/transports must not spend a durable delivery attempt."""
         from gateway.wake import adapter_supports_push
 
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
         if parent_session_id:
-            verdict = await self._classify_completion_target(parent_session_id, str(evt.get("session_key") or ""))
+            verdict, owner_session_id, proven_session_id = await self._classify_completion_owner(
+                parent_session_id, str(evt.get("session_key") or ""))
             if verdict != "deliver":
                 # Definitively closed targets still need the normal terminal disposition.
                 return verdict == "terminal"
+            # A live agent turn on the owning session (or its compression tip) would admit
+            # this delivery as a CONCURRENT turn: Relay instrumentation degrades for it and
+            # the synthetic block lands mid-tool-batch, reading as corrupted tool output
+            # (#137581). Hold at the turn boundary — False just requeues the still-pending
+            # durable event for the next watcher pass, after ``end_turn``.
+            if self._relay_turn_active_for([owner_session_id, proven_session_id]):
+                logger.debug(
+                    "Holding async completion %s until the agent turn on session %s ends",
+                    evt.get("delegation_id") or evt.get("session_id") or "<unknown>",
+                    owner_session_id or proven_session_id,
+                )
+                return False
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if source is not None:
             platform = source.platform.value if hasattr(source.platform, "value") else str(source.platform)

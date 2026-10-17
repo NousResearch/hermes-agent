@@ -270,6 +270,10 @@ def compress_after_tool_results(
     _compressor = agent.context_compressor
     # A new checkpoint must reach the provider before stale usage can trigger
     # local compression, overflow warnings, or destructive tool-result pruning.
+    # Stay silent on this return. The 2026-09-21 eBay-bot incident logged
+    # "attempts_exhausted:0" while the latch was set and no real usage count
+    # existed yet. Do not label it from _blocked_compress_reason: the caller
+    # that passes attempts_spent never reaches that helper while the latch is set.
     if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
         return _verdict(False)
     # Real usage decides: the anchor is the provider's last prompt count plus a rough delta for

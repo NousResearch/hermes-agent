@@ -4,7 +4,8 @@ Converse is the bearer-token Claude path and the sticky fallback after a stream-
 error, so a Claude turn captured in Anthropic shape (``anthropic_content_blocks``) must keep its signed
 thinking ahead of its toolUse. AWS docs: Claude needs the signature and all previous messages; DeepSeek-R1's
 sample removes prior reasoning; Kimi K3 raises InternalServerException on prior-turn reasoning; non-Claude
-models reject the ``reasoningText.signature`` field.
+models reject the ``reasoningText.signature`` field; OpenAI's reasoning GPTs (gpt-6) reject ``reasoningText``
+in assistant history outright.
 """
 
 from __future__ import annotations
@@ -65,6 +66,9 @@ def _reasoning(blocks):
         ("global.moonshotai.kimi-k3", [], [{"text": "own sig_loop"}]),
         # gpt-oss rejects reasoningText.signature: prior turns go back as readable text only.
         ("openai.gpt-oss-120b-1:0", [{"text": "own sig_prior"}], [{"text": "own sig_loop"}]),
+        # Reasoning GPTs reject readable reasoningText in assistant history outright (#140177): prior
+        # turns lose their reasoning; the in-flight loop still replays the model's own blocks.
+        ("global.openai.gpt-6.1-sol", [], [{"text": "own sig_loop"}]),
     ],
 )
 def test_converse_replays_each_models_reasoning_contract(model, prior, loop):

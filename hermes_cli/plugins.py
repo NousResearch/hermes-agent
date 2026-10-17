@@ -46,7 +46,7 @@ from hermes_cli.plugins_discovery import (
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
-    _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
+    _plugin_home_scope, _serialized_replacement, get_plugin_context_engine, in_plugin_load_worker,
 )
 from hermes_cli.plugins_dispatch import (
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
@@ -1170,6 +1170,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # messaging gateway and a TUI in one process would otherwise clobber each other.
         self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        self._failed_plugin_retry_at: dict[str, float] = {}  # plugin_key -> retry-not-before (#137879)
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
         # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
@@ -2183,11 +2184,6 @@ def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
     manager = get_plugin_manager()
     manager.discover_and_load(force=force)
     return manager
-
-
-def get_plugin_context_engine():
-    """Return the plugin-registered context engine, or None."""
-    return _ensure_plugins_discovered()._context_engine
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:

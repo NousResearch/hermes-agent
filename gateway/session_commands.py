@@ -61,12 +61,12 @@ def _first_token(arg):
 
 
 # The read-only argument forms of a read command whose other subcommands write: ``/usage reset``
-# redeems a credit, ``/memory approve|approval`` applies writes / edits config.yaml,
-# ``/suggestions accept|catalog`` schedules cron jobs delivering to this (non-messaging) chat.
+# redeems a credit, ``/suggestions accept|catalog`` schedules cron jobs delivering to this
+# (non-messaging) chat. The review queues read like main's CLI: only the first word counts.
 _READ_ARGUMENTS = {
     'skills': lambda arg: _first_token(arg) in {'', 'pending', 'diff'},
     'usage': lambda arg: not arg.strip(),
-    'memory': lambda arg: arg.strip().lower() in {'', 'pending'},
+    'memory': lambda arg: _first_token(arg) in {'', 'pending'},
     'suggestions': lambda arg: not arg.strip(),
     'kanban': lambda arg: _first_token(arg) in _KANBAN_READS,
 }

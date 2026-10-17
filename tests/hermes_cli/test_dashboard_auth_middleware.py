@@ -59,6 +59,9 @@ def gated_app():
         "javascript:alert(1)",
         "../../etc/passwd",
         "canary\r\nSet-Cookie: injected=1",
+        "/\\evil.com",
+        "//evil.com",
+        "/\\evil.com/path",
     ],
 )
 def test_empty_provider_login_page_is_safe_through_real_route(
@@ -76,6 +79,40 @@ def test_empty_provider_login_page_is_safe_through_real_route(
     assert "OAuth provider" in response.text
     assert "--insecure" not in response.text
     assert next_value not in response.text
+
+
+def test_is_safe_next_path_validation():
+    from hermes_cli.dashboard_auth.request_utils import is_safe_next_path
+
+    # valid relative paths
+    assert is_safe_next_path("/") is True
+    assert is_safe_next_path("/dashboard") is True
+    assert is_safe_next_path("/sessions/abc?tab=details") is True
+    assert is_safe_next_path("/settings/providers#oauth") is True
+
+    # protocol-relative and whatwg backslash bypasses
+    assert is_safe_next_path("//evil.com") is False
+    assert is_safe_next_path("/\\evil.com") is False
+    assert is_safe_next_path("/\\evil.com/path") is False
+    assert is_safe_next_path("/path\\with\\backslash") is False
+    assert is_safe_next_path("\\evil.com") is False
+    assert is_safe_next_path("/\tevil.com") is False
+    assert is_safe_next_path("/\nevil.com") is False
+    assert is_safe_next_path("/\revil.com") is False
+
+    # absolute urls
+    assert is_safe_next_path("http://evil.com") is False
+    assert is_safe_next_path("https://evil.com/dashboard") is False
+    assert is_safe_next_path("javascript:alert(1)") is False
+
+    # denied prefix targets
+    assert is_safe_next_path("/login") is False
+    assert is_safe_next_path("/login?provider=google") is False
+    assert is_safe_next_path("/auth/callback") is False
+    assert is_safe_next_path("/api/auth/me") is False
+    assert is_safe_next_path("/api") is False
+    assert is_safe_next_path("/api/status") is False
+    assert is_safe_next_path("") is False
 
 
 def test_gated_status_is_public(gated_app):

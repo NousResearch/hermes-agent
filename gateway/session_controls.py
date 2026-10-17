@@ -167,6 +167,8 @@ class AuthorityConnection:
         handlers.update(tui_ops_handlers(self))
         from gateway.session_tui_side import handlers as side_handlers
         handlers.update(side_handlers(self))
+        from gateway.session_llm_oneshot import handlers as oneshot_handlers
+        handlers.update(oneshot_handlers(self))
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
@@ -254,6 +256,10 @@ class AuthorityConnection:
                         'data': {'reason': 'unknown_method'}}}
                 else:
                     result = await handlers[method](ref, params)
+                    from gateway.session_llm_oneshot import DeferredReply
+                    if isinstance(result, DeferredReply):  # answered off the serial dispatch
+                        check_params_accepted(contract, original_params)
+                        return result.start(self, rid, partial(check_result, contract))
             check_params_accepted(contract, original_params)
             check_result(contract, result)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
@@ -714,6 +720,8 @@ class AuthorityConnection:
         for sibling in self._siblings.values():
             await sibling.close()
         self._siblings.clear()
+        from gateway.session_llm_oneshot import forget
+        forget(self)  # nobody is left to read its one-shot replies
         # Deletion may already have evicted a subscribed session; its membership died
         # with it, and one retired ID must not leave the others (or the transport) attached.
         for session_id, subscription in list(self.subscriptions.items()):

@@ -5111,11 +5111,11 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         final_model = _normalize_resolved_model(
             model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini", provider,
         )
-        extra = {}
         _clean_base, _dq = _extract_url_query_params(custom_base)
-        if _dq:
-            extra["default_query"] = _dq
-        _custom_headers = _endpoint_default_headers(custom_base, provider, is_vision=req.is_vision)
+        extra = {"default_query": _dq} if _dq else {}
+        from hermes_cli.config import get_custom_provider_extra_headers  # this endpoint's entry, as agent_init
+        _custom_headers = {**(_endpoint_default_headers(custom_base, provider, is_vision=req.is_vision) or {}),
+                           **get_custom_provider_extra_headers(custom_base)}
         if _custom_headers:
             extra["default_headers"] = _custom_headers
         client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)

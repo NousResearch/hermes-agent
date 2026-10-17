@@ -264,6 +264,8 @@ async def _retire_profile_authority(authority, timeout=None):
     if getattr(authority.runner, 'session_ticket_store', None) is not None:
         _publish_served_set(authority.runner)  # discovery and tickets stop naming it now
     stop_authority_work(authority)
+    from gateway.session_llm_oneshot import stop as stop_oneshots
+    stop_oneshots(authority)
     service = getattr(authority, 'hosted_room_service', None)
     rooms = None if service is None else asyncio.ensure_future(asyncio.to_thread(service.stop, timeout=timeout))
     try:
@@ -479,6 +481,9 @@ async def settle_gateway_runtime(runner, budget=None):
     the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
     authorities = _authorities(runner)
     stop_managed_turns(runner)
+    from gateway.session_llm_oneshot import stop as stop_oneshots
+    for authority in authorities:
+        stop_oneshots(authority)  # an answer is no durable settlement: never waited for
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
     wait = TURN_SETTLE_SECONDS if budget is None else max(0.0, min(TURN_SETTLE_SECONDS,
                                                                    budget - STOP_TAIL_RESERVE_SECONDS))

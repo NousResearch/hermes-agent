@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { onComposerAttachImagesRequest, onComposerFocusRequest, onComposerInsertRequest } from './focus'
+import { onComposerAttachFilesRequest, onComposerFocusRequest, onComposerInsertRequest } from './focus'
 import { handleWindowPaste, routeClipboardToComposer } from './paste-to-focus'
 
 /** Minimal DataTransfer stand-in: text/plain + optional image file items. */
@@ -54,10 +54,10 @@ describe('routeClipboardToComposer', () => {
     expect(inserts[0]).toContain('@url:')
   })
 
-  it('attaches clipboard images and pulls focus on an image-only paste', async () => {
+  it('routes OS file-manager copies to the file attach bus and pulls focus', async () => {
     const attached: Blob[][] = []
     const focused: boolean[] = []
-    const offAttach = onComposerAttachImagesRequest(({ blobs }) => attached.push(blobs))
+    const offAttach = onComposerAttachFilesRequest(({ imageBlobs }) => attached.push(imageBlobs))
     const offFocus = onComposerFocusRequest(() => focused.push(true))
 
     expect(routeClipboardToComposer(clipboard({ files: [image()] }))).toBe(true)
@@ -70,19 +70,37 @@ describe('routeClipboardToComposer', () => {
     expect(focused).toHaveLength(1)
   })
 
-  it('takes both from a mixed paste — images attach AND the text inserts', async () => {
-    const attached: Blob[][] = []
+  it('captures mixed file and text payloads before DataTransfer detaches without inserting eagerly', async () => {
+    const attached = vi.fn()
     const inserts: string[] = []
-    const offAttach = onComposerAttachImagesRequest(({ blobs }) => attached.push(blobs))
+    const offAttach = onComposerAttachFilesRequest(attached)
     const offInsert = onComposerInsertRequest(({ text }) => inserts.push(text))
+    const file = image()
+    const clip = clipboard({ files: [file], text: ' \n[200~look at this[201~\n ' })
+    const getData = vi.spyOn(clip, 'getData')
+    const event = pasteEvent(clip)
 
-    routeClipboardToComposer(clipboard({ files: [image()], text: 'look at this' }))
+    handleWindowPaste(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(getData).toHaveBeenCalledWith('text')
+    const reads = getData.mock.calls.length
+    getData.mockImplementation(() => { throw new Error('DataTransfer detached') })
+    Object.defineProperties(clip, {
+      files: { get: () => { throw new Error('DataTransfer detached') } },
+      items: { get: () => { throw new Error('DataTransfer detached') } }
+    })
     await flushBus()
     offAttach()
     offInsert()
 
-    expect(attached).toHaveLength(1)
-    expect(inserts).toEqual(['look at this'])
+    expect(attached).toHaveBeenCalledExactlyOnceWith({
+      snapshot: [{ file, path: '' }],
+      imageBlobs: [file],
+      text: 'look at this',
+      target: 'main'
+    })
+    expect(getData).toHaveBeenCalledTimes(reads)
+    expect(inserts).toEqual([])
   })
 
   it('reports an empty clipboard as unhandled', () => {

@@ -176,7 +176,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
 
 # ── Protected agent-instruction files (always-ask approval gate) ─────────
 # Files that steer FUTURE agent behavior are a prompt-injection persistence
-# vector (AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project .hermes tree).
+# vector (AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / .hermes.md / project .hermes tree).
 # Writes ALWAYS require human approval — even under --yolo — and fail closed
 # without a human channel. Basenames match in ANY directory, case-insensitively.
 # Ported from: RooCodeInc/Roo-Code RooProtectedController (Apache-2.0). Companion: the terminal-tool vector
@@ -186,31 +186,52 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
 # run from is a live target. Basenames match case-insensitively so case-variant spellings on
 # case-insensitive filesystems (macOS/Windows) cannot slip past; on case-sensitive filesystems most loaders
 # probe common case variants too, so the stricter behavior is kept uniform.
+#
+# ``.hermes.md``/``HERMES.md`` belongs here for exactly that reason, and at higher
+# stakes: the prompt builder loads it as project-context type 1 (first-match-wins,
+# nearest match walking parents up to the git root), so it SHADOWS every AGENTS.md in
+# the tree. Left unguarded it is the one instruction file an injected agent can rewrite
+# with no dialog at all, in the priority position. Note this is a basename rule, not a
+# directory rule — see the allowlist below for the supported directory exemption.
+#
+# OPERATOR DECLARATION: ``security.protected_instruction_allowlist_dirs`` exempts whole
+# trees BEFORE the basename match, for operator-owned work trees where instruction-file
+# edits are expected and the always-ask dialog is pure noise (e.g. /opt/hermes_prod,
+# /opt/hermes_sandbox). It is config-only, and ``config.yaml`` is hard-blocked from
+# agent writes above, so the exemption is always a HUMAN declaration — never a
+# self-grant. Entries are realpath'd on both sides at match time so a symlinked path
+# cannot evade the exemption, and the gate stays ON everywhere else.
 _PROTECTED_INSTRUCTION_BASENAMES = frozenset({
-    "agents.md", "claude.md", "soul.md", ".cursorrules"})
+    "agents.md", "claude.md", "soul.md", ".cursorrules", ".hermes.md", "hermes.md"})
 
 
-def _protected_instruction_config() -> tuple[bool, list[str]]:
-    """Return ``(enabled, extra_patterns)`` from ``security.protected_instruction_files`` /
-    ``security.protected_instruction_extra_patterns`` (fnmatch on basename). Config read
-    failures keep the gate ON — fail-safe for a security boundary."""
+def _protected_instruction_config() -> tuple[bool, list[str], list[str]]:
+    """Return ``(enabled, extra_patterns, allowlist_dirs)`` from
+    ``security.protected_instruction_files`` / ``security.protected_instruction_extra_patterns``
+    (fnmatch on basename) / ``security.protected_instruction_allowlist_dirs`` (absolute
+    directory prefixes whose whole subtree is exempt from the gate). Config read failures
+    keep the gate ON — fail-safe for a security boundary."""
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
         enabled = cfg_get(cfg, "security", "protected_instruction_files", default=True)
         extra = cfg_get(cfg, "security", "protected_instruction_extra_patterns", default=[])
+        allowed = cfg_get(cfg, "security", "protected_instruction_allowlist_dirs", default=[])
     except Exception:
-        return True, []
+        return True, [], []
     if not isinstance(enabled, bool):
         enabled = True
     if not isinstance(extra, list):
         extra = []
-    return enabled, [str(p) for p in extra if p]
+    if not isinstance(allowed, list):
+        allowed = []
+    return enabled, [str(p) for p in extra if p], [str(d) for d in allowed if d]
 
 
 def _protected_instruction_reason(filepath: str, task_id: str = "default",
                                   *, enabled: bool | None = None,
-                                  extra_patterns: list[str] | None = None) -> str | None:
+                                  extra_patterns: list[str] | None = None,
+                                  allowlist_dirs: list[str] | None = None) -> str | None:
     """Return a short label when ``filepath`` targets a protected instruction file, else ``None``.
     Matches BOTH the normalized input and its realpath so no symlink direction escapes.
 
@@ -218,8 +239,8 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     protected file (#41351) nor a protected name that is itself a symlink escapes the gate. ``..`` traversal
     is neutralized by normpath/realpath before the basename compare.
     """
-    if enabled is None or extra_patterns is None:
-        enabled, extra_patterns = _protected_instruction_config()
+    if enabled is None or extra_patterns is None or allowlist_dirs is None:
+        enabled, extra_patterns, allowlist_dirs = _protected_instruction_config()
     if not enabled:
         return None
 
@@ -236,6 +257,16 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.
     for real_home in _hermes_exempt_homes():
         if resolved == real_home or resolved.startswith(real_home + os.sep):
+            return None
+
+    # Operator-declared allowlist: trusted work trees (e.g. /opt/hermes_prod,
+    # /opt/hermes_sandbox) where instruction-file edits are expected and the
+    # always-ask dialog is noise. Realpath'd on BOTH sides, so neither a
+    # symlinked allowlist entry nor a symlinked target can evade the check.
+    for allowed_dir in allowlist_dirs:
+        real_allowed = os.path.realpath(os.path.normpath(_expand_tilde(allowed_dir)))
+        if real_allowed and (resolved == real_allowed
+                             or resolved.startswith(real_allowed + os.sep)):
             return None
 
     for candidate in (normalized, resolved):
@@ -346,10 +377,11 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:
     """Gate a write/patch touching protected instruction files. ONE protected file gates
     the ENTIRE multi-file patch (one prompt, all-or-nothing)."""
-    enabled, extra = _protected_instruction_config()
+    enabled, extra, allow = _protected_instruction_config()
     if not enabled:
         return None
-    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra)
+    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra,
+                                                         allowlist_dirs=allow)
                            for p in paths) if r]
     if not reasons:
         return None

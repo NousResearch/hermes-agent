@@ -15,7 +15,7 @@ import pytest
 def _gate_on(monkeypatch):
     import tools.file_tools_write_guards as guards
     from tools.terminal_tool import set_approval_callback
-    monkeypatch.setattr(guards, "_protected_instruction_config", lambda: (True, []))
+    monkeypatch.setattr(guards, "_protected_instruction_config", lambda: (True, [], []))
     for name in ("HERMES_SINGLE_QUERY_SESSION", "HERMES_CRON_SESSION", "HERMES_SESSION_PLATFORM"):
         monkeypatch.delenv(name, raising=False)
     set_approval_callback(None)

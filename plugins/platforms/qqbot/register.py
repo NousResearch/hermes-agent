@@ -8,6 +8,8 @@ connection.
 from __future__ import annotations
 
 from gateway.platforms._shared import env_is_connected
+from gateway.platforms._shared import config_connected_extra
+from gateway.platforms.send_targets import StandaloneSendPolicy
 
 from .adapter import QQAdapter, check_qq_requirements
 
@@ -121,19 +123,35 @@ def setup_qqbot() -> None:
     _gw().print_info(f"  App ID: {credentials['app_id']}")
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are on QQ, a popular Chinese messaging platform. QQ supports markdown formatting "
+    "and emoji. You can send media files natively: include MEDIA:/absolute/path/to/file in "
+    "your response. Images are sent as native photos, and other files arrive as downloadable documents."
+)
+
+
 def register(ctx) -> None:
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        standalone_send=StandaloneSendPolicy(label="QQ Bot", media=True, captionable=True, text_direct=True),
         name="qqbot",
+        dashboard_description="Connect Hermes to a QQ Bot from the QQ Open Platform.",
+        docs_url="https://q.qq.com",
+        dashboard_env_vars=("QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_ALLOWED_USERS"),
         label="QQ Bot",
         adapter_factory=QQAdapter,
         check_fn=check_qq_requirements,
         is_connected=is_connected,
+        config_connected_fn=config_connected_extra("app_id", "client_secret"),
         required_env=["QQ_APP_ID", "QQ_CLIENT_SECRET"],
         install_hint="QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured",
         setup_fn=setup_qqbot,
-        allowed_users_env="QQ_ALLOWED_USERS",
-        allow_all_env="QQ_ALLOW_ALL_USERS",
         emoji="🐧",
         cron_deliver_env_var="QQBOT_HOME_CHANNEL",
         standalone_sender_fn=standalone_send,
+        # QQ's dm/group policy is YAML-only (no env var); QQ_ALLOW_ALL_USERS is still the opt-in.
+        platform_hint=_PLATFORM_HINT,
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

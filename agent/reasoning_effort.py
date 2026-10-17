@@ -78,9 +78,15 @@ GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
-#: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.
-DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
-DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+#: DeepSeek V4 OpenAI-compat endpoint accepts low/high/max; its compatibility
+#: aliases map medium and xhigh to high, while minimal and ultra map to its bounds.
+DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "high", "max")
+DEEPSEEK_V4_OVERRIDES: dict[str, str] = {
+    "minimal": "low",
+    "medium": "high",
+    "xhigh": "high",
+    "ultra": "max",
+}
 
 #: Ollama Cloud /v1/chat/completions: rejects ``minimal`` with HTTP 400.
 OLLAMA_CLOUD_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")

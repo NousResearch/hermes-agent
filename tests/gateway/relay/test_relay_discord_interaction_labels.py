@@ -9,6 +9,7 @@ re-rendered the cached prefix and the next message rendered it back.
 import asyncio
 import json
 import threading
+from itertools import count
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,6 +20,8 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.relay.ws_transport import _event_from_wire
 from gateway.session import SessionStore, build_session_context, build_session_key
 from tests.gateway.relay.test_relay_interactive import _adapter
+
+_SLASH_IDS = count()
 
 
 def _forward(**payload):
@@ -49,7 +52,8 @@ def _message(chat, user="u1", chat_name="Hermes Server / #ops", chat_topic="Inci
 async def _slash(adapter, **interaction):
     """Forward an interaction the way the transport does and return the event it admits."""
     adapter.handle_message = AsyncMock()
-    await adapter._on_passthrough(_forward(**interaction))
+    # Each invocation models a fresh user command, including after a label-read fault.
+    await adapter._on_passthrough(_forward(id=f"slash-{next(_SLASH_IDS)}", **interaction))
     return adapter.handle_message.await_args.args[0]
 
 

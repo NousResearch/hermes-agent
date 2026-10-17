@@ -91,18 +91,15 @@ class RelayDiscordInteractionMixin:
         try:
             platform = getattr(forward, "platform", "") or ""
             if platform == "discord":
-                event = self._discord_interaction_to_event(forward)
+                event = self._discord_interaction_to_event(forward, buffer_id)
                 if event is not None:
-                    self._capture_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound).
-                    if await self._consume_prompt_response(event):
-                        return
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
                         str(src.scope_id or ""), src.chat_id)
                     from gateway.session_ingress_context import relay_passthrough_event
                     with relay_passthrough_event(self._transport, forward, event):
-                        await self.handle_message(event)
+                        # A failed label read is no fresh observation of an unlabelled chat.
+                        await self._on_inbound(event, remember_labels=False)
                     return
             logger.info(
                 "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
@@ -111,7 +108,7 @@ class RelayDiscordInteractionMixin:
         except Exception:
             logger.warning("relay passthrough_forward handling failed", exc_info=True)
 
-    def _discord_interaction_to_event(self, forward):
+    def _discord_interaction_to_event(self, forward, buffer_id=None):
         """Convert a forwarded Discord interaction body to a MessageEvent, or None for
         an unusable body (a PING is answered at the edge and never forwarded). The
         session source mirrors the connector's ``interactionSessionSource`` so the
@@ -185,6 +182,14 @@ class RelayDiscordInteractionMixin:
             profile=getattr(forward, "profile", None),
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
+        # Prefer the provider id: reconnects may assign another buffer entry to the same
+        # interaction. Keep delivery identity independent of message/reply targets, scoped to
+        # this bot and profile (one relay adapter can front several of both).
+        if payload.get("id") or buffer_id:
+            event.delivery_id = json.dumps(
+                ["relay", "discord", getattr(forward, "bot_id", ""), source.profile, source.scope_id,
+                 "interaction" if payload.get("id") else "buffer", str(payload.get("id") or buffer_id)],
+                separators=(",", ":"))
         if itype == 3:
             # A component press whose custom_id is a Hermes prompt token
             # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;

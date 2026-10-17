@@ -144,9 +144,12 @@ def _protected() -> tuple[tuple[str, str], ...]:
 
 
 def _overlaps(a: str, b: str) -> bool:
-    """True when ``a`` and ``b`` are the same path or one is an ancestor of the other."""
+    """True when ``a`` and ``b`` are the same path or one is an ancestor of the other, compared
+    case-folded: ``realpath`` keeps the typed case, and a case-insensitive filesystem opens a
+    re-cased venv path as the real one (agent.file_safety.fold_path)."""
     if not a or not b:
         return False
+    a, b = a.casefold(), b.casefold()
     sep = os.sep
     return a == b or a.startswith(b + sep) or b.startswith(a + sep)
 

@@ -437,6 +437,7 @@ from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
+from agent.file_safety import is_under_folded
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
@@ -923,8 +924,7 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
         resolved_denied = _resolve_path(denied, expand=True)
         if resolved_denied is None:
             continue
-        hit = resolved == resolved_denied or _path_is_within(resolved, resolved_denied)
-        if hit and resolved_denied != home:
+        if is_under_folded(resolved, resolved_denied) and resolved_denied != home:  # folded: re-cased spellings
             return True
     return False
 

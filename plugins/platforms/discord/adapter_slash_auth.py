@@ -3,11 +3,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional, Tuple
 
-try:
-    import discord
-except ImportError:  # the adapter does not start without discord.py
-    discord = None
-
 
 class DiscordSlashAuthMixin:
     _get_parent_channel_id: Callable[[Any], Optional[str]]
@@ -27,6 +22,12 @@ class DiscordSlashAuthMixin:
         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
         """
+        # The adapter can lazy-install discord.py after this mixin was imported.
+        # Resolve its live module binding rather than retaining the import-time None.
+        from plugins.platforms.discord.adapter import discord
+
+        if discord is None:
+            return (False, "discord dependency unavailable")
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
         channel_ids: set = set()

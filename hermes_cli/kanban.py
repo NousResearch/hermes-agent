@@ -1027,9 +1027,19 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
-        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+        force = bool(getattr(args, "force", False))
+        op = _commented(conn, reason, author, "UNBLOCK",
+                        lambda tid: kb.unblock_task(conn, tid, force=force))
+
+        def _unblock_err(tid: str) -> str:
+            task = kb.get_task(conn, tid)
+            if task and task.status == "blocked" and not force:
+                from hermes_cli.kanban_db_stop import initial_status_hold
+                if initial_status_hold(conn, tid):
+                    return f"cannot unblock {tid} (created blocked; pass --force to release)"
+            return f"cannot unblock {tid} (not blocked/scheduled?)"
+
+        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}", _unblock_err)
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:
@@ -1354,7 +1364,7 @@ Common subcommands:
   `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done
   `request-review <id>` Enter first-class review; `request-changes <id> <reason>` returns an active review to its implementer
-  `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
+  `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock [--force] <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts

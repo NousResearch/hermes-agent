@@ -330,6 +330,9 @@ _SPECS = [
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
+        _arg("--force", action="store_true",
+             help="Release a task created with --initial-status=blocked (R3/human-ops hold) "
+                  "or one parked by a stop note. Without --force those stay blocked."),
         _TASK_IDS,
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
     _cmd("request-review", [

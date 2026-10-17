@@ -31,6 +31,7 @@ class Life:
         self.number = number
         self.events = asyncio.Queue()
         self.calls = []
+        self.show_reasoning = False
         self.drop_on_submit = drop_on_submit
         self.resume_errors = resume_errors if resume_errors is not None else []
 
@@ -41,8 +42,12 @@ class Life:
         if method == "session.resume":
             return {"stored_session_id": params["session_id"], "subscription_id": f"sub-{self.number}",
                     "revision": 1, "execution_generation": 7, "messages": []}
+        if method == "config.set" and params.get("key") == "show_reasoning":
+            self.show_reasoning = params["value"] == "1"
         if method == "prompt.submit":
             loop = asyncio.get_running_loop()
+            if self.show_reasoning:
+                loop.call_soon(self.events.put_nowait, _frame("reasoning.delta", {"text": "thinking"}))
             if self.drop_on_submit:  # restarted mid-turn: the outcome is unknown to this client
                 loop.call_soon(self.events.put_nowait, GatewayClientError("Gateway disconnected"))
             else:
@@ -115,6 +120,46 @@ def test_the_next_call_after_a_restart_reconnects_and_resubscribes(gateway, conn
     assert isinstance(lost, GatewayClientError) and lost_before(lost, conn.epoch)
 
 
+@pytest.mark.parametrize("enabled", [True, False], ids=["shown", "hidden"])
+def test_reasoning_preference_is_restored_before_the_first_reconnected_turn(gateway, conn, enabled):
+    seen = []
+    agent = GatewayAgent(connection=conn, session_id=SID, reasoning_callback=seen.append)
+    if not enabled:
+        agent.reasoning_callback = None
+    gateway.hang_up(conn)
+
+    result = agent.run_conversation("after restart")
+    assert not result.get("failed") and result["final_response"] == "reply 2"
+    assert seen == (["thinking"] if enabled else [])
+    calls = gateway.lives[1].calls
+    assert calls[:3] == [
+        ("session.resume", {"session_id": SID}),
+        ("config.set", {"session_id": SID, "key": "show_reasoning", "value": "1" if enabled else "0"}),
+        next(call for call in calls if call[0] == "prompt.submit"),
+    ]
+    # An unchanged callback must not send another config write within this connection.
+    agent.reasoning_callback = seen.append if enabled else None
+    assert sum(method == "config.set" for method, _ in calls) == 1
+
+
+def test_reasoning_preferences_stay_per_session_and_unset_sessions_are_left_alone(gateway, conn):
+    GatewayAgent(connection=conn, session_id=SID, reasoning_callback=lambda text: None)
+    other = "local-other"
+    conn.state(other).adopt_snapshot(conn.call("session.resume", session_id=other))
+    hidden = GatewayAgent(connection=conn, session_id=other, reasoning_callback=lambda text: None)
+    hidden.reasoning_callback = None
+    untouched = "local-untouched"
+    conn.state(untouched).adopt_snapshot(conn.call("session.resume", session_id=untouched))
+    gateway.hang_up(conn)
+
+    conn.call("status")
+    writes = [params for method, params in gateway.lives[1].calls if method == "config.set"]
+    assert writes == [
+        {"session_id": SID, "key": "show_reasoning", "value": "1"},
+        {"session_id": other, "key": "show_reasoning", "value": "0"},
+    ]
+
+
 def test_close_ends_the_viewer_for_good(gateway, conn):
     conn.close()
     with pytest.raises(GatewayClientError, match="disconnected"):
@@ -182,7 +227,7 @@ def test_a_turn_lost_to_a_restart_is_reported_plainly_and_the_next_turn_runs(gat
     conn._thread.join(5)
     result = agent.run_conversation("second")
     assert not result.get("failed") and result["final_response"] == "reply 2"
-    assert [method for method, _ in gateway.lives[1].calls][:2] == ["session.resume", "prompt.submit"]
+    assert [method for method, _ in gateway.lives[1].calls][:3] == ["session.resume", "config.set", "prompt.submit"]
 
 
 def test_the_previous_connections_loss_never_fails_a_live_turn(gateway, conn):

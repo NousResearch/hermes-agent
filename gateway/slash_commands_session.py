@@ -219,11 +219,22 @@ class GatewaySessionCommandsMixin:
                          old_session_id=_old_sid, new_session_id=_new_sid)
         except Exception:
             pass
+        _show_tips = True
         try:
-            from hermes_cli.tips import get_random_tip
-            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+            from gateway.display_config import resolve_display_setting
+            from gateway.run import _load_gateway_config, _platform_config_key
+            _show_tips = resolve_display_setting(
+                _load_gateway_config(), _platform_config_key(source.platform), "tips", True,
+            )
         except Exception:
-            _tip_line = ""
+            pass
+        _tip_line = ""
+        if _show_tips:
+            try:
+                from hermes_cli.tips import get_random_tip
+                _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+            except Exception:
+                pass
         body = f"{header}\n\n{session_info}" if session_info else header
         return EphemeralReply(f"{body}{_tip_line}")
 

@@ -2188,6 +2188,7 @@ display:
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  tips: true               # Gateway: append a CLI/TUI usage tip to /new and /reset replies
   suppress_warning_notifications: false  # Opt-in: hide automatic warning/diagnostic notices (see messaging guide)
   show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)

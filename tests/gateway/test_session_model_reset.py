@@ -1,7 +1,7 @@
 """Tests that /new (and its /reset alias) clears session-scoped overrides."""
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -100,3 +100,21 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("config", "has_tip"), [
+    ({}, True),
+    ({"display": {"tips": False}}, False),
+    ({"display": {"tips": True, "platforms": {"telegram": {"tips": False}}}}, False),
+])
+async def test_new_command_respects_display_tips(config, has_tip):
+    """Gateway /new tips default on and can be disabled globally or per platform."""
+    runner = _make_runner()
+    with (
+        patch("gateway.run._load_gateway_config", return_value=config),
+        patch("hermes_cli.tips.get_random_tip", return_value="CLI-only tip"),
+    ):
+        reply = await runner._handle_reset_command(_make_event("/new"))
+
+    assert ("CLI-only tip" in str(reply)) is has_tip

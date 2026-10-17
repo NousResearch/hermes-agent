@@ -95,6 +95,19 @@ def _cli_startup_notices(enabled):
     return notices
 
 
+def _unknown_toolsets(enabled, config):
+    """Main's "Unknown toolsets" startup warning (``HermesCLI._init_toolsets``), judged where the plugins
+    load: the session's toolset names the profile's registry, MCP servers, plugin toolsets and platform
+    bundles cannot place (an uninstalled plugin's stale ``platform_toolsets`` entry)."""
+    if "all" in enabled or "*" in enabled:
+        return []
+    with contextlib.suppress(Exception):
+        from hermes_cli.toolset_validation import saved_toolset_resolver
+        known = saved_toolset_resolver(config)
+        return [name for name in enabled if not known(name)]
+    return []
+
+
 def _cli_skills():
     """``hermes_cli.banner.get_available_skills`` as main's classic CLI computed it: ``cmd_chat`` pins
     ``HERMES_KANBAN_BOARD`` before HermesCLI starts, so ``environments: [kanban]`` skills are offered.
@@ -152,7 +165,7 @@ def session_inventory(authority, policy, agent, cwd):
             from hermes_cli.banner import compute_toolset_availability
             info["tool_availability"] = compute_toolset_availability(enabled)
         if policy is not None and policy.source == "cli":
-            info.update(_cli_startup_notices(enabled))
+            info.update(_cli_startup_notices(enabled), unknown_toolsets=_unknown_toolsets(enabled, config))
         with contextlib.suppress(Exception):
             if policy is not None and policy.source == "cli":
                 info["skills"] = _cli_skills()

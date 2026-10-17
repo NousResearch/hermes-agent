@@ -60,6 +60,37 @@ function packageIsInstalled(name, fromDir) {
   }
 }
 
+// A dependency declared with a local specifier (`file:../shared`, `workspace:*`,
+// `link:`) is a workspace member, not something the registry installs: npm
+// materialises it as `node_modules/<name>` -> that directory, and the desktop
+// build resolves it through `vite.config.ts`'s explicit alias to the workspace
+// source. So the hoisted copy is a convenience, not a requirement — and on
+// Windows that link can be a reparse point the running token may not traverse
+// (observed with a non-interactive/SSH token that treats foreign reparse points
+// as untrusted), which made `existsSync` answer false for a package the repo
+// owns. Checked by name here so the package-is-present test can be skipped for
+// these, exactly when the workspace directory it points at really exists.
+function localWorkspacePackages(appDir) {
+  const local = new Map()
+  let manifest
+  try {
+    manifest = JSON.parse(readFileSync(join(appDir, "package.json"), "utf8"))
+  } catch {
+    return local
+  }
+  const declared = { ...manifest.dependencies, ...manifest.devDependencies }
+  for (const [name, spec] of Object.entries(declared)) {
+    if (typeof spec !== "string" || !/^(file|link|workspace):/.test(spec)) continue
+    // `file:`/`link:` name a path relative to this manifest; `workspace:` a range
+    // npm resolves from the root `workspaces` globs. Only the former is resolvable
+    // from here, so a workspace: spec counts only if its directory is found by name.
+    const target = spec.replace(/^(file|link):/, "").replace(/^workspace:/, "")
+    const candidate = /^[./]/.test(target) ? resolve(appDir, target) : null
+    if (candidate && existsSync(join(candidate, "package.json"))) local.set(name, candidate)
+  }
+  return local
+}
+
 // Every package the workspace manifest at `appDir` declares as required
 // (`dependencies` + `devDependencies`; never `optionalDependencies`). An
 // unreadable or malformed manifest yields [] — the floor still applies, and
@@ -80,7 +111,10 @@ export function requiredPackages(appDir) {
 // Kept side-effect-free so it can be unit tested without spawning a process.
 export function checkRootInstall(appDir, rootDir) {
   const wanted = [...new Set([...BUILD_CRITICAL_PACKAGES, ...requiredPackages(appDir)])]
-  const missing = wanted.filter(pkg => !packageIsInstalled(pkg, appDir))
+  // A workspace member declared with a local specifier does not need a traversable
+  // hoisted copy: the build resolves it through vite's alias to its source.
+  const localWorkspace = localWorkspacePackages(appDir)
+  const missing = wanted.filter(pkg => !packageIsInstalled(pkg, appDir) && !localWorkspace.has(pkg))
   if (missing.length > 0) {
     return {
       ok: false,

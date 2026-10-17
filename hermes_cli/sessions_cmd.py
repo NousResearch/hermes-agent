@@ -106,6 +106,8 @@ def _cmd_repair(args):
         print(f"No session database at {db_path} (nothing to repair).")
         return
     from hermes_state_reconcile import repair_declarative_schema, schema_drift_reason
+    # A missing canonical sessions table is not additive upgrade drift: creating
+    # an empty one could hide lost history. Preserve corruption/recovery routing.
     reason = _db_opens_cleanly(db_path)
     repair = repair_state_db_schema
     if reason is None:

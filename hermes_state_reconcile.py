@@ -30,7 +30,7 @@ def _reconcile_snapshot(path, guard):
         _copy_database_snapshot, _db_opens_cleanly, _repair_conn,
         _repair_scratch_space_error, _unlink_db_triple,
     )
-    from hermes_state_schema import reconcile_state_schema
+    from hermes_state_schema import SessionSchemaMixin, reconcile_state_schema
 
     scratch = path.with_name(path.name + '.reconcile-scratch')
     if error := _repair_scratch_space_error(path):
@@ -40,6 +40,10 @@ def _reconcile_snapshot(path, guard):
     try:
         _copy_database_snapshot(path, scratch, source_connection=guard)
         with _repair_conn(scratch) as conn:
+            # Old indexed columns must exist before the canonical DDL can create
+            # their indexes. Reuse the column owner; the final probe fails closed
+            # if an additive change is not possible. Missing tables are created below.
+            object.__new__(SessionSchemaMixin)._reconcile_columns(conn.cursor())
             reconcile_state_schema(conn)
             conn.commit()
         if reason := schema_drift_reason(scratch):
@@ -61,6 +65,11 @@ def _reconcile_locked(path, backup, report):
 
     if _live_writer_holds_db(path):
         raise RuntimeError('a live writer still holds state.db; stop it and retry')
+    from hermes_cli.sqlite_safe_read import connect_tracked
+    with closing(connect_tracked(path.resolve().as_uri() + '?mode=ro', uri=True, tracking_path=path)) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if {'sessions', 'messages'} - tables:
+        raise RuntimeError('canonical history tables are missing; use sessions recover, not additive reconciliation')
     if schema_drift_reason(path) is None:
         report.update(repaired=True, strategy='already_healthy')
         return

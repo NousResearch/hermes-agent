@@ -81,6 +81,38 @@ def test_canonical_store_is_unchanged(tmp_path, monkeypatch, with_history):
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize('missing', ['sessions', 'messages'])
+def test_missing_history_table_is_not_recreated_as_empty(tmp_path, monkeypatch, missing):
+    from hermes_state_reconcile import repair_declarative_schema
+    path = tmp_path / 'state.db'
+    kept = 'messages' if missing == 'sessions' else 'sessions'
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(f'CREATE TABLE {kept} (id TEXT)')
+        conn.execute(f"INSERT INTO {kept} VALUES ('retain-me')")
+        conn.commit()
+    before = path.read_bytes()
+    report = repair_declarative_schema(path)
+    assert report['repaired'] is False
+    assert 'canonical history tables are missing' in report['error']
+    assert path.read_bytes() == before
+
+
+def test_repair_restores_missing_indexed_column(tmp_path, monkeypatch):
+    path = tmp_path / 'state.db'
+    with SessionDB(db_path=path) as db:
+        db.create_session('retained', source='cli')
+        db.append_message('retained', role='user', content='history survives')
+    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', path)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute('DROP INDEX idx_async_delegations_delivery')
+        conn.execute('ALTER TABLE async_delegations DROP COLUMN completed_at')
+        conn.commit()
+    assert sessions_cmd._cmd_repair(SimpleNamespace(check_only=False, no_backup=False)) in (None, 0)
+    with _open_session_db_at_path(path, read_only=True) as db:
+        assert [row['content'] for row in db.get_messages('retained')] == ['history survives']
+        assert db._conn.execute("SELECT name FROM sqlite_master WHERE name='idx_async_delegations_delivery'").fetchone()
+
+
 @pytest.mark.parametrize('backup', [True, False])
 def test_explicit_repair_restores_readonly_history(tmp_path, monkeypatch, backup):
     path = _legacy_store(tmp_path, monkeypatch)

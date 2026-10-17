@@ -49,6 +49,35 @@ def _refused_check(exc):
     return f'{cause}{where}{chained}'
 
 
+def _with_untracked_compression(authority, sid, receipt):
+    """*receipt*, after recording compression steps an older build published past its tip (#140060)."""
+    from hermes_state_local_lineage import adopt_untracked_compression, untracked_compression_tip
+    with authority.db._read_ctx() as conn:
+        if untracked_compression_tip(conn, receipt) is None:
+            return receipt
+    adopt_untracked_compression(authority.db, epoch=authority.epoch, session_id=sid, expected=receipt)
+    return local_receipt(authority.db, sid)
+
+
+def _checked_entry(authority, receipt, source, route):
+    """*receipt*'s entry, once its route, origin and stored identity are this authority's."""
+    if receipt['route'] != route:
+        raise ValueError('route mismatch')
+    entry = SessionEntry.from_dict(receipt['entry'])
+    # Older local receipts omitted the served profile from the origin. The receipt's
+    # home and route already matched this authority; fill only that absent field,
+    # never accept an explicitly different profile or change the durable route.
+    if 'profile' not in receipt['entry']['origin']:
+        entry.origin.profile = source.profile
+    if (entry.session_key != route
+            or entry.origin.to_dict() != source.to_dict()):
+        raise ValueError('entry mismatch')
+    row = authority.db.get_session(entry.session_id)
+    if row is None or (row['session_key'], row['chat_id'], row['user_id']) != (route, source.chat_id, source.user_id):
+        raise ValueError('stored identity mismatch')
+    return entry
+
+
 def restore_local_session(authority, sid):
     from gateway.session_authority import LiveSession
     from gateway.session_local import LocalSessionAdapter
@@ -64,22 +93,12 @@ def restore_local_session(authority, sid):
         source = local_source(authority, chat_id, receipt['principal_id'])
         store = authority.runner.session_store
         route = store._generate_session_key(source)
-        if receipt['route'] != route:
-            raise ValueError('route mismatch')
+        # The catch-up writes, so the receipt as stored must already be this owner's (#140060).
+        _checked_entry(authority, receipt, source, route)
+        receipt = _with_untracked_compression(authority, sid, receipt)
         policy = restore_policy(receipt['policy'])
-        entry = SessionEntry.from_dict(receipt['entry'])
-        # Older local receipts omitted the served profile from the origin. The receipt's
-        # home and route already matched this authority; fill only that absent field,
-        # never accept an explicitly different profile or change the durable route.
-        if 'profile' not in receipt['entry']['origin']:
-            entry.origin.profile = source.profile
+        entry = _checked_entry(authority, receipt, source, route)
         target = entry.session_id
-        if (entry.session_key != route
-                or entry.origin.to_dict() != source.to_dict()):
-            raise ValueError('entry mismatch')
-        row = authority.db.get_session(target)
-        if row is None or (row['session_key'], row['chat_id'], row['user_id']) != (route, chat_id, source.user_id):
-            raise ValueError('stored identity mismatch')
         from hermes_state_local_lineage import validate_local_lineage
         with authority.db._read_ctx() as conn:
             validate_local_lineage(conn, receipt)

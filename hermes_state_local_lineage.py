@@ -89,6 +89,54 @@ def advance_local_target(conn, parent_session_id, child_session_id, *, entry=Non
     conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (logical_id,))
 
 
+def untracked_compression_tip(conn, receipt):
+    """The compression child of *receipt*'s tip, when the receipt does not record it yet."""
+    from hermes_state_compression import _CHAIN_STEP_SQL
+    step = conn.execute(_CHAIN_STEP_SQL, (receipt['entry']['session_id'],)).fetchone()
+    return step['id'] if step is not None else None
+
+
+def adopt_untracked_compression(db, *, epoch, session_id, expected):
+    """Record, once, compression steps a receipt-unaware build published past the receipt's tip.
+
+    0.22.2 (the classic line) resumes a 0.22.1 local session by id. Its compaction ends the tip with
+    ``compression`` and copies the parent's route columns onto the child, but never advances the
+    receipt, so ``validate_local_lineage`` refused the session forever (#140060). On this owner a
+    compaction advances the receipt in its own transaction, so such a step comes only from an older
+    writer. A child carrying the receipt's own route, owner and principal is that session's
+    continuation: append it to the lineage and move the receipt's and the routing entry's target to
+    it, nothing else. The stored receipt must still be *expected*, the copy the caller checked
+    against its owner. Anything else is left for validation to refuse, unchanged.
+    """
+    def write(conn):
+        _epoch(conn, epoch)
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
+        receipt = json.loads(saved[0])
+        if receipt != expected:
+            return
+        identity = (receipt['route'], receipt['session_id'], receipt['principal_id'])
+        lineage = list(receipt.get('lineage', [session_id]))
+        tip = receipt['entry']['session_id']
+        while (child_id := untracked_compression_tip(conn, receipt)) is not None:
+            child = conn.execute('SELECT session_key,chat_id,user_id FROM sessions WHERE id=?', (child_id,)).fetchone()
+            if child_id in lineage or tuple(child) != identity:
+                return
+            lineage.append(child_id)
+            receipt['entry'] = dict(receipt['entry'], session_id=child_id)
+        route_row = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
+                                 (receipt['route'],)).fetchone()
+        routed = json.loads(route_row[0]) if route_row else None
+        if routed is None or routed['session_id'] != tip:
+            return
+        receipt['lineage'] = lineage
+        validate_local_lineage(conn, receipt)
+        conn.execute("UPDATE gateway_routing SET entry_json=? WHERE scope='' AND session_key=?",
+                     (_json(dict(routed, session_id=receipt['entry']['session_id'])), receipt['route']))
+        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), POLICY_PREFIX + session_id))
+        conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
+    db._execute_write(write)
+
+
 def reset_local_target(db, *, epoch, parent_session_id, entry):
     def write(conn):
         _epoch(conn, epoch)

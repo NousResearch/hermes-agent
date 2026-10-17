@@ -771,9 +771,13 @@ class WebSocketRelayTransport:
                 self._ws = None
             # The reader is the ONLY thing that resolves pending futures; once it
             # exits every waiter would block the full outbound timeout. Fail them
-            # NOW with the dict shape callers expect (never an exception).
+            # NOW with the dict shape callers expect (never an exception). The
+            # caller returns this only after its write succeeds; without an ACK
+            # delivery is unknown. A failed write still returns its own failure.
             self._fail_pending(
-                lambda fut: fut.set_result({"success": False, "error": "relay transport connection lost"})
+                lambda fut: fut.set_result({
+                    "success": False, "error": "relay transport connection lost", "ambiguous": True,
+                })
             )
 
     def _dialer_running(self) -> bool:

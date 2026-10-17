@@ -61,6 +61,7 @@ class TestHook:
     @pytest.fixture(autouse=True)
     def _auto(self, monkeypatch):
         monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "auto")
+        monkeypatch.setattr(nous_wire, "_native_sdk_available", lambda: True)
         self.switches = []
         monkeypatch.setattr("agent.agent_runtime_helpers.switch_model",
                             lambda agent, m, p, api_key="", base_url="", api_mode="", **k: self.switches.append(api_mode) or setattr(agent, "api_mode", api_mode))
@@ -89,6 +90,14 @@ class TestHook:
         a = _agent()
         assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(id="msg_01abc"), 1) is False
         assert a.api_mode == "chat_completions" and self.switches == []
+
+    def test_gmi_without_the_anthropic_sdk_stays_on_chat(self, monkeypatch):
+        """No mid-session dependency install: without the SDK the decision is chat, and final."""
+        monkeypatch.setattr(nous_wire, "_native_sdk_available", lambda: False)
+        a = _agent()
+        assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(id="msg_01abc"), 1) is False
+        assert nous_wire.apply_pending_wire_switch(a) is False
+        assert a.api_mode == "chat_completions" and a._nous_wire_decided is True and self.switches == []
 
     @pytest.mark.parametrize("mode", ["chat", "native"])
     def test_explicit_modes_never_auto_switch(self, monkeypatch, mode):

@@ -1,11 +1,14 @@
 """Nous Portal ``anthropic/*`` wire selection when ``nous.anthropic_wire`` is ``auto``.
 
 Portal serves Claude two ways and Hermes cannot tell which from the request: an OpenRouter
-passthrough (today, for every ``anthropic/*`` id) or GMI/Vertex (planned once GMI is back). The
-native Messages wire is the better transport, but on the OpenRouter path it re-writes the previous
-turn's prompt cache on 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
-NousResearch/api#227), so the session must ride chat/completions there. On GMI that is untested,
-and until it is measured ``auto`` never promotes to native.
+passthrough or GMI/Vertex (e.g. ``anthropic/claude-opus-4.8``). On the OpenRouter path the native
+Messages wire re-writes the previous turn's prompt cache on 14-20% of consecutive calls in
+concurrent tool loops (measured 2026-09-06; NousResearch/api#227), so the session rides
+chat/completions there. On GMI it is the other way round: GMI's chat conversion ignores
+``cache_control`` on tool results and tool-calling assistant turns, so a tool loop on chat pins
+cache reads at the last user message and re-bills the whole growing tail every call (5.7% hit),
+while the native wire carries the marker on the ``tool_result`` block (63% hit, -45% cost per
+prompt token; 5 x 6 probe, 2026-10-12). ``auto`` therefore promotes GMI sessions to native.
 
 The upstream IS visible in the first RESPONSE: OpenRouter stamps ``provider`` (chat wire) and
 mints ``gen-<unix>-<rand>`` ids; GMI/Vertex responses carry neither. So ``auto`` starts every
@@ -24,9 +27,10 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Flip to True only after the 20x6 concurrency probe (evals/postmortem/live_ab) is clean on a
-# GMI-served anthropic/* id on the native wire. Until then ``auto`` is chat everywhere.
-GMI_NATIVE_WIRE_CLEARED = False
+# Measured with evals/postmortem/live_ab/cache_concurrency_probe.py on anthropic/claude-opus-4.8
+# (GMI-served), 5 sessions x 6 tool calls per wire: chat 5.7% hit / $4.78 per M prompt tokens,
+# native 63.1% hit / $2.65. Native is not jitter-free on GMI (17% stuck pairs) but chat is 88% stuck.
+GMI_NATIVE_WIRE_CLEARED = True
 
 _OPENROUTER_ID = re.compile(r"^gen-\d{9,}-[A-Za-z0-9_-]{8,}$")
 
@@ -59,6 +63,11 @@ def wire_for_upstream(upstream: Optional[str]) -> str:
     return "chat_completions"
 
 
+def _native_sdk_available() -> bool:
+    from pm.extras import available
+    return available("anthropic")
+
+
 def maybe_switch_wire_after_first_response(agent: Any, response: Any, api_call_count: int) -> bool:
     """Decide the session's wire from its first response; the switch itself is applied at the
     start of the next iteration (``apply_pending_wire_switch``), never while a response is being
@@ -83,6 +92,11 @@ def maybe_switch_wire_after_first_response(agent: Any, response: Any, api_call_c
     agent._nous_wire_decided = True  # one decision per session, whatever it is
     upstream = classify_upstream(response)
     want = wire_for_upstream(upstream)
+    if want == "anthropic_messages" and not _native_sdk_available():
+        # Never install a dependency mid-session (a gateway or subagent turn would run a venv sync).
+        logger.info("nous wire auto: upstream=%s wants the native wire but the 'anthropic' extra is not "
+                    "installed; staying on chat (hermes pm install --extra anthropic)", upstream)
+        return False
     if want == getattr(agent, "api_mode", None):
         logger.debug("nous wire auto: upstream=%s, staying on %s", upstream, want)
         return False

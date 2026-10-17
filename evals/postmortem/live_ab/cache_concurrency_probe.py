@@ -98,8 +98,21 @@ class _Ctx:
     def __exit__(self, *a): return self.mgr.__exit__(*a)
     def __getattr__(self, n): return getattr(self.mgr, n)
 
+def _sha(o):
+    return hashlib.sha256(json.dumps(o, sort_keys=True, default=str).encode()).hexdigest()[:10]
+
+def _probe_worker(first):
+    """Worker index from the ``[probe-session N]`` tag on the session's first message."""
+    import re as _re
+    content = (first or {}).get("content")
+    text = content if isinstance(content, str) else "".join(
+        b.get("text", "") for b in (content or []) if isinstance(b, dict))
+    return _re.search(r"\[probe-session (\d+)\]", text or "")
+
 def patched_stream(self, **kw):
     msgs = kw.get("messages") or []
+    m = _probe_worker(msgs[0] if msgs else None)
+    sys_sha, tools_sha, msg_shas = _sha(kw.get("system")), _sha(kw.get("tools")), [_sha(x) for x in msgs]
     rec = dict(worker=int(m.group(1)) if m else None, call=len(msgs), t_start=time.time(), model=kw.get("model"),
                n_msgs=len(msgs), system_sha=sys_sha, tools_sha=tools_sha, msg_shas=msg_shas)
     if SETTLE_S > 0 and len(msgs) > 1:
@@ -208,7 +221,7 @@ for t in th: t.join(timeout=900)
 print(f"done in {time.time()-t0:.0f}s")
 
 # ---- summary: classify consecutive pairs per session
-rows = [json.loads(l) for l in open(OUT, encoding="utf-8") if l.strip()]
+rows = [json.loads(l) for l in open(OUT, encoding="utf-8-sig") if l.strip()]
 errs = [r for r in rows if "error" in r]; rows = [r for r in rows if "cache_read" in r]
 byw = collections.defaultdict(list)
 for r in rows: byw[r["worker"]].append(r)
@@ -236,4 +249,4 @@ json.dump(dict(provider=PROVIDER, wire=API_MODE, model=MODEL, workers=N, calls_p
                bad_pairs=[dict(kind=k, session=f"cacheprobe-{PROVIDER}-{ARGS.wire or API_MODE}-{N}-{w}", ok_id=p.get("message_id"), ok_cf_ray=(p.get("nous_headers") or {}).get("cf-ray"),
                               bad_id=c.get("message_id"), bad_cf_ray=(c.get("nous_headers") or {}).get("cf-ray"), read_before=p["cache_read"], read_after=c["cache_read"],
                               expected_read=p["prompt_tokens"], write_after=c["cache_creation"]) for w, p, c, k in bad]),
-          open(OUT.replace(".jsonl", ".summary.json"), "w", encoding="utf-8"), indent=1)
+          open(OUT.replace(".jsonl", ".summary.json"), "w", encoding="utf-8"), indent=1)  # windows-footgun: ok — a write, not a read

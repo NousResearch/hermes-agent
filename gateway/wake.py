@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 WAKE_TURN_TIMEOUT_SECONDS = 600.0
 
 # Backoff between retries on transient failures. The API server has no per-session lock (concurrent
-# turns are last-writer-wins) but DOES enforce a global max_concurrent_runs cap via HTTP 429, which
-# is worth waiting out.
+# turns are last-writer-wins) but DOES enforce a global max_concurrent_runs cap: a self-post over
+# the cap now queues (bounded) and only a full queue or an expired wait answers HTTP 429, which is
+# still worth waiting out.
 _RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0)
 
 

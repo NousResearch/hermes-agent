@@ -1024,8 +1024,9 @@ class OpenAICompatRoutesMixin:
     async def _implicit_chat_session(self, request: web.Request, session_id: str) -> tuple:
         """A derived (header-less) id whose session was deleted names a new conversation with the
         same opening: the owning profile's store picks its generation (``implicit_api_session``).
-        -> ``(session_id, None)`` or ``(session_id, 500 response)``: a store that cannot answer
-        gets the same OpenAI error envelope as ``_run_idempotent``, before either response starts."""
+        -> ``(session_id, None)`` or ``(session_id, error response)``, before either response starts:
+        a refusal keeps its reason and a busy or unreadable store is a retryable 503
+        ``storage_unavailable`` (``store_error_response``); anything else is the OpenAI 500."""
         if getattr(self.gateway_runner, 'session_authority', None) is None:
             return session_id, None
         from gateway.session_api import implicit_api_session
@@ -1033,11 +1034,12 @@ class OpenAICompatRoutesMixin:
         authority = active_authority(self.gateway_runner)
         if authority is None:
             return session_id, None  # admission refuses the unserved profile with its own verdict
+        import sqlite3
         from hermes_state_runtime import RuntimeStoreError
         try:
             return await asyncio.to_thread(implicit_api_session, authority.db, session_id,
                                            self._chat_request_id(request)), None
-        except RuntimeStoreError as exc:
+        except (RuntimeStoreError, sqlite3.Error, OSError) as exc:
             from gateway.platforms.api_server import _openai_error
             from gateway.platforms.api_server_authority_runs import store_error_response
             return session_id, store_error_response(_openai_error, exc)

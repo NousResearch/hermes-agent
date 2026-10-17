@@ -5,6 +5,8 @@ session's id stays retired for good. A new conversation with the same opening mo
 generation of that opening instead of being refused forever; its later turns keep landing there.
 An explicit X-Hermes-Session-Id and a spent Idempotency-Key are never moved.
 """
+import json
+
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -127,6 +129,8 @@ async def test_an_idempotency_key_retry_keeps_its_deleted_session(api, owner, se
 @pytest.mark.asyncio
 @pytest.mark.parametrize('stream', [False, True], ids=['json', 'stream'])
 async def test_a_store_that_cannot_answer_the_lookup_returns_an_openai_error(api, owner, served, monkeypatch, stream):
+    """A busy or unreadable store is retryable: 503 ``storage_unavailable`` with Retry-After, the
+    same verdict ``store_error_response`` gives every other admission door, never the raw error."""
     import sqlite3
 
     def unreadable(*_a, **_k):
@@ -137,10 +141,11 @@ async def test_a_store_that_cannot_answer_the_lookup_returns_an_openai_error(api
         response = await client.post('/v1/chat/completions',
                                      json={'model': 'hermes-agent', 'messages': _OPENING, 'stream': stream},
                                      headers={'Authorization': 'Bearer ' + _API_KEY})
-        assert response.status == 500
         assert response.content_type == 'application/json', await response.text()
         payload = await response.json()
-        assert payload['error']['type'] == 'server_error', payload
+        assert response.status == 503 and payload['error']['code'] == 'storage_unavailable', payload
+        assert response.headers.get('Retry-After') == '1'
+        assert 'disk I/O error' not in json.dumps(payload)
     assert served == []
 
 

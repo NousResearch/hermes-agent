@@ -679,6 +679,8 @@ class CLIAgentSetupMixin:
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
                 # The gateway's model-guard refusal is asked like main's own guard; -q cannot answer it.
                 model_confirm_callback=None if single_query_mode else self._confirm_owner_model_switch,
+                # Another viewer answering the gateway's clarify/sudo/secret request closes this modal.
+                modal_withdraw_callback=None if single_query_mode else self._withdraw_gateway_modal,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,

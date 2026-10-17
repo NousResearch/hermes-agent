@@ -5,6 +5,9 @@ from __future__ import annotations
 from .method_ctx import bind_module
 
 
+LONG_HANDLERS = frozenset({"session.context_breakdown"})
+
+
 def handle_request(req: dict) -> dict | None:
     from hermes_cli.backend_retirement import retirement
 
@@ -91,4 +94,5 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
 
 
 def register(server):
+    server._LONG_HANDLERS = server._LONG_HANDLERS | LONG_HANDLERS
     bind_module(globals(), server)

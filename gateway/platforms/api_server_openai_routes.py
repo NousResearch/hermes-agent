@@ -882,6 +882,9 @@ class OpenAICompatRoutesMixin:
             first_user = next(
                 (cm.get("content", "") for cm in conversation_messages if cm.get("role") == "user"), "")
             session_id = _derive_chat_session_id(system_prompt, first_user, _api_request_profile.get())
+            session_id, lookup_error = await self._implicit_chat_session(request, session_id)
+            if lookup_error is not None:
+                return lookup_error
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -901,13 +904,7 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
-        if getattr(self.gateway_runner, 'session_authority', None) is not None:
-            key = request.headers.get('Idempotency-Key')
-            # The durable admission identity carries the authenticated namespace: a rotated
-            # API key (or another profile) reusing a client key is a new principal, not a retry.
-            run_kwargs.update(
-                request_id=f'chat:{self._run_idempotency_scope(request)}:{key}' if key else None,
-                history_from_session=bool(provided_session_id), run_owner_scope=self._run_idempotency_scope(request))
+        run_kwargs.update(self._authority_chat_kwargs(request, provided_session_id))
         # This is presentation only. The ordinary API-key/session authorization
         # above still applies; it grants no internal ingress or control authority.
         if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
@@ -1009,6 +1006,45 @@ class OpenAICompatRoutesMixin:
             if err_msg and not presentation_muted:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
         return web.json_response(response_data, headers=response_headers)
+
+    def _chat_request_id(self, request: web.Request) -> Optional[str]:
+        """Durable admission identity of a Chat Completions Idempotency-Key. It carries the
+        authenticated namespace: a rotated API key (or another profile) reusing a client key is a
+        new principal, not a retry."""
+        key = request.headers.get('Idempotency-Key')
+        return f'chat:{self._run_idempotency_scope(request)}:{key}' if key else None
+
+    def _authority_chat_kwargs(self, request: web.Request, provided_session_id) -> dict:
+        """Admission identity of a Chat Completions turn under session authority; none before it."""
+        if getattr(self.gateway_runner, 'session_authority', None) is None:
+            return {}
+        return dict(request_id=self._chat_request_id(request), history_from_session=bool(provided_session_id),
+                    run_owner_scope=self._run_idempotency_scope(request))
+
+    async def _implicit_chat_session(self, request: web.Request, session_id: str) -> tuple:
+        """A derived (header-less) id whose session was deleted names a new conversation with the
+        same opening: the owning profile's store picks its generation (``implicit_api_session``).
+        -> ``(session_id, None)`` or ``(session_id, 500 response)``: a store that cannot answer
+        gets the same OpenAI error envelope as ``_run_idempotent``, before either response starts."""
+        if getattr(self.gateway_runner, 'session_authority', None) is None:
+            return session_id, None
+        from gateway.session_api import implicit_api_session
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self.gateway_runner)
+        if authority is None:
+            return session_id, None  # admission refuses the unserved profile with its own verdict
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            return await asyncio.to_thread(implicit_api_session, authority.db, session_id,
+                                           self._chat_request_id(request)), None
+        except RuntimeStoreError as exc:
+            from gateway.platforms.api_server import _openai_error
+            from gateway.platforms.api_server_authority_runs import store_error_response
+            return session_id, store_error_response(_openai_error, exc)
+        except Exception as e:
+            from gateway.platforms.api_server import _error_response
+            logger.error("Error resolving the chat completions session: %s", e, exc_info=True)
+            return session_id, _error_response(f"Internal server error: {e}", 500, err_type="server_error")
 
     async def _run_idempotent(
         self, request: web.Request, body: dict[str, Any], compute, *,

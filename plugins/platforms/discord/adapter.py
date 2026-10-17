@@ -313,7 +313,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, parse_slash_command
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
@@ -4832,7 +4832,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
             role_authorized=self._slash_role_grant(interaction),
         )
-        msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+        msg_type = MessageType.COMMAND if parse_slash_command(text) is not None else MessageType.TEXT
         channel_id = str(interaction.channel_id)
         return MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=interaction,
@@ -6204,7 +6204,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if resolved_reference is not None:
             referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
         all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
-        if normalized_content.startswith("/"):
+        if parse_slash_command(normalized_content) is not None:
             msg_type = MessageType.COMMAND
         elif all_attachments:
             msg_type = self._attachment_message_type(all_attachments[0])

@@ -36,8 +36,11 @@ logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
 
 # Least privilege: chat.messages.create covers BOTH media.upload and the
-# subsequent messages.create; no drive.file or other scopes.
-SCOPES: list[str] = ["https://www.googleapis.com/auth/chat.messages.create"]
+# subsequent messages.create; chat.messages.readonly lets the adapter read the
+# thread a user is talking in (history backfill) — the bot identity can't list
+# messages in DMs at all. No drive.file or read-write chat.messages.
+MESSAGES_READONLY_SCOPE = "https://www.googleapis.com/auth/chat.messages.readonly"
+SCOPES: list[str] = ["https://www.googleapis.com/auth/chat.messages.create", MESSAGES_READONLY_SCOPE]
 
 # Declared extras (pyproject) and the exact pins they carry; the pins double as the
 # staleness probe so a half-synced interpreter is repaired instead of trusted.
@@ -138,6 +141,17 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     return _refresh_and_persist(
         creds, token_path, Request, failure_msg="token refresh failed (user should re-run /setup-files)",
     )
+
+
+def token_has_scope(scope: str, email: Optional[str] = None) -> Optional[bool]:
+    """Whether the stored token for ``email`` was granted ``scope``; ``None`` when there is
+    no token or it doesn't record its scopes (callers then just try the API)."""
+    try:
+        scopes = json.loads(_token_path(email).read_text(encoding="utf-8")).get("scopes")
+    except (OSError, ValueError, AttributeError):
+        return None
+    scopes = scopes.split() if isinstance(scopes, str) else scopes
+    return scope in scopes if isinstance(scopes, list) and scopes else None
 
 
 def refresh_or_none(creds: Any, email: Optional[str] = None) -> Optional[Any]:

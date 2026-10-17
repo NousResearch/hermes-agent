@@ -97,11 +97,18 @@ class ReviewIdleQueue:
     def enqueue(self, agent: Any, session_key: str, kwargs: dict[str, Any]) -> None:
         """Add (or replace — newest snapshot wins) a session's pending review, keeping the ORIGINAL
         enqueue time on coalesce so a busy session cannot push its age-out forever."""
-        with self._lock:
-            existing = self._pending.get(session_key)
-            enqueued_at = existing.enqueued_at if existing is not None else self._now()
-            self._pending[session_key] = _PendingReview(
-                agent, session_key, kwargs, enqueued_at, contextvars.copy_context())
+        from agent.background_review import holding_review_fence
+
+        # Parent -> queue lock order; retirement fences insertion before purging. The
+        # dispatcher never takes a parent lock while holding the queue lock.
+        with holding_review_fence(agent) as retired:
+            if retired:
+                return
+            with self._lock:
+                existing = self._pending.get(session_key)
+                enqueued_at = existing.enqueued_at if existing is not None else self._now()
+                self._pending[session_key] = _PendingReview(
+                    agent, session_key, kwargs, enqueued_at, contextvars.copy_context())
         self._ensure_thread()
         self._wake.set()
         logger.info("Background review deferred (session=%s, queued=%d)", session_key[-12:], len(self._pending))
@@ -109,6 +116,13 @@ class ReviewIdleQueue:
     def pending_count(self) -> int:
         with self._lock:
             return len(self._pending)
+
+    def discard_parent(self, agent: Any) -> None:
+        """Remove only this instance's items, never a successor sharing its session key."""
+        with self._lock:
+            keys = [key for key, item in self._pending.items() if item.agent is agent]
+            for key in keys:
+                del self._pending[key]
 
     def _ensure_thread(self) -> None:
         with self._lock:
@@ -161,6 +175,12 @@ class ReviewIdleQueue:
                 time.sleep(_POLL_INTERVAL_S)
 
     def _dispatch(self, item: _PendingReview) -> None:
+        from agent.background_review import background_review_retired
+
+        # A popped item is no longer purgeable. Preparation/admission also check the
+        # fence in case retirement races this check or the enabled/config re-read.
+        if background_review_retired(item.agent):
+            return
         if not self._still_enabled(item):
             logger.info(
                 "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",

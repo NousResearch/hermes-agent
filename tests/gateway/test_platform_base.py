@@ -14,11 +14,11 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
     cache_image_from_bytes,
-    safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
     cache_audio_from_bytes,
 )
+from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.event import MessageEvent
 
 

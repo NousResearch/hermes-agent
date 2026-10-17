@@ -31,8 +31,10 @@ http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split("?")[0]);
   let file = path.join(ROOT, url === "/" ? "/index.html" : url);
 
-  // Refuse to serve outside the root even if the path walks up.
-  if (!file.startsWith(ROOT)) { res.writeHead(403).end("forbidden"); return; }
+  // Refuse to serve outside the root even if the path walks up. Compare with a
+  // separator so a sibling whose name shares the root prefix (root=/a/app,
+  // file=/a/app-secret/x) is not mistaken for a path inside the root.
+  if (file !== ROOT && !file.startsWith(ROOT + path.sep)) { res.writeHead(403).end("forbidden"); return; }
   if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, "index.html");
   if (!fs.existsSync(file)) { res.writeHead(404).end("not found"); return; }
 

@@ -70,7 +70,7 @@ def _ensure_authenticated():
 
 def _stored_token_scopes() -> list[str]:
     try:
-        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
+        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return list(SCOPES)
     scopes = data.get("scopes")
@@ -1009,6 +1009,127 @@ def sheets_create(args):
     }, indent=2, ensure_ascii=False))
 
 
+def _sheets_tabs(sheet_id: str) -> list[dict]:
+    """Every tab of a spreadsheet, in tab order, as the fields the tab commands need."""
+    if _gws_binary():
+        data = _run_gws(["sheets", "spreadsheets", "get"],
+                        params={"spreadsheetId": sheet_id, "fields": "sheets.properties"})
+    else:
+        data = build_service("sheets", "v4").spreadsheets().get(
+            spreadsheetId=sheet_id, fields="sheets.properties").execute()
+    tabs = []
+    for sheet in data.get("sheets", []):
+        props = sheet.get("properties", {})
+        grid = props.get("gridProperties", {})
+        tabs.append({
+            "sheetId": props.get("sheetId", 0), "title": props.get("title", ""),
+            "index": props.get("index", 0), "hidden": bool(props.get("hidden", False)),
+            "rowCount": grid.get("rowCount", 0), "columnCount": grid.get("columnCount", 0),
+            "frozenRowCount": grid.get("frozenRowCount", 0),
+            "frozenColumnCount": grid.get("frozenColumnCount", 0),
+        })
+    return sorted(tabs, key=lambda tab: tab["index"])
+
+
+def _resolve_sheet_tab(tabs: list[dict], ref: str) -> dict:
+    """The tab named ``ref`` (Google treats titles case-insensitively) or with sheetId ``ref``
+    (the ``gid`` in a sheet URL). Unknown refs error with the tab list, never a guess."""
+    wanted = ref.lower()
+    for tab in tabs:
+        if tab["title"].lower() == wanted:
+            return tab
+    for tab in tabs:
+        if str(tab["sheetId"]) == ref:
+            return tab
+    print(json.dumps({
+        "error": f"no tab titled (or with sheetId) {ref!r}",
+        "tabs": [{"sheetId": t["sheetId"], "title": t["title"]} for t in tabs],
+    }, indent=2, ensure_ascii=False), file=sys.stderr)
+    sys.exit(1)
+
+
+def _sheets_batch_update(sheet_id: str, requests: list[dict]) -> list[dict]:
+    body = {"requests": requests}
+    if _gws_binary():
+        result = _run_gws(["sheets", "spreadsheets", "batchUpdate"],
+                          params={"spreadsheetId": sheet_id}, body=body)
+    else:
+        result = build_service("sheets", "v4").spreadsheets().batchUpdate(
+            spreadsheetId=sheet_id, body=body).execute()
+    return result.get("replies", [])
+
+
+def _tab_summary(props: dict) -> dict:
+    return {"sheetId": props.get("sheetId"), "title": props.get("title"), "index": props.get("index")}
+
+
+def sheets_tabs(args):
+    print(json.dumps(_sheets_tabs(args.sheet_id), indent=2, ensure_ascii=False))
+
+
+def sheets_add_tab(args):
+    props = {"title": args.title}
+    if args.index is not None:
+        props["index"] = args.index
+    if args.rows or args.columns:
+        props["gridProperties"] = {"rowCount": args.rows or 1000, "columnCount": args.columns or 26}
+    reply = _sheets_batch_update(args.sheet_id, [{"addSheet": {"properties": props}}])[0]
+    print(json.dumps({"status": "added", **_tab_summary(reply["addSheet"]["properties"])}, indent=2, ensure_ascii=False))
+
+
+def sheets_rename_tab(args):
+    tab = _resolve_sheet_tab(_sheets_tabs(args.sheet_id), args.tab)
+    _sheets_batch_update(args.sheet_id, [{"updateSheetProperties": {
+        "properties": {"sheetId": tab["sheetId"], "title": args.title}, "fields": "title"}}])
+    print(json.dumps({"status": "renamed", "sheetId": tab["sheetId"], "from": tab["title"], "to": args.title},
+                     indent=2, ensure_ascii=False))
+
+
+def sheets_copy_tab(args):
+    tab = _resolve_sheet_tab(_sheets_tabs(args.sheet_id), args.tab)
+    # Without a name and index Google picks a localized name and puts the copy first.
+    request = {"sourceSheetId": tab["sheetId"], "newSheetName": args.title or f"Copy of {tab['title']}",
+               "insertSheetIndex": tab["index"] + 1 if args.index is None else args.index}
+    reply = _sheets_batch_update(args.sheet_id, [{"duplicateSheet": request}])[0]
+    print(json.dumps({"status": "copied", "from": tab["title"], **_tab_summary(reply["duplicateSheet"]["properties"])},
+                     indent=2, ensure_ascii=False))
+
+
+def sheets_delete_tab(args):
+    tab = _resolve_sheet_tab(_sheets_tabs(args.sheet_id), args.tab)
+    _sheets_batch_update(args.sheet_id, [{"deleteSheet": {"sheetId": tab["sheetId"]}}])
+    print(json.dumps({"status": "deleted", "sheetId": tab["sheetId"], "title": tab["title"]}, indent=2, ensure_ascii=False))
+
+
+def _line_index(axis: str, at: str) -> int:
+    """Zero-based index of a 1-based row number, or of a column letter / 1-based column number."""
+    at = at.strip()
+    if at.isdigit() and int(at) >= 1:
+        return int(at) - 1
+    if axis == "COLUMNS" and at.isalpha():
+        number = 0
+        for char in at.upper():
+            number = number * 26 + ord(char) - ord("A") + 1
+        return number - 1
+    noun = "a column letter or 1-based number" if axis == "COLUMNS" else "a 1-based row number"
+    raise SystemExit(f"--at {at!r} is not {noun}")
+
+
+def sheets_lines(args):
+    """insert-/delete-rows/columns: ``--at`` is the first line affected; inserts go before it."""
+    tab = _resolve_sheet_tab(_sheets_tabs(args.sheet_id), args.tab)
+    start = _line_index(args.axis, args.at)
+    span = {"sheetId": tab["sheetId"], "dimension": args.axis, "startIndex": start, "endIndex": start + args.count}
+    if args.op == "insert":
+        # New lines take the formatting of the line before them; Google rejects that at index 0.
+        request = {"insertDimension": {"range": span, "inheritFromBefore": start > 0}}
+    else:
+        request = {"deleteDimension": {"range": span}}
+    _sheets_batch_update(args.sheet_id, [request])
+    print(json.dumps({"status": "inserted" if args.op == "insert" else "deleted", "tab": tab["title"],
+                      "dimension": args.axis, "at": args.at, "count": args.count}, indent=2, ensure_ascii=False))
+
+
 # =========================================================================
 # Docs
 # =========================================================================
@@ -1292,6 +1413,46 @@ def main():
     p.add_argument("--title", required=True, help="Spreadsheet title")
     p.add_argument("--sheet-name", default="", help="Name of the first tab (defaults to 'Sheet1')")
     p.set_defaults(func=sheets_create)
+
+    p = sh_sub.add_parser("tabs", help="List tabs: sheetId, title, index, hidden, size")
+    p.add_argument("sheet_id")
+    p.set_defaults(func=sheets_tabs)
+
+    p = sh_sub.add_parser("add-tab")
+    p.add_argument("sheet_id")
+    p.add_argument("--title", required=True)
+    p.add_argument("--index", type=int, default=None, help="0-based position (default: last)")
+    p.add_argument("--rows", type=int, default=0)
+    p.add_argument("--columns", type=int, default=0)
+    p.set_defaults(func=sheets_add_tab)
+
+    p = sh_sub.add_parser("rename-tab")
+    p.add_argument("sheet_id")
+    p.add_argument("tab", help="Tab title or sheetId")
+    p.add_argument("--title", required=True, help="New title")
+    p.set_defaults(func=sheets_rename_tab)
+
+    p = sh_sub.add_parser("copy-tab")
+    p.add_argument("sheet_id")
+    p.add_argument("tab", help="Tab title or sheetId")
+    p.add_argument("--title", default="", help="Copy's title (default: 'Copy of <tab>')")
+    p.add_argument("--index", type=int, default=None, help="0-based position (default: after the source)")
+    p.set_defaults(func=sheets_copy_tab)
+
+    p = sh_sub.add_parser("delete-tab")
+    p.add_argument("sheet_id")
+    p.add_argument("tab", help="Tab title or sheetId")
+    p.set_defaults(func=sheets_delete_tab)
+
+    for op in ("insert", "delete"):
+        for axis in ("rows", "columns"):
+            p = sh_sub.add_parser(f"{op}-{axis}")
+            p.add_argument("sheet_id")
+            p.add_argument("tab", help="Tab title or sheetId")
+            p.add_argument("--at", required=True,
+                           help="First row number, or column letter/number" + (" (inserts go before it)" if op == "insert" else ""))
+            p.add_argument("--count", type=int, default=1)
+            p.set_defaults(func=sheets_lines, op=op, axis=axis.upper())
 
     # --- Docs ---
     docs = sub.add_parser("docs")

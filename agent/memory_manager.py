@@ -322,6 +322,64 @@ class StreamingContextScrubber:
 # ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
 _RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
 
+# One stamped recall block, as it sits inside a user row's replayable text (api_content sidecar
+# or a durable text part). Non-greedy so two blocks in one row are found separately.
+_MEMORY_CONTEXT_SPAN_RE = re.compile(r"<memory-context>.*?</memory-context>", re.DOTALL)
+
+
+def _bullet_carries_continuation(lines: list[str], index: int) -> bool:
+    """Whether the bullet at ``index`` has an indented non-blank line beneath it."""
+    following = lines[index + 1] if index + 1 < len(lines) else ""
+    return bool(following.strip()) and following[0].isspace()
+
+
+def _is_self_contained_bullet(lines: list[str], index: int) -> bool:
+    """A column-0 bullet with no continuation line — the only shape dedupe ever drops."""
+    line = lines[index]
+    stripped = line.strip()
+    return (
+        bool(stripped)
+        and not line[0].isspace()
+        and bool(_RECALL_BULLET_RE.match(stripped))
+        and not _bullet_carries_continuation(lines, index)
+    )
+
+
+def _self_contained_bullets(text: str) -> set[str]:
+    """The stripped self-contained bullets of ``text`` (the dedupe key shape)."""
+    lines = text.split("\n")
+    return {lines[i].strip() for i in range(len(lines)) if _is_self_contained_bullet(lines, i)}
+
+
+def window_recall_bullets(messages: Any) -> set[str]:
+    """Self-contained recall bullets the context window is ALREADY replaying.
+
+    A composed recall block is stamped into the user row it accompanied — the ``api_content``
+    sidecar on string content, a durable text part on list content — and replayed verbatim on
+    every later request while that row stays in context. This reads what the window still
+    carries, so the set is derived, never stored: rows dropped by compression, a session
+    switch or ``/new`` stop contributing with no extra bookkeeping to invalidate.
+    """
+    seen: set[str] = set()
+    for msg in messages or ():
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        texts: list[str] = []
+        sidecar = msg.get("api_content")
+        if isinstance(sidecar, str) and sidecar:
+            texts.append(sidecar)
+        content = msg.get("content")
+        if isinstance(content, list):
+            texts.extend(
+                part.get("text") for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            )
+        for text in texts:
+            for span in _MEMORY_CONTEXT_SPAN_RE.findall(text):
+                seen.update(_self_contained_bullets(span))
+    return seen
+
 
 def _drop_repeated_recall_lines(text: str) -> str:
     """Drop a recalled bullet that an EARLIER line of this same block already states.
@@ -359,9 +417,7 @@ def _drop_repeated_recall_lines(text: str) -> str:
         if stripped and not is_bullet:
             seen.clear()
         if is_bullet:
-            following = lines[index + 1] if index + 1 < len(lines) else ""
-            carries_continuation = bool(following.strip()) and following[0].isspace()
-            if not carries_continuation:
+            if not _bullet_carries_continuation(lines, index):
                 if stripped in seen:
                     continue
                 seen.add(stripped)
@@ -369,8 +425,32 @@ def _drop_repeated_recall_lines(text: str) -> str:
     return "\n".join(kept)
 
 
-def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note."""
+def _drop_window_repeated_recall_lines(text: str, already_in_window: set[str]) -> str:
+    """Drop a self-contained bullet an earlier row's recall block already states.
+
+    Repeats across turns are what ``_drop_repeated_recall_lines`` cannot see: it dedupes inside
+    one block, while the window replays every stamped block verbatim, so a conversation that
+    stays on a topic pays the same facts once per turn, forever, until compression drops the
+    rows. Bullets already replaying tell the model nothing new; bullets with continuation lines
+    keep today's behaviour (never dropped) for the same provenance reason as within one block.
+    """
+    if not already_in_window:
+        return text
+    lines = text.split("\n")
+    kept = [
+        line for index, line in enumerate(lines)
+        if not (_is_self_contained_bullet(lines, index) and line.strip() in already_in_window)
+    ]
+    return "\n".join(kept)
+
+
+def build_memory_context_block(raw_context: str, *, already_in_window: Optional[set[str]] = None) -> str:
+    """Wrap prefetched memory in a fenced block with system note.
+
+    ``already_in_window`` is ``window_recall_bullets`` of the current history: bullets the
+    window already replays are dropped from the new block instead of being stamped — and
+    re-paid — a second time. Nothing replayable left means no block at all.
+    """
     if not raw_context or not raw_context.strip():
         return ""
     sanitized = sanitize_context(raw_context)
@@ -378,6 +458,13 @@ def build_memory_context_block(raw_context: str) -> str:
         # Stays keyed on sanitization alone: a deduped bullet is routine, not a provider fault.
         logger.warning("memory provider returned pre-wrapped context; stripped")
     clean = _drop_repeated_recall_lines(sanitized)
+    if already_in_window:
+        clean = _drop_window_repeated_recall_lines(clean, already_in_window)
+        # A block the window fully covers injects nothing. Guarded on ``sanitized`` so a
+        # provider whose pre-wrapped output sanitize stripped keeps the (warned) empty-fence
+        # shape of today instead of silently dropping the wrapper violation.
+        if sanitized.strip() and not clean.strip():
+            return ""
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

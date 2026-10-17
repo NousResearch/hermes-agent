@@ -8,6 +8,7 @@ import hmac
 import os
 
 from gateway.session_admission import admission_fingerprint
+from hermes_process_identity import matches_process_birth, valid_process_birth
 from hermes_state_runtime import (
     RuntimeStoreError, _secret_digest, adopt_worker_execution,
     mutate_worker_execution, register_worker_execution,
@@ -26,11 +27,11 @@ def _claim(connection, ref, params):
     pid, birth = params.get('pid'), params.get('birth')
     secret = params.get('secret')
     if (type(pid) is not int or pid <= 0 or pid == os.getpid()
-            or type(birth) not in (int, float) or not isinstance(secret, str) or not 16 <= len(secret) <= 256):
+            or not valid_process_birth(birth) or not isinstance(secret, str) or not 16 <= len(secret) <= 256):
         raise RuntimeStoreError('invalid_params')
     try:
         process = psutil.Process(pid)
-        if (process.create_time() != birth or not process.is_running()
+        if (not matches_process_birth(process, birth) or not process.is_running()
                 or process.status() == psutil.STATUS_ZOMBIE
                 or process.username() != psutil.Process().username()):
             raise RuntimeStoreError('permission_denied')

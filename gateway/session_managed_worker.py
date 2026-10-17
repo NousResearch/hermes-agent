@@ -287,11 +287,12 @@ class ManagedWorker:
         """Signal the verified interpreter, not only the handle: a launcher that exec-chained
         or exited leaves the real worker outside the Popen's reach."""
         import psutil
+        from hermes_process_identity import matches_process_birth
         if self.worker is None or self.worker[0] == self.process.pid:
             return
         try:
             proc = psutil.Process(self.worker[0])
-            if proc.create_time() == self.worker[1]:
+            if matches_process_birth(proc, self.worker[1]):
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:
             pass

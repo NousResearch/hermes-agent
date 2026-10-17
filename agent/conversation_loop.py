@@ -1534,6 +1534,31 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     return None
 
 
+def _finalize_terminal_api_result(agent, s: _LoopState, result: dict[str, Any]) -> dict[str, Any]:
+    """Send a terminal retry-loop result through the normal turn finalizer.
+
+    API error handlers construct their own user-facing failure result, but their early return
+    used to skip the lifecycle work shared by every completed turn, including plugin hooks.
+    Keep their failure metadata while letting the finalizer own terminal cleanup.
+    """
+    finalized = finalize_turn(
+        agent,
+        final_response=result.get("final_response", s.final_response),
+        api_call_count=result.get("api_calls", s.api_call_count),
+        interrupted=result.get("interrupted", s.interrupted),
+        failed=result.get("failed", s.failed),
+        messages=result.get("messages", s.messages),
+        conversation_history=s.conversation_history,
+        effective_task_id=s.effective_task_id,
+        turn_id=s.turn_id,
+        user_message=s.user_message,
+        original_user_message=s.original_user_message,
+        _should_review_memory=s._should_review_memory,
+        _turn_exit_reason=result.get("turn_exit_reason", s._turn_exit_reason),
+    )
+    return {**result, **finalized}
+
+
 def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     """The codex app-server's result for this turn, or None when its failure activated a fallback and the
     generic loop retries the same user turn."""
@@ -1675,7 +1700,7 @@ def _run_conversation_turn(
 
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
-            return early_result
+            return _finalize_terminal_api_result(agent, s, early_result)
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":

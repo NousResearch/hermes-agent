@@ -308,19 +308,23 @@ class SessionGatewayMixin:
             (scope, session_key, entry_json, time.time(), route_namespace(session_key)),
         )
 
-    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> None:
+    def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> set[str]:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
-        are removed); other scopes untouched."""
+        are removed); other scopes untouched. Returns the keys skipped as retired routes, which
+        the sessions.json mirror must leave out too."""
         from hermes_state_mutation_retirement import route_namespace, route_retired_sql
         now = time.time()
+        rows = [(scope, k, v, now, route_namespace(k)) for k, v in entries.items() if k and v]
         def _do(conn):
             conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
+            if rows:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
                     f"SELECT ?1, ?2, ?3, ?4 WHERE NOT {route_retired_sql('?3', '?5')}",
-                    [(scope, k, v, now, route_namespace(k)) for k, v in entries.items() if k and v])
-        self._execute_write(_do)
+                    rows)
+            kept = {r[0] for r in conn.execute("SELECT session_key FROM gateway_routing WHERE scope = ?", (scope,))}
+            return {row[1] for row in rows} - kept
+        return self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""

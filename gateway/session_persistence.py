@@ -329,19 +329,25 @@ class SessionPersistenceMixin:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         db_load_succeeded = self._load_routing_rows_locked()
         db_had_entries = db_load_succeeded and bool(self._entries)
-        self._import_legacy_sessions_json(db_had_entries)
+        mirror_retired = self._import_legacy_sessions_json(db_had_entries)
         self._loaded = True
         self._routing_db_loaded = db_load_succeeded
         self._routing_fallback_baseline = None if db_load_succeeded else self._entries_as_dicts()
+        if mirror_retired and db_load_succeeded:
+            # Rewrite the mirror while the fences that kept those routes out still hold: a prune's
+            # ages out, and the import would then restore the retired route.
+            self._save()
         # A hard crash skips graceful shutdown and leaves sessions.json pointing at ended sessions.
         self._prune_stale_sessions_locked()
 
-    def _import_legacy_sessions_json(self, db_had_entries: bool) -> None:
-        """Legacy import: sessions.json fills only keys the DB lacks. Lock held."""
+    def _import_legacy_sessions_json(self, db_had_entries: bool) -> int:
+        """Legacy import: sessions.json fills only keys the DB lacks. Lock held. Returns how many
+        mirror entries it skipped as retired routes."""
         from gateway.session import SessionEntry
         sessions_file = self.sessions_dir / "sessions.json"
+        retired = 0
         if not sessions_file.exists():
-            return
+            return retired
         try:
             with open(sessions_file, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
@@ -360,6 +366,7 @@ class SessionPersistenceMixin:
                     db = self._routing_db
                     if db is not None and route_retired(db, key, json.dumps(
                             {'session_id': entry_data['session_id']})):
+                        retired += 1
                         continue
                     self._entries[key] = SessionEntry.from_dict(entry_data)
                     imported += 1
@@ -371,6 +378,7 @@ class SessionPersistenceMixin:
                     "state.db routing table", imported, "y" if imported == 1 else "ies")
         except Exception as e:
             print(f"[gateway] Warning: Failed to load sessions: {e}")
+        return retired
 
     def _prune_stale_sessions_locked(self) -> None:
         """Remove routing entries whose session has ended in state.db (startup, lock held). Stale ==
@@ -513,8 +521,12 @@ class SessionPersistenceMixin:
             replacer = self._routing_db_method("replace_gateway_routing_entries")
             if replacer is not None:
                 try:
-                    replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
+                    retired = replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
                     db_saved = True
+                    # A retired route the save skipped stays out of the mirror too: its fence may
+                    # age out (a prune's), and the next start's legacy import would restore it.
+                    if isinstance(retired, set) and retired:
+                        data = {k: v for k, v in data.items() if k not in retired}
                 except Exception as exc:
                     logger.warning("gateway.session: state.db routing save failed: %s", exc)
             if getattr(self, "_write_sessions_json", True) or not db_saved:

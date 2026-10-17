@@ -185,9 +185,79 @@ async def test_a_shared_fence_an_earlier_release_wrote_still_guards_every_route(
         with store._lock:
             store._save()
         assert key not in _durable(store)
-        assert key in json.loads((store.sessions_dir / 'sessions.json').read_text())
-        store._entries.pop(key)
+        assert key not in json.loads((store.sessions_dir / 'sessions.json').read_text())
+        store._save_sessions_json({key: store._entries.pop(key).to_dict()})  # an earlier release's unfiltered mirror
         with store._lock:
             store._import_legacy_sessions_json(True)
         assert key not in store._entries, 'the sessions.json mirror restored a fenced route'
         assert _conflict(served.launch.db, 'gone') == ('session_deleted', 'Session was deleted; its id cannot be reused')
+
+
+def _mirror(store):
+    return json.loads((store.sessions_dir / 'sessions.json').read_text())
+
+
+def _restart(store):
+    """The next gateway start's routing load: state.db rows, then the sessions.json import."""
+    with store._lock:
+        store._entries.clear()
+        store._loaded = False
+        store._ensure_loaded_locked()
+
+
+async def _pruned_alpha_route(served, tmp_path):
+    """``(key, sid, stale)``: alpha's routed session, pruned through the owner path after a
+    worker took a whole-index snapshot that still names its route."""
+    from gateway.run import _profile_runtime_scope
+    from gateway.session_local import create_local_session
+    store, key = served.store, 'agent:alpha:telegram:333'
+    with _profile_runtime_scope(served.home, {}):
+        ref = create_local_session(served.alpha, served.actor, {
+            'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
+        store._entries[key] = _entry(key, ref.session_id)
+        with store._lock:
+            stale = store._snapshot_routing_locked()
+        await _prune(served, ref)
+    return key, ref.session_id, stale
+
+
+@pytest.mark.asyncio
+async def test_a_delayed_snapshot_cannot_restore_a_pruned_route_once_its_fence_ages_out(tmp_path, monkeypatch):
+    """The delayed snapshot is filtered in ``gateway_routing``, and in its sessions.json mirror too:
+    otherwise, once the prune's shared fence aged out, the next start imported the mirror's route
+    (its session row is gone, and the stale pass keeps routes without a row). The id itself is free
+    again: alpha recreating it routes as usual."""
+    async with _served(tmp_path, monkeypatch) as served:
+        store = served.store
+        key, sid, stale = await _pruned_alpha_route(served, tmp_path)
+        store._persist_routing_data(*stale)
+        assert key not in _durable(store)
+        assert key not in _mirror(store), 'the sessions.json mirror kept the pruned route'
+        _past_the_horizon(served.alpha.db, served.launch.db)
+        _restart(store)
+        assert key not in store._entries, 'a pruned route came back on startup after its fence aged out'
+
+        served.alpha.db.create_session(sid, source='telegram')
+        store._entries[key] = _entry(key, sid)
+        with store._lock:
+            store._save()
+        assert key in _durable(store) and key in _mirror(store), 'the recreated id was refused a route'
+        _restart(store)
+        assert store._entries[key].session_id == sid
+
+
+@pytest.mark.asyncio
+async def test_a_start_within_the_horizon_strips_a_pruned_route_from_an_older_mirror(tmp_path, monkeypatch):
+    """A sessions.json an earlier release wrote unfiltered (or one left by a crash before the next
+    save) still names the pruned route. The first start while the fence holds skips it and rewrites
+    the mirror, so the route cannot come back once the fence ages out."""
+    async with _served(tmp_path, monkeypatch) as served:
+        store = served.store
+        key, _sid, stale = await _pruned_alpha_route(served, tmp_path)
+        store._save_sessions_json(stale[0])
+        _restart(store)
+        assert key not in store._entries
+        assert key not in _mirror(store), 'the start kept the pruned route in the mirror'
+        _past_the_horizon(served.alpha.db, served.launch.db)
+        _restart(store)
+        assert key not in store._entries, 'a pruned route came back on startup after its fence aged out'

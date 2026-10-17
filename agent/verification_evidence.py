@@ -303,12 +303,22 @@ def _is_under(token: str, base: str | Path | None) -> bool:
 
 
 def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
-    """An ad-hoc verify script: prefixed name, under the temp dir, outside the repo."""
+    """An ad-hoc verify script: prefixed name that lives under the temp dir OR outside the repo.
+
+    The two path tests must not be ANDed: the bootstrap points ``TMPDIR`` at
+    ``HERMES_HOME/cache/scratch``, so when the workspace root contains the Hermes home the
+    gate-mandated script path is under the temp dir AND under the root — the AND admitted no
+    script at all, a passing ad-hoc run recorded nothing, and the verify-on-stop nudge fired
+    every turn (#136322). The prefix plus ``not _is_under(root)`` still keeps a committed file
+    with the prefix inside the repo from counting as ad-hoc coverage.
+    """
     try:
         name = Path(token).expanduser().name
     except Exception:
         return False
-    return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
+    return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and (
+        _is_under(token, tempfile.gettempdir()) or not _is_under(token, root)
+    )
 
 
 def _is_interpreter_token(token: str) -> bool:

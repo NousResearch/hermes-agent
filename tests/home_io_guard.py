@@ -30,6 +30,13 @@ _INTERPRETER_PREFIXES = tuple({
 # resolve once at import, as before: they are fixed for the process lifetime.
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
+# The venv's container directory: a PM testenv generation root (``<home>/installs/<key>/
+# test-environment/<gen>/``) or the checkout for an in-tree ``.venv``. ``owning_install_root``
+# stats ``venv.parent / "hermes_cli" / "main.py"`` — a *sibling* of sys.prefix that none of the
+# prefixes above covers — on every ``hermes`` update command, so a PM-managed layout would trip
+# the guard before any test logic runs. Lookups only: writing into the running generation stays
+# refused.
+_VENV_CONTAINER_PREFIXES = (_normcase(os.fspath(Path(sys.prefix).resolve().parent)),)
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -102,6 +109,13 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
+            # The venv's container directory (see _VENV_CONTAINER_PREFIXES): probing the PM
+            # generation the interpreter was installed into is command/install discovery, not a
+            # state read. Lookups only — a write there is still Hermes state manipulation.
+            if metadata:
+                for prefix in _VENV_CONTAINER_PREFIXES:
+                    if _within(absolute, prefix):
+                        return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             for root in roots:

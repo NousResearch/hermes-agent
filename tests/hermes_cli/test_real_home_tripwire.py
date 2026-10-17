@@ -216,6 +216,30 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
 
+def test_pm_generation_root_beside_the_venv_is_lookup_exempt_only(
+    tmp_path, monkeypatch
+):
+    """A PM testenv venv sits at ``<home>/installs/<key>/test-environment/<gen>/venv``;
+    ``owning_install_root`` stats ``<gen>/hermes_cli/main.py`` beside it on every ``hermes``
+    update command — a *sibling* of sys.prefix that none of its own prefixes covers. That
+    lookup is install discovery, not a state read. Only lookups are exempt: reading or
+    writing under the generation stays refused."""
+    from tests.home_io_guard import HomeIOGuard
+
+    generation = tmp_path / "gen"
+    generation.mkdir()
+    monkeypatch.setattr(
+        "tests.home_io_guard._VENV_CONTAINER_PREFIXES",
+        (os.path.normcase(os.fspath(generation)),),
+    )
+    guard = HomeIOGuard(lambda: [generation])
+    guard.check(generation / "hermes_cli" / "main.py", metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(generation / "hermes_cli" / "main.py")
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(generation / "profiles" / "state.db")
+
+
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     """A Hermes-launched shell hands pytest TMPDIR=<home>/cache/scratch (tagged by
     HERMES_SCRATCH_DIR). With that home guarded, honoring it would put the session

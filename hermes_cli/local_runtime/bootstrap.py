@@ -33,8 +33,22 @@ def _stop_at_exit() -> None:
     global _EXIT_HOOKED
     if not _EXIT_HOOKED:
         import atexit
+        import signal
 
         atexit.register(shutdown_local_runtime)
+        # The desktop app (Electron) kills the backend with SIGTERM/SIGKILL on close,
+        # which bypasses atexit. Catch SIGTERM to clean up the server tree.
+        def _sigterm_handler(signum, frame):
+            shutdown_local_runtime()
+            # Re-raise so the default handler still terminates the process
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+        with suppress(ValueError):
+            # ValueError if not in main thread (e.g. some test contexts)
+            signal.signal(signal.SIGTERM, _sigterm_handler)
+        with suppress(ValueError):
+            signal.signal(signal.SIGINT, _sigterm_handler)
         _EXIT_HOOKED = True
 
 

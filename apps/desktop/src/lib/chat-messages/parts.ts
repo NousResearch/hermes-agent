@@ -1,5 +1,6 @@
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 
+import { sealOpenToolParts } from './tool-parts'
 import type { ChatMessage, ChatMessagePart } from './types'
 
 export function textPart(text: string, timestamp?: number): ChatMessagePart {
@@ -537,10 +538,14 @@ export function mergeFinalAssistantText(
   return [...kept, finalPart]
 }
 
-/** Seal every still-open visible activity when the assistant turn stops. */
-export function completeOpenTimelineParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
+/** An interim response ends prose, while its tools can outlive the bubble. */
+export function completeOpenTimelineParts(
+  parts: ChatMessagePart[],
+  completedAt: number,
+  scope: 'response' | 'turn' = 'turn'
+): ChatMessagePart[] {
   return parts.map(part =>
-    part.timestamp !== undefined && part.completedAt === undefined
+    part.timestamp !== undefined && part.completedAt === undefined && (scope === 'turn' || part.type !== 'tool-call')
       ? ({ ...part, completedAt } as ChatMessagePart)
       : part
   )
@@ -554,7 +559,7 @@ export function finalizeInterruptedMessages(
   streamId?: null | string,
   occurredAt = Date.now() / 1000
 ): ChatMessage[] {
-  return messages
+  const settled = messages
     .filter(
       message =>
         !(
@@ -573,6 +578,9 @@ export function finalizeInterruptedMessages(
           }
         : message
     )
+
+  // Interim bubbles are no longer pending, but their tools can still be open.
+  return sealOpenToolParts(settled)
 }
 
 // Coalesce only adjacent deltas of the same channel. Switching between text

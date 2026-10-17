@@ -279,6 +279,28 @@ def start_deferred_title_upgrade(agent: Any) -> None:
     start_title_upgrade(upgrade)
 
 
+def row_carries_user_message(msg: Any, user_message: Any) -> bool:
+    """True when a user row still carries this turn's text beyond a verbatim match.
+
+    Alternation repair can weld this turn's row into an adjacent one: a display row
+    (e.g. a model-switch marker) merged with a typed synthetic event keeps the marker's
+    ``display_kind``, so the event's exact-match anchor disappears even though its text
+    survives inside the merged content (#140650). That merged row — not an older human
+    request — is the row carrying this turn. Compaction handoffs never qualify (#80622):
+    their content is reference scaffolding that merely mentions the ask.
+    """
+    from agent.context_compressor import is_compaction_summary_message
+
+    if not (isinstance(user_message, str) and user_message):
+        return False
+    content = msg.get("content")
+    return (
+        isinstance(content, str)
+        and user_message in content
+        and not is_compaction_summary_message(msg)
+    )
+
+
 def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
@@ -305,6 +327,12 @@ def reanchor_current_turn_user_idx(messages: list[Any], user_message: Any) -> in
         # Typed synthetic current events keep their persistence anchor when raw
         # content is unchanged; not eligible for the human-only fallback below.
         if msg.get("content") == user_message:
+            return i
+        # A row that absorbed this turn's text through alternation repair (a
+        # model-switch marker welded onto a typed async-delegation completion,
+        # #140650) still carries the turn: anchor it instead of silently falling
+        # back to an older human request (or none).
+        if row_carries_user_message(msg, user_message):
             return i
         live_view = user_originated_turn_view(msg)
         if live_view is None:

@@ -47,6 +47,20 @@ def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
         recover_at_startup()
 
 
+def _profile_has_timed_reset_plugin(home: Path) -> bool:
+    """Whether *home*'s own plugin set honours a retired timed ``session_reset``.
+
+    A routed profile dispatches its hooks (``pre_gateway_dispatch``) through ITS OWN plugin
+    manager — the registry is cached per resolved home — so the host's plugin set says nothing
+    about a secondary profile. The check therefore runs inside the profile's runtime scope.
+    Blocking: reads that profile's ``.env`` for the scope.
+    """
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.session_reset_retirement import reset_plugin_enabled
+    with _profile_runtime_scope(Path(home)):
+        return reset_plugin_enabled()
+
+
 def recover_left_core_at_gateway_start() -> None:
     """Left-core migration for the homes whose platform config the runner loads first: the launch
     home and the default root (the multiplex primary; a named launcher is then served as a
@@ -978,16 +992,15 @@ class GatewayStartupMixin:
 
     def _start_log_retired_session_reset(self) -> None:
         """Warn per served profile whose config still declares an idle/daily ``session_reset``,
-        unless the plugin that honours it is enabled. Never raises."""
+        unless the plugin that honours it is enabled in that profile's own plugin set. Never raises."""
         with _log_suppressed(logging.DEBUG, "retired session_reset check failed", exc_info=True):
             from gateway.config_loader import read_yaml_layers
             from hermes_cli.profiles import profiles_to_serve
-            from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
-            hits = [(name, found) for name, home in profiles_to_serve(bool(self.config.multiplex_profiles))
-                    if (found := retired_reset_policy(read_yaml_layers(home)))]
-            if hits and not reset_plugin_enabled():
-                for name, (path, mode) in hits:
-                    logger.warning("Profile %s: %s", name, format_notice(path, mode))
+            from hermes_cli.session_reset_retirement import format_notice, retired_reset_policy
+            for name, home in profiles_to_serve(bool(self.config.multiplex_profiles)):
+                found = retired_reset_policy(read_yaml_layers(home))
+                if found and not _profile_has_timed_reset_plugin(home):
+                    logger.warning("Profile %s: %s", name, format_notice(*found))
 
     def _start_log_systemd_timing_alignment(self) -> None:
         """Warn when systemd's TimeoutStopSec does not cover the drain window (a unit file from before

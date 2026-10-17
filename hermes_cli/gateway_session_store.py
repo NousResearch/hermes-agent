@@ -382,11 +382,6 @@ class GatewaySessionStore:
         }
 
 
-# Built from session_policy.SURFACES and STORED_AS_LOCAL. gui and desktop are one
-# conversation (in-process agent is desktop; the managed worker creates with gui).
-# acp is stored local too. tool and oneshot are not cli aliases.
-
-
 class SurfaceLabelReader:
     """A read-only ``SessionDB`` whose source-filtered listings read main's labels: ``source='cli'``
     also matches a gateway row labelled ``local`` that the CLI created (``created_source='cli'``), so
@@ -416,8 +411,11 @@ class SurfaceLabelReader:
     def _expand(self, requested):
         """``(live source labels, created_source labels)`` or None for a raw source filter.
 
-        Live labels include the other name of a gui/desktop pair, so a row that has not been
-        peer-refreshed (``source='gui'``) still matches ``--source desktop``.
+        Groups come from session_policy.SURFACES and STORED_AS_LOCAL: gui and desktop are one
+        conversation (the in-process agent is desktop, the managed worker creates with gui), acp
+        is stored local too, and tool/oneshot are not cli aliases. Live labels include the other
+        name of a gui/desktop pair, so a row that has not been peer-refreshed (``source='gui'``)
+        still matches ``--source desktop``.
         """
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
         created = set()

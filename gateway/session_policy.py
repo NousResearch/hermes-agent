@@ -80,6 +80,8 @@ SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 
 # Every other creation label is rewritten to ``source='local'`` on peer refresh.
 _KEEP_STORED_LABEL = frozenset({'tool', 'oneshot'})
 STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
+# Routing labels and the accounting placeholder: never a creating surface.
+_NOT_A_SURFACE = frozenset({None, '', 'local', 'unknown'})
 
 
 def created_surface(label):
@@ -89,12 +91,9 @@ def created_surface(label):
     through ``SURFACES`` (``gui`` is ``desktop``). Any other label, including
     ``tool`` and ``oneshot``, is kept as itself: created_source is provenance.
     """
-    if label in (None, '', 'local', 'unknown'):
+    if label in _NOT_A_SURFACE:
         return None
-    mapped = SURFACES[label] if label in STORED_AS_LOCAL else label
-    if mapped in ('', 'local', 'unknown'):
-        return None
-    return mapped
+    return SURFACES[label] if label in STORED_AS_LOCAL else label
 
 
 def surface_groups():

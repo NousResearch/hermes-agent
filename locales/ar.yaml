@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ تمت أرشفة الـ worktree في {ref} وإزالته: {path}"
     restore_hint: "لاستعادته: hermes worktree restore {name}"
     archive_failed: "✗ تعذّرت أرشفة {path}، سيُحتفظ به: {error}"
-    archive_not_removed: "تم حفظ الأرشيف، لكن تعذّرت إزالة {path}؛ أزله يدويًا."
+    archived_kept: "✓ تمت أرشفة الـ worktree في {ref} لكن احتُفظ به (تغيّر، أو قيد الاستخدام، أو تعذّرت إزالته): {path}"
+    sweep_archived_removed: "أُرشف + أُزيل → {ref}"
+    sweep_archived_kept: "أُرشف، واحتُفظ به (تغيّر أثناء التنظيف) → {ref}"
     discarded: "تمت إزالة الـ worktree وتجاهل تغييراته: {path}"
 display:
   verb:

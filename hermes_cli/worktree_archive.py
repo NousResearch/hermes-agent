@@ -52,6 +52,7 @@ class Archive:
     sha: str
     created: float
     meta: dict = field(default_factory=dict)
+    staged: str = ""  # staged_state() of exactly the index this archive captured
 
 
 def _env(cwd, index: Optional[str] = None) -> dict:
@@ -173,16 +174,74 @@ def _untracked(wt: Path, env) -> list[str]:
     return [p for p in out.split("\0") if p]
 
 
+SUBMODULE_REASON = "submodule "
+
+
+def submodule_work(wt_path, _depth: int = 0) -> Optional[str]:
+    """Why an initialized submodule of *wt_path* holds work a snapshot cannot carry, or None.
+
+    A snapshot records a submodule only as its ``160000`` gitlink, and removing the worktree
+    deletes the submodule checkout and its per-worktree ``modules/`` repository. So a populated
+    submodule that is dirty (tracked or untracked), checked out at another commit than recorded,
+    or holding any commit/stash no remote-tracking ref has, keeps the tree. Uninitialized
+    submodules, and clean ones whose commits all exist on a remote, are safe. Read-only.
+    """
+    wt = Path(wt_path)
+    env = _env(wt)
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    staged = _ok(["ls-files", "--stage", "-z"], wt, env)
+    links = [e.split("\t", 1)[1] for e in staged.split("\0") if e.startswith("160000 ") and "\t" in e]
+    populated = [p for p in dict.fromkeys(links) if (wt / p / ".git").exists()]
+    if not populated:
+        return None
+    # --ignore-submodules=none overrides diff.ignoreSubmodules/.gitmodules ignore=all; the S flags
+    # (C = new commit, M = tracked changes, U = untracked files) recurse into nested submodules.
+    status = _ok(["status", "--porcelain=v2", "-z", "-uno", "--no-renames", "--ignore-submodules=none"], wt, env)
+    for entry in status.split("\0"):
+        fields = entry.split(" ")
+        if entry[:2] in ("1 ", "2 ", "u ") and len(fields) > 2 and fields[2].startswith("S") \
+                and fields[2] != "S...":
+            path = entry.split(" ", 10 if entry[0] == "u" else (9 if entry[0] == "2" else 8))[-1]
+            return f"{SUBMODULE_REASON}{path.split(chr(9))[0]} has uncommitted work or a new commit"
+    for rel in populated:
+        sub = wt / rel
+        senv = _env(sub)
+        local_only = _ok(["rev-list", "-n1", "--all", "--not", "--remotes"], sub, senv).strip()
+        if local_only:
+            return f"{SUBMODULE_REASON}{rel} has commits or stashes on no remote"
+        if _depth < 8:
+            nested = submodule_work(sub, _depth + 1)
+            if nested:
+                return nested.replace(SUBMODULE_REASON, f"{SUBMODULE_REASON}{rel}/", 1)
+    return None
+
+
+def staged_state(wt_path) -> str:
+    """Digest of the semantic staged entries (mode, blob id, stage, path) of *wt_path*.
+
+    A stat-only index refresh (``git status``) leaves it unchanged; any ``git add``/``apply
+    --cached``/``rm --cached`` changes it. Raises :class:`ArchiveError` when git fails.
+    """
+    wt = Path(wt_path)
+    return _digest_index(wt, _env(wt))
+
+
+def _digest_index(wt: Path, env) -> str:
+    import hashlib
+    env = {**env, "GIT_OPTIONAL_LOCKS": "0"}
+    return hashlib.sha256(_ok(["ls-files", "--stage", "-z"], wt, env).encode("utf-8", "surrogateescape")).hexdigest()
+
+
 def archive_preflight(wt_path) -> Optional[str]:
     """Why *wt_path* cannot be snapshotted losslessly, or None. Read-only."""
     try:
         wt = Path(wt_path)
         embedded = [p for p in _untracked(wt, _env(wt)) if p.endswith("/")]
+        if not embedded:
+            return submodule_work(wt)
     except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
         return str(exc)
-    if embedded:
-        return f"untracked embedded repository {embedded[0].rstrip('/')} cannot be archived"
-    return None
+    return f"untracked embedded repository {embedded[0].rstrip('/')} cannot be archived"
 
 
 def _split_oversized(wt: Path, untracked: list[str], max_mb: float) -> list[dict]:
@@ -217,6 +276,11 @@ def snapshot_worktree(repo_root: str, wt_path, *, reason: str, max_untracked_mb:
     """
     wt = Path(wt_path)
     env = _env(wt)
+    # Shared refusal point (sweep, exit-time Archive, subagent finalization): a gitlink records
+    # no submodule work, and removing the tree would delete it.
+    unsafe = submodule_work(wt)
+    if unsafe:
+        raise ArchiveError(unsafe)
     head = _ok(["rev-parse", "--verify", "HEAD^{commit}"], wt, env).strip()
     branch = _run(["symbolic-ref", "--short", "-q", "HEAD"], wt, env).stdout.strip() or None
     git_dir = Path(_ok(["rev-parse", "--absolute-git-dir"], wt, env).strip())
@@ -234,6 +298,7 @@ def snapshot_worktree(repo_root: str, wt_path, *, reason: str, max_untracked_mb:
             shutil.copyfile(git_dir / "index", tmp_index)
         else:
             _ok(["read-tree", head], wt, tenv)
+        staged = _digest_index(wt, tenv)
         # Staged state first (fails on an unmerged index: a conflicted tree is never archived).
         index_tree = _ok(["write-tree"], wt, tenv).strip()
         empty_tree = _ok(["mktree"], wt, env, stdin_text="").strip()
@@ -256,7 +321,8 @@ def snapshot_worktree(repo_root: str, wt_path, *, reason: str, max_untracked_mb:
             leftover.unlink(missing_ok=True)
     ref = _create_ref(repo_root, wt.name, sha, env)
     logger.info("Archived worktree %s -> %s (%s)", wt, ref, reason)
-    return Archive(ref=ref, name=ref[len(ARCHIVE_PREFIX):], sha=sha, created=meta["created"], meta=meta)
+    return Archive(ref=ref, name=ref[len(ARCHIVE_PREFIX):], sha=sha, created=meta["created"], meta=meta,
+                   staged=staged)
 
 
 def _parse_meta(body: str) -> dict:

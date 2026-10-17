@@ -6,7 +6,8 @@ tiers and classifier, then removes an idle dirty/unpushed tree only after archiv
 working state to ``refs/hermes/archive/<tree>`` (``worktree_archive``); a failed archive keeps
 the tree. Never touched, at any age or budget: Kanban ``t_<hex>`` trees, trees whose ``hermes``
 lock owner still runs, trees any live process sits in (cwd or open file), and trees with file or
-ref activity younger than their tier. With ``archive_dirty: false`` and no size budget the
+ref activity younger than their tier, and trees whose initialized submodules hold work
+(``keep-submodule-work``: an archive records only the gitlink). With ``archive_dirty: false`` and no size budget the
 classic pruner runs unchanged.
 
 ``plan_sweep`` is read-only (``hermes worktree prune --dry-run`` prints it); ``execute_plan``
@@ -195,6 +196,13 @@ def _tier_hours(name: str, max_age_hours: float) -> float:
     return prune_tier_hours(name, max_age_hours)
 
 
+def _unarchivable_action(why: str) -> str:
+    """``keep-submodule-work`` for submodule edits/commits a gitlink cannot carry, else
+    ``keep-unarchivable``."""
+    from hermes_cli.worktree_archive import SUBMODULE_REASON
+    return "keep-submodule-work" if why.startswith(SUBMODULE_REASON) else "keep-unarchivable"
+
+
 def _plan_survivor(repo_root: str, entry: Path, verdict: str, lock_state, settings: dict,
                    tier_hours: float, now: float) -> tuple[str, str, Optional[str], Optional[float]]:
     """(action, reason, lock_state, last_activity) for a dirty/unpushed tree past its tier."""
@@ -211,7 +219,7 @@ def _plan_survivor(repo_root: str, entry: Path, verdict: str, lock_state, settin
         return f"keep-{verdict}", what, lock_state, active  # idle: only the size budget may evict it
     unsafe = archive_preflight(str(entry))
     if unsafe:
-        return "keep-unarchivable", unsafe, lock_state, active
+        return _unarchivable_action(unsafe), unsafe, lock_state, active
     return "archive-remove", what, lock_state, active
 
 
@@ -232,7 +240,7 @@ def _apply_budget(decisions: list[Decision], max_total_gb: float) -> None:
             break
         unsafe = archive_preflight(d.path)
         if unsafe:
-            d.action, d.reason = "keep-unarchivable", unsafe
+            d.action, d.reason = _unarchivable_action(unsafe), unsafe
             continue
         d.action, d.reason = "archive-remove", f"{d.reason}; over worktrees.max_total_gb={max_total_gb:g}"
         total -= d.size_mb or 0
@@ -330,6 +338,19 @@ def _in_use_since(path: str, since: float, exclude=()) -> Optional[str]:
     return None
 
 
+def _index_moved(path: str, captured: str) -> Optional[str]:
+    """Why the staged state of *path* no longer matches the archive (``git add``/``apply
+    --cached`` after the capture: the index is not a file-mtime signal), or None. A stat-only
+    refresh by ``git status`` does not count. Unreadable index = moved (keep the tree)."""
+    from hermes_cli.worktree_archive import ArchiveError, staged_state
+    try:
+        if staged_state(path) == captured:
+            return None
+    except (ArchiveError, OSError, subprocess.SubprocessError):
+        pass
+    return "staged changes since the snapshot"
+
+
 def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked_mb: float,
                         unlock: bool, remote_heads_fn=None, keep_branch: bool = False,
                         exclude_pids=(),
@@ -337,8 +358,8 @@ def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked
     """Snapshot *path*, then remove it -> ``(archive_ref, kept_branch, removed)``.
 
     Raises ``ArchiveError`` (tree untouched) when the snapshot fails. Right after the snapshot the
-    tree is checked again: a process (other than *exclude_pids*) now working in it, or any edit
-    made while the snapshot ran, keeps the tree (``removed`` False; the archive stays). The branch
+    tree is checked again: a process (other than *exclude_pids*) now working in it, any edit
+    made while the snapshot ran, or staged entries that differ from the captured index keep the tree (``removed`` False; the archive stays). The branch
     survives when it is protected or published on a remote (an open PR may still need it);
     otherwise the archive ref anchors its commits and the local branch is deleted.
     """
@@ -347,7 +368,7 @@ def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked
     from hermes_cli._subprocess_compat import noninteractive_git_env
     started = time.time()
     arc = snapshot_worktree(repo_root, path, reason=reason, max_untracked_mb=max_untracked_mb)
-    busy = _in_use_since(path, started, exclude=exclude_pids)
+    busy = _in_use_since(path, started, exclude=exclude_pids) or _index_moved(path, arc.staged)
     if busy:
         logger.warning("Archived %s to %s but keeping it: %s", path, arc.ref, busy)
         return arc.ref, None, False
@@ -393,9 +414,11 @@ def _recheck(repo_root: str, d: Decision) -> tuple[Optional[str], Optional[str]]
     return None, lock_state
 
 
-def execute_plan(repo_root: str, plan: list[Decision], settings: dict) -> tuple[list[str], set, list[str]]:
-    """Apply a frozen plan -> ``(preserved_stale, kept_branches, archived_refs)``. Each tree is
-    re-gated (lock, live process, fresh activity) right before it is archived or removed."""
+def execute_plan(repo_root: str, plan: list[Decision], settings: dict
+                 ) -> tuple[list[str], set, list[tuple[str, bool]]]:
+    """Apply a frozen plan -> ``(preserved_stale, kept_branches, [(archive_ref, removed)])``. Each
+    tree is re-gated (lock, live process, fresh activity) right before it is archived or removed;
+    ``removed`` is False when the archive was saved but the tree was kept (changed meanwhile)."""
     from hermes_cli import worktree_ops as ops
     from hermes_cli.worktree_archive import ArchiveError
     memo: dict = {}
@@ -406,7 +429,7 @@ def execute_plan(repo_root: str, plan: list[Decision], settings: dict) -> tuple[
         return memo["heads"]
 
     kept_branches: set = set()
-    archived: list[str] = []
+    archived: list[tuple[str, bool]] = []
     preserved: list[str] = [f"{d.name} ({d.reason})" for d in plan if d.action.startswith("keep-")]
     for d in (d for d in plan if d.action in _DESTRUCTIVE):
         why_keep, lock_state = _recheck(repo_root, d)
@@ -419,14 +442,16 @@ def execute_plan(repo_root: str, plan: list[Decision], settings: dict) -> tuple[
             kept_branches |= kept
             continue
         try:
-            ref, kept, _removed = archive_then_remove(
+            ref, kept, removed = archive_then_remove(
                 repo_root, d.path, reason=f"sweep: {d.reason}", max_untracked_mb=settings["archive_max_file_mb"],
                 unlock=lock_state == "dead", remote_heads_fn=remote_heads)
         except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
             logger.warning("Keeping worktree %s: archive failed (%s)", d.name, exc)
             preserved.append(f"{d.name} (archive failed)")
             continue
-        archived.append(ref)
+        archived.append((ref, removed))
+        if not removed:
+            preserved.append(f"{d.name} (archived to {ref}, kept: changed during the sweep)")
         if kept:
             kept_branches.add(kept)
     return preserved, kept_branches, archived
@@ -438,9 +463,10 @@ def run_sweep(repo_root: str, max_age_hours: int, settings: dict) -> None:
     from hermes_cli.worktree_archive import prune_expired_archives
     plan = plan_sweep(repo_root, max_age_hours, settings)
     preserved, kept_branches, archived = execute_plan(repo_root, plan, settings)
-    if archived:
+    removed = [ref for ref, gone in archived if gone]
+    if removed:
         logger.warning("Archived and removed %d idle worktree(s) with unmerged work; restore any with "
-                       "`hermes worktree restore <name>` (`hermes worktree list` shows archives).", len(archived))
+                       "`hermes worktree restore <name>` (`hermes worktree list` shows archives).", len(removed))
     if preserved:
         logger.warning("Preserving %d stale worktree(s) (run `hermes worktree prune --dry-run` for reasons): %s",
                        len(preserved), ", ".join(sorted(preserved)[:20]))

@@ -3409,7 +3409,9 @@ cli:
     archived: "✓ Worktree archived to {ref} and removed: {path}"
     restore_hint: "Restore it with: hermes worktree restore {name}"
     archive_failed: "✗ Could not archive {path}, keeping it: {error}"
-    archive_not_removed: "The archive is saved, but {path} could not be removed; remove it by hand."
+    archived_kept: "✓ Worktree archived to {ref} but kept (it changed, is in use, or could not be removed): {path}"
+    sweep_archived_removed: "archived + removed → {ref}"
+    sweep_archived_kept: "archived, kept (changed during the sweep) → {ref}"
     discarded: "Worktree removed and its changes discarded: {path}"
 
 display:

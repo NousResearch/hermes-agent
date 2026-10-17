@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ Worktree arquivada em {ref} e removida: {path}"
     restore_hint: "Restaure com: hermes worktree restore {name}"
     archive_failed: "✗ Não foi possível arquivar {path}; mantendo: {error}"
-    archive_not_removed: "O arquivo foi salvo, mas não foi possível remover {path}; remova manualmente."
+    archived_kept: "✓ Worktree arquivada em {ref}, mas mantida (foi alterada, está em uso ou não pôde ser removida): {path}"
+    sweep_archived_removed: "arquivada + removida → {ref}"
+    sweep_archived_kept: "arquivada, mantida (alterada durante a limpeza) → {ref}"
     discarded: "Worktree removida e alterações descartadas: {path}"
 display:
   verb:

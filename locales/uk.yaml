@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ Робоче дерево заархівовано в {ref} і видалено: {path}"
     restore_hint: "Відновити: hermes worktree restore {name}"
     archive_failed: "✗ Не вдалося заархівувати {path}, залишаємо: {error}"
-    archive_not_removed: "Архів збережено, але {path} не вдалося видалити; видаліть вручну."
+    archived_kept: "✓ Робоче дерево заархівовано в {ref}, але збережено (змінилося, використовується або не вдалося видалити): {path}"
+    sweep_archived_removed: "заархівовано + видалено → {ref}"
+    sweep_archived_kept: "заархівовано, збережено (змінилося під час очищення) → {ref}"
     discarded: "Робоче дерево видалено, зміни відкинуто: {path}"
 display:
   verb:

@@ -213,12 +213,15 @@ repositories' `.worktrees/`:
 | A live hermes lock owner, or any live process whose cwd (Linux: or an open file) is inside | never touched |
 | File, `HEAD` or reflog activity younger than its tier (a deleted file counts through its folder) | never touched |
 | Kanban task trees (`t_<hex>`) | never touched (the Kanban GC owns them) |
+| An initialized submodule with uncommitted edits, a different commit than recorded, or commits on no remote | kept (`keep-submodule-work`: an archive records only the submodule pointer) |
 
 An archive is a commit stored at `refs/hermes/archive/<tree>` holding the
 tree's `HEAD`, staged changes, unstaged changes and untracked files (files your
 `.gitignore` excludes, such as `node_modules/` or `.venv/`, are not captured).
 It is built with a temporary index, so the tree itself is never modified; if
-the archive cannot be built, the tree is kept. File bytes are stored and
+the archive cannot be built, the tree is kept. If the tree is entered or its
+staged changes move (`git add`, `git apply --cached`) while the archive is
+being built, the archive is saved and the tree is kept too. File bytes are stored and
 restored exactly: no `.gitattributes`, `info/attributes`, `core.attributesFile`
 line-ending or filter rule is applied. Untracked files larger than
 `worktrees.archive_max_file_mb` are left out and listed in the archive. A

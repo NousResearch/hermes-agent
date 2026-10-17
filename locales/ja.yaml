@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ ワークツリーを {ref} にアーカイブして削除しました: {path}"
     restore_hint: "復元するには: hermes worktree restore {name}"
     archive_failed: "✗ {path} をアーカイブできなかったため保持します: {error}"
-    archive_not_removed: "アーカイブは保存されましたが、{path} を削除できませんでした。手動で削除してください。"
+    archived_kept: "✓ ワークツリーを {ref} にアーカイブしましたが保持しました (変更された、使用中、または削除できませんでした): {path}"
+    sweep_archived_removed: "アーカイブして削除 → {ref}"
+    sweep_archived_kept: "アーカイブ済み、保持 (掃除中に変更されました) → {ref}"
     discarded: "ワークツリーを削除し、変更を破棄しました: {path}"
 display:
   verb:

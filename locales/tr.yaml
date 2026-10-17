@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ Worktree {ref} konumuna arşivlendi ve kaldırıldı: {path}"
     restore_hint: "Geri yüklemek için: hermes worktree restore {name}"
     archive_failed: "✗ {path} arşivlenemedi, korunuyor: {error}"
-    archive_not_removed: "Arşiv kaydedildi ancak {path} kaldırılamadı; elle kaldırın."
+    archived_kept: "✓ Worktree {ref} konumuna arşivlendi ama tutuldu (değişti, kullanımda veya kaldırılamadı): {path}"
+    sweep_archived_removed: "arşivlendi + kaldırıldı → {ref}"
+    sweep_archived_kept: "arşivlendi, tutuldu (temizlik sırasında değişti) → {ref}"
     discarded: "Worktree kaldırıldı ve değişiklikleri atıldı: {path}"
 display:
   verb:

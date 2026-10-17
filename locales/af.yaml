@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ Werkboom geargiveer na {ref} en verwyder: {path}"
     restore_hint: "Herstel dit met: hermes worktree restore {name}"
     archive_failed: "✗ Kon nie {path} argiveer nie, word behou: {error}"
-    archive_not_removed: "Die argief is gestoor, maar {path} kon nie verwyder word nie; verwyder dit met die hand."
+    archived_kept: "✓ Werkboom geargiveer na {ref} maar behou (dit het verander, is in gebruik, of kon nie verwyder word nie): {path}"
+    sweep_archived_removed: "geargiveer + verwyder → {ref}"
+    sweep_archived_kept: "geargiveer, behou (verander tydens die opruiming) → {ref}"
     discarded: "Werkboom verwyder en sy veranderinge weggegooi: {path}"
 display:
   verb:

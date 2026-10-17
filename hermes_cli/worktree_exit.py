@@ -101,10 +101,8 @@ def apply_exit_choice(info: dict, echo) -> bool:
             echo(f"\033[31m{t('cli.worktree.archive_failed', path=path, error=str(exc) or 'interrupted')}\033[0m")
             return True
         name = ref.rsplit("/", 1)[-1]
-        echo(f"\033[32m{t('cli.worktree.archived', path=path, ref=ref)}\033[0m")
+        echo(f"\033[32m{t('cli.worktree.archived' if removed else 'cli.worktree.archived_kept', path=path, ref=ref)}\033[0m")
         echo(f"  {t('cli.worktree.restore_hint', name=name)}")
-        if not removed:
-            echo(f"  {t('cli.worktree.archive_not_removed', path=path)}")
         return True
     from hermes_cli._subprocess_compat import noninteractive_git_env
     from hermes_cli.worktree_ops import _git_quiet, release_lsp_clients

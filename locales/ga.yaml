@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ Worktree cartlannaithe go {ref} agus bainte: {path}"
     restore_hint: "Athchóirigh é le: hermes worktree restore {name}"
     archive_failed: "✗ Níorbh fhéidir {path} a chartlannú, á choinneáil: {error}"
-    archive_not_removed: "Tá an chartlann sábháilte, ach níorbh fhéidir {path} a bhaint; bain de láimh é."
+    archived_kept: "✓ Worktree cartlannaithe go {ref} ach coinnithe (athraíodh é, tá sé in úsáid, nó níorbh fhéidir é a bhaint): {path}"
+    sweep_archived_removed: "cartlannaithe + bainte → {ref}"
+    sweep_archived_kept: "cartlannaithe, coinnithe (athraithe le linn an scuabtha) → {ref}"
     discarded: "Worktree bainte agus a athruithe caite uait: {path}"
 display:
   verb:

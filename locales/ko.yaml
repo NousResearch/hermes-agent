@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ 워크트리를 {ref}에 보관하고 제거했어요: {path}"
     restore_hint: "복원하려면: hermes worktree restore {name}"
     archive_failed: "✗ {path}을(를) 보관하지 못해 유지해요: {error}"
-    archive_not_removed: "보관은 완료됐지만 {path}을(를) 제거하지 못했어요. 직접 제거해 주세요."
+    archived_kept: "✓ 워크트리를 {ref}에 보관했지만 유지했어요 (변경됐거나, 사용 중이거나, 제거할 수 없음): {path}"
+    sweep_archived_removed: "보관 후 제거 → {ref}"
+    sweep_archived_kept: "보관됨, 유지 (정리 중 변경됨) → {ref}"
     discarded: "워크트리를 제거하고 변경 사항을 버렸어요: {path}"
 display:
   verb:

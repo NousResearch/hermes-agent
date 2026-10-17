@@ -3308,7 +3308,9 @@ cli:
     archived: "✓ 工作樹已封存至 {ref} 並移除：{path}"
     restore_hint: "還原方式：hermes worktree restore {name}"
     archive_failed: "✗ 無法封存 {path}，保留：{error}"
-    archive_not_removed: "封存已儲存，但無法移除 {path}；請手動移除。"
+    archived_kept: "✓ 工作樹已封存至 {ref}，但已保留（有變更、使用中或無法移除）：{path}"
+    sweep_archived_removed: "已封存並移除 → {ref}"
+    sweep_archived_kept: "已封存，保留（清理期間有變更）→ {ref}"
     discarded: "工作樹已移除，變更已捨棄：{path}"
 display:
   verb:

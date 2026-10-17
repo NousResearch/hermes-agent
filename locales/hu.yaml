@@ -3325,7 +3325,9 @@ cli:
     archived: "✓ Worktree archiválva ide: {ref}, és eltávolítva: {path}"
     restore_hint: "Visszaállítás: hermes worktree restore {name}"
     archive_failed: "✗ {path} archiválása sikertelen, megtartva: {error}"
-    archive_not_removed: "Az archívum elmentve, de {path} nem távolítható el; töröld kézzel."
+    archived_kept: "✓ Worktree archiválva ide: {ref}, de megtartva (változott, használatban van, vagy nem távolítható el): {path}"
+    sweep_archived_removed: "archiválva + eltávolítva → {ref}"
+    sweep_archived_kept: "archiválva, megtartva (a takarítás közben változott) → {ref}"
     discarded: "Worktree eltávolítva, változásai elvetve: {path}"
 display:
   verb:

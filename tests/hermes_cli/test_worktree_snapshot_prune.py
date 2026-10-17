@@ -166,34 +166,81 @@ def test_sweep_archives_idle_work_and_never_touches_live_kanban_or_young_trees(r
         assert kept.exists() and (kept / "notes.md").read_text(encoding="utf-8-sig") == "uncommitted\n", kept.name
 
 
-def test_a_tree_resumed_mid_sweep_is_never_removed(repo, monkeypatch):
+def test_a_tree_resumed_mid_sweep_is_never_removed(repo, monkeypatch, capsys):
     """I2 at the removal boundary: a process entering a later tree while an earlier one is being
-    archived, or an edit made while a tree's own snapshot ran, keeps that tree."""
-    from hermes_cli import worktree_archive, worktree_sweep
+    archived, an edit made while a tree's own snapshot ran, or an index-only edit (``git apply
+    --cached``: no file, HEAD or reflog mtime moves) made right after capture keeps that tree, and
+    the sweep reports it as archived-but-kept, not removed."""
+    from hermes_cli import worktree_archive, worktree_cmd, worktree_sweep
 
     first, second = _tree(repo, "lane-a", dirty=True), _tree(repo, "lane-b", dirty=True)
-    for tree in (first, second):
+    staged = _tree(repo, "lane-staged", dirty=True)
+    for tree in (first, second, staged):
         _idle(tree)
-    plan = worktree_sweep.plan_sweep(str(repo), settings=worktree_sweep.sweep_settings())
-    assert {d.name for d in plan if d.action == "archive-remove"} == {"lane-a", "lane-b"}
     real_snapshot, sleepers = worktree_archive.snapshot_worktree, []
+    patch = ("--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-x = 1\n+NEW STAGED CONTENT\n")
 
     def snapshot_then_user_returns(repo_root, wt_path, **kw):
         arc = real_snapshot(repo_root, wt_path, **kw)
+        if Path(wt_path).name == "lane-staged":
+            subprocess.run(["git", "apply", "--cached", "-"], cwd=str(wt_path), input=patch.encode(), check=True)
+            subprocess.run(["git", "status", "--porcelain"], cwd=str(wt_path), capture_output=True, check=True)
+            return arc
         (Path(wt_path) / "notes.md").write_text("edited during the snapshot\n", encoding="utf-8")
         sleepers.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(second)))
         return arc
 
     monkeypatch.setattr(worktree_archive, "snapshot_worktree", snapshot_then_user_returns)
     try:
-        worktree_sweep.execute_plan(str(repo), plan, worktree_sweep.sweep_settings())
+        plan, actions = worktree_cmd._sweep(str(repo), dry_run=False)
     finally:
         for proc in sleepers:
             proc.kill()
             proc.wait()
+    assert {d.name for d in plan if d.action == "archive-remove"} == {"lane-a", "lane-b", "lane-staged"}
     assert (first / "notes.md").read_text(encoding="utf-8-sig") == "edited during the snapshot\n"
     assert second.exists() and (second / "notes.md").read_text(encoding="utf-8-sig") == "uncommitted\n"
-    assert [ref.rsplit("/", 1)[-1] for ref in _archives(repo)] == ["lane-a"]
+    assert staged.exists() and _git(["show", ":b.py"], staged) == "NEW STAGED CONTENT"
+    assert sorted(ref.rsplit("/", 1)[-1] for ref in _archives(repo)) == ["lane-a", "lane-staged"]
+    assert sorted(actions) == ["archived, kept (changed during the sweep) → refs/hermes/archive/lane-a",
+                               "archived, kept (changed during the sweep) → refs/hermes/archive/lane-staged"]
+
+
+def test_dirty_submodule_work_is_never_archived_away(repo, tmp_path):
+    """C1: a snapshot records a submodule only as its gitlink, so a tree whose initialized
+    submodule holds uncommitted edits survives the real sweep byte-for-byte, and the shared
+    snapshot entry point (exit-time Archive, subagent finalization) refuses it too. A tree whose
+    submodule is clean at the recorded commit is still archived and removed."""
+    from hermes_cli.worktree_archive import ArchiveError, snapshot_worktree
+
+    sub_origin, sub_work = tmp_path / "sub.git", tmp_path / "subwork"
+    _git(["init", "-q", "--bare", "-b", "main", str(sub_origin)], tmp_path)
+    _git(["init", "-q", "-b", "main", str(sub_work)], tmp_path)
+    (sub_work / "file.txt").write_text("base\n", encoding="utf-8")
+    _git(["add", "-A"], sub_work)
+    _git(["commit", "-qm", "sub"], sub_work)
+    _git(["push", "-q", str(sub_origin), "main"], sub_work)
+    _git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub_origin), "sub"], repo)
+    _git(["commit", "-qm", "add submodule"], repo)
+    trees = {}
+    for name in ("lane-subdirty", "lane-subclean"):
+        trees[name] = _tree(repo, name, dirty=True)
+        _git(["-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init"], trees[name])
+    dirty_file = trees["lane-subdirty"] / "sub" / "file.txt"
+    dirty_file.write_bytes(b"base\nUNCOMMITTED SUBMODULE EDIT\r\n")
+    for tree in trees.values():
+        _idle(tree)
+    from hermes_cli import worktree_sweep
+    plan = {d.name: d.action for d in worktree_sweep.plan_sweep(str(repo), settings=worktree_sweep.sweep_settings())}
+    assert plan == {"lane-subdirty": "keep-submodule-work", "lane-subclean": "archive-remove"}
+
+    worktree_ops._prune_stale_worktrees(str(repo))
+
+    assert dirty_file.read_bytes() == b"base\nUNCOMMITTED SUBMODULE EDIT\r\n"
+    assert not trees["lane-subclean"].exists(), "a clean submodule at the recorded commit is archivable"
+    assert [ref.rsplit("/", 1)[-1] for ref in _archives(repo)] == ["lane-subclean"]
+    with pytest.raises(ArchiveError, match="submodule sub"):
+        snapshot_worktree(str(repo), trees["lane-subdirty"], reason="session exit")
 
 
 def test_prune_older_than_bounds_what_the_sweep_removes(repo, capsys):

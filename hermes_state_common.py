@@ -591,6 +591,17 @@ CREATE TABLE IF NOT EXISTS gateway_routing (
     PRIMARY KEY (scope, session_key)
 );
 
+CREATE TABLE IF NOT EXISTS telegram_group_topic_cache (
+    profile_name TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    source TEXT NOT NULL,
+    PRIMARY KEY (profile_name, bot_id, chat_id, thread_id)
+);
+
 CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
     session_key TEXT PRIMARY KEY,
     failure_streak INTEGER NOT NULL DEFAULT 0

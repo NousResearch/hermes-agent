@@ -1028,6 +1028,49 @@ platforms:
 3. Topics without a `skill` key get session isolation only (existing behavior, unchanged)
 4. Unmapped `thread_id` values or `chat_id` values fall through silently — no error, no skill
 
+### Learned forum topic names
+
+Hermes learns group/supergroup forum names online from `forum_topic_created` and
+nonempty `forum_topic_edited` service messages. These updates only refresh the cache;
+they do not invoke the agent or generate a reply. Icon-only edits keep the previous name.
+Names persist in the receiving adapter's profile `state.db`, isolated by transport
+profile, bot identity, chat ID and thread ID, and are available immediately after restart.
+
+Configured `group_topics` names and skills remain authoritative, including after a
+Telegram rename. Both the list form above and the mapping form
+`group_topics: {"-1001234567890": [{thread_id: 5, name: Engineering}]}` are supported.
+Learned names are fallback labels only; routing/session IDs do not change.
+The connected adapter merges configured topics, learned names and session history
+into the channel directory (also consumed by `hermes send --list`). A directory refresh
+can update an old topic label without starting a new agent session.
+
+Forum targets discovered from history must also have been observed by this receiving
+profile **and bot**, or match an explicit `group_topics` entry. Ordinary forum traffic
+records ownership even without a name: the cache stores an empty-string name marker,
+displayed as `topic <id>`. Repeated messages do not update that observation's timestamp.
+Optional creation replies fill an unknown marker atomically, never a learned rename.
+Merely looking up a label does not establish ownership.
+
+**Legacy policy:** old forum session rows without this scoped observation are omitted
+from discovery until this bot receives traffic there or the operator configures that
+target. A historical profile field or routed session key is not proof of receiving-bot
+ownership. DM and non-forum discovery keep their existing profile/transport filtering;
+old DM rows do not gain universal bot provenance, and missing historical transport
+metadata remains ambiguous.
+
+Directory workers hold a managed database reference for their entire operation,
+including after disconnect or cancellation of the awaiting task. Disconnect fences
+new cache acquisition; only an explicit reconnect reopens it. Optional storage failures
+leave configured bindings and ordinary message enqueue intact, with category-only
+diagnostics. Cache-only service updates never become agent turns on failure.
+
+Telegram's Bot API cannot enumerate existing forum topics or look up their old names.
+If a message happens to include a reply to the original creation service message,
+Hermes can seed an unknown name from it, but ordinary messages do not always include
+that metadata. Old creation replies never overwrite a learned rename. Observed topics
+with unknown names display as `topic <id>`; unobserved historical forum targets are
+omitted under the legacy policy above. There is no bulk backfill.
+
 ### Differences from DM Topics
 
 | | DM Topics | Group Topics |

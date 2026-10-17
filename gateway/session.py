@@ -964,6 +964,8 @@ class SessionStore(
             create_kwargs = self._route_create(
                 decision, session_key, source, now, force_new, observed
             )
+        if self._refresh_telegram_origin(session_key, decision.entry, source):
+            decision.needs_save = True
         if decision.needs_save:
             if decision.metadata_only_save:
                 self._save_entry(session_key)

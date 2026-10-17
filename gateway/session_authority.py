@@ -60,6 +60,14 @@ class LiveSession:
     settling: dict = field(default_factory=dict)
     # A viewer attached while a guarded deferred pick awaits consent: the next boundary asks again.
     reask_pick: bool = False
+    # A historic messaging row mounted for reading after its lane moved on (``/new``): ``route`` is
+    # the lane's CURRENT key, which names another conversation, so nothing route-keyed (agent, Stop,
+    # turns, eviction) may act through it (gateway/session_route_recovery.py). The lane publishing
+    # this row again clears it.
+    superseded: bool = False
+    # Mounted by that cold path (not published by its lane): the lane publishing ANOTHER conversation
+    # on the same route later supersedes it too.
+    history_mount: bool = False
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -139,9 +147,16 @@ class SessionAuthority:
                 from gateway.session_local_recovery import restore_local_session
                 restore_local_session(self, ref.session_id)
             else:
-                from gateway.session_api import restore_api_session
-                restore_api_session(self, ref.session_id)
+                from gateway.session_route_recovery import restore_routed_session
+                if restore_routed_session(self, ref.session_id) is None:
+                    from gateway.session_api import restore_api_session
+                    restore_api_session(self, ref.session_id)
         from gateway.config import Platform
+        if self.sessions[ref.session_id].superseded and capability != 'session:read':
+            # One gateway owns every session and never crosses them: the lane's route now belongs to
+            # its newer conversation, so a write here would land there. Named, so a viewer can say so.
+            raise RuntimeStoreError('session_superseded', field='session_id',
+                                    detail='this conversation\'s chat has moved on to a newer session; it is read-only')
         source = self.sessions[ref.session_id].source
         if (source is not None and source.platform == Platform.LOCAL
                 and source.user_id != actor.subject and 'session:operator' not in actor.capabilities):
@@ -195,12 +210,24 @@ class SessionAuthority:
 
     def _publish_route(self, source, sid, route):
         self._require_admission_open()
-        self.sessions.setdefault(sid, LiveSession(source, route))
+        live = self.sessions.get(sid)
+        if live is None:
+            live = self.sessions[sid] = LiveSession(source, route)
+            # The lane moved on to *sid*: a cold history mount still on its route is now another
+            # conversation's, so it goes read-only (gateway/session_route_recovery.py).
+            for other in self.sessions.values():
+                if other.history_mount and other.route == route and other is not live:
+                    other.superseded = True
+        # The lane itself names *sid* (again): a historic mount becomes its live session.
+        live.superseded = live.history_mount = False
         return SessionRef(self.profile_id, sid)
 
     def agent(self, ref):
+        live = self.sessions[ref.session_id]
+        if live.superseded:
+            return None  # the route's agent is the newer conversation's
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
-        return lookup(self.sessions[ref.session_id].route)
+        return lookup(live.route)
 
     def _pending_rows(self, ref):
         """Pending admissions as the event stream presents them: a settlement committed but not yet
@@ -350,9 +377,9 @@ class SessionAuthority:
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
 
-    async def admit_automation(self, adapter, event, identity):
+    async def admit_automation(self, adapter, event, identity, replaces=None):
         from gateway.session_automation import admit_automation
-        return await admit_automation(self, adapter, event, identity)
+        return await admit_automation(self, adapter, event, identity, replaces)
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
@@ -375,14 +402,20 @@ class SessionAuthority:
                                source.thread_id, source.user_id], separators=(',', ':'))
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
         committed = [ref]  # the row's target: the write may retarget a rotated-away reservation
+        # A /retry re-send carries its transcript rewrite: it commits in this admission's own write.
+        from gateway import session_retry_admission
+        rewrite = session_retry_admission.take(event, self.db)
 
         def admitted(row):
             committed[0] = SessionRef(self.profile_id, row.get('target_session_id') or ref.session_id)
+            if rewrite is not None and rewrite.applied:
+                rewrite.on_commit()
             return self._admitted(committed[0], event, row)
         native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
-            request_id=request_id, payload=payload, authorize=self._admission_gate(),
+            request_id=request_id, payload=payload,
+            authorize=session_retry_admission.compose(rewrite, self._admission_gate()),
             raw=getattr(event, 'raw_message', None)),
             then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]))
 
@@ -724,8 +757,11 @@ class SessionAuthority:
         """The route's running slot holds a real agent (not the claim's pending sentinel), so the
         Stop above reached the turn's own agent, not a cached one it may still replace."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        live = self.sessions[ref.session_id]
+        if live.superseded:
+            return False
         running = getattr(self.runner, '_running_agents', None) or {}
-        agent = running.get(self.sessions[ref.session_id].route)
+        agent = running.get(live.route)
         return agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
     def steer_agent(self, ref, generation, text):

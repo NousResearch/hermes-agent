@@ -65,6 +65,35 @@ def _canonical_home(home: str | Path) -> str:
     return os.path.normcase(str(Path(home).expanduser().resolve()))
 
 
+def gateway_profile_home(home: str | Path) -> Path:
+    """The profile home whose gateway serves *home*: the home itself, or for a private overlay home
+    (a task dir mirroring a profile through symlinks, its ``gateway.lock`` among them) the profile its
+    lock names. A client compares the owner's ``profile_id`` with this, never the overlay path.
+    Not normcased: ``profile_id`` keeps the owner's own spelling (Windows)."""
+    return _overlay_owner_home(Path(home).expanduser().resolve())
+
+
+def _overlay_owner_home(home: Path) -> Path:
+    """Return the owner named by a private overlay's gateway lock, if it has one."""
+    if os.name == "nt":
+        return home
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, _private_lock, _private_node
+    lock = home / "gateway.lock"
+    try:
+        # An overlay home intentionally shares only the owner's lock.  Do not turn an arbitrary
+        # link into a profile alias: both homes and the target lock must meet ordinary discovery's
+        # private-control checks.
+        _private_node(home, kind="directory", home=True)
+        target = lock.resolve(strict=True)
+        if not lock.is_symlink() or target.name != "gateway.lock":
+            return home
+        _private_node(target.parent, kind="directory", home=True)
+        _private_lock(target)
+    except (FileNotFoundError, OSError, DiscoveryError):
+        return home
+    return target.parent
+
+
 def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> GatewayDiscovery:
     if type(payload.get("runtime_protocol")) is not int or payload["runtime_protocol"] != 1:
         return GatewayDiscovery("incompatible", reason_code="runtime_protocol")
@@ -198,7 +227,7 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
 
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
-    home = Path(_canonical_home(profile_home))
+    home = _overlay_owner_home(Path(_canonical_home(profile_home)))
     try:
         return _endpoint(query_identify(home, timeout=timeout), home)
     except (FileNotFoundError, ConnectionRefusedError):
@@ -313,7 +342,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     deadline = time.monotonic() + timeout
-    home = Path(_canonical_home(profile_home))
+    home = _overlay_owner_home(Path(_canonical_home(profile_home)))
     requested = False
     child = None
     child_home, child_offset = home, 0

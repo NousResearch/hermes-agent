@@ -66,12 +66,14 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
+import { patchSpectrumStreamHeartbeat } from "./patch-spectrum-stream-heartbeat.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import {
   classifyProbeRejection,
   createProbeMessageId,
   shouldProbe,
   isZombieSuspect,
+  heartbeatStall,
 } from "./stream-staleness.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
@@ -115,6 +117,13 @@ const STREAM_PROBE_COOLDOWN_MS =
 const STREAM_PROBE_TIMEOUT_MS =
   Number(process.env.PHOTON_STREAM_PROBE_TIMEOUT_MS) || 10 * 1000;
 const STREAM_WATCHDOG_TICK_MS = 30 * 1000;
+// Once the inbound streams have delivered one server heartbeat (~every 30s,
+// even on a quiet line), a missing heartbeat replaces the silence probe as the
+// stall signal: two missed beats plus slack. A non-positive value disables it.
+const STREAM_HEARTBEAT_STALL_MS = (() => {
+  const raw = Number(process.env.PHOTON_STREAM_HEARTBEAT_STALL_MS);
+  return Number.isFinite(raw) ? raw : 65 * 1000;
+})();
 
 const streamHealth = {
   state: "starting",
@@ -132,6 +141,16 @@ const staleness = {
   lastProbeAt: 0,
   lastProbeOutcome: null, // "alive" | "inconclusive" | null
   zombieSuspected: false,
+  lastHeartbeatAt: 0,
+  heartbeatCount: 0,
+};
+
+// Called by patch-spectrum-stream-heartbeat.mjs for every server heartbeat on
+// Spectrum's iMessage streams.
+globalThis.__hermesPhotonStreamHeartbeat = () => {
+  staleness.lastHeartbeatAt = Date.now();
+  staleness.heartbeatCount += 1;
+  staleness.zombieSuspected = false;
 };
 
 function noteInboundYield() {
@@ -150,6 +169,12 @@ function stalenessSnapshot(now) {
         : null,
     lastProbeOutcome: staleness.lastProbeOutcome,
     zombieSuspected: staleness.zombieSuspected,
+    lastHeartbeatAt:
+      staleness.lastHeartbeatAt > 0
+        ? new Date(staleness.lastHeartbeatAt).toISOString()
+        : null,
+    heartbeatCount: staleness.heartbeatCount,
+    heartbeatStallThresholdMs: STREAM_HEARTBEAT_STALL_MS,
   };
 }
 
@@ -296,6 +321,21 @@ try {
       "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
       "Original error: " +
       (e && e.stack ? e.stack : String(e))
+  );
+}
+// Optional: without it the stall watchdog keeps its silence-probe behavior.
+try {
+  const heartbeatPatch = patchSpectrumStreamHeartbeat();
+  if (heartbeatPatch.patched) {
+    console.error(
+      `photon-sidecar: spectrum stream heartbeat patch applied: ${heartbeatPatch.file}`
+    );
+  }
+} catch (e) {
+  console.error(
+    "photon-sidecar: spectrum stream heartbeat patch skipped; the stall " +
+      "watchdog falls back to silence probes: " +
+      (e && e.message ? e.message : String(e))
   );
 }
 let Spectrum,
@@ -783,6 +823,21 @@ async function zombieWatchdogTick() {
   if (watchdogProbeInFlight) return;
   const now = Date.now();
   const silentForMs = now - staleness.lastInboundAt;
+  // Heartbeats prove the subscription itself, so a quiet line is never
+  // restarted; only a missing heartbeat is. Until the first heartbeat (or if
+  // the SDK patch is absent) the silence probe below remains the fallback.
+  const stall = heartbeatStall(now, staleness, STREAM_HEARTBEAT_STALL_MS);
+  if (stall) {
+    if (stall.stalled && streamHealth.state !== "degraded") {
+      staleness.zombieSuspected = true;
+      const reason =
+        `no heartbeat or message on the inbound stream for ${stall.stalledForMs}ms ` +
+        "(server heartbeats every ~30s) — stalled stream suspected";
+      console.error("photon-sidecar: " + reason);
+      markStreamDegraded(reason);
+    }
+    return;
+  }
   if (
     !shouldProbe(
       silentForMs,
@@ -815,7 +870,7 @@ async function zombieWatchdogTick() {
   }
 }
 
-if (STREAM_SILENCE_PROBE_MS > 0) {
+if (STREAM_SILENCE_PROBE_MS > 0 || STREAM_HEARTBEAT_STALL_MS > 0) {
   const watchdogTimer = setInterval(zombieWatchdogTick, STREAM_WATCHDOG_TICK_MS);
   watchdogTimer.unref();
 }

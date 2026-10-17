@@ -5,7 +5,9 @@ Each tick runs the source FIRST and hashes its EXACT output bytes (no timestamp/
 normalization — scripts must emit stable output) against the hash from the last agent-triggering
 tick: unchanged → agent run suppressed (silent ``no_change`` run); changed/first run → a "MONITOR
 CHANGE DETECTED" block (capped unified diff + new output) is injected into the prompt; source
-failure → an ERROR, never a change, and the stored hash is left untouched. State:
+failure → an ERROR, never a change, and the stored hash is left untouched. A suppressed tick is
+NEUTRAL for the job's health — it neither recovers the job nor touches its failure streak (see
+``NO_CHANGE_FLAG`` below). State:
 ``job["monitor_state"]`` in jobs.json (hash + last_changed_at) and
 ``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` (for the diff).
 """
@@ -121,6 +123,40 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
 
 def job_has_monitor(job: dict) -> bool:
     return bool(_field(job, "monitor_script") or _field(job, "monitor_url"))
+
+
+# --- A suppressed tick is NEUTRAL for the job's health ----------------------------------------
+# The gate reports an unchanged tick as a successful run so it costs no LLM turn and delivers
+# nothing, but that success says NOTHING about whether the job's own work succeeds. Reading it as
+# a plain success resolved the job's open failure incidents and reset ``failure_streak`` on every
+# unchanged poll, which made ``cron.failure_repeat_alert_hours`` and ``cron.failure_nudge_threshold``
+# dead letters for monitor-gated jobs: every real failure arrived as the first failure of a fresh
+# streak — one notice per failing run instead of one notice plus its reminder cadence (#140178).
+# So a suppressed tick must leave the failure state exactly as the last real run left it.
+#
+# The flag rides on the in-flight job dict for one fire (the same idiom as ``_model_unreachable`` /
+# ``_quota_hold_seconds``: set by the run, read by that fire's terminal bookkeeping). It travels to
+# the firing scheduler through ``gateway.session_cron.RUN_JOB_FLAGS`` when the gateway owns the run.
+NO_CHANGE_FLAG = "_monitor_no_change"
+
+
+def flag_no_change_tick(job: dict) -> None:
+    """Mark this fire as a suppressed (agent-less) monitor tick, for its bookkeeping tail."""
+    job[NO_CHANGE_FLAG] = True
+
+
+def suppressed_tick(job: object) -> bool:
+    """True when *job*'s in-flight run was a suppressed monitor tick (no agent work ran)."""
+    return bool(isinstance(job, dict) and job.get(NO_CHANGE_FLAG))
+
+
+def resolve_incidents_after_run(job: dict) -> None:
+    """Resolve the job's open incidents after a run that DID work; a suppressed tick resolves none."""
+    if suppressed_tick(job):
+        return
+    from cron.incidents import close_incidents_for_recovered_job
+
+    close_incidents_for_recovered_job(job["id"])
 
 
 def check_monitor(job: dict) -> MonitorOutcome:

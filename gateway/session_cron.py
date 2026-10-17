@@ -111,7 +111,7 @@ def _create(authority, actor, params):
 # Run-side verdicts run_job stamps on the job dict for the firing scheduler's bookkeeping tail
 # (cron/quota_hold.py parks past a closed usage window; cron/unreachable_retry.py re-runs a
 # never-reached model). They cross the authority boundary inside the cron result.
-RUN_JOB_FLAGS = ('_model_unreachable', '_quota_hold_seconds')
+RUN_JOB_FLAGS = ('_model_unreachable', '_quota_hold_seconds', '_monitor_no_change')
 
 
 async def operation(authority, name, params, actor=None):

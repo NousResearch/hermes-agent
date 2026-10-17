@@ -690,7 +690,7 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
             "pending": sorted(connecting - wanted)}
 
 
-def _awaiting_connect(wanted: set[str], scope) -> list[str]:
+def _unregistered(wanted: set[str], scope) -> set[str]:
     with _core._lock:
         # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
         # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
@@ -699,11 +699,52 @@ def _awaiting_connect(wanted: set[str], scope) -> list[str]:
         known = {name for name in wanted
                  if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
                  or key in _core._server_connecting or key in _core._lazy_server_configs}
+    return wanted - known
+
+
+def _awaiting_connect(wanted: set[str], scope) -> list[str]:
     # A configured server that is not live is retried — the only way one whose FIRST connect
     # failed comes back (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
     # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
     # waiting when another process holds it) and logs a failed pass, every call, for nothing.
-    return sorted(name for name in wanted - known if not _connect_cooldown_active(name))
+    return sorted(name for name in _unregistered(wanted, scope) if not _connect_cooldown_active(name))
+
+
+def _enabled_config_names() -> set[str]:
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
+    return {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
+
+
+def _not_connected(wanted: set[str], scope) -> set[str]:
+    with _core._lock:
+        # A parked task stays registered (it self-probes) but serves nothing, as does one whose connect
+        # recorded an error since its last success, and a lazy registration whose first-use connect failed
+        # (a timed-out one leaves no task; one that never started has no error).
+        serving_nothing = {name for name in wanted
+                           if ((key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                               and (key in _core._server_connect_errors
+                                    or getattr(_core._servers[key], "_park_reason", None) is not None))
+                           or (key in _core._lazy_server_configs and key in _core._server_connect_errors)}
+    return _unregistered(wanted, scope) | serving_nothing
+
+
+def mcp_servers_not_connected() -> list[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope has no live, connecting or lazy
+    registration for, in connect cooldown or not, or whose registration (lazy included) is parked or
+    failed its connect: after a reload, the servers that did not connect."""
+    return sorted(_not_connected(_enabled_config_names(), _core._mcp_registry_scope()))
+
+
+def mcp_servers_ready() -> list[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope serves now: live, or lazily registered
+    and not failed on its first use."""
+    wanted, scope = _enabled_config_names(), _core._mcp_registry_scope()
+    with _core._lock:
+        registered = {name for name in wanted
+                      if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                      or key in _core._lazy_server_configs}
+    return sorted(registered - _not_connected(wanted, scope))
 
 
 def mcp_servers_awaiting_connect() -> list[str]:
@@ -711,10 +752,7 @@ def mcp_servers_awaiting_connect() -> list[str]:
     registration for, whose connect cooldown has lapsed: added to config since the last discovery
     run, or one whose earlier connect failed. Read-only — what the next :func:`discover_mcp_tools`
     would connect."""
-    with _owner_secret_scope():
-        servers = _config._load_mcp_config()
-    wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
-    return _awaiting_connect(wanted, _core._mcp_registry_scope())
+    return _awaiting_connect(_enabled_config_names(), _core._mcp_registry_scope())
 
 
 def _forget_lazy_server(key) -> None:

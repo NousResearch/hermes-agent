@@ -65,7 +65,16 @@ class GatewayInboundHooksMixin:
     ) -> Optional[MessageEvent]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
+        ``allow``/None → normal dispatch. On the messaging path it runs BEFORE auth so plugins can handle
+        unauthorized senders; on the producer path (webhook/relay, ``admit_producer``) it runs AFTER the
+        delivery's authorization, which preparing its payload performs, so it never sees a refused sender.
+
+        Once per inbound message, at ingress (here, or ``admit_producer`` for webhook/relay), never
+        while an admitted row EXECUTES: a messaging turn already passed it before its commit, and a
+        local CLI/TUI/Desktop turn never fired it on main, so a skip must not drop committed input."""
+        from gateway.session_ingress import executing_admission
+        if executing_admission.get():
+            return event
         try:
             from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
             _hook_results = await _ainvoke_hook(

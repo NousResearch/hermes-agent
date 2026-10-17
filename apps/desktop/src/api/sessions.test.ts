@@ -135,7 +135,7 @@ describe('setSessionArchived profile scoping', () => {
       method: 'PATCH',
       path: '/api/sessions/sess-a',
       profile: 'tommy',
-      body: { archived: true, profile: 'tommy' }
+      body: { archived: true, pinned: false, profile: 'tommy' }
     })
   })
 
@@ -165,6 +165,7 @@ describe('setSessionArchived profile scoping', () => {
     const req = hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { body: Record<string, unknown> }
     expect(req).toMatchObject({ method: 'PATCH', body: { archived: false } })
     expect(req.body).not.toHaveProperty('profile')
+    expect(req.body).not.toHaveProperty('pinned')
   })
 })
 

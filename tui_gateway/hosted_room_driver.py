@@ -589,10 +589,12 @@ class HostedRoomRuntime:
     ) -> None:
         profile, submit_attempted = task["payload"]["target_profile"], False
         attachments = task["payload"].get("attachments")
-        transport = self._transport_for(binding, task)
         with self._status_lock:
             self._current_tasks[binding.room_id] = attempt.identity
         try:
+            # Inside the try: a member whose destination is gone (an unserved bot) fails its own
+            # turn before submit instead of leaving the task running and the room wedged.
+            transport = self._transport_for(binding, task)
             if attachments and not getattr(transport, "accepts_attachments", False):
                 # A route that cannot carry the files would answer without them, and a
                 # retry cannot change the route: settle a proven failure before submit.

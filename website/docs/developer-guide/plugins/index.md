@@ -162,6 +162,12 @@ extends the wait budget, not the cancellation or permission policy. Configure
 any server-internal analysis deadline separately and leave time for its result
 to reach the client. Other harnesses ignore this extension.
 
+A server entry key this Hermes does not know (one a newer release added) is
+ignored with a warning, which `hermes plugins validate` lists, and the package
+still installs. Releases from before this rule reject the package instead, and a
+release that ignores a key may behave less safely than intended, so declare a new
+key together with a catalog `requires_hermes` floor.
+
 An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
 whose budget exceeds the shared concurrent-batch deadline becomes a sequential
 barrier, whether called directly or through tool search. It gets its own budget
@@ -1570,6 +1576,20 @@ def _handle_admin(raw_args: str, *, source: SessionSource | None = None) -> str:
 ```
 
 The example's `plugin_policy` and action function are illustrative plugin-owned code, not Hermes APIs. The gateway preserves the existing session-context binding and sync-handler executor behavior. Legacy `handler(raw_args)` callbacks continue receiving only the raw argument string; CLI/non-gateway invocation also retains its existing one-argument contract. Hermes supplies `source=` only when the handler signature accepts that keyword (including `**kwargs`). A parameter named `source` that is positional-only does not opt in. The source describes transport/routing identity and is not an authorization grant: plugin policy remains responsible for each action, and display names are untrusted labels, not authorization evidence. If a sensitive operation requires gateway identity, reject a missing source rather than treating the non-gateway call as authorized. Exceptions raised inside a handler propagate through normal dispatch error handling; Hermes does not retry the callback as a legacy call.
+
+**Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
+
+- Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
+- Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
+- Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")` and the other `HERMES_SESSION_*` names, not `os.environ`.
+
+```python
+from agent.runtime_cwd import resolve_agent_cwd
+
+def _handle_todo(raw_args: str) -> str:
+    todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
+    return todo.read_text() if todo.exists() else "No TODO.md here."
+```
 
 ### Dispatch tools from slash commands
 

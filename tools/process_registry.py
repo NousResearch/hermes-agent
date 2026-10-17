@@ -32,7 +32,8 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import format_process_notification, is_child_process_notification, should_surface_notification
+from tools.process_registry_notifications import (
+    format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_termination import ProcessTerminationMixin
@@ -84,7 +85,6 @@ WATCH_LIFETIME_MAX_HITS = 8
 # per process) and needs no strike/lifetime breaker. The floor exists so a model cannot turn
 # it into a 5-second poll; the output slice is capped like a completion notice.
 HEARTBEAT_MIN_SECONDS = 60
-HEARTBEAT_OUTPUT_CHARS = 2000
 HEARTBEAT_TICK_SECONDS = 5
 # Reader final drain after a reconcile saw the direct child exit: the exited child's unread tail is at
 # most one pipe buffer (Linux pipe-max-size default 1 MiB), and the reader publishes within one select
@@ -765,9 +765,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             session._heartbeat_total_at_last = session.total_output_chars
         if not output:
             return
-        if len(output) > HEARTBEAT_OUTPUT_CHARS:
-            cut = len(output) - HEARTBEAT_OUTPUT_CHARS
-            output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
+        output, omitted = heartbeat_output_tail(output)
         session._heartbeat_seq += 1
         notification = {
             **self._watch_event_base(session),
@@ -776,6 +774,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "interval": session.heartbeat_seconds,
             "elapsed": int(now - session.started_at) if session.started_at else 0,
             "output": output,
+            "omitted": omitted,
             "started_at": session.started_at,
         }
         _redact_process_result(notification)
@@ -1128,9 +1127,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     @staticmethod
     def _spawn_env(env_vars: dict) -> dict:
-        """Sanitized child env; PYTHONUNBUFFERED so tqdm/datasets-style buffering
-        doesn't hide progress from process(action="poll")."""
-        env = _terminal_env(_sanitize_subprocess_env(os.environ, env_vars))
+        """Sanitized child env from the session's client toolchain; PYTHONUNBUFFERED so poll sees progress."""
+        from agent.session_client_env import toolchain_environ
+        env = _terminal_env(_sanitize_subprocess_env(toolchain_environ(), env_vars))
         env["PYTHONUNBUFFERED"] = "1"
         return env
 

@@ -18,6 +18,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Public/private channels** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
+| **Threads (after @mention)** | Once you @mention Hermes in a thread, it follows all subsequent replies in that thread automatically — no re-mention needed. Set `strict_mention: true` to require a mention on every turn. |
 | **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
@@ -158,6 +159,18 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
+
+```yaml
+mattermost:
+  # Require @mention in channels (default: true). Set to false to respond to
+  # all messages without a mention.
+  # require_mention: false
+
+  # Thread auto-follow is ON by default: after an @mention, Hermes responds to
+  # all follow-ups in that thread without re-mentioning.
+  # Set strict_mention: true to require a mention on every turn (opt-out).
+  # strict_mention: true
+```
 
 ```yaml
 group_sessions_per_user: true

@@ -120,6 +120,18 @@ async def test_media_send_times_out_instead_of_hanging(monkeypatch):
     assert result.success is True
 
 
+def test_should_drop_pending_updates_off_by_default(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_DROP_PENDING_UPDATES", raising=False)
+    assert tg_adapter._should_drop_pending_updates(is_reconnect=False) is False
+    assert tg_adapter._should_drop_pending_updates(is_reconnect=True) is False
+
+
+def test_should_drop_pending_updates_opt_in_cold_boot_only(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_DROP_PENDING_UPDATES", "1")
+    assert tg_adapter._should_drop_pending_updates(is_reconnect=False) is True
+    assert tg_adapter._should_drop_pending_updates(is_reconnect=True) is False
+
+
 def test_mark_connected_publishes_connected_when_healthy():
     """A normal connect (never degraded) still publishes platform_state=connected."""
     adapter = _make_adapter()

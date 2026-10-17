@@ -135,6 +135,30 @@ def _restore_server_toolset_alias(key) -> None:
         registry.register_toolset_alias(server_name, f"mcp-{server_name}")
 
 
+def _lazy_registration_current(key, config: dict) -> bool:
+    """True when *key* carries a lazy registration built for exactly this config (#140265).
+
+    A cache-backed registration deliberately has no live server, so "no server under the key" is
+    not staleness. The markers left by ``_register_from_cache_sync`` record the config they were
+    built from; retaining only while that fingerprint still matches keeps a route change or a
+    credential swap from pinning a stale overlay.
+
+    Callers hold ``_core._lock`` (a plain ``Lock``, never re-entered here).
+    """
+    from tools.mcp_schema_cache import config_fingerprint
+
+    fingerprint = _core._lazy_server_fingerprints.get(key)
+    return bool(fingerprint) and fingerprint == config_fingerprint(config)
+
+
+def _forget_lazy_registration(key) -> None:
+    """Drop a revoked lazy registration's markers so normal discovery can rebuild it."""
+    with _core._lock:
+        _core._lazy_server_configs.pop(key, None)
+        _core._lazy_server_fingerprints.pop(key, None)
+        _core._lazy_server_tool_names.pop(key, None)
+
+
 def _remove_server_scope(key, scope: str) -> None:
     """Remove one profile's MCP overlay for a shared live connection."""
     from tools.registry import registry
@@ -551,6 +575,12 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(key)
             config = judged[name]
             cross_profile = _key_scope(key) != scope
+            if (server is None and not cross_profile and config is not None
+                    and mcp_server_enabled(config) and _lazy_registration_current(key, config)):
+                # A cache-backed registration has no live server by design: reconciling the
+                # ALLOWLIST must not erase it (#140265). A changed or disabled config falls
+                # through, so the revoked overlay is removed with its markers below.
+                continue
             if (config is None or not mcp_server_enabled(config) or server is None
                     or getattr(server, "session", None) is None
                     or not _same_server_route(server, config, cross_profile=cross_profile,
@@ -558,6 +588,9 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
+        # A revoked lazy registration must forget its markers too: _select_new_servers treats a
+        # key with lazy markers as already known, so a surviving marker blocks the rebuild.
+        _forget_lazy_registration(key)
 
     registered_servers = 0
     for name, config in servers.items():

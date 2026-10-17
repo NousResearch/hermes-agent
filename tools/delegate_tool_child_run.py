@@ -557,6 +557,10 @@ def _build_result_entry(
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
     wins over the summary-presence heuristic (a fallback for legacy/mock results only)."""
     summary = result.get("final_response") or ""
+    # A forked child's messages start with the parent's transcript (same dicts): its calls are not the child's work.
+    inherited = getattr(child, "_delegate_fork_history", None)
+    inherited_ids = {id(m) for m in inherited} if isinstance(inherited, list) else set()
+    own_messages = [m for m in result.get("messages") or [] if id(m) not in inherited_ids]
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
@@ -568,7 +572,7 @@ def _build_result_entry(
         # text — and keep the placeholder as the error.
         from agent.message_content import flatten_message_text
         placeholders = {"", summary.strip(), "Operation interrupted."}
-        partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
+        partial = next((t for m in reversed(own_messages) if m.get("role") == "assistant"
                         and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
         if partial:
             interrupt_note, summary = summary.strip(), partial
@@ -604,7 +608,7 @@ def _build_result_entry(
             "input": _num(getattr(child, "session_prompt_tokens", 0)),
             "output": _num(getattr(child, "session_completion_tokens", 0)),
         },
-        "tool_trace": _build_tool_trace(result.get("messages") or []),
+        "tool_trace": _build_tool_trace(own_messages),
         # Captured before the finally block calls child.close() so the parent thread can fire subagent_stop with the
         # correct role; stripped before the dict is serialised back to the model (as is _child_cost_usd, folded into
         # the parent's session cost by the aggregator).
@@ -858,9 +862,15 @@ class _ChildRun:
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
-                )
+                run_kwargs = {
+                    "user_message": user_message, "task_id": self.child_task_id, "stream_callback": self.relay_text,
+                }
+                fork_history = getattr(child, "_delegate_fork_history", None)
+                if isinstance(fork_history, list):
+                    from tools.delegate_tool_fork import frame_forked_goal
+                    run_kwargs["conversation_history"] = fork_history
+                    run_kwargs["user_message"] = frame_forked_goal(user_message)
+                return child.run_conversation(**run_kwargs)
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.

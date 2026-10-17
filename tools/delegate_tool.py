@@ -221,6 +221,7 @@ def _build_child_agent(
     routing_cfg: Optional[dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    context_mode: str = "blank",
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -307,6 +308,10 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    if str(context_mode).strip().lower() == "fork":
+        # Snapshot NOW, on the dispatching thread: a background child never sees later parent messages.
+        from tools.delegate_tool_fork import build_fork_history
+        child._delegate_fork_history = build_fork_history(parent_agent)
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
@@ -438,7 +443,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                context_mode=t.get("context_mode", "blank"), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -490,7 +496,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[dict[str, Any]] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, context_mode: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -547,6 +553,11 @@ def delegate_task(
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    if not err and context_mode is not None:
+        # Apply the top-level mode only after normalization so malformed task entries
+        # still produce the structured validation error instead of crashing here.
+        for task in task_list:
+            task.setdefault("context_mode", context_mode)  # a per-task mode wins over the call-wide one
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
@@ -717,13 +728,21 @@ DELEGATE_TASK_SCHEMA = {
                     "properties": {
                         "goal": _p(
                             "string",
-                            "What this subagent should accomplish. Be specific and self-contained — it knows "
-                            "nothing about your conversation history.",
+                            "What this subagent should accomplish. Be specific and self-contained — unless "
+                            "context_mode is 'fork', it knows nothing about your conversation history.",
                         ),
                         "context": _p(
                             "string",
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
+                        ),
+                        "context_mode": _p(
+                            "string",
+                            "'blank' (default): the child knows nothing of this conversation. 'fork': the child starts from "
+                            "this conversation as it stands now, so no re-briefing; use it for workers continuing your current "
+                            "work, keep 'blank' for independent tasks and for reviewers/verifiers who must not inherit your "
+                            "framing. A fork re-sends this transcript and costs accordingly.",
+                            enum=["blank", "fork"],
                         ),
                         "output_schema": _p(
                             "object",
@@ -806,6 +825,7 @@ registry.register(
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
+        context_mode=args.get("context_mode"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

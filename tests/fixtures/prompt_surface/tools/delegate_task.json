@@ -29,8 +29,16 @@
               "description": "Background THIS child needs: file paths, error messages, constraints. Each child sees only its own context — repeat shared background in every task that needs it.",
               "type": "string"
             },
+            "context_mode": {
+              "description": "'blank' (default): the child knows nothing of this conversation. 'fork': the child starts from this conversation as it stands now, so no re-briefing; use it for workers continuing your current work, keep 'blank' for independent tasks and for reviewers/verifiers who must not inherit your framing. A fork re-sends this transcript and costs accordingly.",
+              "enum": [
+                "blank",
+                "fork"
+              ],
+              "type": "string"
+            },
             "goal": {
-              "description": "What this subagent should accomplish. Be specific and self-contained — it knows nothing about your conversation history.",
+              "description": "What this subagent should accomplish. Be specific and self-contained — unless context_mode is 'fork', it knows nothing about your conversation history.",
               "type": "string"
             },
             "images": {

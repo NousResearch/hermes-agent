@@ -79,8 +79,8 @@ Keep schemas forgiving: require only the fields you will actually read. Tasks wi
 
 ## How Subagent Context Works
 
-:::warning Critical: Subagents Know Nothing
-Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task`.
+:::warning Critical: Subagents Know Nothing (unless forked)
+By default subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task`. A task with `context_mode: "fork"` is the exception; see [Forking the parent conversation](#fork-mode).
 :::
 
 One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
@@ -103,6 +103,22 @@ delegate_task(
 ```
 
 The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
+
+### Forking the parent conversation {#fork-mode}
+
+Set `context_mode: "fork"` on a task to start the child from the parent's conversation instead of a blank one: the user's exact words, files already read, and decisions made all carry over, so the parent does not have to compress them into `context`.
+
+```python
+delegate_task(tasks=[{
+    "goal": "Draft the migration for the schema we just agreed on",
+    "context_mode": "fork",
+}])
+```
+
+- The copy is taken when the parent calls `delegate_task`. Background children never see what the parent does afterwards.
+- The parent's in-flight tool calls are recorded as handed off inside the copy, and the child's goal is framed as its own task, so it does not redo the rest of the parent's request.
+- Use fork for workers that continue the current work. Keep the default `"blank"` for independent tasks and for reviewers or verifiers whose judgment should not inherit the parent's framing.
+- A fork re-sends the parent's (already compacted) transcript on the child's first request, so it costs accordingly. The child's system prompt differs from the parent's, so expect no prompt-cache reuse between them.
 
 ### Forwarding Images to a Subagent
 

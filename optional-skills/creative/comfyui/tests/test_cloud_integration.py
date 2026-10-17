@@ -1,7 +1,7 @@
 """Integration tests against the live Comfy Cloud API.
 
 These tests are auto-skipped when COMFY_CLOUD_API_KEY is not set.
-They never SUBMIT workflows (would need a paid subscription) — they only
+They never SUBMIT workflows (would need a paid subscription): they only
 verify the read-only endpoints we rely on.
 """
 
@@ -52,7 +52,7 @@ class TestCloudEndpointsLive:
         # On free tier, /object_info returns 403 with a recognizable message
         url = resolve_url("https://cloud.comfy.org", "/object_info")
         r = http_get(url, headers={"X-API-Key": cloud_key})
-        # Should be either 200 (paid) or 403 (free) — not 404 / 500
+        # Should be either 200 (paid) or 403 (free): not 404 / 500
         assert r.status in {200, 403}
         if r.status == 403:
             # Body should mention the limitation

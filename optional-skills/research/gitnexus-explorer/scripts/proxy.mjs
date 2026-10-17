@@ -1,5 +1,5 @@
 /**
- * GitNexus reverse proxy — serves production web UI + proxies /api/* to backend.
+ * GitNexus reverse proxy: serves production web UI + proxies /api/* to backend.
  * Zero dependencies, Node.js built-ins only.
  *
  * Usage: node proxy.mjs <dist-dir> [port]
@@ -46,7 +46,7 @@ function proxyToApi(req, res) {
   });
   proxy.on('error', () => {
     res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end('GitNexus backend unavailable — is `npx gitnexus serve` running?');
+    res.end('GitNexus backend unavailable: is `npx gitnexus serve` running?');
   });
   req.pipe(proxy, { end: true });
 }

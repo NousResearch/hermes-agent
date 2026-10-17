@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * chromadiff.mjs — the cheerful-drift gate.
+ * chromadiff.mjs: the cheerful-drift gate.
  * Given a near-monochrome reference, a model still returns a friendlier, bluer, more saturated
  * version of it, and it does so with the reference on screen. Eyes forgive that drift because each
  * frame looks fine alone; side by side it is the difference between a photograph and game graphics.
@@ -11,10 +11,10 @@
  * checked after, when "it just felt right dark" is no longer admissible evidence.
  * Feed --target-l a FULL-PAGE capture (shoot.mjs --full). The sheet commits to the page's mean
  * lightness, and the first viewport is never the mean: measured on one build, the hero frame read
- * 0.876 against a page that actually sat at 0.740 — a false FAIL produced entirely by the crop.
+ * 0.876 against a page that actually sat at 0.740: a false FAIL produced entirely by the crop.
  * Usage: node chromadiff.mjs <yours.png> <reference.png|jpg> [--max-delta 0.02] [--json]
  *        node chromadiff.mjs <full-page.png> --target-l 0.55 [--tolerance 0.12] [--json]
- * ponytail: decodes via the playwright chromium that shoot.mjs already installs — no image deps.
+ * ponytail: decodes via the playwright chromium that shoot.mjs already installs: no image deps.
  */
 import { chromium } from 'playwright';
 import { resolve, extname } from 'path';
@@ -43,7 +43,7 @@ const [mine, ref] = files.map(f => resolve(f));
 for (const f of [mine, ref].filter(Boolean)) if (!existsSync(f)) { process.stderr.write(`not found: ${f}\n`); process.exit(2); }
 
 // A file:// image will not decode inside an about:blank page (opaque origin), so the bytes travel
-// as a data URL instead — which also keeps this working against any page the browser is showing.
+// as a data URL instead: which also keeps this working against any page the browser is showing.
 const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.avif': 'image/avif' };
 const toUrl = async p => {
   const mime = MIME[extname(p).toLowerCase()];
@@ -97,13 +97,13 @@ if (TARGET_L !== null) {
   const dl = a.lightness - TARGET_L;
   if (Math.abs(dl) > TOLERANCE)
     fails.push(`background lightness ${r3(a.lightness)} vs committed ${TARGET_L} (${dl > 0 ? '+' : ''}${r3(dl)}, tolerance ±${TOLERANCE})` +
-               (dl < 0 ? ' — the page went darker than the sheet says; taste.md §2.5 tell #1' : ''));
+               (dl < 0 ? ': the page went darker than the sheet says; taste.md §2.5 tell #1' : ''));
   const summaryL = { yours: { chroma: r3(a.chroma), lightness: r3(a.lightness), darkShare: r3(a.darkShare) }, targetL: TARGET_L, tolerance: TOLERANCE, fails };
   if (jsonMode) process.stdout.write(JSON.stringify(summaryL, null, 2) + '\n');
   else {
     process.stdout.write(`chromadiff: L ${r3(a.lightness)} (committed ${TARGET_L}) - C ${r3(a.chroma)} - ${Math.round(a.darkShare * 100)}% dark pixels\n`);
     for (const f of fails) process.stdout.write(`FAIL ${f}\n`);
-    process.stdout.write(fails.length ? 'FAIL — decide it or change the sheet; do not let it drift\n' : 'PASS\n');
+    process.stdout.write(fails.length ? 'FAIL: decide it or change the sheet; do not let it drift\n' : 'PASS\n');
   }
   process.exit(fails.length ? 1 : 0);
 }
@@ -124,6 +124,6 @@ if (jsonMode) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
 else {
   process.stdout.write(`chromadiff: yours C ${r3(a.chroma)} L ${r3(a.lightness)} - reference C ${r3(b.chroma)} L ${r3(b.lightness)} - delta ${delta >= 0 ? '+' : ''}${r3(delta)}\n`);
   for (const f of fails) process.stdout.write(`FAIL ${f}\n`);
-  process.stdout.write(fails.length ? 'FAIL — this is the drift, not a lighting difference: pull chroma back to the committed palette\n' : 'PASS\n');
+  process.stdout.write(fails.length ? 'FAIL: this is the drift, not a lighting difference: pull chroma back to the committed palette\n' : 'PASS\n');
 }
 process.exit(fails.length ? 1 : 0);

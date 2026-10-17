@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Domain Intelligence — Passive OSINT via Python stdlib.
+Domain Intelligence: Passive OSINT via Python stdlib.
 
 Usage:
     python domain_intel.py subdomains example.com
@@ -104,11 +104,11 @@ def check_ssl(host, port=443, timeout=10):
     if is_expired:
         status = f"EXPIRED ({abs(days)} days ago)"
     elif days is not None and days <= 14:
-        status = f"CRITICAL — {days} day(s) left"
+        status = f"CRITICAL: {days} day(s) left"
     elif days is not None and days <= 30:
-        status = f"WARNING — {days} day(s) left"
+        status = f"WARNING: {days} day(s) left"
     else:
-        status = f"OK — {days} day(s) remaining" if days is not None else "unknown"
+        status = f"OK: {days} day(s) remaining" if days is not None else "unknown"
 
     return {
         "host": host, "port": port,

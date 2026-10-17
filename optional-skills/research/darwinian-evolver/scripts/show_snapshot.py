@@ -1,5 +1,5 @@
 """
-show_snapshot.py — Dump the population from a darwinian-evolver snapshot pickle.
+show_snapshot.py: Dump the population from a darwinian-evolver snapshot pickle.
 
 Usage:
     python show_snapshot.py PATH/TO/iteration_N.pkl [--field prompt_template]
@@ -48,7 +48,7 @@ def main() -> int:
         )
 
     print(
-        f"WARNING: unpickling {args.snapshot} — this executes code embedded in the "
+        f"WARNING: unpickling {args.snapshot}: this executes code embedded in the "
         "file. Only safe for snapshots you produced yourself.",
         file=sys.stderr,
     )

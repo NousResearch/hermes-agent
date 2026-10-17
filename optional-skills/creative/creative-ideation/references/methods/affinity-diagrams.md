@@ -9,13 +9,13 @@ Jiro Kawakita, *Hassōhō* (1967). The KJ method (Kawakita's initials, Japanese 
 - Requirements gathering (pile of user requests / bug reports / suggestions)
 - Sense-making after a workshop (whiteboard full of stickies)
 - Bottom-up taxonomy when no good existing one fits
-- Diagnosing what's missing — gaps between clusters often reveal what the data set lacks
+- Diagnosing what's missing, gaps between clusters often reveal what the data set lacks
 
 ## Don't use when
 
-- Few items (under ~15 — overkill, hold them in mind instead)
+- Few items (under ~15, overkill, hold them in mind instead)
 - The right structure is already known (use deductive coding)
-- Time pressure — done well takes hours
+- Time pressure, done well takes hours
 - Solo without enough cognitive distance from items (you'll produce the categories you'd have produced anyway)
 - Highly quantitative data (use stats)
 
@@ -24,19 +24,19 @@ Jiro Kawakita, *Hassōhō* (1967). The KJ method (Kawakita's initials, Japanese 
 1. **Atomize items.** One observation per card. Items must be self-contained, specific, comparable in granularity.
 2. **Make them physically separable.** Sticky notes; index cards; or a shared canvas (Miro/Mural/FigJam). Free movement matters; a list in a doc doesn't work.
 3. **Spread out.** Distribute across a flat surface. No structure yet.
-4. **Cluster silently.** Each participant moves items into proximity with similar ones. **Silently** — talking shapes group thinking, defeats bottom-up. If two participants disagree on placement, *duplicate the item* and let it appear in both.
+4. **Cluster silently.** Each participant moves items into proximity with similar ones. **Silently**: talking shapes group thinking, defeats bottom-up. If two participants disagree on placement, *duplicate the item* and let it appear in both.
 5. **Continue until movement slows.**
 6. **Name each cluster.** Specific names ("requests for offline functionality"), not generic ("technical issues"). Resist generic names.
 7. **Look at orphans and gaps.**
-   - Orphans: items not fitting any cluster — often the most surprising data.
-   - Gaps: spaces between clusters — suggest categories the data lacks (questions like "why didn't anyone mention X?").
+   - Orphans: items not fitting any cluster, often the most surprising data.
+   - Gaps: spaces between clusters, suggest categories the data lacks (questions like "why didn't anyone mention X?").
    - Cluster sizes: very large = items not differentiated enough; very small = specialized concerns worth noting.
 8. **Look for relationships between clusters.** Some depend on others. Some conflict.
 9. **Narrative test (Kawakita).** Write a 1–2 paragraph narrative using the cluster names to tell a coherent story about the domain. If you can't, the clusters are misapprehension.
 
 ## Worked example
 
-50-person team brainwrites about "what would make the codebase more maintainable" — 108 raw ideas.
+50-person team brainwrites about "what would make the codebase more maintainable", 108 raw ideas.
 
 After 45 minutes silent clustering:
 
@@ -47,13 +47,13 @@ After 45 minutes silent clustering:
 - **Implicit knowledge** ("only Sara knows how X works") (~10)
 - **Tooling fragmentation** (~9)
 - **Technical debt visibility** (~8)
-- **Orphans** (~15 — scattered specific concerns)
+- **Orphans** (~15, scattered specific concerns)
 
-**Gap**: noticeably absent — almost no items about *production reliability*, *security review*, or *cross-team API contracts*. The team's perception of "maintainability" is internal-developer-facing; user-facing reliability is not surfaced.
+**Gap**: noticeably absent, almost no items about *production reliability*, *security review*, or *cross-team API contracts*. The team's perception of "maintainability" is internal-developer-facing; user-facing reliability is not surfaced.
 
 **Narrative**: "Maintainability concerns cluster around (1) dependencies, (2) tests, (3) docs-code drift, with secondary concerns around onboarding and implicit knowledge. The team experiences maintainability as a developer-experience problem rather than a reliability problem."
 
-The diagram has produced a *map of perceived maintainability problems*. Decisions about which to address require additional inputs (impact, cost, owner). But the map shows what the team thinks the problem is — and the gap is itself useful.
+The diagram has produced a *map of perceived maintainability problems*. Decisions about which to address require additional inputs (impact, cost, owner). But the map shows what the team thinks the problem is, and the gap is itself useful.
 
 ## Anti-slop notes
 

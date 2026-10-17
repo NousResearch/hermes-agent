@@ -31,7 +31,7 @@ def get(
 ) -> bytes:
     """GET with retry on 5xx and Retry-After honoring.
 
-    429 (rate-limit) is raised IMMEDIATELY with a clear message — retrying
+    429 (rate-limit) is raised IMMEDIATELY with a clear message: retrying
     when the upstream says "you're over quota" just wastes time. The caller
     should slow down or supply real credentials.
     """

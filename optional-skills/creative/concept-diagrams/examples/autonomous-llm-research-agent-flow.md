@@ -4,11 +4,11 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
 
 ## Key Patterns Used
 
-- **Three-section layout**: Setup row, main loop container, and detail container — each visually distinct
+- **Three-section layout**: Setup row, main loop container, and detail container, each visually distinct
 - **Neutral dashed containers**: Loop and training pipeline use `var(--bg-secondary)` fill with dashed borders to recede behind colored content nodes
 - **Decision branching with convergence**: "val_bpb improved?" splits into Keep (green) and Discard (red), then both converge back to "Log to results.tsv"
 - **Loop-back arrow**: Dashed path with rounded corners on the right side of the container showing infinite repetition
-- **Semantic color for outcomes**: Green = improvement (keep), Red = no improvement (discard) — not arbitrary decoration
+- **Semantic color for outcomes**: Green = improvement (keep), Red = no improvement (discard), not arbitrary decoration
 - **Highlighted key step**: "Run training" uses `c-coral` to visually distinguish the most important step from other `c-teal` actions
 - **Horizontal pipeline flow**: Training details section uses left-to-right arrow-connected nodes (GPT → MuonAdamW → Evaluation)
 - **Footer metadata**: Fixed constraints shown as subtle centered text below the pipeline nodes
@@ -72,7 +72,7 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
           stroke-width="1" stroke-dasharray="6 4"
           fill="var(--bg-secondary)" stroke="var(--border)"/>
     <text class="th" x="66" y="170">Autonomous experiment loop</text>
-    <text class="ts" x="66" y="188">~12 experiments/hour — runs until manually stopped</text>
+    <text class="ts" x="66" y="188">~12 experiments/hour: runs until manually stopped</text>
   </g>
 
   <!-- Step 1: Read code + past results -->
@@ -94,7 +94,7 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
   <!-- Arrow: S2 → S3 -->
   <line x1="310" y1="330" x2="310" y2="352" class="arr" marker-end="url(#arrow)"/>
 
-  <!-- Step 3: Run training (highlighted — key step) -->
+  <!-- Step 3: Run training (highlighted: key step) -->
   <g class="node c-coral">
     <rect x="170" y="352" width="280" height="56" rx="8" stroke-width="0.5"/>
     <text class="th" x="310" y="372" text-anchor="middle" dominant-baseline="central">Run training</text>
@@ -104,7 +104,7 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
   <!-- Arrow: S3 → S4 -->
   <line x1="310" y1="408" x2="310" y2="430" class="arr" marker-end="url(#arrow)"/>
 
-  <!-- Step 4: Decision — val_bpb improved? -->
+  <!-- Step 4: Decision: val_bpb improved? -->
   <g class="node c-gray">
     <rect x="170" y="430" width="280" height="44" rx="8" stroke-width="0.5"/>
     <text class="th" x="310" y="452" text-anchor="middle" dominant-baseline="central">val_bpb improved?</text>
@@ -118,14 +118,14 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
   <text class="ts" x="195" y="496" opacity=".6">yes</text>
   <text class="ts" x="416" y="496" opacity=".6">no</text>
 
-  <!-- Keep — advance branch -->
+  <!-- Keep: advance branch -->
   <g class="node c-green">
     <rect x="70" y="508" width="210" height="56" rx="8" stroke-width="0.5"/>
     <text class="th" x="175" y="528" text-anchor="middle" dominant-baseline="central">Keep</text>
     <text class="ts" x="175" y="548" text-anchor="middle" dominant-baseline="central">Advance git branch</text>
   </g>
 
-  <!-- Discard — git reset -->
+  <!-- Discard: git reset -->
   <g class="node c-red">
     <rect x="340" y="508" width="210" height="56" rx="8" stroke-width="0.5"/>
     <text class="th" x="445" y="528" text-anchor="middle" dominant-baseline="central">Discard</text>
@@ -158,8 +158,8 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
     <rect x="40" y="710" width="600" height="170" rx="16"
           stroke-width="1" stroke-dasharray="6 4"
           fill="var(--bg-secondary)" stroke="var(--border)"/>
-    <text class="th" x="66" y="738">train.py — modifiable training pipeline</text>
-    <text class="ts" x="66" y="756">Runs during each training step — single GPU, single file</text>
+    <text class="th" x="66" y="738">train.py: modifiable training pipeline</text>
+    <text class="ts" x="66" y="756">Runs during each training step: single GPU, single file</text>
   </g>
 
   <!-- GPT model -->
@@ -218,19 +218,19 @@ A multi-section flowchart showing Karpathy's autoresearch framework: human-agent
 | Human, program.md | `c-gray` | Neutral setup / input nodes |
 | AI agent | `c-purple` | The active intelligent actor |
 | Loop action steps | `c-teal` | Agent's analytical/editing actions |
-| Run training | `c-coral` | Highlighted key step — the 5-min training run |
+| Run training | `c-coral` | Highlighted key step, the 5-min training run|
 | Decision check | `c-gray` | Neutral evaluation checkpoint |
-| Keep (improved) | `c-green` | Semantic success — val_bpb decreased |
-| Discard (not improved) | `c-red` | Semantic failure — no improvement |
+| Keep (improved) | `c-green` | Semantic success, val_bpb decreased|
+| Discard (not improved) | `c-red` | Semantic failure, no improvement|
 | Training pipeline nodes | `c-coral` | Training infrastructure components |
-| Evaluation node | `c-amber` | Distinct from training — measurement/metric role |
+| Evaluation node | `c-amber` | Distinct from training, measurement/metric role|
 | Containers | Neutral (dashed) | Subtle grouping that recedes behind content |
 
 ## Layout Notes
 
 - **ViewBox**: 680×920 (standard width, tall for 3 sections)
 - **Three sections**: Setup row (y=30–98), loop container (y=142–670), training details (y=710–880)
-- **Container style**: Dashed border (`stroke-dasharray="6 4"`), neutral fill (`var(--bg-secondary)`), `stroke-width="1"` — not colored, so inner nodes pop
+- **Container style**: Dashed border (`stroke-dasharray="6 4"`), neutral fill (`var(--bg-secondary)`), `stroke-width="1"`: not colored, so inner nodes pop
 - **Loop-back arrow**: Dashed `<path>` with quadratic curves (`Q`) at corners for smooth rounded turns, running up the right side of the loop container from "Log" back to "Read code"
 - **Decision pattern**: Single question node ("val_bpb improved?") with diagonal arrows to Keep/Discard, then convergent diagonal arrows back to "Log to results.tsv"
 - **Decision labels**: "yes"/"no" labels placed along the diagonal arrows with `opacity=".6"` to stay subtle

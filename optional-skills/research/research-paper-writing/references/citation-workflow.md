@@ -38,7 +38,7 @@ Research has documented significant issues with AI-generated citations:
 
 ### Solution
 
-**Never generate citations from memory—always verify programmatically.**
+**Never generate citations from memory, always verify programmatically.**
 
 ---
 
@@ -419,7 +419,7 @@ def batch_cite(queries: List[str], output_file: str = "references.bib"):
 | Customization | Limited | Highly flexible |
 | Backend | bibtex | Biber (recommended) |
 
-**Recommendation**: Use natbib with BibTeX for conference submissions — all major venue templates (NeurIPS, ICML, ICLR, ACL, AAAI, COLM) ship with natbib and `.bst` files. BibLaTeX with Biber is an option for journals or personal projects where you control the template.
+**Recommendation**: Use natbib with BibTeX for conference submissions, all major venue templates (NeurIPS, ICML, ICLR, ACL, AAAI, COLM) ship with natbib and `.bst` files. BibLaTeX with Biber is an option for journals or personal projects where you control the template.
 
 ### LaTeX Setup
 

@@ -16,7 +16,7 @@ metadata:
 Reads any RSS 2.0, RSS 1.0/RDF, Atom, or JSON Feed URL into a clean, date-sorted list of
 entries, and discovers the feed behind an ordinary page URL (`<link rel="alternate">` or
 the usual `/feed`, `/rss.xml`, `/atom.xml` paths). Standard library only, nothing to
-install. It does not fetch full article bodies — pass an entry's link to `web_extract` for
+install. It does not fetch full article bodies, pass an entry's link to `web_extract` for
 that.
 
 ## When to Use
@@ -79,7 +79,7 @@ truncated or the first paragraph only.
 
 - A 200 response with HTML means the URL is a page, not a feed; the script falls through
   to discovery automatically, but a site with no `<link rel="alternate">` and none of the
-  common paths reports `no feed found` — check the site's footer or `/sitemap.xml` before
+  common paths reports `no feed found`: check the site's footer or `/sitemap.xml` before
   concluding there is none.
 - Reddit feeds share Reddit's anonymous throttle (about one request per minute per IP).
   Chain them through `reddit-reading`, which waits out the window, when you need more

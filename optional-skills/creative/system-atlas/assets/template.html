@@ -302,12 +302,12 @@ function renderPanel(){
   if(!n){ renderChapterPanel(); return; }
   if(n.inside){ const parent=byId[S.inside]; const i=+n.id.slice(1);
     body.innerHTML=`<div class="eyebrow">Inside ${esc(parent.code)} · ${esc(parent.name)} · step ${i+1} of ${parent.steps.length}</div><h1 class="t">${esc(n.name)}</h1><p class="lede">${esc(n.desc)}</p>
-    <h3 class="sec">All steps</h3>${parent.steps.map((s,j)=>`<div class="step ${j===i?'cur':''}"><div class="no">${j+1}</div><div class="tx"><b>${esc(s[0])}</b> — ${esc(s[1])}</div></div>`).join('')}
+    <h3 class="sec">All steps</h3>${parent.steps.map((s,j)=>`<div class="step ${j===i?'cur':''}"><div class="no">${j+1}</div><div class="tx"><b>${esc(s[0])}</b>: ${esc(s[1])}</div></div>`).join('')}
     <div class="actions"><button class="ctl" onclick="comeOut()">← Come back out</button></div>`; return; }
   const status = n.ghost?'<span class="chip ghost static">Not switched on</span>':`<span class="chip static">${n.group==='loop'?'turn loop':n.group==='mem'?'memory':'supporting'}</span>`;
   const pinned=S.selected===n.id;
   let content='';
-  if(S.tab==='what') content=`<p class="lede">${n.one}</p><details${pinned?' open':''}><summary>Read more</summary><p>${n.what}</p></details>${n.steps?`<details><summary>Steps in execution</summary>${n.steps.map((s,j)=>`<div class="step"><div class="no">${j+1}</div><div class="tx"><b>${esc(s[0])}</b> — ${esc(s[1])}</div></div>`).join('')}</details>`:''}`;
+  if(S.tab==='what') content=`<p class="lede">${n.one}</p><details${pinned?' open':''}><summary>Read more</summary><p>${n.what}</p></details>${n.steps?`<details><summary>Steps in execution</summary>${n.steps.map((s,j)=>`<div class="step"><div class="no">${j+1}</div><div class="tx"><b>${esc(s[0])}</b>: ${esc(s[1])}</div></div>`).join('')}</details>`:''}`;
   else if(S.tab==='how') content=`<p class="lede">${n.one}</p><p>${n.how}</p>`;
   else content=`<p class="lede">${n.one}</p>`+(n.cond&&n.cond.length?qHtml(n.cond):`<p>Nothing open here right now.</p>`);
   body.innerHTML=`<div class="eyebrow">${esc(n.code)} · ${pinned?'pinned':'hovering'}${isNew(n.id)?' · new in this chapter':''}</div><h1 class="t">${esc(n.name)}</h1><div class="sub">${status}</div>${content}
@@ -380,7 +380,7 @@ function zoomAt(f,cx,cy){ tween=null; const nk=Math.max(.35,Math.min(3,S.k*f)); 
 svg.addEventListener('wheel',e=>{e.preventDefault(); const r=svg.getBoundingClientRect(); zoomAt(e.deltaY<0?1.1:0.9,e.clientX-r.left,e.clientY-r.top);},{passive:false});
 /* Selection runs on pointerdown rather than click. render() and drawPackets() each
    clear their layer, and both run on hover, so the box or dot under the cursor is
-   replaced between press and release — the browser then never synthesises a click on
+   replaced between press and release: the browser then never synthesises a click on
    it and click-to-pin silently did nothing. Pointer capture is deferred until a drag
    actually starts for the same reason: capturing on pointerdown retargets the click
    to the svg, away from the node. */
@@ -395,7 +395,7 @@ svg.addEventListener('pointermove',e=>{ if(!drag)return; const dx=e.clientX-drag
   S.tx=drag.tx+dx; S.ty=drag.ty+dy; applyView(); });
 svg.addEventListener('pointercancel',()=>{ drag=null; svg.classList.remove('dragging'); });
 svg.addEventListener('pointerup',()=>{ const d=drag; drag=null; svg.classList.remove('dragging');
-  if(!d||d.moved)return;                                  // a pan, not a tap — leave selection alone
+  if(!d||d.moved)return;                                  // a pan, not a tap: leave selection alone
   if(d.pkt!=null){ selectPacket(d.pkt); return; }
   if(d.id==null){ select(null); return; }                 // empty canvas clears the pin
   const n=sceneNodes.find(x=>x.id===d.id), now=performance.now();
@@ -407,7 +407,7 @@ document.getElementById('zout').onclick=()=>{const r=svg.getBoundingClientRect()
 window.addEventListener('resize',()=>fitView(false));
 
 /* ---------------- TIP ---------------- */
-function showTip(e,n){ tip.style.display='block'; tip.textContent=n.inside?n.desc:(n.ghost?'Later · ':'')+n.name+' — '+(n.one||'').replace(/<[^>]+>/g,''); moveTip(e); }
+function showTip(e,n){ tip.style.display='block'; tip.textContent=n.inside?n.desc:(n.ghost?'Later · ':'')+n.name+': '+(n.one||'').replace(/<[^>]+>/g,''); moveTip(e); }
 function moveTip(e){ const r=svg.getBoundingClientRect(); let x=e.clientX-r.left+14,y=e.clientY-r.top+14; if(x+290>r.width)x-=300; if(y+60>r.height)y-=70; tip.style.left=x+'px'; tip.style.top=y+'px'; }
 function hideTip(){ tip.style.display='none'; }
 

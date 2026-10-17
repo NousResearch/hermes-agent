@@ -87,7 +87,7 @@ def analyze(
     donations = _read(donations_path)
     contracts = _read(contracts_path)
 
-    # Allow optional join through cross_links — donor (left) ↔ vendor (right).
+    # Allow optional join through cross_links: donor (left) ↔ vendor (right).
     # When present, donor strings get mapped to matched vendor names so the
     # vendor-date index lookup actually finds the contracts.
     matched_pairs: set[tuple[str, str]] | None = None
@@ -136,7 +136,7 @@ def analyze(
             skipped += 1
             continue
         # Only test if donor appears in cross-links (when provided). The
-        # (donor, candidate) tuple itself is NOT what's in matched_pairs —
+        # (donor, candidate) tuple itself is NOT what's in matched_pairs: 
         # cross_links pairs are (donor, vendor). We use the cross-link to
         # map donor → vendor name(s) so the vendor-date index resolves.
         if matched_pairs is not None and donor not in donor_to_vendors:

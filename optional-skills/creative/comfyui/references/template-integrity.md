@@ -1,6 +1,6 @@
 # ComfyUI Workflow-Template Integrity
 
-> **Authored by [@purzbeats](https://github.com/purzbeats)** — adapted from
+> **Authored by [@purzbeats](https://github.com/purzbeats)**: adapted from
 > [purzbeats/hermes-agent-comfyui-helper](https://github.com/purzbeats/hermes-agent-comfyui-helper).
 > Use this reference when converting workflows from the official
 > `comfyui-workflow-templates` package (editor format) into API format for
@@ -23,7 +23,7 @@ Comfy Desktop, manual venv, etc.). Find it once with:
 comfy --workspace <ws> run-python -c "import comfyui_workflow_templates, pathlib; print(pathlib.Path(comfyui_workflow_templates.__file__).parent / 'templates')"
 ```
 
-Templates ship in **editor format** — `nodes` / `links` arrays inside
+Templates ship in **editor format**, `nodes` / `links` arrays inside
 `data['definitions']['subgraphs'][0]`. They must be converted to **API
 format** (a `node_id -> {class_type, inputs}` mapping) before submission.
 
@@ -33,9 +33,9 @@ format** (a `node_id -> {class_type, inputs}` mapping) before submission.
 
 - **Never strip, simplify, or "minimize" nodes** from a template.
 - Full template architecture (dual-pass pipelines, LoRA chains, distilled
-  sigmas, conditioning paths) is intentional — removing any part breaks quality.
+  sigmas, conditioning paths) is intentional, removing any part breaks quality.
 - If an image-dependent path exists but the task is text-to-video, **leave
-  it wired with the bypass toggle enabled** — don't remove the nodes.
+  it wired with the bypass toggle enabled**, don't remove the nodes.
 - Only change: prompt text, seed, and dimensions (when explicitly requested).
 
 ## RULE #2: Server validation errors are the source of truth
@@ -61,7 +61,7 @@ wants. Use it literally.** If it says `"values.a"` or `"resize_type.width"`,
 those are the actual key names in the JSON object. Do not "simplify" them to
 flat names based on assumptions about what the field "should" be called.
 
-## RULE #3: Don't rebuild from scratch — patch the failing nodes
+## RULE #3: Don't rebuild from scratch: patch the failing nodes
 
 Every regeneration from the template reintroduces the same bugs. Instead:
 
@@ -83,7 +83,7 @@ a template:
    `[source_node_id, source_slot]`.
 3. Delete the Reroute node from the API mapping.
 
-**Real example — LTX 2.3 t2v template:**
+**Real example, LTX 2.3 t2v template:**
 
 - Reroute node 255 receives VAE from `CheckpointLoaderSimple 236` slot 2.
 - Three nodes reference Reroute 255 for their VAE input:
@@ -193,19 +193,19 @@ nodes.
 
 **Cloud submission pitfalls:**
 
-- `/api/object_info/<node>` returns 404 on free tier — can't query node
+- `/api/object_info/<node>` returns 404 on free tier, can't query node
   schemas remotely, but the workflow runs fine anyway. Always probe
   `object_info` locally before building workflows.
-- Cloud is ~4x faster — prefer Cloud for batch runs unless local is needed
+- Cloud is ~4x faster, prefer Cloud for batch runs unless local is needed
   for debugging.
-- Cloud `/api/view` returns **302 redirect to signed GCS URL** — use
+- Cloud `/api/view` returns **302 redirect to signed GCS URL**: use
   `curl -s -L` to follow and download. Python `urllib` fails with 401
   (forwards auth headers to GCS CDN).
 - `COMFY_CLOUD_API_KEY` is only in the terminal/bash env, not in the Python
   sandbox. Use subprocess or terminal scripts for Cloud API calls.
 - Cloud free tier processes jobs **sequentially** (1 at a time). Submit all,
   then poll history.
-- LTX 2.3 at **1920x1080 OOMs locally** (even RTX 5090) — upscaler pass
+- LTX 2.3 at **1920x1080 OOMs locally** (even RTX 5090), upscaler pass
   exceeds VRAM. Prefer Cloud for 1080p; use 1280x720 locally (~90s/video).
 
 ---
@@ -224,9 +224,9 @@ ffmpeg -y -i input.mp4 \
 
 Key settings:
 
-- `-pix_fmt yuv420p` — **required for Discord**, ComfyUI outputs `yuv444p` by default.
-- `-crf 13` — high quality without massive file size (default 23 is too lossy).
-- `-profile:v main` — widely compatible.
+- `-pix_fmt yuv420p`, **required for Discord**, ComfyUI outputs `yuv444p` by default.
+- `-crf 13`: high quality without massive file size (default 23 is too lossy).
+- `-profile:v main`: widely compatible.
 
 For multi-video crossfade stitching, chain `xfade` (video) and `acrossfade`
 (audio):

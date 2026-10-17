@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * slopscan.mjs — AI-slop design linter, zero dependencies, read-only
+ * slopscan.mjs: AI-slop design linter, zero dependencies, read-only
  * ponytail: regex tokenization over CSS blocks, no full parser needed for these rules
  */
 import { readFileSync, statSync, readdirSync } from 'node:fs';
 import { join, extname, resolve } from 'node:path';
 
 const SCAN_EXTS = new Set(['.css','.scss','.html','.jsx','.tsx','.vue','.svelte','.astro','.js','.mjs','.ts']);
-// Pure-JS files get only JS-relevant rules — CSS-block heuristics false-positive on JS object literals
+// Pure-JS files get only JS-relevant rules: CSS-block heuristics false-positive on JS object literals
 const PURE_JS_EXTS = new Set(['.js','.mjs','.ts']);
 const SKIP_DIRS = new Set(['node_modules','dist','build','.git','.next','out']);
 
@@ -236,7 +236,7 @@ function checkTransitionAll(text, findings) {
   let m;
   while ((m = re.exec(text)) !== null) {
     findings.push({ rule: 'TRANSITION_ALL', severity: 'fail', line: lineAt(m.index),
-      detail: `transition: all — use specific properties instead` });
+      detail: `transition: all: use specific properties instead` });
   }
 }
 
@@ -246,12 +246,12 @@ function checkRawScrollListener(text, findings) {
   const re = /addEventListener\s*\(\s*['"]scroll['"]/g;
   while ((m = re.exec(text)) !== null) {
     findings.push({ rule: 'RAW_SCROLL_LISTENER', severity: 'fail', line: lineAt(m.index),
-      detail: `addEventListener('scroll') — use IntersectionObserver or animation-timeline` });
+      detail: `addEventListener('scroll'): use IntersectionObserver or animation-timeline` });
   }
   const re2 = /\bonscroll\s*=/g;
   while ((m = re2.exec(text)) !== null) {
     findings.push({ rule: 'RAW_SCROLL_LISTENER', severity: 'fail', line: lineAt(m.index),
-      detail: `onscroll= attribute — use IntersectionObserver or animation-timeline` });
+      detail: `onscroll= attribute: use IntersectionObserver or animation-timeline` });
   }
 }
 
@@ -288,7 +288,7 @@ function checkCardCloneGrid(blocks, findings) {
   }
 }
 
-// Ban #16 is "em-dash-HEAVY sentences" — a density property, not the presence of the glyph.
+// Ban #16 is "em-dash-HEAVY sentences": a density property, not the presence of the glyph.
 // Flagging every occurrence trains you to suppress the rule, which is how a linter loses its
 // authority; and the old remediation ("use &mdash;") renders the identical character, so
 // following it changed nothing the rule claimed to detect.
@@ -301,7 +301,7 @@ function checkEmDashCopy(text, ext, findings) {
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<title[\s\S]*?<\/title>/gi, ' ')
     .replace(/<meta[^>]*>/gi, ' ')
-    // Headings, terms and captions are LABELS, not sentences. "-200m — The Blue" is a dash doing
+    // Headings, terms and captions are LABELS, not sentences. "-200m: The Blue" is a dash doing
     // exactly the job a dash should do, and counting it made the rule argue against good typography.
     .replace(/<(h[1-6]|dt|summary|figcaption|legend|caption|th)\b[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
@@ -310,14 +310,14 @@ function checkEmDashCopy(text, ext, findings) {
     .replace(/<[^>]+>/g, ' ');
 
   // Entity-encoded dashes render the identical glyph. Counting only the literal character meant the
-  // rule was defeated by `&mdash;` — the exact dodge the comment above says the old advice suffered
+  // rule was defeated by `&mdash;`: the exact dodge the comment above says the old advice suffered
   // from. Decode first, then count.
   const decoded = prose
-    .replace(/&mdash;|&#8212;|&#[xX]2014;/g, '—')
+    .replace(/&mdash;|&#8212;|&#[xX]2014;/g, ', ')
     .replace(/&ndash;|&#8211;|&#[xX]2013;/g, '–')
     .replace(/&hellip;|&#8230;/g, '…')
     .replace(/&nbsp;|&#160;/g, ' ');
-  const dashes = (decoded.match(/—/g) || []).length;
+  const dashes = (decoded.match(/, /g) || []).length;
   if (dashes < 3) return;
   const sentences = (decoded.match(/[.!?]["')\]]?(\s|$)/g) || []).length || 1;
   const words = (decoded.match(/\S+/g) || []).length || 1;
@@ -329,10 +329,10 @@ function checkEmDashCopy(text, ext, findings) {
   if (perSentence < 0.5) return;
 
   const lineAt = makeLineAt(text);
-  const first = text.indexOf('—');
+  const first = text.indexOf(', ');
   findings.push({
     rule: 'EM_DASH_COPY', severity: 'warn', line: lineAt(first < 0 ? 0 : first),
-    detail: `${dashes} em dashes across ${sentences} sentences / ${words} words of visible copy (${perSentence.toFixed(2)}/sentence, ${per100w.toFixed(1)} per 100 words) — the dash is doing the work sentence structure should. Rewrite the densest ones as full sentences; an occasional em dash is fine.`,
+    detail: `${dashes} em dashes across ${sentences} sentences / ${words} words of visible copy (${perSentence.toFixed(2)}/sentence, ${per100w.toFixed(1)} per 100 words): the dash is doing the work sentence structure should. Rewrite the densest ones as full sentences; an occasional em dash is fine.`,
   });
 }
 
@@ -391,7 +391,7 @@ function checkAutoplaySound(text, findings) {
   while ((m = re.exec(text)) !== null) {
     if (/\bautoplay\b/i.test(m[2]) && !/\bmuted\b/i.test(m[2])) {
       findings.push({ rule: 'AUTOPLAY_SOUND', severity: 'fail', line: lineAt(m.index),
-        detail: `<${m[1].toLowerCase()} autoplay> without muted — sound must start on a user gesture` });
+        detail: `<${m[1].toLowerCase()} autoplay> without muted: sound must start on a user gesture` });
     }
   }
 }
@@ -403,7 +403,7 @@ function checkVideoNoPoster(text, findings) {
   while ((m = re.exec(text)) !== null) {
     if (!/\bposter\s*=/i.test(m[1])) {
       findings.push({ rule: 'VIDEO_NO_POSTER', severity: 'warn', line: lineAt(m.index),
-        detail: `<video> without poster — blank hero until the clip decodes` });
+        detail: `<video> without poster: blank hero until the clip decodes` });
     }
   }
 }
@@ -415,7 +415,7 @@ function checkWebglNoReducedMotion(text, findings) {
   if (!cm) return;
   if (!/prefers-reduced-motion/i.test(text)) {
     findings.push({ rule: 'WEBGL_NO_REDUCED_MOTION', severity: 'warn', line: lineAt(cm.index),
-      detail: `WebGL/WebGPU scene with no prefers-reduced-motion branch — reduced-motion is an alternative art direction, not an afterthought` });
+      detail: `WebGL/WebGPU scene with no prefers-reduced-motion branch: reduced-motion is an alternative art direction, not an afterthought` });
   }
 }
 
@@ -425,7 +425,7 @@ function checkPointerNoRaf(text, findings) {
   if (!pm) return;
   if (!/requestAnimationFrame/.test(text)) {
     findings.push({ rule: 'POINTER_NO_RAF', severity: 'warn', line: lineAt(pm.index),
-      detail: `pointermove/mousemove handler with no requestAnimationFrame — throttle DOM/uniform writes to rAF, never per-event` });
+      detail: `pointermove/mousemove handler with no requestAnimationFrame: throttle DOM/uniform writes to rAF, never per-event` });
   }
 }
 
@@ -469,7 +469,7 @@ function scanFile(filePath) {
   for (const [ruleId, sup] of suppressions) {
     if (!sup.reasonOk) {
       result.push({ rule: 'SUPPRESSION_NO_REASON', severity: 'warn', line: sup.line,
-        detail: `auteur-allow: ${ruleId} — reason too short (need 10+ non-whitespace chars)`, suppressed: false });
+        detail: `auteur-allow: ${ruleId}: reason too short (need 10+ non-whitespace chars)`, suppressed: false });
     }
   }
 
@@ -531,7 +531,7 @@ function main() {
       const rel = fr.path.replace(rootDir, '').replace(/^[\\/]/, '');
       for (const f of fr.findings) {
         const tag = f.suppressed ? 'SKIP' : f.severity.toUpperCase();
-        process.stdout.write(`${tag} ${f.rule} ${rel}:${f.line} — ${f.detail}\n`);
+        process.stdout.write(`${tag} ${f.rule} ${rel}:${f.line}: ${f.detail}\n`);
       }
     }
     process.stdout.write(`\nSummary: ${totalFails} fails, ${totalWarns} warns, ${totalSuppressed} suppressed\n`);

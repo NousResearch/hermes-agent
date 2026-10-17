@@ -8,7 +8,7 @@ Firecrawl), a Camofox session exposing CDP, or anything wired via
 
 Why this exists: Playwright's record_har_path only works on a context you
 launched locally. connect_over_cdp() attaches to an existing browser, so
-record_har is unavailable — we assemble the HAR from CDP Network.* events
+record_har is unavailable: we assemble the HAR from CDP Network.* events
 ourselves via page.on("request"/"response").
 
 Usage:

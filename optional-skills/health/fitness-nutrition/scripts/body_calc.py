@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-body_calc.py — All-in-one fitness calculator.
+body_calc.py: All-in-one fitness calculator.
 
 Subcommands:
   bmi      <weight_kg> <height_cm>
@@ -9,7 +9,7 @@ Subcommands:
   macros   <tdee_kcal> <cut|maintain|bulk>
   bodyfat  <M|F> <neck_cm> <waist_cm> [hip_cm] <height_cm>
 
-No external dependencies — stdlib only.
+No external dependencies: stdlib only.
 """
 import sys
 import math
@@ -26,7 +26,7 @@ def bmi(weight_kg, height_cm):
         cat = "Overweight"
     else:
         cat = "Obese"
-    print(f"BMI: {val:.1f} — {cat}")
+    print(f"BMI: {val:.1f}: {cat}")
     print()
     print("Ranges:")
     print("  Underweight : < 18.5")

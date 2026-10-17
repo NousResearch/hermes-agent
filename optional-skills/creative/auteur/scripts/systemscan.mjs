@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * systemscan.mjs — the multi-screen gate: does this product still have ONE design system?
+ * systemscan.mjs: the multi-screen gate: does this product still have ONE design system?
  *
  * slopscan reads source and catches defaults. shoot.mjs photographs one page. Neither can see the
  * failure mode of a real app: drift. Screen 1 has three button variants, screen 7 invents a fourth,
@@ -14,7 +14,7 @@
  * Options:
  *   --routes a,b,c   paths to append to the first url (instead of listing full urls)
  *   --out DIR        output dir (default design/system)
- *   --max-variants B  variant budget: a number, or per kind — `button=5,select=1,4` (default 4)
+ *   --max-variants B  variant budget: a number, or per kind: `button=5,select=1,4` (default 4)
  *   --width N        viewport width (default 1440)
  *   --no-shots       skip the component contact sheet
  *
@@ -28,7 +28,7 @@ import { resolve, join } from 'path';
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('--help')) {
-  console.log(`systemscan.mjs — cross-route design-system drift gate
+  console.log(`systemscan.mjs: cross-route design-system drift gate
 
   node scripts/systemscan.mjs <url> [<url>...]
   node scripts/systemscan.mjs http://localhost:3000 --routes /,/settings,/billing
@@ -42,14 +42,14 @@ const has = f => args.includes(f);
 const outDir = resolve(get('--out', 'design/system'));
 // Per-kind budgets: `--max-variants button=5,select=1` (a bare number sets the default for the rest).
 // One global number meant a sheet declaring button:5 and select:1 had to pass 5, leaving every
-// smaller kind unpoliced — the sheet's central promise enforced for exactly one control kind.
+// smaller kind unpoliced: the sheet's central promise enforced for exactly one control kind.
 const rawBudget = get('--max-variants', '4');
 const budget = { default: 4, byKind: {} };
 for (const part of String(rawBudget).split(',').map(s => s.trim()).filter(Boolean)) {
   const m = part.match(/^([a-z]+)\s*=\s*(\d+)$/i);
   if (m) budget.byKind[m[1].toLowerCase()] = +m[2];
   else if (/^\d+$/.test(part)) budget.default = +part;
-  else console.error(`[systemscan] ignoring unparseable budget "${part}" — use 4 or button=5,select=1`);
+  else console.error(`[systemscan] ignoring unparseable budget "${part}": use 4 or button=5,select=1`);
 }
 const budgetFor = kind => budget.byKind[kind] ?? budget.default;
 const width = parseInt(get('--width', '1440'), 10) || 1440;
@@ -107,7 +107,7 @@ const COLLECT = () => {
   };
 
   // A STATE is not a variant. A disabled secondary button paints differently from an enabled one by
-  // design — that is the state matrix system.md demands, and counting it as a fifth button punishes
+  // design: that is the state matrix system.md demands, and counting it as a fifth button punishes
   // the team that built it while a system with no disabled state at all sails through. Same for a
   // control that inverts because the row it sits in is in an alert state: the component did not
   // multiply, its container changed colour underneath it. Both are counted and reported separately.
@@ -134,7 +134,7 @@ const COLLECT = () => {
     if (!controls[kind][k]) {
       // Tag the exemplar NOW and re-select it by attribute in the screenshot pass. Handing a
       // positional index between two independent DOM walks produced tiles that showed a parent or a
-      // sibling rather than the control they were captioned with — which destroys the sheet's whole
+      // sibling rather than the control they were captioned with: which destroys the sheet's whole
       // purpose, because a tile showing the wrong element looks different for the wrong reason.
       const tag = `ss${shotId++}`;
       el.setAttribute('data-ss-shot', tag);
@@ -173,7 +173,7 @@ const COLLECT = () => {
 /**
  * Focus state cannot be read from a stylesheet: a `:focus-visible` rule may exist and be overridden,
  * and `:focus-visible` itself is a heuristic that programmatic `.focus()` does not reliably trigger.
- * So drive the real thing — press Tab and look at what the browser actually paints. Tabbing also
+ * So drive the real thing: press Tab and look at what the browser actually paints. Tabbing also
  * skips disabled and unfocusable elements for free, which a `.focus()` loop reports as failures.
  */
 const PROBE_FOCUS = async (page, maxStops = 40) => {
@@ -263,7 +263,7 @@ const ok = perRoute.filter(r => !r.error);
 if (!ok.length) { console.error('[systemscan] no route could be read.'); await browser.close(); process.exit(1); }
 
 // A document scanned twice (`/settings` and `/settings#state-error` are the same DOM) must not count
-// twice — summing across URLs meant scanning MORE thoroughly hid genuine one-off variants, which is
+// twice: summing across URLs meant scanning MORE thoroughly hid genuine one-off variants, which is
 // the opposite of what `system.md` tells you to do. Count per document, take the max, then sum.
 const docOf = u => u.split('#')[0];
 const docs = [...new Set(ok.map(r => docOf(r.url)))];
@@ -308,23 +308,23 @@ for (const [kind, vars] of Object.entries(controlVariants)) {
   const n = Object.keys(vars).length, b = budgetFor(kind);
   if (n > b) fails.push(`${kind}: ${n} distinct rendered variants (budget ${b}). A variant nobody can name is drift.`);
   for (const [sig, v] of Object.entries(vars)) {
-    if (v.count === 1 && n > 1) warns.push(`${kind} variant used exactly once ("${v.sample}") — either promote it into the system or delete it: ${sig}`);
+    if (v.count === 1 && n > 1) warns.push(`${kind} variant used exactly once ("${v.sample}"): either promote it into the system or delete it: ${sig}`);
   }
 }
 const blank = perRoute.filter(r => !r.error && (r.status >= 400 || r.empty));
-if (blank.length) fails.push(`${blank.length} route(s) rendered nothing measurable or returned an error status — a gate that goes green on a 404 is worse than no gate: ${blank.map(r => `${r.url}${r.status >= 400 ? ` (HTTP ${r.status})` : ''}`).join(', ')}`);
+if (blank.length) fails.push(`${blank.length} route(s) rendered nothing measurable or returned an error status: a gate that goes green on a 404 is worse than no gate: ${blank.map(r => `${r.url}${r.status >= 400 ? ` (HTTP ${r.status})` : ''}`).join(', ')}`);
 const noFocus = ok.flatMap(r => (r.focus?.noFocusRing || []).map(t => `${r.url} → ${t}`));
-if (noFocus.length) fails.push(`${noFocus.length} interactive element(s) paint identically when focused — keyboard users cannot see where they are`);
+if (noFocus.length) fails.push(`${noFocus.length} interactive element(s) paint identically when focused: keyboard users cannot see where they are`);
 
 const colors = mergeCount('colors'), type = mergeCount('type'), radii = mergeCount('radii'), shadows = mergeCount('shadows');
 if (docs.length > 1) {
   for (const [label, list] of [['colour', colors], ['type step', type], ['radius', radii]]) {
     const singles = list.filter(x => x.routes === 1 && x.total >= 3);
-    if (singles.length) warns.push(`${singles.length} ${label}(s) appear on exactly one route and nowhere else — that is where the system is splitting: ${singles.slice(0, 4).map(s => s.k).join(' · ')}`);
+    if (singles.length) warns.push(`${singles.length} ${label}(s) appear on exactly one route and nowhere else: that is where the system is splitting: ${singles.slice(0, 4).map(s => s.k).join(' · ')}`);
   }
 }
-if (type.length > 12) warns.push(`${type.length} distinct type steps across the product — a scale nobody can hold in their head is not a scale`);
-if (!ok.some(r => r.hasDisabled)) warns.push('no disabled control appeared on any route — the disabled state is probably undesigned, not absent');
+if (type.length > 12) warns.push(`${type.length} distinct type steps across the product: a scale nobody can hold in their head is not a scale`);
+if (!ok.some(r => r.hasDisabled)) warns.push('no disabled control appeared on any route: the disabled state is probably undesigned, not absent');
 
 // ---- component contact sheet -------------------------------------------------
 let sheet = null;
@@ -345,7 +345,7 @@ if (shots && tiles.length) {
   await p.setViewportSize({ width: 1200, height: 900 });
   await p.goto('file:///' + f.replace(/\\/g, '/'), { waitUntil: 'load', timeout: 20_000 }).catch(() => {});
   await p.waitForTimeout(900);
-  // shoot the grid, not the viewport — a fullPage shot of a two-row sheet is mostly empty canvas
+  // shoot the grid, not the viewport: a fullPage shot of a two-row sheet is mostly empty canvas
   const grid = await p.$('.g');
   await (grid || p).screenshot({ path: join(outDir, 'components.png') });
   await p.close();
@@ -355,13 +355,13 @@ await browser.close();
 
 // ---- report ------------------------------------------------------------------
 const L = [];
-L.push(`# SYSTEM-REPORT — ${ok.length} route(s), ${new Date().toISOString().slice(0, 10)}`);
+L.push(`# SYSTEM-REPORT: ${ok.length} route(s), ${new Date().toISOString().slice(0, 10)}`);
 L.push('');
 L.push('The system as **painted**, not as documented. A token in the stylesheet that never renders is');
-L.push('not part of the system; a one-off inline style is. Read this against `design/DESIGN.md` — every');
+L.push('not part of the system; a one-off inline style is. Read this against `design/DESIGN.md`: every');
 L.push('number below that DESIGN.md does not account for is drift.');
 L.push('');
-if (sheet) L.push(`**Look at \`${sheet}\`** — one tile per distinct rendered control variant. Two tiles that look the same to you but appear separately are the drift.\n`);
+if (sheet) L.push(`**Look at \`${sheet}\`**: one tile per distinct rendered control variant. Two tiles that look the same to you but appear separately are the drift.\n`);
 
 L.push('## Controls');
 L.push('');
@@ -374,7 +374,7 @@ for (const [kind, vars] of Object.entries(controlVariants)) {
 L.push('');
 for (const [kind, vars] of Object.entries(controlVariants)) {
   L.push(`### ${kind}`);
-  for (const [sig, v] of Object.entries(vars)) L.push(`- ×${v.count} on ${v.routes.size} route(s) — "${v.sample}" — \`${sig}\``);
+  for (const [sig, v] of Object.entries(vars)) L.push(`- ×${v.count} on ${v.routes.size} route(s): "${v.sample}": \`${sig}\``);
   if (controlStates[kind]) {
     const st = Object.entries(controlStates[kind]).map(([n, c]) => `${n} ×${c}`).join(' · ');
     L.push(`- *states (not counted as variants): ${st}*`);
@@ -382,7 +382,7 @@ for (const [kind, vars] of Object.entries(controlVariants)) {
   L.push('');
 }
 if (Object.keys(controlStates).length) {
-  L.push('> States — disabled, current, and controls inside a row carrying a `data-state` — are');
+  L.push('> States: disabled, current, and controls inside a row carrying a `data-state`: are');
   L.push('> excluded from the variant budget. A disabled button paints differently on purpose; a');
   L.push('> product that has no disabled state at all should not score better than one that does.');
   L.push('');
@@ -392,7 +392,7 @@ L.push('## Tokens as rendered');
 L.push('');
 for (const [label, list] of [['Colour', colors], ['Type step', type], ['Radius', radii], ['Shadow', shadows]]) {
   L.push(`**${label}** (${list.length} distinct)`);
-  for (const x of list.slice(0, 10)) L.push(`- \`${x.k}\` — ${x.total}× on ${x.routes} route(s)`);
+  for (const x of list.slice(0, 10)) L.push(`- \`${x.k}\`: ${x.total}× on ${x.routes} route(s)`);
   if (list.length > 10) L.push(`- …and ${list.length - 10} more`);
   L.push('');
 }
@@ -401,8 +401,8 @@ L.push('## Per route');
 L.push('');
 L.push('| route | landmarks | h1 | focusable | console errors |');
 L.push('|---|---|---|---|---|');
-for (const r of ok) L.push(`| ${r.url} | ${r.landmarks || '—'} | ${r.h1} | ${r.focusable} | ${r.errors.length} |`);
-for (const r of perRoute.filter(r => r.error)) L.push(`| ${r.url} | **unreachable** — ${r.error} | | | |`);
+for (const r of ok) L.push(`| ${r.url} | ${r.landmarks || ', '} | ${r.h1} | ${r.focusable} | ${r.errors.length} |`);
+for (const r of perRoute.filter(r => r.error)) L.push(`| ${r.url} | **unreachable**: ${r.error} | | | |`);
 L.push('');
 
 if (fails.length) { L.push('## FAIL'); fails.forEach(f => L.push(`- ${f}`)); L.push(''); }
@@ -420,7 +420,7 @@ await writeFile(join(outDir, 'system.json'), JSON.stringify({
 
 console.log(`\n=== systemscan ===`);
 console.log(`routes  : ${ok.length}/${perRoute.length} read (${docs.length} distinct document(s))`);
-console.log(`controls: ${Object.entries(controlVariants).map(([k, v]) => `${k} ${Object.keys(v).length}`).join(' · ') || '—'}`);
+console.log(`controls: ${Object.entries(controlVariants).map(([k, v]) => `${k} ${Object.keys(v).length}`).join(' · ') || ', '}`);
 console.log(`tokens  : ${colors.length} colours · ${type.length} type steps · ${radii.length} radii · ${shadows.length} shadows`);
 console.log(`report  : ${join(outDir, 'SYSTEM-REPORT.md')}${sheet ? `\nsheet   : ${join(outDir, sheet)}` : ''}`);
 for (const f of fails) console.log(`FAIL ${f}`);

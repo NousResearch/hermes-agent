@@ -13,9 +13,9 @@ metadata:
 
 # Code Wiki Skill
 
-Generate a full wiki for any codebase — overview, architecture, per-module deep-dives, Mermaid class and sequence diagrams. Inspired by Google CodeWiki, but works on local repos, private repos, and any language. Uses only existing Hermes tools (`terminal`, `read_file`, `search_files`, `write_file`); no Docker, no external services, no extra dependencies.
+Generate a full wiki for any codebase, overview, architecture, per-module deep-dives, Mermaid class and sequence diagrams. Inspired by Google CodeWiki, but works on local repos, private repos, and any language. Uses only existing Hermes tools (`terminal`, `read_file`, `search_files`, `write_file`); no Docker, no external services, no extra dependencies.
 
-This skill produces **reference documentation** (what/how). It does not produce strategic narrative (why — that's a different skill).
+This skill produces **reference documentation** (what/how). It does not produce strategic narrative (why, that's a different skill).
 
 ## When to Use
 
@@ -25,10 +25,10 @@ This skill produces **reference documentation** (what/how). It does not produce 
 - Need a stable artifact (markdown + Mermaid) that renders on GitHub
 
 Do NOT use this for:
-- Single-file or single-function documentation — just answer directly
-- API reference for one specific endpoint — use `read_file` and answer inline
-- Strategic "why does this exist" narrative — different skill, different purpose
-- Codebases the user is actively developing in this session — just answer questions as they come
+- Single-file or single-function documentation, just answer directly
+- API reference for one specific endpoint, use `read_file` and answer inline
+- Strategic "why does this exist" narrative, different skill, different purpose
+- Codebases the user is actively developing in this session, just answer questions as they come
 
 ## Prerequisites
 
@@ -44,8 +44,8 @@ Invoke through the `terminal` tool from the target repo's root, then use `read_f
 
 | Step | Action |
 |---|---|
-| 1 | Resolve target — local cwd, given path, or `git clone --depth 50 <url>` to a temp dir |
-| 2 | Scan structure — `ls`, `find -maxdepth 3`, manifest files, README |
+| 1 | Resolve target, local cwd, given path, or `git clone --depth 50 <url>` to a temp dir|
+| 2 | Scan structure, `ls`, `find -maxdepth 3`: manifest files, README|
 | 3 | Pick 8–10 modules to document |
 | 4 | Write `README.md` (overview + module map) |
 | 5 | Write `architecture.md` with Mermaid flowchart |
@@ -128,7 +128,7 @@ For very large repos, prioritize by:
 2. LOC (bigger modules usually warrant their own doc)
 3. Mentions in README / top-level docs
 
-State the module list to the user before generating per-module docs on big repos — gives them a chance to redirect.
+State the module list to the user before generating per-module docs on big repos, gives them a chance to redirect.
 
 ### 4. Write `README.md`
 
@@ -137,18 +137,18 @@ State the module list to the user before generating per-module docs on big repos
 ````markdown
 # <Project Name>
 
-<One paragraph: what it is and what it's for. Self-contained — don't assume the
+<One paragraph: what it is and what it's for. Self-contained: don't assume the
 reader has the source README.>
 
 ## Key Concepts
 
-- **<Concept 1>** — <one line>
-- **<Concept 2>** — <one line>
+- **<Concept 1>**: <one line>
+- **<Concept 2>**: <one line>
 
 ## Entry Points
 
-- [`path/to/main.py`](<link>) — <what runs when you start it>
-- [`path/to/cli.py`](<link>) — <CLI surface>
+- [`path/to/main.py`](<link>): <what runs when you start it>
+- [`path/to/cli.py`](<link>): <CLI surface>
 
 ## High-Level Architecture
 
@@ -179,7 +179,7 @@ where it exits, where state lives.>
 
 ## Components
 
-- **<Component>** — <1-2 sentences>. See [`modules/<module>.md`](modules/<module>.md).
+- **<Component>**: <1-2 sentences>. See [`modules/<module>.md`](modules/<module>.md).
 
 ## System Diagram
 
@@ -193,8 +193,8 @@ flowchart TD
 
 ## Data Flow
 
-1. **<Step>** — [`<file>`](<link>)
-2. **<Step>** — [`<file>`](<link>)
+1. **<Step>**: [`<file>`](<link>)
+2. **<Step>**: [`<file>`](<link>)
 
 ## Key Design Decisions
 
@@ -226,7 +226,7 @@ For each selected module, inspect its layout with `ls`, identify 3–5 most impo
 
 ## Key Files
 
-- [`<module>/<file>`](<link>) — <what it does>
+- [`<module>/<file>`](<link>): <what it does>
 
 ## Public API
 
@@ -275,7 +275,7 @@ classDiagram
 
 ## Notes
 
-<Anything the diagram can't express — lifecycle, threading, etc.>
+<Anything the diagram can't express: lifecycle, threading, etc.>
 ````
 
 For languages without classes (Go, C, Rust): use the diagram for struct relationships, or skip class-diagram.md and explain it in prose in architecture.md. Don't force-fit.
@@ -307,8 +307,8 @@ sequenceDiagram
 
 ### Walkthrough
 
-1. **User input** — [`cli.py:HermesCLI.run_session`](<link>)
-2. **Message dispatch** — [`run_agent.py:AIAgent.chat`](<link>)
+1. **User input**: [`cli.py:HermesCLI.run_session`](<link>)
+2. **Message dispatch**: [`run_agent.py:AIAgent.chat`](<link>)
 ````
 
 Don't invent participants. Every box must correspond to a real component the reader can find in the code.
@@ -320,7 +320,7 @@ Don't invent participants. Every box must correspond to a real component the rea
 
 ## Prerequisites
 
-<From manifest files + README. Be specific — versions if pinned.>
+<From manifest files + README. Be specific: versions if pinned.>
 
 ## Installation
 
@@ -341,8 +341,8 @@ Don't invent participants. Every box must correspond to a real component the rea
 
 ## Configuration
 
-- `<config-file>` — <what it controls>
-- Env var `<VAR>` — <what it controls>
+- `<config-file>`: <what it controls>
+- Env var `<VAR>`: <what it controls>
 
 ## Where to Go Next
 
@@ -399,7 +399,7 @@ Generating a full wiki for a 500K-LOC monorepo is wildly token-expensive. Defaul
 - Per-file reads: prefer `search_files` for symbols + `read_file` with `offset`/`limit` over full reads
 - Skip vendored code (`vendor/`, `third_party/`, generated code, `_pb2.py`, `.min.js`)
 
-If the user says "do the whole thing exhaustively", believe them — but ballpark the cost first: "this repo has ~340 source files, comprehensive coverage will be expensive — confirm?"
+If the user says "do the whole thing exhaustively", believe them, but ballpark the cost first: "this repo has ~340 source files, comprehensive coverage will be expensive, confirm?"
 
 ## Re-Run / Update
 
@@ -409,7 +409,7 @@ If `.codewiki-state.json` already exists at the target path:
 - If source SHA matches: ask user if they want to regenerate or skip
 - If SHA differs: offer to regenerate only modules with changed files (`git diff --name-only <old-sha> HEAD`)
 
-Full incremental-regeneration is a future enhancement — for now, regenerating the whole thing is acceptable.
+Full incremental-regeneration is a future enhancement, for now, regenerating the whole thing is acceptable.
 
 ## Pitfalls
 
@@ -422,13 +422,13 @@ Full incremental-regeneration is a future enhancement — for now, regenerating 
 - **Mermaid special chars need quotes:** `A["Tool / Agent"]` not `A[Tool / Agent]`. `<br>` for line breaks inside a node.
 - **Nested code fences in SKILL.md.** When writing a markdown example that contains a Mermaid block, use 4-backtick outer fences so the 3-backtick inner ` ```mermaid ` doesn't close the outer. (This SKILL.md does it.)
 - **classDiagram generics** render as `~T~` (e.g. `List~Tool~`), not `<T>`.
-- **GitHub Mermaid theme is fixed** — don't include `%%{init: ...}%%` blocks; they're stripped on render.
+- **GitHub Mermaid theme is fixed**: don't include `%%{init: ...}%%` blocks; they're stripped on render.
 
 ## Verification
 
 After writing, verify:
 
-1. **Mermaid blocks balance** — opens equal closes per file:
+1. **Mermaid blocks balance**: opens equal closes per file:
    ```bash
    for f in "$OUTPUT_DIR"/diagrams/*.md "$OUTPUT_DIR"/architecture.md; do
      opens=$(grep -c '^```mermaid' "$f")
@@ -436,10 +436,10 @@ After writing, verify:
      echo "$f: $opens mermaid blocks, $total total fences (expect total = opens*2)"
    done
    ```
-2. **All expected files exist** —
+2. **All expected files exist**:
    ```bash
    ls "$OUTPUT_DIR"/{README.md,architecture.md,getting-started.md,.codewiki-state.json} \
       "$OUTPUT_DIR"/modules/ "$OUTPUT_DIR"/diagrams/
    ```
-3. **Module count matches what you intended** — `ls "$OUTPUT_DIR/modules" | wc -l` should equal the number of modules you committed to in Step 3.
-4. **No fabricated paths** — sanity-check 2–3 source links resolve to real files.
+3. **Module count matches what you intended**: `ls "$OUTPUT_DIR/modules" | wc -l` should equal the number of modules you committed to in Step 3.
+4. **No fabricated paths**: sanity-check 2–3 source links resolve to real files.

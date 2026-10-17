@@ -12,7 +12,7 @@ metadata:
     category: productivity
 ---
 
-# Telephony — Numbers, Calls, and Texts without Core Tool Changes
+# Telephony, Numbers, Calls, and Texts without Core Tool Changes
 
 This optional skill gives Hermes practical phone capabilities while keeping telephony out of the core tool list.
 
@@ -38,7 +38,7 @@ This skill is meant to cover the practical phone tasks users actually want:
 
 It does **not** turn Hermes into a real-time inbound phone gateway. Inbound SMS is handled by polling the Twilio REST API. That is enough for many workflows, including notifications and some one-time-code retrieval, without adding core webhook infrastructure.
 
-## Safety rules — mandatory
+## Safety rules: mandatory
 
 1. Always confirm before placing a call or sending a text.
 2. Never dial emergency numbers.
@@ -49,7 +49,7 @@ It does **not** turn Hermes into a real-time inbound phone gateway. Inbound SMS 
 5. It is fine to persist the **agent-owned Twilio number** because that is part of the user's configuration.
 6. VoIP numbers are **not guaranteed** to work for all third-party 2FA flows. Use with caution and set user expectations clearly.
 
-## Decision tree — which service to use?
+## Decision tree: which service to use?
 
 Use this logic instead of hardcoded provider routing:
 
@@ -146,7 +146,7 @@ hermes skills install official/productivity/telephony
 
 ## Provider setup
 
-### Twilio — owned number, SMS/MMS, direct calls, inbound SMS polling
+### Twilio: owned number, SMS/MMS, direct calls, inbound SMS polling
 
 Sign up at:
 - https://www.twilio.com/try-twilio
@@ -183,7 +183,7 @@ python "$SCRIPT" twilio-set-default "+17025551234" --save-env
 python "$SCRIPT" twilio-set-default PNXXXXXXXXXXXXXXXXXXXXXXXXXXXX --save-env
 ```
 
-### Bland.ai — easiest outbound AI calling
+### Bland.ai: easiest outbound AI calling
 
 Sign up at:
 - https://app.bland.ai
@@ -194,7 +194,7 @@ Save config:
 python "$SCRIPT" save-bland your_bland_api_key --voice mason
 ```
 
-### Vapi — better conversational voice quality
+### Vapi: better conversational voice quality
 
 Sign up at:
 - https://dashboard.vapi.ai

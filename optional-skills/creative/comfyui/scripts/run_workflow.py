@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-run_workflow.py — Inject parameters into a ComfyUI workflow, submit it, monitor
+run_workflow.py: Inject parameters into a ComfyUI workflow, submit it, monitor
 execution, and download outputs.
 
 Improvements over v1:
   - Cloud-aware URL routing (handles /api prefix and /history_v2 / /experiment/models renames)
   - API key from CLI flag OR $COMFY_CLOUD_API_KEY env var
   - WebSocket progress monitoring (--ws), with HTTP polling fallback
-  - Streaming download (no whole-file buffering — handles GB-size video outputs)
+  - Streaming download (no whole-file buffering: handles GB-size video outputs)
   - Path-traversal-safe output writes
   - Subfolder-aware download paths (no silent overwrites)
   - Retry with exponential backoff on transient errors
@@ -57,7 +57,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
-# Local import — _common.py sits next to this script.
+# Local import: _common.py sits next to this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import (
     DEFAULT_LOCAL_HOST, ENV_API_KEY,
@@ -213,7 +213,7 @@ class ComfyRunner:
                     # Cloud sometimes 404s briefly between submit and dispatcher pickup
                     pass
                 else:
-                    # transient error — retry loop covers it
+                    # transient error: retry loop covers it
                     pass
             else:
                 # Local: /history/{id} grows once execution completes
@@ -229,7 +229,7 @@ class ComfyRunner:
                     entry = data.get(prompt_id)
                     if isinstance(entry, dict):
                         st = entry.get("status") or {}
-                        # IMPORTANT: check error first — `completed: true` can coexist with errors
+                        # IMPORTANT: check error first: `completed: true` can coexist with errors
                         status_str = st.get("status_str")
                         if status_str == "error":
                             return {"status": "error", "data": entry}
@@ -278,7 +278,7 @@ class ComfyRunner:
             while time.time() < deadline:
                 msg = ws.recv()
                 if isinstance(msg, bytes):
-                    # Binary preview frame — ignore for now; ws_monitor.py prints them
+                    # Binary preview frame: ignore for now; ws_monitor.py prints them
                     continue
                 try:
                     payload = json.loads(msg)
@@ -486,7 +486,7 @@ def inject_params(
         if not isinstance(node, dict) or "inputs" not in node:
             warnings.append(f"node '{nid}' for parameter '{name}' missing in workflow")
             continue
-        # Refuse to overwrite a link with a literal — would silently break wiring
+        # Refuse to overwrite a link with a literal: would silently break wiring
         cur = node["inputs"].get(field)
         if is_link(cur):
             warnings.append(
@@ -739,7 +739,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             wait_result = runner.poll_status(prompt_id, timeout=timeout)
     except KeyboardInterrupt:
-        log(f"Interrupted — cancelling job {prompt_id} on server…")
+        log(f"Interrupted: cancelling job {prompt_id} on server…")
         try:
             runner.cancel(prompt_id)
         except Exception as e:

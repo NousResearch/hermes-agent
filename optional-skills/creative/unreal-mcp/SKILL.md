@@ -35,7 +35,7 @@ campfire and render a shot of it").
 
 Don't use for: DCC-style mesh modeling/sculpting (model in Blender and
 import the result), or for editing Unreal C++ project source (that's normal
-code work — use the terminal; this skill is about the live editor).
+code work, use the terminal; this skill is about the live editor).
 
 ## Prerequisites
 
@@ -44,16 +44,16 @@ Two halves, in this order: the editor side must be up before Hermes connects.
 ### One-time, editor side
 
 1. Unreal Editor **5.8+** with a project open. (macOS: full Xcode must be
-   installed and its license accepted — the editor exits on first launch
+   installed and its license accepted, the editor exits on first launch
    without it; see pitfalls.)
-2. **Edit > Plugins** — enable **Unreal MCP** (its Toolset Registry
+2. **Edit > Plugins**: enable **Unreal MCP** (its Toolset Registry
    dependency auto-enables). Restart the editor when prompted.
 3. The typed toolsets ship separately from the server: also enable the
    **AllToolsets** plugin in the same Plugins browser. Unreal MCP ships NO
-   tools itself — AllToolsets provides the shipped toolsets (SceneTools,
+   tools itself, AllToolsets provides the shipped toolsets (SceneTools,
    ActorTools, MaterialInstanceTools, ObjectTools, …); skip it and the
    server connects but the agent has nothing to call.
-4. **Edit > Editor Preferences > General > Model Context Protocol** — enable
+4. **Edit > Editor Preferences > General > Model Context Protocol**: enable
    **Auto Start Server**. Default bind is `http://127.0.0.1:8000/mcp`
    (port/path configurable in the same panel; server name is `unreal-mcp`).
    To start manually instead, run `ModelContextProtocol.StartServer` in the
@@ -69,7 +69,7 @@ while the editor + server are up so the probe sees the real surface. If the
 user changed port/path in Editor Preferences, edit the `url` in
 `~/.hermes/config.yaml` under `mcp_servers.unreal-engine` to match.
 
-Do NOT use `ModelContextProtocol.GenerateClientConfig` for Hermes — that
+Do NOT use `ModelContextProtocol.GenerateClientConfig` for Hermes, that
 writes `.mcp.json`-style files for Claude Code/Cursor/etc. Hermes connects
 from `config.yaml` via the catalog entry.
 
@@ -79,7 +79,7 @@ from `config.yaml` via the catalog entry.
    server started (Output Log shows the bind address, or run
    `ModelContextProtocol.StartServer` manually).
 2. Start the Hermes session. Tools register as `mcp_unreal_engine_*`. If
-   they're missing: editor wasn't up first — start it, then open a new
+   they're missing: editor wasn't up first, start it, then open a new
    Hermes session.
 3. Sanity check: call `mcp_unreal_engine_list_toolsets` and confirm toolsets
    come back.
@@ -102,9 +102,9 @@ The discovery walk, always in this order:
    (the surface is project-dependent: enabled plugins, Game Feature Plugins,
    and any custom toolsets all contribute). Names come back FULLY QUALIFIED
    (`editor_toolset.toolsets.scene.SceneTools`,
-   `EditorToolset.EditorAppToolset`) — use them verbatim as `toolset_name`.
+   `EditorToolset.EditorAppToolset`), use them verbatim as `toolset_name`.
 2. `describe_toolset` on the group you need → read the real parameter
-   schemas. Never guess parameter names — schemas are the contract.
+   schemas. Never guess parameter names, schemas are the contract.
 3. `call_tool` with the qualified toolset name, the SHORT tool name
    (`find_actors`, not the dotted form), and arguments matching the schema.
 
@@ -130,14 +130,14 @@ Every Unreal task follows the same loop:
    (`call_tool` → `AgentSkillToolset.ListSkills`): a matching project skill's
    instructions override this skill's generic defaults.
 2. **Act in small, single-purpose calls.** One logical step per `call_tool`.
-   The server executes tools **serially on the game thread** — a big
+   The server executes tools **serially on the game thread**: a big
    monolithic operation freezes the editor UI until it finishes and risks
    client timeouts. Exception: for loops over 5+ homogeneous operations,
    ONE `ProgrammaticToolset.execute_tool_script` call batches them
    server-side without breaking the serial rule
    (`references/advanced-workflows.md`).
 3. **NEVER issue overlapping calls.** Do not batch multiple
-   `mcp_unreal_engine_*` calls in one turn — Hermes runs batched calls
+   `mcp_unreal_engine_*` calls in one turn, Hermes runs batched calls
    concurrently, and parallel calls against the game thread deadlock or
    fail. Strictly one call, await result, next call. This overrides the
    general parallel-tool-calls guidance.
@@ -145,11 +145,11 @@ Every Unreal task follows the same loop:
    widget creation) report success/failure in the response body with no
    protocol-level exception. Anything that isn't an explicit success is a
    stop-and-diagnose, not a shrug. After property writes, read the value
-   back — several write paths silently no-op (see pitfalls).
+   back, several write paths silently no-op (see pitfalls).
 5. **Verify visually and structurally.** After each milestone, confirm state
    by querying the actors/properties you changed, and capture a viewport
    screenshot when composition matters (see `references/tool-surface.md` for
-   the capture options; `vision_analyze` the image — you are the art
+   the capture options; `vision_analyze` the image, you are the art
    director, judge it).
 6. **Save often.** Editor edits are in-memory until packages/levels are
    saved; an editor crash loses everything since the last save, and MCP
@@ -170,7 +170,7 @@ Rules of the world while you work:
   not actor **names** (internal, unique). Prefer resolving actors by
   label/class queries, then hold on to whatever handle the tool returns.
 - Prefer physically-plausible lighting values (lux/candela/Kelvin) over
-  arbitrary brightness numbers — but FIRST read the existing sun's
+  arbitrary brightness numbers, but FIRST read the existing sun's
   intensity to learn the scene's calibration convention; template worlds
   are often calibrated around `intensity: 10`, and physical values blow
   them out (`references/scene-craft.md` has the numbers,
@@ -182,7 +182,7 @@ The user gives intent, not specs. Translate before you build:
 
 1. **Extract the brief.** Subject, mood, time of day, interior/exterior,
    style, deliverable (screenshot? render? playable level?). Ask at most one
-   round of clarifying questions, then commit — you are the technical
+   round of clarifying questions, then commit, you are the technical
    director; don't bounce Unreal jargon back at the user.
 2. **Plan the build order.** The order that works: level/environment shell →
    blocking (major geometry/meshes in place) → lighting + atmosphere →
@@ -211,9 +211,9 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
 | `references/advanced-workflows.md` | Sophisticated workflows, live-verified: ProgrammaticToolset batching, Blueprint DSL authoring loop (create→DSL→compile→spawn), PIE test sessions, Sequencer orientation (140 tools), LogsToolset self-debugging, automation testing, semantic asset search, config settings, per-situation decision table |
 | `references/scene-craft.md` | Numeric cheat sheet: physical light intensities, color temperatures, exposure/EV100, fog densities, mood recipes (noon/golden hour/overcast/night/interior), scale tables, content path conventions |
 | `references/recipes.md` | End-to-end worked builds with exact call sequences |
-| `references/pitfalls.md` | Setup, runtime, and workflow pitfalls with fixes — read before your first session and whenever something misbehaves |
+| `references/pitfalls.md` | Setup, runtime, and workflow pitfalls with fixes, read before your first session and whenever something misbehaves|
 
-## Pitfalls (top of mind — full list in references/pitfalls.md)
+## Pitfalls (top of mind: full list in references/pitfalls.md)
 
 - **Start order matters.** Editor + server up first, then the Hermes
   session. Missing `mcp_unreal_engine_*` tools = wrong order.
@@ -229,7 +229,7 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
   render/import-heavy sessions.
 - **Stale tool schemas.** After authoring/hot-reloading toolsets or enabling
   a plugin, run `ModelContextProtocol.RefreshTools` in the editor console
-  and re-`list_toolsets`. New C++ `UFUNCTION`s need a full editor restart —
+  and re-`list_toolsets`. New C++ `UFUNCTION`s need a full editor restart,
   Live Coding won't surface them.
 - **Experimental plugin.** APIs and tool shapes can change between engine
   versions; trust `describe_toolset` over memory, including this skill's
@@ -238,7 +238,7 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
   design. Never suggest binding it wider.
 - **Licensing note.** The server logs on start: data transmitted via the
   plugin to a connected LLM service is Licensed Technology under the UE
-  EULA (§6(e)) — the user is responsible for ensuring their LLM provider
+  EULA (§6(e)), the user is responsible for ensuring their LLM provider
   doesn't train on it. Surface this if the user asks about data handling.
 
 ## Verification Checklist

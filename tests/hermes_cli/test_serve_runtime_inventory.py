@@ -13,6 +13,8 @@ from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli import update_inventory
 from hermes_cli import main_dashboard
 
@@ -245,3 +247,70 @@ def test_inventory_classifies_launchd_job_owned_serve(monkeypatch):
     assert row.restart_via == "launchd"
     assert row.detail["launchd_domain"] == "gui/501"
     assert row.detail["launchd_label"] == "ai.hermes.dashboard"
+
+
+# ---------------------------------------------------------------------------
+# update_inventory: systemd-unit-owned serve/dashboard classification (#139387)
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_CGROUP = "/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-dashboard.service"
+
+
+@pytest.mark.platforms("linux")
+def test_inventory_classifies_systemd_unit_owned_dashboard(monkeypatch):
+    """A unit-managed dashboard's ledger row records no live spawner — systemd started it, not the
+    CLI — so the spawner probe alone reads ``manual-serve``: the plan then advertises a respawn-argv
+    restart and files a durable manual-restart reminder for a backend systemd already owns (#139387).
+    Ownership is proved through the unit's live ``MainPID``, so the row must classify ``systemd``."""
+    entry = _ledger_entry(purpose="dashboard", argv="hermes dashboard --port 8300")
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: True,  # systemd started it: no CLI spawner left
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    with patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value="hermes-dashboard.service"), \
+         patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=_DASHBOARD_CGROUP):
+        plan = update_inventory.collect_runtime_inventory()
+    rows = [r for r in plan.runtimes if r.kind == "dashboard"]
+    assert rows, "the systemd-owned dashboard must appear in the inventory"
+    row = rows[0]
+    assert row.supervisor == "systemd"
+    assert row.restart_via == "systemd"
+    assert row.detail["systemd_unit"] == "hermes-dashboard.service"
+    assert row.detail["systemd_scope"] == "user"
+
+
+@pytest.mark.platforms("linux")
+def test_inventory_leaves_a_unit_less_backend_manual(monkeypatch):
+    """Ownership must be proved before it is claimed: a backend that merely runs under some
+    ``.service`` cgroup (one started from the gateway's terminal tool, cron, a CI runner) is not
+    that unit's ``MainPID``, and the probe answers None for it — the row stays ``manual-serve``
+    with its durable handoff."""
+    entry = _ledger_entry(purpose="dashboard", argv="hermes dashboard --port 8300")
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    with patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None):
+        plan = update_inventory.collect_runtime_inventory()
+    rows = [r for r in plan.runtimes if r.kind == "dashboard"]
+    assert rows and rows[0].supervisor == "manual-serve"
+    assert rows[0].restart_via == "respawn-argv"
+    assert "systemd_unit" not in rows[0].detail
+
+
+@pytest.mark.platforms("linux")
+def test_inventory_systemd_probe_failure_degrades_to_spawner_classification(monkeypatch):
+    """The systemd ownership probe is advisory: a failing probe must degrade to the spawner
+    classification, never abort the (read-only) inventory pass."""
+    entry = _ledger_entry(purpose="dashboard", argv="hermes dashboard --port 8300")
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    with patch.object(main_dashboard, "_get_systemd_service_for_pid", side_effect=OSError("systemctl busy")):
+        plan = update_inventory.collect_runtime_inventory()
+    rows = [r for r in plan.runtimes if r.kind == "dashboard"]
+    assert rows and rows[0].supervisor == "manual-serve"

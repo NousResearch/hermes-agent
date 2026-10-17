@@ -261,3 +261,21 @@ def test_launchd_serve_row_never_pessimize_gateway_coverage():
         kind="serve", profile="work", pid=900, supervisor="launchd", restart_via="launchd", detail={}))
     receipt = {"plan": {"runtimes": [{"kind": "gateway", "profile": "default"}, launchd]}, "fleet": []}
     assert fleet._receipt_owed_gateways(receipt, []) == {("gateway", "default")}
+
+
+def test_systemd_serve_row_owes_no_manual_handoff(monkeypatch, tmp_path):
+    """#139387: systemd owns the restart, so a unit-owned dashboard must not file a durable
+    manual-restart reminder nor make the receipt's gateway coverage unverified — the update's own
+    systemd pass restarts the ``hermes-serve*``/``hermes-dashboard*`` unit that owns it."""
+    from hermes_cli import update_serve_obligations
+
+    monkeypatch.setattr(update_serve_obligations, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
+    row = asdict(RuntimeRecord(
+        kind="dashboard", profile="default", pid=901, supervisor="systemd", restart_via="systemd",
+        detail={"create_time": 1000.0, "systemd_unit": "hermes-dashboard.service"}))
+    assert defer_manual_serve(row) is False
+    assert retain_receipt_manual_serves({"plan": {"runtimes": [row]}}) == []
+    assert not (tmp_path / "serve_restart_pending").exists()
+    receipt = {"plan": {"runtimes": [{"kind": "gateway", "profile": "default"}, row]}, "fleet": []}
+    assert fleet._receipt_owed_gateways(receipt, []) == {("gateway", "default")}

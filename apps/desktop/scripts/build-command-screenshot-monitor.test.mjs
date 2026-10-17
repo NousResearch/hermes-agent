@@ -28,8 +28,8 @@ describe('buildCommandScreenshotMonitor argv', () => {
         const out = buildCommandScreenshotMonitor({ distDir, platform: 'darwin', sysroot })
         const [cmd, argv] = vi.mocked(execFileSync).mock.lastCall
         expect(cmd).toBe('xcrun')
-        expect(argv.slice(0, 3)).toEqual(sysroot
-          ? ['clang', '-isysroot', sysroot]
+        expect(argv.slice(0, sysroot ? 5 : 3)).toEqual(sysroot
+          ? ['--sdk', sysroot, 'clang', '-isysroot', sysroot]
           : ['--sdk', 'macosx', 'clang'])
         expect(out).toBe(path.resolve(distDir, 'native/command-screenshot-monitor'))
       } finally {

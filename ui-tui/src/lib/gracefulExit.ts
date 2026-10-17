@@ -21,6 +21,12 @@ let wired = false
 export const shouldExitForSignal = (signal: GracefulSignal, ignoredSignals: readonly GracefulSignal[] = []) =>
   !ignoredSignals.includes(signal)
 
+export const ignoredSignalsForTuiMode = (dashboardTuiMode: boolean): GracefulSignal[] =>
+  dashboardTuiMode ? ['SIGINT', 'SIGHUP'] : []
+
+export const nextDeadOutputStreamErrorCount = (previousCount: number, code?: string) =>
+  code === 'EIO' || code === 'EPIPE' ? previousCount + 1 : 0
+
 export function setupGracefulExit({
   cleanups = [],
   failsafeMs = 4000,

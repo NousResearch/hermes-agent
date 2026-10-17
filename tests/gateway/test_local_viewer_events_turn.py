@@ -25,7 +25,7 @@ def _turn(platform, published, *, live=None):
         resolve_display_setting=lambda *a: None, _run_still_current=lambda: True,
         _voice_ack_guild=[None], _native_slack_task_cards=False, progress_mode='all',
         session_id='s', progress_queue=None, _live_status_adapter=None, _live_status_mode='off',
-        log_queue=None,
+        log_queue=None, internal_plugin_execution_id=None,
     )
     turn._runner = SimpleNamespace(config=None, _delivery_adapter_for=lambda source: None)
     live = live or SimpleNamespace(tool_progress_mode=None)

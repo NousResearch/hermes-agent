@@ -95,6 +95,39 @@ def test_selection_uses_boolean_values_and_fork_scope() -> None:
     )
 
 
+@pytest.mark.parametrize("repository", ["mekenthompson/hermes-agent", "NousResearch/hermes-agent"])
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+@pytest.mark.parametrize("release", [False, True])
+@pytest.mark.parametrize("catalog", [False, True])
+def test_catalog_lane_uses_shared_selection(repository, event, release, catalog) -> None:
+    selected = _mod.selected_jobs(
+        {"catalog": str(catalog).lower()}, repository, event, release=release)
+    assert selected.get("catalog-tests") is catalog
+    assert _mod.image_selected_jobs(selected).get("catalog-tests") is catalog
+    import yaml
+
+    jobs = yaml.safe_load((_PATH.parents[2] / ".github/workflows/ci.yaml").read_text())["jobs"]
+    assert jobs["catalog-tests"]["if"] == "${{ fromJSON(needs.detect.outputs.selected_jobs)['catalog-tests'] }}"
+
+
+@pytest.mark.parametrize("catalog", [False, True])
+@pytest.mark.parametrize("image", [False, True])
+@pytest.mark.parametrize("result", ["success", "skipped", "failure", "cancelled", "missing", None])
+def test_catalog_gate_requires_explicit_applicable_result(catalog, image, result) -> None:
+    selected = _mod.selected_jobs(
+        {"catalog": str(catalog).lower()}, "mekenthompson/hermes-agent", "push")
+    if image:
+        selected = _mod.image_selected_jobs(selected)
+    needs = {name: {"result": "success" if required else "skipped"}
+             for name, required in selected.items()}
+    if result is not None:
+        needs["catalog-tests"] = {"result": result}
+    else:
+        needs.pop("catalog-tests", None)
+    expected = [] if result == "success" or (not catalog and result == "skipped") else ["catalog-tests"]
+    assert _mod.evaluate_needs(needs, selected).failed == expected
+
+
 def test_selection_covers_each_orchestrator_prerequisite() -> None:
     yaml = pytest.importorskip("hermes_yaml")
     workflow = yaml.safe_load(

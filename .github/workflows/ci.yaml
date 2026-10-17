@@ -271,7 +271,7 @@ jobs:
     # A PR that changes only catalog entry data runs these instead of the
     # Python suite (the classifier turns `python` off for it); required whenever
     # detect selects it.
-    if: needs.detect.outputs.catalog == 'true'
+    if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['catalog-tests'] }}
     uses: ./.github/workflows/catalog-tests.yml
     with:
       commit: ${{ inputs.commit }}
@@ -587,6 +587,7 @@ jobs:
     needs:
       - detect
       - tests
+      - catalog-tests
       - lint
       - js-tests
       - history-check

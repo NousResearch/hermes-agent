@@ -56,6 +56,20 @@ def test_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize("platform", ["teams", "google_chat", "homeassistant"])
+def test_unloaded_plugin_platform_toolset_no_runtime_warning(caplog, platform):
+    """Bundled and catalog plugin-platform entries are valid before plugin loading."""
+    import hermes_cli.tools_config as _tc
+
+    _tc._warned_invalid_platform_toolsets.discard(platform)
+    config = {"platform_toolsets": {platform: [f"hermes-{platform}"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, platform)
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
 def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     """When at least one configured toolset is valid, tools still resolve, so
     the runtime zero-tools warning must not fire (the migration-time check still

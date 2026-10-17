@@ -398,6 +398,28 @@ class TestSearchFilesIncludesDirectories:
         assert str(visible_dir) in result.files
         assert str(ignored_dir) not in result.files
 
+    def test_gitignore_filter_disables_repository_fsmonitor(self, mock_env):
+        """Filename search must neutralize fsmonitor from the searched repository."""
+        commands = []
+
+        def execute(command, **kwargs):
+            commands.append(command)
+            if "check-ignore" in command:
+                return {"output": "/repo/ignored_dir\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = execute
+        result = ShellFileOperations(mock_env)._filter_gitignored_paths(
+            ["/repo/ignored_dir", "/repo/visible_dir"], "/repo"
+        )
+
+        assert result == ["/repo/visible_dir"]
+        git_commands = [command for command in commands if command.startswith("git ")]
+        assert git_commands == [
+            "git -c core.fsmonitor=false -C '/repo' rev-parse --is-inside-work-tree >/dev/null 2>&1",
+            "git -c core.fsmonitor=false -C '/repo' check-ignore --stdin",
+        ]
+
     @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
     def test_rg_sorts_files_and_directories_before_pagination(self, tmp_path):
         """A newer directory must page ahead of older files and dirs (globally

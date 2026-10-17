@@ -125,6 +125,12 @@ def _(rid, params):
     except OSError:
         # Creation/cleanup races are normal while a child starts or ends.
         return _ok(rid, result)
+    if size > _SUBAGENT_TAIL_BYTES:
+        # The window is cut by BYTES, so it can open mid-line. Drop that fragment: every
+        # returned line must be a whole event, never the tail of one.
+        _, newline, rest = text.partition("\n")
+        if newline:
+            text = rest
     return _ok(rid, {**result, "available": True, "text": text, "truncated": size > _SUBAGENT_TAIL_BYTES})
 
 

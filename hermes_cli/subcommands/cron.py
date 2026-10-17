@@ -155,6 +155,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
     cron_pause.add_argument("job_id", help="Job ID to pause")
+    cron_pause.add_argument("--reason", default=None,
+        help="Auditable reason stored as paused_reason, e.g. 'matrix outage; resume by 2026-10-20'. "
+             "Shown by `hermes cron list`; cleared on resume.")
 
     cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
     cron_resume.add_argument("job_id", help="Job ID to resume")

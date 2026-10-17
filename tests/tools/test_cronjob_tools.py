@@ -314,6 +314,19 @@ class TestUnifiedCronjobTool:
         assert resumed["success"] is True
         assert resumed["job"]["state"] == "scheduled"
 
+    def test_pause_reason_is_advertised_stored_and_cleared(self):
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+        assert "reason" in CRONJOB_SCHEMA["parameters"]["properties"]
+        job_id = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))["job_id"]
+
+        paused = json.loads(cronjob(action="pause", job_id=job_id, reason="outage; resume by 2026-10-20"))
+        assert paused["success"] is True
+        from cron.jobs import get_job
+        assert get_job(job_id)["paused_reason"] == "outage; resume by 2026-10-20"
+
+        json.loads(cronjob(action="resume", job_id=job_id))
+        assert get_job(job_id)["paused_reason"] is None
+
 
     @staticmethod
     def _patch_named_legit(monkeypatch):

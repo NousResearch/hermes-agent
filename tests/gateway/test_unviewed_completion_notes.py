@@ -53,6 +53,56 @@ def _process_event(authority, ref, target, name='proc_busy'):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('unavailable', ['adapter', 'admission'])
+async def test_owned_local_notification_refusal_is_retryable(tmp_path, monkeypatch, unavailable):
+    from gateway.config import Platform
+    from hermes_state_runtime import RuntimeStoreError
+
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        evt = _process_event(authority, ref, _target(runner, authority, ref))
+        if unavailable == 'adapter':
+            runner.adapters.pop(Platform.LOCAL)
+        else:
+            async def refuse(*args):
+                raise RuntimeStoreError('storage_unavailable')
+            monkeypatch.setattr(authority, 'admit_automation', refuse)
+        assert await runner._deliver_completion_notification('[finished] RESULT_retry', evt) is False
+        assert _admissions(authority, ref) == []
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_orphan_local_watch_with_an_active_authority_is_terminal(tmp_path, monkeypatch):
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        evt = {'type': 'watch_match', 'session_id': 'orphan-process',
+               'session_key': 'linear:orphan', 'platform': 'local',
+               'chat_type': 'dm', 'chat_id': 'linear:orphan'}
+        assert await runner._inject_watch_notification('orphan watch', evt) is None
+        assert _admissions(authority, ref) == []
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_local_notification_never_uses_classic_admission_without_authority(tmp_path, monkeypatch):
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        evt = _process_event(authority, ref, _target(runner, authority, ref))
+        monkeypatch.setattr('gateway.session_authorities.active_authority', lambda runner: None)
+
+        async def unexpected(*args):
+            pytest.fail('local notification entered classic admission without an authority')
+        monkeypatch.setattr('gateway.wake.admit_internal_event', unexpected)
+        assert await runner._inject_watch_notification('[finished] RESULT_orphan', evt) is None
+        assert _admissions(authority, ref) == []
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_busy_session_keeps_the_completion_durably_until_its_turn(tmp_path, monkeypatch):
     """No ``session_busy`` refusal (so no delivery-failure budget): the completion is committed behind
     the running input and becomes a note when it reaches the head, with notifications off too."""

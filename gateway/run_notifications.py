@@ -841,11 +841,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return None
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         if source.platform is Platform.LOCAL:
-            logger.debug(
-                "Dropping local watch notification with no messaging transport for session %s",
-                evt.get("session_id", "unknown"),
-            )
-            return None
+            from gateway.session_authorities import active_authority
+            authority = active_authority(self)
+            # Orphan local producers have no owner; canonical local conversations still
+            # enter the existing guarded FIFO, even after their last viewer detached.
+            if authority is None or await asyncio.to_thread(authority.db.get_session, source.chat_id) is None:
+                logger.debug(
+                    "Dropping local watch notification with no session authority for session %s",
+                    evt.get("session_id", "unknown"),
+                )
+                return None
         adapter = self._resolve_injection_adapter(platform_name, source)
         if not adapter and platform_name == Platform.API_SERVER.value and getattr(source, "profile", None):
             # A route-only served profile owns no adapter map; the shared listener wakes exactly the

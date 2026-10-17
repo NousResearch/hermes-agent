@@ -26,6 +26,10 @@ def _tar(tmp_path, members):
     return archive
 
 
+def _filter_error():
+    return getattr(tarfile, "FilterError", tarfile.TarError)
+
+
 def test_relative_symlinks_resolve_from_their_own_directory(tmp_path):
     archive = _tar(tmp_path, [("python/share/terminfo/a/adm1178", None), ("python/share/terminfo/1/1178", "../a/adm1178")])
     dest = tmp_path / "out"
@@ -38,9 +42,65 @@ def test_relative_symlinks_resolve_from_their_own_directory(tmp_path):
 @pytest.mark.parametrize("linkname", ["../../../etc/passwd", "/etc/passwd"])
 def test_symlinks_escaping_the_destination_are_rejected(tmp_path, linkname):
     archive = _tar(tmp_path, [("python/bin/evil", linkname)])
-    with pytest.raises(tarfile.FilterError):
+    with pytest.raises(_filter_error()):
         extract(archive, tmp_path / "out")
     assert not (tmp_path / "out" / "python/bin/evil").is_symlink()
+
+
+def test_extract_tar_works_without_pep706_tarfile_apis(monkeypatch, tmp_path):
+    archive = _tar(tmp_path, [("python/bin/hermes", None)])
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    monkeypatch.delattr(tarfile, "FilterError", raising=False)
+    monkeypatch.delattr(tarfile.TarInfo, "replace", raising=False)
+
+    extract(archive, tmp_path / "out")
+
+    assert (tmp_path / "out/python/bin/hermes").read_bytes() == b"x"
+
+
+def test_extract_tar_rejects_escape_without_pep706_tarfile_apis(monkeypatch, tmp_path):
+    archive = _tar(tmp_path, [("../../escape", None)])
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    monkeypatch.delattr(tarfile, "FilterError", raising=False)
+    monkeypatch.delattr(tarfile.TarInfo, "replace", raising=False)
+
+    with pytest.raises(tarfile.TarError):
+        extract(archive, tmp_path / "out")
+    assert not (tmp_path / "escape").exists()
+
+
+def test_extract_tar_rejects_hardlink_escape_without_pep706_tarfile_apis(monkeypatch, tmp_path):
+    archive = tmp_path / "pkg.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        info = tarfile.TarInfo("python/bin/hermes")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "../escape"
+        tf.addfile(info)
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    monkeypatch.delattr(tarfile, "FilterError", raising=False)
+    monkeypatch.delattr(tarfile.TarInfo, "replace", raising=False)
+
+    with pytest.raises(tarfile.TarError):
+        extract(archive, tmp_path / "out")
+    assert not (tmp_path / "out/python/bin/hermes").exists()
+
+
+def test_extract_tar_defers_directory_mode_until_after_children(monkeypatch, tmp_path):
+    archive = tmp_path / "pkg.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        directory = tarfile.TarInfo("python/lib")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o555
+        tf.addfile(directory)
+        child = tarfile.TarInfo("python/lib/module.py")
+        child.size = 1
+        tf.addfile(child, io.BytesIO(b"x"))
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    monkeypatch.delattr(tarfile.TarInfo, "replace", raising=False)
+
+    extract(archive, tmp_path / "out")
+
+    assert (tmp_path / "out/python/lib/module.py").read_bytes() == b"x"
 
 
 def _portable_git(tmp_path):

@@ -164,6 +164,53 @@ describe('refreshCronRunWriteGate — restored tab after a restart (no verdict y
   })
 })
 
+describe('a tab held on a segment that compression ended after it was opened', () => {
+  // The tab opened the run at its tip; the run then compressed and goes on in a continuation.
+  // The held segment's own `ended_at` is the compression's, not a close, and run rows now arrive
+  // under the new tip's id, naming every segment in `_lineage_ids`.
+  const held = 'local-0a1b2c3d4e5f6a7b'
+  const tip = 'local-9f8e7d6c5b4a3f2e'
+
+  // Session detail of the held segment: the backend reports its run at the live tip.
+  const heldDetail = (runTip?: { ended_at: null | number; scheduler_owned: boolean }) => ({
+    ...(runTip && {
+      cron_run_tip: { end_reason: runTip.ended_at == null ? null : 'cron_complete', id: tip, ...runTip }
+    }),
+    end_reason: 'compression',
+    ended_at: NOW_S - 600,
+    last_active: NOW_S - 600,
+    scheduler_owned: false,
+    source: 'cron'
+  })
+
+  it.each([
+    { readOnly: true, runTip: { ended_at: null, scheduler_owned: false }, state: 'lost after compressing' },
+    { readOnly: false, runTip: { ended_at: null, scheduler_owned: true }, state: 'live' },
+    { readOnly: false, runTip: { ended_at: NOW_S, scheduler_owned: false }, state: 'finalized' },
+    // A backend without `cron_run_tip` reads the segment's own stamp, as before.
+    { readOnly: false, runTip: undefined, state: 'unknown to an older backend' }
+  ])('the pre-send gate judges the run at its tip: $state', async ({ readOnly, runTip }) => {
+    openCronRun(run({ id: held, scheduler_owned: true }), vi.fn())
+    const fetchRow = vi.fn(async () => heldDetail(runTip))
+
+    expect(await refreshCronRunWriteGate(held, fetchRow)).toBe(readOnly)
+    expect(fetchRow).toHaveBeenCalledWith(held)
+  })
+
+  it('a poll reaches the held segment through its run row lineage, and no other run', () => {
+    openCronRun(run({ id: held, scheduler_owned: true }), vi.fn())
+
+    const lostRun = { ...run({ id: tip, scheduler_owned: false }), _lineage_ids: [held, tip] }
+    const otherLostRun = { ...run({ id: 'local-other-tip', scheduler_owned: false }), _lineage_ids: ['local-other'] }
+
+    reconcileCronRunVerdicts([otherLostRun])
+    expect(isStoredTranscriptReadOnly(held)).toBe(false)
+
+    reconcileCronRunVerdicts([lostRun])
+    expect(isStoredTranscriptReadOnly(held)).toBe(true)
+  })
+})
+
 describe('refreshCronRunWriteGate — a unified-runtime run is known by its row, not its id (#138812)', () => {
   // The unified gateway runtime keeps the run's runtime-minted `local-*` id;
   // only the row the backend served (`source: 'cron'`) says it is a cron run.

@@ -1,11 +1,18 @@
-import { hasCronRunVerdict, isCronRunReadOnly, recordCronRunVerdict } from '@/store/read-only-transcript'
+import {
+  $cronRunReadOnlyVerdicts,
+  hasCronRunVerdict,
+  isCronRunReadOnly,
+  recordCronRunVerdict
+} from '@/store/read-only-transcript'
 import { ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 type CronRunLiveness = Pick<SessionInfo, 'ended_at' | 'last_active' | 'scheduler_owned'> &
-  Partial<Pick<SessionInfo, 'is_active'>>
+  Partial<Pick<SessionInfo, 'cron_run_tip' | 'end_reason' | 'is_active'>>
 
-type CronRunRow = CronRunLiveness & Pick<SessionInfo, 'id'>
+type CronRunRow = CronRunLiveness &
+  Pick<SessionInfo, 'id'> &
+  Partial<Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id'>>
 
 // Mirrors the backend's activity window (`hermes_cli/web_routers/cron.py`,
 // `sessions.py::_ACTIVE_WINDOW_S`). Used ONLY against an older backend that
@@ -34,8 +41,20 @@ const LEGACY_CRON_RUN_SESSION_ID = /^cron_.+_\d{8}_\d{6}$/
  * (the backend's `is_active`, or the same formula over `last_active` for rows
  * that carry no flag). That is the best such a backend can say, and the verdict
  * is re-evaluated on every refresh and send, so it never latches.
+ *
+ * Compression ending a segment is not a close: the run goes on in a
+ * continuation. Run rows are served at the run's live tip, and session detail
+ * of an older segment (a tab opened it when it was the tip) carries the run at
+ * that tip (`cron_run_tip`), which is judged instead. A backend without it
+ * leaves the segment's own stamp to read as a close, as it always has.
  */
 export function isResumableCronRun(run: CronRunLiveness, nowMs = Date.now()): boolean {
+  const tip = run.end_reason === 'compression' ? run.cron_run_tip : undefined
+
+  if (tip) {
+    return tip.ended_at != null || tip.scheduler_owned === true
+  }
+
   if (run.ended_at != null) {
     return true
   }
@@ -112,12 +131,18 @@ export function openCronRun<Run extends CronRunRow>(run: Run, open: (sessionId: 
  * Fold a fresh page of run rows (a Cron surface poll) into the verdicts of runs
  * the desktop already evaluated, so a zombie-looking run that later ticks or
  * closes becomes writable again — and a live one that dies becomes view-only —
- * without waiting for a send. Rows never opened are left alone.
+ * without waiting for a send. A run that compressed arrives under its new
+ * tip's id, so its verdicts are found through its lineage: a tab still holding
+ * an older segment follows the run. Rows never opened are left alone.
  */
 export function reconcileCronRunVerdicts(runs: readonly CronRunRow[]): void {
+  const opened = [...$cronRunReadOnlyVerdicts.get().keys()]
+
   for (const run of runs) {
-    if (hasCronRunVerdict(run.id)) {
-      recordRunVerdict(run)
+    for (const id of opened) {
+      if (sessionMatchesStoredId(run, id)) {
+        recordCronRunVerdict(id, !isResumableCronRun(run))
+      }
     }
   }
 }

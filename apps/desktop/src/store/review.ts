@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import { isPaneVisible, revealTreePane, setTreePaneHidden } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
@@ -387,6 +387,12 @@ export function closeReview(): void {
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
   clearReviewSelection()
+  // `revealReview` fronts the pane through the tree (`revealTreePane`), which
+  // bypasses the workspace-gated visibility binding. Without a cwd that
+  // binding's computed stays false, so the `$reviewOpen` write above never
+  // hides the pane and the ✕ read as a no-op (#135463). Hide on the tree side
+  // too — idempotent when the binding already did it.
+  setTreePaneHidden(REVIEW_PANE_ID, true)
 }
 
 export function toggleReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {

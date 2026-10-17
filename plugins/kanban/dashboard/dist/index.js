@@ -3428,7 +3428,7 @@
               value: skills,
               onChange: function (e) { setSkills(e.target.value); },
               placeholder: tx(t, "skillsPlaceholder",
-                "skills (optional, comma-separated): translation, github-code-review"),
+                "skills (optional, comma-separated): translation, github"),
               title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
               className: "h-8 text-sm",
             }),

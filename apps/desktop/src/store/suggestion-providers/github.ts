@@ -16,8 +16,8 @@ import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer
  *
  * - `gh` already authenticated → no pill. The skills just work; suggesting
  *   setup at an already-set-up user is noise.
- * - not authenticated (or gh missing) → offer the `github-auth` skill. The
- *   invoke prefixes the draft with `/github-auth` (same reversible,
+ * - not authenticated (or gh missing) → offer the `github` skill. The
+ *   invoke prefixes the draft with `/github` (same reversible,
  *   never-sends-on-your-behalf contract as the skill provider) and the
  *   agent walks the user through `gh auth login` / install.
  *
@@ -27,7 +27,7 @@ import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer
  */
 
 const AUTH_TTL_MS = 5 * 60_000
-const SKILL_NAME = 'github-auth'
+const SKILL_NAME = 'github'
 
 let needsSetup: boolean | null = null
 let checkedAt = 0
@@ -83,7 +83,7 @@ function toSuggestion(): ComposerSuggestion {
     id: SKILL_NAME,
     invoke: async () => {
       // Prefix, don't replace — and never send. The agent takes over when
-      // the user sends: the github-auth skill installs gh if needed and
+      // the user sends: the github skill installs gh if needed and
       // runs the device-code OAuth flow.
       requestComposerInsert(`/${SKILL_NAME} `, { mode: 'prefix' })
       requestComposerFocus()

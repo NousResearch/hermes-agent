@@ -860,6 +860,11 @@ DEFAULT_CONFIG = {
         # Memory updated") | "verbose" (content preview). Per-platform via
         # display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
+        # Prefetch recall indicator in gateway chat ("🧠 Holographic — recalled 1 memory"):
+        # "off" | "on" (default). Distinct from memory_notifications, which only gates the
+        # background-review "💾 …" line. Per-platform via
+        # display.platforms.<platform>.recall_notifications (that override is actually read).
+        "recall_notifications": "on",
         # Gateway notices when a terminal(background=true) process finishes: "concise" (one line;
         # failures append an output tail) | "all" (running updates + final raw output) | "result"
         # (final raw only) | "error" (raw only on non-zero exit) | "off".

@@ -577,12 +577,43 @@ def _oauth_wire_namer(anthropic_tools: list[dict[str, Any]]):
 _OAUTH_SYSTEM_REPLACEMENTS = (
     ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"), ("Nous Research", "Anthropic"),
 )
+# User-owned paths must remain dereferenceable, including a terminal brand directory.
+# Unquoted spaces are ambiguous: allow the brand plus one prefix word ("My Hermes Agent"),
+# not arbitrary prose up to a later separator. Quote paths with longer spaced components.
+_OAUTH_PATH_TOKEN = r"""[^\s\\/'"`<>|,;:!?()\[\]{}]"""
+_OAUTH_PATH_COMPONENT = (
+    rf"(?:{_OAUTH_PATH_TOKEN}+[ ])?(?:Hermes[ ](?:Agent|agent)|Nous[ ]Research){_OAUTH_PATH_TOKEN}*"
+    rf"|{_OAUTH_PATH_TOKEN}+"
+)
+_OAUTH_PROTECTED_PATH_PATTERN = re.compile(
+    r"""(?P<quote>['"`])(?:~|[A-Za-z]:)?[\\/][^\r\n]*?(?P=quote)"""
+    rf"|(?:~|[A-Za-z]:)?[\\/](?:{_OAUTH_PATH_COMPONENT})(?:[\\/](?:{_OAUTH_PATH_COMPONENT}))*"
+)
 # The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
 # or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
 # ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
 # dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
 # identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
 _OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
+
+
+def _apply_oauth_system_replacements(text: str) -> str:
+    """Rebrand prose while leaving filesystem path components dereferenceable."""
+    def rewrite_prose(prose: str) -> str:
+        for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
+            prose = re.sub(
+                rf"(?<!['\"`]){re.escape(old)}(?!['\"`])", new, prose,
+            )
+        return prose
+
+    parts = []
+    start = 0
+    for path_match in _OAUTH_PROTECTED_PATH_PATTERN.finditer(text):
+        parts.append(rewrite_prose(text[start:path_match.start()]))
+        parts.append(path_match.group())
+        start = path_match.end()
+    parts.append(rewrite_prose(text[start:]))
+    return "".join(parts)
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
@@ -597,8 +628,7 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     for block in system:
         if isinstance(block, dict) and block.get("type") == "text":
             text = block.get("text", "")
-            for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
-                text = text.replace(old, new)
+            text = _apply_oauth_system_replacements(text)
             text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:

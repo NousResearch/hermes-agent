@@ -1617,13 +1617,14 @@ def _handle_terminal(args, **kw):
         if isinstance(notify, bool):
             notify_on_complete = notify
             watch_patterns = None
-        elif isinstance(notify, list):
-            watch_patterns = notify
+        elif isinstance(notify, list) and (not notify or any(isinstance(p, str) and p for p in notify)):
+            # Non-string / empty entries are dropped; a list with none usable is refused below.
+            watch_patterns = [p for p in notify if isinstance(p, str) and p]
             notify_on_complete = False
         else:
             return tool_error(
-                "notify must be true/false (notify on exit) or a list of "
-                "strings (notify on output pattern match)."
+                "notify must be true/false (notify on exit) or a list of strings "
+                f"(notify on output pattern match); got {type(notify).__name__} {notify!r}."
             )
     if heartbeat:
         notify_on_complete = True  # the heartbeat rides the completion delivery path

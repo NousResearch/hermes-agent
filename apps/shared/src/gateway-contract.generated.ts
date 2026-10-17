@@ -3077,6 +3077,7 @@ export interface SessionCreateResult {
   message_count: number
   messages: TranscriptMessage[]
   info: SessionLiveInfo
+  running?: boolean | null
 }
 /** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 export interface TranscriptMessage {
@@ -3121,6 +3122,7 @@ export interface SessionBranchStoredResult {
   message_count: number
   messages_omitted: boolean
   info: SessionLiveInfo
+  running?: boolean | null
 }
 /** ``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id. */
 export interface SessionResumeParams {

@@ -56,6 +56,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
@@ -155,10 +156,23 @@ DEFAULT_EXCLUDES = [
     "Thumbs.db",
     # Logs
     "*.log",
+    # Raster media (carried invariant). The checkpoint layer is code/text
+    # focused: media stays on disk but is not rollbackable through checkpoints.
+    "*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.bmp", "*.tif", "*.tiff",
+    # Case-insensitive catch for generated UPPER.PNG etc.
+    "*.[pP][nN][gG]", "*.[jJ][pP][gG]", "*.[jJ][pP][eE][gG]",
+    "*.[wW][eE][bB][pP]", "*.[gG][iI][fF]", "*.[bB][mM][pP]",
+    "*.[tT][iI][fF]", "*.[tT][iI][fF][fF]",
 ]
 
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
+
+# Carried invariant: raster suffixes enforced at staging and restore boundaries.
+_RASTER_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff",
+     ".avif", ".heic", ".heif", ".ico"}
+)
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
@@ -522,8 +536,10 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         # Only migrate if the base dir has pre-existing content that isn't
         # our own v2 layout.
         _migrate_legacy_store(base)
-
     if (store / "HEAD").exists():
+        # Carried invariant: refresh required excludes even on an existing
+        # store so a pre-raster store gains the hard media exclusions.
+        _ensure_default_excludes(store)
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -576,8 +592,41 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
     )
 
+    _ensure_default_excludes(store)
     logger.debug("Initialised checkpoint store at %s", store)
     return None
+
+
+_EXCLUDE_REFRESH_LOCK = threading.Lock()
+
+
+def _ensure_default_excludes(store: Path) -> None:
+    """Merge required checkpoint exclusions into a new or existing store.
+
+    Custom text is retained for non-raster policy. Raster exclusion is a hard
+    checkpoint invariant enforced again after staging, so a custom ``!*.png``
+    rule cannot re-enable generated media.
+    """
+    exclude_file = store / "info" / "exclude"
+    try:
+        with _EXCLUDE_REFRESH_LOCK:
+            exclude_file.parent.mkdir(parents=True, exist_ok=True)
+            existing = (
+                exclude_file.read_text(encoding="utf-8")
+                if exclude_file.exists()
+                else ""
+            )
+            existing_lines = existing.splitlines()
+            custom_lines = [
+                line for line in existing_lines if line not in DEFAULT_EXCLUDES
+            ]
+            desired_lines = list(DEFAULT_EXCLUDES) + custom_lines
+            desired = "\n".join(desired_lines) + "\n"
+            if existing == desired:
+                return
+            exclude_file.write_text(desired, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not update checkpoint exclusions in %s: %s", store, exc)
 
 
 def _volume_evidence(workdir: Path) -> dict:
@@ -1248,7 +1297,9 @@ class CheckpointManager:
                     "nested_repositories": blocked_repos,
                 }
 
+
         skipped_user_edits: list[str] = []
+        skipped_excluded_media: list[str] = []  # carried invariant: raster never restores
         kept_oversize: list[str] = []
         failed_deletes: list[str] = []
         restore_paths: Optional[list[str]] = None
@@ -1261,10 +1312,20 @@ class CheckpointManager:
                 # the classic full restore rather than restoring nothing.
                 restore_paths = None
             else:
-                restore_paths = plan["restore"]
+                planned_paths = list(plan["restore"])
+                # Carried invariant: raster media never participates in restore —
+                # strip it from the plan and report it as skipped instead.
+                restore_paths = [
+                    rel for rel in planned_paths
+                    if Path(rel).suffix.lower() not in _RASTER_SUFFIXES
+                ]
+                skipped_excluded_media = [
+                    rel for rel in planned_paths
+                    if Path(rel).suffix.lower() in _RASTER_SUFFIXES
+                ]
                 skipped_user_edits = plan["skipped"]
                 if not restore_paths:
-                    return {
+                    result = {
                         "success": True,
                         "restored_to": commit_hash[:8],
                         "reason": "nothing to restore (all changed files were user-edited)",
@@ -1273,12 +1334,23 @@ class CheckpointManager:
                         "skipped_user_edits": skipped_user_edits,
                         "skipped_oversize": [],
                     }
+                    if skipped_excluded_media:
+                        result["skipped_excluded_media"] = skipped_excluded_media
+                    return result
 
         # Take a pre-rollback snapshot so you can undo the undo.
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})", prune=False)
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
+
+        # Carried invariant: single-file restores never target raster media
+        # (the full-directory path is guarded by checkout pathspec excludes).
+        if file_path and Path(file_path).suffix.lower() in _RASTER_SUFFIXES:
+            return {
+                "success": False,
+                "error": "Raster media is excluded from checkpoint restore",
+            }
 
         if restore_paths is not None:
             # Split into files present in the checkpoint (checkout) and
@@ -1338,9 +1410,21 @@ class CheckpointManager:
                     index_file=index_file,
                     extra_env={"GIT_LITERAL_PATHSPECS": "1"},
                 )
+        elif not file_path:
+            # Carried invariant: a restore must never resurrect generated raster
+            # media — full-directory checkouts exclude raster globs (case-insensitive).
+            raster_excludes = [
+                f":(exclude,icase,glob)**/*{suffix}"
+                for suffix in sorted(_RASTER_SUFFIXES)
+            ]
+            ok, _stdout, err = _run_git(
+                ["checkout", commit_hash, "--", ".", *raster_excludes],
+                store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                index_file=index_file,
+            )
         else:
             ok, _stdout, err = _run_git(
-                ["checkout", commit_hash, "--", file_path if file_path else "."],
+                ["checkout", commit_hash, "--", file_path],
                 store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                 index_file=index_file,
             )
@@ -1376,6 +1460,8 @@ class CheckpointManager:
             result["skipped_oversize"] = kept_oversize
             if failed_deletes:
                 result["failed_deletes"] = failed_deletes
+            if skipped_excluded_media:
+                result["skipped_excluded_media"] = skipped_excluded_media
         # The selected tree was needed until checkout completed. Only now may
         # the safety snapshot's count/size budget make that tree unreachable.
         self._prune(store, abs_dir, _ref_name(dir_hash))
@@ -1473,6 +1559,11 @@ class CheckpointManager:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
 
+
+        # Carried invariant: raster media must never enter the store; fail closed.
+        if not self._drop_raster_from_index(store, working_dir, index_file):
+            logger.warning("Checkpoint aborted: could not enforce raster exclusion for %s", working_dir)
+            return False
         if self.max_file_size_mb > 0:
             self._drop_oversize_from_index(store, working_dir, index_file)
 
@@ -1506,6 +1597,12 @@ class CheckpointManager:
             if ok_ls and not ls_out.strip():
                 logger.debug("Checkpoint skipped: empty tree in %s", working_dir)
                 return False
+
+        # Carried invariant: final boundary scan before write-tree — a late
+        # forbidden entry means an earlier cleanup invariant was violated.
+        if not self._verify_no_raster_in_index(store, working_dir, index_file):
+            logger.warning("Checkpoint aborted: raster path reappeared before write-tree for %s", working_dir)
+            return False
 
         # Write tree from per-project index.
         ok_tree, tree_sha, err = _run_git(
@@ -1576,6 +1673,45 @@ class CheckpointManager:
             return path.stat().st_size > cap
         except OSError:
             return False
+
+    def _drop_raster_from_index(self, store: Path, working_dir: str, index_file: Path) -> bool:
+        """Remove raster media and verify the index is clean; fail closed (carried invariant)."""
+        ok, stdout, err = _run_git(["ls-files", "--cached", "-z"], store, working_dir, index_file=index_file)
+        if not ok:
+            logger.warning("Checkpoint raster index scan failed: %s", err)
+            return False
+        raster_paths = [rel for rel in (stdout or "").split("\x00") if rel and Path(rel).suffix.lower() in _RASTER_SUFFIXES]
+        if not raster_paths:
+            return True
+        logger.debug("Checkpoint: dropping %d raster file(s) from index", len(raster_paths))
+        for index in range(0, len(raster_paths), 200):
+            ok, _, err = _run_git(
+                ["rm", "--cached", "--quiet", "--"] + raster_paths[index:index + 200],
+                store, working_dir, index_file=index_file)
+            if not ok:
+                logger.warning("Checkpoint raster index prune failed: %s", err)
+                return False
+        ok, stdout, err = _run_git(["ls-files", "--cached", "-z"], store, working_dir, index_file=index_file)
+        if not ok:
+            logger.warning("Checkpoint raster verification scan failed: %s", err)
+            return False
+        remaining = [rel for rel in (stdout or "").split("\x00") if rel and Path(rel).suffix.lower() in _RASTER_SUFFIXES]
+        if remaining:
+            logger.warning("Checkpoint raster verification found %d staged path(s)", len(remaining))
+            return False
+        return True
+
+    def _verify_no_raster_in_index(self, store: Path, working_dir: str, index_file: Path) -> bool:
+        """Prove the staged tree has no raster paths at the commit boundary (fail closed)."""
+        ok, stdout, err = _run_git(["ls-files", "--cached", "-z"], store, working_dir, index_file=index_file)
+        if not ok:
+            logger.warning("Checkpoint final raster scan failed: %s", err)
+            return False
+        remaining = [rel for rel in (stdout or "").split("\x00") if rel and Path(rel).suffix.lower() in _RASTER_SUFFIXES]
+        if remaining:
+            logger.warning("Checkpoint final raster scan found %d staged path(s)", len(remaining))
+            return False
+        return True
 
     def _drop_oversize_from_index(
         self, store: Path, working_dir: str, index_file: Path,

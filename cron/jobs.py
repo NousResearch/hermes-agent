@@ -486,16 +486,26 @@ def job_payload_is_empty(job: dict[str, Any]) -> bool:
 
 
 def _schedule_display_for_job(job: dict[str, Any]) -> str:
+    schedule = job.get("schedule")
+    # Cron expressions are the scheduling source of truth.  ``display`` fields are rendered
+    # snapshots and can become stale after the expression changes, so cron schedules never
+    # fall back to them.
+    if isinstance(schedule, dict) and schedule.get("kind") == "cron":
+        for key in ("expr", "value", "run_at"):
+            text = _coerce_job_text(schedule.get(key)).strip()
+            if text:
+                return text
+        return "?"
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
         return display
     schedule = job.get("schedule")
     if isinstance(schedule, dict):
-        for key in ("display", "value", "expr", "run_at"):
+        for key in ("expr", "display", "value", "run_at"):
             text = _coerce_job_text(schedule.get(key)).strip()
             if text:
                 return text
-    elif schedule is not None:
+    if schedule is not None:
         return str(schedule)
     return "?"
 
@@ -1881,7 +1891,11 @@ def create_job(
         "monitor_state": None,
         "context_from": f["context_from"],
         "schedule": parsed_schedule,
-        "schedule_display": parsed_schedule.get("display", schedule),
+        "schedule_display": (
+            parsed_schedule["expr"]
+            if parsed_schedule["kind"] == "cron"
+            else parsed_schedule.get("display", schedule)
+        ),
         "repeat": {"times": repeat, "completed": 0},  # times None = forever
         "enabled": not paused,
         "state": "paused" if paused else "scheduled",
@@ -2058,8 +2072,13 @@ def _apply_schedule_update(updated: dict[str, Any], updates: dict[str, Any], job
     if isinstance(updated_schedule, str):
         updated_schedule = parse_schedule(updated_schedule)
         updated["schedule"] = updated_schedule
-    updated["schedule_display"] = updates.get(
-        "schedule_display", updated_schedule.get("display", updated.get("schedule_display")))
+    updated["schedule_display"] = updates.get("schedule_display")
+    if updated["schedule_display"] is None:
+        updated["schedule_display"] = (
+            updated_schedule["expr"]
+            if updated_schedule.get("kind") == "cron"
+            else updated_schedule.get("display", updated.get("schedule_display"))
+        )
     if updated.get("state") != "paused":
         updated["next_run_at"] = _next_run_or_reject_past_oneshot(
             updated_schedule, updated.get("name", job_id), updated_schedule, "update ")

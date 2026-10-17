@@ -29,11 +29,23 @@ async def run(params, board_db):
     while True:
         try:
             async with connect_gateway() as client:
-                return await _submit_claim(client, params, board_db)
+                # kanban.run subscribes this socket to the card's session, but only receipts matter
+                # here: discard the turn's events, or they fill the client's bounded queue and its
+                # reader stops, with the next receipt behind it.
+                drain = asyncio.create_task(_discard(client.events))
+                try:
+                    return await _submit_claim(client, params, board_db)
+                finally:
+                    drain.cancel()
         except GatewayUnavailableError as exc:
             if exc.state not in _TRANSIENT_OWNER_STATES or time.monotonic() >= deadline:
                 raise
             await asyncio.sleep(1)
+
+
+async def _discard(events):
+    while True:
+        await events.get()
 
 
 async def _submit_claim(client, params, board_db):

@@ -42,10 +42,10 @@ def _iter_process_table() -> list[tuple[int, str]]:
         # join indefinitely (#87134). It also passes CREATE_NO_WINDOW: this scan can run from the windowless
         # pythonw.exe desktop/gateway backend during an update, where a bare wmic spawn would pop a console
         # window.
-        from hermes_cli._subprocess_compat import bounded_probe_run
+        from hermes_cli._subprocess_compat import bounded_probe_run, windows_probe_encoding
         result = bounded_probe_run(
             ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-            timeout=10, errors="ignore")
+            timeout=10, encoding=windows_probe_encoding(), errors="ignore")
         if result is None or result.returncode != 0 or result.stdout is None:
             return rows
         current_cmd = ""

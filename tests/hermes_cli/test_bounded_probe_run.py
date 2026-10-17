@@ -23,6 +23,7 @@ exercise the same code path through the ``bounded_git_probe`` delegation.
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 
@@ -110,3 +111,142 @@ def test_posix_child_gets_own_process_group():
     )
     assert result is not None
     assert result.stdout.strip() == "True"
+
+
+# --------------------------------------------------------------------------
+# Decoding contract (#90017 follow-up): the Windows-native probes -- wmic,
+# tasklist, Windows PowerShell -- emit the machine's code page, not UTF-8.
+# ``bounded_probe_run`` used to hardcode ``encoding="utf-8"``, so on a CP932
+# host the process scans decoded CJK path segments to garbage before matching
+# them against a path read from the filesystem.
+# --------------------------------------------------------------------------
+
+
+class _FakeProc:
+    def __init__(self):
+        self.returncode = 0
+
+    def communicate(self, input=None, timeout=None):
+        return "", ""
+
+
+def _capture_spawn(monkeypatch, captured):
+    """Record the kwargs ``bounded_probe_run`` forwards to ``spawn_server``.
+
+    The probe spawns through ``spawn_server`` (which forwards these kwargs to
+    ``Popen``), so the encoding contract is observed at that boundary.
+    """
+    import hermes_cli.local_runtime.processes as procs
+
+    def fake_spawn(argv, **kwargs):
+        captured.update(kwargs)
+        captured["argv"] = list(argv)
+        return _FakeProc(), None
+
+    monkeypatch.setattr(procs, "spawn_server", fake_spawn)
+
+
+def test_bounded_probe_run_defaults_to_utf8(monkeypatch):
+    """Existing callers (git probes, POSIX probes) keep UTF-8 decoding."""
+    captured: dict = {}
+    _capture_spawn(monkeypatch, captured)
+
+    bounded_probe_run(["anything"], timeout=5)
+
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
+
+def test_bounded_probe_run_forwards_an_explicit_encoding(monkeypatch):
+    captured: dict = {}
+    _capture_spawn(monkeypatch, captured)
+
+    bounded_probe_run(["anything"], timeout=5, encoding="cp932", errors="ignore")
+
+    assert captured["encoding"] == "cp932"
+    assert captured["errors"] == "ignore"
+
+
+def test_windows_probe_encoding_is_utf8_off_windows(monkeypatch):
+    import hermes_cli._subprocess_compat as sc
+
+    monkeypatch.setattr(sc, "IS_WINDOWS", False)
+    assert sc.windows_probe_encoding() == "utf-8"
+
+
+def _windows_host(monkeypatch, *, oem, ansi):
+    """Put ``windows_probe_encoding`` on a Windows host whose ``GetOEMCP`` answers *oem*.
+
+    *oem* is the code page the call returns, or an exception it raises.  Faking
+    ``ctypes.windll`` is what makes these tests platform-independent: off Windows
+    the attribute does not exist, so the OEM branch raises for a reason that has
+    nothing to do with the case under test, and a Windows runner takes the OEM
+    branch for real and never reaches the fallback at all.
+    """
+    import ctypes
+
+    import hermes_cli._subprocess_compat as sc
+
+    def get_oem_cp():
+        if isinstance(oem, BaseException):
+            raise oem
+        return oem
+
+    monkeypatch.setattr(sc, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        types.SimpleNamespace(kernel32=types.SimpleNamespace(GetOEMCP=get_oem_cp)),
+        raising=False,
+    )
+    monkeypatch.setattr(sc.locale, "getencoding", lambda: ansi)
+    monkeypatch.setattr(sc.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
+    return sc
+
+
+def test_windows_probe_encoding_prefers_the_oem_code_page(monkeypatch):
+    """A console-mode child writes in the OEM code page, not the ANSI one.
+
+    Measured on a us-EN Win11 host: ``GetOEMCP()`` is 437 while ``GetACP()`` is
+    1252, and a spawned command line carrying an e-acute came back as the byte
+    ``0x82``, which is where cp437 keeps that letter.  cp1252 reads ``0x82`` as a
+    low quotation mark instead, so resolving the ANSI page first would corrupt
+    the very scan this codec exists to decode.
+    """
+    sc = _windows_host(monkeypatch, oem=437, ansi="cp1252")
+
+    assert sc.windows_probe_encoding() == "cp437"
+
+
+def test_windows_probe_encoding_falls_back_to_the_locale_code_page(monkeypatch):
+    """When the OEM code page can't be read, use the ANSI one -- never
+    ``getpreferredencoding(False)``, which follows Python UTF-8 Mode and would
+    answer ``utf-8`` on a CP932 host that Hermes started in UTF-8 Mode."""
+    sc = _windows_host(monkeypatch, oem=OSError(1, "GetOEMCP unavailable"), ansi="cp932")
+
+    assert sc.windows_probe_encoding() == "cp932"
+
+
+def test_windows_probe_encoding_falls_back_when_the_oem_page_is_zero(monkeypatch):
+    """``GetOEMCP`` answers 0 when it fails, and ``cp0`` is not a codec."""
+    sc = _windows_host(monkeypatch, oem=0, ansi="cp932")
+
+    assert sc.windows_probe_encoding() == "cp932"
+
+
+def test_utf8_ignore_keeps_dbcs_trail_bytes_as_ascii():
+    """Why the wrong codec is worse than a crash here.
+
+    Measured on a ja-JP host: a real ``wmic`` scan returned a path segment
+    whose CP932 bytes are ``90 66 92 66 83 7E``. Under ``utf-8`` with
+    ``errors="ignore"`` each lead byte is dropped and each trail byte in the
+    0x40-0x7E range survives as a literal ASCII character, so five characters
+    became ``ff~`` -- no U+FFFD, nothing to notice, and every later
+    ``in``-match against the real path fails.
+    """
+    segment = "診断ミレル"
+    raw = segment.encode("cp932")
+
+    assert raw == b"\x90\x66\x92\x66\x83\x7e\x83\x8c\x83\x8b"
+    assert raw.decode("cp932") == segment
+    assert raw.decode("utf-8", errors="ignore") == "ff~"

@@ -399,6 +399,8 @@ export interface ComposerActions {
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => void
   clearIn: () => void
+  /** Drop the pending steer (agent slot cleared via session.steer_clear). */
+  clearSteer: () => void
   stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
   enqueue: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem | void
@@ -409,12 +411,17 @@ export interface ComposerActions {
   /** Composer text for queue-edit slot `index` (local items first, then server-queued rows). */
   queueDraft: (index: number) => string
   removeQueue: (index: number) => void
+  /** Replace the pending steer text in place (post-edit re-steer). */
+  replaceSteer: (text: string) => void
   setCompIdx: StateSetter<number>
   setComposerTokens: StateSetter<ComposerToken[]>
   setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
   setQueueEdit: (index: null | number) => void
+  /** Park an accepted steer so the queue strip renders it first. */
+  setSteer: (text: string) => void
+  setSteerEdit: (index: null | number) => void
   takeQueue: (index: number, editedDisplay?: string) => QueueItem | Promise<QueueItem | undefined> | undefined
   /** Reconcile attached payloads against tokens still present in the text. */
   syncTokens: (value: string) => void
@@ -425,6 +432,9 @@ export interface ComposerRefs {
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
   queueRef: MutableRefObject<QueueItem[]>
+  /** Source of truth for the pending steer text (read in keystroke handlers). */
+  steerRef: MutableRefObject<null | string>
+  steerEditRef: MutableRefObject<null | number>
   submitRef: MutableRefObject<(value: string) => void>
   tokensRef: MutableRefObject<ComposerToken[]>
 }
@@ -436,8 +446,11 @@ export interface ComposerState {
   historyIdx: null | number
   input: string
   inputBuf: string[]
+  /** Pending steer text accepted by the gateway; rendered as strip row 1. */
+  pendingSteer: null | string
   queueEditIdx: null | number
   queuedDisplay: string[]
+  steerEditIdx: null | number
   tokens: ComposerToken[]
 }
 
@@ -626,8 +639,10 @@ export interface AppLayoutComposerProps {
   input: string
   inputBuf: string[]
   pagerPageSize: number
+  pendingSteer: null | string
   queueEditIdx: null | number
   queuedDisplay: string[]
+  steerEditIdx: null | number
   submit: (value: string) => void
   updateInput: StateSetter<string>
   voiceRecordKey: ParsedVoiceRecordKey

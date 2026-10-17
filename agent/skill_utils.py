@@ -434,15 +434,16 @@ def skill_candidate_rank(skill_md, root) -> tuple[bool, int]:
 
 
 def pick_skill_candidate(candidates) -> tuple[Optional[int], list[int]]:
-    """Winner index among one identifier's ``(tier, root, rank, skill_md)`` candidates, plus the
-    winning tier's contender indexes. The lowest tier wins; inside it a lone candidate wins, identical
-    copies under one root resolve to the strictly best ``rank``, anything else is ambiguous (None)."""
+    """Winner index among one identifier's ``(tier, root, rank, skill_md)`` candidates (in root scan
+    order), plus the winning tier's contender indexes. The lowest tier wins; inside it a lone candidate
+    wins, identical copies resolve to the strictly best ``rank`` (across roots, the first-scanned root
+    breaks a tie), anything else is ambiguous (None)."""
     top = min(c[0] for c in candidates)
     contenders = [i for i, c in enumerate(candidates) if c[0] == top]
-    if len(contenders) > 1 and len({candidates[i][1] for i in contenders}) == 1 and provably_same_skill(
-            [candidates[i][3] for i in contenders]):
-        ranked = sorted(contenders, key=lambda i: candidates[i][2])
-        if candidates[ranked[0]][2] != candidates[ranked[1]][2]:
+    if len(contenders) > 1 and provably_same_skill([candidates[i][3] for i in contenders]):
+        ranked = sorted(contenders, key=lambda i: candidates[i][2])  # stable: keeps root scan order
+        best, runner_up = candidates[ranked[0]], candidates[ranked[1]]
+        if best[2] != runner_up[2] or best[1] != runner_up[1]:
             return ranked[0], contenders
     return (contenders[0] if len(contenders) == 1 else None), contenders
 
@@ -492,13 +493,16 @@ def resolve_skill_catalog(entries: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
-# Project-local skills (<root>/.hermes/skills, <root>/.agents/skills; root = nearest
-# .git ancestor) are a prompt-injection vector if auto-sourced from any clone, so
+# Project-local skills (<root>/.hermes/skills, <root>/.agents/skills, <root>/.claude/skills;
+# root = nearest .git ancestor) are a prompt-injection vector if auto-sourced from any clone, so
 # they load only when the root is in ``skills.trusted_project_dirs``; then they
 # override same-named profile/bundled skills. cwd + trust list are session-fixed
 # so the skills index stays byte-stable.
 
-PROJECT_SKILLS_SUBDIRS = (os.path.join(".hermes", "skills"), os.path.join(".agents", "skills"))
+# Scan order is precedence among identical copies: repos often ship one skill for several harnesses
+# (.claude/skills is Claude Code's layout), as a copy or a symlink of the .agents one.
+PROJECT_SKILLS_SUBDIRS = (os.path.join(".hermes", "skills"), os.path.join(".agents", "skills"),
+                          os.path.join(".claude", "skills"))
 
 _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
@@ -563,7 +567,8 @@ def _candidate_project_skills_dirs(root: Path) -> list[Path]:
     dirs: list[Path] = []
     for cand in (root / sub for sub in PROJECT_SKILLS_SUBDIRS):
         try:
-            if cand.is_dir() and cand.resolve() != local_skills:
+            # A symlinked harness dir (.claude/skills -> ../.agents/skills) is one root, not two.
+            if cand.is_dir() and cand.resolve() != local_skills and cand.resolve() not in dirs:
                 dirs.append(cand.resolve())
         except OSError:
             continue

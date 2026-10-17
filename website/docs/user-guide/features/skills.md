@@ -471,7 +471,10 @@ Repos can carry their own skills, active only for sessions started inside that p
 ```text
 <project-root>/.hermes/skills/    # Hermes-native location
 <project-root>/.agents/skills/    # cross-tool convention (shared with other agent CLIs)
+<project-root>/.claude/skills/    # Claude Code's layout, so repos that ship skills for it work as-is
 ```
+
+A repo that ships the same skill in more than one of these (a copy or a symlink) loads it once, preferring the earlier directory in the list above. Two *different* skills with the same name in two of these directories are refused as ambiguous, like any same-tier collision: rename one of them.
 
 The project root is the nearest ancestor directory containing `.git` (worktrees and submodules count).
 

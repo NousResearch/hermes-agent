@@ -98,7 +98,16 @@ def install_state_permission_message(project_root: Path, exc: PermissionError) -
     denied = Path(exc.filename).resolve()
     if not denied.is_relative_to(install_state_dir(project_root).resolve()):
         return None
-    return (f"install state is not writable by this user ({denied}); "
+    # Windows can deny the write while owner and DACL metadata look permissive
+    # (sharing violation winerror 32, integrity-level winerror 5); the OS codes
+    # are the only on-disk signal that separates those from a real ACL problem.
+    detail = f"errno {exc.errno}"
+    winerror = getattr(exc, "winerror", None)
+    if winerror is not None:
+        detail += f", winerror {winerror}"
+    if exc.strerror:
+        detail += f": {exc.strerror}"
+    return (f"install state is not writable by this user ({denied} [{detail}]); "
             "run as the install owner or grant write access")
 
 

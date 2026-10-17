@@ -19,6 +19,7 @@ import type { SessionInfo, UsageStats } from '@/types/hermes'
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
+import { $projectTree } from './project-tree'
 
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
@@ -1077,6 +1078,18 @@ function withUnlistedOwnerStubs(rows: SessionInfo[], stubs: readonly SessionInfo
   return visible.length ? [...rows, ...visible] : rows
 }
 
+/** Every session row the loaded project tree can expose: overview previews
+ * plus rows from an entered project's hydrated worktree lanes. These source
+ * excluded conversations such as ACP without placing them back in Recents. */
+function projectTreeOwnerRows(): SessionInfo[] {
+  return $projectTree
+    .get()
+    .flatMap(project => [
+      ...(project.previewSessions ?? []),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+    ])
+}
+
 /**
  * Every session row the renderer knows, for OWNER lookups. The sidebar splits
  * its fetch into three source-scoped slices ($sessions / $cronSessions /
@@ -1087,22 +1100,26 @@ function withUnlistedOwnerStubs(rows: SessionInfo[], stubs: readonly SessionInfo
  * install failed closed with SessionOwnerResolutionError even though the row
  * naming its owner was already in memory, one atom over. Concatenation order
  * mirrors lookup priority: recents first (they can carry fresher optimistic
- * connection tags), then the cron and messaging slices. Unlisted-draft stubs
- * ($unlistedSessionOwnerRows) ride last: a real row for the same id always
- * shadows its stub, so a listed session never resolves off a stale stamp.
+ * connection tags), then the cron, messaging, and project-tree slices. ACP
+ * rows intentionally live only in the project tree, so including that cached
+ * source preserves their stored tab title without making them Recents rows.
+ * Unlisted-draft stubs ($unlistedSessionOwnerRows) ride last: a real row for
+ * the same id always shadows its stub, so a listed session never resolves off
+ * a stale stamp.
  */
 export function ownerLookupSessionRows(): SessionInfo[] {
   const cron = $cronSessions.get()
   const messaging = $messagingSessions.get()
+  const projectTree = projectTreeOwnerRows()
   const stubs = $unlistedSessionOwnerRows.get()
 
   // Recents-only stays the common case; keep its array identity (no copy) so
   // per-list memo caches (lineageAliases) keyed on the reference still hit.
-  if (!cron.length && !messaging.length) {
+  if (!cron.length && !messaging.length && !projectTree.length) {
     return withUnlistedOwnerStubs($sessions.get(), stubs)
   }
 
-  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging], stubs)
+  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging, ...projectTree], stubs)
 }
 
 // Whether a profile's last session page was CAPPED by the request limit, keyed

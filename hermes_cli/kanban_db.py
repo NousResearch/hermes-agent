@@ -2210,6 +2210,10 @@ def claim_task(
             )
             _append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
             return None
+        # One live worker per card, whatever released the claim (#140342).
+        if _prior_run_worker_still_alive(conn, task_id):
+            _append_event(conn, task_id, "claim_rejected", {"reason": "prior_worker_alive"})
+            return None
         # Close a leaked prior run so the CAS below doesn't strand it.
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
@@ -2243,6 +2247,10 @@ def claim_review_task(
                     conn, task_id, "dependency_wait",
                     {"reason": "parent_reopened", "source_status": "review"},
                 )
+            return None
+        # Same one-live-worker rule as claim_task: no reviewer beside a live implementer.
+        if _prior_run_worker_still_alive(conn, task_id):
+            _append_event(conn, task_id, "claim_rejected", {"reason": "prior_worker_alive"})
             return None
         run_id = _claim_and_open_run(
             conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
@@ -2442,19 +2450,6 @@ def release_stale_claims(
                 heartbeat_stale=bool(heartbeat_stale), retry_status=retry_status,
             )
     return reclaimed
-
-
-def _record_reclaim(
-    conn: sqlite3.Connection, task_id: str, termination: dict, *, error: str, payload: dict,
-) -> Optional[int]:
-    """Close the active run as ``reclaimed`` and emit the ``reclaimed`` event
-    (payload merged with the termination report). Caller holds the txn."""
-    run_id = _end_run(
-        conn, task_id, outcome="reclaimed", status="reclaimed", error=error, metadata=termination,
-    )
-    payload.update(termination)
-    _append_event(conn, task_id, "reclaimed", payload, run_id=run_id)
-    return run_id
 
 
 def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: int) -> None:
@@ -4254,4 +4249,8 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
+)
+from hermes_cli.kanban_db_reclaim import (
+    _prior_run_worker_still_alive,
+    _record_reclaim,
 )

@@ -51,8 +51,21 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
 :::tip
-The `hermes config set` command automatically routes values to the right file — every `UPPER_SNAKE` name (`OPENROUTER_API_KEY`, `DISCORD_HOME_CHANNEL`, `TELEGRAM_GROUP_ALLOWED_USERS`, `HERMES_TIMEZONE`, …) is an environment variable and is saved to `.env`, never to `config.yaml`; dotted settings go to `config.yaml`. Any other `UPPER_SNAKE` name is saved to `.env` as-is (it is exported to the process environment for plugins and skills); names on the env writer's denylist (`HERMES_YOLO_MODE`, `PATH`, …) are refused. A known key written under the wrong prefix (`gateway.discord.foo`, where `discord.foo` is itself a known key) is refused with a did-you-mean before anything is written; pass `--force` to write it anyway. Any other unknown path under a known section (a typo such as `agent.max_turnz`, or a runtime-read key with no seeded default) is written together with a did-you-mean notice, since the schema alone cannot tell the two apart. `hermes config get` on such a path prints the value from your file together with a stderr notice that Hermes may not read it, so a leftover key cannot silently pass for a live setting.
+The `hermes config set` command automatically routes values to the right file — every `UPPER_SNAKE` name (`OPENROUTER_API_KEY`, `DISCORD_HOME_CHANNEL`, `TELEGRAM_GROUP_ALLOWED_USERS`, `HERMES_TIMEZONE`, …) is an environment variable and is saved to `.env`, never to `config.yaml`; dotted settings go to `config.yaml`. Any other `UPPER_SNAKE` name is saved to `.env` as-is (it is exported to the process environment for plugins and skills); names on the env writer's denylist (`HERMES_YOLO_MODE`, `PATH`, …) are refused. A known key written under the wrong prefix (`gateway.discord.foo`, where `discord.foo` is itself a known key) is refused with a did-you-mean before anything is written; pass `--force` to write it anyway. Any other unknown path under a known section (a typo such as `agent.max_turnz`, or a runtime-read key with no seeded default) is written together with a did-you-mean notice, since the schema alone cannot tell the two apart. `hermes config get` on such a path prints the value from your file together with a stderr notice that Hermes may not read it, so a leftover key cannot silently pass for a live setting. Root keys whose name starts with an underscore are exempt from all of this — see [Internal Marker Keys](#internal-marker-keys).
 :::
+
+## Internal Marker Keys
+
+Root keys in `config.yaml` whose name starts with an underscore (`_`) are internal: Hermes writes some of them itself as migration or feature markers, and the rest are yours to keep. `hermes config` treats any `_`-prefixed first segment as known — `hermes config set` / `get` read and write such a path without a did-you-mean notice, and `hermes config check` never lists it as a missing option. The exemption applies to the first segment only, so a typo like `agent._max_turnz` is still caught.
+
+The left-core migration (features that moved out of core into installable plugins — currently Home Assistant) writes two of them:
+
+| Key | What it records | What deleting the row does |
+|-----|-----------------|----------------------------|
+| `_left_core_scoped` | Features whose toolset scope this home already converted | The next start re-derives the same state from your saved `platform_toolsets` selection: a toolset you explicitly enabled in `hermes tools` stays on, nothing you chose is switched back off, and the row is written again |
+| `_left_core_installed` | Features whose plugin directory exists in this home | The next start re-marks the feature as installed (a home whose install never succeeded keeps retrying the install — that is what the marker exists for) |
+
+Both rows are machine-maintained: deleting one only costs an idempotent re-derivation at the next start, after which Hermes writes it right back. Hand-editing them is never necessary, and downstream cleanup tooling should ignore root keys starting with `_` rather than flag them as unknown configuration.
 
 ## Configuration Precedence
 

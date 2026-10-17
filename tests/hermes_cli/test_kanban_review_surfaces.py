@@ -90,6 +90,79 @@ def test_review_tools_redact_handoff_and_route_changes(
         )
 
 
+def _review_run(conn, task_id: str, reviewer: str = "reviewer:1"):
+    """Implementation run -> request_review -> claimed reviewer run (the request_changes precondition)."""
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    assert kb.request_review(
+        conn, task_id, summary="ready", reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    ) is True
+    review = kb.claim_review_task(conn, task_id, claimer=reviewer)
+    assert review is not None
+    return review
+
+
+def _run_metadata(conn, run_id: int):
+    raw = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()["metadata"]
+    return json.loads(raw) if raw else None
+
+
+def test_request_changes_metadata_lands_on_the_closed_review_run(
+    review_worker: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reviewer's structured verdicts reach task_runs.metadata through the
+    public tool (schema + handler + kernel), redacted on the same path as request_review."""
+    from tools import kanban_tools as tools
+    from tools.kanban_tools_schemas import KANBAN_COMPLETE_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA
+
+    props = KANBAN_REQUEST_CHANGES_SCHEMA["parameters"]["properties"]
+    assert props["metadata"]["type"] == KANBAN_COMPLETE_SCHEMA["parameters"]["properties"]["metadata"]["type"] == "object"
+    assert "metadata" not in KANBAN_REQUEST_CHANGES_SCHEMA["parameters"]["required"]
+
+    assert json.loads(tools._handle_request_review({"summary": "ready", "reviewer": "reviewer"}))["ok"] is True
+    with kbc.connect() as conn:
+        review = kb.claim_review_task(conn, review_worker, claimer="reviewer:1")
+        assert review is not None
+    monkeypatch.setenv("HERMES_PROFILE", "reviewer")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(review.current_run_id))
+
+    rejected = json.loads(tools._handle_request_changes({"reason": "AC2 fails", "metadata": "AC2 FAIL"}))
+    assert "error" in rejected and "metadata must be an object" in rejected["error"]
+
+    secret = "sk-" + "C" * 32
+    verdicts = [{"ac": "AC2", "head": "a" * 40, "verdict": "FAIL", "evidence": "src/x.py::handler"}]
+    changed = json.loads(tools._handle_request_changes({
+        "reason": "AC2 fails at the reviewed head",
+        "metadata": {"verdicts": verdicts, "note": f"leaked={secret}"},
+    }))
+    assert changed["ok"] is True
+
+    with kbc.connect() as conn:
+        metadata = _run_metadata(conn, review.current_run_id)
+        assert metadata["verdicts"] == verdicts
+        assert secret not in json.dumps(metadata)
+        # The event payload keeps its existing shape; verdicts live on the run only.
+        event = [e for e in kb.list_events(conn, review_worker) if e.kind == "changes_requested"][-1]
+        assert "verdicts" not in (event.payload or {})
+
+
+def test_request_changes_without_metadata_leaves_the_run_metadata_unchanged(review_worker: str) -> None:
+    """Omitting metadata keeps today's behavior — the run keeps exactly what the
+    claim recorded and the changes_requested event payload is the same key set."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="plain request changes", assignee="builder")
+        review = _review_run(conn, task_id)
+        before = _run_metadata(conn, review.current_run_id)
+        assert kb.request_changes(
+            conn, task_id, reason="add a boundary test", expected_run_id=review.current_run_id,
+        ) == (True, "builder")
+        assert _run_metadata(conn, review.current_run_id) == before
+        event = [e for e in kb.list_events(conn, task_id) if e.kind == "changes_requested"][-1]
+        assert set(event.payload) == {"reason", "implementer", "reviewer", "status"}
+
+
 def test_review_tools_are_gated_and_visible_to_kanban_workers(
     review_worker: str,
 ) -> None:

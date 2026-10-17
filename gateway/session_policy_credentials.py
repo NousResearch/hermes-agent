@@ -112,9 +112,20 @@ def recover_config_secrets(authority, policy, skip=None):
     try:
         source = json.loads(ref[len(PREFIX):])
         home = Path(authority.db.db_path).resolve().parent
-        if (source['home'] != str(home) or source['profile'] != authority.profile_id
-                or source['policy'] != policy_identity(policy)):
-            raise ValueError('scope mismatch')
+        if source['home'] != str(home) or source['profile'] != authority.profile_id:
+            raise RuntimeStoreError('launch_credentials_unavailable',
+                field='home' if source['home'] != str(home) else 'profile',
+                detail='receipt scope mismatch: the frozen config reference belongs to another '
+                       + ('home' if source['home'] != str(home) else 'profile'))
+        if source['policy'] != policy_identity(policy):
+            # The stamp covers the whole frozen config_json, secret fields and not: a profile edit
+            # that rewrote the snapshot after the reference froze (a repointed base_url, keys
+            # unchanged) fails it without touching a single secret, stranding the session on every
+            # turn -- and on the /model re-stamp and the policy refresh that would repair it. The
+            # per-entry fingerprints below still gate every value against the live config.yaml and
+            # still refuse a changed route credential, so a stale stamp degrades to that check.
+            logger.warning('Session %s: frozen config reference predates the current policy snapshot; '
+                           'verifying its entries per fingerprint', source.get('session'))
         cached = getattr(authority, '_local_config_secrets', {}).get(ref)
         if cached is not None:
             return {path: value for path, value in cached.items() if path[0] not in skip}

@@ -36,8 +36,8 @@ layer reads from it:
   `zai`, `openrouter`, `custom` — those need bespoke token resolution).
 - `hermes_cli/models.py` extends `CANONICAL_PROVIDERS` and calls
   `profile.fetch_models()` inside `provider_model_ids()`.
-- `hermes_cli/doctor.py` adds a `/models` health check for each
-  `auth_type="api_key"` profile.
+- `hermes_cli/doctor_connectivity.py` (invoked from `hermes_cli/doctor.py` via `build_probes()`
+  / `run_probes()`) adds a `/models` health check for each `auth_type="api_key"` profile.
 - `hermes_cli/config.py` injects every `env_var` into
   `OPTIONAL_ENV_VARS` so the setup wizard knows about it.
 - `hermes_cli/runtime_provider.py` reads `profile.api_mode` as a fallback
@@ -49,8 +49,10 @@ layer reads from it:
 - `agent/transports/chat_completions.py::_build_kwargs_from_profile()`
   invokes `profile.prepare_messages()`, `profile.build_extra_body()`,
   and `profile.build_api_kwargs_extras()` on every call.
-- `run_agent.py` passes `provider_profile=<ProviderProfile>` so the
-  transport takes the profile path instead of the legacy flag path.
+- `agent/chat_completion_helpers.py` resolves the profile and passes
+  `provider_profile=<ProviderProfile>` into `transport.build_kwargs()`, so the transport takes the
+  profile path (`agent/transports/chat_completions.py::_build_kwargs_from_profile()`) instead of the
+  legacy flag path.
 
 ---
 

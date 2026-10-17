@@ -43,6 +43,46 @@ class TestBrowserCleanup:
         self.browser_tool._recording_sessions.update(self.orig_recording_sessions)
         self.browser_tool._cleanup_done = self.orig_cleanup_done
 
+    def test_creation_race_releases_discarded_session(self, monkeypatch):
+        from tools import browser_tool_session
+
+        browser_tool = self.browser_tool
+        winner = {"session_name": "winner", "bb_session_id": "bb-winner"}
+        discarded = {"session_name": "discarded", "bb_session_id": "bb-discarded"}
+        def create_racing_session(*_args):
+            browser_tool._active_sessions["task-1"] = winner
+            return discarded
+
+        monkeypatch.setattr(browser_tool_session, "_create_session_for_key", create_racing_session)
+        monkeypatch.setattr(browser_tool_session._lifecycle, "_start_browser_cleanup_thread", lambda: None)
+        monkeypatch.setattr(browser_tool_session._lifecycle, "_update_session_activity", lambda *_: None)
+        monkeypatch.setattr(browser_tool_session._lifecycle, "_session_has_expired", lambda *_: False)
+        calls = []
+        monkeypatch.setattr(
+            browser_tool_session._lifecycle, "_release_session_resources", lambda *args: calls.append(args)
+        )
+
+        assert browser_tool_session._get_session_info("task-1") is winner
+        assert calls == [("task-1#discarded-" + str(id(discarded)), discarded)]
+
+    def test_release_session_resources_stops_lightpanda_session(self):
+        session_info = {
+            "session_name": "lightpanda-discarded",
+            "bb_session_id": None,
+            "features": {"lightpanda": True},
+        }
+
+        with (
+            patch("tools.browser_lightpanda.stop_lightpanda") as mock_stop,
+            patch.object(bt_lifecycle, "_forget_session_tracking") as mock_forget,
+            patch.object(bt_lifecycle._cloud, "_get_cloud_provider") as mock_provider,
+        ):
+            bt_lifecycle._release_session_resources("task-1#discarded", session_info)
+
+        mock_forget.assert_called_once_with("task-1#discarded", session=True)
+        mock_stop.assert_called_once_with("lightpanda-discarded")
+        mock_provider.assert_not_called()
+
     def test_cleanup_browser_clears_tracking_state(self):
         browser_tool = self.browser_tool
         browser_tool._active_sessions["task-1"] = {

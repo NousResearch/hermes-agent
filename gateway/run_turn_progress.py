@@ -289,6 +289,7 @@ class GatewayTurnProgressMixin:
         try:
             adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
+            logger.debug("Progress adapter resolution failed", exc_info=True)
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
         verbose = ctx.progress_mode == "verbose"

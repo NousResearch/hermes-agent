@@ -1113,6 +1113,8 @@ class TurnRunner(SessionTitleCallbacks, GatewayTurnProgressMixin, GatewaySession
         lifetime, which shutdown/drain can never quiesce.  A timeout is fail-closed (denied).
         """
         ctx = self._ctx
+        if ctx.execution_launch_gate is None:
+            return True
         if not ctx.execution_launch_gate.wait(timeout=EXECUTION_LAUNCH_GATE_TIMEOUT):
             logger.warning(
                 "gateway launch fence timed out after %.0fs for session=%s execution=%s; "
@@ -1258,7 +1260,7 @@ class TurnRunner(SessionTitleCallbacks, GatewayTurnProgressMixin, GatewaySession
             agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         execution_id = ctx.internal_plugin_execution_id
-        if ctx.execution_launch_gate is not None and not self._await_execution_launch(execution_id):
+        if not self._await_execution_launch(execution_id):
             return {"final_response": "", "messages": [], "api_calls": 0,
                     "tools": [], "completed": True, "interrupted": True}
         from gateway.run_turn_progress import local_viewer_turn

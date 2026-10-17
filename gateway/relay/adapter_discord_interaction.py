@@ -119,6 +119,7 @@ class RelayDiscordInteractionMixin:
         try:
             payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
         except Exception:
+            logger.debug("Forwarded Discord interaction decode failed", exc_info=True)
             return None
         if not isinstance(payload, dict):
             return None

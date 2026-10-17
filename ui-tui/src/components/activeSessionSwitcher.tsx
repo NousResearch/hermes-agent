@@ -557,6 +557,7 @@ export function ActiveSessionSwitcher({
 
       setDeleting(true)
       setActionErr('')
+
       // The shared gateway has no `session.delete`: its delete is the revision-fenced
       // `session.mutate operation=delete` (the whole lineage), as the classic CLI sends it.
       const deleted = gw.isCanonical

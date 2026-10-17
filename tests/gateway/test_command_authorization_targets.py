@@ -159,3 +159,29 @@ def test_builtin_allowlist_resolves_registered_aliases(listed, typed):
     source = _make_source(user_id='reader')
     assert runner._check_slash_access(source, typed) is None
     assert '/restart is admin-only here' in runner._check_slash_access(source, 'restart')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['denied', 'admin', 'allowlisted', 'ungated'])
+async def test_hook_alias_target_uses_plugin_grant(tmp_path, monkeypatch, mode):
+    calls = _plugin(monkeypatch)
+    extra = {} if mode == 'ungated' else {
+        'allow_admin_from': ['owner'], 'user_allowed_commands': ['outer', 'my_cmd'],
+    }
+    if mode == 'allowlisted':
+        extra['user_allowed_commands'].append('my-cmd')
+    runner = _runner(extra)
+    runner.config.quick_commands = {
+        'outer': {'type': 'alias', 'target': '/my_cmd'},
+        'my_cmd': {'type': 'exec', 'command': 'printf QUICK'},
+    }
+    monkeypatch.setattr('gateway.hooks.HOOKS_DIR', tmp_path / 'hooks')
+    _rewrite(runner, tmp_path, 'outer')
+    source = _make_source(user_id='owner' if mode == 'admin' else 'reader')
+    result = await runner._handle_message(_make_event('/help', source))
+    if mode == 'denied':
+        assert '/my-cmd is admin-only here' in result
+        assert calls == []
+    else:
+        assert result == 'PLUGIN-RAN'
+        assert calls == ['']

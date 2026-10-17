@@ -267,7 +267,7 @@ class GatewayInboundHooksMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    denied = self._check_slash_access(source, command)
+                    denied = self._check_slash_access(source, ("plugin", command.replace("_", "-")))
                     if denied is not None:
                         return True, denied, command
                     return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command

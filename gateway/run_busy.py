@@ -1222,7 +1222,9 @@ class GatewayBusySessionMixin:
             return await self._handle_loop_command(event)
         return t("gateway.busy.reject_loop")
 
-    def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
+    def _check_slash_access(
+        self, source: SessionSource, canonical_cmd: str | tuple[str, str],
+    ) -> Optional[str]:
         """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
         use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
         from gateway.slash_access import policy_for_runner_source
@@ -1233,7 +1235,8 @@ class GatewayBusySessionMixin:
             source.user_id, canonical_cmd, command_key=self._hm_command_key,
         ):
             return None
-        canonical_cmd = self._hm_command_key(canonical_cmd)[1]
+        canonical_cmd = (self._hm_command_key(canonical_cmd)[1]
+                         if isinstance(canonical_cmd, str) else canonical_cmd[1])
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd, source.platform.value if source.platform else "?", source.user_id,

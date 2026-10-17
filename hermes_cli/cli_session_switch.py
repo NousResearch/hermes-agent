@@ -7,11 +7,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 
-from hermes_cli.gateway_session_store import RESUME_REFUSALS
-
-# session.resume refusals that keep the chat on its current session (startup resume's set plus
-# profile_mismatch, which restore_local_session raises for another profile's receipt).
-_SWITCH_REFUSALS = RESUME_REFUSALS | {'profile_mismatch'}
+from hermes_cli.gateway_connection import RESUME_GONE
 
 
 def _end_current_session(cli, reason: str) -> None:
@@ -48,7 +44,7 @@ def _open_switched_session(cli, session_id: str) -> str | None:
     except GatewayRPCError as exc:
         # The owner answered: only an ownership refusal stops the switch.
         reason = str(exc)
-        return reason if reason in _SWITCH_REFUSALS else None
+        return reason if reason in RESUME_GONE else None
     except GatewayClientError:
         # No answer (unavailable, disconnected, timeout). The switch's reads are local, so it
         # proceeds as before; the turn reports the lost connection itself.

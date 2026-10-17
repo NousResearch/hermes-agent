@@ -23,7 +23,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,6 @@ _GATEWAY_OWNED = frozenset({
 # Mutations the owner refuses without the execution generation they were read at (hermes_state_runtime).
 _GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress"})
 _COUNTED_REPAIRS = frozenset({"prune_empty_ghost_sessions", "finalize_orphaned_compression_sessions"})
-# ``session.resume`` refusals that mean "this viewer may not open that session": the caller keeps the
-# session it is on instead of adopting the target.
-RESUME_REFUSALS = frozenset({"not_found", "permission_denied"})
 # Launch options main's ``cli.main`` takes that are creation policy on the gateway session.
 _LAUNCH_POLICY = ("model", "provider", "toolsets", "reasoning", "api_key", "base_url", "max_turns",
                   "ignore_rules", "checkpoints", "pass_session_id", "skills")

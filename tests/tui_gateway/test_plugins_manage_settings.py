@@ -64,3 +64,61 @@ def test_settings_writes_the_plugin_namespace_and_refuses_secrets_and_bad_types(
     for values in ({"api_key": "leak"}, {"retries": "two"}, {"mode": "reckless"}, {"unknown": 1}):
         assert _manage(action="settings", key="demo-plugin", values=values)["error"]["code"] == 4021
     assert "api_key" not in (plugins_home / "config.yaml").read_text(encoding="utf-8")
+
+
+SECTIONED_MANIFEST = """\
+name: sectioned-plugin
+version: 1.0.0
+config_schema:
+  enabled: {type: bool, default: true, section: Behaviour}
+  mode: {type: str, choices: [rotate, compact], default: rotate, section: Behaviour}
+  bar_width: {type: int, default: 10, group: Appearance}
+  emoji: {type: str, default: "x", section: Appearance}
+  legacy: {type: bool, default: false}
+"""
+
+
+@pytest.fixture
+def sectioned_home(tmp_path, monkeypatch):
+    home = tmp_path / "sectioned-home"
+    (home / "plugins" / "sectioned-plugin").mkdir(parents=True)
+    (home / "plugins" / "sectioned-plugin" / "plugin.yaml").write_text(SECTIONED_MANIFEST, encoding="utf-8")
+    (home / "config.yaml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def _sectioned_fields(sectioned_home):
+    rows = _manage(action="list")["result"]["plugins"]
+    row = next(r for r in rows if r["key"] == "sectioned-plugin")
+    return row["settings_schema"]
+
+
+def test_section_heading_is_carried_on_the_wire(sectioned_home):
+    fields = {f["key"]: f for f in _sectioned_fields(sectioned_home)}
+
+    assert fields["enabled"]["section"] == "Behaviour"
+    assert fields["mode"]["section"] == "Behaviour"
+    # `group` is an accepted alias so manifests do not have to guess the spelling.
+    assert fields["bar_width"]["section"] == "Appearance"
+    assert fields["emoji"]["section"] == "Appearance"
+    # A key that declares neither stays flat — and carries no empty-string section.
+    assert "section" not in fields["legacy"]
+
+
+def test_undeclared_section_is_absent_not_empty(sectioned_home):
+    """Older Hermes build a field dict without the key at all; a missing section must
+    stay missing rather than becoming `""`, so a naive client does not render a blank heading."""
+    for field in _sectioned_fields(sectioned_home):
+        if "section" in field:
+            assert field["section"], field
+
+
+def test_section_does_not_leak_into_the_saved_value(sectioned_home):
+    """`section` is presentation metadata; writing settings must store only the value."""
+    resp = _manage(action="settings", key="sectioned-plugin", values={"bar_width": 20})
+    assert resp["result"]["ok"] is True
+
+    from hermes_cli.config import load_config_readonly
+    saved = load_config_readonly()["plugins"]["entries"]["sectioned-plugin"]["settings"]
+    assert saved == {"bar_width": 20}

@@ -109,6 +109,34 @@ export function joinSentences(...parts: (null | string | undefined)[]): string {
     .join(' ')
 }
 
+/**
+ * Group consecutive fields that declare the same `section` heading.
+ *
+ * A manifest declares `section:` (or `group:`) on individual keys; the renderer
+ * collects each run of same-section fields under one heading and keeps
+ * ungrouped fields together in a single trailing group with no heading. Fields
+ * WITHOUT any section are returned as one flat group, so a manifest that
+ * declares none renders exactly as it did before.
+ */
+export function groupFieldsBySection(
+  fields: PluginSettingField[]
+): { section: string | undefined; fields: PluginSettingField[] }[] {
+  const groups: { section: string | undefined; fields: PluginSettingField[] }[] = []
+
+  for (const field of fields) {
+    const section = field.section?.trim() || undefined
+    const last = groups.at(-1)
+
+    if (last && last.section === section) {
+      last.fields.push(field)
+    } else {
+      groups.push({ section, fields: [field] })
+    }
+  }
+
+  return groups
+}
+
 /** What the input shows before the user touches it. */
 const INITIAL_TEXT: Record<PluginSettingFieldType, (field: PluginSettingField) => string> = {
   boolean: field => (field.value === true ? 'true' : 'false'),
@@ -368,54 +396,63 @@ export function PluginSettingsForm({
         </p>
       )}
       <div>
-        {fields.map(field => {
-          const id = `${idPrefix}-${field.key}`
-          const Control = FIELD_CONTROLS[field.type]
-          const label = fieldLabel(field)
+        {groupFieldsBySection(fields).map(group => (
+          <div key={group.section ?? '__ungrouped'}>
+            {group.section && (
+              <h3 className="mt-2 mb-1 text-[length:var(--settings-section-title-font-size,var(--conversation-caption-font-size))] font-medium text-muted-foreground first:mt-0">
+                {group.section}
+              </h3>
+            )}
+            {group.fields.map(field => {
+              const id = `${idPrefix}-${field.key}`
+              const Control = FIELD_CONTROLS[field.type]
+              const label = fieldLabel(field)
 
-          const control = (
-            <Control
-              disabled={disabled || saving}
-              field={field}
-              id={id}
-              onChange={raw => setDraft(current => ({ ...current, [field.key]: raw }))}
-              raw={draft[field.key] ?? ''}
-              secretSetHint={s.secretSet}
-            />
-          )
+              const control = (
+                <Control
+                  disabled={disabled || saving}
+                  field={field}
+                  id={id}
+                  onChange={raw => setDraft(current => ({ ...current, [field.key]: raw }))}
+                  raw={draft[field.key] ?? ''}
+                  secretSetHint={s.secretSet}
+                />
+              )
 
-          const description =
-            joinSentences(field.description, field.type === 'secret' && field.env ? s.secretStoredAs(field.env) : '') ||
-            undefined
+              const description =
+                joinSentences(field.description, field.type === 'secret' && field.env ? s.secretStoredAs(field.env) : '') ||
+                undefined
 
-          const rowTitle = (
-            <span className="inline-flex flex-wrap items-center gap-2">
-              <label htmlFor={id}>{label}</label>
-              {field.required && <Pill>{s.required}</Pill>}
-            </span>
-          )
+              const rowTitle = (
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  <label htmlFor={id}>{label}</label>
+                  {field.required && <Pill>{s.required}</Pill>}
+                </span>
+              )
 
-          // Editors too big for the control column take the full width under
-          // the description, as native config rows do.
-          return field.type === 'json' ? (
-            <ListRow
-              below={<div className="mt-3">{control}</div>}
-              data-tour={`plugin-field-${field.key}`}
-              description={description}
-              key={field.key}
-              title={rowTitle}
-              wide
-            />
-          ) : (
-            <ListRow
-              action={control}
-              data-tour={`plugin-field-${field.key}`}
-              description={description}
-              key={field.key}
-              title={rowTitle}
-            />
-          )
-        })}
+              // Editors too big for the control column take the full width under
+              // the description, as native config rows do.
+              return field.type === 'json' ? (
+                <ListRow
+                  below={<div className="mt-3">{control}</div>}
+                  data-tour={`plugin-field-${field.key}`}
+                  description={description}
+                  key={field.key}
+                  title={rowTitle}
+                  wide
+                />
+              ) : (
+                <ListRow
+                  action={control}
+                  data-tour={`plugin-field-${field.key}`}
+                  description={description}
+                  key={field.key}
+                  title={rowTitle}
+                />
+              )
+            })}
+          </div>
+        ))}
       </div>
     </form>
   )

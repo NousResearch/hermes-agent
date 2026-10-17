@@ -80,6 +80,8 @@ export interface PluginSettingField {
   choices?: string[]
   env?: string
   has_value?: boolean
+  /** Optional grouping heading from the manifest's `section` (or `group`) key. */
+  section?: string
 }
 
 export const normalizeAgentPluginRow = (row: AgentPluginRow): AgentPluginRow => ({

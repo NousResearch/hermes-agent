@@ -92,8 +92,11 @@ else:
         "tools.process_registry.restart_safe_gateway_child_argv", dispatch
     )
     with use_cron_store(home):
-        # A lost worker must obey the same bounded history as normal finishes.
+        # A lost worker must obey the same bounded history as normal finishes. The per-job floor
+        # is zeroed so the GLOBAL cap is what this case measures (three distinct jobs would
+        # otherwise each keep their newest row).
         monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 2)
+        monkeypatch.setattr(executions, "PER_JOB_RETAINED_EXECUTIONS", 0)
         for index in range(executions.MAX_TERMINAL_EXECUTIONS):
             old = executions.create_execution(f"old-{index}", source="direct")
             executions.finish_execution(old["id"], success=True)

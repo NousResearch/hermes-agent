@@ -51,6 +51,34 @@ def test_memory_reads_only_its_first_word_like_the_cli(arg, reach):
     from gateway.session_commands import command_verdict
     assert command_verdict('memory', arg) == reach
 
+
+@pytest.mark.parametrize(('arg', 'reach'), [
+    ("pending it's", 'read'), ('diff "unclosed', 'read'), ("approve it's", 'control'), ("it's pending", 'refused')])
+def test_skills_reads_only_its_first_word_like_its_handler(arg, reach):
+    """The messaging /skills handler splits on whitespace too (gateway/slash_commands.py
+    ``_handle_skills_command``): a quote later in the line is the argument's, not a parse failure."""
+    from gateway.session_commands import command_verdict
+    try:
+        verdict = command_verdict('skills', arg)
+    except ValueError as exc:
+        verdict = f'internal error: {exc}'
+    assert verdict == reach
+
+
+def test_kanban_with_an_unclosed_quote_is_refused_by_name():
+    """/kanban parses with shlex (hermes_cli/kanban.py ``run_slash``), so an unclosed quote can't run
+    there either: the client gets ``invalid_params`` naming the argument, not an internal error."""
+    from gateway.session_commands import command_verdict
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        verdict = command_verdict('kanban', "show it's")
+    except RuntimeStoreError as exc:
+        verdict = (exc.reason, exc.field)
+    except ValueError as exc:
+        verdict = f'internal error: {exc}'
+    assert verdict == ('invalid_params', 'arg')
+    assert command_verdict('kanban', 'show "two words"') == 'read'
+
 def _stage(home, pending_id, content):
     folder = home / 'pending' / 'memory'
     folder.mkdir(parents=True, exist_ok=True)

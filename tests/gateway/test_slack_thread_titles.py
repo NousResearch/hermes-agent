@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 import plugins.platforms.slack.adapter as slack_mod
-from tests.gateway.test_slack import (
+from tests.gateway.test_slack import _pin_legacy_assistant_threads_api
+from tests.gateway.test_slack_agent_sessions_api import (
     TestAgentSessionsApiRouting as _AgentSessionsHelpers,
-    _pin_legacy_assistant_threads_api,
 )
 
 

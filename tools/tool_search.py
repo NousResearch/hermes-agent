@@ -392,10 +392,13 @@ def _shared_tool_record(entry: CatalogEntry) -> dict[str, Any]:
         required = entry.schema["function"]["parameters"]["required"]
     except (TypeError, KeyError, AttributeError):
         required = []
-    return {"source": entry.source, "source_name": entry.source_name,
+    rec: Dict[str, Any] = {"source": entry.source, "source_name": entry.source_name,
             "description": _clip_description(entry.description or ""),
             "required": [r[:64] for r in (required if isinstance(required, list) else [])
                          if isinstance(r, str)][:32]}
+    if entry.original_name:
+        rec["original_name"] = entry.original_name
+    return rec
 
 
 def _available_source_summary(catalog: list[CatalogEntry]) -> list[dict[str, Any]]:

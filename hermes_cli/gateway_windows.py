@@ -62,6 +62,20 @@ _TASK_RESTART_COUNT = 999
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
 
+def _launcher_encoding(path: Path) -> str:
+    """Return the encoding understood by the Windows launcher interpreter.
+
+    WSH recognizes a UTF-16 BOM, while cmd.exe reads batch files in the active
+    ANSI code page.  A BOM-less UTF-8 launcher corrupts a localized home path
+    before either interpreter can start the gateway.
+    """
+    if path.suffix.lower() == ".vbs":
+        return "utf-16"
+    if path.suffix.lower() in {".cmd", ".bat"} and os.name == "nt":
+        return "mbcs"
+    return "utf-8"
+
+
 def _schtasks_encoding() -> str:
     """Console encoding for ``schtasks.exe`` output: localized Windows emits the OEM/ANSI code page,
     not UTF-8, and decoding with the wrong codec raised UnicodeDecodeError in subprocess' reader
@@ -488,7 +502,7 @@ def _atomic_write(path: Path, content: str, tmp: Path) -> None:
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
     """
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.write_text(content, encoding=_launcher_encoding(path), newline="")
         tmp.replace(path)
     finally:
         try:

@@ -3039,6 +3039,7 @@ export interface Translations extends NoticeTranslations {
     removeAttachment: (label: string) => string
     dictating: string
     preparingAudio: string
+    paused: string
     speakingResponse: string
     readingAloud: string
     themeSuggestions: string
@@ -4067,6 +4068,8 @@ export interface Translations extends NoticeTranslations {
       readAloudFailed: string
       preparingAudio: string
       stopReading: string
+      pauseReading: string
+      resumeReading: string
       readAloud: string
       copyFullResponse: string
       readAloudFullResponseHint: string

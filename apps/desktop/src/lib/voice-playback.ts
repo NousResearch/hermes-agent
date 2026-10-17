@@ -13,6 +13,61 @@ import {
 
 import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 
+// ---------------------------------------------------------------------------
+// Pause / resume — freeze audio in place without destroying it, then pick up
+// exactly where it left off. Accessibility: lets the user pause TTS to think,
+// process, or attend to something, then resume without losing their place.
+//
+// Three playback paths must be handled:
+//  1. data-URL HTMLAudioElement (the POST fallback) — the `currentAudio` global.
+//  2. client-direct per-sentence HTMLAudioElement — the `playing` local inside
+//     openClientDirectSpeechSession, reachable via the livePauses set below.
+//  3. streaming AudioContext (the WS relay) — `context.suspend()` / `resume()`,
+//     reachable via the same set.
+//
+// Each live session registers its pause/resume pair into `livePauses` when it
+// starts speaking, and unregisters on settle. The global functions dispatch to
+// every registered pair (there is normally only one).
+// ---------------------------------------------------------------------------
+
+/** Pause handler for a live playback session. */
+type PauseHandler = () => void
+/** Resume handler for a live playback session. */
+type ResumeHandler = () => void
+interface PauseResume {
+  pause: PauseHandler
+  resume: ResumeHandler
+}
+
+/** Registered pause/resume pairs from every live playback session. */
+const livePauses = new Set<PauseResume>()
+
+export function pauseVoicePlayback() {
+  const state = $voicePlayback.get()
+  if (state.status !== 'speaking') {
+    return
+  }
+
+  for (const pr of [...livePauses]) {
+    pr.pause()
+  }
+
+  setVoicePlaybackState({ ...state, status: 'paused' })
+}
+
+export function resumeVoicePlayback() {
+  const state = $voicePlayback.get()
+  if (state.status !== 'paused') {
+    return
+  }
+
+  for (const pr of [...livePauses]) {
+    pr.resume()
+  }
+
+  setVoicePlaybackState({ ...state, status: 'speaking' })
+}
+
 // Free Edge TTS occasionally hands back audio that never fires `playing`/`ended`
 // nor `error` — leaving voice mode stuck "speaking" forever. Reject if playback
 // fails to start or stalls mid-stream for this long (rearmed on each progress
@@ -100,6 +155,7 @@ export function stopVoicePlayback() {
   }
 
   liveStops.clear()
+  livePauses.clear()
 
   if (currentAudio) {
     currentAudio.pause()
@@ -249,6 +305,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
       settled = true
       liveStops.delete(stop)
+      livePauses.delete(pauseResume)
 
       if (playing) {
         playing.pause()
@@ -261,6 +318,15 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   })
 
   liveStops.add(stop)
+
+  // Pause/resume for the client-direct path: pause/resume the current
+  // sentence's HTMLAudioElement. The pump loop's await on the 'ended' event
+  // naturally blocks while paused, so no queue advancement happens.
+  const pauseResume: PauseResume = {
+    pause: () => { playing?.pause() },
+    resume: () => { void playing?.play().catch(() => undefined) }
+  }
+  livePauses.add(pauseResume)
 
   const pump = async () => {
     if (synthesizing || settled) {
@@ -408,6 +474,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
       settled = true
       liveStops.delete(stop)
+      livePauses.delete(pauseResume)
 
       try {
         ws.close()
@@ -432,6 +499,14 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   }
 
   liveStops.add(stop)
+
+  // Pause/resume for the streaming AudioContext path: suspend the context to
+  // freeze scheduled buffers in place, resume to pick up where it left off.
+  const pauseResume: PauseResume = {
+    pause: () => void context?.suspend().catch(() => undefined),
+    resume: () => void context?.resume().catch(() => undefined)
+  }
+  livePauses.add(pauseResume)
 
   const finishWhenDrained = () => {
     const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
@@ -652,6 +727,12 @@ async function playSpeechDataUrl(
       resolve()
     }
 
+    // Pause/resume for the data-URL HTMLAudioElement path.
+    const pauseResume: PauseResume = {
+      pause: () => audio.pause(),
+      resume: () => void audio.play().catch(() => undefined)
+    }
+
     const cleanup = () => {
       if (stall !== null) {
         window.clearTimeout(stall)
@@ -662,6 +743,7 @@ async function playSpeechDataUrl(
       audio.removeEventListener('error', onError)
       audio.removeEventListener('timeupdate', armStall)
       liveStops.delete(stop)
+      livePauses.delete(pauseResume)
     }
 
     const armStall = () => {
@@ -686,6 +768,7 @@ async function playSpeechDataUrl(
     }
 
     liveStops.add(stop)
+    livePauses.add(pauseResume)
 
     audio.addEventListener('ended', onEnded, { once: true })
     audio.addEventListener('error', onError, { once: true })

@@ -247,12 +247,12 @@ def _claim_for_manual_run(job_id: str, log_label: str):
             return claimed_job, None
         refreshed = get_job(job_id)
         if refreshed is None:
-            reason = "Job no longer exists; nothing to run."
+            reason, code = "Job no longer exists; nothing to run.", "missing"
         elif not is_job_runnable(refreshed):
-            reason = "Job is paused/disabled; resume it before running."
+            reason, code = "Job is paused/disabled; resume it before running.", "paused"
         else:
-            reason = "Job is already being fired by the scheduler; not run again."
-        return None, {"claimed": False, "success": False, "error": reason}
+            reason, code = "Job is already being fired by the scheduler; not run again.", "overlap"
+        return None, {"claimed": False, "success": False, "error": reason, "reason_code": code}
     except Exception as e:
         logger.error("Failed to claim cron job %s for %s: %s", job_id, log_label, e)
         with contextlib.suppress(Exception):
@@ -432,6 +432,13 @@ def execute_job_for_event(
     stored prompt is never mutated), exactly like ``action='run'`` with a
     ``prompt`` argument.
 
+    A burst colliding with an in-flight run's fire claim is the event path's
+    normal condition, not an error: an ``overlap`` refusal defers the event
+    context and one merged follow-up run replays the batch once the claim
+    frees (see ``tools/cronjob_event_defer.py``). The immediate result then
+    carries ``deferred: True`` with the queue depth — the event is queued,
+    never dropped.
+
     Returns the ``_execute_job_now`` result shape:
     ``{"claimed": bool, "success": bool, "error": str|None}``.
     """
@@ -445,7 +452,110 @@ def execute_job_for_event(
             "success": False,
             "error": f"Cron job '{job_ref}' not found.",
         }
-    return _execute_job_now(job, extra_prompt=extra_prompt)
+    result = _execute_job_now(job, extra_prompt=extra_prompt)
+    if result.get("reason_code") == "overlap":
+        deferred, _replayer = _defer_event_fire_and_replay(job, extra_prompt or "")
+        return deferred
+    return result
+
+
+# Replayer pacing: poll often enough that a replay lands within seconds of the in-flight run
+# finishing, rarely enough not to hammer the jobs store; the wait budget bounds a wedged claim.
+_EVENT_REPLAY_POLL_SECONDS = 5.0
+_EVENT_REPLAY_MAX_WAIT_SECONDS = 900.0
+
+
+def _defer_event_fire_and_replay(job: dict[str, Any], context: str, *,
+                                 poll_seconds: Optional[float] = None,
+                                 max_wait_seconds: Optional[float] = None,
+                                 ) -> tuple[dict[str, Any], Optional[threading.Thread]]:
+    """Defer one overlap-refused event fire; the first deferrer also starts the replayer.
+
+    Returns ``(result, replayer_thread)``. Every caller gets the immediate deferred result
+    (the webhook adapter answers "accepted, queued"); only the elected owner gets a thread —
+    one replayer drains the whole batch, so a 14-event burst costs two runs, not 14."""
+    from tools.cronjob_event_defer import defer_event
+
+    depth, owner = defer_event(job["id"], context)
+    if not owner:
+        return ({"claimed": False, "success": True, "deferred": True, "pending": depth,
+                 "error": None}, None)
+    from agent.memory_provider import spawn_context_thread
+
+    thread = spawn_context_thread(
+        _replay_deferred_events, name=f"cron-event-replay-{job['id']}",
+        args=(job,
+              poll_seconds if poll_seconds is not None else _EVENT_REPLAY_POLL_SECONDS,
+              max_wait_seconds if max_wait_seconds is not None else _EVENT_REPLAY_MAX_WAIT_SECONDS))
+    thread.start()
+    return ({"claimed": False, "success": True, "deferred": True, "pending": depth,
+             "error": None}, thread)
+
+
+def _replay_deferred_events(job: dict[str, Any], poll_seconds: float,
+                            max_wait_seconds: float) -> dict[str, Any]:
+    """Drain-and-replay loop for deferred event fires; one thread per busy batch.
+
+    Waits out the in-flight run (its fire claim in the jobs store, or its entry in this
+    process's running set), then fires ONE merged run per batch and logs a replay
+    confirmation. A batch that still cannot get the claim within ``max_wait_seconds`` stays
+    QUEUED (never discarded) — the next deferrer re-elects a replayer and retries it."""
+    from cron.scheduler import is_job_running
+    from tools.cronjob_event_defer import (
+        finish_or_continue, mark_replayer_stood_down, merge_contexts, pending_count, push_front,
+        take_pending)
+
+    job_id = job["id"]
+    deadline = time.monotonic() + max_wait_seconds
+    try:
+        while True:
+            time.sleep(poll_seconds)  # the in-flight run owns the claim; give it room
+            entries = take_pending(job_id)
+            if not entries:
+                if not finish_or_continue(job_id):
+                    return {"claimed": False, "success": True, "deferred": True,
+                            "pending": 0, "error": None}
+                continue
+            try:
+                if is_job_running(job_id):
+                    # In-process run still executing: claiming now would win the file CAS only
+                    # to lose the running-set dedupe and strand the claim for its TTL.
+                    raise _StillInFlight()
+                merged = merge_contexts(entries)
+                result = _execute_job_now(job, extra_prompt=merged)
+                if result.get("reason_code") == "overlap":
+                    raise _StillInFlight()
+            except _StillInFlight:
+                push_front(job_id, entries)  # re-queue; a newer deferral joins the same batch
+                if time.monotonic() >= deadline:
+                    return _replay_gave_up(job_id, len(entries), max_wait_seconds)
+                continue
+            logger.info("[cron-event] replay confirmation job=%s events=%d success=%s",
+                        job_id, len(entries), result.get("success"))
+            outcome = {**result, "replayed_events": len(entries)}
+            if not finish_or_continue(job_id):
+                return outcome
+            deadline = time.monotonic() + max_wait_seconds  # a new batch arrived; fresh budget
+    except BaseException:
+        logger.exception("[cron-event] replay loop crashed job=%s; %d event(s) stay queued",
+                         job_id, pending_count(job_id))
+        return {"claimed": False, "success": False, "deferred": True,
+                "error": "event replay loop crashed; see the gateway log"}
+    finally:
+        mark_replayer_stood_down(job_id)
+
+
+class _StillInFlight(Exception):
+    """Internal control flow: the claim is still held; re-queue and retry."""
+
+
+def _replay_gave_up(job_id: str, events: int, max_wait_seconds: float) -> dict[str, Any]:
+    logger.error("[cron-event] replay gave up after %.0fs waiting for the fire claim; "
+                 "%d deferred event(s) remain queued for the next fire",
+                 max_wait_seconds, events)
+    return {"claimed": False, "success": False, "deferred": True,
+            "error": (f"fire claim never freed within {max_wait_seconds:.0f}s; "
+                      f"{events} deferred event(s) stay queued")}
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:

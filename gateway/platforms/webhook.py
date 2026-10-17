@@ -601,7 +601,11 @@ class WebhookAdapter(BasePlatformAdapter):
                 # run (minutes) — keep it off the gateway event loop.
                 with self._profile_scope(profile):
                     result = await asyncio.to_thread(execute_job_for_event, job_ref, event_context)
-                if not result.get("success"):
+                if result.get("deferred"):
+                    logger.info("[webhook] cron-trigger job=%s route=%s deferred with %s pending "
+                                "event(s) — replays merged after the in-flight run", job_ref,
+                                route_name, result.get("pending"))
+                elif not result.get("success"):
                     logger.warning("[webhook] cron-trigger job=%s route=%s did not complete cleanly: %s", job_ref,
                                    route_name, result.get("error"))
             except Exception:

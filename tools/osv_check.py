@@ -22,8 +22,9 @@ _TIMEOUT = 10  # seconds
 # Result cache: (ecosystem, package, version) -> (expiry_wallclock, result). Reconnect
 # ladders, parked-server self-probes and repeated `hermes mcp test` runs re-run the preflight
 # for the SAME package on every spawn; uncached, a flapping server becomes a sustained OSV/DNS
-# query stream. Clean AND blocked verdicts are reusable; network failures are NOT cached
-# (fail-open covers them and caching one could mask a real advisory later).
+# query stream. Clean AND blocked verdicts are reusable. Network failures use a
+# separate, process-local cooldown so an unreachable API cannot add a full timeout
+# to every revival spawn; they are never persisted as verdicts.
 # The cache is also persisted under the Hermes home so separate processes and gateway
 # restarts reuse warm verdicts; expiry is absolute wall-clock time so it survives restarts.
 # Trade-off: a MAL advisory published right after a clean verdict is noticed at TTL expiry
@@ -34,7 +35,9 @@ _TIMEOUT = 10  # seconds
 # same one the in-process cache already accepted; it just now spans restarts.
 _CACHE_TTL_S = float(os.getenv("OSV_CHECK_CACHE_TTL", "3600"))
 _CACHE_MAX_ENTRIES = 256
+_NETWORK_FAILURE_COOLDOWN_S = 60
 _cache: dict = {}
+_network_failure_until: dict = {}
 _cache_lock = threading.Lock()
 _disk_cache_loaded = False
 _DISK_CACHE_VERSION = 1
@@ -163,6 +166,28 @@ def _cache_put(key, result: Optional[str]) -> None:
         _save_disk_cache()
 
 
+def _network_failure_active(key) -> bool:
+    """Return whether a recent OSV network failure is still in its cooldown."""
+    with _cache_lock:
+        until = _network_failure_until.get(key, 0.0)
+        if time.monotonic() < until:
+            return True
+        _network_failure_until.pop(key, None)
+        return False
+
+
+def _record_network_failure(key) -> None:
+    """Suppress repeated unavailable-OSV checks without persisting a verdict."""
+    with _cache_lock:
+        now = time.monotonic()
+        for stale_key, until in list(_network_failure_until.items()):
+            if until <= now:
+                del _network_failure_until[stale_key]
+        if len(_network_failure_until) >= _CACHE_MAX_ENTRIES:
+            _network_failure_until.clear()
+        _network_failure_until[key] = now + _NETWORK_FAILURE_COOLDOWN_S
+
+
 def check_package_for_malware(command: str, args: list) -> Optional[str]:
     """Check an MCP server package (inferred from ``command``/``args``) for MAL-* advisories.
     Returns a BLOCKED message, else None — also on network errors/unknown commands (fail-open)."""
@@ -176,10 +201,14 @@ def check_package_for_malware(command: str, args: list) -> Optional[str]:
     hit, cached = _cache_get(cache_key)
     if hit:
         return cached
+    if _network_failure_active(cache_key):
+        return None
     try:
         malware = _query_osv(package, ecosystem, version)
     except Exception as exc:
-        # Fail-open; deliberately NOT cached — see _CACHE_TTL_S comment.
+        # Fail-open, with a short in-process cooldown. Do not persist this: a
+        # fresh process should re-check rather than treating an outage as clean.
+        _record_network_failure(cache_key)
         logger.debug("OSV check failed for %s/%s (allowing): %s", ecosystem, package, exc)
         return None
     result = None

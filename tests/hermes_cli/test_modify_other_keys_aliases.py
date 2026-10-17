@@ -303,6 +303,11 @@ def test_shift_tab_produces_backtab():
     assert _parse("\x1b[27;2;9~") == [Keys.BackTab]
 
 
+def test_consolehost_shift_insert_is_ignored_not_inserted_as_text():
+    """Legacy Windows ConsoleHost sends Shift+Insert as CSI 2;2~ (#137674)."""
+    assert _parse("\x1b[2;2~") == [Keys.Ignore]
+
+
 def test_ctrl_backspace_produces_backward_kill_word():
     """Ctrl+Backspace must produce the (Escape, ControlH) tuple that fires
     prompt_toolkit's backward-kill-word — parity with the Ink TUI and

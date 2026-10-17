@@ -1173,6 +1173,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # One memory provider per session across requests (this surface rebuilds the agent per turn).
         self._memory_sessions = ApiServerMemorySessions()
         self.gateway_runner: Optional[Any] = None  # set by gateway/run.py
+        # X-Hermes-Deliver destinations this server may post a turn's final text to.
+        # Config-only, exact-match: see _parse_deliver_allow for why free-form targets
+        # and home-channel shorthand are refused.
+        self._deliver_allow: frozenset[str] = self._parse_deliver_allow(extra.get("deliver_allow"))
         # Admitted requests not yet in agent bookkeeping, so shutdown drain counts them.
         self._pending_agent_requests: int = 0
 # Shared broker; this adapter maps HTTP registration + controller WS onto it.
@@ -1772,6 +1776,136 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if len(raw) > self._MAX_SESSION_HEADER_LEN:
             return None, _invalid_request("Session key too long")
         return raw, None
+
+    # -- Delivery binding (X-Hermes-Deliver) --------------------------------------------
+
+    _MAX_DELIVER_HEADER_LEN = 256
+
+    @staticmethod
+    def _parse_deliver_allow(raw: Any) -> frozenset[str]:
+        """Normalise ``platforms.api_server.deliver_allow`` into an exact-match allow-set.
+
+        Entries are ``<platform>:<chat_id>[:<thread_id>]``. ``origin``/``local``, bare
+        platform names (home-channel shorthand) and unknown platforms are dropped with a
+        warning: a caller must name a concrete destination the operator already authorised,
+        so the header can never become a free-form post primitive. A malformed entry is
+        dropped rather than disabling the feature, and the surviving set is what
+        ``_parse_deliver_header`` matches against byte-for-byte.
+        """
+        from gateway.config import Platform
+        from gateway.delivery import DeliveryTarget
+
+        if raw is None:
+            return frozenset()
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            logger.warning(
+                "api_server deliver_allow must be a list of targets; ignoring %s",
+                type(raw).__name__)
+            return frozenset()
+        allowed: set[str] = set()
+        for entry in raw:
+            if not isinstance(entry, str) or not entry.strip():
+                logger.warning("api_server deliver_allow: dropping non-string entry %r", entry)
+                continue
+            target = DeliveryTarget.parse(entry.strip())
+            if (
+                target.unknown_platform is not None
+                or not target.is_explicit
+                or target.platform == Platform.LOCAL
+            ):
+                logger.warning(
+                    "api_server deliver_allow: dropping %r — expected "
+                    "<platform>:<chat_id>[:<thread_id>]", entry)
+                continue
+            allowed.add(target.to_string())
+        return frozenset(allowed)
+
+    def _parse_deliver_header(
+        self, request: web.Request
+    ) -> tuple[Optional[str], Optional[web.Response]]:
+        """Validate ``X-Hermes-Deliver`` -> ``(target_or_None, None)`` or ``(None, error)``.
+
+        The header binds a turn's final assistant text to a delivery destination, so routing
+        stops being a property of the *prompt* (which drifted silently for weeks) and becomes
+        a property of the request. Two constraints keep it from becoming an arbitrary-post
+        primitive:
+
+        * the server must be API-key authenticated, and
+        * the destination must appear verbatim in ``platforms.api_server.deliver_allow``.
+
+        Targets are never resolved against home channels, ``origin`` or ``local``: an absent
+        header means "no delivery", never "deliver somewhere sensible".
+        """
+        raw = request.headers.get("X-Hermes-Deliver", "")
+        if not raw.strip():
+            return None, None
+        # Control characters could smuggle a second header through the echo path. Checked on
+        # the RAW value, before stripping: a newline is rejected, not tidied away.
+        if re.search(r'[\r\n\x00]', raw):
+            return None, _invalid_request("Invalid delivery target")
+        raw = raw.strip()
+        if not self._api_key:
+            logger.warning(
+                "X-Hermes-Deliver rejected: no API key configured. "
+                "Set API_SERVER_KEY to enable delivery binding.")
+            return None, _error_response(
+                "X-Hermes-Deliver requires API key authentication. "
+                "Configure API_SERVER_KEY to enable this feature.", 403)
+        if len(raw) > self._MAX_DELIVER_HEADER_LEN:
+            return None, _invalid_request("Delivery target too long")
+        if not self._deliver_allow:
+            return None, _error_response(
+                "X-Hermes-Deliver is not enabled on this server. Add the destination to "
+                "platforms.api_server.deliver_allow.", 403)
+        from gateway.delivery import DeliveryTarget
+
+        normalised = DeliveryTarget.parse(raw).to_string()
+        if normalised not in self._deliver_allow:
+            logger.warning(
+                "X-Hermes-Deliver rejected: %r is not in deliver_allow (%d configured)",
+                self._clean_log_value(raw), len(self._deliver_allow))
+            return None, _error_response(
+                "Delivery target not authorised. The destination must be listed in "
+                "platforms.api_server.deliver_allow.", 403)
+        return normalised, None
+
+    async def deliver_final_response(self, target: str, text: str) -> str:
+        """Hand ``text`` to ``target`` through the gateway's DeliveryRouter (best effort).
+
+        Returns the token echoed in the ``X-Hermes-Delivered`` response header:
+        ``ok`` / ``empty`` / ``error`` / ``unavailable``. Never raises — a delivery problem
+        must not turn a completed turn into an error response, because the caller still owns
+        and returns the body.
+        """
+        runner = self.gateway_runner
+        router = getattr(runner, "delivery_router", None) if runner is not None else None
+        if router is None:
+            logger.warning(
+                "X-Hermes-Deliver: no gateway delivery router available; %s not delivered",
+                target)
+            return "unavailable"
+        body = (text or "").strip()
+        if not body:
+            logger.info("X-Hermes-Deliver: empty final text; nothing sent to %s", target)
+            return "empty"
+        try:
+            from gateway.delivery import DeliveryTarget
+
+            results = await router.deliver(body, [DeliveryTarget.parse(target)])
+        except Exception as e:  # never let delivery break the turn
+            logger.warning("X-Hermes-Deliver: delivery to %s failed: %s", target, e)
+            return "error"
+        outcome = results.get(target) or {}
+        if outcome.get("success") and not outcome.get("skipped"):
+            logger.info("X-Hermes-Deliver: delivered %d chars to %s", len(body), target)
+            return "ok"
+        reason = outcome.get("skipped") or outcome.get("error") or "not confirmed"
+        logger.warning(
+            "X-Hermes-Deliver: delivery to %s failed: %s",
+            target, self._clean_log_value(str(reason), max_len=160))
+        return "error"
 
     # -- Responses state ----------------------------------------------------------------
 

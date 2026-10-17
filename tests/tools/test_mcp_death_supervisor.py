@@ -608,8 +608,11 @@ def _stdio_connection(child_pid, fake_supervisor):
         # First call is the pids_before baseline; the second reports our child
         # as the newly spawned server.
         patch(
-            "tools.mcp_tool_lifecycle._snapshot_child_pids",
-            side_effect=[set(), {child_pid}],
+            "tools.mcp_tool_lifecycle._snapshot_spawn_children",
+            side_effect=[
+                _mcp_lifecycle._ChildSnapshot(frozenset(), "thread"),
+                _mcp_lifecycle._ChildSnapshot(frozenset({child_pid}), "thread"),
+            ],
         ),
         patch("tools.mcp_tool_config._write_stderr_log_header"),
         patch("tools.mcp_tool._get_mcp_stderr_log", return_value=None),

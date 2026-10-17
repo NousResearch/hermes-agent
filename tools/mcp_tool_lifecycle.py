@@ -3,9 +3,12 @@ server shutdown and draining of the background MCP loop."""
 
 import logging
 import asyncio
+import inspect
 import os
+import threading
 import time
-from typing import Dict, Optional
+import weakref
+from typing import Dict, NamedTuple, Optional
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
 
@@ -74,6 +77,83 @@ def _snapshot_child_pids() -> set:
         return {c.pid for c in psutil.Process(my_pid).children()}
     except Exception:
         return set()
+
+
+class _ChildSnapshot(NamedTuple):
+    """Child PIDs plus the scope they were read in: ``"thread"`` (the calling thread's procfs
+    ``children`` file) or ``"process"`` (every thread / psutil). ``scope`` is ``None`` when the
+    requested reading was unavailable."""
+    pids: frozenset
+    scope: Optional[str]
+
+
+def _read_thread_children() -> Optional[set]:
+    """The calling thread's direct children (Linux procfs), or ``None`` when unreadable."""
+    try:
+        with open(f"/proc/{os.getpid()}/task/{threading.get_native_id()}/children", encoding="utf-8-sig") as f:
+            return {int(p) for p in f.read().split() if p.strip()}
+    except (OSError, ValueError):
+        return None
+
+
+def _snapshot_spawn_children(scope: Optional[str] = None) -> _ChildSnapshot:
+    """One side of the stdio spawn's before/after child delta.
+
+    The before-sample (``scope=None``) prefers the calling thread: stdio_client() forks from the
+    MCP loop thread, so a child another gateway thread spawns inside the window (a cron worker or
+    its ``systemd-run`` wrapper) is not attributed to the server and later SIGTERMed as its
+    orphan (#134611). Without a readable thread file it falls back to the process-wide reading.
+    The after-sample must pass the before-sample's ``scope`` and is read in exactly that scope:
+    widening a failed thread read to the process-wide union would put every child that existed
+    before the window into the delta."""
+    if scope in (None, "thread"):
+        pids = _read_thread_children()
+        if pids is not None:
+            return _ChildSnapshot(frozenset(pids), "thread")
+        if scope == "thread":
+            return _ChildSnapshot(frozenset(), None)
+    return _ChildSnapshot(frozenset(_snapshot_child_pids()), "process")
+
+
+def _spawned_child_delta(before: _ChildSnapshot, after: _ChildSnapshot) -> set:
+    """PIDs that appeared between two samples of the same scope; empty when the scopes differ or
+    either sample was unavailable, since such a difference is not a list of new children."""
+    if before.scope is None or after.scope != before.scope:
+        logger.warning("MCP stdio child attribution skipped: before/after child samples are not "
+                       "comparable (scopes %r/%r); this server's PIDs are not ledgered for cleanup",
+                       before.scope, after.scope)
+        return set()
+    return set(after.pids - before.pids)
+
+
+def _sdk_spawned_pid(transport_cm) -> Optional[int]:
+    """PID of the process the SDK's ``stdio_client`` spawned for *this* context manager, read
+    from its suspended generator frame (mcp binds it to the local ``process``). Exact per
+    connection, so concurrent connects on the shared MCP loop cannot claim each other's child.
+    ``None`` when unavailable (a wrapped or mocked client, an SDK that renamed the local);
+    callers then fall back to the snapshot delta."""
+    gen = getattr(transport_cm, "gen", None)
+    frame = gen.ag_frame if inspect.isasyncgen(gen) else None
+    if frame is None:
+        return None
+    pid = getattr(frame.f_locals.get("process"), "pid", None)
+    return pid if type(pid) is int and pid > 0 else None
+
+
+_spawn_window_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+_spawn_window_locks_guard = threading.Lock()
+
+
+def _stdio_spawn_window_lock() -> asyncio.Lock:
+    """The running loop's lock for the stdio spawn window (snapshot, spawn, attribute, ledger).
+    Every stdio connection task shares the MCP loop, so overlapping windows would otherwise
+    let one transport's snapshot delta claim another's child (#67736)."""
+    loop = asyncio.get_running_loop()
+    with _spawn_window_locks_guard:
+        lock = _spawn_window_locks.get(loop)
+        if lock is None:
+            lock = _spawn_window_locks[loop] = asyncio.Lock()
+        return lock
 
 
 # argv markers of non-MCP gateway children that can race into the snapshot delta during an

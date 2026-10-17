@@ -51,6 +51,10 @@ class GatewayProcessView:
         self.delegations = 0
         self._polled = 0.0
         self._lock = threading.Lock()
+        self.subagents: list = []
+        self._subagents_polled = 0.0
+        self._subagents_lock = threading.Lock()
+        self._tail = None
 
     @property
     def session_id(self):
@@ -127,6 +131,62 @@ class GatewayProcessView:
             return 0
         value = usage.get("active_subagents")
         return value if isinstance(value, int) else 0
+
+    # -- the subagent registry main's Ctrl+T monitor and dock read ---------------------------
+    def subagent_rows(self, *, busy):
+        """The session's live children (``subagent.list``). Asks at most once a second, and only
+        while a turn runs (``busy``), children were listed last time, or the gateway counts some."""
+        now = time.time()
+        wanted = busy or self.subagents or self.active_delegations()
+        if wanted and now - self._subagents_polled >= _POLL_SECONDS and self._subagents_lock.acquire(blocking=False):
+            try:
+                self._subagents_polled = now
+                result = self.connection.call("subagent.list", session_id=self.session_id, timeout=5)
+                self.subagents = list((result or {}).get("subagents") or [])
+            except (GatewayClientError, RuntimeError) as exc:
+                logger.debug("subagent.list failed: %s", exc)
+            finally:
+                self._subagents_lock.release()
+        return [dict(row) for row in self.subagents]
+
+    def subagent_tail(self, subagent_id):
+        """The child's live transcript tail (``subagent.tail``); None when the gateway has none.
+        The monitor repaints the detail view every frame, so the answer is reused for a second."""
+        now = time.time()
+        cached = self._tail
+        if cached and cached[0] == subagent_id and now - cached[1] < _POLL_SECONDS:
+            return cached[2]
+        try:
+            result = self.connection.call("subagent.tail", session_id=self.session_id,
+                                          subagent_id=subagent_id, timeout=5) or {}
+        except (GatewayClientError, RuntimeError) as exc:
+            logger.debug("subagent.tail failed: %s", exc)
+            return None
+        text = result.get("text") if result.get("available") else None
+        self._tail = (subagent_id, now, text)
+        return text
+
+    def subagent_control(self, action, subagent_id, message=None):
+        """Steer (``subagent.steer``) or stop (``subagent.interrupt``) one child of this session, in
+        the shape ``delegate_tool_registry._handle_control_action`` answers: ``note`` or ``error``."""
+        from tools.delegate_tool_registry import _CONTROL_OUTCOMES
+
+        status, note, failure = _CONTROL_OUTCOMES[action]
+        try:
+            if action == "steer":
+                result = self.connection.call("subagent.steer", session_id=self.session_id,
+                                              subagent_id=subagent_id, text=message) or {}
+                ok = result.get("status") == "queued"
+            else:
+                result = self.connection.call("subagent.interrupt", session_id=self.session_id,
+                                              subagent_id=subagent_id) or {}
+                ok = bool(result.get("found"))
+        except GatewayClientError as exc:
+            return {"error": str(exc)}
+        self._subagents_polled = 0.0  # the next tick re-reads the roster
+        if ok:
+            return {"action": action, "subagent_id": subagent_id, "status": status, "note": note}
+        return {"error": failure.format(sid=subagent_id)}
 
 
 class _OpenedSession:

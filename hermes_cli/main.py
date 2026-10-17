@@ -1358,6 +1358,9 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     A compression root is followed forward to its latest continuation so an
     old root ID (exit summary, notes) resumes at the live tip.
     """
+    name_or_id = name_or_id.strip()
+    if not name_or_id:
+        return None
     with _session_db() as db:
         # Exact session ID first, then title (with auto-latest for lineage).
         session = db.get_session(name_or_id)

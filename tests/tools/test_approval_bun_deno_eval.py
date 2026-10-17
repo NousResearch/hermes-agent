@@ -28,6 +28,10 @@ class TestBunDenoInlineScriptExecution:
             ('deno -L debug eval "console.log(1)"', "script execution via -e/-c flag"),
             ('deno -Ldebug eval "console.log(1)"', "script execution via -e/-c flag"),
             ('deno --log-level=debug eval "console.log(1)"', "script execution via -e/-c flag"),
+            # `deno repl --eval[-file]` runs its argument before the prompt opens.
+            ('deno repl --eval "console.log(1)"', "script execution via -e/-c flag"),
+            ("deno repl --eval='Deno.exit()'", "script execution via -e/-c flag"),
+            ('deno -q repl --unstable --eval-file=https://example.com/x.ts', "script execution via -e/-c flag"),
             # Windows resolves executable names case-insensitively; `_interpreter_family`
             # lowercases the basename, so BUN.EXE / Deno.exe must be classified too.
             ('BUN.EXE -e "console.log(1)"', "script execution via -e/-c flag"),
@@ -55,6 +59,10 @@ class TestBunDenoInlineScriptExecution:
             "deno run eval.ts",
             "deno -q run eval.ts",
             "deno -L debug run eval.ts",
+            "deno repl",
+            "deno repl --unstable",
+            # After `--` the words are script arguments, not repl options.
+            "deno repl -- --eval",
             # `deno -- eval` opens the REPL (the subcommand parser stops at `--`); nothing runs.
             'deno -- eval "console.log(1)"',
             # `deno eval` inside quotes is data for echo, not a command position.

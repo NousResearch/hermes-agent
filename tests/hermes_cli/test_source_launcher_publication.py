@@ -58,6 +58,60 @@ def fixture_tree(tmp_path, monkeypatch):
     return repo, home, interpreter
 
 
+def test_task_store_cannot_replace_shared_launchers(tmp_path, monkeypatch):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    local = repo / ".hermes" / "bin"
+    assert len(_launchers.ensure_install_launchers(repo, local)) == 2
+    original = {path.name: path.read_bytes() for path in local.iterdir()}
+
+    task_store = tmp_path.parent / "multica_workspaces_fixture" / "task-0123456789ab" / "hermes-home" / "tools"
+    task_store.mkdir(parents=True)
+    (task_store / "facts.json").write_text((home / "tools" / "facts.json").read_text())
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(task_store))
+    assert _launchers.expose_cli(repo, create=False) == {"ok": True, "skipped": "ephemeral-store"}
+    assert _launchers._expose_windows_user_bin(repo, create=True) == {"ok": True, "skipped": "ephemeral-store"}
+    from hermes_cli.venv_sync import publish_launchers
+    publish_launchers(repo)
+    assert _launchers.ensure_install_launchers(repo, local) == []
+    assert {path.name: path.read_bytes() for path in local.iterdir()} == original
+
+
+def test_durable_external_store_still_publishes(tmp_path, monkeypatch):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    external = tmp_path.parent / (tmp_path.name + "-data-volume") / "tools"
+    external.mkdir(parents=True)
+    (external / "facts.json").write_text((home / "tools" / "facts.json").read_text())
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(external))
+    local = repo / ".hermes" / "bin"
+    assert len(_launchers.ensure_install_launchers(repo, local)) == 2
+    assert _launchers.expose_cli(repo, create=False)["ok"] is True
+
+
+@pytest.mark.parametrize("workspace_dir, workspace_id", [
+    ("multica_workspaces_fixture", ""),
+    ("multica_workspaces_desktop-api.multica.ai", "vanderzege-a7151c285975"),
+])
+def test_unstamped_task_home_symlink_cannot_republish(tmp_path, monkeypatch, workspace_dir, workspace_id):
+    repo, home, _ = fixture_tree(tmp_path, monkeypatch)
+    local = repo / ".hermes" / "bin"
+    assert len(_launchers.ensure_install_launchers(repo, local)) == 2
+    original = {path.name: path.read_bytes() for path in local.iterdir()}
+
+    task_home = tmp_path.parent / workspace_dir
+    if workspace_id:
+        task_home /= workspace_id
+    task_home = task_home / "task-abcdef123456" / "hermes-home"
+    task_home.mkdir(parents=True)
+    (task_home / "tools").symlink_to(home / "tools", target_is_directory=True)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(task_home))
+    assert _launchers.ephemeral_task_store(repo)
+    assert _launchers.stage_launcher("hermes", repo, local) is None
+    assert _launchers.expose_cli(repo, create=False) == {"ok": True, "skipped": "ephemeral-store"}
+    assert _launchers.ensure_install_launchers(repo, local) == []
+    assert {path.name: path.read_bytes() for path in local.iterdir()} == original
+
+
 def select_generation(repo, name, value):
     selected = install_state_dir(repo) / 'environments' / str(name) / 'venv'
     site = site_packages(selected)
@@ -533,7 +587,7 @@ def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monk
                             capture_output=True, text=True, timeout=30, encoding="utf-8", check=False)
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout)["value"] == "ready"
-    assert Path(json.loads(result.stdout)["exe"]) == store / "python-B/bin/python3"
+    assert Path(json.loads(result.stdout)["exe"]).samefile(store / "python-B/bin/python3")
 
 def _torn_by_a_killed_merge(tmp_path, monkeypatch):
     """A git install whose update was killed mid-merge while git rewrote ``hermes_constants.py``.

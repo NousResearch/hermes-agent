@@ -245,17 +245,26 @@ def _slack_tools_loaded() -> bool:
         return False
 
 
+def _discord_bot_token_configured() -> bool:
+    """Whether this profile has the token required by Discord tool checks."""
+    try:
+        from agent.secret_scope import get_secret
+
+        return bool((get_secret("DISCORD_BOT_TOKEN", "") or "").strip())
+    except Exception:
+        return False
+
+
 def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session: `discord`/`discord_admin`
     toolset enabled AND `DISCORD_BOT_TOKEN` set (the tool's `check_fn` gates on it)."""
     try:
-        from agent.secret_scope import get_secret
         # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
         # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
         from hermes_cli.config import load_config_readonly
         from hermes_cli.tools_config import _get_platform_tools
 
-        if not (get_secret("DISCORD_BOT_TOKEN", "") or "").strip():
+        if not _discord_bot_token_configured():
             return False
         enabled = _get_platform_tools(load_config_readonly(), "discord", include_default_mcp_servers=False)
         return "discord" in enabled or "discord_admin" in enabled
@@ -337,12 +346,21 @@ def _discord_platform_notes(context: SessionContext) -> list[str]:
             "user message (use it as `message_id` for reply/react/pin)"
         )
     else:
-        lines = ["", (
-            "**Platform notes:** You are running inside Discord. You do NOT have access to "
-            "Discord-specific APIs — you cannot search channel history, pin messages, manage "
-            "roles, or list server members. Do not promise to perform these actions. If the user "
-            "asks, explain that you can only read messages sent directly to you and respond."
-        )]
+        if _discord_bot_token_configured():
+            lines = ["", (
+                "**Platform notes:** Discord server tools (`discord`, `discord_admin`) are installed "
+                "but not enabled for this platform. Do not promise Discord actions while they are off. "
+                "If the user asks for channel history, member search, threads, pins, or roles, explain "
+                "that they can run `hermes tools enable discord --platform discord` (and add "
+                "`discord_admin` for server management), then restart the gateway."
+            )]
+        else:
+            lines = ["", (
+                "**Platform notes:** You are running inside Discord. You do NOT have access to "
+                "Discord-specific APIs — you cannot search channel history, pin messages, manage "
+                "roles, or list server members. Do not promise to perform these actions. If the user "
+                "asks, explain that you can only read messages sent directly to you and respond."
+            )]
     # Static pointer: live voice-channel state goes on the user message (prompt-cache safety).
     lines += ["", (
         "Voice-channel state, when relevant, appears in the current message as a "

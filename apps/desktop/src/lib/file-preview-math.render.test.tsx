@@ -32,8 +32,34 @@ describe('file-preview math rendering', () => {
     )
 
     await waitFor(() => {
-      expect(container.querySelector('.katex-display') || container.querySelector('.katex')).not.toBeNull()
+      expect(container.querySelector('.katex-display')).not.toBeNull()
     })
+  })
+
+  it('renders a lone single-line $$..$$ as display (centered) math, not inline', async () => {
+    const { container } = render(
+      <Streamdown mode="static" plugins={{ math: mathPlugin }}>
+        {preprocessMarkdown('$$x^2 + y^2 = r^2$$')}
+      </Streamdown>
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('.katex-display')).not.toBeNull()
+    })
+    expect(container.querySelector('.katex-display .katex')).not.toBeNull()
+  })
+
+  it('keeps a mid-sentence $$..$$ inline', async () => {
+    const { container } = render(
+      <Streamdown mode="static" plugins={{ math: mathPlugin }}>
+        {preprocessMarkdown('The value $$x^2$$ is positive.')}
+      </Streamdown>
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('.katex')).not.toBeNull()
+    })
+    expect(container.querySelector('.katex-display')).toBeNull()
   })
 
   it('renders delimited math as KaTeX', async () => {

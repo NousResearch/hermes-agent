@@ -2861,10 +2861,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"
-    # TERMINAL_CWD takes precedence over process cwd in file_tools and
-    # build_context_files_prompt; without it relative writes land in the gateway
-    # user's home and workers load the gateway's AGENTS.md. file_tools rejects
-    # relative / sentinel values, so only set a real absolute directory.
+    # The worker's prompts are this dispatcher's, not the operator's: a bot author keeps memory
+    # providers from filing "work kanban task t_..." and the worker's reply under the human's peer.
+    from agent.turn_author import bot_author_id, turn_author_env
+    env.update(turn_author_env({"id": bot_author_id("kanban"), "name": "Kanban dispatcher", "is_bot": True}))
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and context-file loader anchor on
     # the workspace, not whatever cwd the dispatching gateway happened to export. The worker subprocess is
     # already launched with cwd=workspace, but TERMINAL_CWD takes precedence over the process cwd in both

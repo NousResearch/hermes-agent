@@ -42,7 +42,8 @@ def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> 
 
 def _job_skill_names(job: dict) -> list[str]:
     """Normalized skill names from ``skills`` (list or str) or the legacy singular ``skill``."""
-    skills = job.get("skills")
+    from cron.skill_lists import unwrap_skill_repr
+    skills = unwrap_skill_repr(job.get("skills"))
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []

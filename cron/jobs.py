@@ -34,6 +34,7 @@ from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
+from cron.skill_lists import normalize_skill_names
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -436,26 +437,10 @@ def _job_output_dir(job_id: str) -> Path:
     return _current_cron_store().output_dir / text
 
 
-def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> list[str]:
-    """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
-    if skills is None:
-        raw_items = [skill] if skill else []
-    elif isinstance(skills, str):
-        raw_items = [skills]
-    else:
-        raw_items = list(skills)
-    normalized: list[str] = []
-    for item in raw_items:
-        text = str(item or "").strip()
-        if text and text not in normalized:
-            normalized.append(text)
-    return normalized
-
-
 def _apply_skill_fields(job: dict[str, Any]) -> dict[str, Any]:
     """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
     normalized = dict(job)
-    skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
+    skills = normalize_skill_names(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
     return normalized
@@ -480,7 +465,7 @@ def job_payload_is_empty(job: dict[str, Any]) -> bool:
     least one payload field is explicitly present. ``no_agent`` already requires a script."""
     if _coerce_job_text(job.get("prompt")).strip() or _coerce_job_text(job.get("script")).strip():
         return False
-    if _normalize_skill_list(job.get("skill"), job.get("skills")):
+    if normalize_skill_names(job.get("skill"), job.get("skills")):
         return False
     return any(k in job for k in ("prompt", "script", "skill", "skills"))
 
@@ -1842,7 +1827,7 @@ def create_job(
 
     raw = locals()
     f = {key: norm(raw[key]) for key, norm in _CREATE_FIELD_NORMALIZERS.items()}
-    normalized_skills = _normalize_skill_list(skill, skills)
+    normalized_skills = normalize_skill_names(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
 
@@ -3426,7 +3411,7 @@ def referenced_skill_names() -> set[str]:
         cleaned
         for job in jobs
         if isinstance(job, dict)
-        for name in _normalize_skill_list(job.get("skill"), job.get("skills"))
+        for name in normalize_skill_names(job.get("skill"), job.get("skills"))
         if (cleaned := _canonical_skill_ref(name))
     }
 
@@ -3450,7 +3435,7 @@ def rewrite_skill_refs(
         jobs = load_jobs()
         rewrites: list[dict[str, Any]] = []
         for job in jobs:
-            skills_before = _normalize_skill_list(job.get("skill"), job.get("skills"))
+            skills_before = normalize_skill_names(job.get("skill"), job.get("skills"))
             if not skills_before:
                 continue
             mapped: dict[str, str] = {}

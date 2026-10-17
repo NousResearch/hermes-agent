@@ -8,10 +8,16 @@ included — carrying the ``pre_api_request`` / ``post_api_request`` payload sha
 turn-scoped, so observability plugins keyed on turn identity never see auxiliary traffic unless
 they subscribe to these. Observer-only (returns ignored) and fail-open: a raising or hung
 callback is logged and the auxiliary call proceeds untouched.
+
+``auxiliary_execution`` middleware (``hermes_cli.middleware``) is the one place a plugin can gate an
+auxiliary attempt: it wraps the provider call of a non-streaming attempt and may return a
+replacement response instead of calling ``next_call``. It cannot rewrite the request, and
+streaming attempts are not gated. Like every middleware kind it is fail-open on exceptions.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -20,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 PRE_AUXILIARY_CALL = "pre_auxiliary_call"
 POST_AUXILIARY_CALL = "post_auxiliary_call"
+AUXILIARY_EXECUTION = "auxiliary_execution"  # middleware kind; see hermes_cli.middleware
 
 
 def _parent_turn_identity() -> dict[str, str]:
@@ -220,16 +227,48 @@ def _post_safely(hooks: Optional[_AuxCallHooks], response: Any = None, error: An
         logger.warning("post_auxiliary_call payload build failed; continuing", exc_info=True)
 
 
+def _execution_context(
+    aux_task: str, metadata: dict[str, Any], kwargs: dict[str, Any], provider: str, model: str, api_mode: str,
+) -> dict[str, Any]:
+    """Payload fields for ``auxiliary_execution`` middleware: the attempt plus its parent turn."""
+    return dict(
+        _parent_turn_identity(), aux_task=aux_task, provider=provider, model=model, api_mode=api_mode,
+        api_request_id=str(metadata.get("api_request_id") or ""), retry_count=int(metadata.get("retry_count") or 0),
+    )
+
+
+def _has_execution_middleware() -> bool:
+    try:
+        from hermes_cli.plugins import has_middleware
+
+        return has_middleware(AUXILIARY_EXECUTION)
+    except Exception:
+        logger.warning("auxiliary_execution middleware lookup failed; continuing", exc_info=True)
+        return False
+
+
 def run_with_aux_hooks(
     call: Callable[[], Any], *, aux_task: str, metadata: dict[str, Any], client: Any,
     kwargs: dict[str, Any], provider: str, model: str, api_mode: str, streaming: bool = False,
 ) -> Any:
     """Run one synchronous provider attempt between ``pre_auxiliary_call`` and
-    ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised."""
+    ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised.
+
+    A non-streaming attempt also runs through ``auxiliary_execution`` middleware, which may
+    replace the response instead of calling ``next_call`` (that is how a plugin refuses it).
+    Streaming attempts are not gated: a refusal object would break the stream reassembly.
+    """
     hooks = _hooks_or_none(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
                            provider=provider, model=model, api_mode=api_mode, streaming=streaming)
     try:
-        response = call()
+        if streaming or not _has_execution_middleware():
+            response = call()
+        else:
+            from hermes_cli.middleware import run_auxiliary_execution_middleware
+
+            response = run_auxiliary_execution_middleware(
+                kwargs, lambda _request: call(),
+                **_execution_context(aux_task, metadata, kwargs, provider, model, api_mode))
     except BaseException as exc:
         _post_safely(hooks, error=exc)
         raise
@@ -241,11 +280,24 @@ async def arun_with_aux_hooks(
     call: Callable[[], Awaitable[Any]], *, aux_task: str, metadata: dict[str, Any], client: Any,
     kwargs: dict[str, Any], provider: str, model: str, api_mode: str,
 ) -> Any:
-    """Async twin of :func:`run_with_aux_hooks`."""
+    """Async twin of :func:`run_with_aux_hooks`.
+
+    Middleware callbacks are synchronous: ``next_call`` hands back the awaitable, and a replacement
+    response is returned as is, so the result is awaited only when it is awaitable.
+    """
     hooks = _hooks_or_none(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
                            provider=provider, model=model, api_mode=api_mode, streaming=False)
     try:
-        response = await call()
+        if not _has_execution_middleware():
+            response = await call()
+        else:
+            from hermes_cli.middleware import run_auxiliary_execution_middleware
+
+            response = run_auxiliary_execution_middleware(
+                kwargs, lambda _request: call(),
+                **_execution_context(aux_task, metadata, kwargs, provider, model, api_mode))
+            if inspect.isawaitable(response):
+                response = await response
     except BaseException as exc:
         _post_safely(hooks, error=exc)
         raise

@@ -1076,6 +1076,18 @@ class LocalEnvironment(BaseEnvironment):
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
 
+    def _usable_cwd(self, cwd: str) -> str:
+        """The directory ``execute`` embeds in the wrapper's ``cd``: ``cwd`` if enterable, else
+        what ``_resolve_safe_cwd`` picks. Recovering only ``self.cwd`` (inside ``_run_bash``)
+        came too late — the script was already built and exited 126 at ``cd`` on every call —
+        and missed the explicit cwd the terminal tool passes from the session record. A real
+        fallback (not a benign MSYS→Windows normalization) is queued for ``execute`` to report,
+        because relative paths now resolve somewhere the model did not ask for."""
+        safe_cwd = _resolve_safe_cwd(cwd)
+        if safe_cwd != cwd and safe_cwd != _msys_to_windows_path(cwd):
+            self._cwd_fallback_pending = {"requested": cwd, "used": safe_cwd}
+        return safe_cwd
+
     def _recover_cwd(self) -> None:
         """Swap ``self.cwd`` for a usable directory if it vanished or is inaccessible
         (e.g. a command ``rm -rf``'d its own cwd) — otherwise Popen raises before bash

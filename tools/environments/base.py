@@ -637,6 +637,11 @@ class BaseEnvironment(ABC):
         old workspace state (lobehub/lobehub#19329 class)."""
         self._recreated_notice_pending = True
 
+    def _usable_cwd(self, cwd: str) -> str:
+        """Directory the command may actually start in. Local swaps a deleted/unenterable one
+        (it would make the wrapper's ``cd`` exit 126 on every call); sandboxes resolve their own."""
+        return cwd
+
     # --- Unified execute() ---
     def execute(
         self,
@@ -668,7 +673,9 @@ class BaseEnvironment(ABC):
             from tools.terminal_tool_sudo import _rewrite_compound_background
             exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
-        effective_cwd = cwd or self.cwd
+        # An explicit ``cwd`` (the session's recorded cd state) can be just as dead as
+        # ``self.cwd``; resolving only the latter left every call exiting 126 at ``cd``.
+        effective_cwd = self._usable_cwd(cwd or self.cwd)
 
         # Merge sudo stdin with caller stdin.
         effective_stdin = sudo_stdin + (stdin_data or "") if sudo_stdin is not None else stdin_data
@@ -752,6 +759,9 @@ class BaseEnvironment(ABC):
         if getattr(self, "_recreated_notice_pending", False):
             self._recreated_notice_pending = False
             result["environment_recreated"] = True
+        if fallback := getattr(self, "_cwd_fallback_pending", None):
+            self._cwd_fallback_pending = None
+            result["cwd_fallback"] = fallback
         return result
 
     def _kill_spawned_tree(self, spawned) -> None:

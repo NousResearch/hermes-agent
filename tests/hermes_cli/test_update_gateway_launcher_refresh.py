@@ -72,6 +72,7 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
     assert new_argv[1:] == argv[1:]
     assert cwd == str(tmp_path)
     assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
+    assert env["PYTHONUTF8"] == "1"
 
 # ---------------------------------------------------------------------------
 # _refresh_windows_gateway_launchers: hermes update regenerates launchers

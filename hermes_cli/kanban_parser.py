@@ -107,6 +107,12 @@ _BOARD_SPECS = [
         _arg("--color", help="Optional hex color (e.g. '#8b5cf6') for the dashboard"),
         _arg("--switch", action="store_true", help="Switch to the new board after creating it"),
         _arg("--default-workdir", help="Default workspace path for tasks created on this board"),
+        _arg("--no-dispatch", action="store_true", dest="no_dispatch",
+             help="Mark an ESTATE/scratch board: write \"dispatch\": false into the "
+                  "board's metadata so the dispatcher NEVER serves it. Use this for a "
+                  "rehearsal board a SEV1/failure card may be redirected to — a redirect "
+                  "to a normal board is not isolation, because the dispatcher serves every "
+                  "non-archived board."),
     ], aliases=["new"], help="Create a new board"),
     _cmd("rm", [
         _SLUG,
@@ -122,6 +128,14 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-dispatch", [
+        _SLUG,
+        _arg("state", choices=("on", "off"),
+             help="'off' marks an estate/scratch board the dispatcher must never "
+                  "serve; 'on' admits it again"),
+        _json_flag(),
+    ], help="Admit or exclude a board from the dispatcher's set "
+            "(off = estate/scratch board, never served)"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

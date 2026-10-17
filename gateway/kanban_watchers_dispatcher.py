@@ -135,7 +135,39 @@ class _KanbanDispatcher:
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
 
     def _board_slugs(self) -> list:
-        return _board_slugs(self.kb)
+        """Boards the dispatcher may serve — estate/scratch boards are EXCLUDED.
+
+        ``list_dispatch_boards`` is the dispatcher's OWN enumeration (card
+        t_17c9c847): it drops a board whose ``board.json`` carries
+        ``"dispatch": false`` at the source, so a rehearsal estate never reaches
+        ``tick_once_for_board`` and its phantom cards are never spawned. When that
+        reader is absent (a kb double) or faults, the plain list is filtered
+        through the same chokepoint rather than visited whole — the estate half of
+        the guard survives.
+        """
+        reader = getattr(self.kb, "list_dispatch_boards", None)
+        if callable(reader):
+            try:
+                return [
+                    b.get("slug") or self.kb.DEFAULT_BOARD
+                    for b in reader()
+                ]
+            except Exception:
+                pass
+        slugs = _board_slugs(self.kb)
+        enabled = getattr(self.kb, "board_dispatch_enabled", None)
+        if not callable(enabled):
+            # A kb object with neither method (a double, or an older surface):
+            # there is no admission flag to read, so keep the plain list.
+            return slugs
+        out: list = []
+        for slug in slugs:
+            try:
+                if enabled(slug):
+                    out.append(slug)
+            except Exception:
+                continue  # unreadable admission = not admitted
+        return out
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
         from hermes_cli import kanban_db as _kb

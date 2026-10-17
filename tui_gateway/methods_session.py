@@ -5,6 +5,7 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+import re
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -862,6 +863,16 @@ def _resume_guard(ctx: _Resume) -> dict | None:
         return _err(ctx.rid, 4130, str(exc))
     except Exception as exc:
         logger.warning("resume safety check failed for %s (proceeding without guard): %s", ctx.target, exc)
+    from hermes_cli.lifecycle import admission_refusal
+    if (refusal := admission_refusal(
+            "pre_session_resume",
+            session_id=ctx.target,
+            platform=str(ctx.found.get("platform") or "tui"),
+            source=str(ctx.found.get("source") or ""),
+            session=dict(ctx.found),
+            params=dict(ctx.params),
+    )) is not None:
+        return _err(ctx.rid, 4031, refusal)
     return None
 
 
@@ -2194,9 +2205,13 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @method("session.close")
 def _(rid, params: dict) -> dict:
+    end_reason = params.get("end_reason")
+    if end_reason is not None and (
+            not isinstance(end_reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", end_reason)):
+        return _err(rid, 4004, "end_reason must be a lowercase snake_case identifier")
     with _session_resume_lock:  # lock only the ownership claim; finalization must not block resumes
         session = _pop_session_by_id(params.get("session_id", ""))
-    return _ok(rid, {"closed": _teardown_popped_session(session, end_reason="tui_close"), "messages": list((session or {}).get("_end_msgs") or [])})
+    return _ok(rid, {"closed": _teardown_popped_session(session, end_reason=end_reason or "tui_close"), "messages": list((session or {}).get("_end_msgs") or [])})
 
 
 @_session_method("session.branch", live=True)

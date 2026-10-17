@@ -740,6 +740,15 @@ def _append_unconfigured_rows(
     return extras
 
 
+def _anthropic_api_key_present() -> bool:
+    """True only when the profile-scoped native Anthropic API-key variable is set."""
+    try:
+        from hermes_cli.model_switch import _scoped_key_env
+        return bool(_scoped_key_env("ANTHROPIC_API_KEY"))
+    except Exception:
+        return False
+
+
 def _anthropic_oauth_credentials_present() -> bool:
     """True when the user explicitly authenticated Anthropic via OAuth (Hermes device flow or Claude Code
     login) — those leave no trace in active_provider / model.provider / API-key env vars."""
@@ -786,9 +795,11 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
             return _raw_config_has_enabled_moa_preset()
         return (
+            (slug == "claude-api" and _anthropic_api_key_present())
+            or (slug == "claude-subscription" and _anthropic_oauth_credentials_present())
             # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
-            # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
-            (slug == "anthropic" and _anthropic_oauth_credentials_present())
+            # deliberate sign-ins that leave no trace in active_provider / model.provider / API-key env vars.
+            or (slug == "anthropic" and _anthropic_oauth_credentials_present())
             or _external_process_signed_in(slug)
             or is_provider_explicitly_configured(slug)
         )

@@ -311,6 +311,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "ai-gateway": [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS],
 }
 
+# The two source-specific Claude choices share the native Anthropic catalog but
+# keep distinct provider IDs so model selection also fixes the credential route.
+_PROVIDER_MODELS["claude-subscription"] = list(_PROVIDER_MODELS["anthropic"])
+_PROVIDER_MODELS["claude-api"] = list(_PROVIDER_MODELS["anthropic"])
+
 
 # ---------------------------------------------------------------------------
 # Canonical provider list — single source of truth for provider identity. Every code path that
@@ -332,7 +337,9 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("moa", "Mixture of Agents", "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ("novita", "NovitaAI", "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ("lmstudio", "LM Studio", "LM Studio (Local desktop app with built-in model server)"),
-    ("anthropic", "Anthropic", "Anthropic (Claude models via API key or Claude Code)"),
+    ("anthropic", "Anthropic (automatic credential)", "Claude via the legacy automatic credential resolver"),
+    ("claude-subscription", "Claude Subscription", "Claude using a Claude subscription OAuth credential"),
+    ("claude-api", "Anthropic API", "Claude using ANTHROPIC_API_KEY directly with the Anthropic Messages API"),
     ("openai-codex", "ChatGPT or Codex Subscription", "ChatGPT or Codex Subscription (Sign in with your ChatGPT account, uses Codex models)"),
     ("openai-api", "OpenAI API", "OpenAI API (api.openai.com, API key)"),
     ("alibaba", "Qwen Cloud", "Qwen Cloud / DashScope (Qwen + multi-provider)"),
@@ -438,6 +445,7 @@ def listed_canonical_providers() -> list[ProviderEntry]:
 # Member order is the order shown inside the group submenu; member detail lives in ``tui_desc``.
 # ---------------------------------------------------------------------------
 PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
+    "claude":    ("Claude", "Subscription OAuth or direct Anthropic API", ["claude-subscription", "claude-api"]),
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),

@@ -212,6 +212,10 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     # path by prefix. Only ANTHROPIC_API_KEY and ANTHROPIC_TOKEN are usable as literal API keys.
     ("anthropic", "Anthropic", "https://api.anthropic.com",
      ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"), "ANTHROPIC_BASE_URL"),
+    ProviderConfig(
+        "claude-subscription", "Claude Subscription", "oauth_external",
+        inference_base_url="https://api.anthropic.com"),
+    ("claude-api", "Anthropic API", "https://api.anthropic.com", ("ANTHROPIC_API_KEY",), "ANTHROPIC_BASE_URL"),
     ("alibaba", "Qwen Cloud", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
      ("DASHSCOPE_API_KEY",), "DASHSCOPE_BASE_URL"),
     ("alibaba-coding-plan", "Alibaba Cloud (Coding Plan)", "https://coding-intl.dashscope.aliyuncs.com/v1",

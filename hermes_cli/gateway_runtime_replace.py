@@ -30,6 +30,7 @@ REFUSAL_DETAIL = {
     "owner_newer": "a newer Hermes's gateway owns this profile; update Hermes or run: hermes gateway stop",
     "foreign_install": "another Hermes install's gateway owns this profile; stop it there: hermes gateway stop",
     "owner_unverified": "an older Hermes gateway owns this profile and was not verified; run: hermes gateway stop",
+    "owner_is_parent": "this process was started by an older Hermes gateway that is still running; it is replaced when that gateway restarts",
     "owner_did_not_exit": "an older Hermes gateway owns this profile and did not stop; run: hermes gateway stop",
     "owner_unreachable": "an older Hermes gateway owns this profile; run: hermes gateway stop",
 }
@@ -76,8 +77,12 @@ def _verified_owner(control: Path, payload: dict) -> tuple[int, Any] | str:
         return "foreign_install"
     pid, recorded = payload.get("pid"), payload.get("start_time")
     if (payload.get("kind") != _GATEWAY_KIND or type(pid) is not int or pid <= 1
-            or pid in {os.getpid(), os.getppid()} or recorded is None or not _pid_exists(pid)):
+            or pid == os.getpid() or recorded is None or not _pid_exists(pid)):
         return "owner_unverified"
+    if pid == os.getppid():
+        # A child this gateway spawned (a restart-safe cron worker) can run code an update installed
+        # ahead of the gateway's own replacement; stopping its parent is never the child's call.
+        return "owner_is_parent"
     current = get_process_start_time(pid)
     try:
         if current is None or not start_time_fingerprints_match(recorded, current):

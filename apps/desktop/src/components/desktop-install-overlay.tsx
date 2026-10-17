@@ -186,6 +186,7 @@ const EMPTY_STATE: DesktopBootstrapState = {
   manifest: null,
   stages: {},
   error: null,
+  cancelled: false,
   log: [],
   startedAt: null,
   completedAt: null,
@@ -272,7 +273,12 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
   }
 
   if (ev.type === 'failed') {
-    return { ...state, active: false, error: ev.error || 'unknown error', setupChoice: null }
+    // The runner's abort path reports the cancel as a 'failed' event whose
+    // error is the fixed sentinel string (electron/bootstrap-runner.ts).
+    // Distinguish it so the user sees their own cancel, not a failed install.
+    const cancelled = ev.error === 'bootstrap cancelled by user'
+
+    return { ...state, active: false, error: cancelled ? null : ev.error || 'unknown error', cancelled, setupChoice: null }
   }
 
   if (ev.type === 'unsupported-platform') {
@@ -367,11 +373,12 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     }
   }, [state.error])
 
-  // Escape dismisses a failed install the same way the footer's Close button
-  // does -- local-only, no resetBootstrap + reload. Scoped to the failed
-  // state so a running install is still only cancellable via its own button.
+  // Escape dismisses a failed or cancelled install the same way the footer's
+  // Close button does -- local-only, no resetBootstrap + reload. Scoped to the
+  // terminal states so a running install is still only cancellable via its
+  // own button.
   useEffect(() => {
-    if (!state.error) {
+    if (!state.error && !state.cancelled) {
       return
     }
 
@@ -384,8 +391,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the failed/not-failed transition matters, not error text changes
-  }, [Boolean(state.error)])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the terminal-state transition matters, not text changes
+  }, [Boolean(state.error), Boolean(state.cancelled)])
 
   // The choice remains mounted while main hands off to local bootstrap. Once
   // a manifest/failure takes ownership (or a later repair presents a fresh
@@ -417,7 +424,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       return true
     }
 
-    if (state.error) {
+    if (state.error || state.cancelled) {
       return true
     }
 
@@ -430,7 +437,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     }
 
     return false
-  }, [enabled, state.active, state.error, state.setupChoice, state.unsupportedPlatform])
+  }, [enabled, state.active, state.cancelled, state.error, state.setupChoice, state.unsupportedPlatform])
 
   if (!shouldShow) {
     return null
@@ -588,6 +595,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   ).length
 
   const totalCount = stages.length
+  const cancelled = Boolean(state.cancelled)
   const failed = Boolean(state.error)
   // Main writes a plain lead sentence and keeps the raw installer error after
   // "Details:" (electron/bootstrap-failure-copy.ts); show them as two lines.
@@ -605,12 +613,20 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       <div className="flex w-full max-w-2xl max-h-[90vh] flex-col rounded-xl border border-(--stroke-nous) bg-card shadow-nous">
         {/* Header -- always visible, never scrolls */}
         <div className="flex flex-shrink-0 items-start gap-4 p-8 pb-4">
-          {!failed && <BrandMark className="size-11 shrink-0" />}
+          {!failed && !cancelled && <BrandMark className="size-11 shrink-0" />}
           <div className="min-w-0">
             <h2 className="text-xl font-semibold tracking-tight">
-              {failed ? copy.failedTitle : state.active ? copy.settingUpTitle : copy.finishingTitle}
+              {cancelled
+                ? copy.cancelledTitle
+                : failed
+                  ? copy.failedTitle
+                  : state.active
+                    ? copy.settingUpTitle
+                    : copy.finishingTitle}
             </h2>
-            <p className="mt-1.5 text-sm text-muted-foreground">{failed ? copy.failedDesc : copy.activeDesc}</p>
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              {cancelled ? copy.cancelledDesc : failed ? copy.failedDesc : copy.activeDesc}
+            </p>
           </div>
         </div>
 
@@ -718,6 +734,23 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               >
                 {cancelling ? <Loader className="size-4" type="fourier-flow" /> : null}
                 {cancelling ? copy.cancelling : copy.cancelInstall}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Cancelled footer: the install stopped at the user's request, so the
+            only way forward is to run it again (via resetBootstrap + reload,
+            same as the failure footer's Reload and retry). */}
+        {cancelled && (
+          <div className="flex-shrink-0 bg-card p-4">
+            <div className="flex items-center justify-end">
+              <Button
+                onClick={() => void window.hermesDesktop?.resetBootstrap?.().catch(() => undefined).then(() => window.location.reload())}
+                size="sm"
+                variant="default"
+              >
+                {copy.reloadRetry}
               </Button>
             </div>
           </div>

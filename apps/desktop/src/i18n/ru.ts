@@ -291,7 +291,7 @@ export const ruOverrides = {
       'view.nextTerminal': 'Следующий терминал',
       'view.prevTerminal': 'Предыдущий терминал',
       'view.closeTerminal': 'Закрыть терминал',
-      'view.selectionToComposer': 'Отправить выделенное из терминала в композер',
+      'view.selectionToComposer': 'Отправить выделенный текст в композер',
       'view.terminalCopy': 'Копировать выделенное из терминала',
       'view.terminalPaste': 'Вставить в терминал',
       'view.closeTab': 'Закрыть вкладку',
@@ -1653,7 +1653,7 @@ export const ruOverrides = {
     importMap: 'Импортировать карту',
     importBtn: 'Загрузить',
     importEmpty: 'Вставьте код карты для загрузки.',
-    importSuccess: nodes => `Загружена карта с ${nodes} ${RU_NOUN(nodes, 'узлом', 'узла', 'узлов')}.`,
+    importSuccess: nodes => `Загружена карта с ${nodes} ${RU_NOUN(nodes, 'узлом', 'узлами', 'узлами')}.`,
     importedBadge: 'импортированная карта',
     resetToMine: 'Вернуться к моей карте'
   },

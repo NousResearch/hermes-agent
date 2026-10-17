@@ -7,6 +7,7 @@ export const ruAuxTasks: AuxTaskCopyMap = {
   approval: { label: 'Одобрение', hint: 'Умное авто-одобрение' },
   mcp: { label: 'MCP', hint: 'Маршрутизация MCP-инструментов' },
   title_generation: { label: 'Ген. заголовка', hint: 'Заголовки сеансов' },
+  review: { label: 'Ревью', hint: '/review — субагент-рецензент' },
   voice_chat: { label: 'Голосовой чат', hint: 'Ответы в голосовом режиме' },
   curator: { label: 'Куратор', hint: 'Просмотр использования навыков' }
 }

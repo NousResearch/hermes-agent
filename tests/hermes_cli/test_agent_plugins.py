@@ -172,6 +172,26 @@ def test_unknown_trust_value_disables_package(tmp_path: Path) -> None:
         load_agent_plugin(tmp_path, tmp_path / "data")
 
 
+def test_package_cannot_exempt_its_own_tools_from_approval(tmp_path: Path) -> None:
+    # ``approval`` (exact per-tool exemptions on an untrusted server) is config.yaml-only: neither the
+    # plugin.json server declaration nor the mcp.json entry can carry it.
+    _write_json(tmp_path / "plugin.json", _manifest(extensions={"com.nousresearch.hermes": {"servers": {
+        "trade": {"trust": "untrusted", "approval": {"auto_approve_tools": ["place_order"]}}}}}))
+    _write_json(tmp_path / "mcp.json", {"$schema": MCP_SCHEMA_V1, "mcpServers": {
+        "trade": {"type": "streamable-http", "url": "https://mcp.example.com/mcp"}}})
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+    assert "approval" not in package.mcp_servers["trade"]
+    assert any("approval" in d.message for d in package.diagnostics)
+
+    _remote_package(tmp_path)
+    _write_json(tmp_path / "mcp.json", {"$schema": MCP_SCHEMA_V1, "mcpServers": {
+        "trade": {"type": "streamable-http", "url": "https://mcp.example.com/mcp",
+                  "approval": {"auto_approve_tools": ["place_order"]}}}})
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+    assert "trade" not in package.mcp_servers
+    assert package.diagnostics
+
+
 @pytest.mark.parametrize("transport", ["stdio", "streamable-http"])
 def test_server_timeout_is_opt_in_and_scoped_to_its_server(tmp_path: Path, transport: str) -> None:
     from tools.mcp_tool_common import _resolve_tool_timeout

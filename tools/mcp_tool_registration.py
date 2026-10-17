@@ -58,25 +58,82 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     return hint is True
 
 
+def _exact_approval_tool_names(server_name: str, config: dict, field: str, available: set) -> frozenset:
+    """Exact names from one ``approval.<field>`` list that name a discovered tool. Fails closed: a
+    non-list value yields nothing (a scalar string is never split, a glob never matches), and unknown
+    names are dropped with a warning rather than kept for a tool the server might add later."""
+    approval = (config or {}).get("approval") or {}
+    raw = approval.get(field) if isinstance(approval, dict) else None
+    if raw is None:
+        return frozenset()
+    if not isinstance(raw, (list, tuple, set)):
+        logger.warning("MCP server '%s': approval.%s must be a list of exact tool names; ignoring %r",
+                       server_name, field, raw)
+        return frozenset()
+    configured = {value for value in raw if isinstance(value, str) and value}
+    invalid = [value for value in raw if not (isinstance(value, str) and value)]
+    if invalid:
+        logger.warning("MCP server '%s': approval.%s accepts only non-empty tool-name strings; ignoring %s",
+                       server_name, field, ", ".join(repr(value) for value in invalid))
+    unknown = configured - available
+    if unknown:
+        logger.warning("MCP server '%s': approval.%s names unknown tool(s) %s; ignoring them",
+                       server_name, field, ", ".join(sorted(repr(name) for name in unknown)))
+    return frozenset(configured & available)
+
+
+def _exact_approval_pins(server_name: str, config: dict, available: set, key) -> dict[str, frozenset]:
+    """Accepted ``approval`` names for consuming *key*, derived once per loaded config object (caller holds
+    ``_core._lock``). A ``tools/list_changed`` refresh reuses the object, so a tool that appears after
+    discovery under a name the operator was told was ignored never gains authority; a config reload
+    builds a fresh object and re-derives, so removing a name revokes it."""
+    pinned = _core._tool_approval_pins.get(key)
+    if pinned is not None and pinned[0] is config:
+        return pinned[1]
+    approval = (config or {}).get("approval")
+    if approval is not None and not isinstance(approval, dict):
+        logger.warning("MCP server '%s': approval must be a mapping; ignoring %r", server_name, approval)
+    elif approval:
+        unknown_keys = set(approval) - {"read_only_tools", "auto_approve_tools"}
+        if unknown_keys:
+            logger.warning("MCP server '%s': approval has unknown key(s) %s; ignoring them",
+                           server_name, ", ".join(sorted(map(repr, unknown_keys))))
+    pins = {field: _exact_approval_tool_names(server_name, config, field, available)
+            for field in ("read_only_tools", "auto_approve_tools")}
+    _core._tool_approval_pins[key] = (config, pins)
+    return pins
+
+
 def _record_tool_trust_metadata(server_name: str, config: dict, tools: list[Any], key=None) -> None:
     """Capture per-server trust and per-tool readOnlyHint at discovery — the security boundary: the call-time gate
     classifies from data we control, never re-read server-supplied state. *key* is the connection (default: the
-    registering profile's own); the ``trust`` policy is recorded under it for the profile that owns it — an
-    adopting profile records its own policy in ``_record_scope_trust``."""
+    registering profile's own); the ``trust`` and ``approval`` policy is recorded under it for the profile that owns
+    it — an adopting profile records its own policy in ``_record_scope_trust``. ``approval.read_only_tools`` and
+    ``approval.auto_approve_tools`` are that profile's policy too: they never enter the connection's readOnlyHint data."""
+    named = {t.name: t for t in tools if getattr(t, "name", None)}
     with _core._lock:
         if key is None:
             key = _server_key(server_name)
         _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
         hints = _core._tool_read_only_hints.setdefault(key, {})
-        hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
+        hints.update({name: _annotation_read_only_hint(t) for name, t in named.items()})
+        pins = _exact_approval_pins(server_name, config, set(named), key)
+        _core._tool_read_only_overrides[key] = pins["read_only_tools"] & set(named)
+        _core._tool_auto_approvals[key] = pins["auto_approve_tools"] & set(named)
 
 
 def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
     """``trust`` is the CONSUMING profile's policy, never the connection's: an ``untrusted`` profile that
-    adopts a ``full`` profile's live connection must still be asked before every write-capable call."""
+    adopts a ``full`` profile's live connection must still be asked before every write-capable call. Its
+    ``approval`` lists follow trust (the owner's are never inherited); the tools available to name are the
+    connection's discovered ones."""
     with _core._lock:
-        _core._server_trust_levels[_server_key(server_name, scope, current=False)] = _normalize_server_trust(
-            (config or {}).get("trust"))
+        consuming = _server_key(server_name, scope, current=False)
+        _core._server_trust_levels[consuming] = _normalize_server_trust((config or {}).get("trust"))
+        available = set(_core._tool_read_only_hints.get(_resolve_server_key(server_name, scope, current=False), {}))
+        pins = _exact_approval_pins(server_name, config, available, consuming)
+        _core._tool_read_only_overrides[consuming] = pins["read_only_tools"] & available
+        _core._tool_auto_approvals[consuming] = pins["auto_approve_tools"] & available
 
 
 def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
@@ -149,7 +206,11 @@ def _remove_server_scope(key, scope: str) -> None:
             _core._server_tool_scopes[key] = scopes
         else:
             _core._server_tool_scopes.pop(key, None)
-        _core._server_trust_levels.pop(_server_key(server_name, scope, current=False), None)
+        consuming = _server_key(server_name, scope, current=False)
+        _core._server_trust_levels.pop(consuming, None)
+        _core._tool_read_only_overrides.pop(consuming, None)
+        _core._tool_auto_approvals.pop(consuming, None)
+        _core._tool_approval_pins.pop(consuming, None)
     _restore_server_toolset_alias(key)
 
 

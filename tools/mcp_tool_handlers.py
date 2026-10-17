@@ -50,11 +50,14 @@ _SESSION_OUTCOME_UNCERTAIN_MSG = (
 
 
 def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
-    """True only when discovery captured ``readOnlyHint=True`` for the tool. Missing or malformed
-    metadata fails safe to False (treated as write-capable). readOnlyHint is a property of the
-    connection's tools, so it lives under the connection key."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
+    """True when discovery captured ``readOnlyHint=True`` for the tool, or the CALLING profile's
+    ``approval.read_only_tools`` names it. Missing or malformed metadata fails safe to False (treated
+    as write-capable). readOnlyHint is a property of the connection's tools, so it lives under the
+    connection key; the operator list is that profile's policy, so it lives under the profile's key."""
+    from tools.mcp_tool_scope import _resolve_server_key, _server_key
+    if _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True:
+        return True
+    return tool_name in _core._tool_read_only_overrides.get(_server_key(server_name), ())
 
 
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
@@ -64,6 +67,9 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier).
     trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
     if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
+        return None
+    # Exact operator exemption, read under the SAME key as trust: it is the calling profile's policy.
+    if tool_name in _core._tool_auto_approvals.get(_server_key(server_name), ()):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent

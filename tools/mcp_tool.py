@@ -526,6 +526,18 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: dict[Any, str] = {}
 _tool_read_only_hints: dict[Any, dict[str, bool]] = {}
+# Operator-owned exact per-tool policy from ``approval``: ``_tool_read_only_overrides``
+# (``read_only_tools``, treated like ``readOnlyHint: true``) and ``_tool_auto_approvals``
+# (``auto_approve_tools``, write-capable tools that may run unprompted). Both are keyed like
+# ``_server_trust_levels`` by the CONSUMING profile's key, never by the connection: they are that
+# profile's policy and must not follow a shared connection into another profile, so
+# ``_tool_read_only_hints`` keeps only the server's own annotations. ``_tool_approval_pins`` holds, per
+# consuming key, the config object the accepted names were derived from and those names: a
+# ``tools/list_changed`` refresh (same object) can never add authority, a config reload (fresh
+# object) re-derives and so can revoke.
+_tool_read_only_overrides: dict[Any, frozenset] = {}
+_tool_auto_approvals: dict[Any, frozenset] = {}
+_tool_approval_pins: dict[Any, tuple] = {}
 
 _TRUST_FULL, _TRUST_UNTRUSTED = "full", "untrusted"
 

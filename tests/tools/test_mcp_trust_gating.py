@@ -75,7 +75,10 @@ def fake_session():
 def _clean_trust_state():
     """Isolate the module-level trust metadata between tests."""
     with patch.dict(mcp_tool._server_trust_levels, {}, clear=True), \
-         patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True):
+         patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True), \
+         patch.dict(mcp_tool._tool_read_only_overrides, {}, clear=True), \
+         patch.dict(mcp_tool._tool_auto_approvals, {}, clear=True), \
+         patch.dict(mcp_tool._tool_approval_pins, {}, clear=True):
         yield
 
 
@@ -154,6 +157,28 @@ class TestTrustGateAtCallTime:
             raw = handler({"repo": "x"})
         consent.assert_not_called()
         assert json.loads(raw) == {"result": "ok"}
+
+    def test_exact_auto_approved_write_skips_approval(self, fake_session):
+        """``approval.auto_approve_tools`` exempts one exact write tool without trusting its server."""
+        _set_trust("srv", "untrusted")
+        mcp_tool._tool_auto_approvals["srv"] = frozenset({"create_draft"})
+        handler = _mcp_handlers._make_tool_handler("srv", "create_draft", 30.0)
+        with patch("tools.approval_prompt.request_elicitation_consent") as consent:
+            raw = handler({})
+        consent.assert_not_called()
+        assert json.loads(raw) == {"result": "ok"}
+
+    @pytest.mark.parametrize("tool", ["create_campaign", "send_draft", "create_draft2"])
+    def test_auto_approval_is_exact_and_sibling_writes_stay_gated(self, fake_session, tool):
+        """No server-wide leak and no pattern matching: neighbouring write tools still need consent."""
+        _set_trust("srv", "untrusted")
+        mcp_tool._tool_auto_approvals["srv"] = frozenset({"create_draft", "create_*"})
+        handler = _mcp_handlers._make_tool_handler("srv", tool, 30.0)
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline") as consent:
+            raw = handler({})
+        consent.assert_called_once()
+        fake_session.call_tool.assert_not_awaited()
+        assert "error" in json.loads(raw)
 
     def test_read_only_false_hint_is_gated(self, fake_session):
         """An explicit readOnlyHint=False is write-capable."""
@@ -344,6 +369,76 @@ class TestAnnotationCaptureAtDiscovery:
         # Anything not exactly True is write-capable.
         assert not hints.get("delete_repo")
         assert not hints.get("no_annotations")
+
+    def test_exact_approval_policy_marks_read_only_and_auto_approves_named_write(self):
+        """Per-tool policy is captured without broadening the untrusted server."""
+        tools = [self._make_tool("list_items"), self._make_tool("create_draft"), self._make_tool("send_item")]
+        config = {"trust": "untrusted",
+                  "approval": {"read_only_tools": ["list_items"], "auto_approve_tools": ["create_draft"]}}
+
+        _mcp_registration._record_tool_trust_metadata("srv", config, tools)
+
+        assert mcp_tool._server_trust_levels["srv"] == "untrusted"
+        # Operator policy never enters the connection's readOnlyHint data (shared by adopters).
+        assert mcp_tool._tool_read_only_hints["srv"] == {
+            "list_items": False, "create_draft": False, "send_item": False}
+        assert mcp_tool._tool_read_only_overrides["srv"] == {"list_items"}
+        assert mcp_tool._tool_auto_approvals["srv"] == {"create_draft"}
+        assert _mcp_handlers._tool_is_read_only("srv", "list_items") is True
+        assert _mcp_handlers._trust_gate_check("srv", "list_items") is None
+        assert _mcp_handlers._trust_gate_check("srv", "create_draft") is None
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
+            assert _mcp_handlers._trust_gate_check("srv", "send_item") is not None
+
+    def test_approval_policy_fails_closed_on_malformed_or_unknown_names(self):
+        """A scalar string is not split, a glob is not a pattern, an unknown name is dropped."""
+        tools = [self._make_tool("create_draft")]
+        config = {"trust": "untrusted",
+                  "approval": {"read_only_tools": "create_draft",
+                               "auto_approve_tools": ["create_*", "missing_tool", 7, ""]}}
+
+        _mcp_registration._record_tool_trust_metadata("srv", config, tools)
+
+        assert mcp_tool._tool_read_only_hints["srv"] == {"create_draft": False}
+        assert mcp_tool._tool_read_only_overrides["srv"] == set()
+        assert mcp_tool._tool_auto_approvals["srv"] == set()
+
+    @pytest.mark.parametrize("approval,expected", [
+        (["create_draft"], "approval must be a mapping"),
+        ({"auto_approve": ["create_draft"]}, "approval has unknown key(s) 'auto_approve'"),
+        ({"auto_approve_tools": ["create_draft", 7, ""]}, "accepts only non-empty tool-name strings; ignoring 7, ''"),
+        ({"auto_approve_tools": ["create_*"]}, "names unknown tool(s) 'create_*'"),
+    ])
+    def test_malformed_approval_is_ignored_with_a_warning(self, caplog, approval, expected):
+        """A misspelled or mis-shaped block grants nothing, but the operator is told why."""
+        tools = [self._make_tool("create_draft"), self._make_tool("create_campaign")]
+        with caplog.at_level("WARNING", logger=_mcp_registration.logger.name):
+            _mcp_registration._record_tool_trust_metadata("srv", {"trust": "untrusted", "approval": approval}, tools)
+        assert expected in caplog.text
+        assert mcp_tool._tool_auto_approvals["srv"] <= {"create_draft"}
+        assert "create_campaign" not in mcp_tool._tool_auto_approvals["srv"]
+
+    def test_list_changed_cannot_add_authority_but_a_reload_revokes(self):
+        """Names are accepted once per loaded config object: a tool that appears after discovery under a
+        name the operator was warned was ignored gains nothing, while a reloaded config re-derives."""
+        config = {"trust": "untrusted",
+                  "approval": {"read_only_tools": ["list_items", "future_read"],
+                               "auto_approve_tools": ["create_draft", "future_write"]}}
+        tools = [self._make_tool("list_items"), self._make_tool("create_draft"), self._make_tool("send_item")]
+        _mcp_registration._record_tool_trust_metadata("srv", config, tools)
+        assert mcp_tool._tool_auto_approvals["srv"] == {"create_draft"}
+
+        # tools/list_changed re-registers with the same config object.
+        late = tools + [self._make_tool("future_read"), self._make_tool("future_write")]
+        _mcp_registration._record_tool_trust_metadata("srv", config, late)
+        assert mcp_tool._tool_read_only_overrides["srv"] == {"list_items"}
+        assert mcp_tool._tool_auto_approvals["srv"] == {"create_draft"}
+
+        # A config reload is a fresh object: dropping the lists revokes the exemption.
+        _mcp_registration._record_tool_trust_metadata("srv", {"trust": "untrusted", "approval": {}}, tools)
+        assert mcp_tool._tool_auto_approvals["srv"] == set()
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
+            assert _mcp_handlers._trust_gate_check("srv", "create_draft") is not None
 
     def test_dict_annotations_supported(self):
         """Cached/JSON annotations arrive as plain dicts."""

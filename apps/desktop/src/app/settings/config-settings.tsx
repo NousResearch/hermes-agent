@@ -456,8 +456,10 @@ function ConfigSettingsInner({
       {showDesktopSettings && (
         <>
           <ListRow
-            action={
+            action={({ titleId, descriptionId }) => (
               <SegmentedControl
+                ariaDescribedBy={descriptionId}
+                ariaLabelledBy={titleId}
                 onChange={mode => {
                   triggerHaptic('selection')
                   setKeepAwakeMode(mode)
@@ -465,7 +467,7 @@ function ConfigSettingsInner({
                 options={keepAwakeOptions}
                 value={keepAwakeMode}
               />
-            }
+            )}
             description={c.keepAwakeDesc}
             id={settingElementId(SETTING_IDS.advanced.keepAwake)}
             title={c.keepAwakeTitle}

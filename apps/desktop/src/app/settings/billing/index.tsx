@@ -194,9 +194,11 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
 
   return (
     <ListRow
-      action={
+      action={({ titleId, descriptionId }) => (
         <>
           <SegmentedControl
+            ariaDescribedBy={descriptionId}
+            ariaLabelledBy={titleId}
             disabled={controlsDisabled}
             onChange={value => setAmount(value)}
             options={presets.map(preset => ({ id: preset.amount, label: preset.label }))}
@@ -225,7 +227,7 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
             {b.buyCredits.buyButton}
           </Button>
         </>
-      }
+      )}
       below={
         <BuyCreditsOutcome
           amount={clampedAmount}

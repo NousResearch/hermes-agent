@@ -63,10 +63,12 @@ KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
 OX_ALPHA_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 OX_ALPHA_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
-#: Tencent TokenHub / Nebius Token Factory / Upstage Solar: plain three-level knobs.
+#: Tencent TokenHub / Nebius Token Factory: plain three-level knobs.
 TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 NEBIUS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
-SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+#: Upstage Solar (api.upstage.ai/v1, live 2026-10-17 on solar-pro4): low..max all turn reasoning
+#: on; none/minimal turn it off (the plugin omits the field for those); other values 400.
+SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 
 #: GLM-5.2 native knob: exactly ``high`` (its minimum thinking level) and ``max``; GLM-5.3
 #: widens it to a graded scale (live-verified, monotonic). ``xhigh`` requests the top tier.

@@ -879,6 +879,8 @@ reach the operator's files.
 and, if not, why. Across the plugin catalog at the time of writing, 299 of 348 entries run in the host
 unchanged.
 
+`hermes plugins show <name>` prints the resolved issue tracker, `hermes plugins list --json` includes `issues_url`, and `hermes dump` lists enabled plugins with their issue trackers.
+
 ### Interactive UI
 
 Running `hermes plugins` with no arguments opens a composite interactive screen:

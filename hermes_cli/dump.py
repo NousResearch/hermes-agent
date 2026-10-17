@@ -299,6 +299,23 @@ def _openai_version() -> str:
         return "not installed"
 
 
+def _plugin_lines() -> list[str]:
+    """List enabled plugin identities without paths or importing plugin code."""
+    try:
+        from hermes_cli import plugins_cmd
+        from hermes_cli.plugins_cmd_listing import _entry_issues_url, _entry_status
+
+        enabled, disabled = plugins_cmd._get_enabled_set(), plugins_cmd._get_disabled_set()
+        active = plugins_cmd._category_active_names()
+        return [
+            f"  {entry[0]} {entry[1]} {entry[3]} {_entry_issues_url(entry) or '-'}"
+            for entry in plugins_cmd._discover_all_plugins()
+            if _entry_status(entry, enabled, disabled, active) == "enabled"
+        ]
+    except Exception:  # health: allow BLE001 -- support dumps must survive any plugin metadata error without leaking paths
+        return ["  (unavailable)"]
+
+
 def run_dump(args):
     """Output a compact, copy-pasteable setup summary."""
     show_keys = getattr(args, "show_keys", False)
@@ -337,6 +354,7 @@ def run_dump(args):
         f"  platforms:          {', '.join(platforms) if platforms else 'none'}",
         f"  cron_jobs:          {_cron_summary(hermes_home)}",
         f"  skills:             {_count_skills(hermes_home)}",
+        "", "plugins:", *_plugin_lines(),
     ]
     overrides = _config_overrides(config)
     if overrides:

@@ -34,7 +34,7 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "kind", "hooks", "label", "optional_env", "platforms", "external_dependencies",
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
-    "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
+    "license", "homepage", "issues_url", "tags", "capabilities", "emits", "listens", "hermes", "depends",
     "requires_hermes", "python_runtime", "provides_locales", "requires_auth",
 }
 
@@ -126,6 +126,55 @@ def _manifest_int(raw: object, key: str, warn: str, fallback: Optional[int]) -> 
         return fallback
 
 
+def _http_url(value: object) -> str:
+    """Only HTTP(S) strings are report destinations; other manifest values are ignored."""
+    return value if isinstance(value, str) and value.startswith(("https://", "http://")) else ""
+
+
+def _github_issues_url(repo: str) -> str:
+    from hermes_cli.plugin_catalog import _normalize_repo
+
+    normalized = _normalize_repo(repo)
+    if re.fullmatch(r"github\.com/[\w.-]+/[\w.-]+", normalized):
+        return f"https://{normalized}/issues"
+    return ""
+
+
+_CATALOG_REPOS: dict[tuple[str, int], dict[str, str]] = {}
+
+
+def _catalog_repo(name: str) -> str:
+    """In-tree catalog ``repo`` for *name*. The name→repo index is parsed once per catalog-dir mtime, so
+    listing N plugins does not re-read every catalog YAML N times."""
+    from hermes_cli import plugin_catalog
+
+    root = plugin_catalog.get_catalog_dir()
+    try:
+        key = (str(root), root.stat().st_mtime_ns)
+    except OSError:
+        return ""
+    if key not in _CATALOG_REPOS:
+        _CATALOG_REPOS.clear()
+        _CATALOG_REPOS[key] = {e.name: e.repo for e in plugin_catalog.load_catalog(root)}
+    return _CATALOG_REPOS[key].get(name, "")
+
+
+def resolve_plugin_issues_url(name: str, manifest: Mapping | PluginManifest, plugin_dir: Optional[Path]) -> str:
+    """Resolve support metadata without loading plugins or consulting the live catalog."""
+    from hermes_cli.plugins_provenance import _git_origin_url
+
+    data = manifest if isinstance(manifest, Mapping) else vars(manifest)
+    if data.get("source") == "bundled":
+        return "https://github.com/NousResearch/hermes-agent/issues"
+    if explicit := _http_url(data.get("issues_url")):
+        return explicit
+    if url := _github_issues_url(_catalog_repo(name)):
+        return url
+    if plugin_dir and (url := _github_issues_url(_git_origin_url(Path(plugin_dir)) or "")):
+        return url
+    return _github_issues_url(_http_url(data.get("homepage")))
+
+
 def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     """Validate/normalize manifest v2 fields into PluginManifest kwargs (warnings, never failures).
 
@@ -180,7 +229,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     return {
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
         "config_schema": schema, "license": str(data.get("license") or ""),
-        "homepage": str(data.get("homepage") or ""), "tags": tags,
+        "homepage": str(data.get("homepage") or ""), "issues_url": _http_url(data.get("issues_url")), "tags": tags,
     }
 
 
@@ -383,6 +432,7 @@ class PluginManifest:
     config_schema: dict[str, Any] = field(default_factory=dict)
     license: str = ""
     homepage: str = ""
+    issues_url: str = ""
     tags: list[str] = field(default_factory=list)
     # Event-bus declarations, advisory (discoverability only): ``emits`` bare names published under
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.

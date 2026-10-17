@@ -1308,6 +1308,8 @@ class GatewayAdapterLifecycleMixin:
                         profile_name, platform.value,
                     )
             if not adapter:
+                if self._adapter_may_heal(platform, platform_config):
+                    self._schedule_secondary_profile_startup_reconnect(profile_name, platform, None)
                 continue
             # Same-token / same-listener conflict detection — refuse a duplicate poll or bind.
             credential_claim = self._adapter_credential_claim(platform, adapter)
@@ -1443,6 +1445,8 @@ class GatewayAdapterLifecycleMixin:
                 return None, None
             adapter = self._create_adapter(platform, profile_config)
             if adapter is None:
+                if self._adapter_may_heal(platform, profile_config):
+                    return None, False
                 logger.warning(
                     "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",
                     platform.value, profile_name,
@@ -1465,6 +1469,7 @@ class GatewayAdapterLifecycleMixin:
         """Reconnect a retryable secondary adapter under its own profile scope."""
         from gateway.run import _profile_runtime_scope, _reconnect_backoff
         attempts = 0
+        load_rearms = 0
         # Same escalation shape as the primary queue entry; ``queued_at`` is this task's start.
         queue_info = {"queued_at": time.monotonic(), "attempts": 0}
         current_task = asyncio.current_task()
@@ -1476,7 +1481,12 @@ class GatewayAdapterLifecycleMixin:
                         profile_name, platform, predecessor
                     )
                     if adapter is None:
-                        return
+                        if success is None:
+                            return
+                        from hermes_cli.plugins import get_plugin_manager
+                        if load_rearms < _MAX_PLUGIN_LOAD_REARMS and await self._run_in_executor_with_context(
+                                get_plugin_manager().rearm_failed_platform, platform.value):
+                            load_rearms += 1
                     if success and self._running:
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
@@ -1543,13 +1553,13 @@ class GatewayAdapterLifecycleMixin:
                         pending.pop(profile_name, None)
 
     def _schedule_secondary_profile_startup_reconnect(
-        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
+        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter | None
     ) -> None:
         """Queue a cold-start reconnect: startup failures happen BEFORE ``_running`` flips True (the
         regular scheduler would drop them), so park a task and hand off once live."""
-        if not getattr(adapter, "fatal_error_retryable", True):
+        if adapter is not None and not getattr(adapter, "fatal_error_retryable", True):
             return
-        if is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
+        if adapter is not None and is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
             # A live foreign token holder is an ownership conflict, not a blip: park it fatal.
             logger.error(
                 # Park it fatal (like ``duplicate_credential``) instead of retry-storming the token every
@@ -1587,10 +1597,10 @@ class GatewayAdapterLifecycleMixin:
         ))
 
     def _schedule_secondary_profile_reconnect(
-        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
+        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter | None
     ) -> None:
         """Schedule one runner-owned reconnect without sharing primary secrets."""
-        if not self._running or not adapter.fatal_error_retryable:
+        if not self._running or not getattr(adapter, "fatal_error_retryable", True):
             return
         pending = self._profile_failed_platforms
         if not isinstance(pending, dict):
@@ -1901,7 +1911,7 @@ class GatewayAdapterLifecycleMixin:
 
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""
-        from gateway.run import _instantiate_builtin_adapter
+        from gateway.run import _BUILTIN_ADAPTERS, _instantiate_builtin_adapter
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault("group_sessions_per_user", self.config.group_sessions_per_user)
             config.extra.setdefault(
@@ -1917,7 +1927,13 @@ class GatewayAdapterLifecycleMixin:
                         "(check dependencies and config)", platform.value,
                     )
                 return adapter
-        return _instantiate_builtin_adapter(platform, config)
+        adapter = _instantiate_builtin_adapter(platform, config)
+        if adapter is None and platform not in _BUILTIN_ADAPTERS:
+            logger.warning(
+                "Platform '%s' is not registered by a plugin; adapter creation cannot continue",
+                platform.value,
+            )
+        return adapter
 
     def _make_adapter_auth_check(
         self, platform: Platform, profile_name: Optional[str] = None

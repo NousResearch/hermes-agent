@@ -453,6 +453,70 @@ class TestSecondaryStartupFailureRecovery:
     for the life of the process."""
 
     @pytest.mark.asyncio
+    async def test_retryable_initial_adapter_none_schedules_reconnect(self, monkeypatch):
+        """An unregistered plugin at secondary startup must enter the recovery lane (#137268)."""
+        runner = _secondary_recovery_runner()
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, _SecondaryRecoveryAdapter()
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: None)
+        monkeypatch.setattr(runner, "_adapter_may_heal", lambda platform, config: True)
+        queued = []
+        monkeypatch.setattr(
+            runner,
+            "_schedule_secondary_profile_startup_reconnect",
+            lambda profile, platform, adapter: queued.append((profile, platform, adapter)),
+        )
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 0
+        assert queued == [("reviewer", Platform.DISCORD, None)]
+
+    @pytest.mark.asyncio
+    async def test_secondary_adapter_none_rearms_failed_plugin_load(self, monkeypatch):
+        """The secondary recovery lane re-arms a failed plugin load before retrying (#137268)."""
+        import hermes_cli.plugins as plugins_mod
+
+        runner = _secondary_recovery_runner()
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, _SecondaryRecoveryAdapter()
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: None)
+        monkeypatch.setattr(runner, "_adapter_may_heal", lambda platform, config: True)
+        manager = MagicMock()
+        manager.rearm_failed_platform.return_value = True
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+
+        async def run_in_worker(fn, *args):
+            return fn(*args)
+
+        async def end_after_backoff(_seconds):
+            runner._running = False
+
+        monkeypatch.setattr(runner, "_run_in_executor_with_context", run_in_worker)
+        monkeypatch.setattr("gateway.run_adapters.asyncio.sleep", end_after_backoff)
+
+        await runner._run_secondary_profile_reconnect("reviewer", Platform.DISCORD)
+
+        manager.rearm_failed_platform.assert_called_once_with("discord")
+
+    def test_unregistered_plugin_adapter_logs_the_reason(self, monkeypatch, caplog):
+        """The create seam distinguishes an unregistered plugin from a failed registered adapter."""
+        from gateway.platform_registry import platform_registry
+
+        runner = _secondary_recovery_runner()
+        monkeypatch.setattr(platform_registry, "is_registered", lambda name: False)
+        monkeypatch.setattr(gateway_run, "_instantiate_builtin_adapter", lambda platform, config: None)
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            assert runner._instantiate_adapter(Platform("irc"), PlatformConfig(enabled=True)) is None
+
+        assert "not registered by a plugin" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_retryable_initial_failure_schedules_reconnect(
         self, monkeypatch
     ):

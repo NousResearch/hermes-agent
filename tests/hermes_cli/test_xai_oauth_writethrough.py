@@ -52,6 +52,54 @@ def profile_and_root(tmp_path, monkeypatch):
 
 
 
+def test_write_through_updates_global_root_when_profile_has_no_own_block(profile_and_root):
+    """When a profile resolves tokens from root fallback, saving updates root and leaves profile unshadowed."""
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}})
+    _write_store(
+        root_path,
+        {"version": 1, "providers": {"xai-oauth": {"tokens": {"access_token": "root_old_acc", "refresh_token": "root_old_ref"}}}},
+    )
+
+    auth._save_xai_oauth_tokens(
+        {"access_token": "root_new_acc", "refresh_token": "root_new_ref"},
+        set_active=False,
+    )
+
+    root_store = _read_store(root_path)
+    assert root_store["providers"]["xai-oauth"]["tokens"]["access_token"] == "root_new_acc"
+    assert root_store["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "root_new_ref"
+
+    profile_store = _read_store(profile_path)
+    assert "xai-oauth" not in profile_store.get("providers", {})
+
+
+def test_profile_with_own_block_does_not_write_through_to_root(profile_and_root):
+    """When a profile has its own xai-oauth grant, saving updates the profile and leaves root untouched."""
+    profile_path, root_path = profile_and_root
+    _write_store(
+        profile_path,
+        {"version": 1, "providers": {"xai-oauth": {"tokens": {"access_token": "prof_old_acc", "refresh_token": "prof_old_ref"}}}},
+    )
+    _write_store(
+        root_path,
+        {"version": 1, "providers": {"xai-oauth": {"tokens": {"access_token": "root_acc", "refresh_token": "root_ref"}}}},
+    )
+
+    auth._save_xai_oauth_tokens(
+        {"access_token": "prof_new_acc", "refresh_token": "prof_new_ref"},
+        set_active=False,
+    )
+
+    profile_store = _read_store(profile_path)
+    assert profile_store["providers"]["xai-oauth"]["tokens"]["access_token"] == "prof_new_acc"
+    assert profile_store["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "prof_new_ref"
+
+    root_store = _read_store(root_path)
+    assert root_store["providers"]["xai-oauth"]["tokens"]["access_token"] == "root_acc"
+    assert root_store["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "root_ref"
+
+
 def test_write_through_is_noop_in_classic_mode(tmp_path, monkeypatch):
     """Classic mode (profile == root) already saves to root; no double write."""
     profile_path = tmp_path / "auth.json"

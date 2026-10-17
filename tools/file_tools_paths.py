@@ -1,4 +1,3 @@
-/Users/junkawasaki/.zshenv:.:1: no such file or directory: /Users/junkawasaki/.cargo/env
 """Path resolution for the file tools: task-aware base dir, ``~`` expansion, workspace-divergence warning.
 
 Core invariant: the base directory anchoring relative paths is ALWAYS absolute

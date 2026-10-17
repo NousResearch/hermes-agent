@@ -248,33 +248,88 @@ class SessionPersistenceMixin:
     def _chat_labels_meta_key(platform, scope_id, chat_id) -> str:
         return f"gateway_chat_labels:{getattr(platform, 'value', platform)}:{scope_id or ''}:{chat_id}"
 
+    def _pending_chat_labels(self) -> dict:
+        """Read the fallback journal; an unreadable journal must stay retryable, not become empty."""
+        try:
+            raw = (self.sessions_dir / "chat_labels.pending.json").read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            return {}
+        pending = json.loads(raw)
+        if not isinstance(pending, dict) or any(
+            not key.startswith("gateway_chat_labels:") or not isinstance(labels, list)
+            or len(labels) != 2 or any(value is not None and not isinstance(value, str) for value in labels)
+            for key, labels in pending.items()
+        ):
+            raise ValueError("invalid chat label fallback journal")
+        return pending
+
+    def _save_pending_chat_labels(self, pending: dict) -> None:
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(self.sessions_dir / "chat_labels.pending.json", pending,
+                          mode=0o600, fsync_dir=True)
+
+    def _replay_chat_labels(self, pending: dict, setter) -> None:
+        """Keep the journal until every SQLite write commits and journal cleanup succeeds.
+
+        Replaying a partially committed batch is idempotent. Readers still use the journal if
+        replay or cleanup fails, so a stale SQLite value never replaces an outage observation.
+        The caller holds the label lock, including across journal publication and cleanup.
+        """
+        if not pending or setter is None:
+            return
+        try:
+            for key, labels in pending.items():
+                setter(key, json.dumps(labels))
+            self._save_pending_chat_labels({})
+        except Exception as exc:
+            logger.warning("gateway.session: chat label fallback replay deferred: %s", exc, exc_info=True)
+
     def record_chat_labels(self, source: SessionSource) -> bool:
         """Persist *source*'s ``chat_name`` / ``chat_topic`` as the chat's current labels, at the
         moment they are observed; True once written. A session origin cannot answer "what is this
         chat called now": it is written when its session is created, which can be after a newer
         observation (a delayed first turn), and a reset inherits it under a fresh ``created_at``.
 
-        False when there is no database handle right now (open failed, backoff, JSONL fallback):
-        nothing was written, so the caller must not treat these labels as recorded."""
-        setter = self._routing_db_method("set_meta")
-        if setter is None:
-            return False
-        setter(self._chat_labels_meta_key(source.platform, source.scope_id, source.chat_id),
-               json.dumps([source.chat_name, source.chat_topic]))
-        return True
+        With no writable database, journal the observation beside the routing fallback instead.
+        Later label reads/writes replay it into SQLite. A failed journal write raises, so the
+        relay never marks an observation recorded without a durable copy."""
+        key = self._chat_labels_meta_key(source.platform, source.scope_id, source.chat_id)
+        labels = [source.chat_name, source.chat_topic]
+        with self._lazy("_chat_labels_lock", threading.Lock):
+            pending = self._pending_chat_labels()
+            setter = self._routing_db_method("set_meta")
+            if not pending and setter is not None:
+                try:
+                    setter(key, json.dumps(labels))
+                    return True
+                except Exception as exc:
+                    logger.warning("gateway.session: chat label write using fallback: %s", exc, exc_info=True)
+                    setter = None  # do not repeat the failed write in this observation
+            # Once a journal exists, publish the newer observation BEFORE touching SQLite.
+            # Otherwise a crash/cleanup fault could replay an older value over the new DB write.
+            pending[key] = labels
+            self._save_pending_chat_labels(pending)
+            self._replay_chat_labels(pending, setter)
+            return True
 
     def chat_labels(self, platform, scope_id, chat_id) -> Optional[tuple]:
         """The ``(chat_name, chat_topic)`` last recorded for a chat, or None when none was. Raises
-        when the store cannot be read, including when there is no database handle right now:
-        "unreadable now" is not "never labelled"."""
-        getter = self._routing_db_method("get_meta")
-        if getter is None:
-            raise LookupError("session database unavailable")
-        raw = getter(self._chat_labels_meta_key(platform, scope_id, chat_id))
-        if not raw:
-            return None
-        chat_name, chat_topic = json.loads(raw)
-        return chat_name, chat_topic
+        when neither the journal nor SQLite can answer for this chat: "unreadable now" is not
+        "never labelled". Pending observations remain authoritative during database recovery."""
+        key = self._chat_labels_meta_key(platform, scope_id, chat_id)
+        with self._lazy("_chat_labels_lock", threading.Lock):
+            pending = self._pending_chat_labels()
+            self._replay_chat_labels(pending, self._routing_db_method("set_meta"))
+            if key in pending:
+                return tuple(pending[key])  # includes an explicit (None, None) observation
+            getter = self._routing_db_method("get_meta")
+            if getter is None:
+                raise LookupError("session database unavailable")
+            raw = getter(key)
+            if not raw:
+                return None
+            chat_name, chat_topic = json.loads(raw)
+            return chat_name, chat_topic
 
     def _load_routing_rows_locked(self) -> bool:
         """Load state.db routing entries into ``_entries``; False when there is no loader or the

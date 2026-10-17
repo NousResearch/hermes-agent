@@ -176,6 +176,14 @@ same way, or the two lanes name one user differently. `bufferId` is
 present when the forward was buffered (Phase 5 §5.3 buffered-only flip) and the
 gateway acks it after durable handoff.
 
+Chat labels use the routing store's SQLite metadata while it is writable. During
+a database outage, observations are atomically journaled in
+`sessions_dir/chat_labels.pending.json`, even with `gateway.write_sessions_json: false`.
+The first subsequent label read or write replays pending observations into SQLite;
+pending values take precedence until replay succeeds. Cleared names/topics are
+observations too. A failed replay or journal cleanup retains the pending batch for
+retry, and a failed journal write is not marked recorded by the relay adapter.
+
 
 
 ### SessionSource fields (the wire surface)

@@ -798,6 +798,7 @@ class SessionStore(
         self._routing_fallback_baseline: Optional[dict[str, Any]] = None
         self._lock = threading.Lock()  # guards _entries / _loaded only
         self._save_lock = threading.Lock()  # whole-index persistence, never held with _lock
+        self._chat_labels_lock = threading.Lock()  # label journal publication / SQLite replay
         # Fast (single-entry) and full saves share one generation counter so they are totally
         # ordered; _fast_persisted_entries: key -> (revision, entry_json) since the last rewrite.
         self._routing_generation = 0

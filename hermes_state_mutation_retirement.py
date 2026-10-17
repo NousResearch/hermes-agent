@@ -165,13 +165,21 @@ def retire_mutation_receipts(conn, session_ids):
             conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), key))
 
 
+# Creation ids of the local conversations a gateway door derives and walks by generation
+# (``first_generation``): Bot Chat and A2A contexts.
+_DERIVED_LOCAL_PREFIXES = ('bot-chat:', 'a2a:')
+# Stored sources of the API sessions whose ids a door derives: the header-less chat and a
+# Responses/Runs chain (``api_server``) and a hosted-room member (``bot_room``).
+_DERIVED_SOURCES = ('api_server', 'bot_room')
+
+
 def _local_conversations(conn):
-    """``(members, bot_chats)``: member id -> every id of its local conversation (the creation id
+    """``(members, derived)``: member id -> every id of its local conversation (the creation id
     (policy, FIFO, generation), each receipt lineage segment and the current target), and the ids
-    of every Bot Chat conversation. One prefix scan, not a lookup per swept id. Malformed receipts
-    name nothing."""
+    of every derived (Bot Chat, A2A) conversation. One prefix scan, not a lookup per swept id.
+    Malformed receipts name nothing."""
     from hermes_state_local import POLICY_PREFIX
-    members, bot_chats = {}, set()
+    members, derived = {}, set()
     for (raw,) in conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)):
         try:
             receipt = json.loads(raw)
@@ -183,9 +191,16 @@ def _local_conversations(conn):
         ids = tuple(x for x in [receipt.get('session_id'), *(lineage if isinstance(lineage, list) else []),
                                 entry.get('session_id') if isinstance(entry, dict) else None] if isinstance(x, str))
         members.update(dict.fromkeys(ids, ids))
-        if str(receipt.get('request_id') or '').startswith('bot-chat:'):
-            bot_chats.update(ids)
-    return members, bot_chats
+        if str(receipt.get('request_id') or '').startswith(_DERIVED_LOCAL_PREFIXES):
+            derived.update(ids)
+    return members, derived
+
+
+def _derived_api_sessions(conn, session_ids):
+    """The ids among *session_ids* whose stored source is a derived API session's."""
+    return {row[0] for row in conn.execute(
+        f"SELECT id FROM sessions WHERE source IN ({','.join('?' * len(_DERIVED_SOURCES))}) "
+        "AND id IN (SELECT value FROM json_each(?))", (*_DERIVED_SOURCES, json.dumps(list(session_ids))))}
 
 
 def retire_prunable(conn, session_ids):
@@ -196,15 +211,19 @@ def retire_prunable(conn, session_ids):
     work (the owner's queued admission continues on the current segment), every one is skipped.
 
     A sweep's markers age out at the retry horizon: housekeeping retires thousands of ids a pass
-    (cron), and a permanent marker each would grow ``state_meta`` without bound. A Bot Chat's stays:
-    its mailbox receipts outlive the horizon and its generation walk would reissue the id."""
-    swept, (conversations, bot_chats) = set(session_ids), _local_conversations(conn)
+    (cron), and a permanent marker each would grow ``state_meta`` without bound. A derived id's
+    stays (Bot Chat, A2A context, header-less chat, Responses chain, hosted-room member): its
+    conversation resumes on the next generation, and the generation walk stops at the first
+    unfenced id, so an aged-out marker would send the next turn back to the swept generation. A
+    Bot Chat's mailbox receipts also outlive the horizon."""
+    swept, (conversations, derived) = set(session_ids), _local_conversations(conn)
 
     def removable(sid):
         whole = conversations.get(sid, (sid,))
         return swept.issuperset(whole) and not any(conn.execute(_LIVE_LEDGER_SQL, (x, x)).fetchone() for x in whole)
     quiet = [sid for sid in session_ids if removable(sid)]
-    retire_sessions(conn, quiet, expiring=[sid for sid in quiet if sid not in bot_chats])
+    derived |= _derived_api_sessions(conn, quiet)
+    retire_sessions(conn, quiet, expiring=[sid for sid in quiet if sid not in derived])
     return quiet
 
 

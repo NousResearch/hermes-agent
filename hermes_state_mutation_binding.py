@@ -42,7 +42,7 @@ def import_history_control(conn, actor, session_ids):
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (BINDING_PREFIX + sid, binding))
 
 
-def authorize_history(conn, actor, session_id, *, claim=False):
+def authorize_history(conn, actor, session_id, *, claim=False, db=None, operation=None, payload=None):
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
     if row is None:
         return False
@@ -50,6 +50,38 @@ def authorize_history(conn, actor, session_id, *, claim=False):
     # transcript as imported history, even if stale import metadata exists.
     if row['session_key'] or row['chat_id'] or row['origin_json']:
         return False
+    subagent = row['source'] == 'subagent'
+    if subagent:
+        # A saved control binding must never become an execution/adoption grant.
+        if db is None or operation not in {'archive', 'sidebar', 'delete'}:
+            raise RuntimeStoreError('permission_denied')
+        if operation != 'delete' and (not isinstance(payload, dict) or 'archived' not in payload
+                or set(payload) - {'archived', 'pinned'} or payload.get('pinned', False) is not False):
+            raise RuntimeStoreError('permission_denied')
+        if row['profile_name'] not in (None, '', db._own_profile_name() or 'default'):
+            raise RuntimeStoreError('profile_mismatch')
+        if row['ended_at'] is None:
+            raise RuntimeStoreError('session_busy')
+        if _owner_user(row) and row['user_id'] not in (actor.subject, _login_label(actor.subject)):
+            raise RuntimeStoreError('permission_denied')
+        from hermes_state_mutation_guards import require_idle, _continuation_edges, delete_targets
+        from hermes_state_sessions import _LINEAGE_CTE_SQL
+        # History rights cover this delegate, not an ambiguous chain or a nested worker subtree.
+        if (row['end_reason'] == 'compression' or _continuation_edges(conn, session_id)
+                or (operation == 'delete' and delete_targets(conn, session_id) != [session_id])):
+            raise RuntimeStoreError('permission_denied')
+        # The delete writer detaches every immediate child, including unmarked and branch rows.
+        if operation == 'delete' and conn.execute(
+                'SELECT 1 FROM sessions WHERE parent_session_id=? LIMIT 1', (session_id,)).fetchone() is not None:
+            raise RuntimeStoreError('permission_denied')
+        # shortcut: non-singleton metadata is refused, revisit when exact-child writes are supported.
+        if operation != 'delete' and conn.execute(
+                _LINEAGE_CTE_SQL + ' SELECT 1 FROM lineage WHERE id<>? LIMIT 1',
+                (session_id, session_id, session_id)).fetchone() is not None:
+            raise RuntimeStoreError('permission_denied')
+        # Idle checks reclaim stale guards, so they belong only in the receipt writer transaction.
+        if claim:
+            require_idle(db, conn, [session_id])
     key = BINDING_PREFIX + session_id
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
@@ -57,7 +89,7 @@ def authorize_history(conn, actor, session_id, *, claim=False):
         if saved[0] != binding:
             raise RuntimeStoreError('permission_denied')
         return True
-    if row['source'] not in _history_sources():
+    if not subagent and row['source'] not in _history_sources():
         return False
     if _owner_user(row) and row['user_id'] not in (actor.subject, _login_label(actor.subject)):
         raise RuntimeStoreError('permission_denied')

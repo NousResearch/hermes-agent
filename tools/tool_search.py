@@ -385,17 +385,43 @@ def _clip_description(text: str, cap: int = 500) -> str:
     return text if len(text) <= cap else text[:cap] + "…"
 
 
+def _compact_parameters(parameters_schema: Any, max_props: int = 16) -> dict[str, str]:
+    """Convert JSON schema properties into compact string signatures e.g. 'type (required)'."""
+    if not isinstance(parameters_schema, dict):
+        return {}
+    props = parameters_schema.get("properties")
+    if not isinstance(props, dict):
+        return {}
+    required_raw = parameters_schema.get("required")
+    required = set(required_raw) if isinstance(required_raw, (list, set, tuple)) else set()
+    compact: dict[str, str] = {}
+    for name, pdef in list(props.items())[:max_props]:
+        if not isinstance(name, str):
+            continue
+        ptype = pdef.get("type", "any") if isinstance(pdef, dict) else "any"
+        req_str = " (required)" if name in required else ""
+        compact[name[:64]] = f"{ptype}{req_str}"
+    return compact
+
+
 def _shared_tool_record(entry: CatalogEntry) -> dict[str, Any]:
     """One record for the shared ``tools`` map (per-query groups carry names only);
-    ``required`` lets the model attempt a trivial call without a ``tool_describe`` round-trip."""
+    ``required`` and ``compact_parameters`` let the model attempt calls without a
+    ``tool_describe`` round-trip."""
     try:
-        required = entry.schema["function"]["parameters"]["required"]
+        fn_params = entry.schema["function"]["parameters"]
+        required = fn_params.get("required", []) if isinstance(fn_params, dict) else []
     except (TypeError, KeyError, AttributeError):
+        fn_params = {}
         required = []
-    return {"source": entry.source, "source_name": entry.source_name,
-            "description": _clip_description(entry.description or ""),
-            "required": [r[:64] for r in (required if isinstance(required, list) else [])
-                         if isinstance(r, str)][:32]}
+    return {
+        "source": entry.source,
+        "source_name": entry.source_name,
+        "description": _clip_description(entry.description or ""),
+        "required": [r[:64] for r in (required if isinstance(required, list) else [])
+                     if isinstance(r, str)][:32],
+        "compact_parameters": _compact_parameters(fn_params),
+    }
 
 
 def _available_source_summary(catalog: list[CatalogEntry]) -> list[dict[str, Any]]:

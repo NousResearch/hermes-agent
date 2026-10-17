@@ -49,10 +49,87 @@ def _stem(token: str) -> str:
     return _thread_local.stemmer.stemWord(token)
 
 
+# Domain-specific synonym clusters of common agent action verbs.
+_RAW_ACTION_CLUSTERS = [
+    # fetch / scrape / extract / crawl / download / retrieve
+    {"fetch", "scrape", "extract", "crawl", "download", "retrieve", "抓取", "获取", "提取", "爬取"},
+    # inspect / examine / read / view / display
+    {"inspect", "examine", "read", "view", "display", "查看", "显示"},
+    # search / query / find / lookup / locate / scan
+    {"search", "query", "find", "lookup", "locate", "scan", "搜索", "查询", "查找"},
+    # list / enumerate / index
+    {"list", "enumerate", "index", "列出"},
+    # modify / update / edit / patch / change
+    {"modify", "update", "edit", "patch", "change", "修改", "更新", "编辑"},
+    # delete / remove / drop / purge / erase
+    {"delete", "remove", "drop", "purge", "erase", "删除", "移除"},
+    # send / post / publish / deliver / transmit
+    {"send", "post", "publish", "deliver", "transmit", "发送", "推送"},
+    # check / test / verify / validate / audit
+    {"check", "test", "verify", "validate", "audit", "检查", "测试", "验证"},
+]
+
+
+def _build_action_synonyms() -> dict[str, frozenset[str]]:
+    mapping: dict[str, set[str]] = {}
+    for cluster in _RAW_ACTION_CLUSTERS:
+        stemmed = {_stem(word) for word in cluster}
+        for sword in stemmed:
+            mapping.setdefault(sword, set()).update(stemmed - {sword})
+    return {k: frozenset(v) for k, v in mapping.items()}
+
+
+SEMANTIC_ACTION_SYNONYMS: dict[str, frozenset[str]] = _build_action_synonyms()
+
+
+def _is_cjk(char: str) -> bool:
+    """Return True if character is within standard CJK Unified Ideographs unicode ranges."""
+    cp = ord(char)
+    return (
+        0x4E00 <= cp <= 0x9FFF
+        or 0x3400 <= cp <= 0x4DBF
+        or 0x20000 <= cp <= 0x2A6DF
+        or 0xF900 <= cp <= 0xFAFF
+    )
+
+
+def _cjk_ngrams(text: str, n: int = 2) -> list[str]:
+    """Extract unigrams from contiguous CJK character sequences plus recognized multi-character action words."""
+    if not text:
+        return []
+    tokens: list[str] = [ch for ch in text if _is_cjk(ch)]
+    # Include recognized multi-character semantic action terms if present in text
+    for syn_word in SEMANTIC_ACTION_SYNONYMS:
+        if len(syn_word) > 1 and syn_word in text:
+            tokens.append(syn_word)
+    return tokens
+
+
+def _expand_semantic_tokens(tokens: list[str]) -> list[str]:
+    """Expand stemmed tokens with their domain-equivalent semantic synonyms."""
+    if not tokens:
+        return []
+    expanded = list(tokens)
+    seen = set(tokens)
+    for tok in tokens:
+        syns = SEMANTIC_ACTION_SYNONYMS.get(tok)
+        if syns:
+            for s in syns:
+                if s not in seen:
+                    seen.add(s)
+                    expanded.append(s)
+    return expanded
+
+
 def _tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens, Snowball-stemmed (English); shared by the index and
-    query paths so "issues" matches ``create_issue``."""
-    return [_stem(token.lower()) for token in _TOKEN_RE.findall(text)] if text else []
+    """Lowercase alphanumeric tokens, Snowball-stemmed (English); plus CJK n-grams."""
+    if not text:
+        return []
+    tokens = [_stem(token.lower()) for token in _TOKEN_RE.findall(text)]
+    cjk = _cjk_ngrams(text)
+    if cjk:
+        tokens.extend(cjk)
+    return tokens
 
 
 def _fn(td: dict[str, Any]) -> dict[str, Any]:
@@ -78,16 +155,30 @@ def _registry_toolset(name: str) -> Optional[str]:
 
 def _entry_search_text(td: dict[str, Any], source_label: str = "") -> str:
     """Search-text blob: split name words + source label + description + top-level parameter
-    names (schema bodies are noise with no recall gain). The ``mcp__`` prefix is dropped — it
-    is in every MCP document, so its IDF is ~0. The source label lets a service-name query
-    ("linear") reach a tool whose own name omits the vendor."""
+    names + action synonyms (the ``mcp__`` prefix is dropped — it is in every MCP document,
+    so its IDF is ~0). The source label lets a service-name query ("linear") reach a tool
+    whose own name omits the vendor."""
     fn = _fn(td)
     name = fn.get("name", "")
     name = name.removeprefix("mcp__")
     name_words = re.sub(r"[_.:-]", " ", name)
     extra = source_label if source_label and source_label not in name_words.split() else ""
     param_names = " ".join(((fn.get("parameters") or {}).get("properties") or {}).keys())
-    return f"{name_words} {extra} {fn.get('description', '') or ''} {param_names}"
+    base_text = f"{name_words} {extra} {fn.get('description', '') or ''} {param_names}"
+    # Expand action synonyms found in tool name and description
+    action_syns: list[str] = []
+    seen: set[str] = set()
+    for word in _TOKEN_RE.findall(f"{name_words} {fn.get('description', '') or ''}"):
+        stemmed = _stem(word.lower())
+        syns = SEMANTIC_ACTION_SYNONYMS.get(stemmed)
+        if syns:
+            for s in syns:
+                if s not in seen:
+                    seen.add(s)
+                    action_syns.append(s)
+    if action_syns:
+        return f"{base_text} {' '.join(action_syns)}"
+    return base_text
 
 
 def _classify_source(name: str) -> tuple[str, str]:
@@ -143,13 +234,14 @@ def _corpus_stats(catalog: list[CatalogEntry]) -> _CorpusStats:
 
 
 def _gate_token(query_tokens: list[str], doc_freq: dict[str, int], n_docs: int) -> str:
-    """The query token with the highest IDF: the word that names the intent. ``send``,
-    ``read``, ``create`` sit in dozens of tool documents and separate nothing; ``gmail``,
-    ``github``, ``incident`` sit in a few and separate everything. A document without this
+    """The query token with the highest IDF: the word that names the intent. send,
+    read, create sit in dozens of tool documents and separate nothing; gmail,
+    github, incident sit in a few and separate everything. A document without this
     token answered a different question, however many common tokens it shares."""
     def _idf(token: str) -> float:
         df = doc_freq.get(token, 0)
         return math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+
     return max(query_tokens, key=_idf)
 
 
@@ -189,21 +281,43 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
     corpus_stats = corpus_stats or _corpus_stats(catalog)
     doc_freq = corpus_stats[2]
     gate = _gate_token(query_tokens, doc_freq, corpus_stats[3])
-    answerable = {t for t in query_tokens if doc_freq.get(t, 0) > 0}
+    answerable = {
+        t for t in query_tokens
+        if doc_freq.get(t, 0) > 0
+        or any(doc_freq.get(s, 0) > 0 for s in SEMANTIC_ACTION_SYNONYMS.get(t, ()))
+    }
     required_terms = _required_term_coverage(len(answerable))
     exact_name = query.strip().lower()
 
-    def _admitted(entry: CatalogEntry) -> bool:
-        """Carries the intent word AND enough of the answerable terms (exact name is exempt)."""
-        if entry.name.lower() == exact_name:
-            return True
-        tokens = set(entry._tokens)
-        return gate in tokens and sum(1 for t in answerable if t in tokens) >= required_terms
+    gate_synonyms = SEMANTIC_ACTION_SYNONYMS.get(gate, frozenset())
 
-    scored = [
-        (float("inf") if entry.name.lower() == exact_name
-         else _bm25_score(query_tokens, entry._tokens, *corpus_stats), entry)
-        for entry in catalog if _admitted(entry)]
+    def _admitted(entry: CatalogEntry) -> tuple[bool, float]:
+        """Carries the intent word AND enough of the answerable terms (exact name is exempt).
+        Returns (is_admitted, score_multiplier)."""
+        if entry.name.lower() == exact_name:
+            return True, 1.0
+        tokens = set(entry._tokens)
+        if gate in tokens and sum(1 for t in answerable if t in tokens) >= required_terms:
+            return True, 1.0
+        # Soft-gate fallback: gate token matches via semantic synonyms
+        if gate_synonyms and any(s in tokens for s in gate_synonyms):
+            matched = sum(
+                1 for t in answerable
+                if t in tokens or any(st in tokens for st in SEMANTIC_ACTION_SYNONYMS.get(t, ()))
+            )
+            if matched >= required_terms:
+                return True, 0.85
+        return False, 0.0
+
+    scored = []
+    for entry in catalog:
+        admitted, multiplier = _admitted(entry)
+        if admitted:
+            if entry.name.lower() == exact_name:
+                score = float("inf")
+            else:
+                score = _bm25_score(query_tokens, entry._tokens, *corpus_stats) * multiplier
+            scored.append((score, entry))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [e for _, e in scored[:limit]]
 

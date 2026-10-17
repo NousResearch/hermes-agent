@@ -32,12 +32,12 @@ class TestMinimaxM3StaleCacheGuard:
 
 
 class TestMinimaxThinkingSupport:
-    """Verify that MiniMax gets manual thinking (not adaptive).
+    """Verify that older MiniMax models retain manual thinking.
 
     MiniMax's Anthropic-compat endpoint officially supports the thinking
     parameter (https://platform.minimax.io/docs/api-reference/text-anthropic-api).
-    It should get manual thinking (type=enabled + budget_tokens), NOT adaptive
-    thinking (which is Claude 4.6-only).
+    M2.x should retain manual thinking (type=enabled + budget_tokens); the M3.1
+    adaptive-thinking contract is tested separately below.
     """
 
     def test_minimax_m27_gets_manual_thinking(self):

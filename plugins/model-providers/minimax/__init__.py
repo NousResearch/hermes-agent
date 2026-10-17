@@ -1,13 +1,15 @@
 """MiniMax provider profiles (international, China, OAuth).
 
 Default routes use anthropic_messages (base URLs end in /anthropic). Users can
-opt MiniMax-M3 into the OpenAI-compatible https://api.minimax.io/v1 route,
-which needs MiniMax-specific reasoning controls in extra_body.
+opt MiniMax-M3 or M3.1 into the OpenAI-compatible https://api.minimax.io/v1
+route; M3 uses a thinking toggle, while M3.1 accepts reasoning_effort.
 """
 
 from typing import Any
 from urllib.parse import urlparse
 
+from agent.anthropic_endpoints import _model_name_is_minimax_adaptive
+from agent.reasoning_effort import MINIMAX_M31_EFFORTS, clamp_effort, requested_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -18,16 +20,24 @@ def _is_minimax_global_openai_base_url(base_url: str | None) -> bool:
 
 
 class MiniMaxProfile(ProviderProfile):
-    """MiniMax — M3 OpenAI-compatible reasoning controls."""
+    """MiniMax — model-specific OpenAI-compatible reasoning controls."""
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None,
         base_url: str | None = None, **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """M3 on api.minimax.io/v1 keeps thinking inline unless ``reasoning_split``
-        is sent; effort levels only select adaptive vs disabled ``thinking``."""
+        """M3 needs ``reasoning_split`` and a thinking toggle; M3.1 already splits
+        reasoning and accepts graded effort, but rejects disabled thinking."""
+        if not _is_minimax_global_openai_base_url(base_url):
+            return {}, {}
+        if _model_name_is_minimax_adaptive(model):
+            # M3.1 rejects both disabled thinking and effort=none. Omit those
+            # requests, as on the Anthropic route; the model keeps thinking.
+            effort = requested_effort(reasoning_config)
+            clamped = clamp_effort(None if effort == "none" else effort, MINIMAX_M31_EFFORTS)
+            return ({}, {"reasoning_effort": clamped}) if clamped in MINIMAX_M31_EFFORTS else ({}, {})
         is_m3 = str(model or "").strip().lower() in {"minimax-m3", "minimax/minimax-m3"}
-        if not _is_minimax_global_openai_base_url(base_url) or not is_m3:
+        if not is_m3:
             return {}, {}
         extra_body: dict[str, Any] = {"reasoning_split": True}
         if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:

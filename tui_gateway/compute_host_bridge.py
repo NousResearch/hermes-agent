@@ -149,6 +149,8 @@ def _relay_compute_host_rpc(message: dict) -> bool:
             with _history_lock(session):
                 session["_compute_host_open_request"] = {
                     "id": message["id"], "method": message["method"], "params": dict(params)}
+    elif isinstance(params, dict) and params.get("type") == "message.complete":
+        _settle_mirrored_inflight_turn(_sessions.get(str(params.get("session_id") or "")), params.get("payload"))
     elif isinstance(params, dict) and params.get("type") == "request.cancel":
         session = _sessions.get(str(params.get("session_id") or ""))
         payload = params.get("payload")
@@ -157,6 +159,24 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                 if _open_request_matches(session, payload.get("id")):
                     session.pop("_compute_host_open_request", None)
     return write_json(message)
+
+
+def _settle_mirrored_inflight_turn(session: dict | None, payload) -> None:
+    """Clear the parent's in-flight mirror BEFORE relaying a successful ``message.complete``.
+
+    The inline runner clears ``inflight_turn`` before it emits ``message.complete``
+    (``_complete_turn_payload``); the isolated path used to keep it until ``turn.done``
+    arrived a moment later. A client that sends its next prompt as soon as it sees
+    ``message.complete`` lands in that window: ``running`` is still True, so the prompt
+    is queued, and if its text equals the finished turn's prompt ``_enqueue_prompt``
+    drops it as a self-duplicate of the live turn while the RPC still answers
+    ``queued``. The prompt never runs. Error completions keep the mirror (the inline
+    path retains a failed turn for resume replay too)."""
+    if session is None or (isinstance(payload, dict) and payload.get("status") == "error"):
+        return
+    with _history_lock(session):
+        if session.get("running") and session.get("_compute_host_turn_id"):
+            _clear_inflight_turn(session)
 
 
 def _history_lock(session: dict):

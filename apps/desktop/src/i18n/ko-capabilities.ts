@@ -115,8 +115,6 @@ export const koCapabilities: Pick<
         '플러그인의 “+ Add to this Agent”(이 에이전트에 추가)를 누르세요. 검토된 항목은 선택한 프로필에 고정 커밋으로 설치됩니다. 에이전트와 데스크톱을 묶은 플러그인은 두 구성 요소를 모두 제공합니다.',
       alreadyInstalled: name => `${name}은(는) 이 프로필에 이미 설치되어 있습니다.`,
       catalogProvenance: sha => `Hermes 카탈로그${sha ? `의 고정 커밋 ${sha}` : ''}에서 설치했습니다.`,
-      tierOfficial: '공식',
-      tierCommunity: '커뮤니티',
       updateToPin: sha => `${sha}(으)로 업데이트`,
       updateFailed: name => `${name}을(를) 업데이트하지 못했습니다`,
       updated: name =>

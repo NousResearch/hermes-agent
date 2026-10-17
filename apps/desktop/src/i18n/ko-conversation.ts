@@ -470,7 +470,6 @@ export const koConversation: Pick<
       heartbeatEveryHours: hours => `${hours}시간마다`,
       heartbeatEverySeconds: seconds => `${seconds}초마다`,
       heartbeatNext: time => `다음 ${time}`,
-      heartbeatDueWaitingForIdle: '실행 시각 도달 — 유휴 상태 대기 중',
       heartbeatActions: '하트비트 작업',
       pauseHeartbeat: '하트비트 일시 중지',
       resumeHeartbeat: '하트비트 재개',

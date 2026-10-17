@@ -58,11 +58,18 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     from hermes_state import SessionDB as _SessionDB
     runtime = _SessionDB.session_gateway_runtime(session_meta)
     base_url = runtime.get("base_url") or None
-    provider = _heal_bare_custom_provider(runtime.get("provider") or None, base_url=base_url, model=stored_model)
+    api_mode = runtime.get("api_mode") or None
+    stored_provider = runtime.get("provider") or None
+    provider = _heal_bare_custom_provider(stored_provider, base_url=base_url, model=stored_model)
+    if provider != stored_provider:
+        # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
+        # endpoint and wire, which must not ride on the ambient provider.
+        base_url = None
+        if provider is None:
+            api_mode = None
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
         return None
-    api_mode = runtime.get("api_mode") or None
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
@@ -197,6 +204,15 @@ def _run_confirm_and_apply(cli, target, *args) -> None:
         threading.Thread(target=target, args=args, daemon=True).start()
     else:
         target(*args)
+
+
+def _ask_switch_anyway(cli, title: str, detail: str) -> bool:
+    """The model-guard prompt (switch anyway once, or cancel): True only on an explicit yes."""
+    choices = [
+        ("once", t("cli.model.choice_switch_anyway"), t("cli.model.desc_switch_anyway")),
+        ("cancel", t("cli.model.choice_cancel"), t("cli.model.desc_keep_current_model"))]
+    raw = cli._prompt_text_input_modal(title=f"!!! {title} !!!", detail=detail, choices=choices, timeout=120)
+    return cli._normalize_slash_confirm_choice(raw, choices) == "once"
 
 
 # `/model` usage block: (invocation form, description key). Forms are command syntax (never
@@ -550,6 +566,7 @@ class CLIModelSwitchMixin:
 
     def _confirm_expensive_model_switch(self, result) -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
+        self._confirmed_switch_warning = None
         if not getattr(result, "success", False):
             return True
         try:
@@ -564,12 +581,22 @@ class CLIModelSwitchMixin:
             warning = None
         if warning is None:
             return True
-        choices = [
-            ("once", t("cli.model.choice_switch_anyway"), t("cli.model.desc_switch_anyway")),
-            ("cancel", t("cli.model.choice_cancel"), t("cli.model.desc_keep_current_model"))]
-        raw = self._prompt_text_input_modal(
-            title=f"!!! {warning.title} !!!", detail=warning.message, choices=choices, timeout=120)
-        return self._normalize_slash_confirm_choice(raw, choices) == "once"
+        if not _ask_switch_anyway(self, warning.title, warning.message):
+            return False
+        self._confirmed_switch_warning = warning.message
+        return True
+
+    def _confirm_owner_model_switch(self, refusal) -> bool:
+        """The gateway owner refused a guarded target (``confirmation_required``: cost, data policy,
+        large context; Ink/Desktop/ACP show the same ``confirm_message``): ask in the same prompt as
+        ``_confirm_expensive_model_switch``. Only a yes re-sends with the owner's token. The identical
+        warning the user just confirmed for this switch is not asked twice."""
+        from hermes_cli.gateway_mutations import confirmation_title
+        message = refusal.get("confirm_message") or ""
+        confirmed, self._confirmed_switch_warning = getattr(self, "_confirmed_switch_warning", None), None
+        if message and message == confirmed:
+            return True
+        return _ask_switch_anyway(self, confirmation_title(refusal), message)
 
     def _confirm_and_apply_model_switch_result(
         self, result, persist_global: bool, custom_providers=None, reasoning_effort: str = "") -> None:
@@ -601,9 +628,10 @@ class CLIModelSwitchMixin:
 
     def _restore_model_runtime_snapshot(self, snapshot: dict | None) -> None:
         """Restore a model runtime captured before a one-turn override."""
-        from cli import logger
+        from cli import _cprint, logger
         if not snapshot:
             return
+        one_turn = _runtime_fields(self)
         for key in _RUNTIME_FIELDS:
             if key in snapshot:
                 setattr(self, key, snapshot.get(key))
@@ -625,15 +653,25 @@ class CLIModelSwitchMixin:
                 logger.debug("CLI one-turn model restore via primary runtime failed", exc_info=True)
         if hasattr(agent, "switch_model"):
             try:
-                agent.switch_model(
+                restored = agent.switch_model(
                     new_model=snapshot.get("model", ""), new_provider=snapshot.get("provider", ""),
                     api_key=snapshot.get("api_key", ""), base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
                     capabilities=snapshot.get("capabilities"))
-                if "reasoning_config" in snapshot:
-                    agent.reasoning_config = snapshot["reasoning_config"]
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- runs in the turn's finally; reported below
                 logger.warning("CLI one-turn model restore failed: %s", exc)
+                restored = exc
+            if restored is False or isinstance(restored, Exception):
+                # The session still runs the one-turn model (the owner's guard prompt was declined, or
+                # nobody can answer it): the CLI follows the session instead of claiming the restore.
+                for key, value in one_turn.items():
+                    setattr(self, key, value)
+                notice = t("cli.model.switch_cancelled") if restored is False else t(
+                    "cli.model.switch_failed", model=snapshot.get("model", ""), error=restored, old_model=agent.model)
+                _cprint(f"  {notice}")
+                return
+            if "reasoning_config" in snapshot:
+                agent.reasoning_config = snapshot["reasoning_config"]
 
     @staticmethod
     def _filter_model_picker_entries(entries: list, query: str) -> list:
@@ -676,6 +714,11 @@ class CLIModelSwitchMixin:
         rolled back. Returns False after printing the failure (a failed switch is a no-op).
         """
         from cli import _cprint
+        if self.agent is None and getattr(self, "_gateway_session_open", False) and not self._init_agent():
+            # Before the first turn: the stand-in built for that turn reads the gateway session's model,
+            # so the switch must commit on the session now; _init_agent printed why it could not.
+            self._confirmed_switch_warning = None
+            return False
         _cli_snapshot = _runtime_fields(self)
         self.model = result.new_model
         self.provider = result.target_provider
@@ -694,10 +737,15 @@ class CLIModelSwitchMixin:
 
         if self.agent is not None:
             try:
-                self.agent.switch_model(
-                    new_model=result.new_model, new_provider=result.target_provider,
-                    api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
-                    capabilities=getattr(result, "runtime_capabilities", None))
+                if self.agent.switch_model(
+                        new_model=result.new_model, new_provider=result.target_provider,
+                        api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
+                        capabilities=getattr(result, "runtime_capabilities", None)) is False:
+                    # Declined at the gateway owner's guard prompt: nothing was committed.
+                    for _k, _v in _cli_snapshot.items():
+                        setattr(self, _k, _v)
+                    _cprint(f"  {t('cli.model.switch_cancelled')}")
+                    return False
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client. Roll the CLI's own staged
                 # fields back too and abort the rest of the commit (note + success print) so a failed switch
@@ -708,6 +756,8 @@ class CLIModelSwitchMixin:
                     setattr(self, _k, _v)
                 _cprint(f"  {t('cli.model.switch_failed', model=result.new_model, error=exc, old_model=old_model)}")
                 return False
+            finally:
+                self._confirmed_switch_warning = None  # this switch's confirmation only
         return True
 
     def _apply_model_switch_result(

@@ -40,7 +40,9 @@ const electronNative: TestProjectConfiguration = {
     // case corpus; pwsh alone takes several seconds to start on a loaded CI
     // runner, so vitest's 5s default timed the Windows marker judge out.
     // Windows cases can probe multiple processes through CIM.
-    testTimeout: process.platform === 'win32' ? 60_000 : 30_000
+    testTimeout: process.platform === 'win32' ? 60_000 : 30_000,
+    // Only these contracts need the Hermes test interpreter.
+    globalSetup: ['./vitest.hermes-python.ts']
   }
 }
 

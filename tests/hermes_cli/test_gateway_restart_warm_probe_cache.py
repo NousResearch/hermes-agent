@@ -50,6 +50,8 @@ def manual_host_gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     home = get_hermes_home()
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
+    assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     _write_record(child.pid, home)
     identity = {"pid": child.pid, "hermes_home": str(home), "supervisor": "none",
                 "launch_supervisor": "manual", "served_profiles": [{"home": str(home)}]}
@@ -57,6 +59,7 @@ def manual_host_gateway(tmp_path, monkeypatch):
     try:
         yield child
     finally:
+        hr.release_host_lock(hr.ROLE_GATEWAY)
         if child.poll() is None:
             child.terminate()
         child.wait(timeout=10)

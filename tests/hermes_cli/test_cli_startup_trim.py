@@ -19,8 +19,12 @@ def _args(command):
 
 @pytest.mark.parametrize("command", [None, "chat"])
 def test_chat_launch_registers_no_shell_hooks_or_webhooks(monkeypatch, command):
+    """... and ``--accept-hooks`` still reaches the gateway: exported as HERMES_ACCEPT_HOOKS, which
+    rides session.create (env_launch_flags) and the classic CLI's consent check (CLI-5)."""
     from hermes_cli import main as main_mod
     calls = []
+    monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "")  # recorded, so the export below is undone at teardown
+    monkeypatch.delenv("HERMES_ACCEPT_HOOKS")
     monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _a: False)
     monkeypatch.setattr(main_mod, "_bypass_chat_launch", lambda _a: False, raising=False)
     monkeypatch.setattr(main_mod, "_guard_noninteractive_user_config", lambda _a: None)
@@ -32,6 +36,7 @@ def test_chat_launch_registers_no_shell_hooks_or_webhooks(monkeypatch, command):
         register_from_config=lambda *a, **k: calls.append("webhooks")))
     main_mod._prepare_agent_startup(_args(command))
     assert calls == []
+    assert main_mod.os.environ["HERMES_ACCEPT_HOOKS"] == "1"
 
 
 def test_non_chat_agent_command_still_registers_hooks(monkeypatch):
@@ -51,21 +56,30 @@ def test_non_chat_agent_command_still_registers_hooks(monkeypatch):
     assert calls == ["hooks", "webhooks"]
 
 
-def test_deferred_startup_spawns_no_mcp_and_registers_no_hooks(monkeypatch):
+def test_deferred_first_turn_discovers_no_plugins_spawns_no_mcp_and_registers_no_hooks(monkeypatch):
+    # Termux's deferred startup ran plugin discovery before the first turn; the gateway runs the turn
+    # and loads the plugins (PLG-7).
     import cli as cli_mod
+    from hermes_cli import gateway_agent
+    from hermes_cli import mcp_startup
     calls = []
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
-    monkeypatch.setattr(cli_mod, "_deferred_agent_startup_done", False)
-    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(
-        discover_plugins=lambda: calls.append("plugins")))
-    from hermes_cli import mcp_startup
+    cli = cli_mod.HermesCLI(compact=True)
+    import hermes_cli.plugins as plugins_mod
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda *a, **k: calls.append("plugins"))
     monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **k: calls.append("mcp"))
+    monkeypatch.setattr(mcp_startup, "ensure_mcp_discovery_before_agent_build", lambda **k: calls.append("mcp"))
     monkeypatch.setitem(sys.modules, "agent.shell_hooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: calls.append("hooks")))
     monkeypatch.setitem(sys.modules, "agent.outbound_webhooks", types.SimpleNamespace(
         register_from_config=lambda *a, **k: calls.append("webhooks")))
-    cli_mod._prepare_deferred_agent_startup()
-    assert calls == ["plugins"]
+    monkeypatch.setattr(gateway_agent, "GatewayAgent", lambda *_a, **_k: types.SimpleNamespace())
+    cli._session_db, cli._resumed, cli.conversation_history = object(), False, []
+    cli._install_tool_callbacks = lambda: None
+    cli._ensure_runtime_credentials = lambda: True
+    cli._ensure_gateway_session = lambda: None
+    assert cli._init_agent() is True
+    assert calls == []
 
 
 def test_init_agent_runs_no_mcp_discovery(monkeypatch):

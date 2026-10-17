@@ -91,7 +91,8 @@ test('canonical create retries retain identity', () => {
   const first = protocol.prepare('session.create', params)
   expect(first).toMatchObject({ source: 'gui', cwd: '/tmp', request_id: expect.any(String) })
   expect(protocol.prepare('session.create', { ...params })).toEqual(first)
-  expect(first).not.toHaveProperty('profile')
+  // RT-26: the picked profile rides the create, `default` included (a named launch profile would own it otherwise).
+  expect(first).toHaveProperty('profile', 'default')
   expect(protocol.prepare('session.create', { ...params, fast: true })).toMatchObject({ service_tier: 'priority' })
   const manual = protocol.prepare('session.create', { ...params, model: 'gpt-5', provider: 'custom' })
   expect(manual).toMatchObject({ model: 'gpt-5', provider: 'custom' })

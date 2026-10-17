@@ -254,6 +254,9 @@ function Set-GitRedirect {
     insteadOf = $RepoUrlSsh
 "@ | Set-Content -LiteralPath $gitCfg -Encoding ASCII
     $env:GIT_CONFIG_GLOBAL = $gitCfg
+    # serve.git publishes commits on main, not releases: HEAD's installer would otherwise
+    # install the latest stable release its tags name. Older installers ignore the variable.
+    $env:HERMES_INSTALL_CHANNEL = 'main'
 
     # check it worked
     $actualGitUrl = Invoke-Git @("-C", $RepoRoot, "remote", "get-url", "origin")

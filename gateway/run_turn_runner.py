@@ -701,6 +701,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(fut, timeout=15)
                 if outcome == "sent":
+                    # Bounded delivery trace (#138133): the platform acked the card. This was the
+                    # only zero-log outcome on the delivery path, so a card the user reports never
+                    # seeing left no send/acknowledgement entry to triage against. Correlation
+                    # only — never the command text.
+                    logger.info(
+                        "Exec approval card delivered (message_id=%s, request_id=%s, session=%s)",
+                        getattr(fut.result(timeout=0), "message_id", None),
+                        approval_data.get("request_id"), self._ctx.session_key)
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
                     register_timeout_notice(

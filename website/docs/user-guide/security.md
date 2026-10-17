@@ -665,7 +665,7 @@ terminal:
 
 Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
 
-Master credential stores are never mounted or synced, whichever list names them: `.env`, `auth.json`, `mcp-tokens/` and the other files the agent is denied from reading are refused for skill-declared files and for `terminal.credential_files` alike, on every backend. Mount a per-service token instead.
+Both lists go through the deny list the agent's file tools use: `.env`, `auth.json`, `mcp-tokens/` and the other stores the agent may not read are refused for skill-declared files and for `terminal.credential_files` alike, before any backend mounts or syncs them. Mount a per-service token instead.
 
 ### Borrowed CLI logins (Codex CLI, Claude Code) {#borrowed-cli-logins}
 

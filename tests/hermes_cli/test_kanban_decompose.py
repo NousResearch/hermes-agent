@@ -256,3 +256,99 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+
+
+# ---------------------------------------------------------------------------
+# PROMPT_BODY_LIMIT — refuse over-bound; force refuses fan-out
+# ---------------------------------------------------------------------------
+
+def test_decompose_refuses_over_bound_body_without_writing(kanban_home):
+    from hermes_cli.kanban_specify import PROMPT_BODY_LIMIT
+    original = "D" * (PROMPT_BODY_LIMIT + 50)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="long", body=original, triage=True)
+
+    called = MagicMock()
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with patch("agent.auxiliary_client.call_llm", called):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "PROMPT_BODY_LIMIT" in outcome.reason
+    assert outcome.body_length == len(original)
+    called.assert_not_called()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "triage"
+    assert task.body == original
+
+
+def test_decompose_force_refuses_fanout_when_over_bound(kanban_home):
+    """Even with --force, fan-out is refused: child bodies can't carry the root tail."""
+    from hermes_cli.kanban_specify import PROMPT_BODY_LIMIT
+    original = "D" * (PROMPT_BODY_LIMIT + 80)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="long", body=original, triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "split",
+        "tasks": [
+            {"title": "a", "body": "x", "assignee": "orchestrator", "parents": []},
+            {"title": "b", "body": "y", "assignee": "orchestrator", "parents": [0]},
+        ],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me", force=True)
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is False
+    assert "fanout" in outcome.reason
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "triage"
+    assert task.body == original
+
+
+def test_decompose_force_single_appends_unseen_tail(kanban_home):
+    from hermes_cli.kanban_specify import PROMPT_BODY_LIMIT
+    marker = "DECOMP_TAIL_MARKER_7c2e"
+    original = ("E" * (PROMPT_BODY_LIMIT - 30)) + f"\n{marker}\n"
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="long", body=original, triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "title": "Single",
+        "body": "**Goal**\nOne task.",
+        "assignee": "orchestrator",
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me", force=True)
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is True
+    assert outcome.fanout is False
+    assert outcome.body_truncated is True
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert marker in (task.body or "")
+    assert (task.body or "").count(marker) == 1

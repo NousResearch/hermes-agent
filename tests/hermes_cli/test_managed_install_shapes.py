@@ -135,3 +135,63 @@ def test_unreadable_marker_still_reports_managed(hermes_home, monkeypatch):
         assert config_mod.is_managed() is True
     finally:
         marker.chmod(0o600)
+
+# ── Home-aware (profile-scoped) detection ────────────────────────────────────
+# The dashboard scopes config reads/writes to a non-default profile by setting
+# a home override (hermes_constants.set_hermes_home_override). A package
+# manager manages the *main* install's config.yaml, not per-profile configs,
+# so a profile with no `.managed` marker must stay writable even when the
+# global install is managed via HERMES_MANAGED.
+
+
+@pytest.fixture
+def profile_home(tmp_path):
+    profile = tmp_path / "profiles" / "maintainer"
+    profile.mkdir(parents=True)
+    return profile
+
+
+def test_profile_override_without_marker_is_unmanaged(hermes_home, profile_home, monkeypatch):
+    """A profile with no `.managed` marker must stay writable even when the
+    global install is managed via HERMES_MANAGED."""
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    monkeypatch.setenv("HERMES_MANAGED", "nixos")
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        assert config_mod.get_managed_system() is None
+        assert config_mod.is_managed() is False
+    finally:
+        reset_hermes_home_override(token)
+
+    # Outside the profile scope the global managed state still applies.
+    assert config_mod.is_managed() is True
+
+
+def test_profile_override_with_marker_is_managed(hermes_home, profile_home, monkeypatch):
+    """A profile with its own `.managed` marker is managed, independent of the
+    process-global HERMES_MANAGED value."""
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    (profile_home / ".managed").write_text("nixos", encoding="utf-8")
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        assert config_mod.get_managed_system() == "nixos"
+        assert config_mod.is_managed() is True
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_profile_override_ignores_global_env_managed(hermes_home, profile_home, monkeypatch):
+    """A profile without a marker stays unmanaged even when the global env var
+    names a managing system — the env var must not leak into the profile scope."""
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    monkeypatch.setenv("HERMES_MANAGED", "home-manager")
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        assert config_mod.get_managed_system() is None
+        assert config_mod.is_managed() is False
+    finally:
+        reset_hermes_home_override(token)

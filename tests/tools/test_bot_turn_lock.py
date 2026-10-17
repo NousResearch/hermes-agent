@@ -24,7 +24,12 @@ import pytest
 pytestmark = pytest.mark.platforms("linux")
 
 from tools import bot_mode_dm, bot_relay
-from tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path
+from tools.bot_relay import (
+    TurnBusyError,
+    acquire_delivery_turn_lock,
+    acquire_turn_lock,
+    turn_lock_path,
+)
 
 
 @pytest.fixture
@@ -138,6 +143,40 @@ def test_turn_wait_seconds_reads_config(monkeypatch):
         lambda: {"bot_mode": {"turn_wait_seconds": 7}},
     )
     assert bot_relay.turn_wait_seconds() == 7.0
+
+
+# ── delivery-path probe: the lock is a mutual-exclusion primitive ─────────────
+
+
+def test_turn_busy_message_says_queued_not_failed():
+    """§3.1/P10(a): a held turn slot queues the delivery — the old 'NOT delivered' text is gone."""
+    error = TurnBusyError("ops", 0.05)
+    assert error.reason == "target_busy"
+    assert error.status_detail == "target_busy: turn slot held by another turn; delivery queued"
+    assert "durably" in str(error) and "Do not resend." in str(error)
+    assert "NOT delivered" not in str(error) and "retry shortly" not in str(error)
+
+
+def test_delivery_turn_lock_probe_is_non_blocking(root, tmp_path, monkeypatch):
+    """P10(b)/§2.5 step 1: the delivery path probes with timeout 0 — a held lock raises now."""
+    home = root / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(bot_relay, "turn_wait_seconds", lambda: 30)  # must be irrelevant
+    held = threading.Event()
+    release = threading.Event()
+    t = threading.Thread(target=_hold_flock, args=(turn_lock_path(home, "ops"), held, release))
+    t.start()
+    assert held.wait(timeout=5)
+    try:
+        started = time.monotonic()
+        with pytest.raises(TurnBusyError):
+            with acquire_delivery_turn_lock(home, "ops"):
+                pass  # pragma: no cover
+        assert time.monotonic() - started < 2.0, "the delivery probe must never wait"
+    finally:
+        release.set()
+        t.join(timeout=5)
 
 
 # ── wiring: peer transport (tools/bot_mode_dm.py) never contends locally ──────

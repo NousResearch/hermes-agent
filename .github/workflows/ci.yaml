@@ -99,6 +99,7 @@ jobs:
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
       remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
+      catalog: ${{ steps.gate-lanes.outputs.catalog }}
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
@@ -113,7 +114,7 @@ jobs:
       selected_jobs: ${{ steps.select-jobs.outputs.selected_jobs }}
       event_name: ${{ github.event_name }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           # PR merge checkout includes both event SHA parents at depth two.
@@ -261,6 +262,17 @@ jobs:
     # changes used to run the TypeScript matrix and nothing that compiles them.
     if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['rust-tests'] }}
     uses: ./.github/workflows/rust-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
+
+  catalog-tests:
+    name: Catalog tests
+    needs: detect
+    # A PR that changes only catalog entry data runs these instead of the
+    # Python suite (the classifier turns `python` off for it); required whenever
+    # detect selects it.
+    if: ${{ fromJSON(needs.detect.outputs.selected_jobs)['catalog-tests'] }}
+    uses: ./.github/workflows/catalog-tests.yml
     with:
       commit: ${{ inputs.commit }}
 
@@ -513,6 +525,7 @@ jobs:
       - installer-tests
       - rust-tests
       - remote-backends
+      - catalog-tests
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core
@@ -546,7 +559,7 @@ jobs:
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
       - name: Evaluate job results
@@ -574,6 +587,7 @@ jobs:
     needs:
       - detect
       - tests
+      - catalog-tests
       - lint
       - js-tests
       - history-check
@@ -624,7 +638,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 

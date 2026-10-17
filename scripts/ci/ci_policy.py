@@ -95,6 +95,7 @@ def selected_jobs(
     return {
         "detect": True,
         "tests": on("python"),
+        "catalog-tests": on("catalog"),
         "native-install-tests": False,
         "tests-os": on("python") and not fork,
         "lint": on("python"),

@@ -1,5 +1,6 @@
 """Local pipe-process launch evidence, never process-tree settlement proof."""
 from uuid import uuid4
+import os
 from typing import Any
 
 
@@ -26,27 +27,34 @@ def record_local_process(handle, process_session_id, pid, host_start_time):
         raise RuntimeError("Durable terminal process lineage refused")
 
 
-def spawn_local_pipe(registry, session, safe_command, env_vars, pty_scope_attempted, resource):
+def spawn_local_pipe(registry, session, safe_command, env_vars, pty_scope_attempted, resource, *, log=None):
     # Late facade lookup preserves existing platform and subprocess test seams.
     from tools import process_registry as facade
     popen_kwargs: dict[str, Any] = {"creationflags": facade.windows_hide_flags()} if facade._IS_WINDOWS else {}
     suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
-    argv = registry._scope_argv(session, safe_command, suffix, "Local")
+    argv = registry._scope_argv(
+        session, facade.record_exit_command(log, safe_command) if log else safe_command, suffix, "Local")
     env = registry._spawn_env(env_vars)
     if session.systemd_unit:
         env = facade.systemd_user_bus_env(env)
     start_local_process(resource)
     # The scope does not create a new session; preserve TTY/process-group isolation.
-    proc = facade.subprocess.Popen(
-        argv, text=True, cwd=session.cwd, env=env, encoding="utf-8", errors="replace",
-        stdout=facade.subprocess.PIPE, stderr=facade.subprocess.STDOUT,
-        stdin=facade.subprocess.DEVNULL, start_new_session=True, **popen_kwargs)
-    session.process = proc
+    output = facade.open_output_log(log) if log else facade.subprocess.PIPE
+    try:
+        proc = facade.subprocess.Popen(
+            argv, text=True, cwd=session.cwd, env=env, encoding="utf-8", errors="replace",
+            stdout=output, stderr=facade.subprocess.STDOUT,
+            stdin=facade.subprocess.DEVNULL, start_new_session=True, **popen_kwargs)
+    finally:
+        if log:
+            os.close(output)
+    session.process, session.output_log = proc, str(log or "")
     session.pid = proc.pid
     session.host_start_time = registry._safe_host_start_time(session.pid)
     try:
         record_local_process(resource, session.id, session.pid, session.host_start_time)
-        registry._track_started(session, registry._reader_loop, f"proc-reader-{session.id}")
+        registry._track_started(
+            session, registry._log_reader_loop if log else registry._reader_loop, f"proc-reader-{session.id}")
     except Exception:
         registry._reap_untracked(session, proc)
         raise

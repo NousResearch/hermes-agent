@@ -105,7 +105,7 @@ jobs:
     outputs:
       build: ${{ steps.gate.outputs.build }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 
@@ -169,7 +169,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # Stable dispatches from the default branch and names the claim commit.
           # Pin it, never a mutable branch ref.
@@ -213,16 +213,16 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       # Build once, load into the local daemon for testing.  Cached
       # per-arch; the push step below reuses every layer from this build.
       - name: Build image (${{ matrix.variant }}/${{ matrix.arch }})
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
         with:
           context: .
           file: Dockerfile
@@ -358,7 +358,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout trusted source
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           fetch-depth: 0
@@ -388,11 +388,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -404,7 +404,7 @@ jobs:
       # manifest list after both architecture publishers complete.
       - name: Push ${{ matrix.variant }}/${{ matrix.arch }} by digest
         id: push
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
         with:
           context: .
           file: Dockerfile
@@ -470,11 +470,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -546,7 +546,7 @@ jobs:
       SUFFIX: ${{ matrix.variant == 'desktop' && '-desktop' || '' }}
     steps:
       - name: Checkout release code (helper scripts only, no build)
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
 
@@ -566,11 +566,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Load tested image
         run: |
@@ -637,7 +637,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - name: Checkout release code (helper scripts only)
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
 
@@ -650,11 +650,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0

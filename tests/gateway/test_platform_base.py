@@ -6,6 +6,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from pathlib import Path
+
 import pytest
 
 from gateway.platforms.base import (
@@ -867,6 +869,34 @@ class TestMediaDeliveryDefaultMode:
         )
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
+
+
+def test_windows_drive_letter_host_mount_parses(monkeypatch):
+    """``C:/data:/workspace`` splits on the container colon, not the drive, and keeps the
+    POSIX container root on every gateway (``Path("/workspace").is_absolute()`` is False on
+    Windows; the Windows lanes run the marked twin below)."""
+    import json
+
+    from gateway.platforms import base
+
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/data:/workspace:ro"]))
+    monkeypatch.setattr(base, "_resolve_path", lambda p, **_k: p)
+
+    assert base._parse_docker_volume_mounts() == [(Path("C:/data"), Path("/workspace"))]
+
+
+@pytest.mark.platforms("windows")
+def test_windows_drive_letter_host_mount_parses_on_windows(monkeypatch):
+    """Windows-lane twin of the parse test: there ``Path("/workspace").is_absolute()`` is
+    False, which is the case the fix is for (the lanes only run ``-m platforms``)."""
+    import json
+
+    from gateway.platforms import base
+
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/data:/workspace:ro"]))
+    monkeypatch.setattr(base, "_resolve_path", lambda p, **_k: p)
+
+    assert base._parse_docker_volume_mounts() == [(Path("C:/data"), Path("/workspace"))]
 
 
 @pytest.mark.platforms("linux")

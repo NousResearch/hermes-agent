@@ -40,6 +40,12 @@ Lanes:
 * ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
   lives under ``apps/``, so without this lane a Rust change matched ``frontend``
   and only the TypeScript matrix ran.
+* ``catalog``     — the plugin-catalog tests (catalog-tests.yml). A diff made
+  only of catalog entry data (``plugin-catalog/*.yaml``, ``contributors/emails/``)
+  runs this lane INSTEAD of the Python suite: those files are data that a known
+  set of tests reads, so a one-entry PR need not run 23k tests on three OSes.
+  ``plugin-catalog/README.md`` is not entry data (a docs page mirrors it), and
+  any other file in the diff brings the full Python suite back.
 * ``remote_backends`` — the SSH and Docker terminal backends against a real
   sshd container and the runner's Docker daemon (remote-backends.yml). Every
   other test of those backends is mocked, so a change to the backends, the
@@ -136,6 +142,10 @@ _PY_RELEVANT_CONTRACT_FILES = {
     # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
 }
+
+# Catalog entry data: read by the catalog tests and the Plugin Catalog CI
+# admission gate, executed by nothing. Same set that gate allows in an entry PR.
+_CATALOG_DATA = ("plugin-catalog/", "contributors/emails/")
 
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")
@@ -342,6 +352,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/build_info.py",
     "hermes_cli/image_provenance.py",
     "hermes_cli/backup.py",  # pre-update backup
+    "hermes_cli/backup_cron_prompts.py",  # restore_cron_prompt_fields_if_degraded (update_cmd_config)
     "hermes_cli/backup_restore.py",
     "hermes_cli/relay_plugin_migrate.py",
     "hermes_cli/macos_tcc_anchor.py",
@@ -403,6 +414,12 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
         "hermes_state",
+        # Messaging-gated gateway cases: only the e2e job installs the real
+        # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
+        "tests/gateway/test_native_role_reauthorization.py",
+        "tests/gateway/test_native_telegram_startup_recovery.py",
+        "tests/gateway/test_native_pause_notice.py",
+        "tests/gateway/test_native_reply_crash_recovery.py",
     ),
     "e2e_upgrade": (
         *_PY_TEST_HARNESS,
@@ -416,6 +433,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/update_",
         "hermes_cli/_update_",
         "hermes_cli/old_updater",
+        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
+        "hermes_state_holders.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",
@@ -459,7 +478,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/desktop/electron/handoff-result",
         "apps/desktop/electron/desktop-installation",
         "apps/desktop/electron/backend-discovery",
-        "apps/desktop/electron/host-backend-attach",
+        "apps/desktop/electron/local-gateway",  # gateway ensure: code_sha vs checkout, restart on skew
         "apps/desktop/electron/bundle-swap",
         "apps/desktop/electron/app-installer-file",
         "scripts/desktop-update/",
@@ -477,8 +496,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "scripts/msix-shared.mjs",
         # The launchers the Desktop relaunches through reach the launch-time repair first.
         "hermes_cli/_launchers.py",
-        # The backend's /api/health `commit`, which host-backend-attach compares to the
-        # checkout before attaching to a running backend after an update.
+        # The backend's /api/health `commit`, which the Desktop compares to the checkout
+        # before attaching to a running backend after an update.
         "hermes_cli/web_routers/status.py",
     ),
 }
@@ -530,6 +549,10 @@ def _py_irrelevant(p: str) -> bool:
         or p.startswith(_DOCKER_META)
         or _is_nix(p)
     )
+
+
+def _is_catalog_data(p: str) -> bool:
+    return p.startswith(_CATALOG_DATA) and p not in _PY_RELEVANT_CONTRACT_FILES
 
 
 def _py_test_only(p: str) -> bool:
@@ -648,8 +671,10 @@ def classify(files: list[str], run_e2e: bool = False, *, fork: bool = False, roo
     """
     root = root or Path(__file__).resolve().parents[2]
     files = [f.strip() for f in files if f.strip()]
-    python = any(not _py_irrelevant(f) for f in files)
-    python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
+    catalog = any(_is_catalog_data(f) for f in files)
+    code = [f for f in files if not _is_catalog_data(f)]
+    python = any(not _py_irrelevant(f) for f in code)
+    python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in code)
     frontend = any(
         f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
         or f.startswith("tests-js/")
@@ -677,6 +702,7 @@ def classify(files: list[str], run_e2e: bool = False, *, fork: bool = False, roo
         "rust": any(_is_rust(f) for f in files),
         **review_lanes(files),
         "remote_backends": any(f.startswith(_REMOTE_BACKEND_PATHS) for f in files),
+        "catalog": catalog,
         **{lane: run_e2e or on for lane, on in _slow_lanes(files).items()},
         "installer": any(_is_installer(f) for f in files),
         "os_tests": any(_is_os_specific(f, root) for f in files),
@@ -703,6 +729,7 @@ def classify(files: list[str], run_e2e: bool = False, *, fork: bool = False, roo
         ret["rust"] = True
         ret["ci_review"] = True
         ret["remote_backends"] = True
+        ret["catalog"] = True
         ret.update(dict.fromkeys(_slow_lanes([]), True))
         ret["installer"] = True
         ret["os_tests"] = True

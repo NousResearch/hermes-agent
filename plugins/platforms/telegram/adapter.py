@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 """Telegram platform adapter (python-telegram-bot): inbound messages/media/commands, outbound replies."""
 
 import asyncio
@@ -180,7 +181,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -7162,8 +7163,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
 # -- Plugin registration glue: register(ctx) plus the hook implementations (adapter factory, YAML→env/extra
 # config, setup wizard, standalone sender).
-
-
 # ────────────────────────────────────────────────────────────────────────── Plugin migration glue (#41112 /
 # #3823) Added when the Telegram adapter (+ its telegram_network satellite) moved from gateway/platforms/
 # into this bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a register(ctx) entry point
@@ -7288,8 +7287,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     if _telegram_rtm is not None:
         _set_env("TELEGRAM_REPLY_TO_MODE", "off" if _telegram_rtm is False else str(_telegram_rtm).lower())
     _bridge_gate("allow_from", "TELEGRAM_ALLOWED_USERS", telegram_cfg.get("allow_from"))
-    _bridge_gate(
-        "group_allow_from", "TELEGRAM_GROUP_ALLOWED_USERS", telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from"))
+    _bridge_gate("group_allow_from", "TELEGRAM_GROUP_ALLOWED_USERS", telegram_cfg.get("group_allow_from") or _telegram_extra.get("group_allow_from"))
     _bridge_gate(
         "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
         telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
@@ -7310,9 +7308,20 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
         name="telegram", label="Telegram", adapter_factory=_build_adapter, check_fn=telegram_deps_present,
+        **DASHBOARD_CARD,
         ensure_deps_fn=check_telegram_requirements, is_connected=_is_connected, required_env=["TELEGRAM_BOT_TOKEN"],
-        install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config,
-        allowed_users_env="TELEGRAM_ALLOWED_USERS", allow_all_env="TELEGRAM_ALLOW_ALL_USERS", cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
-        standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True)
+        install_hint=t("platform.telegram.install_hint"), setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="TELEGRAM_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="✈️", allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="high",
+        # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats.
+        display_overrides={"tool_progress": "off", "busy_ack_detail": False},
+        target_ref_syntax_fn=parse_send_target,
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

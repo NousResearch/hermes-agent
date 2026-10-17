@@ -2,16 +2,20 @@
 
 import logging
 
+from gateway.run_turn_progress import GatewayTurnProgressMixin, local_viewer_turn
+
 logger = logging.getLogger("gateway.run")
 
 
-class SessionTitleCallbacks:
+class SessionTitleCallbacks(GatewayTurnProgressMixin):
     def _attach_session_title_callback(self, agent, ctx) -> None:
         """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
 
         The titler runs in the turn prologue, so attach before the run, not after it.
         """
         try:
+            if local_viewer_turn(self):
+                return super()._attach_session_title_callback(agent, ctx)
             # Gateway auto-title failures are not user-actionable, so never surface them as messages;
             # overriding the failure sink keeps CLI on _emit_auxiliary_failure while gateway logs debug.
             agent._title_failure_callback = lambda task, exc: logger.debug(

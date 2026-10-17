@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
+from agent.session_activity import AwakeIdleMeter
+
 
 from gateway.chat_execution_followup import QueuedWorkerReservation
 
@@ -38,6 +40,8 @@ class TurnContext:
     repeat_count: list = field(default_factory=lambda: [0])
     long_tool_hint_fired: list = field(default_factory=lambda: [False])
     agent_holder: list = field(default_factory=lambda: [None])
+    # Turn-scoped so the poll loop and stale-agent eviction both discount host sleep from idle.
+    awake_idle: AwakeIdleMeter = field(default_factory=AwakeIdleMeter)
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
     _cleanup_msg_ids: list[str] = field(default_factory=list)

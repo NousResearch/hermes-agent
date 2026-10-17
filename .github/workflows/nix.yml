@@ -66,7 +66,7 @@ jobs:
     outputs:
       nix: ${{ steps.classify.outputs.nix }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # A stable run passes the claim commit. Every other event tests its own head SHA.
           ref: ${{ inputs.commit || github.sha }}
@@ -91,7 +91,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # A stable run passes the claim commit. Every other event tests its own head SHA.
           ref: ${{ inputs.commit || github.sha }}

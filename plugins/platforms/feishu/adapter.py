@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 """
 Feishu/Lark platform adapter.
 
@@ -4470,24 +4471,31 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
     return {"allow_bots": str(seeded["allow_bots"]).lower()} if seeded else None
 
 
-
 def _is_connected(config) -> bool:
     """Feishu counts as connected once app_id is configured."""
     extra = getattr(config, "extra", {}) or {}
     return bool(extra.get("app_id"))
 
 
-
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT
+    from .send_targets import SEND_ENTRY_KWARGS
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="feishu", label="Feishu / Lark", adapter_factory=FeishuAdapter,
+        **DASHBOARD_CARD,
         check_fn=feishu_deps_present, ensure_deps_fn=check_feishu_requirements,
         is_connected=_is_connected, validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
         install_hint="Run `hermes setup` to install Feishu support.", setup_fn=interactive_setup,
-        apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="FEISHU_ALLOWED_USERS",
-        allow_all_env="FEISHU_ALLOW_ALL_USERS", cron_deliver_env_var="FEISHU_HOME_CHANNEL",
+        apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="FEISHU_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=8000, emoji="🪽",
         allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="medium",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

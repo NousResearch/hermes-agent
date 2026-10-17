@@ -3874,7 +3874,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
     def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
-        """Issue the single aux summary call; return validated content text.
+        """Issue the single aux summary call; return validated, markup-stripped content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
         # call_llm writes the route it actually selected; never pre-resolve a second, stale pair.
@@ -3927,17 +3927,20 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
         # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
-        content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
+        raw = extract_content_or_reasoning(response, max_reasoning_chars=8000)
         where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
         # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
-        # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
-        # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
-        # otherwise be stored as a prefix-only summary with no body — silently wiping the compacted turns
-        # and making the model forget the in-progress task (#11978, #11914). Treat empty content as a
-        # failure so it routes through the same main-model fallback + cooldown machinery as a transport
-        # error, rather than replacing real context with an empty summary.
-        if not content.strip():
-            raise RuntimeError(f"Context compression LLM returned empty content {where}")
+        # with an empty or whitespace-only ``content``, and a thinking model can return only a trace (an
+        # unterminated <think> survives the closed-pair pass above, #139538). Both pass
+        # ``_validate_llm_response`` and, stored, would wipe the compacted turns and make the model
+        # forget the in-progress task (#11978, #11914); a stored trace is also re-fed into every
+        # iterative update (#60989). Strip the markup first and treat an empty result as a failure so it
+        # routes through the same main-model fallback + cooldown machinery as a transport error.
+        from agent.agent_runtime_helpers import strip_think_blocks
+        content = strip_think_blocks(None, raw).strip()
+        if not content:
+            markup_only = " (reasoning/tool-call markup only)" if raw else ""
+            raise RuntimeError(f"Context compression LLM returned empty content{markup_only} {where}")
         if _is_refusal_response(response, content):
             # Treat a refusal as unusable content. This deliberately reuses the
             # established fallback/cooldown/abort path for an empty body, so it
@@ -4000,9 +4003,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
         try:
             content = self._call_summary_llm(prompt, prompt_started_at)
-            # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
-            from agent.agent_runtime_helpers import strip_think_blocks
-            content = strip_think_blocks(None, content).strip() or content
             # The summarizer may echo secrets verbatim; redact the output too.
             summary = _redact_compaction_text(content.strip())
             # Restore any [SKILL_PRUNED] marker the summarizer paraphrased away.

@@ -253,6 +253,58 @@ class TestGenerateSummaryTruncationGuard:
         assert c._last_summary_truncated_failure is False
 
 
+class TestReasoningOnlySummaryGuard:
+    """A summarizer reply that is nothing but reasoning must never become a checkpoint (#139538)."""
+
+    def test_unterminated_think_only_summary_is_rejected(self):
+        """Closed-pair extraction keeps an unterminated <think>; stripping it leaves nothing usable."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True,
+                protect_first_n=2, protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = _msgs()
+        trace = "<think>\nThe user wants me to produce a structured summary.\nLet me plan the sections first."
+        with patch("agent.context_compressor.call_llm", return_value=_mock_response(trace, "stop")):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_compress_aborted is True
+        assert c._previous_summary is None
+        # The recorded error names the cause, so a trace-only reply is told apart from an empty body.
+        assert "markup only" in (c._last_summary_error or "")
+
+    def test_empty_body_is_not_labelled_markup_only(self):
+        """A genuinely empty reply keeps the plain empty-content error."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True,
+                protect_first_n=2, protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = _msgs()
+        with patch("agent.context_compressor.call_llm", return_value=_mock_response("   ", "stop")):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert "empty content" in (c._last_summary_error or "")
+        assert "markup only" not in (c._last_summary_error or "")
+
+    def test_reasoning_prefix_is_stripped_from_real_summary(self):
+        """Control: a real summary behind a closed <think> block survives without the trace."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        content = "<think>Plan the sections.</think>\n## Goal\nShip the parser fix."
+        with patch("agent.context_compressor.call_llm", return_value=_mock_response(content, "stop")):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert "## Goal" in result
+        assert "<think>" not in result and "Plan the sections" not in result
+
+
 class TestMicroSummarizeTruncationGuard:
     def test_length_stop_discards_partial_merge(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

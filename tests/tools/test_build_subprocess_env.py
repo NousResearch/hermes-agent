@@ -34,6 +34,22 @@ def test_factory_child_policy_and_profile_home(child_env, monkeypatch, scrub, in
     assert dict(os.environ) == before
 
 
+def test_build_subprocess_env_injects_session_artifacts_dir(child_env, monkeypatch):
+    """A real terminal child sees the context path instead of a stale mirror."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    artifacts = child_env / "artifacts"
+    monkeypatch.setenv("HERMES_SESSION_ARTIFACTS_DIR", str(child_env / "stale-artifacts"))
+    tokens = set_session_vars(artifacts_dir=str(artifacts))
+    try:
+        env = build_subprocess_env()
+        result = observe_child(env, ["HERMES_SESSION_ARTIFACTS_DIR"])
+        assert result == {"HERMES_SESSION_ARTIFACTS_DIR": str(artifacts)}
+        assert not artifacts.exists()
+    finally:
+        clear_session_vars(tokens)
+
+
 def test_no_scrub_is_byte_preserving_except_explicit_extra():
     base = {"PATH": "/bin", "PYTHONHOME": "/poison", "VIRTUAL_ENV": "/venv",
             "CONDA_PREFIX": "/conda", "SERVICE_TOKEN": "fake", "HERMES_HOME": "/original"}

@@ -38,3 +38,9 @@ def test_native_windows_reaper_and_decode(monkeypatch):
     kbd._live_worker_procs[proc.pid] = proc
     assert kbd.reap_worker_zombies() == [proc.pid]
     assert kbd._classify_worker_exit(proc.pid) == ("rate_limited", kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+
+
+def test_infrastructure_exit_is_classified_separately_from_provider_rate_limit():
+    pid = 123456
+    kbd._record_worker_exit(pid, kbd._wait_status_from_returncode(kb.KANBAN_INFRASTRUCTURE_EXIT_CODE))
+    assert kbd._classify_worker_exit(pid) == ("infrastructure_failure", kb.KANBAN_INFRASTRUCTURE_EXIT_CODE)

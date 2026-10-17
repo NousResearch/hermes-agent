@@ -187,6 +187,9 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
         return 0
     if kanban_task_id():
         reason = result.get("failure_reason")
+        if isinstance(reason, str) and reason.startswith("session_persistence_failed"):
+            from hermes_cli.kanban_db import KANBAN_INFRASTRUCTURE_EXIT_CODE
+            return KANBAN_INFRASTRUCTURE_EXIT_CODE
         if reason in _TRANSIENT_PROVIDER_REASONS:
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE

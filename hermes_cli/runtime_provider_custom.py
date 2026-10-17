@@ -578,6 +578,25 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
+def _configured_main_custom_entry(target_model: Optional[str], config=None) -> Optional[dict[str, Any]]:
+    """Recover a flattened main-model route, never guess a foreign model's account."""
+    rp = _rp()
+    model_cfg = rp._get_model_config() if config is None else config.get("model", {})
+    if not isinstance(model_cfg, dict):
+        return None
+    # Existing endpoint overrides retain their own credential/precedence contract.
+    if model_cfg.get("base_url") or get_secret_str("CUSTOM_BASE_URL", "").strip():
+        return None
+    model = str(model_cfg.get("default") or "").strip()
+    if not model or not target_model or str(target_model).strip() != model:
+        return None
+    provider = str(model_cfg.get("provider") or "").strip()
+    if not provider or provider.lower() in {"auto", "custom"}:
+        return None
+    return (rp._get_named_custom_provider(provider) if config is None
+            else _get_named_custom_provider(provider, config=config))
+
+
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None, config=None) -> Optional[dict[str, Any]]:
@@ -604,6 +623,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     if custom_provider is None:
         custom_provider = (rp._get_named_custom_provider(requested_provider) if config is None
                            else _get_named_custom_provider(requested_provider, config=config))
+    if not custom_provider and requested_provider.strip().lower() == "custom":
+        custom_provider = _configured_main_custom_entry(target_model, config)
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")

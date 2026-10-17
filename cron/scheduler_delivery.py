@@ -191,6 +191,50 @@ def _cron_mirror_message(job: dict, text: str) -> str:
     return f"[Cron delivery: {_cron_display_name(job)}]\n{text}"
 
 
+def _cron_fresh_session_enabled(job: dict) -> bool:
+    """Per-job opt-in: each delivery opens a NEW session and seeds the brief as assistant.
+
+    Tape: system → assistant(brief) → user(reply). Avoids main-DM attach_to_session fake-user
+    mirrors (alternation hack #2221/#2313). Phone uses a unique chat_id so Threads + reply
+    routing stay isolated from the home DM.
+    """
+    return job.get("fresh_session") is True
+
+
+def _fresh_session_chat_id(job: dict) -> str:
+    """Stable-looking unique chat_id per fire so phone provisional threads + gateway keys isolate."""
+    import re
+    from datetime import datetime
+
+    name = re.sub(r"[^a-z0-9]+", "-", str(job.get("name") or "cron").lower()).strip("-")[:32] or "cron"
+    jid = str(job.get("id") or "job")[:12]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"cron-{name}-{jid}-{ts}"
+
+
+def _title_cron_seed_session(adapter, session_id: Optional[str], job: dict) -> None:
+    """Best-effort title the fresh session with the job name (never raises)."""
+    if not session_id:
+        return
+    title = (job.get("name") or job.get("id") or "Cron brief").strip()
+    if not title:
+        return
+    try:
+        store = getattr(adapter, "_session_store", None)
+        db = getattr(store, "_db", None) or getattr(store, "db", None)
+        if db is not None and hasattr(db, "set_session_title"):
+            from cron.scheduler import _set_cron_session_title
+            _set_cron_session_title(db, session_id, title)
+            return
+        if store is not None and hasattr(store, "set_session_title"):
+            store.set_session_title(session_id, title)
+    except Exception as e:
+        logger.debug(
+            "Job '%s': could not title fresh session %s: %s",
+            job.get("id", "?"), session_id, e,
+        )
+
+
 def _maybe_mirror_cron_delivery(
     job: dict, platform_name: str, chat_id: str, mirror_text: str, thread_id: Optional[str] = None,
     user_id: Optional[str] = None, *, enabled: bool = False,
@@ -201,6 +245,9 @@ def _maybe_mirror_cron_delivery(
     chats resolve to the scheduling member. All failures swallowed — a successful delivery must
     never be reported failed because the mirror broke."""
     if not enabled:
+        return
+    if _cron_fresh_session_enabled(job):
+        # fresh_session seeds its own assistant turn; never fake-user into the home DM.
         return
     text = (mirror_text or "").strip()
     if not text:
@@ -214,6 +261,7 @@ def _maybe_mirror_cron_delivery(
         # removed). A user-role turn collapses safely via repair_message_sequence's consecutive-user merge
         # on every provider, and the prefix preserves the "this came from cron" context that the dropped
         # SQLite mirror metadata would otherwise lose on replay.
+        # Exception: jobs with fresh_session=true open a NEW session and seed role=assistant instead.
         ok = mirror_to_session(
             platform_name, str(chat_id), _cron_mirror_message(job, text),
             source_label="cron", thread_id=thread_id, user_id=user_id, role="user")
@@ -267,8 +315,13 @@ def _seed_cron_session(
     job: dict, adapter, platform_name: str, chat_id: str, text: str, *, thread_id: Optional[str],
     chat_type: str, user_id: Optional[str], user_name: Optional[str] = None,
     chat_name: Optional[str], scope_id: Optional[str], discord_keys_on_thread: bool = False,
+    role: str = "user", force_new: bool = False, labeled: bool = True,
 ) -> bool:
-    """Create the session row (so the mirror has a target) and mirror the brief as a USER turn.
+    """Create the session row (so the mirror has a target) and mirror the brief.
+
+    Default role=user + labeled [Cron delivery] prefix (attach-into-existing-DM path, #2221/#2313).
+    fresh_session jobs seed separately (bootstrap user + assistant brief) so the tape is
+    system → user([scheduled check-in]) → assistant(brief) → user(reply) on a dedicated session.
     The seeded key must equal the reply's ``build_session_key``: chat_type, user_id, thread_id and
     scope_id (Slack team id) are all part of it, so callers pass exactly what the reply carries."""
     from gateway.config import Platform
@@ -277,16 +330,23 @@ def _seed_cron_session(
     seeded_session_id: Optional[str] = None
     session_store = getattr(adapter, "_session_store", None)
     if session_store is not None:
+        # Built-ins resolve via Platform(); plugin platforms (phone) may only exist after the
+        # gateway registers them — fall back to a pseudo member so SessionSource keys still match
+        # the reply path.
+        platform_enum = None
         try:
-            platform_enum = Platform(platform_name.lower())
+            platform_enum = Platform(str(platform_name).lower())
         except (ValueError, KeyError):
             platform_enum = None
+        if platform_enum is None:
+            with contextlib.suppress(Exception):
+                platform_enum = Platform._add_pseudo_member(str(platform_name).lower())
         if platform_enum is not None:
             # Discord keys in-thread messages with chat_id == thread_id; Slack/Telegram use the
             # parent channel.
             seed_chat_id = (
                 str(thread_id)
-                if discord_keys_on_thread and platform_enum == Platform.DISCORD
+                if discord_keys_on_thread and getattr(platform_enum, "value", None) == "discord"
                 else str(chat_id)
             )
             dest_source = SessionSource(
@@ -295,14 +355,21 @@ def _seed_cron_session(
                 user_id=user_id, user_name=user_name, thread_id=thread_id,
                 scope_id=str(scope_id) if scope_id else None)
             # Create the row and pass its exact id to the mirror — origin-heuristic rediscovery
-            # bails on populated chats.
-            _entry = session_store.get_or_create_session(dest_source)
+            # bails on populated chats. force_new=True opens a dedicated row per brief.
+            create_kwargs = {}
+            if force_new:
+                create_kwargs["force_new"] = True
+            _entry = session_store.get_or_create_session(dest_source, **create_kwargs)
             seeded_session_id = getattr(_entry, "session_id", None)
-    return mirror_to_session(
-        platform_name, str(chat_id), _cron_mirror_message(job, text),
-        source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
+    content = _cron_mirror_message(job, text) if labeled else text
+    ok = mirror_to_session(
+        platform_name, str(chat_id), content,
+        source_label="cron", thread_id=thread_id, user_id=user_id, role=role,
         session_id=seeded_session_id,
     )
+    if ok and force_new:
+        _title_cron_seed_session(adapter, seeded_session_id, job)
+    return ok
 
 
 def _seed_cron_thread_session(
@@ -370,6 +437,88 @@ def _seed_cron_channel_session(
         # WARNING, not debug: a silent seed failure IS the continuation-amnesia bug.
         logger.warning(
             "Job '%s': seeding in_channel session failed for %s:%s: %s",
+            job.get("id", "?"), platform_name, chat_id, e)
+        return False
+
+
+def _seed_cron_fresh_session(
+    job: dict, adapter, platform_name: str, chat_id: str, mirror_text: str, *,
+    chat_name: Optional[str] = None, scope_id: Optional[str] = None,
+) -> bool:
+    """Open a NEW session and seed bootstrap user + assistant brief (never raises).
+
+    Phone replies key on chat_id alone; the delivery chat_id is unique per fire so this row is
+    what the reply resolves to.
+
+    Tape: system → user(\"[scheduled check-in]\") → assistant(brief) → user(reply).
+    The thin user opener satisfies Anthropic's first-content-must-be-user rule without harming
+    OpenAI-compat providers; the brief itself stays role=assistant (not a fake-user main-DM mirror).
+    """
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.mirror import mirror_to_session
+
+    text = (mirror_text or "").strip()
+    if not text:
+        return False
+    bootstrap = "[scheduled check-in]"
+    try:
+        seeded_session_id: Optional[str] = None
+        session_store = getattr(adapter, "_session_store", None)
+        if session_store is not None:
+            platform_enum = None
+            try:
+                platform_enum = Platform(str(platform_name).lower())
+            except (ValueError, KeyError):
+                platform_enum = None
+            if platform_enum is None:
+                with contextlib.suppress(Exception):
+                    platform_enum = Platform._add_pseudo_member(str(platform_name).lower())
+            if platform_enum is not None:
+                dest_source = SessionSource(
+                    platform=platform_enum,
+                    chat_id=str(chat_id),
+                    chat_name=chat_name or (job.get("name") or "Cron brief"),
+                    chat_type="dm",
+                    user_id=None,
+                    thread_id=None,
+                    scope_id=str(scope_id) if scope_id else None,
+                )
+                _entry = session_store.get_or_create_session(dest_source, force_new=True)
+                seeded_session_id = getattr(_entry, "session_id", None)
+
+        if not seeded_session_id:
+            logger.warning(
+                "Job '%s': fresh_session could not create session for %s:%s — seed skipped",
+                job.get("id", "?"), platform_name, chat_id)
+            return False
+
+        # Bootstrap user first (Anthropic), then the real brief as assistant.
+        ok_boot = mirror_to_session(
+            platform_name, str(chat_id), bootstrap,
+            source_label="cron", thread_id=None, user_id=None, role="user",
+            session_id=seeded_session_id,
+        )
+        ok_brief = mirror_to_session(
+            platform_name, str(chat_id), text,
+            source_label="cron", thread_id=None, user_id=None, role="assistant",
+            session_id=seeded_session_id,
+        )
+        ok = bool(ok_boot and ok_brief)
+        if ok:
+            _title_cron_seed_session(adapter, seeded_session_id, job)
+            logger.info(
+                "Job '%s': fresh_session seeded user bootstrap + assistant brief on %s:%s",
+                job.get("id", "?"), platform_name, chat_id)
+        else:
+            logger.warning(
+                "Job '%s': fresh_session seed incomplete on %s:%s "
+                "(bootstrap=%s brief=%s) — a reply may not see this brief",
+                job.get("id", "?"), platform_name, chat_id, ok_boot, ok_brief)
+        return ok
+    except Exception as e:
+        logger.warning(
+            "Job '%s': fresh_session seed failed for %s:%s: %s",
             job.get("id", "?"), platform_name, chat_id, e)
         return False
 
@@ -1393,6 +1542,19 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
     origin = t.origin
     seed_kwargs = dict(
         chat_name=origin.get("chat_name"), is_dm=t.is_dm_target, scope_id=origin.get("scope_id"))
+    # fresh_session: dedicated new session + assistant brief; no main-DM mirror / thread attach.
+    if _cron_fresh_session_enabled(job):
+        if t.runtime_adapter is not None:
+            _seed_cron_fresh_session(
+                job, t.runtime_adapter, t.platform_name, t.chat_id, t.mirror_text,
+                chat_name=origin.get("chat_name") or job.get("name"),
+                scope_id=origin.get("scope_id"),
+            )
+        else:
+            logger.warning(
+                "Job '%s': fresh_session requested but no runtime adapter for %s:%s — seed skipped",
+                job.get("id", "?"), t.platform_name, t.chat_id)
+        return
     thread_seeded = False
     inchannel_seeded = False
     if t.opened_thread_id:
@@ -1626,6 +1788,18 @@ def _deliver_standalone(
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
+    if _cron_fresh_session_enabled(job):
+        if t.runtime_adapter is not None:
+            _seed_cron_fresh_session(
+                job, t.runtime_adapter, t.platform_name, t.chat_id, t.mirror_text,
+                chat_name=(t.origin or {}).get("chat_name") or job.get("name"),
+                scope_id=(t.origin or {}).get("scope_id"),
+            )
+        else:
+            logger.warning(
+                "Job '%s': fresh_session standalone delivery has no adapter for %s:%s — seed skipped",
+                job.get("id", "?"), t.platform_name, t.chat_id)
+        return
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
@@ -1643,10 +1817,18 @@ def _prepare_target_delivery(
     platform_name = target["platform"]
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
+    fresh_session = _cron_fresh_session_enabled(job)
+
+    # fresh_session + phone: unique chat_id so Threads + gateway session isolate from home DM.
+    # Other platforms keep real chat_id (home/channel) so the push still lands; seed still
+    # force_new with assistant role after send.
+    if fresh_session and str(platform_name).lower() == "phone":
+        chat_id = _fresh_session_chat_id(job)
+        thread_id = None
 
     origin = _resolve_origin(job) or {}
     origin_thread = origin.get("thread_id")
-    if origin_thread and not thread_id:
+    if origin_thread and not thread_id and not fresh_session:
         logger.warning(
             "Job '%s': origin has thread_id=%s but delivery target lost it (deliver=%s, target=%s)",
             job["id"], origin_thread, job.get("deliver", "local"), target)
@@ -1656,22 +1838,32 @@ def _prepare_target_delivery(
             job["id"], platform_name, chat_id, thread_id)
 
     # Mirror: origin, origin-less home fallback, user-written home, or explicit-target opt-in.
+    # fresh_session never mirrors into an existing session.
     origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
-    mirror_this_target = mirror_enabled and _target_mirror_eligible(
-        job, target, global_mirror=mirror_enabled, origin_match=origin_target)
+    mirror_this_target = (
+        False if fresh_session
+        else (mirror_enabled and _target_mirror_eligible(
+            job, target, global_mirror=mirror_enabled, origin_match=origin_target))
+    )
     # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.
     origin_user_id = origin.get("user_id") if origin_target else None
 
     # DM shape for BOTH the flatten gate and seed chat_type (Slack DM ids start with "D").
     origin_chat_type = str(origin.get("chat_type") or "").lower()
-    is_dm_target = origin_chat_type == "dm" or (
-        not origin_chat_type and str(chat_id).startswith("D"))
+    is_dm_target = (
+        True if fresh_session else (
+            origin_chat_type == "dm" or (
+                not origin_chat_type and str(chat_id).startswith("D"))
+        )
+    )
 
     # in_channel gate shared by thread-flatten and flat seed — they MUST match or brief and
     # session land in different places. Origin qualifies unconditionally; others only when the
     # seed can create a resolvable session (_inchannel_seed_allowed).
-    inchannel_continuable = origin_target or (
-        mirror_this_target and _inchannel_seed_allowed(is_dm=is_dm_target, user_id=origin_user_id))
+    inchannel_continuable = (not fresh_session) and (
+        origin_target or (
+            mirror_this_target and _inchannel_seed_allowed(is_dm=is_dm_target, user_id=origin_user_id))
+    )
 
     # Plugin platform names create dynamic members via Platform._missing_().
     try:
@@ -1698,7 +1890,11 @@ def _prepare_target_delivery(
     # Continuable surface (D1/D2/D6) from platform config ``extra``; default "thread".
     # ``in_channel`` delivers FLAT so a plain channel reply continues via the shared session
     # ``(platform, chat_id, None)``. Unsupported adapters fail SAFE to thread.
-    in_channel_surface = _resolve_cron_surface_mode(pconfig, platform_name) == "in_channel"
+    # fresh_session forces flat DM seed path (handled in _seed_live_delivery_sessions).
+    in_channel_surface = (
+        False if fresh_session
+        else _resolve_cron_surface_mode(pconfig, platform_name) == "in_channel"
+    )
     if (
         in_channel_surface
         and runtime_adapter is not None
@@ -1717,9 +1913,11 @@ def _prepare_target_delivery(
     # Thread-preferred continuable cron: open a DEDICATED thread; its session is seeded after a
     # successful send. DM-only platforms return None → mirror the origin DM. in_channel SKIPS
     # this: it posts flat and _seed_cron_channel_session CREATES the session.
+    # fresh_session skips thread open — isolation is via unique phone chat_id / force_new seed.
     opened_thread_id: Optional[str] = None
     if (
-        mirror_this_target
+        not fresh_session
+        and mirror_this_target
         and not in_channel_surface
         and runtime_adapter is not None
         and loop is not None

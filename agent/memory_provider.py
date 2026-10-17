@@ -119,7 +119,13 @@ class MemoryProvider(ABC):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Formatted recall context for the upcoming turn ("" if none). Must be fast — recall
-        in the background and return cached results; ``session_id`` scopes concurrent sessions."""
+        in the background and return cached results; ``session_id`` scopes concurrent sessions.
+
+        The injection boundary conservatively deduplicates standalone Markdown bullets and
+        bracketed ISO date/time observations within each section. Preserve timestamps and
+        provenance in the formatted line; providers own semantic/historical deduplication
+        and formats outside that shared contract.
+        """
         return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:

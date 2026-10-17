@@ -187,6 +187,30 @@ each operation's previous content reflects earlier operations in that batch.
 Older Hermes versions can omit `previous_content`. Providers that require exact
 identity should skip destructive mirroring when it is absent.
 
+### Duplicate observations at the injection boundary
+
+The shared `build_memory_context_block()` boundary uses
+`agent.memory_context_dedupe.dedupe_recall_observations()` to suppress exact,
+self-contained observation lines within one section of one composed block. It recognizes:
+
+- Top-level Markdown bullets (`-`, `*`, or `+`, whitespace, then text).
+- Top-level bracketed ISO date/time observations, such as
+  `[2026-10-06 12:00:00] prefers concise answers.` or
+  `[2026-10-06T12:00:00.123Z] prefers concise answers.` Offsets such as `+08:00` are supported.
+
+The complete trimmed line is the key, including timestamps and provenance. Different
+times, source IDs, case-sensitive identifiers, contradictions and numerical values remain
+distinct. A heading, separator or column-zero non-observation line starts a fresh scope,
+so identical observations for different sections or peers survive. Fenced code, numbered
+items, prose and indented continuations are preserved. Records with continuation text,
+including indented provenance after a blank line, are not removed and cannot suppress a
+later standalone record. Ambiguous unindented prose after a timestamp headline is preserved.
+
+This is a conservative shared guard, not semantic or historical deduplication. Providers
+must deduplicate observations in other formats and resolve near-duplicate facts before
+formatting `prefetch()` output. The filter uses no cross-turn state and only composes the
+new memory block; earlier message bytes and cached prompt prefixes are unchanged.
+
 ### Oversized prefetch results
 
 External `prefetch()` results are returned in full by default, preserving the

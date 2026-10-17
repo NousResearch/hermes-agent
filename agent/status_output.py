@@ -105,6 +105,16 @@ class StatusOutputMixin:
         """Emit a user-visible warning for degraded side paths where the turn continues but the user must know."""
         self._emit_status_kind("warn", message, origin="_emit_warning")
 
+    def _warn_auxiliary_billing(self, message: str, *, route_key: tuple) -> None:
+        """One notice per source/target route per live session; /new re-arms it."""
+        session_id = getattr(self, "session_id", "") or ""
+        if getattr(self, "_aux_billing_warned_session", None) != session_id:
+            self._aux_billing_warned_session = session_id
+            self._aux_billing_warned_routes = set()
+        if route_key not in self._aux_billing_warned_routes:
+            self._aux_billing_warned_routes.add(route_key)
+            self._emit_warning(message)
+
     def _emit_startup_warning(self, message: str) -> None:
         """A warning raised during ``__init__`` that the user must see (e.g. a memory provider that
         could not be recovered). The CLI prints it. Other drivers get a sticky warn ``AgentNotice``:

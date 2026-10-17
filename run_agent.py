@@ -503,12 +503,11 @@ class AIAgent(
             detail = detail[:217].rstrip() + "..."
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
-    def _current_main_runtime(self) -> dict[str, str]:
+    def _current_main_runtime(self) -> dict[str, Any]:
         """Return the live main runtime for session-scoped auxiliary routing."""
-        return {
-            key: getattr(self, key, "") or ""
-            for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
-        }
+        runtime = {key: getattr(self, key, "") or "" for key in (
+            "model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")}
+        return {**runtime, "billing_warning_callback": self._warn_auxiliary_billing}
 
     _check_compression_model_feasibility = _forward("agent.conversation_compression", "check_compression_model_feasibility")
     _replay_compression_warning = _forward("agent.conversation_compression", "replay_compression_warning")

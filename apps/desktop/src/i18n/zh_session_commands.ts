@@ -13,5 +13,7 @@ export const zhSessionCommands = {
   queued: (preview: string) => `已排队：“${preview}”`,
   queueFailed: '无法将消息加入队列',
   countOne: (count: string) => `${count} 条排队消息`,
-  countOther: (count: string) => `${count} 条排队消息`
+  countOther: (count: string) => `${count} 条排队消息`,
+  queueEditKeptTitle: '排队消息未更改',
+  queueEditKept: '在保存编辑之前它已开始或被拒绝。编辑后的文本仍在输入框中。'
 }

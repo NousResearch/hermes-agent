@@ -63,12 +63,13 @@ def prepare_result(row, response, outcome, result=None):
     return outcome, _redacted(compact_result(result, user_message=row['payload'].get('text')))
 
 
-def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None):
+def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None):
     """Delivery failure cannot rewrite an already committed execution outcome.
 
     `result` is the exact structured result captured in-process; the managed
     worker path commits its own before this runs and is read back here.
     `prepared` is ``prepare_result``'s output computed before the caller took a lock.
+    `transfers` are the queued steers handed to this claim; they settle in the same write.
     """
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
@@ -84,7 +85,7 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
             return dict(current), result['result'].get('final_response') or ''
     outcome, stored = prepared or prepare_result(row, response, outcome, result)
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-        generation=row['generation'], outcome=outcome, result=stored)
+        generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers)
     return settled, response
 
 

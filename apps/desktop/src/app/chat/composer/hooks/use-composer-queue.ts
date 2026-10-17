@@ -26,10 +26,12 @@ import {
   updateQueuedPrompt,
   withQueueDrainClaim
 } from '@/store/composer-queue'
+import { activeGateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
+import { replaceQueuedPrompt } from '../discard-lost-prompt'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -83,6 +85,9 @@ interface UseComposerQueueArgs {
   onSubmit: ChatBarProps['onSubmit']
   queueEditRef: RefObject<QueueEditState | null>
   queueSessionKey: ChatBarProps['queueSessionKey']
+  /** Ask the owner to replace a server-queued admission with edited text (default: through the
+   *  active gateway, routed to the session's owner). */
+  replaceServerQueued?: (admissionId: string, text: string) => Promise<unknown>
   sessionId: string | null | undefined
 }
 
@@ -108,7 +113,20 @@ export function useComposerQueue({
   onSubmit,
   queueEditRef,
   queueSessionKey,
-  sessionId
+  sessionId,
+  replaceServerQueued = (admissionId, text) => {
+    const gateway = activeGateway()
+
+    return gateway
+      ? replaceQueuedPrompt(
+          sessionId,
+          activeQueueSessionKey ?? admissionId,
+          admissionId,
+          text,
+          gateway.request.bind(gateway)
+        )
+      : Promise.reject(new Error('Gateway unavailable'))
+  }
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
   const scope = useComposerScope()
@@ -137,6 +155,25 @@ export function useComposerQueue({
   )
 
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
+  // A server row's edit: its id while editing, and while the owner answers its save. Presentation
+  // only: the owner's FIFO keeps running (it may claim the row mid-edit), so the composer keeps
+  // the edited text until the owner accepts the replacement.
+  const serverEditRef = useRef<string | null>(null)
+  const savingServerEditRef = useRef<string | null>(null)
+
+  // The owner refused the replacement or started the row: nothing typed is lost. The edit stays
+  // in the composer as an unsent draft (followed by the draft it interrupted), with the reason.
+  const keepServerEditAsDraft = (edit: QueueEditState, text: string) => {
+    serverEditRef.current = null
+    setQueueEditSnapshot(null)
+    const previous = edit.draft.trim() && edit.draft !== text ? edit.draft : ''
+    loadIntoComposer(previous ? `${text}\n\n${previous}` : text, edit.attachments)
+    notify({
+      kind: 'warning',
+      title: t.promptNotices.sessionCommands.queueEditKeptTitle,
+      message: t.promptNotices.sessionCommands.queueEditKept
+    })
+  }
 
   const currentQueueKeyRef = useRef(activeQueueSessionKey)
   currentQueueKeyRef.current = activeQueueSessionKey
@@ -146,10 +183,12 @@ export function useComposerQueue({
   const [drainRetryTick, setDrainRetryTick] = useState(0)
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
-    if (!activeQueueSessionKey || queueEdit || entry.serverStatus) {
+    // A server row is editable only when its owner serves `replace` for it.
+    if (!activeQueueSessionKey || queueEdit || (entry.serverStatus && !entry.serverControls?.includes('replace'))) {
       return
     }
 
+    serverEditRef.current = entry.serverStatus ? entry.id : null
     setQueueEditSnapshot({
       attachments: cloneAttachments(attachments),
       draft: draftRef.current,
@@ -169,6 +208,11 @@ export function useComposerQueue({
   const stepQueuedEdit = (direction: -1 | 1) => {
     if (!queueEdit) {
       return false
+    }
+
+    // A server row's text lives in the owner's FIFO: only an explicit save replaces it.
+    if (editingQueuedPrompt?.serverStatus) {
+      return true
     }
 
     const index = queuedPrompts.findIndex(e => e.id === queueEdit.entryId)
@@ -241,18 +285,74 @@ export function useComposerQueue({
         return false
       }
 
-      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
-        attachments: next,
-        text: frozen.text,
-        displayText: frozen.displayText ?? null,
-        frozenTransport: frozen.frozenTransport ?? null
-      })
+      if (editingQueuedPrompt?.serverStatus) {
+        // The owner replaces the admission and its pending fanout repaints the card. Text only,
+        // like the row it replaces: the owner serves `replace` only for text-only rows.
+        if (next.length > 0 || !text.trim()) {
+          return false
+        }
 
-      triggerHaptic(saved ? 'success' : 'selection')
+        const edited = frozen.frozenTransport ?? frozen.text
+        const entryId = editingQueuedPrompt.id
+
+        if (savingServerEditRef.current === entryId) {
+          return true // its save is already with the owner
+        }
+
+        if (edited !== editingQueuedPrompt.text) {
+          // The edit stays open until the owner answers: only an accepted replacement restores the
+          // pre-edit draft; a refusal (started, queue full, transport) keeps the edited text.
+          const edit = queueEdit
+          savingServerEditRef.current = entryId
+
+          const settle = (accepted: boolean) => {
+            if (savingServerEditRef.current !== entryId) {
+              return
+            }
+
+            savingServerEditRef.current = null
+
+            if (queueEditRef.current?.entryId !== entryId) {
+              return
+            }
+
+            if (!accepted) {
+              keepServerEditAsDraft(edit, text)
+
+              return
+            }
+
+            serverEditRef.current = null
+            setQueueEditSnapshot(null)
+            loadIntoComposer(edit.draft, edit.attachments)
+            focusInput()
+          }
+
+          replaceServerQueued(entryId, edited).then(
+            () => settle(true),
+            () => settle(false)
+          )
+          triggerHaptic('success')
+
+          return true
+        }
+
+        triggerHaptic('success')
+      } else {
+        const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
+          attachments: next,
+          text: frozen.text,
+          displayText: frozen.displayText ?? null,
+          frozenTransport: frozen.frozenTransport ?? null
+        })
+
+        triggerHaptic(saved ? 'success' : 'selection')
+      }
     } else {
       triggerHaptic('cancel')
     }
 
+    serverEditRef.current = null
     setQueueEditSnapshot(null)
     loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     focusInput()
@@ -640,7 +740,18 @@ export function useComposerQueue({
     }
 
     if (queueEdit.sessionKey === activeQueueSessionKey) {
-      if (editingQueuedPrompt) {
+      // A server row the owner started (or retired) is no longer editable.
+      if (editingQueuedPrompt && (!editingQueuedPrompt.serverStatus || editingQueuedPrompt.serverStatus === 'queued')) {
+        return
+      }
+
+      if (savingServerEditRef.current === queueEdit.entryId) {
+        return // our own replacement retired it: the owner's answer settles the edit
+      }
+
+      if (serverEditRef.current === queueEdit.entryId) {
+        keepServerEditAsDraft(queueEdit, draftRef.current)
+
         return
       }
 

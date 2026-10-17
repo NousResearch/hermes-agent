@@ -82,6 +82,9 @@ class CanonicalSessionHandle(Result):
 class CanonicalPendingAdmission(AdmissionStatus):
     input_id: str
     text: str
+    # The queued-row verbs the owner serves for this row: ``steer`` (``prompt.steer_queued``) and
+    # ``replace`` (``prompt.replace_queued``). Absent from an owner that predates them.
+    controls: list[Literal['steer', 'replace']] | None = None
 
 
 class CanonicalPendingPrompt(Result):
@@ -211,6 +214,21 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     clarify_batch: bool = False
 
 
+class CanonicalSteerQueuedParams(CanonicalSessionParams):
+    admission_id: str
+
+
+class CanonicalReplaceQueuedParams(CanonicalSessionParams):
+    """The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail."""
+
+    admission_id: str
+    submission_id: str
+    text: str
+    attachments: list[CanonicalAttachment] | None = None
+    display_kind: Literal['hidden'] | None = None
+    title_preview: str | None = None
+
+
 class CanonicalControlParams(CanonicalSessionParams):
     execution_generation: int
 
@@ -271,3 +289,15 @@ for _name, _params, _result in (
     ('approval.respond', CanonicalApprovalParams, PromptResponseResult),
 ):
     canonical_method(_name, params=_params, result=_result)
+
+canonical_method('prompt.steer_queued', params=CanonicalSteerQueuedParams, result=AdmissionStatus,
+                 doc="Hand a still-queued admission's text to the running turn's agent as a steer. "
+                     "The admission reads 'started' with that turn and never runs on its own; it "
+                     "settles terminal 'steered' when the turn completes, else 'interrupted'. "
+                     "Refusals: admission_started, session_idle, steer_unavailable (no agent to take "
+                     "it: the admission stays queued), unsupported_control, not_found.")
+canonical_method('prompt.replace_queued', params=CanonicalReplaceQueuedParams, result=AdmissionStatus,
+                 doc="Cancel a still-queued admission and admit the edited prompt as a new admission "
+                     "at the back of the FIFO, in one write bound to the replaced admission. "
+                     "Refusals: admission_started, admission_conflict (the submission_id replaced "
+                     "another admission), queue_full, unsupported_control, not_found.")

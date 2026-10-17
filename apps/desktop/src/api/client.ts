@@ -43,7 +43,17 @@ export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
 // the same `onRequest` registry as a request whose `respond` issues the RPC.
 const CANONICAL_PROMPT_EVENTS: Record<string, 'approval' | 'clarify'> = { 'approval.request': 'approval', 'clarify.request': 'clarify' }
 
-const ATTACH_REQUIRED = new Set(['prompt.submit', 'approval.respond', 'clarify.respond', 'session.interrupt', 'prompt.cancel', 'session.rewind'])
+const ATTACH_REQUIRED = new Set([
+  'prompt.submit',
+  'approval.respond',
+  'clarify.respond',
+  'session.interrupt',
+  'prompt.cancel',
+  'session.rewind',
+  'prompt.steer_queued',
+  'prompt.replace_queued'
+])
+
 // A branch is a CAS mutation on the PARENT: an un-attached parent (right-click on a sidebar row
 // that was never opened) has no cached revision, so attach it first to learn one. Move to project
 // (`session_key`) is the same CAS mutation on a sidebar row.

@@ -87,6 +87,7 @@ _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
+                               'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'approval.respond', 'clarify.respond'})
 
@@ -182,6 +183,8 @@ class AuthorityConnection:
                     'approval.respond': self.respond, 'clarify.respond': self.respond_clarify}
         from gateway.session_busy_controls import handlers as busy_handlers
         handlers.update(busy_handlers(self))
+        from gateway.session_queued_controls import handlers as queued_handlers
+        handlers.update(queued_handlers(self))
         from gateway.session_config import handlers as config_handlers
         handlers.update(config_handlers(self))
         from gateway.session_tui_config import handlers as tui_config_handlers
@@ -654,6 +657,13 @@ class AuthorityConnection:
         return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
 
     async def submit(self, ref, params):
+        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
+        receipt = await self.authority.submit(self.actor, self.submission(ref, params),
+                                              queue_while_restarting=self._operator is True)
+        return asdict(receipt)
+
+    def submission(self, ref, params):
+        """The admission a ``prompt.submit``-shaped request asks for (``prompt.replace_queued`` too)."""
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
@@ -672,10 +682,7 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
-        receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'),
-                                              queue_while_restarting=self._operator is True)
-        return asdict(receipt)
+        return Submission(request_id, ref, payload, 'queue')
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session

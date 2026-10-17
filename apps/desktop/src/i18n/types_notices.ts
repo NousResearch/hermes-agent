@@ -42,4 +42,7 @@ export interface SessionCommandNotices {
   queueFailed: string
   countOne: (count: string) => string
   countOther: (count: string) => string
+  /** A canonical queued row's edit the owner refused, or whose row started mid-edit. */
+  queueEditKeptTitle: string
+  queueEditKept: string
 }

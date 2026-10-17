@@ -16,6 +16,7 @@ import {
   simulateComposerQueueReloadForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { $connection, setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
@@ -32,7 +33,13 @@ import { useComposerQueue } from './use-composer-queue'
 const SESSION_KEY = 'stored-session-queue-hook'
 
 function renderQueueHook(
-  overrides: { busy?: boolean; draft?: string; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}
+  overrides: {
+    busy?: boolean
+    draft?: string
+    onCancel?: () => void
+    onSteer?: ChatBarProps['onSteer']
+    replaceServerQueued?: (admissionId: string, text: string) => Promise<unknown>
+  } = {}
 ) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
@@ -59,6 +66,7 @@ function renderQueueHook(
         onSubmit,
         queueEditRef,
         queueSessionKey: SESSION_KEY,
+        replaceServerQueued: overrides.replaceServerQueued,
         sessionId: 'rt-session-queue-hook'
       }),
     { initialProps: { busy: overrides.busy ?? false } }
@@ -532,5 +540,82 @@ describe('useComposerQueue scope', () => {
 
     expect(hook.result.current.queuedPrompts).toEqual([])
     expect(getQueuedPrompts('session-a').map(entry => entry.text)).toEqual(['for A'])
+  })
+
+  // RT-35: a server-queued row is an admission in the owner's FIFO. Saving its edit asks the owner
+  // to replace it; the owner's pending fanout then repaints the card (no client-side edit).
+  it('saving an edit of a server-queued row replaces its admission at the owner', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const replaceServerQueued = vi.fn(async () => ({}))
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    expect(draftRef.current).toBe('old words')
+    draftRef.current = 'new words'
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+
+    expect(replaceServerQueued).toHaveBeenCalledWith('adm-1', 'new words')
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['old words'])
+    // The pre-edit draft comes back once the owner accepted the replacement.
+    await waitFor(() => expect(draftRef.current).toBe('my draft'))
+    expect(hook.result.current.queueEdit).toBeNull()
+  })
+
+  it('a refused replacement keeps the edited text as an unsent draft and says why', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    clearNotifications()
+
+    const replaceServerQueued = vi.fn(async () => {
+      throw new Error('admission_started')
+    })
+
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+
+    await waitFor(() => expect(hook.result.current.queueEdit).toBeNull())
+    // Nothing typed is lost: the edit, then the draft it interrupted.
+    expect(draftRef.current).toBe('new words\n\nmy draft')
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+  })
+
+  it('a started-row snapshot arriving mid-edit keeps the edit as a draft', () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    clearNotifications()
+    const replaceServerQueued = vi.fn(async () => ({}))
+    const { draftRef, hook } = renderQueueHook({ busy: true, replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'half-typed edit'
+    // The owner claimed the row: the next pending snapshot carries it as started.
+    act(() =>
+      reconcilePendingSubmissions(SESSION_KEY, [{ admission_id: 'adm-1', status: 'started', user: 'old words' }])
+    )
+
+    expect(hook.result.current.queueEdit).toBeNull()
+    expect(draftRef.current).toBe('half-typed edit')
+    expect(replaceServerQueued).not.toHaveBeenCalled()
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+  })
+
+  it('a server-queued row whose owner serves no replace stays read-only', () => {
+    reconcilePendingSubmissions(SESSION_KEY, [{ admission_id: 'adm-1', status: 'queued', user: 'old words' }])
+    const { hook } = renderQueueHook({ busy: true, replaceServerQueued: vi.fn(async () => ({})) })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+
+    expect(hook.result.current.queueEdit).toBeNull()
   })
 })

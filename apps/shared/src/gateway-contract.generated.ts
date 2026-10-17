@@ -4941,6 +4941,7 @@ export interface CanonicalPendingAdmission {
   execution_generation: number | null
   input_id: string
   text: string
+  controls?: ('steer' | 'replace')[] | null
 }
 export interface CanonicalPendingPrompt {
   kind: 'approval' | 'clarify'
@@ -5123,6 +5124,22 @@ export interface CanonicalApprovalParams {
   execution_generation: number
   prompt_id: string
   choice: string
+}
+export interface CanonicalSteerQueuedParams {
+  profile?: string | null
+  session_id: string
+  admission_id: string
+}
+/** The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail. */
+export interface CanonicalReplaceQueuedParams {
+  profile?: string | null
+  session_id: string
+  admission_id: string
+  submission_id: string
+  text: string
+  attachments?: CanonicalAttachment[] | null
+  display_kind?: 'hidden' | null
+  title_preview?: string | null
 }
 export interface CanonicalConfigGetResult {
   value?: string | null
@@ -6722,8 +6739,12 @@ export interface CanonicalRpcMethods {
   'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
   /** Current receipt of one admission the caller submitted (or controls). */
   'prompt.receipt': { params: PromptReceiptParams; result: PromptReceiptResult }
+  /** Cancel a still-queued admission and admit the edited prompt as a new admission at the back of the FIFO, in one write bound to the replaced admission. Refusals: admission_started, admission_conflict (the submission_id replaced another admission), queue_full, unsupported_control, not_found. */
+  'prompt.replace_queued': { params: CanonicalReplaceQueuedParams; result: AdmissionStatus }
   /** Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input. */
   'prompt.resolve_unknown': { params: PromptResolveUnknownParams; result: AdmissionStatus }
+  /** Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn and never runs on its own; it settles terminal 'steered' when the turn completes, else 'interrupted'. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found. */
+  'prompt.steer_queued': { params: CanonicalSteerQueuedParams; result: AdmissionStatus }
   'prompt.submit': { params: CanonicalSubmitParams; result: AdmissionStatus }
   /** The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer. */
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
@@ -6782,7 +6803,9 @@ export const CANONICAL_RPC_METHODS = [
   'profiles.list',
   'prompt.cancel',
   'prompt.receipt',
+  'prompt.replace_queued',
   'prompt.resolve_unknown',
+  'prompt.steer_queued',
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',

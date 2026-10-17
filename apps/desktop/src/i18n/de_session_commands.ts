@@ -14,5 +14,8 @@ export const deSessionCommands = {
   queued: (preview: string) => `eingereiht: „${preview}“`,
   queueFailed: 'Die Nachricht konnte nicht eingereiht werden',
   countOne: (count: string) => `${count} eingereihte Nachricht`,
-  countOther: (count: string) => `${count} eingereihte Nachrichten`
+  countOther: (count: string) => `${count} eingereihte Nachrichten`,
+  queueEditKeptTitle: 'Eingereihte Nachricht nicht geändert',
+  queueEditKept:
+    'Sie wurde gestartet oder abgelehnt, bevor deine Änderung gespeichert war. Dein bearbeiteter Text steht im Eingabefeld.'
 }

@@ -15,6 +15,8 @@ interface PendingSubmission {
   status?: string
   /** Where in the session's event order the owner last listed this admission as pending. */
   seen?: PendingSnapshotFence
+  /** The snapshot's queued-row controls; carried to the card only, never journaled. */
+  controls?: string[]
 }
 
 /** A canonical pending snapshot's place in its session's event order: the replay epoch and the
@@ -193,7 +195,8 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
       ...known[id],
       id,
       text: typeof raw.user === 'string' ? raw.user : (known[id]?.text ?? ''),
-      status: stale ? known[id].status : raw.status
+      status: stale ? known[id].status : raw.status,
+      ...(Array.isArray(raw.controls) ? { controls: raw.controls.filter((c: unknown) => typeof c === 'string') } : {})
     })
   }
 
@@ -221,7 +224,7 @@ function projectQueue(
 
     if (receipt) {
       if (receipt.status !== 'started') {
-        next.push({ ...entry, id: receipt.id, serverStatus: receipt.status })
+        next.push({ ...entry, id: receipt.id, serverStatus: receipt.status, serverControls: receipt.controls })
       }
 
       receipts.delete(receipt.id)
@@ -238,7 +241,8 @@ function projectQueue(
         displayText: receipt.displayText,
         attachments: [],
         queuedAt: Date.now(),
-        serverStatus: receipt.status
+        serverStatus: receipt.status,
+        serverControls: receipt.controls
       })
     }
   }

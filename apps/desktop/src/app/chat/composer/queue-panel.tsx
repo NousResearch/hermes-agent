@@ -95,9 +95,15 @@ export function QueuePanel({
       {entries.map(entry => {
         const isEditing = editingId === entry.id
         const attachmentsCount = entry.attachments.length
+
         // Steer only surfaces where it can actually deliver: a live turn to
         // redirect and an entry the redirect can carry (text-only, no slash).
-        const canSteer = busy && Boolean(onSteerNow) && isSteerableEntry(entry)
+        // A server row can be steered only when its owner serves the verb for it.
+        const canSteer =
+          busy &&
+          Boolean(onSteerNow) &&
+          (entry.serverStatus ? Boolean(entry.serverControls?.includes('steer')) : isSteerableEntry(entry))
+
         // The owner died mid-turn and recovered this row as `unknown`: the
         // FIFO behind it is paused until someone acknowledges the loss.
         const lost = entry.serverStatus === 'unknown'
@@ -194,7 +200,9 @@ interface EntryActionsArgs {
   onSteerNow?: (id: string) => void
 }
 
-/** Per-row trailing actions: discard for a lost row, else edit/steer/send for a local one. */
+/** Per-row trailing actions: discard for a lost row, else edit/steer/send for a local one. A
+ *  server row gets only the edit/steer its owner serves, never send-next: reordering it would
+ *  break the owner's one FIFO. */
 function renderEntryActions({
   busy,
   c,
@@ -223,8 +231,8 @@ function renderEntryActions({
       </Button>
     </Tip>
   ) : (
-    !entry.serverStatus && (
-      <>
+    <>
+      {(!entry.serverStatus || entry.serverControls?.includes('replace')) && (
         <Tip label={c.queueEdit}>
           <Button
             aria-label={c.queueEdit}
@@ -238,21 +246,23 @@ function renderEntryActions({
             <Pencil className={iconSize.xs} />
           </Button>
         </Tip>
-        {canSteer && (
-          <Tip label={c.queueSteer}>
-            <Button
-              aria-label={c.queueSteer}
-              className="size-5 rounded-md"
-              disabled={isEditing}
-              onClick={() => onSteerNow?.(entry.id)}
-              size="icon-xs"
-              type="button"
-              variant="ghost"
-            >
-              <SteeringWheel className={iconSize.xs} />
-            </Button>
-          </Tip>
-        )}
+      )}
+      {canSteer && (
+        <Tip label={c.queueSteer}>
+          <Button
+            aria-label={c.queueSteer}
+            className="size-5 rounded-md"
+            disabled={isEditing}
+            onClick={() => onSteerNow?.(entry.id)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <SteeringWheel className={iconSize.xs} />
+          </Button>
+        </Tip>
+      )}
+      {!entry.serverStatus && (
         <Tip label={busy ? c.queueSendNext : c.queueSend}>
           <Button
             aria-label={busy ? c.queueSendNext : c.queueSend}
@@ -266,7 +276,7 @@ function renderEntryActions({
             <CornerDownLeft className={iconSize.xs} />
           </Button>
         </Tip>
-      </>
-    )
+      )}
+    </>
   )
 }

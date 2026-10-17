@@ -13,5 +13,8 @@ export const frSessionCommands = {
   queued: (preview: string) => `en file : « ${preview} »`,
   queueFailed: 'Impossible de mettre le message en file',
   countOne: (count: string) => `${count} message en file`,
-  countOther: (count: string) => `${count} messages en file`
+  countOther: (count: string) => `${count} messages en file`,
+  queueEditKeptTitle: 'Message en file non modifié',
+  queueEditKept:
+    "Il a démarré ou a été refusé avant l'enregistrement de ta modification. Ton texte modifié est dans la zone de saisie."
 }

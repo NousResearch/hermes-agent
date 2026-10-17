@@ -13,5 +13,7 @@ export const ruSessionCommands = {
   queued: (preview: string) => `в очереди: «${preview}»`,
   queueFailed: 'Не удалось поставить сообщение в очередь',
   countOne: (count: string) => `сообщений в очереди: ${count}`,
-  countOther: (count: string) => `сообщений в очереди: ${count}`
+  countOther: (count: string) => `сообщений в очереди: ${count}`,
+  queueEditKeptTitle: 'Сообщение в очереди не изменено',
+  queueEditKept: 'Оно началось или было отклонено до сохранения правки. Отредактированный текст остался в поле ввода.'
 }

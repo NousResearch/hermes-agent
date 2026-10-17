@@ -31,3 +31,35 @@ export async function cancelQueuedPrompt(
     admission_id: admissionId
   })
 }
+
+/** Deliver a server-queued admission as a steer into the running turn. The authority consumes the
+ *  admission (it never also runs) and its pending fanout retires the card; a refusal
+ *  (admission_started, session_idle) leaves it queued. */
+export async function steerQueuedPrompt(
+  sessionId: string | null | undefined,
+  queueSessionKey: string,
+  admissionId: string,
+  request: GatewayRequest
+): Promise<unknown> {
+  return requestForOwnedSession(queueSessionKey, request, 'prompt.steer_queued', {
+    session_id: sessionId ?? queueSessionKey,
+    admission_id: admissionId
+  })
+}
+
+/** Replace a server-queued admission with edited text: the authority cancels it and admits the
+ *  edit as a new admission at the back of the FIFO, in one write. */
+export async function replaceQueuedPrompt(
+  sessionId: string | null | undefined,
+  queueSessionKey: string,
+  admissionId: string,
+  text: string,
+  request: GatewayRequest
+): Promise<unknown> {
+  return requestForOwnedSession(queueSessionKey, request, 'prompt.replace_queued', {
+    session_id: sessionId ?? queueSessionKey,
+    admission_id: admissionId,
+    submission_id: crypto.randomUUID(),
+    text
+  })
+}

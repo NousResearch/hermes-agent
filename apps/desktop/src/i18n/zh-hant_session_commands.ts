@@ -13,5 +13,7 @@ export const zhHantSessionCommands = {
   queued: (preview: string) => `已排入佇列：「${preview}」`,
   queueFailed: '無法將訊息排入佇列',
   countOne: (count: string) => `${count} 則排隊訊息`,
-  countOther: (count: string) => `${count} 則排隊訊息`
+  countOther: (count: string) => `${count} 則排隊訊息`,
+  queueEditKeptTitle: '排隊訊息未變更',
+  queueEditKept: '在儲存編輯之前它已開始或被拒絕。編輯後的文字仍在輸入框中。'
 }

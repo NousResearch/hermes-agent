@@ -13,5 +13,7 @@ export const arSessionCommands = {
   queued: (preview: string) => `في قائمة الانتظار: "${preview}"`,
   queueFailed: 'تعذّرت إضافة الرسالة إلى قائمة الانتظار',
   countOne: (count: string) => `${count} رسالة في قائمة الانتظار`,
-  countOther: (count: string) => `${count} رسائل في قائمة الانتظار`
+  countOther: (count: string) => `${count} رسائل في قائمة الانتظار`,
+  queueEditKeptTitle: 'لم تتغير الرسالة في قائمة الانتظار',
+  queueEditKept: 'بدأت أو رُفضت قبل حفظ تعديلك. نصك المعدّل موجود في مربع الكتابة.'
 }

@@ -2437,6 +2437,8 @@
     "promptNotices.mcpReloadUnavailable",
     "promptNotices.sessionCommands.countOne",
     "promptNotices.sessionCommands.countOther",
+    "promptNotices.sessionCommands.queueEditKept",
+    "promptNotices.sessionCommands.queueEditKeptTitle",
     "promptNotices.sessionCommands.queueFailed",
     "promptNotices.sessionCommands.queued",
     "promptNotices.sessionCommands.retryNothing",

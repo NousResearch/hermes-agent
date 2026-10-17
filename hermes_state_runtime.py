@@ -116,12 +116,14 @@ ADMISSION_QUEUE_MAX = 32
 
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
                         request_id: str, payload: dict, intent: str = 'queue',
-                        _authorize_write=None) -> dict:
+                        _authorize_write=None, _replay_guard=None) -> dict:
     """Admit input; the trusted private guard raises to refuse a NEW write.
 
     The guard receives the owning transaction connection, must not commit it or
     perform external effects, and may run again on SQLite retry. Exact existing
     and terminal replays bypass it: they cannot create or change accepted work.
+    ``_replay_guard(conn)`` runs on the exact live replay instead, inside the same
+    transaction (a replacement's binding to the admission it retired).
     """
     for value in (principal_id, session_id, request_id):
         _text(value)
@@ -142,6 +144,8 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
         if old is not None:
             if old['payload_digest'] != digest:
                 raise RuntimeStoreError('admission_conflict')
+            if _replay_guard is not None:
+                _replay_guard(conn)
             return _row(old)
         queued = conn.execute('''SELECT COUNT(*) FROM session_admissions WHERE target_session_id=?
             AND status='queued' ''', (session_id,)).fetchone()[0]
@@ -221,7 +225,7 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
 
 
 def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, outcome: str,
-                         result: dict | None = None) -> dict:
+                         result: dict | None = None, _transfers=None) -> dict:
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
     from hermes_state_terminal import compact_result, encode_result
@@ -241,6 +245,7 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (RESULT_PREFIX + admission_id, encoded))
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?", (outcome, admission_id))
+        settle_steer_transfers(conn, epoch=epoch, generation=generation, transfers=_transfers, outcome=outcome)
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return _row(_admission(conn, admission_id))
     return db._execute_write(write)
@@ -258,6 +263,87 @@ def cancel_session_input(db, *, epoch: int, admission_id: str) -> dict:
             conn.execute("UPDATE session_admissions SET status='terminal',outcome='cancelled' WHERE admission_id=?", (admission_id,))
         return _row(_admission(conn, admission_id))
     return db._execute_write(write)
+
+
+# A queued admission handed to its FIFO's running claim: terminal (never claimable, outside the queue
+# cap) but not yet an outcome. It is bound to that claim's ``(owner_epoch, generation)`` and settles
+# with it: ``steered`` once the claim completes with the text delivered, ``interrupted`` otherwise, or
+# back to ``queued`` (its own FIFO place) when the text never reached the claim's agent.
+STEERING = 'steering'
+
+
+def steer_session_input(db, *, epoch: int, admission_id: str, generation: int) -> tuple[dict, bool]:
+    """Hand a still-queued admission to its FIFO's running claim: queued -> terminal ``steering``
+    bound to ``generation`` in one write, only while ``generation`` is the started claim this owner
+    holds, so the drain can never also claim it. ``(row, True)`` when this call committed the
+    transfer, ``(row, False)`` for an exact retry of one already committed (never delivered twice)."""
+    def write(conn):
+        _epoch(conn, epoch)
+        row = _admission(conn, admission_id)
+        if row['status'] == 'terminal' and row['outcome'] in (STEERING, 'steered'):
+            return _row(row), False
+        if row['status'] != 'queued':
+            raise RuntimeStoreError('admission_started')
+        if type(generation) is not int or conn.execute(
+                "SELECT 1 FROM session_admissions WHERE target_session_id=? AND status='started' "
+                "AND owner_epoch=? AND generation=?", (row['target_session_id'], epoch, generation)).fetchone() is None:
+            raise RuntimeStoreError('session_idle')
+        conn.execute("UPDATE session_admissions SET status='terminal',outcome=?,owner_epoch=?,generation=? "
+                     "WHERE admission_id=?", (STEERING, epoch, generation, admission_id))
+        return _row(_admission(conn, admission_id)), True
+    return db._execute_write(write)
+
+
+def settle_steer_transfers(conn, *, epoch: int, generation: int, transfers, outcome: str) -> None:
+    """In the receiving claim's terminal write: each admission bound to it settles ``steered`` only if
+    its text reached the claim's agent (``transfers[id]``) and the claim completed; a delivered text
+    under any other ending is ``interrupted`` (never replayed); an undelivered one is queued again."""
+    for admission_id, delivered in (transfers or {}).items():
+        bound = ("WHERE admission_id=? AND status='terminal' AND outcome=? AND owner_epoch=? AND generation=?",
+                 (admission_id, STEERING, epoch, generation))
+        if delivered:
+            final = 'steered' if outcome == 'completed' else 'interrupted'
+            conn.execute('UPDATE session_admissions SET outcome=? ' + bound[0], (final, *bound[1]))
+        else:
+            conn.execute("UPDATE session_admissions SET status='queued',outcome=NULL,generation=NULL " + bound[0], bound[1])
+
+
+def revert_steer_input(db, *, epoch: int, admission_id: str, generation: int) -> bool:
+    """A transfer whose text never reached the claim's agent: the admission is queued again, in its
+    original FIFO place (its ``seq``). False when the claim's settlement already decided it."""
+    def write(conn):
+        _epoch(conn, epoch)
+        changed = conn.execute("UPDATE session_admissions SET status='queued',outcome=NULL,generation=NULL "
+                               "WHERE admission_id=? AND status='terminal' AND outcome=? AND owner_epoch=? "
+                               "AND generation=?", (admission_id, STEERING, epoch, generation)).rowcount
+        return changed == 1
+    return db._execute_write(write)
+
+
+REPLACEMENT_PREFIX = 'gateway.queued_replacement.v1.'
+
+
+def replacement_binding(principal_id: str, session_id: str, request_id: str) -> str:
+    """The durable key binding a replacement's identity to the admission it retired."""
+    return REPLACEMENT_PREFIX + admission_fingerprint(canonical_target=session_id,
+                                                      payload={'principal': principal_id, 'request': request_id})
+
+
+def retire_replaced_input(conn, admission_id: str, binding: str) -> None:
+    """Inside the replacement's own admission write: the replaced row, still queued, is cancelled
+    in the same transaction that admits its successor at the FIFO tail, which is bound to it."""
+    row = _admission(conn, admission_id)
+    if row['status'] != 'queued':
+        raise RuntimeStoreError('admission_started')
+    conn.execute("UPDATE session_admissions SET status='terminal',outcome='cancelled' WHERE admission_id=?", (admission_id,))
+    conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (binding, json.dumps(admission_id)))
+
+
+def check_replaced_input(conn, admission_id: str, binding: str) -> None:
+    """The exact replay of a replacement answers only the request that retired ``admission_id``."""
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (binding,)).fetchone()
+    if saved is None or json.loads(saved[0]) != admission_id:
+        raise RuntimeStoreError('admission_conflict')
 
 
 def rehome_queued_inputs(db, *, epoch: int, old_session_id: str, new_session_id: str,
@@ -296,6 +382,9 @@ def recover_session_inputs(db, *, epoch: int) -> int:
     def write(conn):
         _epoch(conn, epoch)
         conn.execute("UPDATE worker_executions SET status='unknown' WHERE status IN ('registered','running') AND owner_epoch!=?", (epoch,))
+        # A steer handed to a lost claim may or may not have reached its agent: never replayed.
+        conn.execute("UPDATE session_admissions SET outcome='interrupted' WHERE status='terminal' AND outcome=? "
+                     "AND owner_epoch!=?", (STEERING, epoch))
         return conn.execute("UPDATE session_admissions SET status='unknown' WHERE status='started' AND owner_epoch!=?", (epoch,)).rowcount
     return db._execute_write(write)
 

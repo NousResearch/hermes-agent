@@ -8,6 +8,7 @@ def test_resume_lists_pending_admission_text_capped_and_terminal_safe(capsys):
 
     authority = object.__new__(SessionAuthority)
     authority.profile_id, authority.epoch = "profile", 3
+    authority._launch_sources = {"stored": "cli"}  # the resumed classic CLI's launch source
     row = {"target_session_id": "stored", "outcome": None, "owner_epoch": 3}
     hostile = "\x1b]0;pwned\x07\x1b[2Jdeploy\rhidden\x08\u202e\x9b31m now " + "x" * 200
     rows = [

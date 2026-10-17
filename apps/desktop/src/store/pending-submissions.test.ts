@@ -33,6 +33,19 @@ it('projects resumed runtime pending receipts under durable identity without mak
   expect(getQueuedPrompts('runtime')).toEqual([])
 })
 
+it('carries the queued-row controls the owner lists onto the card, and none when it lists none (RT-35)', () => {
+  reconcilePendingSubmissions('chat', [
+    { admission_id: 'served', status: 'queued', user: 'edit me', controls: ['steer', 'replace'] },
+    { admission_id: 'older', status: 'queued', user: 'older owner' }
+  ])
+
+  expect(getQueuedPrompts('chat').map(({ id, serverControls }) => ({ id, serverControls }))).toEqual([
+    { id: 'served', serverControls: ['steer', 'replace'] },
+    { id: 'older', serverControls: undefined }
+  ])
+  expect(Object.values(readPendingSubmissions('chat')).some(entry => 'controls' in entry)).toBe(false)
+})
+
 it('reconciles server queue by identity without replaying or duplicating local entries', () => {
   enqueueQueuedPrompt('chat', { id: 'one', text: 'same', attachments: [] })
   enqueueQueuedPrompt('chat', { id: 'local', text: 'same', attachments: [] })

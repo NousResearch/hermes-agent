@@ -19,12 +19,13 @@ from providers import get_provider_profile
 class _Agent:
     """The attributes ``_build_api_kwargs_for_mode`` reads before handing off to the transport builder."""
 
-    def __init__(self, reasoning_config, *, provider="custom:relay", api_mode="chat_completions"):
+    def __init__(self, reasoning_config, *, provider="custom:relay", model="moonshotai/kimi-k3",
+                 base_url="http://relay.example/v1", api_mode="chat_completions"):
         self.reasoning_config = reasoning_config
         self.provider = provider
-        self.model = "moonshotai/kimi-k3"
+        self.model = model
         self.api_mode = api_mode
-        self.base_url = "http://relay.example/v1"
+        self.base_url = base_url
         self.tools = []
         self.request_overrides = None
         self.service_tier = None
@@ -47,11 +48,11 @@ def _wire_reasoning_config(agent):
         return _build_api_kwargs_for_mode(agent, [], [])["reasoning_config"]
 
 
-def _custom_wire_field(reasoning_config):
+def _custom_wire_field(reasoning_config, *, model="moonshotai/kimi-k3", base_url="http://relay.example/v1"):
     kwargs = ChatCompletionsTransport().build_kwargs(
-        "moonshotai/kimi-k3", [{"role": "user", "content": "hi"}], tools=None,
+        model, [{"role": "user", "content": "hi"}], tools=None,
         provider_profile=get_provider_profile("custom:relay"), reasoning_config=reasoning_config,
-        base_url="http://relay.example/v1",
+        base_url=base_url,
     )
     return kwargs.get("reasoning_effort")
 
@@ -67,6 +68,14 @@ def test_unset_effort_goes_out_as_medium_and_explicit_efforts_are_untouched(conf
     assert _custom_wire_field(sent) == expected_wire
     # The rejection ladder classifies the NEXT 400 from what was recorded as sent.
     assert agent._wire_reasoning_config == sent
+
+
+def test_unset_effort_omits_the_field_for_ministral_on_mistral_api():
+    agent = _Agent(None, model="ministral-14b-2512", base_url="https://api.mistral.ai/v1")
+    with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        sent = _wire_reasoning_config(agent)
+    assert sent == {"enabled": True, "effort": "medium"}
+    assert _custom_wire_field(sent, model=agent.model, base_url=agent.base_url) is None
 
 
 def test_unset_effort_default_keeps_the_field_off_where_it_would_be_wrong():
@@ -88,4 +97,3 @@ def test_unset_effort_default_keeps_the_field_off_where_it_would_be_wrong():
         # Not a chat-completions wire: the Anthropic adapter's "unset = no thinking kwargs" stands.
         from agent.reasoning_params import unset_reasoning_default
         assert unset_reasoning_default(_Agent(None, api_mode="anthropic_messages")) is None
-

@@ -138,7 +138,10 @@ export function isRemoteReauthFailure(
   return (
     isRemoteConfig(config) &&
     config!.remoteAuthMode === 'oauth' &&
-    (!config!.remoteOauthConnected || isRemoteReauthError(error))
+    // Disconnected metadata alone cannot establish why a boot failed: a
+    // transport or IPC timeout must retain the ordinary remote retry path.
+    // With no failure detail, keep the first-sign-in affordance.
+    (isRemoteReauthError(error) || (!config!.remoteOauthConnected && !String(error || '').trim()))
   )
 }
 

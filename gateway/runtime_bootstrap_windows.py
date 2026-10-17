@@ -350,3 +350,54 @@ class NativeControlServer:
         finally:
             if handle is not None:
                 win.CloseHandle(handle)
+
+
+# Why a same-user gateway's control pipe or process refused this client (#139845, #140252). The
+# pipe DACL names the user's SID, so a refusal between two processes of one user means a boundary
+# the SID does not cross: an elevated owner (High integrity) seen from a filtered token, or an
+# owner in another logon session (a session-0 S4U boot task). ``authorization`` reads as a
+# credential problem and names neither.
+GATEWAY_ELEVATED = "gateway_elevated"
+GATEWAY_OTHER_SESSION = "gateway_other_session"
+
+
+def classify_refused_owner(*, own_session: int | None, owner_session: int | None,
+                           own_elevated: bool, owner_elevated: bool | None) -> str | None:
+    """Pure decision over probed facts; ``None`` keeps the generic ``authorization`` code.
+
+    ``owner_elevated`` is None when the owner's token could not be opened; from a non-elevated
+    client in the same session that refusal is itself the elevation boundary."""
+    if own_session is not None and owner_session is not None and own_session != owner_session:
+        return GATEWAY_OTHER_SESSION
+    if own_elevated:
+        return None
+    if owner_elevated or (owner_elevated is None and owner_session is not None):
+        return GATEWAY_ELEVATED
+    return None
+
+
+def refused_owner_remedy(reason: str, pid: int, owner_session: int | None) -> str:
+    if reason == GATEWAY_ELEVATED:
+        return (f"The running gateway (PID {pid}) was started as administrator, so this non-elevated "
+                "app cannot reach it. Stop it from an administrator prompt (hermes gateway stop), then "
+                "start Hermes without elevation")
+    where = f"session {owner_session}" if owner_session is not None else "another session"
+    return (f"The running gateway (PID {pid}) runs in another Windows logon session ({where}, e.g. a "
+            "boot-time scheduled task), so this app cannot reach it. Stop it (hermes gateway stop from an "
+            "administrator prompt) and let only one auto-start task launch the gateway")
+
+
+def _session_of(pid: int) -> int | None:
+    k = ctypes.WinDLL('kernel32', use_last_error=True)
+    session = wintypes.DWORD()
+    to_session = _api(k, 'ProcessIdToSessionId', wintypes.BOOL, [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)])
+    return session.value if to_session(pid, ctypes.byref(session)) else None
+
+
+def probe_refused_owner(pid: int) -> tuple[str, str] | None:
+    """``(reason_code, remedy)`` naming why *pid*'s gateway refused this client, or None."""
+    from hermes_dir_acl import process_elevation, process_is_elevated
+    own_session, owner_session = _session_of(os.getpid()), _session_of(pid)
+    reason = classify_refused_owner(own_session=own_session, owner_session=owner_session,
+                                    own_elevated=process_is_elevated(), owner_elevated=process_elevation(pid))
+    return (reason, refused_owner_remedy(reason, pid, owner_session)) if reason else None

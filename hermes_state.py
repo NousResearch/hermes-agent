@@ -683,6 +683,9 @@ class SessionDB(
             # Serialize zero-byte check, quarantine, connect and schema commit so concurrent
             # openers don't race the absent-path -> schema-commit window.
             if not self.db_path.exists() or has_invalid_sqlite_header_preopen(self.db_path):
+                # The directory must be writable before the lock file can be created in it; the
+                # directory never vanishes mid-quarantine, so checking it unlocked is race-free.
+                preflight_db_writability(self.db_path, db_label="state.db", directory_only=True)
                 with quarantine_cross_process_lock(self.db_path) as lock_acquired:
                     if not lock_acquired:
                         logger.warning(

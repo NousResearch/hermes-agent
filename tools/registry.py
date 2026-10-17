@@ -936,7 +936,9 @@ class ToolRegistry:
     def dispatch(
         self, name: str, args: dict, *, scope: Optional[str] = None, **kwargs) -> str | dict:
         """Execute a tool handler by name: async handlers bridged via ``_run_async()``,
-        results normalized, every exception returned as ``{"error": ...}``."""
+        results normalized, every exception (``SystemExit`` included) returned as
+        ``{"error": ...}``; other ``BaseException``s (``KeyboardInterrupt``, ``GeneratorExit``,
+        ``CancelledError``) propagate."""
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
@@ -951,7 +953,10 @@ class ToolRegistry:
             else:
                 result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
+            # A handler's sys.exit() (plugin code, or argparse/click inside it) is a failed call,
+            # not a request to stop Hermes: uncaught, it unwinds the turn and, on the gateway, the
+            # event loop. Same boundary as plugin hooks (#117303).
             # exc_info already renders the exception, so keep the message copy bounded.
             logger.exception("Tool %s dispatch error: %s", name, _bound_error_text(str(e)))
             # Sanitize so framing tokens/CDATA/fences in exception text aren't structural noise.

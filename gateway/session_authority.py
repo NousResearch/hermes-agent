@@ -244,6 +244,11 @@ class SessionAuthority:
 
     def _handle(self, ref):
         row = self.db.get_session(ref.session_id)
+        if row is None:
+            # A live entry whose durable row is gone (``sessions delete``, an external wipe):
+            # the same refusal ``authorize`` gives an absent id, so every lister skips the
+            # entry instead of dying on the row it no longer has.
+            raise RuntimeStoreError('not_found')
         pending = self._pending_rows(ref)
         state = 'unknown' if any(r['status'] == 'unknown' for r in pending) else (
             'running' if any(r['status'] == 'started' for r in pending) else 'idle')

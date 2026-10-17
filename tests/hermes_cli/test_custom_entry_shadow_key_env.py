@@ -405,3 +405,21 @@ def test_aux_auth_failure_on_the_entry_never_rotates_the_builtin_pool(tmp_path, 
     assert ac._recover_provider_pool(pool_provider, err) is False
     builtin = [e for e in load_pool("deepseek").entries() if e.source == "env:DEEPSEEK_API_KEY"]
     assert builtin and all(e.last_status != "exhausted" for e in builtin)
+
+
+def test_bare_route_skips_an_unusable_inline_key_for_the_declared_key_env(tmp_path, monkeypatch):
+    _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY",
+          entry_extra={"key_env": "ENTRY_KEY_VAR", "api_key": "placeholder"})
+    from hermes_cli import runtime_provider as rp
+    from hermes_cli.runtime_provider_custom import _owning_entry_credential
+
+    assert _owning_entry_credential(rp, ENDPOINT) == (True, ENTRY_KEY)
+
+
+def test_aux_named_entry_skips_an_unusable_inline_key_for_the_declared_key_env(tmp_path, monkeypatch):
+    _home(tmp_path, monkeypatch, "mydeep", "DEEPSEEK_API_KEY",
+          entry_extra={"key_env": "ENTRY_KEY_VAR", "api_key": "placeholder"})
+    from agent.auxiliary_client import _named_custom_api_key
+    from hermes_cli.runtime_provider import _get_named_custom_provider
+
+    assert _named_custom_api_key(_get_named_custom_provider("custom:mydeep"), "mydeep", ENDPOINT) == ENTRY_KEY

@@ -439,14 +439,20 @@ def _owning_entry_credential(rp, base_url: str) -> tuple[bool, Any]:
     entry = _owning_entry(rp, base_url)
     if entry is None or not entry_declares_credential(entry):
         return False, ""
-    name = str(entry.get("name") or "custom")
+    return True, _entry_credential(rp, entry, str(entry.get("name") or "custom"))
+
+
+def _entry_credential(rp, entry: dict[str, Any], name: str) -> Any:
+    """A ``providers:`` entry's own credential, for the named and the URL-matched bare routes alike:
+    ``key_cmd`` (minted per request) first, else the first usable of ``api_key`` / ``key_env``, else "".
+    A placeholder ``api_key`` never hides a working ``key_env``."""
     key_cmd = _clean(entry.get("key_cmd"))
     if key_cmd:
         from agent.command_token_source import build_command_token_provider
-        token_provider = build_command_token_provider(key_cmd, name)
-        if token_provider is not None:
-            return True, token_provider
-    return True, _clean(entry.get("api_key")) or _key_env_secret(entry, f"custom provider '{name}'")
+        if (token_provider := build_command_token_provider(key_cmd, name)) is not None:
+            return token_provider
+    candidates = (_clean(entry.get("api_key")), _key_env_secret(entry, f"custom provider '{name}'"))
+    return next((c for c in candidates if rp.has_usable_secret(c)), "")
 
 
 def _try_resolve_from_custom_pool(
@@ -658,24 +664,14 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
         return pool_result
-    # A declared credential that resolves to nothing gets no implicit host-gated env key: on the
-    # entry's built-in's host that is another account's key.
-    candidates = [
-        explicit_key,
-        _clean(custom_provider.get("api_key", "")),
-        _key_env_secret(custom_provider, f"custom provider '{custom_provider.get('name', requested_provider)}'"),
-        *([] if entry_declares_credential(custom_provider) else rp._host_gated_env_key_candidates(base_url, ollama=False)),
-    ]
-    api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
-    # ``key_cmd`` credentials are minted per request (short-lived bearers would go stale
-    # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
-    # explicit --api-key still wins as the one-off recovery escape hatch.
-    key_cmd = _clean(custom_provider.get("key_cmd", ""))
-    if key_cmd and not rp.has_usable_secret(explicit_key):
-        from agent.command_token_source import build_command_token_provider
-        token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
-        if token_provider is not None:
-            api_key = token_provider
+    # An explicit --api-key wins as the one-off recovery escape hatch. ``key_cmd`` credentials are
+    # minted per request (short-lived bearers would go stale mid-session); both wire clients accept a
+    # callable api_key (the Entra ID contract). A declared credential that resolves to nothing gets no
+    # implicit host-gated env key: on the entry's built-in's host that is another account's key.
+    api_key: Any = explicit_key if rp.has_usable_secret(explicit_key) else (
+        _entry_credential(rp, custom_provider, str(custom_provider.get("name", requested_provider) or "custom"))
+        or next((c for c in ([] if entry_declares_credential(custom_provider)
+                             else rp._host_gated_env_key_candidates(base_url, ollama=False)) if rp.has_usable_secret(c)), ""))
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)

@@ -56,11 +56,20 @@ def commit_local_session(db, *, epoch, receipt):
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()
-        conn.execute('''INSERT INTO sessions(id,source,user_id,session_key,chat_id,chat_type,
-            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,'dm',?,?,?,?,?)
+        # Auxiliary usage inserts created_source='unknown' when it creates the row, and
+        # that value never moves (record_auxiliary_usage carries no surface). The agent's
+        # own accounting passes its surface (turn_usage._agent_session_source) and is not
+        # that writer. Stamp the agent surface in this insert so a later usage write
+        # cannot fill the column. gui's in-process agent is desktop; a managed worker
+        # creates with the policy label gui.
+        from gateway.session_policy import created_surface
+        created = created_surface(policy['source'])
+        conn.execute('''INSERT INTO sessions(id,source,created_source,user_id,session_key,chat_id,chat_type,
+            model,cwd,profile_name,origin_json,started_at) VALUES(?,?,?,?,?,?,'dm',?,?,?,?,?)
             ON CONFLICT(id) DO NOTHING''',
-            (sid, policy['source'], receipt['principal_id'], route, entry['origin']['chat_id'],
-             policy['model'], _row_cwd(policy), db._own_profile_name(), _json(entry['origin']), started))
+            (sid, policy['source'], created, receipt['principal_id'], route,
+             entry['origin']['chat_id'], policy['model'], _row_cwd(policy), db._own_profile_name(),
+             _json(entry['origin']), started))
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))

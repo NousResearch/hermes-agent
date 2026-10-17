@@ -396,10 +396,23 @@ class SessionUsageMixin:
         if not session_id or not task:
             return
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
-        # FK to sessions.id: same guard as update_token_counts; the aux path carries no surface, so
-        # the placeholder stays repairable by the creator's upsert (_insert_session_row).
-        self._insert_session_row(session_id, "unknown")
-        self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
+        # FK to sessions.id. A missing row is inserted as ``unknown``, and that created_source
+        # never moves. An existing row keeps source and created_source, including a NULL
+        # surface update_token_counts can still fill. The upsert's profile_name backfill
+        # still runs: a NULL owner is filled without writing ``unknown`` anywhere.
+        own_profile = None
+        if self._read_one("SELECT 1 FROM sessions WHERE id=?", (session_id,)) is None:
+            self._insert_session_row(session_id, "unknown")
+        else:
+            own_profile = self._own_profile_name()
+
+        def _write(conn):
+            if own_profile:
+                conn.execute(
+                    "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
+                    (own_profile, session_id))
+            self._record_model_usage(conn, session_id, task=task, **usage)
+        self._execute_write(_write)
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed

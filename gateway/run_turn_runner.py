@@ -133,32 +133,37 @@ def _settle_api_runtime_lock(agent, result, captured):
 
 def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, str]:
     """``(chat text, failure_reason)`` for a model/credential resolution failure before the turn."""
+    from agent.error_classifier import FailoverReason
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_state_runtime import RuntimeStoreError
+    auth_permanent = FailoverReason.auth_permanent.value
     if isinstance(exc, RuntimeStoreError):
         # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
         # daemon restart): keep it in the reply so clients can act on it, and do not suggest
         # /login — the profile's own credentials were never in play.
         return (f"⚠️ This session's launch credentials are no longer available ({exc.reason}), so this "
-                "message wasn't processed. Start a new session from the CLI to bind them again.", "auth_permanent")
+                "message wasn't processed. Start a new session from the CLI to bind them again.", auth_permanent)
     if is_rate_limited_auth_error(exc.__cause__):
         # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
         from gateway.run import _gateway_provider_error_reply
-        return _gateway_provider_error_reply(str(exc)), "auth_permanent"
+        return _gateway_provider_error_reply(str(exc)), auth_permanent
     if platform == Platform.LOCAL:
         # The local operator reads the terminal: the resolver's own sentence ("provider 'custom'
         # resolved without credentials ...") is the diagnosis; /login is not.
-        return f"⚠️ {exc}", "auth_permanent"
-    chain: list[BaseException] = []
+        return f"⚠️ {exc}", auth_permanent
+    seen: set[int] = set()
+    host = auth = False
     link: BaseException | None = exc
-    while link is not None and link not in chain:
-        chain.append(link)
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        host = host or isinstance(link, OSError)
+        auth = auth or isinstance(link, AuthError)
         link = link.__cause__ or link.__context__
-    if any(isinstance(e, OSError) for e in chain) and not any(isinstance(e, AuthError) for e in chain):
+    if host and not auth:
         # A host-side failure (a CA bundle deleted under a long-lived process, an unreadable file)
         # with no credential verdict: /login cannot fix it, the gateway log can (#140344).
-        return t("gateway.errors.generic_failed"), "unknown"
-    return t("gateway.errors.no_credentials"), "auth_permanent"
+        return t("gateway.errors.generic_failed"), FailoverReason.unknown.value
+    return t("gateway.errors.no_credentials"), auth_permanent
 
 
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):

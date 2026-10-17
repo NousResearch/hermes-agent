@@ -1203,14 +1203,18 @@ class MoAChatCompletions:
         if trace is not None:
             trace["aggregator_label"] = _slot_label(aggregator)
         # stream=True returns the RAW token stream (consumer reassembles + retries);
-        # the non-streaming path forwards no stream/stream_options/timeout. The
-        # consumer's stream-read timeout must govern the aggregator stream.
+        # stream/stream_options stay off on the non-streaming path. The caller's
+        # per-call timeout, though, has to survive BOTH branches: on the
+        # non-streaming path nothing else bounds this request, and the consumer's
+        # stream-read timeout only exists when the aggregator actually streams
+        # (#133916).
         stream = bool(api_kwargs.get("stream"))
         stream_kwargs: dict[str, Any] = {}
+        if api_kwargs.get("timeout") is not None:
+            stream_kwargs["timeout"] = api_kwargs["timeout"]
         if stream:
-            stream_kwargs = {"stream": True, "stream_options": api_kwargs.get("stream_options") or {"include_usage": True}}
-            if api_kwargs.get("timeout") is not None:
-                stream_kwargs["timeout"] = api_kwargs["timeout"]
+            stream_kwargs["stream"] = True
+            stream_kwargs["stream_options"] = api_kwargs.get("stream_options") or {"include_usage": True}
         # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
         agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
         destination = destination_key(agg_runtime)

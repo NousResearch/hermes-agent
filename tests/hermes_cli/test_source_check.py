@@ -589,3 +589,39 @@ def test_stable_release_the_checkout_already_contains_is_a_rollback(installation
     assert status.get("targetSha") == shas[release], status
     assert status["updateAvailable"] is True
     assert status["rollback"] is rollback
+
+
+@pytest.mark.parametrize("ledgered", [True, False])
+def test_stable_release_the_updater_refuses_is_held_not_offered(installation, tmp_path, monkeypatch, ledgered):
+    """A release off this checkout's history that predates the gateway runtime is held while a store
+    has runtime history (#139099): `hermes update` refuses it, so the check must not offer it."""
+    from hermes_cli.source_check import check_for_updates
+    from tests.hermes_cli.test_update_downgrade_guard import _ledgered_store
+
+    root, _linked, home, base, _head, responses, _requests, git = installation
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
+    git("add", "hermes_state_common.py")
+    git("commit", "-q", "-m", "gateway runtime")
+    git("checkout", "-q", "-b", "release-line", base)
+    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
+    git("add", "hermes_state_common.py")
+    git("commit", "-q", "-m", "release from the older line")
+    release = git("rev-parse", "HEAD")
+    bare = tmp_path / "origin.git"
+    git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
+    git("tag", "v1.2.3", release, cwd=bare)
+    git("remote", "set-url", "origin", str(bare))
+    git("checkout", "-q", "main")
+    if ledgered:
+        _ledgered_store(home)
+    api = "/repos/NousResearch/hermes-agent"
+    responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
+    responses[f"{api}/commits/v1.2.3"] = (200, {"sha": release})
+
+    status = check_for_updates(install_root=root, home=home, channel="stable", force=True)
+
+    assert status.get("targetSha") == release, status
+    assert status["rollback"] is False  # off-history: the ancestry test alone cannot see it
+    assert status["updateAvailable"] is not ledgered
+    assert status.get("held") == ("downgrade" if ledgered else None)

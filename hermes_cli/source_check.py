@@ -288,7 +288,19 @@ def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> 
         logger.debug("Could not cache source check: %s", exc)
 
 
-def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only: bool = False):
+def _update_refuses(co: _Checkout, target: str, home: Path) -> bool:
+    """The updater's downgrade refusal, asked read-only. An embedded checkout has no git to ask."""
+    if co.embedded:
+        return False
+    from hermes_cli.update_downgrade_guard import would_refuse
+
+    def git(*args: str) -> int:
+        result = _git_run(list(args), cwd=co.root, git=co.git, text=False, timeout=20)
+        return -1 if result is None else result.returncode
+    return would_refuse(co.root, target, home, git=git)
+
+
+def _resolve_channel(result: dict, channel: str, co: _Checkout, home: Path, *, forward_only: bool = False):
     """Resolve a release channel's target into ``result``; the SourceTarget, or None on error.
 
     A target with a pinned commit is final; one without names a branch to follow instead.
@@ -313,6 +325,11 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only:
         # not a new update. Local ancestry only; an unknown relation stays an update.
         result["rollback"] = bool(co.head and co.head != target and not co.embedded and _git_ok(
             ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git))
+        if result["updateAvailable"] and _update_refuses(co, target, home):
+            # `hermes update` refuses this release (it predates the gateway runtime these session
+            # stores use), so it is held, not offered. Covers releases off this checkout's history
+            # too, which the ancestry-only rollback test cannot see.
+            result.update(updateAvailable=False, behind=0, held="downgrade")
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target
@@ -437,7 +454,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1,
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 2,
                 "forwardOnly": forward_only}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
@@ -449,7 +466,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     if not _is_full_sha(co.head):
         result.update(error="head-unavailable", message="Could not read the installed revision.")
     elif branch is None:
-        source_target = _resolve_channel(result, channel, co, forward_only=forward_only)
+        source_target = _resolve_channel(result, channel, co, home, forward_only=forward_only)
         if source_target is not None and not source_target.commit:
             # The record supplies a default, not permission to leave the user's branch.
             selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)

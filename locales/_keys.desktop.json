@@ -2581,6 +2581,7 @@
     "settings.about.channel.description",
     "settings.about.channel.detailsLabel",
     "settings.about.channel.failed",
+    "settings.about.channel.heldBody",
     "settings.about.channel.latestRelease",
     "settings.about.channel.main",
     "settings.about.channel.rollbackAction",

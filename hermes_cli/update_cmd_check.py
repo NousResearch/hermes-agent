@@ -62,6 +62,20 @@ def report_pack_tidy(root: Path) -> None:
         print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
+def _refuses(git_cmd: list[str], root: Path, target: str) -> bool:
+    """`hermes update` would refuse ``target`` (see update_downgrade_guard), so --check must not offer it."""
+    from hermes_cli.update_downgrade_guard import would_refuse
+    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+
+    def git(*args: str) -> int:
+        try:
+            return _git(git_cmd, root, list(args), env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
+                        timeout=20).returncode
+        except (OSError, subprocess.SubprocessError):
+            return -1
+    return would_refuse(root, target, git=git)
+
+
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:
     """Report a release-pinned channel's verdict, or return the branch to compare against.
 
@@ -92,6 +106,10 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         print(f"→ This checkout is newer than the selected release: {target.label}.")
         print("  `hermes update` moves it back to that release"
               " (`hermes update --set-channel main` follows every commit).")
+    elif _refuses(git_cmd, root, target.commit):
+        print(f"→ Holding at this build: {target.label} predates the gateway runtime your sessions use.")
+        print("  `hermes update` will not move back to it; the next stable release that includes the"
+              " runtime installs normally (`hermes update --set-channel main` follows every commit).")
     else:
         print(f"→ Selected release available: {target.label}")
         print("  Run `hermes update` to install it.")

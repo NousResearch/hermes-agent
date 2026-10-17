@@ -95,3 +95,31 @@ def test_forward_updates_and_stores_without_ledger_rows_are_never_refused(repo, 
     assert guard.downgrade_refusal(["git"], repo, head, home=ledgered) is None
     _git(repo, "checkout", "-q", "--detach", old)  # running the old release: the newer target is forward
     assert guard.downgrade_refusal(["git"], repo, head, home=ledgered) is None
+
+
+def test_check_holds_a_release_off_this_history_that_update_would_refuse(repo, tmp_path, monkeypatch, capsys):
+    """`hermes update --check` must not say "Selected release available" for a release the update then
+    refuses (#139099). A release cut beside this checkout's history is not a rollback by ancestry."""
+    from types import SimpleNamespace
+
+    from hermes_cli import source_releases, update_cmd_check
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    _git(repo, "checkout", "-q", "-b", "release-line", "old-release")
+    (repo / "notes.txt").write_text("release fix\n")
+    _git(repo, "add", "notes.txt")
+    _git(repo, "commit", "-qm", "release from the older line")
+    release = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    target = SimpleNamespace(commit=release, retired=False, ahead=False, label="v1.2.3", branch=None)
+    monkeypatch.setattr(source_releases, "resolve_source_target", lambda *a, **k: target)
+
+    update_cmd_check.channel_compare_branch("stable", ["git"], repo)
+    assert "Selected release available" in capsys.readouterr().out  # no runtime history yet: a real update
+
+    _ledgered_store(home)
+    update_cmd_check.channel_compare_branch("stable", ["git"], repo)
+    out = capsys.readouterr().out
+    assert "Holding at this build" in out and "Selected release available" not in out

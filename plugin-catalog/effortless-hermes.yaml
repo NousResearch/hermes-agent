@@ -1,14 +1,14 @@
 name: effortless-hermes
 repo: https://github.com/ivcained/effortless-hermes
-sha: bcbbc7e12b451d4437475206ea731c771c4f9120
+sha: cc6fde2c125f8670433c31ae25e1d952630be009
 description: "Picks the reasoning effort for every prompt: a fast judge (Jev/TypeSafe, a local OpenAI-compatible model, or any custom API) reads the next message once per turn and rewrites the request's reasoning effort before it ships — easy questions run cheap, hard jobs get high. Port of effortless for Claude Code. Disclosure — sends the next message (≤4000 chars) plus a short recent-conversation excerpt (≤1600 chars) to the configured judge endpoint (default api.typesafe.ai for Jev; a local or custom OpenAI-compatible API otherwise), solely to pick the effort; no telemetry; secrets resolved only through Hermes' secret scope; stdlib-only, no pip dependencies."
 maintainer: ivcained
 tier: community
 category: tools
 requires_hermes: ">=0.21.7"
 docs_url: https://github.com/ivcained/effortless-hermes#readme
-image: https://raw.githubusercontent.com/ivcained/effortless-hermes/bcbbc7e12b451d4437475206ea731c771c4f9120/assets/banner.png
-version: "0.3.0"
+image: https://raw.githubusercontent.com/ivcained/effortless-hermes/cc6fde2c125f8670433c31ae25e1d952630be009/assets/banner.png
+version: "0.3.2"
 platforms: []
 title: "effortless-hermes"
 capabilities:

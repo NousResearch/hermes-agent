@@ -5,7 +5,7 @@ import { isSessionRemovalPending } from '@/store/session-removal'
 
 import type { ClientSessionState } from '../../../types'
 
-import { cachedSessionRow } from './utils'
+import { cachedSessionRow } from './listed-sessions'
 
 /** Navigation revokes the view, not a read owned by an unchanged session. */
 export function captureDisplayHydration({

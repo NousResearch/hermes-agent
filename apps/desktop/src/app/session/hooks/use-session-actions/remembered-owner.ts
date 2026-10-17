@@ -1,7 +1,7 @@
 import { forgetSessionOwnerHintsForSession, getSessionOwnerHint } from '@/store/session'
 import { type SessionOwnerRoute, sessionOwnerRouteFromRow } from '@/store/session-request-router'
 
-import { cachedSessionRow } from './utils'
+import { cachedSessionRow } from './listed-sessions'
 
 /**
  * The persisted owner hint a pathname-driven resume may still trust, repairing a stale one in

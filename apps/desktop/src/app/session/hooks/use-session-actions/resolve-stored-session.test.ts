@@ -8,7 +8,8 @@ import { $cronSessions, $messagingSessions, $sessions, $unlistedSessionOwnerRows
 import { $removedSessionIds, tombstoneSessions, untombstoneSessions } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
 
-import { cachedSessionRow, resolveStoredSession } from './utils'
+import { cachedSessionRow } from './listed-sessions'
+import { resolveStoredSession } from './utils'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),

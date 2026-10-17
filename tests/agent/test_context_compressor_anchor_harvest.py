@@ -97,3 +97,22 @@ def test_anchor_index_omits_a_class_when_even_its_label_cannot_fit(monkeypatch):
     turns = [{"role": "user", "content": "见 src/very/deep/nested/module_name.py"}]
 
     assert cc._build_anchor_index(turns) == ""
+
+
+def test_anchor_index_does_not_harvest_a_skill_scaffold_body(monkeypatch):
+    """A ``/skill`` turn's inline skill body is not the user's words, so it is not indexed as anchors.
+
+    The harvest reads user rows through the same normalizer the rest of compaction uses; dropping
+    that here would index a skill's own instructions as if the user had typed them.
+    """
+    from agent import skill_commands
+
+    monkeypatch.setattr(skill_commands, "skills_loaded_by_scaffold", lambda content: ["demo"])
+    monkeypatch.setattr(skill_commands, "describe_skill_invocation",
+                        lambda content, separator=" — ": "/skill demo")
+
+    turns = [{"role": "user", "content": "/skill demo 泄漏路径 /srv/skill/body/leaked.yaml"}]
+
+    index = cc._build_anchor_index(turns)
+
+    assert "leaked.yaml" not in index

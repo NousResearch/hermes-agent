@@ -167,3 +167,75 @@ async def test_persisted_work_count_returns_to_zero_when_the_drain_ends():
     await live.task
     await asyncio.sleep(0)
     assert persisted and persisted[-1] == 0
+
+
+@pytest.mark.asyncio
+async def test_side_agent_is_owner_work_until_its_thread_unwinds(monkeypatch):
+    """/bg (like /btw and preview restart) runs on a detached thread (``session_tui_side._spawn``).
+    The restart wait, stop drain, SessionDB close gate and idle exit must count it, and retirement
+    must interrupt and join it, or a planned restart exits under it and its result never arrives."""
+    import contextlib
+    from gateway import session_tui_side
+    from gateway.session_contract import SessionRef
+    from gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
+
+    started, release, persisted, interrupts = threading.Event(), threading.Event(), [], []
+    def run_conversation(**_):
+        started.set()
+        release.wait(10)
+        return {'final_response': 'done'}
+    agent = SimpleNamespace(run_conversation=run_conversation, close=lambda: None,
+                            hard_interrupt=lambda message=None: interrupts.append(message))
+    authority = SimpleNamespace(sessions={}, pending_stops={}, adopted={})
+    runner = SimpleNamespace(_running_agents={}, session_authority=authority,
+                             _persist_active_agents=lambda: persisted.append(uncounted_runtime_work(runner)))
+    authority.runner = runner
+    monkeypatch.setattr(session_tui_side, '_admit', lambda *_: (None, None, 'task', 'bg_x'))
+    monkeypatch.setattr(session_tui_side, '_side_scope', lambda *_: contextlib.nullcontext())
+    monkeypatch.setattr(session_tui_side, '_side_agent', lambda *_: agent)
+    try:
+        await session_tui_side.background(SimpleNamespace(authority=authority), SessionRef('p', 's'), {})
+        assert await asyncio.to_thread(started.wait, 5)
+        thread = next(t for t in threading.enumerate() if t.name == 'side-agent-bg_x')
+        assert uncounted_runtime_work(runner) == 1 and persisted == [1]
+        with pytest.raises(TimeoutError):  # retirement keeps ownership while it runs
+            await join_authority_work(authority, .2)
+        assert set(interrupts) == {'Profile runtime is stopping'}  # the /bg agent, once built
+        release.set()
+        await join_authority_work(authority, 5)
+        await asyncio.to_thread(thread.join, 5)
+        await asyncio.sleep(0)  # the thread's recount runs on the owner loop
+        assert uncounted_runtime_work(runner) == 0 and persisted[-1] == 0
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('exit_type', [asyncio.CancelledError, KeyboardInterrupt, SystemExit])
+async def test_side_agent_thread_killed_by_a_base_exception_releases_owner_work(monkeypatch, exit_type):
+    """The agent re-raises cancellation and exit (``agent/turn_facade.py``). A side-agent thread
+    that dies that way must still leave the ledger, or idle exit, retirement, the persisted count
+    and the SessionDB close gate stay blocked on work that no longer exists."""
+    from gateway import session_tui_side
+    from gateway.session_contract import SessionRef
+    from gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
+
+    started, threads, failures, persisted = threading.Event(), [], [], []
+    authority = SimpleNamespace(sessions={}, pending_stops={}, adopted={})
+    runner = SimpleNamespace(_running_agents={}, session_authority=authority,
+                             _persist_active_agents=lambda: persisted.append(uncounted_runtime_work(runner)))
+    authority.runner = runner
+    monkeypatch.setattr(threading, 'excepthook', lambda args: failures.append(args.exc_type))
+
+    def body():
+        threads.append(threading.current_thread())
+        started.set()
+        raise exit_type()
+
+    session_tui_side._spawn(authority, SessionRef('p', 's'), 'bg_abort', 'background.complete', body)
+    assert await asyncio.to_thread(started.wait, 5)
+    await asyncio.to_thread(threads[0].join, 5)
+    await asyncio.sleep(0)  # the thread's recount runs on the owner loop
+    assert not threads[0].is_alive() and failures == [exit_type]
+    assert uncounted_runtime_work(runner) == 0 and (not persisted or persisted[-1] == 0)
+    await join_authority_work(authority, 0)

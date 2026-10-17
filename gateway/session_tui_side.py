@@ -9,6 +9,7 @@ under the owning profile's scope and the session's frozen launch policy (cwd, te
 route, toolsets), so a session that never ran a turn (no resident agent) works the same.
 """
 from functools import partial
+import asyncio
 import contextlib
 import logging
 import threading
@@ -19,8 +20,6 @@ from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
-# Strong references to the running side-agent threads (dropped as each one finishes).
-_RUNNING = set()
 _RUNTIME_KEYS = ('api_key', 'base_url', 'provider', 'requested_provider', 'api_mode', 'command', 'args',
                  'credential_pool', 'max_tokens', 'capabilities')
 
@@ -106,27 +105,51 @@ def _side_agent(authority, policy, live, task_id, **overrides):
     return AIAgent(**kwargs)
 
 
-def _spawn(authority, ref, task_id, event_type, body, extra=None):
-    """Run ``body()`` on a daemon thread; publish its text (or ``error: <exc>``) on the session."""
+def _spawn(authority, ref, task_id, event_type, body, extra=None, holder=None):
+    """Run ``body()`` on a daemon thread; publish its text (or ``error: <exc>``) on the session.
+
+    The thread is owner work until it unwinds: the authority's ``_side_agents`` ledger is counted by
+    the restart wait, the shutdown drain, the SessionDB close gate and idle exit
+    (``session_runtime_workers.uncounted_runtime_work``), and profile retirement interrupts
+    ``holder[0]`` (the side agent, once built) and joins the thread."""
+    from gateway.session_runtime_workers import persist_work_count
     extra = extra or {}
+    ledger = getattr(authority, '_side_agents', None)
+    if ledger is None:
+        ledger = authority._side_agents = {}
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
     def run():
+        # The whole target: a BaseException the agent re-raises (cancellation, exit) must not
+        # leave a dead thread counted as owner work.
         try:
-            text = body()
-        except Exception as exc:
-            logger.warning('Side agent %s failed', task_id, exc_info=True)
-            text = f'error: {getattr(exc, "reason", None) or exc}'
-        try:
+            try:
+                text = body()
+            except Exception as exc:
+                logger.warning('Side agent %s failed', task_id, exc_info=True)
+                text = f'error: {getattr(exc, "reason", None) or exc}'
             live = authority.sessions.get(ref.session_id)
             if live is not None:
                 live.event_stream.publish(ref.session_id, {'task_id': task_id, **extra, 'text': str(text or '')},
                                           event_type=event_type)
         finally:
-            _RUNNING.discard(thread)
+            ledger.pop(thread, None)
+            if loop is not None:
+                # gateway_state.json's active_agents drops back, recounted on the owner loop.
+                with contextlib.suppress(RuntimeError):  # the loop already closed
+                    loop.call_soon_threadsafe(persist_work_count, authority)
 
     thread = threading.Thread(target=run, name=f'side-agent-{task_id}', daemon=True)
-    _RUNNING.add(thread)
-    thread.start()
+    ledger[thread] = holder
+    try:
+        thread.start()
+    except BaseException:
+        ledger.pop(thread, None)
+        raise
+    persist_work_count(authority)
     return {'task_id': task_id}
 
 
@@ -134,11 +157,12 @@ async def background(connection, ref, params):
     """``/bg <prompt>``: a fresh agent on the session's route runs the prompt to completion."""
     live, policy, text, task_id = _admit(connection, ref, params, 'bg')
     authority = connection.authority
+    holder = [None]
 
     def body():
         from tui_gateway.methods_prompt import _final_response_text
         with _side_scope(authority, policy, task_id):
-            agent = _side_agent(authority, policy, live, task_id)
+            agent = holder[0] = _side_agent(authority, policy, live, task_id)
             try:
                 result = agent.run_conversation(user_message=text, task_id=task_id)
             finally:
@@ -147,7 +171,7 @@ async def background(connection, ref, params):
                     agent.close()
         return _final_response_text(result)
 
-    return _spawn(authority, ref, task_id, 'background.complete', body)
+    return _spawn(authority, ref, task_id, 'background.complete', body, holder=holder)
 
 
 async def btw(connection, ref, params):
@@ -185,6 +209,7 @@ async def preview_restart(connection, ref, params):
     cwd, context = (str(params.get(key) or '').strip() for key in ('cwd', 'context'))
     from gateway.session_local_recovery import transcript_target
     target = transcript_target(authority, ref)
+    holder = [None]
 
     def progress(text):
         if (text := str(text or '').strip()) and (stream := authority.sessions.get(ref.session_id)) is not None:
@@ -209,6 +234,7 @@ async def preview_restart(connection, ref, params):
                 agent = _side_agent(authority, policy, live, task_id, enabled_toolsets=['terminal', 'file'],
                                     disabled_toolsets=None, session_db=None, skip_memory=True,
                                     tool_start_callback=lambda _id, name, _args: progress(f'Running {name}'))
+                holder[0] = agent
                 result = agent.run_conversation(user_message=prompt, task_id=task_id,
                                                 conversation_history=history or None)
             finally:
@@ -217,4 +243,4 @@ async def preview_restart(connection, ref, params):
                     clear_task_env_overrides(task_id)
         return _final_response_text(result)
 
-    return _spawn(authority, ref, task_id, 'preview.restart.complete', body)
+    return _spawn(authority, ref, task_id, 'preview.restart.complete', body, holder=holder)

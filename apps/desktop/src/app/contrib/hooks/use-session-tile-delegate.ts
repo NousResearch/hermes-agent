@@ -75,6 +75,21 @@ function tileRestScope(owner: SessionOwnerScope) {
 }
 
 /** A cached binding still carrying this session's transcript (or mid-turn). */
+/** The resumed session's checkout binding (branch, coding workspace, agent worktree) for the tile state. */
+function resumedWorkspaceState(
+  info: SessionResumeResult['info'] | undefined
+): Partial<Pick<ClientSessionState, 'agentWorktree' | 'branch' | 'codingWorkspace'>> {
+  if (!info) {
+    return {}
+  }
+
+  return {
+    ...(typeof info.branch === 'string' ? { branch: info.branch } : {}),
+    ...('coding_workspace' in info ? { codingWorkspace: info.coding_workspace } : {}),
+    ...('agent_worktree' in info ? { agentWorktree: info.agent_worktree } : {})
+  }
+}
+
 function isWarmTileState(
   cached: ClientSessionState | undefined,
   storedSessionId: string
@@ -538,6 +553,7 @@ export function useSessionTileDelegate({
               ...(typeof info?.reasoning_effort_wire === 'string'
                 ? { reasoningEffortWire: info.reasoning_effort_wire }
                 : {}),
+              ...resumedWorkspaceState(info),
               awaitingResponse: running && !resumed.inflight?.assistant,
               busy: running,
               messages

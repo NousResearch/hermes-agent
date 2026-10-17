@@ -27,11 +27,13 @@ def host_gateways(tmp_path):
     other = tmp_path / "other-user"
     installs = {
         "own": {"HERMES_HOME": os.environ["HERMES_HOME"]},
+        "own_beta": {"HERMES_HOME": str(Path(os.environ["HERMES_HOME"]) / "profiles" / "beta")},
         "foreign": {"HERMES_HOME": str(other / ".hermes")},
         # Another install at its platform default home: no HERMES_HOME in its environment.
         "foreign_default": {"HOME": str(other), "USERPROFILE": str(other),
                             "LOCALAPPDATA": str(other / "AppData" / "Local")},
     }
+    Path(installs["own_beta"]["HERMES_HOME"]).mkdir(parents=True)
     base = {k: v for k, v in os.environ.items()
             if k not in ("HERMES_HOME", "HOME", "USERPROFILE", "LOCALAPPDATA")}
     procs = {
@@ -54,15 +56,16 @@ def test_update_pause_takes_only_this_installs_gateways(monkeypatch, host_gatewa
 
     running_pids = update_cmd_windows._discover_windows_gateways()[3]
 
-    assert running_pids == [host_gateways["own"]]
+    assert running_pids == [host_gateways["own"], host_gateways["own_beta"]]
 
 
-def test_foreign_gateways_do_not_suppress_cold_start(monkeypatch, host_gateways):
+@pytest.mark.parametrize("live_names", [("foreign", "foreign_default"), ("own_beta",)])
+def test_foreign_gateways_do_not_suppress_cold_start(monkeypatch, host_gateways, live_names):
     monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids",
-                        lambda **_kw: [host_gateways["foreign"], host_gateways["foreign_default"]])
+                        lambda **_kw: [host_gateways[name] for name in live_names])
     spawned = []
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawned.append(4242) or 4242)
     monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *_a, **_kw: [4242])

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -24,7 +25,7 @@ def defer(key: str, job: dict, content: str, home: Path, *, for_failure: bool) -
     """Park one never-admitted output under its delivery id; a later tick hands it to the owner."""
     import time
     root = get_hermes_home().resolve() / "cron" / "bot_chat_pending"
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    make_user_dir(root, parents=True, exist_ok=True, mode=0o700)
     path = root / f"{key}.json"
     if not path.exists():  # an existing record (queued or already transferred) keeps its status
         atomic_json_write(path, dict(

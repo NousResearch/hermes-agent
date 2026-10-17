@@ -716,6 +716,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 (retry_status, tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
+                _stamp_ready_reentry(conn, tid, retry_status)
                 payload = {
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
@@ -823,6 +824,7 @@ def detect_stale_running(
             if cur.rowcount != 1:
                 continue
 
+            _stamp_ready_reentry(conn, tid, retry_status)
             payload = {
                 "elapsed_seconds": int(elapsed),
                 "last_heartbeat_at": _kb._opt_int(last_hb),
@@ -890,6 +892,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
             )
             if cur.rowcount != 1:
                 continue
+            _stamp_ready_reentry(conn, tid, "ready")
             payload = {
                 "reason": "orphaned_running",
                 "claim_lock": row["claim_lock"],
@@ -1200,6 +1203,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             )
             if cur.rowcount != 1:
                 continue
+            _stamp_ready_reentry(conn, row["id"], retry_status)
             run_id = _kb._end_run(
                 conn, row["id"],
                 outcome=dead.run_outcome, status=dead.run_outcome,
@@ -1422,13 +1426,15 @@ def _record_task_failure(
         if infrastructure or not (force_trip or failures >= effective_limit):
             if release_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE tasks SET status = ?, claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error, task_id),
                 )
+                if cur.rowcount == 1:
+                    _stamp_ready_reentry(conn, task_id, retry_status)
             else:
                 conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
@@ -3010,3 +3016,17 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli import kanban_db_admission as _admission
+
+
+def _stamp_ready_reentry(conn: sqlite3.Connection, task_id: str, retry_status: Optional[str]) -> None:
+    """Stamp the wait clock for a ``running -> ready`` retry.
+
+    A crash/stale/timeout retry is a RE-ENTRY (``kanban_db_admission``): the
+    demand was admitted once already, so it is exempt from the budget — but the
+    card is entering the ready population again, so ``ready_since`` must be
+    reset or the ageing metric reads the gap as a wait.
+    """
+    if retry_status != "ready":
+        return
+    _admission.reenter_ready(conn, [task_id])

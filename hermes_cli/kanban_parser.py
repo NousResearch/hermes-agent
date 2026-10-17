@@ -181,6 +181,10 @@ _SPECS = [
         _arg("--idempotency-key",
              help="Dedup key. If a non-archived task with this key exists, "
                   "its id is returned instead of creating a duplicate."),
+        _arg("--admit-reason", choices=("normal", "consent"), default=None,
+             help="'consent' marks a filing that was explicitly authorised: it "
+                  "is exempt from ready-queue admission, which otherwise parks a "
+                  "filing over budget in todo (see `hermes kanban queue-state`)."),
         _arg("--max-runtime",
              help="Per-task runtime cap. Accepts seconds (300) or durations (90s, "
                   "30m, 2h, 1d). When exceeded, the dispatcher SIGTERMs (then "
@@ -386,6 +390,16 @@ _SPECS = [
         _arg("--interval", type=float, default=0.5, help="Poll interval in seconds (default: 0.5)"),
     ], help="Live-stream task_events to the terminal (Ctrl+C to exit)"),
     _cmd("stats", [_json_flag()], help="Per-status + per-assignee counts + oldest-ready age"),
+    _cmd("queue-state", [_json_flag(help="Emit the ready-queue state as JSON")],
+         help="Ready-queue depth vs admission budget, deferrals, bypass + ageing",
+         description=(
+             "Reports the state the ready-queue admission mechanism acts on (the "
+             "same derivation the kernel gates on): ready depth vs budget and "
+             "budget_source, per-lane depth/budget, deferred/admitted/fallback/"
+             "bypass counts, the pre-mechanism backlog, and the ready-ageing "
+             "numbers. Read-only; the budget comes from the trailing completion "
+             "window (kanban.admission_* config, see `hermes config get kanban`)."
+         )),
     _cmd("notify-subscribe", [
         _TASK_ID,
         *_NOTIFY_TARGET,

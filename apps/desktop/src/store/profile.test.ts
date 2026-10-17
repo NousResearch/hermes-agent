@@ -40,6 +40,8 @@ const {
   ensureGatewayProfile,
   invalidateProfileListFetches,
   newSessionInProfile,
+  normalizeProfileKey,
+  profileLabel,
   prewarmProfileBackend,
   prewarmProfilePick,
   refreshProfiles,
@@ -401,5 +403,28 @@ describe("profile switch leaves the previous profile's project (#54990)", () => 
     newSessionInProfile('default')
 
     expect(resolveNewSessionCwd()).toBe('/work/app1')
+  })
+})
+
+describe('profile key coercion (#136202)', () => {
+  // Gateway and roster payloads have surfaced profile fields as OBJECTS (a
+  // wrapped registry/roster entry, #93572). The Workbench desktop build died
+  // on first render with "(intermediate value).trim is not a function" from
+  // exactly this family of receivers (#136202): a non-string must degrade
+  // instead of throwing mid-render.
+  it('normalizeProfileKey unwraps or degrades non-string input', () => {
+    expect(normalizeProfileKey({ name: 'work' } as unknown as string)).toBe('work')
+    expect(normalizeProfileKey({} as unknown as string)).toBe('default')
+    expect(normalizeProfileKey(42 as unknown as string)).toBe('default')
+    expect(normalizeProfileKey(null)).toBe('default')
+    expect(normalizeProfileKey(undefined)).toBe('default')
+    expect(normalizeProfileKey('')).toBe('default')
+    expect(normalizeProfileKey('  ops  ')).toBe('ops')
+  })
+
+  it('profileLabel ignores a non-string display_name', () => {
+    expect(profileLabel({ name: 'default', display_name: { label: 'x' } as unknown as string })).toBe('default')
+    expect(profileLabel({ name: 'default', display_name: '  Renamed  ' })).toBe('Renamed')
+    expect(profileLabel({ name: 'ops', display_name: '' })).toBe('ops')
   })
 })

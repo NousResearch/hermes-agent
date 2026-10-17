@@ -369,7 +369,9 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
             adapters = runner._adapters_for_profile(profile)
             # A credentialless shared-bot satellite borrows the primary's bot for ROUTED targets
             # only — the same grant the ticker's ``tick_adapters_for`` makes, never the full map.
-            if getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
+            # Default owns the native bots; its primary-route lookup returns [], so wrapping
+            # its adapters would prevent native delivery even if the satellite predicate is true.
+            if profile != "default" and getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
                 from cron.scheduler_preflight import (
                     SharedRouteAdapters, _primary_profile_routes_for_current_home)
 

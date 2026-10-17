@@ -379,3 +379,38 @@ _HANDLER = "import logging\n\nlogger = logging.getLogger(__name__)\n\n\ndef boun
 def test_ble001_fix_text_matches_the_engine(tmp_path, capsys, handler, blocks):
     code, out = _judge(tmp_path, capsys, {}, {"pkg/h.py": _HANDLER.format(handler)})
     assert code == (1 if blocks else 0), out
+
+
+# --- HX014: eager bind_module annotations are not injected by the seam ---
+
+_BIND = "from .method_ctx import bind_module\n\n{}\n\ndef register(server):\n    bind_module(globals(), server)\n"
+
+
+def test_hx014_flags_unbound_path_on_eager_split_module():
+    src = _BIND.format("def store() -> Path:\n    return None\n")
+    assert _hits("HX014", src) == [3]
+
+
+def test_hx014_accepts_imported_path():
+    src = "from pathlib import Path\n" + _BIND.format("def store() -> Path:\n    return None\n")
+    assert _hits("HX014", src) == []
+
+
+def test_hx014_skips_postponed_annotations():
+    src = "from __future__ import annotations\n" + _BIND.format("def store() -> Path:\n    return None\n")
+    assert _hits("HX014", src) == []
+
+
+def test_hx014_skips_modules_that_do_not_bind():
+    assert _hits("HX014", "def store() -> Path:\n    return None\n") == []
+
+
+def test_hx014_ignores_nested_function_after_local_import():
+    inner = (
+        "def handler():\n"
+        "    from pathlib import Path\n"
+        "    def nested() -> Path:\n"
+        "        return Path('.')\n"
+        "    return nested\n"
+    )
+    assert _hits("HX014", _BIND.format(inner)) == []

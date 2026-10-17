@@ -488,7 +488,43 @@ export async function openReviewForPath(
 
   if (file) {
     await selectReviewFile(file)
+
+    return
   }
+
+  // The click promised this file's diff, but the pane's scope can't show it:
+  // a 'lastTurn' baseline lost to a restart (the turn-base map is in-memory),
+  // a 'branch' base that doesn't resolve, or changes the agent already
+  // committed. Each dead-ends the pane on "No diffs" while the transcript
+  // card — fed by tool events — still lists the file. Try the other read
+  // scopes before giving up so the click lands somewhere real; the pane stays
+  // coherent because list, selection and diff all come from that scope.
+  const originalScope = $reviewScope.get()
+
+  for (const scope of ['uncommitted', 'branch', 'lastTurn'] as const) {
+    if (scope === originalScope) {
+      continue
+    }
+
+    $reviewScope.set(scope)
+    const ok = await refreshReview()
+
+    if (!ok || repoCwd() !== cwd) {
+      return
+    }
+
+    const match = matchReviewFile($reviewFiles.get(), path)
+
+    if (match) {
+      await selectReviewFile(match)
+
+      return
+    }
+  }
+
+  // Nothing lists the file (stale card); leave the user's scope untouched.
+  $reviewScope.set(originalScope)
+  await refreshReview()
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────────

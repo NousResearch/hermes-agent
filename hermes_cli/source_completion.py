@@ -212,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
     passthrough = (["--desktop"] if args.desktop else []) + \
                   (["--finish-update"] if args.finish_update else [])
     command = _bootstrap_command(root, passthrough)
+    from hermes_cli.update_cmd_nixos import wrap_nixos_toolchain
+    command = wrap_nixos_toolchain(command)
     from hermes_cli.update_lock import checkout_lock_fds
 
     # Called inside an update tree (venv_sync's interrupted-update finish), the prepared child

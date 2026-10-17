@@ -117,6 +117,14 @@ from hermes_cli.update_cmd_maint import (
     _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
+from hermes_cli.update_cmd_nixos import (
+    autodetect_nixos_ca_bundle,
+    check_nixos_toolchain,
+    is_nixos,
+    missing_native_toolchain,
+    needs_nixos_toolchain,
+    wrap_nixos_toolchain,
+)
 from datetime import UTC
 logger = logging.getLogger(__name__)
 
@@ -191,6 +199,7 @@ def _map_ssl_cert_file_for_git(git_cmd) -> None:
     the env var outranks the config file in git's precedence, so mapping over
     either would silently override a deliberate choice.
     """
+    autodetect_nixos_ca_bundle()
     bundle = os.environ.get("SSL_CERT_FILE")
     if not bundle or os.environ.get("GIT_SSL_CAINFO"):
         return
@@ -640,6 +649,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
     Installs that can't honor non-default branches (e.g. Docker) surface a
     one-line notice instead of silently dropping the flag.
     """
+    autodetect_nixos_ca_bundle()
     # Shared admission gate (#91277 Phase 3): same marker-first decision as
     # the apply path, so --check can never report git state for an install
     # whose real update mechanism is an image pull.
@@ -1800,6 +1810,8 @@ def _update_run_channel(args) -> str:
 
 def _cmd_update_impl(args, gateway_mode: bool):
     """Apply the update; the command boundary owns errors, receipts and stdio."""
+    autodetect_nixos_ca_bundle()
+    check_nixos_toolchain(stop_fn=lambda: _record_stop("missing_toolchain", without_receipt="failed"))
     # Marks this frame as the CURRENT updater for
     # _old_updater.in_historical_update(); historical on-disk updaters do not
     # declare this local, so only they hand off through retired shims.

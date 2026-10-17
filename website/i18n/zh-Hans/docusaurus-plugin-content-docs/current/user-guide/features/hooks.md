@@ -43,7 +43,7 @@ events:
   - agent:step
 ```
 
-`events` 列表决定哪些事件会触发你的处理器。可以订阅任意事件组合，包括 `command:*` 这样的通配符。
+`events` 列表决定哪些事件会触发你的处理器。可以订阅任意事件组合，包括 `command:*` 这样的通配符。单个事件也可以直接写成字符串（`events: agent:start`）。`events` 为其他类型的 hook 会被跳过，并在 gateway 输出中打印一行 `[hooks] Skipping`，其余 hook 照常加载。
 
 #### handler.py
 

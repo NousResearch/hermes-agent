@@ -1,5 +1,6 @@
 """Tests for gateway/hooks.py — event hook system."""
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -52,6 +53,33 @@ class TestDiscoverAndLoad:
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 0
+
+    @pytest.mark.asyncio
+    async def test_scalar_events_value_fires_for_that_event(self, tmp_path):
+        """Regression for #11902: ``events: agent:start`` subscribes to agent:start, not to its characters."""
+        _create_hook(tmp_path, "scalar-hook", "agent:start",
+                     "FIRED = []\ndef handle(event_type, context):\n    FIRED.append(event_type)\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+            await reg.emit("agent:start", {})
+
+        assert sys.modules["hermes_hook_scalar-hook"].FIRED == ["agent:start"]
+        assert reg.loaded_hooks[0]["events"] == ["agent:start"]
+
+    @pytest.mark.parametrize("events", ['""', "42", "[{agent:start: true}]"])
+    def test_malformed_events_value_skips_only_that_hook(self, tmp_path, events):
+        """One bad HOOK.yaml must not abort discovery (gateway startup) for the hooks after it."""
+        _create_hook(tmp_path, "a-bad", events, "def handle(e, c): pass\n")
+        _create_hook(tmp_path, "b-good", '["agent:start"]', "def handle(e, c): pass\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        assert [hook["name"] for hook in reg.loaded_hooks] == ["b-good"]
+        assert "" not in reg._handlers
 
 
 class TestEmit:

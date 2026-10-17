@@ -3201,9 +3201,13 @@ class SlackAdapter(BasePlatformAdapter):
 
         def _convert_bold(m):
             # Slack misses a closing * after a non-word char and silently truncates the
-            # message; insert U+200B before it.
+            # message. It also autolinks a trailing bare URL with that marker; insert
+            # U+200B before it in either case.
             inner = m.group(1)
-            zw = "\u200b" if inner and not (inner[-1].isalnum() or inner[-1] == "_") else ""
+            trailing_bare_url = re.search(r"(?:^|\s)https?://\S+$", inner)
+            zw = "\u200b" if inner and (
+                not (inner[-1].isalnum() or inner[-1] == "_") or trailing_bare_url
+            ) else ""
             return _ph(f"*{inner}{zw}*")
 
         # Ordered passes: protect code/links/entities/quotes, escape, then convert emphasis.

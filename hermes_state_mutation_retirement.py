@@ -4,6 +4,8 @@ import time
 from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _json, _text
 
 RETIRED_PREFIX = 'gateway.retired_session.v1.'
+# A last viewer's close stored until the owner's idle point (gateway/session_viewer_close).
+VIEWER_CLOSE_PREFIX = 'gateway.viewer_close.v1:'
 
 
 def retired_session(db, session_id):
@@ -200,6 +202,7 @@ def retire_routes(conn, session_ids):
         conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
                      (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time()})))
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
+        conn.execute('DELETE FROM state_meta WHERE key=?', (VIEWER_CLOSE_PREFIX + sid,))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
         if entry_session_id(row['entry_json']) in targets:

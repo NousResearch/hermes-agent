@@ -446,6 +446,87 @@ class TestSecondaryProfileFatalRecovery:
         assert replacement.disconnected is True
         assert runner._profile_failed_platforms == {}
 
+    @pytest.mark.asyncio
+    async def test_secondary_reconnect_success_publishes_connected_status(
+        self, monkeypatch
+    ):
+        """#132953: a successful secondary reconnect must publish ``<profile>:<platform>`` =
+        connected and clear needs_attention, mirroring _install_reconnected_adapter. The fatal
+        and needs-attention paths already write that key, so without this write the status can
+        only ever move away from connected."""
+        runner = _secondary_recovery_runner()
+        runner._profile_failed_platforms["reviewer"] = {}
+        replacement = _SecondaryRecoveryAdapter()
+        _install_secondary_reconnect_context(monkeypatch, runner, replacement)
+        statuses = []
+        monkeypatch.setattr(
+            runner,
+            "_update_platform_runtime_status",
+            lambda key, **kw: statuses.append((key, kw)),
+        )
+
+        async def connect(adapter, platform, *, is_reconnect=False):
+            return True
+
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        monkeypatch.setattr(runner, "_schedule_planned_restart_replay", lambda: None)
+        monkeypatch.setattr(
+            runner, "_schedule_resume_pending_sessions", lambda platform: None
+        )
+        await asyncio.wait_for(
+            runner._run_secondary_profile_reconnect("reviewer", Platform.DISCORD),
+            timeout=0.5,
+        )
+
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        assert statuses == [
+            (
+                "reviewer:discord",
+                dict(
+                    platform_state="connected",
+                    error_code=None,
+                    error_message=None,
+                    needs_attention=False,
+                    retrying_since=None,
+                ),
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_secondary_startup_success_publishes_connected_status(
+        self, monkeypatch
+    ):
+        """#132953: a cold-start secondary success must stamp ``<profile>:<platform>`` =
+        connected like the primary startup path does, or a runner-published adapter (email never
+        calls _mark_connected) never appears in gateway_state.json at all."""
+        runner = _secondary_recovery_runner()
+        adapter = _SecondaryRecoveryAdapter()
+        _install_secondary_reconnect_context(monkeypatch, runner, adapter)
+        statuses = []
+        monkeypatch.setattr(
+            runner,
+            "_update_platform_runtime_status",
+            lambda key, **kw: statuses.append((key, kw)),
+        )
+
+        async def ok_connect(adapter, platform):
+            return True
+
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", ok_connect)
+
+        connected = await runner._start_one_profile_adapters(
+            "reviewer", "/tmp/reviewer", {}
+        )
+
+        assert connected == 1
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is adapter
+        assert statuses == [
+            (
+                "reviewer:discord",
+                dict(platform_state="connected", error_code=None, error_message=None),
+            )
+        ]
+
 
 class TestSecondaryStartupFailureRecovery:
     """Cold-start connect failures must reach the same reconnect slot as
@@ -1102,8 +1183,14 @@ class TestSecondaryProfileConfigHandling:
         assert connected == (2 if paired else 1)
         assert factory_calls == ([Platform.WHATSAPP, Platform.DISCORD] if paired else [Platform.DISCORD])
         if not paired:
-            assert statuses[-1][1]["error_code"] == "whatsapp_unpaired"
-            assert "hermes -p clientbot whatsapp" in statuses[-1][1]["error_message"]
+            # Startup now also stamps the connected discord ("clientbot:discord"); the unpaired
+            # note must be found by its platform key, not by being the last write (#132953).
+            whatsapp_status = [s for s in statuses if s[0][0] == "clientbot:whatsapp"]
+            assert whatsapp_status[-1][1]["error_code"] == "whatsapp_unpaired"
+            assert (
+                "hermes -p clientbot whatsapp"
+                in whatsapp_status[-1][1]["error_message"]
+            )
 
 
 class TestSecondaryProfileHookRegistration:

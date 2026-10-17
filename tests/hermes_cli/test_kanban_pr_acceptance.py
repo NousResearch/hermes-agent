@@ -19,15 +19,21 @@ def github(tmp_path, monkeypatch):
         def do_GET(self):
             state["requests"].append(self.path)
             sha = state["head"]
+            if state.get("api_error") and "/check-runs" in self.path:
+                self.send_error(503)
+                return
+            if state.get("rules_unavailable") and "/rules/branches/" in self.path:
+                self.send_error(403)
+                return
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": {"branchProtectionRule": None if state.get("no_required") else {"requiredStatusChecks": [
+                        {"context": "ci-required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
                 value = [[]]
             elif "/check-runs" in self.path:
-                run = {"id": 42, "name": "required", "head_sha": sha,
+                run = {"id": 42, "name": "ci-required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
                        "html_url": "https://github.com/acme/repo/actions/runs/42"}
                 if state.get("stale"):
@@ -60,9 +66,14 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport json,sys,urllib.error,urllib.request\n"
+                  "if '--slurp' in sys.argv:\n    print('unknown flag: --slurp', file=sys.stderr); sys.exit(1)\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try: value=json.loads(urllib.request.urlopen(u).read().decode())\n"
+                  "except urllib.error.HTTPError as exc:\n    print(f'gh: fixture (HTTP {exc.code})', file=sys.stderr); sys.exit(1)\n"
+                  "if '--paginate' in sys.argv and isinstance(value, list):\n"
+                  "    for page in value: print(json.dumps(page))\n"
+                  "else: print(json.dumps(value))\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -88,17 +99,34 @@ def test_pr_completion_requires_current_required_evidence(github):
             receipts = [json.loads(r[0]) for r in conn.execute(
                 "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
             assert receipts and receipts[-1]["head_sha"] == "a" * 40
+            assert receipts[-1]["checks"][0]["name"] == "ci-required"
+            assert receipts[-1]["checks"][0]["conclusion"] == conclusion
             if not ok:
                 assert task.status in {"running", "ready", "blocked", "review"}
                 assert "retry" in receipts[-1]["recovery"]
                 assert receipts[-1]["checks"][0]["id"] == 42
-        for fault in ("missing", "stale", "head_change"):
+        for fault in ("missing", "stale", "head_change", "api_error"):
             github.update(conclusion="success", head="a" * 40)
             github[fault] = True
             tid = kb.create_task(conn, title=fault, completion_contract="acme/repo")
             assert not kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
             assert kb.get_task(conn, tid).status != "done"
+            receipt = json.loads(conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+            expected = {"missing": "missing", "stale": "stale", "head_change": "stale", "api_error": "infra"}
+            assert receipt["classification"] == expected[fault]
             github.pop(fault)
+        # A repository without the paid rules endpoint still has the project
+        # CI aggregate as a fail-closed, observable required check.
+        github.update(conclusion="success", head="a" * 40, no_required=True, rules_unavailable=True)
+        tid = kb.create_task(conn, title="ci aggregate fallback", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+        assert receipt["required"] == [{"context": "ci-required", "app_id": None}]
+        assert receipt["checks"][0]["classification"] == "success"
+        github.pop("no_required")
+        github.pop("rules_unavailable")
         # Omission and a sibling repository cannot downgrade the stored declaration.
         tid = kb.create_task(conn, title="publish", completion_contract="acme/repo")
         assert not kb.complete_task(conn, tid, summary="local green")

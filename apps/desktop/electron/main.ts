@@ -402,7 +402,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
-import { SilentLoginCoalescer } from './oauth-login-coalescer'
+import { type LoginAttempt, loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
@@ -7293,24 +7293,57 @@ async function clearOauthSession(baseUrl) {
   }
 }
 
-// One silent login per gateway origin. The opener is a closure so baseUrl and
-// options reach the window; passing the function itself calls it with none.
-const silentOauthLogins = new SilentLoginCoalescer()
+// Open a gateway login window in the OAuth session partition, resolving once
+// the access-token cookie appears (login done) or rejecting if the window is
+// closed first. The window navigates through the IDP and back to
+// /auth/callback, which sets the session cookies on the partition; we poll the
+// cookie jar rather than try to read the HttpOnly value.
+//
+// `silent` selects the URL the window loads:
+//   - silent=false (default): ``/login``, the public provider chooser the
+//     settings UI drives.
+//   - silent=true: the PROTECTED root ``/``. With no session cookie the gate
+//     runs ``_auto_sso_response``: single provider + a live portal session in
+//     this partition → silent 302 through ``/auth/login`` → portal
+//     ``/oauth/authorize`` → ``/auth/callback``, no prompt (decisions.md Q5).
+//
+// `background` (or a withoutInteractiveOauthLogin scope) means nobody asked
+// for this sign-in: the window stays hidden and gives up after 12s. Only a
+// user-driven caller may show a window. oauth-login-flights.ts keeps one flow
+// per cookie jar, so a burst of callers shares one window.
+const oauthLoginFlights = new OauthLoginFlights()
 
-function openOauthLoginWindow(baseUrl, options = {}) {
-  return silentOauthLogins.runFor(baseUrl, options, (url, loginOptions) =>
-    openOauthLoginWindowUnshared(url, loginOptions)
+function openOauthLoginWindow(baseUrl, options: OauthLoginWindowOptions = {}) {
+  const { connectionId = '', pendingAuthMode = '', pendingKind = '' } = options
+  const background = Boolean(options.background) || !canShowInteractiveOauthLogin()
+  const partition = resolveOauthPartitionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind })
+  const key = loginFlightKey(partition, baseUrl)
+
+  return oauthLoginFlights.run(key, background ? 'background' : 'foreground', () =>
+    startOauthLoginWindow(baseUrl, { ...options, background })
   )
 }
 
-function openOauthLoginWindowUnshared(
-  baseUrl,
-  { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
-) {
-  return new Promise((resolve, reject) => {
-    // Background roster work may silently renew a Cloud session, but must
-    // never turn an expired saved gateway into a visible login window.
-    const hiddenRecovery = background || !canShowInteractiveOauthLogin()
+interface OauthLoginWindowOptions {
+  silent?: boolean
+  background?: boolean
+  connectionId?: string
+  pendingAuthMode?: string
+  pendingKind?: string
+}
+
+type OauthLoginOutcome = { baseUrl: string; ok: boolean }
+
+function startOauthLoginWindow(baseUrl, options: OauthLoginWindowOptions = {}): LoginAttempt<OauthLoginOutcome> {
+  const { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = options
+
+  let reveal = (): void => {}
+
+  const result = new Promise<OauthLoginOutcome>((resolve, reject) => {
+    // Unattended recovery may silently renew a session, but must never turn
+    // an expired gateway into a visible login window (a user click promotes
+    // it through reveal() below).
+    let hiddenRecovery = background
 
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
@@ -7439,7 +7472,30 @@ function openOauthLoginWindowUnshared(
     }
 
     if (hiddenRecovery) {
-      deadlineTimer = setTimeout(() => finish(new Error('Cloud session recovery requires sign-in.')), 12_000)
+      deadlineTimer = setTimeout(() => finish(new Error('Silent sign-in did not complete; sign-in required.')), 12_000)
+    }
+
+    // A user's click joined this flow: show the window it already has (a
+    // second window would replace the gateway's PKCE state cookie) and drop
+    // the unattended deadline so they have time to finish.
+    reveal = () => {
+      if (settled || !win || win.isDestroyed()) {
+        return
+      }
+
+      hiddenRecovery = false
+
+      if (deadlineTimer) {
+        clearTimeout(deadlineTimer)
+        deadlineTimer = null
+      }
+
+      try {
+        win.show()
+        win.focus()
+      } catch {
+        // window torn down
+      }
     }
 
     win.on('closed', () => {
@@ -7472,6 +7528,8 @@ function openOauthLoginWindowUnshared(
       finish(error instanceof Error ? error : new Error(String(error)))
     })
   })
+
+  return { result, reveal: () => reveal() }
 }
 
 // JSON request routed through the OAuth session partition so the HttpOnly
@@ -7593,8 +7651,14 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
   return attempt().catch(async error => {
     const origin = new URL(url).origin
 
-    return retryCookie401WithLogin(error, { ...options, loginKey: origin }, {
-      clearCookies: () => remoteSessionCookies.clear(partition, url),
+    return retryCookie401WithLogin(error, options, {
+      // One burst shares one clear: a joiner must not wipe the mirror the
+      // running window is about to fill.
+      clearCookies: () => {
+        if (!oauthLoginFlights.isRunning(loginFlightKey(partition, origin))) {
+          remoteSessionCookies.clear(partition, url)
+        }
+      },
       login: async () => {
         try {
           await openOauthLoginWindow(origin, { silent: true })

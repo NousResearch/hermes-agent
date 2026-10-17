@@ -131,6 +131,77 @@ def test_roster_lines_carry_roles(tmp_path):
     assert "Deep research and literature review" in section
 
 
+def _write_profile_yaml(home, name, body):
+    d = home / "profiles" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "profile.yaml").write_text(textwrap.dedent(body), encoding="utf-8")
+    return d
+
+
+def test_roster_line_carries_the_role_between_title_and_description(tmp_path):
+    """A teammate sees 'Scout — Deep Research — <description>', not a title that doubles as the job."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    d = _write_profile_yaml(
+        home,
+        "scout",
+        """\
+        description: Finds sources and tracks outreach
+        ui_meta:
+          hermes-bots:
+            title: Scout
+            role: Deep Research
+        """,
+    )
+
+    assert bot_mode_probe._profile_role(d) == "Scout — Deep Research — Finds sources and tracks outreach"
+    assert "Scout — Deep Research — Finds sources" in bot_mode_probe.get_bot_mode_protocol_section(home)
+
+
+def test_role_is_optional_and_untrusted_input(tmp_path):
+    """No role leaves the line as before; a hand-edited role is flattened and capped, never raises."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    plain = _write_profile_yaml(
+        home, "plain", "description: Does things\nui_meta:\n  hermes-bots:\n    title: Plain\n"
+    )
+    assert bot_mode_probe._profile_role(plain) == "Plain — Does things"
+
+    # A YAML "\n" escape puts a real newline inside the value.
+    messy = _write_profile_yaml(
+        home,
+        "messy",
+        "ui_meta:\n  hermes-bots:\n    title: Messy\n"
+        f'    role: "Deep\\nResearch {"x" * 200}"\n',
+    )
+    line = bot_mode_probe._profile_role(messy)
+    assert "\n" not in line
+    assert line.startswith("Messy — Deep Research xxxx")
+    assert len(line) <= 160
+
+    # A role that is not text (a hand-edited list, number or bool) is ignored, as the
+    # Desktop ignores it, rather than stringified into teammates' prompts.
+    for raw in ("[a, b]", "42", "true", "{a: 1}"):
+        not_text = _write_profile_yaml(
+            home,
+            "odd",
+            f"description: Finds things\nui_meta:\n  hermes-bots:\n    title: Odd\n    role: {raw}\n",
+        )
+        assert bot_mode_probe._profile_role(not_text) == "Odd — Finds things", raw
+
+
+def test_fingerprint_changes_when_a_role_is_edited(tmp_path):
+    """Editing a role refreshes stored Bot Chat prompts: teammates pick recipients from it."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    body = "ui_meta:\n  hermes-bots:\n    title: Scout\n    role: {role}\n"
+    _write_profile_yaml(home, "scout", body.format(role="Deep Research"))
+    before = bot_mode_probe.capability_fingerprint(home)
+
+    _write_profile_yaml(home, "scout", body.format(role="Scouting"))
+    assert bot_mode_probe.capability_fingerprint(home) != before
+
+
 def test_soul_legacy_protocol_no_longer_suppresses_live_section(tmp_path):
     """Plugin-era SOUL append is stripped at load time; the live roster is the only copy."""
     home = tmp_path / ".hermes"

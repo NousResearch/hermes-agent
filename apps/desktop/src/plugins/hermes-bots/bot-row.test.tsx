@@ -230,3 +230,59 @@ describe('age label reflects the last worker run, not only the last conversation
     expect(screen.getByText('3d')).toBeTruthy()
   })
 })
+
+describe('the row shows the bot role beside its name', () => {
+  const bot = {
+    name: 'scout',
+    last_session: { last_active: Date.now() / 1000, preview: 'Sent the Q4 outreach list' }
+  } as RosterRow
+
+  async function withMeta(meta: Record<string, unknown>) {
+    const { $botMeta, botMetaKey } = await import('./data')
+
+    $botMeta.set({ ...$botMeta.get(), [botMetaKey(bot)]: meta })
+  }
+
+  it('renders the role next to the name and keeps the preview line', async () => {
+    await withMeta({ role: 'Deep Research', title: 'Scout' })
+
+    const { container } = render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+
+    const role = container.querySelector('[data-slot="bot-role"]')
+    const name = screen.getByText('Scout')
+
+    expect(role?.textContent).toBe('Deep Research')
+    expect(name.parentElement?.contains(role)).toBe(true)
+    expect(screen.getByText('Sent the Q4 outreach list')).toBeTruthy()
+    expect(screen.getByRole('button').getAttribute('aria-label')).toContain('Scout · Deep Research · @scout')
+  })
+
+  it('renders nothing extra without a role, and a description is never promoted to one', async () => {
+    await withMeta({ title: 'Scout' })
+
+    const { container } = render(
+      <BotRow
+        bot={{ ...bot, description: 'Finds sources' }}
+        onDelete={noop}
+        onEdit={noop}
+        onGroup={noop}
+        onNewSection={noop}
+      />
+    )
+
+    expect(container.querySelector('[data-slot="bot-role"]')).toBeNull()
+    expect(screen.queryByText('Finds sources')).toBeNull()
+  })
+
+  it('shows the role a row’s own backend reports when this desktop has no meta for it', async () => {
+    await withMeta({})
+
+    const served = { ...bot, ui_meta: { 'hermes-bots': { role: 'Support' } } } as RosterRow
+
+    const { container } = render(
+      <BotRow bot={served} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+    )
+
+    expect(container.querySelector('[data-slot="bot-role"]')?.textContent).toBe('Support')
+  })
+})

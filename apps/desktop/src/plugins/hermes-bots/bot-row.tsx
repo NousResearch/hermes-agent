@@ -33,6 +33,7 @@ import {
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { botRole } from './bot-role'
 import {
   $botChatFocused,
   $focusedBotOwner,
@@ -113,6 +114,21 @@ interface BotRowProps {
   showHandle?: boolean
 }
 
+/** A label beside the name, not a second name: it takes only the width the name leaves. */
+function BotRoleTag({ role, tooltip }: { role: string; tooltip: string }) {
+  if (!role) {
+    return null
+  }
+
+  return (
+    <Tip label={tooltip}>
+      <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-(--ui-text-quaternary)" data-slot="bot-role">
+        {role}
+      </span>
+    </Tip>
+  )
+}
+
 export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
@@ -126,6 +142,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const meta = botRosterMeta(bot, allMeta)
   const hidden = isBotHidden(bot, allMeta)
   const pinned = isBotPinned(bot, allMeta)
+  const role = botRole(bot, meta)
   const sourceStatus = botSourceStatus(bot)
   const groups = botGroups(meta)
   const last = bot.last_session
@@ -198,7 +215,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? b.bot.thisDevice : '')
   const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
 
-  const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
+  const rowTooltip = [displayName(bot, meta), role, `@${handle}`, gatewayLabel, sourceStatus.label]
     .filter(Boolean)
     .join(' · ')
 
@@ -292,6 +309,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             <Tip label={rowTooltip}>
               <span className="min-w-0 truncate text-[0.8125rem] font-medium">{displayName(bot, meta)}</span>
             </Tip>
+            <BotRoleTag role={role} tooltip={rowTooltip} />
           </div>
           {attention ? (
             <Tip label={botAttentionHint(attention.reason)}>

@@ -190,6 +190,30 @@ describe('materializing the draft profile', () => {
     await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith(profileName, { kickoff: true }))
   })
 
+  it('stores the role beside the title and leaves the generated description alone', async () => {
+    await renderDialog(true)
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Scout' } })
+    fireEvent.change(screen.getByPlaceholderText('e.g. Deep Research'), { target: { value: '  Deep   Research ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    // The title→description concat is unchanged: the role is a separate ui_meta field.
+    expect(createCalls()[0][1]).toMatchObject({ description: 'Scout', name: 'inbox-triage' })
+    expect(mocks.saveBotMeta).toHaveBeenCalledWith(
+      'inbox-triage',
+      expect.objectContaining({ role: 'Deep Research', title: 'Scout' })
+    )
+  })
+
+  it('writes no role key when none was entered', async () => {
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.saveBotMeta).toHaveBeenCalled())
+    expect(mocks.saveBotMeta.mock.calls[0][1]).not.toHaveProperty('role')
+  })
+
   it('creates it once when the Capabilities tab opens, pinned to the new slug', async () => {
     await renderDialog(true)
 

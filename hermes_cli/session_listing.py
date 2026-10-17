@@ -85,6 +85,7 @@ def query_session_listing(
     include_unnamed: bool = False,
     search_query: str | None = None,
     limit: int = 10,
+    offset: int = 0,
     exclude_sources: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return session rows for interactive listing surfaces (shared CLI/gateway policy).
@@ -101,6 +102,7 @@ def query_session_listing(
         session_key=session_key,
         exclude_sources=exclude_sources,
         limit=max(limit * 4, limit),
+        offset=offset,
         search_query=search or None,
         order_by_last_active=bool(search),
     )
@@ -123,6 +125,8 @@ def format_gateway_session_listing(
     include_source: bool = False,
     title: str = "Sessions",
     notice: str | None = None,
+    page: int = 1,
+    has_more: bool = False,
 ) -> str:
     """Render a compact Markdown-ish session list for gateway messengers.
 
@@ -151,4 +155,6 @@ def format_gateway_session_listing(
         *lines, "", *([notice] if notice else []),
         "Resume: `/resume <session id>` or `/resume <number>` from `/resume`.",
         "More: `/sessions all`, `/sessions full`, `/sessions search <query>`.",
+        *( [f"Page {page}. Older: `/sessions page {page + 1}`."] if has_more
+           else [f"Page {page}."] if page > 1 else [] ),
     ])

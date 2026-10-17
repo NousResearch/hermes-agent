@@ -78,6 +78,36 @@ def test_deliberately_archived_canonical_chat_releases_name_for_replacement(db):
     assert row and row["id"] == "replacement"
 
 
+def test_archived_visible_legacy_canonical_chat_releases_name_to_a_born_hidden_claimant(db):
+    """A canonical row from before born-hidden chats is archived but visible (#119730);
+    the hidden replacement Bot Mode opens must still claim the name."""
+    db.create_session("legacy", source="desktop")
+    assert db.set_session_title("legacy", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.set_session_archived("legacy", True)
+
+    db.create_session("replacement", source="desktop")
+    assert db.set_session_hidden("replacement", True)
+    assert db.set_session_title("replacement", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+
+    assert db.get_session("legacy")["archived"]
+    assert db.get_session("legacy")["title"] is None
+    row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert row and row["id"] == "replacement"
+
+
+def test_visible_session_cannot_take_bot_chat_from_an_archived_visible_one(db):
+    # Control: without a hidden claimant nothing marks either row as canonical,
+    # so an ordinary visible session keeps the ordinary uniqueness rule.
+    db.create_session("archived", source="cli")
+    assert db.set_session_title("archived", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.set_session_archived("archived", True)
+
+    db.create_session("visible", source="cli")
+    with pytest.raises(ValueError, match="already in use"):
+        db.set_session_title("visible", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.get_session("archived")["title"] == SessionDB.CANONICAL_BOT_CHAT_TITLE
+
+
 def test_auto_archive_sweep_skips_the_canonical_chat(db):
     """Only a deliberate archive may retire a Bot Chat; the idle sweep must not
     (it would strand an unrecoverable, soon-to-be-untitled row)."""

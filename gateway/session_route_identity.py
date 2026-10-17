@@ -39,8 +39,11 @@ def configured_entry_key(identity: str, config: dict) -> str:
 
     Raw provider resolution defers a bare name that is a canonical built-in to the built-in, so a
     ``providers:`` entry keyed ``deepseek`` is reachable only through its ``custom:`` spelling. Only
-    that key names the entry: its display name may be a real built-in's slug (``name: OpenRouter``
-    on ``providers.work``), and a pick of that built-in is not this endpoint (#140107).
+    that key names a keyed entry: its display name may be a real built-in's slug (``name: OpenRouter``
+    on ``providers.work``), and a pick of that built-in is not this endpoint (#140107). A legacy
+    ``custom_providers:`` entry has no key, so its normalized display name is its identity and its
+    key here (``custom_provider_slug``): ``name: OpenRouter`` there answers ``openrouter``, as
+    Desktop's ``customDefaultSupersedesPick`` does.
     """
     identity = str(identity or '').strip().lower()
     if not identity.startswith('custom:') or not _named_entry(identity, config):

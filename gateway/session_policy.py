@@ -433,8 +433,8 @@ def _with_entry_pick(params, config):
     A configured entry keyed like a canonical built-in (`providers: deepseek`) is shadowed by the
     built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
     different provider than the entry the profile runs (#140107). Only the held entry's bare key
-    is that entry (Desktop's guard); its display name may be a real built-in, and a pick of that
-    built-in keeps the built-in. Every other pick stays as it came.
+    is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
+    ``custom_providers:`` entry's is (``configured_entry_key``). Other picks stay as they came.
     """
     from gateway.session_route_identity import configured_entry_key, profile_route_identity
     picked = params.get('provider')

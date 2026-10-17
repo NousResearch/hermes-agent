@@ -463,3 +463,86 @@ def test_results_are_pruned_after_retention(sandbox):
     dr.cleanup_expired()
 
     assert not (sandbox / "result-req-1.json").exists()
+
+
+# --- review gate 1 round 2: hardening additions --------------------------------
+
+
+@pytest.mark.parametrize("bad_value", [float("inf"), float("-inf"), float("nan"), 1e309])
+def test_non_finite_numbers_are_rejected_by_schema(sandbox, bad_value):
+    """JSON's default decoder accepts Infinity/NaN and 1e309 overflows to inf."""
+    _write_pending(sandbox, target_generation={"pid": 4242, "start_time": bad_value})
+    s = Sched()
+    dr.process_sigusr1_request(s.schedule, cancel_restart=s.cancel)
+    assert s.calls == []
+    assert _read_result(sandbox, "req-1")["outcome"] == dr.OUTCOME_REJECTED_INVALID
+
+
+def test_stale_valid_cooldown_file_does_not_bypass_recovery(sandbox):
+    """A stale-but-valid cooldown.json must not short-circuit the record scan
+    (the window is determined by the NEWER of file entry and recovered record)."""
+    # First generation spends the budget and records a cooldown.
+    _write_pending(sandbox, request_id="req-a")
+    dr.process_sigusr1_request(lambda: "scheduled")
+    # Simulate record_cooldown failing after acceptance: result-req-a.json exists
+    # (recovery source), while cooldown.json is rewound to an expired entry.
+    old = time.time() - dr.COOLDOWN_WINDOW_S - 3600
+    (sandbox / "cooldown.json").write_text(json.dumps({
+        dr.service_identity_key(FAKE_IDENTITY): {
+            "request_id": "ancient", "accepted_at": old,
+        },
+    }))
+
+    _write_pending(sandbox, request_id="req-b")
+    s = Sched()
+    dr.process_sigusr1_request(s.schedule, cancel_restart=s.cancel)
+    assert s.calls == []
+    assert _read_result(sandbox, "req-b")["outcome"] == dr.OUTCOME_REJECTED_COOLDOWN
+
+
+def test_orphaned_claim_gets_explicit_decision_and_no_second_schedule(sandbox):
+    """A claim without a result (failed acceptance write / crash) must never let
+    a re-published id schedule a second restart."""
+    sandbox.mkdir(parents=True, exist_ok=True)
+    (sandbox / "claim-req-1.json").write_text(json.dumps({
+        "schema_version": dr.PROTOCOL_SCHEMA_VERSION,
+        "request_id": "req-1",
+        "generation": {"pid": 1, "start_time": 1},
+        "claimed_at": time.time() - 60,
+        "service_key": dr.service_identity_key(FAKE_IDENTITY),
+    }))
+    _write_pending(sandbox)
+    s = Sched()
+    dr.process_sigusr1_request(s.schedule, cancel_restart=s.cancel)
+    assert s.calls == []
+    assert _read_result(sandbox, "req-1")["outcome"] == dr.OUTCOME_REJECTED_INVALID
+    assert not (sandbox / "pending-req-1.json").exists()
+
+
+def test_republished_id_after_acceptance_is_replay_only(sandbox):
+    """Same id re-published after an accepted decision: no second schedule, and
+    the claim/result evidence remains untouched."""
+    _write_pending(sandbox)
+    dr.process_sigusr1_request(lambda: "scheduled")
+    claim_before = (sandbox / "claim-req-1.json").read_bytes()
+    result_before = (sandbox / "result-req-1.json").read_bytes()
+
+    _write_pending(sandbox)  # CLI retries the very same request id
+    s = Sched()
+    dr.process_sigusr1_request(s.schedule, cancel_restart=s.cancel)
+    assert s.calls == []
+    assert (sandbox / "claim-req-1.json").read_bytes() == claim_before
+    assert (sandbox / "result-req-1.json").read_bytes() == result_before
+
+
+def test_stopping_round_trip_through_real_result_files(sandbox):
+    """rejected_stopping is a REAL persisted outcome the CLI can read back
+    (not just a mock-level contract)."""
+    _write_pending(sandbox)
+    s = Sched("stopping")
+    dr.process_sigusr1_request(s.schedule, cancel_restart=s.cancel)
+
+    payload = dr.read_result("req-1")
+    assert payload is not None
+    assert payload["outcome"] == dr.OUTCOME_REJECTED_STOPPING
+    assert payload["generation"] == FAKE_GENERATION

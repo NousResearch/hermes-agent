@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -187,6 +188,36 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> bool:
         return False
 
 
+def _exclusive_write_json(path: Path, payload: dict[str, Any]) -> bool:
+    """Create ``path`` ONLY if absent (``O_EXCL``) — the exclusive claim token.
+
+    Unlike tmp+rename (which replaces), this has true create-if-absent atomic
+    semantics, so exactly one consumer can own a given request id even across
+    re-publishes of the same id (review gate 1 round 2, item 6).
+    """
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        logger.warning("defer-restart: exclusive create %s failed: %s", path, exc)
+        return False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, default=str)
+            fh.flush()
+            os.fsync(fh.fileno())
+        _fsync_dir(path.parent)
+        return True
+    except Exception as exc:
+        logger.warning("defer-restart: exclusive write %s failed: %s", path, exc)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return False
+
+
 def _safe_regular_private_file(path: Path) -> bool:
     """True when ``path`` is a regular file we own with no group/other bits (POSIX)."""
     try:
@@ -295,8 +326,12 @@ def _recover_cooldown_from_records(identity_key: str, now: float) -> Optional[di
 def cooldown_active_for(identity_key: str, *, now: Optional[float] = None) -> Optional[dict[str, Any]]:
     """The blocking cooldown record for ``identity_key``, or None.
 
-    Fail-closed: an unreadable store is treated as ACTIVE (a phantom cooldown
-    only delays a restart; a phantom miss spends the budget twice — I2).
+    Fail-closed on read errors (a phantom cooldown only delays a restart; a
+    phantom miss spends the budget twice — I2), and the store entry is NEVER
+    trusted as the latest state on its own: records are always re-scanned and
+    the NEWER of (store entry, recovered record) wins. A stale-but-valid
+    ``cooldown.json`` plus a failed update cannot reopen the window
+    (review gate 1 round 2, item 4.2).
     """
     now = time.time() if now is None else now
     data, ok = read_cooldown()
@@ -304,15 +339,25 @@ def cooldown_active_for(identity_key: str, *, now: Optional[float] = None) -> Op
         logger.warning("defer-restart: cooldown store unreadable — treating as active (fail-closed)")
         return {"accepted_at": now, "request_id": "<unreadable>", "unreadable": True}
     entry = data.get(identity_key)
+    store_entry: Optional[dict[str, Any]] = None
     if isinstance(entry, dict):
         try:
             accepted_at = float(entry.get("accepted_at", 0.0))
         except (TypeError, ValueError):
             accepted_at = 0.0
         if 0.0 < (now - accepted_at) <= COOLDOWN_WINDOW_S:
-            return entry
+            store_entry = entry
     recovered = _recover_cooldown_from_records(identity_key, now)
-    return recovered
+    if recovered is None:
+        return store_entry
+    if store_entry is None:
+        return recovered
+    try:
+        if float(recovered.get("accepted_at", 0.0)) > float(store_entry.get("accepted_at", 0.0)):
+            return recovered
+    except (TypeError, ValueError):
+        return recovered
+    return store_entry
 
 
 def record_cooldown(identity_key: str, request_id: str) -> bool:
@@ -395,8 +440,12 @@ def read_result(request_id: str) -> Optional[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _is_number(value: Any) -> bool:
-    """Real int/float — explicitly rejects bool (bool is an int subclass)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """Real finite int/float — rejects bool (a subclass of int) and inf/nan
+    (JSON's default decoder accepts ``Infinity``/``NaN``, and ``1e309`` parses
+    to inf — all refused at the schema layer, review gate 1 round 2)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
 
 
 def _validate_payload_shape(payload: Any) -> tuple[bool, str]:
@@ -534,6 +583,16 @@ def consume_pending_request(
             return payload, OUTCOME_DUPLICATE, "replay of decided request"
         return payload, prior, "replay of decided request"
 
+    # A claim without a result means a previous claimer never committed its
+    # decision (failed acceptance write / crash). Never schedule twice for one
+    # id and never let a re-published id race a stale claim.
+    if _claim_path(request_id).exists():
+        with _best_effort():
+            _unlink_exclusive(newest)
+            write_result(request_id, OUTCOME_REJECTED_INVALID,
+                         detail="orphaned claim: a previous acceptance was never committed")
+        return None, OUTCOME_REJECTED_INVALID, "orphaned claim"
+
     if not _generation_matches(payload["target_generation"]):
         # Not ours: leave the file for its real target (or expiry), but tell *this*
         # wake-up's caller nothing was claimed.
@@ -558,17 +617,19 @@ def consume_pending_request(
                          service_key=identity_key)
         return None, OUTCOME_REJECTED_COOLDOWN, "cooldown active"
 
-    # Claim: only the consumer that removes the file may schedule (review item 5).
-    if not _unlink_exclusive(newest):
+    # Claim: the O_EXCL create IS the consume-once gate — only its winner may
+    # reach scheduling (review items 5/6). The pending file is then removed so a
+    # re-sent SIGUSR1 cannot reprocess it.
+    me = process_generation()
+    if not _exclusive_write_json(_claim_path(request_id), {
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
+        "request_id": request_id,
+        "generation": me,
+        "claimed_at": now,
+        "service_key": identity_key,
+    }):
         return None, "", "claim lost to another consumer"
-    with _best_effort():
-        _atomic_write_json(_claim_path(request_id), {
-            "schema_version": PROTOCOL_SCHEMA_VERSION,
-            "request_id": request_id,
-            "generation": me if (me := process_generation()) else None,
-            "claimed_at": now,
-            "service_key": identity_key,
-        })
+    _unlink_quiet(newest)
     return payload, OUTCOME_ACCEPTED, ""
 
 
@@ -591,6 +652,15 @@ def process_sigusr1_request(schedule_restart, cancel_restart=None) -> None:
     ``cancel_restart`` (optional) is invoked when the acceptance cannot be
     persisted after retries: a controlled exit must never run without a
     persisted decision (I1), so the scheduled restart is cancelled instead.
+
+    Serialization guarantee (review gate 1 round 2, items 2/6/7): this whole
+    function runs SYNCHRONOUSLY in one event-loop turn — it contains no
+    ``await``, and the retry backoff uses blocking ``time.sleep`` (which stalls
+    the loop rather than yielding to other tasks). Therefore the restart task
+    created by ``schedule_restart()`` cannot run, another wake cannot consume,
+    and no result writer can interleave between claim, scheduling and the
+    acceptance write. An ``"already"`` answer can consequently only refer to a
+    schedule whose own turn already committed (or cancelled) its decision.
 
     Behaviour:
     - No pending deferred request AND protocol traffic never seen this

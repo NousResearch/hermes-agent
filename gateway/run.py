@@ -4849,12 +4849,6 @@ def _start_gateway_make_restart_signal_handler(runner):
     fall through to the legacy unconditional restart.
     """
     def restart_signal_handler():
-        # systemd's `reload` verb (ExecReload=kill -USR1) lands here too; say so, because operators
-        # expect `reload` to mean an in-process config reload, not a drain-and-relaunch (#117267).
-        logger.info(
-            "SIGUSR1 received (systemctl reload / hermes gateway restart): performing a graceful "
-            "gateway restart — drain active turns, exit, supervisor relaunches. Not an in-process "
-            "config reload.")
         from gateway.defer_restart import process_sigusr1_request
 
         def _schedule() -> str:
@@ -4888,8 +4882,8 @@ def _start_gateway_make_restart_signal_handler(runner):
             except Exception:  # pragma: no cover - best-effort state restore
                 pass
 
-        # The raw callback does NO filesystem work (review gate 1, item C): the
-        # whole request-file protocol runs as a loop task.
+        # The raw callback does NO filesystem or logging-handler work (review gate 1):
+        # everything runs as a loop task.
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # pragma: no cover - handler is registered on the loop
@@ -4897,6 +4891,13 @@ def _start_gateway_make_restart_signal_handler(runner):
             return
 
         async def _wake() -> None:
+            # systemd's `reload` verb (ExecReload=kill -USR1) lands here too; say so,
+            # because operators expect `reload` to mean an in-process config reload,
+            # not a drain-and-relaunch (#117267).
+            logger.info(
+                "SIGUSR1 received (systemctl reload / hermes gateway restart): performing a graceful "
+                "gateway restart — drain active turns, exit, supervisor relaunches. Not an in-process "
+                "config reload.")
             process_sigusr1_request(_schedule, cancel_restart=_cancel)
 
         loop.create_task(_wake())

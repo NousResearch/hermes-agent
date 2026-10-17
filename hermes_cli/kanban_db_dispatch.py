@@ -2854,6 +2854,15 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # A multiplexer dispatching for another profile must not hand it the launch
         # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
         strip_launch_profile_env(env, profile_home)
+    else:
+        # Resolution is deferred to the child, but the launch profile's terminal
+        # policy must not follow it. Task-owned cwd/runtime pins are applied below.
+        from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+
+        terminal_names = set(TERMINAL_CONFIG_ENV_MAP.values())
+        for key in list(env):
+            if key.upper() in terminal_names:
+                env.pop(key, None)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -2861,17 +2870,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"
-    # TERMINAL_CWD takes precedence over process cwd in file_tools and
-    # build_context_files_prompt; without it relative writes land in the gateway
-    # user's home and workers load the gateway's AGENTS.md. file_tools rejects
-    # relative / sentinel values, so only set a real absolute directory.
-    # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and context-file loader anchor on
-    # the workspace, not whatever cwd the dispatching gateway happened to export. The worker subprocess is
-    # already launched with cwd=workspace, but TERMINAL_CWD takes precedence over the process cwd in both
-    # file_tools._resolve_base_dir (#41312 — relative write_file paths were landing in the gateway user's
-    # home) and build_context_files_prompt (#34619 — workers loaded the dispatching gateway's AGENTS.md
-    # instead of the task's). Setting it to the workspace fixes both: the workspace is where the task's work
-    # actually happens.
+    # Pin TERMINAL_CWD to the absolute task workspace: it overrides process cwd for
+    # writes and AGENTS.md loading; gateway-home fallback is wrong (#41312, #34619).
     if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
         env["TERMINAL_CWD"] = workspace
     if task.branch_name:

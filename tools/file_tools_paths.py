@@ -169,7 +169,7 @@ def _anchor(text: str, base, container_paths: bool) -> Path | PurePosixPath:
     return p.resolve()
 
 
-def _ssh_remote_anchor(task_id: str) -> str:
+def _ssh_remote_anchor(task_id: str, *, fallback_to_home: bool = True) -> str:
     """Working directory on the SSH target, read RAW: ``_authoritative_workspace_root``
     expands ``~`` on the Hermes host, which names a directory the remote does not have.
 
@@ -185,7 +185,10 @@ def _ssh_remote_anchor(task_id: str) -> str:
         text = str(raw or "").strip()
         if text.lower() not in _TERMINAL_CWD_SENTINELS and (text.startswith("~") or posixpath.isabs(text)):
             return coerce_ssh_remote_cwd(text, "ssh")
-    return "~"
+    # Relative paths still need a useful default when ordinary path resolution
+    # has no configured cwd. Workspace confinement cannot use that guess as an
+    # authoritative boundary, so its caller can disable this fallback.
+    return "~" if fallback_to_home else ""
 
 
 def _ssh_remote_home(task_id: str) -> str | None:
@@ -272,6 +275,91 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     container_paths = _uses_container_paths(task_id)
     return _anchor(_host_text(filepath, container_paths),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
+
+
+def _workspace_confinement_policy() -> bool | None:
+    """Return the profile's workspace-only setting, or ``None`` if unreadable.
+
+    The setting is profile-scoped and read for each call. If configuration
+    cannot be read, preserve that state so the caller can refuse the operation
+    instead of treating an unknown policy as an explicitly disabled one.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        security = (load_config_readonly() or {}).get("security") or {}
+        return security.get("file_tools_workspace_only") is True
+    except Exception:
+        return None
+
+
+def workspace_confinement_error(
+    filepath: str, task_id: str = "default", *, operation: str = "access"
+) -> str | None:
+    """Return a refusal when an enabled workspace-only file operation escapes.
+
+    Host paths are resolved physically, including existing symlink hops.
+    Container and SSH paths are resolved inside the backend's POSIX namespace
+    so a workspace symlink cannot lexically disguise an outside target. This
+    in-process check does not replace OS-level isolation.
+    """
+    policy = _workspace_confinement_policy()
+    if policy is None:
+        return (
+            "WORKSPACE_CONFINEMENT_REFUSAL: could not read this profile's "
+            "workspace-only file-tool policy. No filesystem "
+            f"{operation} was attempted."
+        )
+    if not policy:
+        return None
+
+    ssh_backend = _terminal_env_type_for_task(task_id) == "ssh"
+    root_text = None if ssh_backend else _authoritative_workspace_root(task_id)
+    has_root = bool(
+        _ssh_remote_anchor(task_id, fallback_to_home=False)
+        if ssh_backend
+        else root_text
+    )
+    if not has_root:
+        return (
+            "WORKSPACE_CONFINEMENT_REFUSAL: file tools are workspace-only, but "
+            "this task has no authoritative workspace root. No filesystem "
+            f"{operation} was attempted."
+        )
+
+    try:
+        container_paths = False
+        if ssh_backend:
+            root = _resolve_ssh_path(".", task_id)
+        else:
+            assert root_text is not None
+            container_paths = _uses_container_paths(task_id)
+            root = _anchor(_host_text(root_text, container_paths), os.getcwd, container_paths)
+        target = _resolve_path_for_task(filepath, task_id)
+        if ssh_backend and _ssh_path_escapes_home(str(target)):
+            raise ValueError("remote target escapes the unresolved home directory")
+        if ssh_backend or container_paths:
+            # These paths belong to another filesystem namespace. Resolving
+            # them with host Path.resolve() misses symlinks in that backend.
+            # The backend probe fails closed when it cannot canonicalize.
+            from tools.file_tools import _get_file_ops
+
+            file_ops = _get_file_ops(task_id)
+            root = PurePosixPath(file_ops.canonicalize_workspace_path(str(root)))
+            target = PurePosixPath(file_ops.canonicalize_workspace_path(str(target)))
+        if not (ssh_backend and _ssh_path_escapes_home(str(target))) and target.is_relative_to(root):
+            return None
+    except Exception as exc:
+        return (
+            "WORKSPACE_CONFINEMENT_REFUSAL: could not validate the requested "
+            f"path for {operation}: {type(exc).__name__}. No filesystem "
+            f"{operation} was attempted."
+        )
+    return (
+        "WORKSPACE_CONFINEMENT_REFUSAL: file tools are confined to the active "
+        f"workspace {str(root)!r}; requested {operation} path {str(target)!r} "
+        f"is outside it. No filesystem {operation} was attempted."
+    )
 
 
 def _resolve_entry_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:

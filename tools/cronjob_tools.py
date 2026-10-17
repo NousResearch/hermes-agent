@@ -331,8 +331,17 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
     registration_owner = object()
     running_future = Future()
     running_future.set_running_or_notify_cancel()
+    # Home half of the in-flight key. try_register keys the claim under the active
+    # cron-scope home; the releases below run outside that scope and would resolve
+    # the default home instead, leaking the claim (mirror _submit_with_guard).
+    _claim_home = None
     try:
-        from cron.scheduler import release_running_job, run_one_job, try_register_running_job
+        from cron.scheduler import (
+            _get_hermes_home,
+            release_running_job,
+            run_one_job,
+            try_register_running_job,
+        )
 
         # In-flight dedupe: the fire claim's TTL is routinely outlived by real jobs, so
         # register in the scheduler's shared running set (same guard the ticker uses;
@@ -345,6 +354,7 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
         ):
             return {"claimed": True, "success": False, "error": _ALREADY_RUNNING_ERROR}
         _registered = True
+        _claim_home = _get_hermes_home()
 
         claim = job.get("fire_claim")
         fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
@@ -382,7 +392,7 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
                 processed = run_one_job(job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
         finally:
             _registered = False
-            release_running_job(job_id, owner=registration_owner)
+            release_running_job(job_id, home=_claim_home, owner=registration_owner)
         refreshed = get_job(job_id) or {}
         execution = None
         execution_id = job.get("execution_id")
@@ -412,7 +422,7 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
     finally:
         # Setup failures and BaseException must release only our registration.
         if _registered:
-            release_running_job(job_id, owner=registration_owner)
+            release_running_job(job_id, home=_claim_home, owner=registration_owner)
         running_future.set_result(None)
 
 

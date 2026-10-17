@@ -162,6 +162,7 @@ skill_matches_platform = _skill_utils_delegate("skill_matches_platform")
 skill_matches_environment = _skill_utils_delegate("skill_matches_environment")
 skill_matches_apps = _skill_utils_delegate("skill_matches_apps")
 _parse_frontmatter = _skill_utils_delegate("parse_frontmatter")
+_parse_triggers = _skill_utils_delegate("extract_skill_triggers")
 _get_disabled_skill_names = _skill_utils_delegate("get_disabled_skill_names")
 
 
@@ -258,6 +259,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                 scanned.append({
                     "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
                     "description": _truncate_description(description),
+                    "triggers": _parse_triggers(frontmatter),
                     "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
                     "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
                                                       and skill_matches_environment(frontmatter)
@@ -274,11 +276,17 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     return [dict(s) for s in skills]
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False, include_triggers: bool = False) -> list[dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
-    unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
-    return [{"name": s["load_name"], "description": s["description"], "category": s["category"]}
+    unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI).
+
+    ``include_triggers`` adds the declared trigger phrases. Off by default: this listing also feeds
+    the model-facing ``skills_list`` tool, where the phrases buy nothing and cost attention on every
+    call, while the desktop composer is the one consumer that needs them.
+    """
+    return [{"name": s["load_name"], "description": s["description"], "category": s["category"],
+             **({"triggers": list(s.get("triggers") or [])} if include_triggers else {})}
             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 
@@ -288,7 +296,12 @@ def _sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def skills_list(category: str | None = None, task_id: str | None = None) -> str:
-    """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
+    """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity.
+
+    Deliberately NOT the declared trigger phrases: those exist for the desktop composer's matcher, and
+    this result is what the model reads on every call. `_find_all_skills(include_triggers=True)` is the
+    opt-in the skills API uses; keep this default lean.
+    """
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
         all_skills = _find_all_skills()

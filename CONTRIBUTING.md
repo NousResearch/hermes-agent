@@ -484,6 +484,9 @@ prerequisites:                     # Optional legacy runtime requirements
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
+    triggers:                          # Optional — phrases the desktop composer offers this
+      - "the words you would type"     #   skill on, in any language. Matched whole-word and
+      - "عبارة بلغتك"                   #   literally: write what the user really types. Max 12.
     related_skills: [other-skill-name]
     fallback_for_toolsets: [web]       # Optional — show only when toolset is unavailable
     requires_toolsets: [terminal]      # Optional — show only when toolset is available

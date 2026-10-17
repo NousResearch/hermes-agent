@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
+from agent.skill_utils import MAX_TRIGGERS, SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
 
 # Shell utilities already wrapped as native tools; naming them in prose steers
 # the model to a raw shell call. banned token -> native tool to name instead.
@@ -122,6 +122,38 @@ def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -
         if bad:
             yield _warn("platforms-value", f"platforms contains unrecognized value(s) {bad}; "
                         f"expected a subset of {sorted(valid)}.")
+
+    # Declared trigger phrases are matched literally against the composer draft, so a shape the
+    # extractor drops in silence (a bare number, a nested list, a blank entry) is a phrase the author
+    # believes is live and is not. Warn on every shape that cannot reach the matcher, so the author
+    # hears it at lint time rather than never.
+    raw_triggers = hermes_meta.get("triggers") if isinstance(hermes_meta, dict) else None
+    if raw_triggers is None:
+        raw_triggers = frontmatter.get("triggers")
+    if raw_triggers is not None:
+        if isinstance(raw_triggers, str):
+            raw_triggers = [part for part in raw_triggers.split(",")]
+        if not isinstance(raw_triggers, list):
+            yield _warn("triggers-shape",
+                        f"triggers is a {type(raw_triggers).__name__}; it must be a list of phrases "
+                        f"(or a comma-separated string). It is ignored as written.")
+        else:
+            kept = [item.strip() for item in raw_triggers if isinstance(item, str) and item.strip()]
+            non_strings = [item for item in raw_triggers if not isinstance(item, str)]
+            if non_strings:
+                yield _warn("triggers-shape",
+                            f"triggers contains non-string entries {non_strings!r}; they are dropped. "
+                            f"Quote them — 'triggers: [\"2026\"]' — if they are meant as phrases.")
+            if len(kept) > MAX_TRIGGERS:
+                yield _warn("triggers-cap",
+                            f"{len(kept)} trigger phrases declared; only the first {MAX_TRIGGERS} are "
+                            f"matched. Keep the {MAX_TRIGGERS} most distinctive.")
+            slash = [phrase for phrase in kept if phrase.startswith("/")]
+            if slash:
+                yield _warn("triggers-slash",
+                            f"trigger phrase(s) {slash} start with '/', which the composer strips "
+                            f"from the draft wherever it follows whitespace — such a phrase fires only "
+                            f"when the draft begins with it. Drop the leading slash.")
 
 
 def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:

@@ -18,8 +18,23 @@ Reviewing a skill PR: check the target directory — heavy-dep or niche skills g
 `name`, `description`, `version`, `author`, `license`, `platforms` (OS gate: `[macos]`,
 `[linux, macos]`, ...), `metadata.hermes.tags`, `metadata.hermes.category`,
 `metadata.hermes.related_skills`, `metadata.hermes.config` (config.yaml settings the skill needs —
-stored under `skills.config.<key>`, prompted during setup, injected at load). Top-level `tags:` /
-`category:` are accepted and mirrored from `metadata.hermes.*` by the loader.
+stored under `skills.config.<key>`, prompted during setup, injected at load),
+`metadata.hermes.triggers` (phrases the desktop composer offers the skill on — see below).
+Top-level `tags:` / `category:` / `triggers:` are accepted and mirrored from `metadata.hermes.*` by
+the loader.
+
+**`triggers:` are literal match phrases, not prose.** Each entry is matched whole-word and literally
+against what the user types in the composer (regex metacharacters are escaped, so `c++` is literal
+and `[URL]` can never match). They exist because the composer otherwise offers a skill only when the
+draft names it — useless to a user who writes in another language or never types the skill's name.
+Write the words the user would actually type, in their language, and keep them distinctive: a phrase
+made of common words fires on unrelated drafts. **Arabic spelling is folded**, so the author does not
+have to guess the hamza: alef variants (`أ إ آ ٱ`) are matched as `ا`, and diacritics and the
+tatweel are ignored — `الأرقام` declared and `الارقام` typed are the same phrase. Deliberately *not*
+folded, because each merges two different words: `ة/ه`, `ى/ي`, `ؤ/ئ` — declare those the way they will
+be typed. At most 12 per skill are honoured (the excess is dropped silently), and a phrase beginning
+with `/` is unreliable — the composer strips a `/token` that follows whitespace from the draft before
+matching, so it fires only when the draft *starts* with it.
 
 ## Authoring standards (HARDLINE — enforced by `tests/skills/test_authoring_standards.py`)
 

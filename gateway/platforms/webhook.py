@@ -1,7 +1,7 @@
-"""Generic webhook platform adapter: aiohttp server that validates HMAC-signed POSTs (GitHub, GitLab,
+"""Generic webhook platform adapter: aiohttp server that validates signed or token-authenticated POSTs (GitHub, GitLab,
 Svix, Linear, generic), renders payloads into agent prompts, and routes responses back (github_comment
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
-secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
+secret for signature or token validation (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message), cron_job (fire an existing cron
 job per event; the rendered prompt is transient per-run context; exclusive with deliver_only), mirror_to_session
 (opt-in: a delivered response is also written into the target chat's transcript so follow-ups there have
@@ -113,8 +113,12 @@ def _is_loopback_host(host: Optional[str]) -> bool:
 
 def _hmac_str_equal(provided: str, expected: str) -> bool:
     """Timing-safe str equality tolerant of non-ASCII: ``compare_digest`` raises TypeError on non-ASCII
-    str and ``provided`` is an attacker-controlled header, so compare as UTF-8 bytes to fail closed."""
-    return hmac.compare_digest(provided.encode(), expected.encode())
+    str and ``provided`` is an attacker-controlled header, so compare as UTF-8 bytes to fail closed.
+    ``surrogatepass`` also handles raw non-UTF-8 header bytes decoded by aiohttp with surrogateescape."""
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
 
 
 def _hex_hmac(secret: str, data: bytes) -> str:
@@ -249,7 +253,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """Startup validation: secret required; INSECURE_NO_AUTH only on loopback (crash early on a public footgun)."""
         secret = route.get("secret", self._global_secret)
         if not _is_usable_secret(secret):
-            raise ValueError(f"[webhook] Route '{name}' HMAC secret is missing, blank, or not a string. Set 'secret' "
+            raise ValueError(f"[webhook] Route '{name}' webhook secret is missing, blank, or not a string. Set 'secret' "
                              f"on the route or globally. "
                              f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'.")
         if secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
@@ -412,7 +416,7 @@ class WebhookAdapter(BasePlatformAdapter):
         effective_secret = route.get("secret", self._global_secret)
         if not _is_usable_secret(effective_secret):
             logger.warning("[webhook] Dynamic route '%s' skipped: 'secret' is missing, blank, or not a string. "
-                           "Set a valid HMAC secret, or use '%s' to explicitly disable auth (testing only).",
+                           "Set a valid webhook secret, or use '%s' to explicitly disable auth (testing only).",
                            name, _INSECURE_NO_AUTH)
             return False
         if effective_secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
@@ -537,9 +541,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # handler reuse cannot become an unauthenticated dispatch surface.
         secret = route_config.get("secret", self._global_secret)
         if not _is_usable_secret(secret):
-            logger.error("[webhook] Route %s HMAC secret is missing, blank, or not a string; refusing request",
+            logger.error("[webhook] Route %s webhook secret is missing, blank, or not a string; refusing request",
                          route_name)
-            return None, _json_error("Webhook route is missing an HMAC secret", 403)
+            return None, _json_error("Webhook route is missing a webhook secret", 403)
         if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
             logger.warning("[webhook] Invalid signature for route %s", route_name)
             return None, _json_error("Invalid signature", 401)
@@ -821,7 +825,7 @@ class WebhookAdapter(BasePlatformAdapter):
     # --- Signature validation ---
 
     def _validate_signature(self, request: web.Request, body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
+        """Validate webhook auth (Svix/Standard Webhooks, Linear, GitHub, GitLab, generic V2/V1, Bearer)."""
         headers = request.headers
 
         def _header(name: str) -> str:
@@ -869,7 +873,21 @@ class WebhookAdapter(BasePlatformAdapter):
                                "to replay attacks. Add an 'X-Webhook-Timestamp' header and switch to "
                                "'X-Webhook-Signature-V2' (HMAC-SHA256 of '<timestamp>.<body>').", route_name)
             return _hmac_str_equal(generic_sig, _hex_hmac(secret, body))
-        logger.debug("[webhook] Secret configured but no signature header found")
+        # Only consider Bearer after the existing signature/token schemes; invalid V2/V1 never falls back.
+        # Empty signature headers are still attempted credentials. Keep earlier scheme
+        # handling unchanged, but do not let the new fallback authorize their rejection.
+        signature_headers = {
+            "svix-signature", "webhook-signature", "linear-signature",
+            "x-hub-signature-256", "x-gitlab-token",
+            "x-webhook-signature-v2", "x-webhook-signature",
+        }
+        if signature_headers.intersection(name.lower() for name in headers):
+            return False
+        auth_header = headers.get("Authorization", "")
+        auth_scheme, _, auth_token = auth_header.partition(" ")
+        if auth_scheme.lower() == "bearer" and auth_token:
+            return _hmac_str_equal(auth_token.strip(), secret)
+        logger.debug("[webhook] Secret configured but no signature/auth header found")
         return False
 
     # --- Prompt rendering ---

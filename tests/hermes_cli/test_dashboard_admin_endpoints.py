@@ -386,9 +386,12 @@ class TestWebhookEndpoints:
         )
         assert r.status_code == 200
         assert r.json()["script"] == "todoist_filter.py"
+        from hermes_cli.webhook import _load_subscriptions
+        assert r.json()["secret"] == _load_subscriptions()["todoist"]["secret"]
 
         subs = self.client.get("/api/webhooks").json()["subscriptions"]
         assert subs[0]["script"] == "todoist_filter.py"
+        assert "secret" not in subs[0]
 
         # A re-POST is a general update, not an enable: an explicit disable must survive it.
         assert self.client.put("/api/webhooks/todoist/enabled", json={"enabled": False}).status_code == 200

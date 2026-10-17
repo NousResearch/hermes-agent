@@ -57,6 +57,66 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
+interface CreatedWebhookDetailsProps {
+  created: CreatedWebhook;
+  onClose: () => void;
+}
+
+function CreatedWebhookDetails({ created, onClose }: CreatedWebhookDetailsProps) {
+  return (
+    <div className="p-5 grid gap-4">
+      <p className="text-sm text-muted-foreground">
+        Subscription created. Copy the secret now — it is only shown
+        once.
+      </p>
+
+      <div className="grid gap-2">
+        <Label>Webhook URL</Label>
+        <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
+          <span className="flex-1 min-w-0 truncate font-mono text-xs">
+            {created.url}
+          </span>
+          <CopyButton value={created.url} />
+        </div>
+      </div>
+
+      <div className="grid gap-2">
+        <Label>Secret (shown once)</Label>
+        <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
+          <span className="flex-1 min-w-0 truncate font-mono text-xs">
+            {created.secret}
+          </span>
+          <CopyButton value={created.secret} />
+        </div>
+      </div>
+
+      <div className="grid gap-2">
+        <Label>Bearer auth header</Label>
+        <p className="text-xs text-muted-foreground">
+          Use this when your webhook provider can send a fixed
+          authorization token but cannot sign payloads with HMAC.
+        </p>
+        <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
+          <span className="flex-1 min-w-0 truncate font-mono text-xs">
+            {"Authorization: Bearer " + created.secret}
+          </span>
+          <CopyButton value={"Authorization: Bearer " + created.secret} />
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <Button
+          className="uppercase"
+          size="sm"
+          onClick={onClose}
+        >
+          Done
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function WebhooksPage() {
   const [data, setData] = useState<WebhooksResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -330,42 +390,7 @@ export default function WebhooksPage() {
             </header>
 
             {created ? (
-              <div className="p-5 grid gap-4">
-                <p className="text-sm text-muted-foreground">
-                  Subscription created. Copy the secret now — it is only shown
-                  once.
-                </p>
-
-                <div className="grid gap-2">
-                  <Label>Webhook URL</Label>
-                  <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
-                      {created.url}
-                    </span>
-                    <CopyButton value={created.url} />
-                  </div>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label>Secret (shown once)</Label>
-                  <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
-                      {created.secret}
-                    </span>
-                    <CopyButton value={created.secret} />
-                  </div>
-                </div>
-
-                <div className="flex justify-end">
-                  <Button
-                    className="uppercase"
-                    size="sm"
-                    onClick={closeCreateModal}
-                  >
-                    Done
-                  </Button>
-                </div>
-              </div>
+              <CreatedWebhookDetails created={created} onClose={closeCreateModal} />
             ) : (
               <div className="p-5 grid gap-4">
                 <div className="grid gap-2">

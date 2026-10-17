@@ -67,7 +67,7 @@ def _load_subscriptions() -> dict[str, dict]:
 
 
 def _save_subscriptions_unlocked(subs: dict[str, dict]) -> None:
-    # The file holds per-route HMAC secrets: atomic_json_write fchmods the temp file 0o600 BEFORE the
+    # The file holds per-route webhook secrets: atomic_json_write fchmods the temp file 0o600 BEFORE the
     # rename (no umask window) and re-asserts the mode on the destination afterwards.
     atomic_json_write(_subscriptions_path(), subs, mode=_SUBSCRIPTIONS_FILE_MODE)
 
@@ -149,7 +149,7 @@ def _setup_hint() -> str:
          enabled: true
          extra:
            port: 8644
-           secret: "your-global-hmac-secret"
+           secret: "your-global-webhook-secret"
 
   3. Or set environment variables in {_dhh}/.env:
      WEBHOOK_ENABLED=true
@@ -278,7 +278,9 @@ def _cmd_subscribe(args):
     if route.get("script"):
         print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
-    print("  Use the secret for HMAC-SHA256 signature validation.")
+    print("  Use the secret for HMAC-SHA256 signature validation when supported.")
+    print("  If your service only supports fixed auth tokens, send:")
+    print("    Authorization header with the Bearer scheme and this secret.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
 
 

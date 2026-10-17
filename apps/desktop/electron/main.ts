@@ -319,7 +319,7 @@ import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
 import { registerHudIpc } from './hud-ipc'
 import { installHudModifierTap } from './hud-modifier'
-import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
+import { applyHudElectronOverlay, hudHidesMainWindow, promoteHudOverlay } from './hud-overlay'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
@@ -13502,7 +13502,7 @@ function spawnHudWindow(sessionId, profile) {
     onRevealed: () => {
       // Step the app aside: the HUD IS the surface now.
       if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.hide()
+        parkMainWindowForHud()
       }
 
       // Compositor overlay adapters (Hyprland float+pin today). Electron
@@ -13562,11 +13562,60 @@ function spawnHudWindow(sessionId, profile) {
 // caret still belonging to whatever the HUD was floating over.
 function restoreMainWindowFromHud() {
   if (!hudRestoreMainWindow) {
+    unparkMainWindowFromHud()
+
     return
   }
 
   hudRestoreMainWindow = false
+  unparkMainWindowFromHud()
   focusWindow(mainWindow)
+}
+
+// Hiding the main window on macOS leaves the app with no regular window. The
+// HUD is an overlay, so about two seconds later AppKit sends Quit and the
+// process exits with no crash report (#137700). Keep the window in the list —
+// invisible and click-through — until HUD mode ends.
+let mainWindowParkedForHud = false
+
+function parkMainWindowForHud() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  if (hudHidesMainWindow(process.platform)) {
+    mainWindow.hide()
+
+    return
+  }
+
+  try {
+    mainWindow.setOpacity(0)
+    mainWindow.setIgnoreMouseEvents(true)
+    mainWindowParkedForHud = true
+    ;(app as { setActivationPolicy?: (policy: 'regular') => void }).setActivationPolicy?.('regular')
+    rememberLog('[hud] parked the main window instead of hiding it')
+  } catch (error) {
+    rememberLog(`[hud] park failed, hiding instead: ${error?.message || error}`)
+    mainWindow.hide()
+  }
+}
+
+function unparkMainWindowFromHud() {
+  if (!mainWindowParkedForHud || !mainWindow || mainWindow.isDestroyed()) {
+    mainWindowParkedForHud = false
+
+    return
+  }
+
+  mainWindowParkedForHud = false
+
+  try {
+    mainWindow.setIgnoreMouseEvents(false)
+    mainWindow.setOpacity(1)
+  } catch (error) {
+    rememberLog(`[hud] unpark failed: ${error?.message || error}`)
+  }
 }
 
 // Take the HUD window down. The 'closed' handler stays attached so ONE path

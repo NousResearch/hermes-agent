@@ -45,4 +45,7 @@ export interface SessionCommandNotices {
   /** A canonical queued row's edit the owner refused, or whose row started mid-edit. */
   queueEditKeptTitle: string
   queueEditKept: string
+  /** A canonical queued row's save whose answer was lost: the edit stays open for a retry. */
+  queueEditUnconfirmedTitle: string
+  queueEditUnconfirmed: string
 }

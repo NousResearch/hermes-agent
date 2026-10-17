@@ -48,18 +48,20 @@ export async function steerQueuedPrompt(
 }
 
 /** Replace a server-queued admission with edited text: the authority cancels it and admits the
- *  edit as a new admission at the back of the FIFO, in one write. */
+ *  edit as a new admission at the back of the FIFO, in one write. `submissionId` is the edit's
+ *  identity: a retry of an unconfirmed save reuses it, and the owner replays a committed one. */
 export async function replaceQueuedPrompt(
   sessionId: string | null | undefined,
   queueSessionKey: string,
   admissionId: string,
   text: string,
+  submissionId: string,
   request: GatewayRequest
 ): Promise<unknown> {
   return requestForOwnedSession(queueSessionKey, request, 'prompt.replace_queued', {
     session_id: sessionId ?? queueSessionKey,
     admission_id: admissionId,
-    submission_id: crypto.randomUUID(),
+    submission_id: submissionId,
     text
   })
 }

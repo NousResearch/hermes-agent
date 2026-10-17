@@ -17,5 +17,8 @@ export const deSessionCommands = {
   countOther: (count: string) => `${count} eingereihte Nachrichten`,
   queueEditKeptTitle: 'Eingereihte Nachricht nicht geändert',
   queueEditKept:
-    'Sie wurde gestartet oder abgelehnt, bevor deine Änderung gespeichert war. Dein bearbeiteter Text steht im Eingabefeld.'
+    'Sie wurde gestartet oder abgelehnt, bevor deine Änderung gespeichert war. Dein bearbeiteter Text steht im Eingabefeld.',
+  queueEditUnconfirmedTitle: 'Änderung nicht bestätigt',
+  queueEditUnconfirmed:
+    'Hermes konnte deine Änderung nicht bestätigen. Speichere erneut, um dieselbe Änderung zu wiederholen; sie wird nie doppelt eingereiht.'
 }

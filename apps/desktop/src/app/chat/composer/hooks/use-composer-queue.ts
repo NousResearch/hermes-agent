@@ -87,12 +87,16 @@ interface UseComposerQueueArgs {
   queueSessionKey: ChatBarProps['queueSessionKey']
   /** Ask the owner to replace a server-queued admission with edited text (default: through the
    *  active gateway, routed to the session's owner). */
-  replaceServerQueued?: (admissionId: string, text: string) => Promise<unknown>
+  replaceServerQueued?: (admissionId: string, text: string, submissionId: string) => Promise<unknown>
   sessionId: string | null | undefined
 }
 
 /** Text kept in the composer, followed by the draft a queued-row edit interrupted (when it differs). */
 const withPreEditDraft = (text: string, draft: string) => (draft.trim() && draft !== text ? `${text}\n\n${draft}` : text)
+
+/** The owner answered with a named refusal: nothing was replaced. Anything else (a lost reply, a
+ *  dropped connection) leaves the outcome unknown. */
+const isOwnerRefusal = (error: unknown) => typeof (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'string'
 
 /**
  * The composer's queue engine — everything about queued turns: the per-session
@@ -117,7 +121,7 @@ export function useComposerQueue({
   queueEditRef,
   queueSessionKey,
   sessionId,
-  replaceServerQueued = (admissionId, text) => {
+  replaceServerQueued = (admissionId, text, submissionId) => {
     const gateway = activeGateway()
 
     return gateway
@@ -126,6 +130,7 @@ export function useComposerQueue({
           activeQueueSessionKey ?? admissionId,
           admissionId,
           text,
+          submissionId,
           gateway.request.bind(gateway)
         )
       : Promise.reject(new Error('Gateway unavailable'))
@@ -165,11 +170,15 @@ export function useComposerQueue({
   // The one save the owner is answering: the exact edit it was made in, its own token and the
   // composer text at Save. Its answer settles only that save and never overwrites newer text.
   const serverSaveRef = useRef<{ edit: QueueEditState; text: string; token: symbol } | null>(null)
+  // A save whose answer was lost: the owner may have committed it. Until a known outcome the edit
+  // stays open and a Save of the same text retries under this identity (the owner replays it).
+  const unconfirmedRef = useRef<{ admissionId: string; edited: string; submissionId: string } | null>(null)
 
   // The owner refused the replacement or started the row: nothing typed is lost. The edit stays
   // in the composer as an unsent draft (followed by the draft it interrupted), with the reason.
   const keepServerEditAsDraft = (edit: QueueEditState, text: string) => {
     serverEditRef.current = null
+    unconfirmedRef.current = null
     setQueueEditSnapshot(null)
     loadIntoComposer(withPreEditDraft(text, edit.draft), edit.attachments)
     notify({
@@ -289,7 +298,8 @@ export function useComposerQueue({
         return false
       }
 
-      if (editingQueuedPrompt?.serverStatus) {
+      // A server row's edit (its row may be gone while an unconfirmed save of it is retried).
+      if (serverEditRef.current === queueEdit.entryId) {
         // The owner replaces the admission and its pending fanout repaints the card. Text only,
         // like the row it replaces: the owner serves `replace` only for text-only rows.
         if (next.length > 0 || !text.trim()) {
@@ -297,34 +307,52 @@ export function useComposerQueue({
         }
 
         const edited = frozen.frozenTransport ?? frozen.text
-        const entryId = editingQueuedPrompt.id
+        const entryId = queueEdit.entryId
 
         if (serverSaveRef.current?.edit === queueEdit) {
           return true // its save is already with the owner
         }
 
-        if (edited !== editingQueuedPrompt.text) {
+        if (edited !== editingQueuedPrompt?.text) {
           // The edit stays open until the owner answers: only an accepted replacement restores the
-          // pre-edit draft; a refusal (started, queue full, transport) keeps the edited text.
+          // pre-edit draft; a refusal keeps the edited text; an unknown outcome keeps the edit open.
           const save = { edit: queueEdit, text, token: Symbol('queued-edit-save') }
+          const retained = unconfirmedRef.current
+
+          const submissionId =
+            retained?.admissionId === entryId && retained.edited === edited ? retained.submissionId : crypto.randomUUID()
+
           serverSaveRef.current = save
 
-          const settle = (accepted: boolean) => {
+          const settle = (outcome: 'accepted' | 'refused' | 'unconfirmed') => {
             if (serverSaveRef.current?.token !== save.token) {
               return
             }
 
             serverSaveRef.current = null
-
             // Cancelled, or cancelled and reopened: that later edit is not this save's to settle.
-            if (queueEditRef.current !== save.edit) {
+            const open = queueEditRef.current === save.edit
+            // A known outcome spends the identity; an unknown one keeps it for the open edit's retry.
+            unconfirmedRef.current = outcome === 'unconfirmed' && open ? { admissionId: entryId, edited, submissionId } : null
+
+            if (!open) {
+              return
+            }
+
+            if (outcome === 'unconfirmed') {
+              notify({
+                kind: 'warning',
+                title: t.promptNotices.sessionCommands.queueEditUnconfirmedTitle,
+                message: t.promptNotices.sessionCommands.queueEditUnconfirmed
+              })
+
               return
             }
 
             // What the composer holds now, typed after Save included.
             const current = draftRef.current
 
-            if (!accepted) {
+            if (outcome === 'refused') {
               keepServerEditAsDraft(save.edit, current)
 
               return
@@ -339,9 +367,9 @@ export function useComposerQueue({
             focusInput()
           }
 
-          replaceServerQueued(entryId, edited).then(
-            () => settle(true),
-            () => settle(false)
+          replaceServerQueued(entryId, edited, submissionId).then(
+            () => settle('accepted'),
+            error => settle(isOwnerRefusal(error) ? 'refused' : 'unconfirmed')
           )
           triggerHaptic('success')
 
@@ -364,6 +392,7 @@ export function useComposerQueue({
     }
 
     serverEditRef.current = null
+    unconfirmedRef.current = null
     setQueueEditSnapshot(null)
     loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     focusInput()
@@ -756,8 +785,9 @@ export function useComposerQueue({
         return
       }
 
-      if (serverSaveRef.current?.edit === queueEdit) {
-        return // our own replacement retired it: the owner's answer settles the edit
+      // Our own replacement may have retired it: the owner's answer (or a retried save) settles it.
+      if (serverSaveRef.current?.edit === queueEdit || unconfirmedRef.current?.admissionId === queueEdit.entryId) {
+        return
       }
 
       if (serverEditRef.current === queueEdit.entryId) {

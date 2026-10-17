@@ -51,7 +51,7 @@ function renderQueueHook(
     draft?: string
     onCancel?: () => void
     onSteer?: ChatBarProps['onSteer']
-    replaceServerQueued?: (admissionId: string, text: string) => Promise<unknown>
+    replaceServerQueued?: (admissionId: string, text: string, submissionId: string) => Promise<unknown>
   } = {}
 ) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
@@ -571,7 +571,7 @@ describe('useComposerQueue scope', () => {
       expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
     })
 
-    expect(replaceServerQueued).toHaveBeenCalledWith('adm-1', 'new words')
+    expect(replaceServerQueued).toHaveBeenCalledWith('adm-1', 'new words', expect.any(String))
     expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['old words'])
     // The pre-edit draft comes back once the owner accepted the replacement.
     await waitFor(() => expect(draftRef.current).toBe('my draft'))
@@ -585,7 +585,7 @@ describe('useComposerQueue scope', () => {
     clearNotifications()
 
     const replaceServerQueued = vi.fn(async () => {
-      throw new Error('admission_started')
+      throw Object.assign(new Error('admission_started'), { data: { reason: 'admission_started' } })
     })
 
     const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
@@ -624,6 +624,73 @@ describe('useComposerQueue scope', () => {
 
     expect(hook.result.current.queueEdit).toBeNull()
     expect(draftRef.current).toBe('typed after save\n\nmy draft')
+  })
+
+  // Review: a reply lost in transport leaves the outcome unknown (the owner may have committed the
+  // replacement). The edit stays open under the same identity, so Save retries prompt.replace_queued
+  // with it (the owner replays a committed one) instead of turning the text into a fresh send.
+  it('an unconfirmed Save keeps the edit open and retries under the same identity', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    clearNotifications()
+    const replies = [deferred(), deferred(), deferred()]
+    const replaceServerQueued = vi.fn((_admissionId: string, _text: string, _submissionId: string) =>
+      replies[replaceServerQueued.mock.calls.length - 1]!.promise)
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    act(() => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+    await act(async () => replies[0]!.reject(new Error('Hermes gateway is not connected')))
+
+    expect(hook.result.current.queueEdit?.entryId).toBe('adm-1')
+    expect(draftRef.current).toBe('new words')
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+
+    // The replacement committed: the owner's snapshot lists it, and the old row is gone. The edit
+    // stays open (no plain draft a later Enter would send again).
+    act(() =>
+      reconcilePendingSubmissions(SESSION_KEY, [{ admission_id: 'adm-2', status: 'queued', user: 'new words' }])
+    )
+    expect(hook.result.current.queueEdit?.entryId).toBe('adm-1')
+
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+    const [first, second] = replaceServerQueued.mock.calls
+    expect(second).toEqual(['adm-1', 'new words', first![2]])
+    await act(async () => replies[1]!.resolve({ admission_id: 'adm-2' }))
+
+    expect(hook.result.current.queueEdit).toBeNull()
+    expect(draftRef.current).toBe('my draft')
+  })
+
+  it('a changed edit after an unconfirmed Save is a new identity', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const replaceServerQueued = vi.fn(async (_admissionId: string, _text: string, _submissionId: string) => {
+      throw new Error('socket closed')
+    })
+    const { draftRef, hook } = renderQueueHook({ busy: true, replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = 'new words'
+    await act(async () => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+    draftRef.current = 'other words'
+    await act(async () => {
+      hook.result.current.exitQueuedEdit('save')
+    })
+
+    expect(replaceServerQueued).toHaveBeenCalledTimes(2)
+    const [first, second] = replaceServerQueued.mock.calls
+    expect(second![1]).toBe('other words')
+    expect(second![2]).not.toBe(first![2])
   })
 
   it('a Save reply for an edit that was cancelled and reopened leaves the reopened edit alone', async () => {

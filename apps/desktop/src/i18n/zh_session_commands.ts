@@ -15,5 +15,7 @@ export const zhSessionCommands = {
   countOne: (count: string) => `${count} 条排队消息`,
   countOther: (count: string) => `${count} 条排队消息`,
   queueEditKeptTitle: '排队消息未更改',
-  queueEditKept: '在保存编辑之前它已开始或被拒绝。编辑后的文本仍在输入框中。'
+  queueEditKept: '在保存编辑之前它已开始或被拒绝。编辑后的文本仍在输入框中。',
+  queueEditUnconfirmedTitle: '编辑未确认',
+  queueEditUnconfirmed: 'Hermes 无法确认你的编辑。再次保存将重试同一编辑，不会重复排队。'
 }

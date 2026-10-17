@@ -565,6 +565,17 @@ results intact in the tail, so the model can use the output it requested. A roun
 exceeds 20% of the input budget (the context window minus the output reservation) can be
 summarized, and its older images are retired so compaction can still make room.
 
+#### Loaded skills across a compaction
+
+A skill's instructions are not kept verbatim forever, but the model is always told when they are
+gone. Every `skill_view` result that a pass stubs or summarizes away (whatever its size) carries
+`[SKILL_PRUNED: content lost in compression; reload with skill_view(name='…')]`, and the summary
+lists each such skill under `## Pruned Skills`. Skills loaded inline by `/skill-name`, bundles,
+stacked invocations and gateway channel auto-load get the same marker when their turn is
+summarized, and the summary quotes that turn as typed (`/skill-name do X`) rather than the skill
+body. A reload after the boundary returns the full skill again. Skills preloaded with `-s` or
+`skills.auto_load` live in the system prompt and are never compacted.
+
 ### Phase 2: Determine Boundaries
 
 ```

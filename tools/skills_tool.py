@@ -25,18 +25,20 @@ from tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
-from tools.skills_tool_dedup import (
-    _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
+from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
 from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
 
 # Per-session discovery cache: {cache_key: (signature, timestamp, skills_list)}. Signature =
-# per-dir max mtime of the dir and its immediate children (add/remove inside a category does
-# NOT bump the root mtime) + the disabled set (config-only change, no mtime) + platform; the
-# TTL bounds staleness from in-place SKILL.md edits, which no directory signature can see.
+# every catalog directory's mtime and child-dir names, walked like the catalog itself (an install
+# under an existing category such as ``mlops/training/`` moves only that dir's mtime) + the disabled
+# set (config-only change, no mtime) + platform; the TTL bounds staleness from in-place SKILL.md
+# edits, which no directory signature can see.
 _SKILLS_CACHE: dict = {}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
+# Deepest directory the signature descends to below a root (a skill sits at <cat>/<sub>/<skill>/).
+_SIGNATURE_MAX_DEPTH = 6
 
 
 def clear_skills_cache() -> None:
@@ -44,23 +46,42 @@ def clear_skills_cache() -> None:
     _SKILLS_CACHE.clear()
 
 
+def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
+    """Append ``(dir, mtime_ns, child dir names)`` for *root* and the dirs below it the catalog walks
+    (``iter_skill_index_files``: no excluded dirs, no support dirs of a skill), depth-bounded. The child
+    names, not only mtimes: an install and an uninstall inside one coarse mtime tick (1-2 s on some
+    filesystems) leave every mtime equal, and the change must still show. ~1 ms for 170 dirs."""
+    from agent.skill_utils import EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS
+    try:
+        mtime = os.stat(root).st_mtime_ns
+        with os.scandir(root) as it:
+            entries = list(it)
+    except OSError:
+        return
+    names, is_skill = [], False
+    for entry in entries:
+        with suppress(OSError):
+            if entry.is_dir():
+                names.append(entry.name)
+            elif entry.name == "SKILL.md":
+                is_skill = True
+    names.sort()
+    sig.append((str(root), mtime, tuple(names)))
+    if depth <= 0:
+        return
+    for name in names:
+        if name not in EXCLUDED_SKILL_DIRS and not (is_skill and name in SKILL_SUPPORT_DIRS):
+            _dir_tree_signature(os.path.join(root, name), sig, depth - 1)
+
+
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
-    """O(#dirs + #categories) stat-based change signature; platform is read via
+    """Stat-based change signature over every directory the catalog walks; platform is read via
     ``agent.skill_utils.sys`` so test patches are honored."""
     from agent import skill_utils as _skill_utils
     platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
-    sig = []
+    sig: list = []
     for d in dirs_to_scan:
-        try:
-            m = d.stat().st_mtime
-        except OSError:
-            continue
-        with suppress(OSError), os.scandir(d) as it:
-            for entry in it:
-                with suppress(OSError):
-                    if entry.is_dir(follow_symlinks=False):
-                        m = max(m, entry.stat(follow_symlinks=False).st_mtime)
-        sig.append((str(d), m))
+        _dir_tree_signature(str(d), sig)
     return (tuple(sig), frozenset(disabled), platform)
 
 
@@ -428,7 +449,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
 def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict, dict]:
     """Resolve required env vars / credential files (prompting for secrets where the surface
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
-    before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
+    before the readiness extras in the skill_view result — key order is tool output."""
     required_env_vars = _get_required_environment_variables(frontmatter)
     from tools.terminal_scope import terminal_env
     backend = str(terminal_env("TERMINAL_ENV", "local")).strip().lower() or "local"
@@ -660,8 +681,6 @@ def skill_view(
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
             **readiness,
-            # Internal: absolute source path for the repeat-view dedup fingerprint.
-            "_source_path": str(skill_md),
             **readiness_extras}
         if deps_note:
             result["deps_note"] = deps_note
@@ -717,8 +736,8 @@ registry.register(
 
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
-    mirrors read_file's unchanged-stub: a SAME, unchanged skill file already loaded in this
-    session returns a short stub (cache cleared on context compression)."""
+    mirrors read_file's unchanged-stub: a result byte-identical to one already served for the
+    same skill file in this session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
     # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there
@@ -726,13 +745,12 @@ def _skill_view_with_bump(args, **kw):
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
-    if (stub := _check_skill_view_dedup(dedup_task_id, name, args.get("file_path"))) is not None:
-        return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
+            if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
+                return stub
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

@@ -81,7 +81,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         # Rate-limit ALL pairing responses (code or rejection) so a burst of DMs doesn't spam.
         if pairing_store._is_rate_limited(platform_name, source.user_id):
             return
-        code = pairing_store.generate_code(platform_name, source.user_id, source.user_name or "")
+        # Off the event loop: the store edit waits on a cross-process lock (dashboard, CLI).
+        try:
+            code = await asyncio.to_thread(
+                pairing_store.generate_code, platform_name, source.user_id, source.user_name or "",
+            )
+        except (OSError, TimeoutError):
+            logger.warning("Could not record a pairing code on %s", platform_name, exc_info=True)
+            return
         adapter = self._delivery_adapter_for(source)
         if code:
             reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
@@ -102,7 +109,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         pairing_store = self._pairing_store_for(source)
         if pairing_store is None or pairing_store.has_recent_decline(platform_name, source.user_id):
             return
-        pairing_store.record_decline(platform_name, source.user_id)
+        # Off the event loop (the stamp waits on a cross-process lock); no stamp → no dedupe → silent.
+        try:
+            await asyncio.to_thread(pairing_store.record_decline, platform_name, source.user_id)
+        except (OSError, TimeoutError):
+            logger.warning("Could not record an unauthorized-DM decline on %s", platform_name, exc_info=True)
+            return
         adapter = self._delivery_adapter_for(source)
         if not adapter:
             return
@@ -154,10 +166,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         if getattr(_config, "multiplex_profiles", False):
             self._canonicalize(source)
         if getattr(source, "profile_route_rejected", False) is True:
-            logger.warning(
-                "Dropping inbound message because its explicit profile route "
-                "targets an unserved profile"
-            )
+            from gateway.parked_route_refusal import drop_rejected_route
+            _intake = None
+            with suppress(Exception):
+                _intake = self._intake_adapter_for(source)
+            drop_rejected_route(_intake, source)  # a parked target is also refused to the sender
             return None
 
         is_internal = bool(getattr(event, "internal", False))  # e.g. background-process notifications
@@ -179,10 +192,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None
 
+        # An admission the authority is executing is already ordered by its durable FIFO; parking it
+        # here would settle the row with no turn and replay the input outside it (GW-2).
+        from gateway.session_ingress import executing_admission
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not is_internal
             and not getattr(event, "_hermes_startup_restore_replay", False)
+            and not executing_admission.get()
         ):
             self._queue_startup_restore_event(event)
             return None
@@ -490,6 +507,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 if _resolved_idle is not None:
                     _stale_idle = _resolved_idle
                     _activity_summary_valid = True
+                    # Host sleep is not idleness: share the turn poll loop's meter (same event loop).
+                    _awake_idle = getattr(_quick_state.turn.ctx, "awake_idle", None)
+                    if _awake_idle is not None:
+                        _stale_idle = _awake_idle.measure(_stale_idle)
                 _stale_detail = (
                     f" | last_activity={_sa_d.get('last_activity_desc', 'unknown')} "
                     f"({_stale_idle:.0f}s ago) "
@@ -1594,32 +1615,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         self, source: SessionSource, session_key: str, message_text: str
     ) -> Optional[str]:
         """Expand ``@`` context references; returns None when the injection was refused (user notified)."""
-        try:
-            from agent.context_references import preprocess_context_references_async
-
-            try:
-                from tools.terminal_scope import terminal_env as _ts_env
-            except ImportError:
-                _ts_env = os.environ.get
-            _msg_cwd = _ts_env("TERMINAL_CWD", os.path.expanduser("~"))
-            _msg_ctx_len = await self._inbound_model_context_length(source, session_key)
-            _ctx_result = await preprocess_context_references_async(
-                message_text, cwd=_msg_cwd, context_length=_msg_ctx_len, allowed_root=_msg_cwd
-            )
-            if _ctx_result.blocked:
-                _adapter = self._delivery_adapter_for(source)
-                if _adapter:
-                    await _adapter.send(
-                        source.chat_id,
-                        "\n".join(_ctx_result.warnings) or t("gateway.notify.context_injection_refused"),
-                    )
-                return None
-            if _ctx_result.expanded:
-                message_text = _ctx_result.message
-        except Exception as exc:
-            logger.warning("@ context reference expansion failed: %s", exc)
-            logger.debug("@ context reference expansion failure detail", exc_info=True)
-        return message_text
+        from gateway.session_context_refs import inbound_references
+        expanded, refusal = await inbound_references(self, source, session_key, message_text)
+        if refusal is None:
+            return expanded
+        _adapter = self._delivery_adapter_for(source)
+        if _adapter:
+            await _adapter.send(source.chat_id, refusal)
+        return None
 
     async def _prepare_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],
@@ -1646,10 +1649,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
         message_text = self._prepend_inbound_document_notes(event, message_text)
-        if "@" in message_text:
-            message_text = await self._expand_inbound_context_references(source, session_key, message_text)
-            if message_text is None:
-                return None
+        from gateway.session_context_refs import turn_references
+        message_text = await turn_references(self, event, source, session_key, message_text)
+        if message_text is None:
+            return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
         return self._prepend_inbound_reply_context(event, source, message_text)
@@ -1773,7 +1776,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         Description *and* local cache path are injected so the model understands the image without
         a tool call and can re-examine it with vision_analyze."""
         from tools.vision_tools import vision_analyze_tool
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "
@@ -1857,11 +1860,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         return transcript, f'"{transcript}"'
 
     async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: list[str]
+        self, user_text: str, audio_paths: list[str], clip_memo: Optional[dict] = None
     ) -> tuple[str, list[str]]:
         """Transcribe voice clips with the configured STT provider and prepend the transcripts →
         ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
-        failed or STT is disabled) let callers echo them back before the agent loop."""
+        failed or STT is disabled) let callers echo them back before the agent loop. ``clip_memo``
+        (path → ``_transcribe_one_clip`` result) skips clips an earlier pass already transcribed."""
         from gateway.run import _probe_audio_duration
         audio_paths = list(dict.fromkeys(audio_paths))
         if not getattr(self.config, "stt_enabled", True):
@@ -1885,10 +1889,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         successful_transcripts: list[str] = []
         for path in audio_paths:
             try:
-                logger.debug("Transcribing user voice: %s", path)
-                transcript, note = await self._transcribe_one_clip(
-                    path, transcribe_audio, transcribe_audio_local_fallback,
-                )
+                if clip_memo is not None and path in clip_memo:
+                    transcript, note = clip_memo[path]
+                else:
+                    logger.debug("Transcribing user voice: %s", path)
+                    transcript, note = await self._transcribe_one_clip(
+                        path, transcribe_audio, transcribe_audio_local_fallback,
+                    )
+                    if clip_memo is not None:
+                        clip_memo[path] = (transcript, note)
                 if transcript is not None:
                     successful_transcripts.append(transcript)
                 enriched_parts.append(note)
@@ -1912,14 +1921,29 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         self, event, user_text: Optional[str] = None
     ) -> tuple[str | None, list[str]]:
         """Transcribe a pending audio event once and cache the result on the event: the interrupt
-        monitor and the pending-drain path both need it — one STT call and one echo per message."""
+        monitor and the pending-drain path both need it — one STT call and one echo per message.
+        ``user_text`` is a deliberate override of the caption; ``None`` reads ``event.text`` live."""
         if hasattr(event, "_gateway_pending_stt_text"):
             return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
         audio_paths = self._pending_event_audio_paths(event)
         if not audio_paths:
             return user_text if user_text is not None else (getattr(event, "text", None) or None), []
         text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
+        # Per-clip results outlive the merged-event cache below (a merge drops only that), so every
+        # re-run — this loop's or the drain path's — transcribes just the newly merged clips.
+        clip_memo = getattr(event, "_gateway_pending_stt_clips", None)
+        if clip_memo is None:
+            clip_memo = {}
+            event._gateway_pending_stt_clips = clip_memo
+        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths, clip_memo)
+        # A voice note merged in during the await dropped a cache that did not exist yet; re-run on
+        # the merged media rather than publish a transcript that silently omits the new note.
+        while self._pending_event_audio_paths(event) != audio_paths:
+            audio_paths = self._pending_event_audio_paths(event)
+            text = user_text if user_text is not None else (getattr(event, "text", "") or "")
+            enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
+                text, audio_paths, clip_memo,
+            )
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
         return enriched_text, successful_transcripts
@@ -1945,11 +1969,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
     ) -> tuple[str, list[str]]:
         """Transcribe a pending voice event and echo transcripts once → ``(enriched_text,
         transcripts)`` for ``agent.interrupt()`` or the pending-drain flow; ``(text, [])`` when there
-        is no STT-eligible media (caller owns the ``_build_media_placeholder`` fallback)."""
+        is no STT-eligible media (caller owns the ``_build_media_placeholder`` fallback). ``text`` is
+        only that fallback: the caption is read live from ``event.text`` so one merged in during
+        the STT await is kept."""
         if not self._pending_event_audio_paths(event):
             return text, []
         try:
-            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event, text)
+            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event)
             if metadata is _UNSET:
                 metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
             await self._echo_pending_stt_transcripts_once(

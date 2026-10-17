@@ -49,9 +49,9 @@ def admit_cli_turn(params):
     if batch is not None and type(batch) is not bool:
         raise RuntimeStoreError('invalid_params')
     if batch:
-        # The submitting viewer is main's HermesCLI, which answers the clarify tool's whole batch
-        # in one ``clarify`` server request (its batch panel). Other viewers of a ``cli``-source
-        # session (an ACP editor, a raw WebSocket client) answer per-question cards.
+        # The submitting viewer answers the clarify tool's whole batch in one ``clarify`` server
+        # request (main's batch panel: classic CLI, Ink TUI). Viewers that never set it (an ACP
+        # editor, a raw WebSocket client) answer per-question cards.
         committed['clarify_batch'] = True
     return {'cli_turn_v1': committed} if committed else {}
 
@@ -72,6 +72,15 @@ def cli_turn(message_id):
     if bound is None or message_id is None or str(message_id) != bound[0]:
         return {}
     return bound[1]
+
+
+def rebind_api_text(message_id, text):
+    """This admission's ``api_text`` with its ``@`` references expanded, for the rest of this execution
+    (``session_context_refs.turn_references``). The committed row keeps what the CLI sent, so a retry
+    expands it afresh rather than twice."""
+    bound = _cli_turn.get()
+    if bound is not None and message_id is not None and str(message_id) == bound[0]:
+        _cli_turn.set((bound[0], {**bound[1], 'api_text': text}))
 
 
 def one_turn_runtime(override, model, runtime_kwargs, config):
@@ -123,9 +132,13 @@ def classic_cli_turn(turn):
 
 
 def clarify_batch_turn(turn):
-    """The clarify tool's batch goes to main's batch panel as one request: a classic-CLI turn that
-    the classic CLI itself submitted (``clarify_batch`` committed with its admission)."""
-    return classic_cli_turn(turn) and bool(cli_turn(getattr(turn._ctx, 'inbound_message_id', None)).get('clarify_batch'))
+    """The clarify tool's batch goes to main's batch panel as one request: a local-viewer turn whose
+    submitter declared it answers the whole set (``clarify_batch`` committed with its admission).
+    Main's classic CLI, Ink TUI and Desktop all showed every question at once (TUI-18); a viewer that
+    never asks (an ACP editor, a raw WebSocket client) keeps one ``clarify.request`` card per question."""
+    from gateway.run_turn_progress import local_viewer_turn
+    return local_viewer_turn(turn) and bool(
+        cli_turn(getattr(turn._ctx, 'inbound_message_id', None)).get('clarify_batch'))
 
 
 def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_id=None):

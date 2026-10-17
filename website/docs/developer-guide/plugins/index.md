@@ -141,6 +141,40 @@ the package's entry, including its trust. Other harnesses ignore this extension.
 `trust` can sit beside `app`, `requires` and `liveness` in the same server
 entry (see [Application declarations](./application-declarations.md)).
 
+A long-running server can also declare a Hermes-specific tool-call `timeout`
+(in seconds) in `plugin.json`, without changing other servers' defaults:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": { "analysis": { "timeout": 1000 } }
+    }
+  }
+}
+```
+
+The value must be a positive finite number within the platform's thread-wait
+limit. It maps to the native per-server `timeout`; omission preserves the
+existing `timeouts.mcp.tool_call` fallback. A same-name native `mcp_servers`
+entry still replaces the entire package entry, including its timeout. This
+extends the wait budget, not the cancellation or permission policy. Configure
+any server-internal analysis deadline separately and leave time for its result
+to reach the client. Other harnesses ignore this extension.
+
+A server entry key this Hermes does not know (one a newer release added) is
+ignored with a warning, which `hermes plugins validate` lists, and the package
+still installs. Releases from before this rule reject the package instead, and a
+release that ignores a key may behave less safely than intended, so declare a new
+key together with a catalog `requires_hermes` floor.
+
+An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
+whose budget exceeds the shared concurrent-batch deadline becomes a sequential
+barrier, whether called directly or through tool search. It gets its own budget
+without extending unrelated tools in the same model response. Existing shorter
+MCP calls retain their normal parallel-admission policy; interruption and
+approval handling are unchanged.
+
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
 [versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)
@@ -1533,6 +1567,20 @@ async def _handle_check(raw_args: str) -> str:
 
 def register(ctx):
     ctx.register_command("check", handler=_handle_check, description="Run async check")
+```
+
+**Where handlers run:** a slash command handler runs in the gateway process that owns the session, also when the user types the command in the classic `hermes chat` CLI. The handler is not running in the user's terminal or directory, so:
+
+- Return the text to show. `print()` writes to the gateway's stdout, and the user never sees it.
+- Take the session's working directory from `agent.runtime_cwd.resolve_agent_cwd()`, not `os.getcwd()`, which is the gateway's own directory. Resolve relative paths against it.
+- Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")` and the other `HERMES_SESSION_*` names, not `os.environ`.
+
+```python
+from agent.runtime_cwd import resolve_agent_cwd
+
+def _handle_todo(raw_args: str) -> str:
+    todo = resolve_agent_cwd() / "TODO.md"  # the session's folder, not the gateway's
+    return todo.read_text() if todo.exists() else "No TODO.md here."
 ```
 
 ### Dispatch tools from slash commands

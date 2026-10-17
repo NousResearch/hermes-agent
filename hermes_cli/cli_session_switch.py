@@ -7,12 +7,16 @@ from __future__ import annotations
 
 from contextlib import suppress
 
-# A gateway that answers with one of these has refused this viewer for the target session
-# (ownership, profile), so the switch must not move the chat onto it. Every other reason it can
+from hermes_cli.gateway_session_store import RESUME_REFUSALS
+
+# A gateway that answers one of these has refused this viewer the target session, so the switch
+# must not move the chat onto it. Every other reason it can
 # answer (session_busy, runtime_coordination_required, storage_unavailable, unknown_execution,
-# admission_conflict, stale_generation, runtime_draining, not_found) is transient or
+# admission_conflict, stale_generation, runtime_draining) is transient or
 # ownership-free: the switch proceeds as it always did and the turn reports what is left.
-_SWITCH_REFUSALS = frozenset({'permission_denied', 'profile_mismatch'})
+# Startup resume's set plus profile_mismatch (``restore_local_session`` raises it for a receipt
+# from another profile).
+_SWITCH_REFUSALS = RESUME_REFUSALS | {'profile_mismatch'}
 
 
 def _end_current_session(cli, reason: str) -> None:

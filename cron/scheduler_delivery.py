@@ -1555,7 +1555,18 @@ def _standalone_send(
             try:
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
-                return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
+                # The coroutine is built INSIDE the worker: built as a submit() argument
+                # it is orphaned — never awaited — when submit() itself rejects (executor shutdown), and
+                # a worker-side asyncio.run() failure must close it before propagating.
+                def _run_send_in_worker():
+                    worker_coro = _send()
+                    try:
+                        return asyncio.run(worker_coro)
+                    except BaseException:
+                        worker_coro.close()
+                        raise
+
+                return pool.submit(contextvars.copy_context().run, _run_send_in_worker).result(
                     timeout=30), None
             finally:
                 pool.shutdown(wait=False)

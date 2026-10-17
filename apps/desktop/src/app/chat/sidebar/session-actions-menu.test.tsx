@@ -2,11 +2,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { refreshProjectTree } from '@/store/projects'
+import { $projectTree, projectRootCwd, refreshProjectTree } from '@/store/projects'
+import { setSidebarAlphabetical } from '@/store/sidebar-alphabetical'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  setSidebarAlphabetical(false)
+  $projectTree.set([])
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -395,5 +400,47 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
 
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
+  })
+
+  describe('"Move to project" target order', () => {
+    const openMoveSubmenu = async () => {
+      renderMenu()
+
+      const trigger = screen.getByRole('button', { name: 'Session actions' })
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+
+      await screen.findByRole('menu')
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
+      await screen.findByRole('menuitem', { name: 'Alpha' })
+
+      return screen
+        .getAllByRole('menuitem')
+        .map(item => item.textContent)
+        .filter(label => ['Alpha', 'Mango', 'zulu'].includes(label ?? ''))
+    }
+
+    const seedTree = () => {
+      vi.mocked(projectRootCwd).mockReturnValue('/projects/root')
+      $projectTree.set([
+        { id: 'z', label: 'zulu' },
+        { id: 'a', label: 'Alpha' },
+        { id: 'm', label: 'Mango' }
+      ])
+    }
+
+    it('keeps the project tree order by default', async () => {
+      seedTree()
+
+      expect(await openMoveSubmenu()).toEqual(['zulu', 'Alpha', 'Mango'])
+    })
+
+    it('lists targets A→Z when "Sort sidebar alphabetically" is on', async () => {
+      seedTree()
+      setSidebarAlphabetical(true)
+
+      expect(await openMoveSubmenu()).toEqual(['Alpha', 'Mango', 'zulu'])
+    })
   })
 })

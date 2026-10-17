@@ -134,6 +134,7 @@ import { $removedSessionIds } from '@/store/session-removal'
 import { $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
+import { $sidebarAlphabetical } from '@/store/sidebar-alphabetical'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
 import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
@@ -159,10 +160,9 @@ import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } 
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
-import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
+import { anyFilterNarrows, resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
-  orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
   PROJECT_PREVIEW_COUNT,
@@ -175,10 +175,10 @@ import {
   sessionRecency as sessionTime,
   type SidebarProjectTree,
   type SidebarWorkspaceTree,
-  sortProjectsForOverview,
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
+import { buildProjectOverview } from './projects/overview-model'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import {
   SidebarBlankState,
@@ -187,10 +187,11 @@ import {
   SidebarSessionSkeletons,
   SidebarStorageCorruptNotice
 } from './section-states'
-import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
+import { buildSessionByAnyId } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
+import { usePinnedSessions } from './use-pinned-sessions'
 import { useServerSessionSearch } from './use-server-session-search'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
@@ -476,6 +477,7 @@ export function ChatSidebar({
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
   const pinsOpen = useStore($sidebarPinsOpen)
+  const alphabetical = useStore($sidebarAlphabetical)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
@@ -650,11 +652,7 @@ export function ChatSidebar({
     ]
   )
 
-  const filtersNarrow =
-    statusFilter.length > 0 ||
-    projectFilter.length > 0 ||
-    prFilter.length > 0 ||
-    (showAllProfiles && profileFilter.length > 0)
+  const filtersNarrow = anyFilterNarrows(statusFilter, projectFilter, prFilter, showAllProfiles ? profileFilter : [])
 
   const visibleSessions = useMemo(
     () => (filtersNarrow ? scopedSessions.filter(sessionMatchesFilters) : scopedSessions),
@@ -687,51 +685,18 @@ export function ChatSidebar({
     [visibleSessions, visibleCronSessions, visibleMessagingSessions]
   )
 
-  // Local pin ids first (hand-picked order), then server-flagged pins the
-  // local set doesn't know about — a backend `pinned=1` row must never be
-  // invisible just because localStorage is cold or was clobbered (#85969) —
-  // minus the rows whose flag our own in-flight pin write already contradicts.
-  const pinnedSessions = useMemo(
-    () =>
-      resolvePinnedSessions(
-        pinnedSessionIds,
-        sessionByAnyId,
-        [...visibleSessions, ...cronSessions, ...messagingSessions],
-        unconfirmedPinWrites
-      ),
-    [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
+  const allPinnableSessions = useMemo(
+    () => [...visibleSessions, ...cronSessions, ...messagingSessions],
+    [visibleSessions, cronSessions, messagingSessions]
   )
 
-  // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
-  // of each session we resolved one to. A pin is stored on the durable lineage
-  // root, but the lists that must filter it out are fed from three independent
-  // fetches (recents, the messaging slice, the backend project tree) and each
-  // can surface the same conversation under either its live tip or its root.
-  // Comparing one identity against the other is how a pinned session ended up
-  // rendered twice — once in Pinned, once in its project group.
-  const pinnedIdentitySet = useMemo(() => {
-    const ids = new Set(pinnedSessionIds)
-
-    for (const session of pinnedSessions) {
-      ids.add(session.id)
-
-      if (session._lineage_root_id) {
-        ids.add(session._lineage_root_id)
-      }
-    }
-
-    return ids
-  }, [pinnedSessionIds, pinnedSessions])
-
-  // A pinned session belongs to the Pinned section and nowhere else, so every
-  // other list filters it out. Match on either identity the row carries — a
-  // backend snapshot can surface either side of a compression tip rotation.
-  const isPinnedSession = useCallback(
-    (session: SessionInfo) =>
-      pinnedIdentitySet.has(session.id) ||
-      (session._lineage_root_id != null && pinnedIdentitySet.has(session._lineage_root_id)),
-    [pinnedIdentitySet]
-  )
+  const { isPinnedSession, pinnedSessions } = usePinnedSessions({
+    alphabetical,
+    allSessions: allPinnableSessions,
+    pinnedSessionIds,
+    sessionByAnyId,
+    unconfirmedPinWrites
+  })
 
   // What the project tree drops: pins (they live in their own section) plus
   // anything the active filters exclude, so filtering works the same whether
@@ -984,55 +949,30 @@ export function ChatSidebar({
   // linked worktrees under their main repo. The desktop only layers local view
   // state on top: dismissed auto-projects, persisted repo/lane order, and the
   // overview sort. Membership is the backend tree's — never re-derived here.
-  const projectModel = useMemo<SidebarProjectTree[]>(() => {
-    const sorted = sortProjectsForOverview(
-      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
-        // A filtered-out project drops its whole lane, header included — hiding
-        // only its rows would leave a row of empty folders behind.
-        .filter(project => !projectFilter.length || projectFilter.includes(project.id))
-        .map(project =>
-          excludeProjectSessions(
-            {
-              ...project,
-              // Home is synthetic, so its name is ours to translate — every
-              // other label is a repo basename or a name the user typed.
-              label: project.isNoProject ? s.projects.home : project.label,
-              repos: orderRepos(project.repos)
-            },
-            isHiddenFromProjects
-          )
-        ),
-      activeProjectId
-    )
-
-    // Layer the user's manual drag-order on top of the deterministic sort. Empty
-    // (default) returns `sorted` untouched; projects the user hasn't ordered yet
-    // keep their sorted position rather than jumping the hand-picked list.
-    // Deduplicate by id — safety net for backend merge edge cases
-    // (e.g. Windows path-casing differences across profiles).
-    const seen = new Set<string>()
-
-    const deduped = sorted.filter(project => {
-      if (seen.has(project.id)) {
-        return false
-      }
-
-      seen.add(project.id)
-
-      return true
-    })
-
-    return orderProjectsByIds(deduped, projectOrderIds)
-  }, [
-    projectTree,
-    dismissedAutoProjects,
-    orderRepos,
-    activeProjectId,
-    projectFilter,
-    projectOrderIds,
-    isHiddenFromProjects,
-    s
-  ])
+  const projectModel = useMemo<SidebarProjectTree[]>(
+    () =>
+      buildProjectOverview({
+        activeProjectId,
+        alphabetical,
+        homeLabel: s.projects.home,
+        isHidden: isHiddenFromProjects,
+        orderRepos,
+        projectFilter,
+        projectOrderIds,
+        projects: filterVisibleProjects(projectTree, dismissedAutoProjects)
+      }),
+    [
+      alphabetical,
+      projectTree,
+      dismissedAutoProjects,
+      orderRepos,
+      activeProjectId,
+      projectFilter,
+      projectOrderIds,
+      isHiddenFromProjects,
+      s
+    ]
+  )
 
   // The overview only renders in grouped mode; the model stays live regardless
   // so scoping is consistent across views.
@@ -1783,7 +1723,7 @@ export function ChatSidebar({
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 showProfileTags={showAllProfiles}
-                sortable={pinnedSessions.length > 1}
+                sortable={!alphabetical && pinnedSessions.length > 1}
               />
             )}
 
@@ -1958,7 +1898,7 @@ export function ChatSidebar({
                 onEnterProject={onEnterProject}
                 onNewSessionInWorkspace={onNewSessionInWorkspace}
                 onNewSessionSplit={onNewSessionSplit}
-                onReorderProjects={showAllProfiles ? undefined : reorderProjects}
+                onReorderProjects={showAllProfiles || alphabetical ? undefined : reorderProjects}
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}

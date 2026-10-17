@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
+import { anyFilterNarrows, filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 
 describe('resolveLiveProjectFilter', () => {
   const treeA = [{ id: 'p_aaa' }, { id: '/Users/me/repos/alpha' }] as const
@@ -57,5 +57,12 @@ describe('filterToSessionBearingProjects (#53004)', () => {
 
     expect(ids).toContain('explicit_empty')
     expect(ids).toContain('home')
+  })
+})
+
+describe('anyFilterNarrows', () => {
+  it('is false when every list is empty and true as soon as one is not', () => {
+    expect(anyFilterNarrows([], [], [])).toBe(false)
+    expect(anyFilterNarrows([], ['busy'], [])).toBe(true)
   })
 })

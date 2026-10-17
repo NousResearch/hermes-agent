@@ -221,6 +221,36 @@ class TestRuntimeStatusFilePropagation:
         assert exc_info.value.code == 0
         assert captured["env"]["HERMES_TUI_RUNTIME_STATUS_FILE"] == explicit_target
 
+    def test_launch_tui_resolves_runtime_status_target_before_env_handoff(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_cli.main as main_mod
+
+        monkeypatch.chdir(tmp_path)
+        captured = {}
+
+        def fake_call(argv, *, cwd, env):
+            captured["env"] = env
+            return 0
+
+        monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda *_args, **_kwargs: (["node", "entry.js"], tmp_path),
+        )
+        monkeypatch.setattr(main_mod, "_apply_tui_python_env", lambda _env: None)
+        monkeypatch.setattr(main_mod, "_resolve_tui_heap_mb", lambda: 1024)
+        monkeypatch.setattr(main_mod, "_print_tui_exit_summary", lambda *_args: None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            main_mod._launch_tui(runtime_status_file="status/runtime.json")
+
+        assert exc_info.value.code == 0
+        assert captured["env"]["HERMES_TUI_RUNTIME_STATUS_FILE"] == str(
+            tmp_path / "status" / "runtime.json"
+        )
+
     def test_launch_tui_drops_stale_runtime_status_target_without_flag(
         self, monkeypatch, tmp_path
     ):

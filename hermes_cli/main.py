@@ -2340,8 +2340,10 @@ def _launch_tui(
     # from the parent shell so an ordinary TUI launch cannot overwrite an old
     # supervisor's status file.
     env.pop("HERMES_TUI_RUNTIME_STATUS_FILE", None)
-    if runtime_status_file:
-        env["HERMES_TUI_RUNTIME_STATUS_FILE"] = runtime_status_file
+    if isinstance(runtime_status_file, str) and runtime_status_file.strip():
+        env["HERMES_TUI_RUNTIME_STATUS_FILE"] = os.path.abspath(
+            os.path.expanduser(runtime_status_file)
+        )
     if max_turns is not None:
         env["HERMES_TUI_MAX_TURNS"] = str(max_turns)
     if verbose:

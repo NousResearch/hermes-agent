@@ -20,7 +20,8 @@ def _pc():
     return plugins_cmd
 
 
-def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None, *, interactive: bool = False) -> str:
+def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None, *, interactive: bool = False,
+                        force: bool = False) -> str:
     """Shared ``update`` core: refuse pinned checkouts, ``git pull`` (or re-install from the
     recorded source when the tree carries no ``.git`` — subdirectory installs), record the new
     revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
@@ -44,7 +45,7 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
 
-    return update_plugin(target, interactive=interactive)
+    return update_plugin(target, interactive=interactive, force=force)
 
 
 def _reclone_plugin_update(target: Path, source: str, previous_revision: object) -> str:
@@ -67,8 +68,13 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object)
     return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
 
 
-def cmd_update(name: str, *, interactive: bool = True) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
+def cmd_update(name: str, *, interactive: bool = True, force: bool = False) -> None:
+    """Update an installed plugin by pulling latest from its git remote.
+
+    *force* accepts a ``caution`` scan verdict on the staged revision, mirroring
+    ``plugins install --force``: a plugin that needed ``--force`` to install can be
+    updated the same way instead of being frozen at its installed revision (#125928).
+    A ``dangerous`` verdict still blocks unconditionally."""
     from rich.markup import escape
     from hermes_cli import plugins_cmd_catalog as catalog
     console = _pc()._console()
@@ -86,7 +92,8 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
                 "--ref <40-character commit SHA>`."),
             lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
             before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"),
-            interactive=interactive)
+            interactive=interactive,
+            force=force)
     except _pc().PluginOperationError as exc:
         _pc()._fail(console, f"[red]Error:[/red] {exc}")
     _post_pull_housekeeping(target, console)

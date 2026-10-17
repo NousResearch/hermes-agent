@@ -71,6 +71,36 @@ class TestResetDelayOneTable:
         normalized = _normalize_error_context({"message": message})
         assert normalized["reset_at"] - time.time() == pytest.approx(seconds, abs=2)
 
+    def test_reset_at_local_naive_zai_usage_limit(self):
+        # Z.AI's usage-limit 429 names an absolute local wall-clock instant:
+        # "Usage limit reached for 5 hour. Your limit will reset at
+        # 2026-09-23 20:06:41". Naive stamps read as local time, so the parsed
+        # delay must match the local-time distance to that instant.
+        # The stamp is built relative to now on purpose: a hard-coded date ages
+        # into the past and then measures the clamp-to-zero path, not the grammar.
+        import time as _time
+
+        target = _time.time() + 5400
+        stamp = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(target))
+        parsed = reset_delay_from_message(f"Your limit will reset at {stamp}")
+        assert parsed is not None
+        assert parsed == pytest.approx(5400, abs=3)
+
+    def test_reset_at_utc_offset_and_z_suffixes(self):
+        import time as _time
+
+        future = _time.strftime("%Y-%m-%d %H:%M:%S", _time.gmtime(_time.time() + 7200))
+        assert reset_delay_from_message(f"will reset at {future}Z") == pytest.approx(7200, abs=3)
+        # The same instant expressed in UTC+03:00 lands three hours LATER on the clock.
+        shifted = _time.strftime("%Y-%m-%d %H:%M:%S", _time.gmtime(_time.time() + 3600 + 3 * 3600))
+        assert reset_delay_from_message(f"resets at {shifted}+03:00") == pytest.approx(3600, abs=3)
+
+    def test_reset_at_in_the_past_clamps_to_zero(self):
+        assert reset_delay_from_message("will reset at 2020-01-01 00:00:00") == 0.0
+
+    def test_reset_at_non_datetime_text_stays_unparsed(self):
+        assert reset_delay_from_message("resets at the top of the hour") is None
+
     def test_no_grammar_means_no_reset(self):
         from agent.credential_pool import _normalize_error_context
 

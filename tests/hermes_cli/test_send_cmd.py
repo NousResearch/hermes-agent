@@ -171,6 +171,23 @@ def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, t
     assert "does not support native mentions" in capsys.readouterr().err
     assert calls == []
 
+
+def test_markdown_file_marks_the_send_for_rich_rendering(fake_tool, monkeypatch, tmp_path):
+    """Regression for #138661: preserve the Markdown file type through the send tool."""
+    markdown_file = tmp_path / "report.md"
+    markdown_file.write_text("Title: report\n\n| Name | Value |\n|---|---|\n| one | 1 |", encoding="utf-8")
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(["--to", "telegram", "--file", str(markdown_file)]))
+
+    assert exc.value.code == 0
+    assert fake_tool.calls == [{
+        "action": "send", "target": "telegram", "message": markdown_file.read_text(encoding="utf-8"),
+        "markdown_file": True,
+    }]
+
+
 # ---------------------------------------------------------------------------
 # --list
 # ---------------------------------------------------------------------------

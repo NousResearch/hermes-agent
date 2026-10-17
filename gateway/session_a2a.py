@@ -68,8 +68,11 @@ def storage_source(db, source, session_id, fallback):
     label = receipt['policy']['source']
     # An adopted pre-authority row (main's cli/tui/gui history) keeps the label main wrote: its
     # ``sessions list --source``, ``-c`` and stale-open sweeps key on it, as they did before the upgrade.
+    # That is the adopted row's own label, which adoption never rewrites: the policy's creation source
+    # folds main's ``desktop`` into ``gui``, so a Desktop chat (a Bot Chat) was re-sourced on its first turn.
     if 'legacy_session_id' in receipt:
-        return label
+        root = db.get_session(receipt['legacy_session_id'])
+        return (root or {}).get('source') or label
     return fallback if label in {'cli', 'tui', 'gui', 'acp'} else label
 
 

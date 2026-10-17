@@ -765,7 +765,10 @@ select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "TID251"]
 ]
 # Skills and plugins are partially user-authored — their own conventions.
 "skills/**" = ["PLW1514"]
-"optional-skills/**" = ["PLW1514"]
+# UP017 stays off here on purpose: skill scripts are invoked with the user's
+# system python3 (the macOS default is 3.9) and datetime.UTC is 3.11-only,
+# so a UP017 pass breaks every skill at import (#138239).
+"optional-skills/**" = ["PLW1514", "UP017"]
 # Plugin platform adapters run ON the gateway event loop — the ASYNC gate
 # applies to them with full force; only PLW1514 stays relaxed.
 "plugins/**" = ["PLW1514"]

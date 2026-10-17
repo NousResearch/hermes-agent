@@ -615,6 +615,8 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     flag appears before the subcommand, and the subscription must land in
     that board's DB rather than the ambient/default board.
     """
+    (kanban_home / "profiles" / "alice").mkdir(parents=True)
+    (kanban_home / "profiles" / "alice" / "config.yaml").write_text("{}\n", encoding="utf-8")
     from gateway.run import GatewayRunner
     from gateway.config import Platform
 
@@ -691,6 +693,8 @@ async def test_gateway_autosubscribe_roundtrips_user_id_alt_for_session_key(
     key built from the original source with the key rebuilt from the persisted
     row.
     """
+    (kanban_home / "profiles" / "alice").mkdir(parents=True)
+    (kanban_home / "profiles" / "alice" / "config.yaml").write_text("{}\n", encoding="utf-8")
     from gateway.run import GatewayRunner
     from gateway.config import Platform
     from gateway.session import SessionSource, build_session_key

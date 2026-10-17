@@ -538,9 +538,12 @@ function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
   return (
     left.role === 'user' &&
     right.role === 'user' &&
-    (left.rowId === undefined || right.rowId === undefined || left.rowId === right.rowId) &&
-    normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
-    attachmentSignature(left) === attachmentSignature(right)
+    // A durable prompt keeps its identity when hydration rewrites its text
+    // or attachment paths. Only unidentified rows need a content comparison.
+    (left.rowId !== undefined && right.rowId !== undefined
+      ? left.rowId === right.rowId
+      : normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
+        attachmentSignature(left) === attachmentSignature(right))
   )
 }
 

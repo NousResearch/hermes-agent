@@ -20,7 +20,7 @@ from gateway.session_contract import (
 from gateway.session_events import SessionEvents
 from gateway.session_pending_controls import PendingControls
 from hermes_state_runtime import (
-    RuntimeStoreError, admit_session_input, begin_runtime_epoch,
+    STEERING, RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     cancel_session_input, claim_session_input, get_session_admission,
     list_session_admissions, recover_session_inputs, resolve_unknown_session_input,
 )
@@ -101,6 +101,10 @@ class SessionAuthority:
         # session -> (generation, [steer text]) accepted before that generation adopted an agent;
         # adopt_agent hands it to that agent (never a later generation's), the drain drops the rest.
         self.pending_steers = {}
+        # session -> (generation, {admission_id: delivered}): queued admissions prompt.steer_queued handed
+        # to that running claim (gateway/session_queued_controls.py); its settlement decides each one.
+        self.steer_transfers = {}
+        self.launch_sources = {}  # session -> its frozen launch source (session_queued_controls)
         # session -> generation of the last Stop delivered to a live agent. A repeated
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
@@ -258,6 +262,7 @@ class SessionAuthority:
         self.authorize(actor, ref, 'session:read')
         live = self.sessions[ref.session_id]
         from gateway.session_local_recovery import local_history
+        from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
@@ -275,7 +280,7 @@ class SessionAuthority:
             epoch, sequence = live.event_stream.watermark()
             snapshot = SubscriptionSnapshot(subscription, handle, epoch,
                                         sequence, tuple(local_history(self, ref)),
-                                        tuple(self._pending_receipt(r) for r in self._pending_rows(ref)), prompts)
+                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
         from gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach
@@ -315,9 +320,11 @@ class SessionAuthority:
         raise RuntimeStoreError('not_found')
 
     def _receipt(self, row):
+        status, outcome = row['status'], row['outcome']
+        if outcome == STEERING:  # handed to the running claim: it reads as that execution until settled
+            status, outcome = 'started', None
         return AdmissionReceipt(row['admission_id'], SessionRef(self.profile_id, row['target_session_id']),
-                                row['seq'], row['status'], row['outcome'],
-                                row['owner_epoch'] or self.epoch, row['generation'])
+                                row['seq'], status, outcome, row['owner_epoch'] or self.epoch, row['generation'])
 
     def _pending_receipt(self, row):
         # Only public input text crosses the viewer boundary, never the
@@ -326,13 +333,16 @@ class SessionAuthority:
         text = payload.get('text')
         if text is None:
             text = payload.get('native_text_v1', {}).get('event', {}).get('text', '')
-        return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text)
+        from gateway.session_queued_controls import queued_controls
+        return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
+                                controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
 
     def _publish_pending(self, ref):
         live = self.sessions[ref.session_id]
+        from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
             handle = self._handle(ref)
-            pending = [asdict(self._pending_receipt(row)) for row in self._pending_rows(ref)]
+            pending = [asdict(self._pending_receipt(row)) for row in pending_rows(self, ref)]
             # Turns bump runtime_revision without any session.updated event, so
             # this is the only place a viewer learns the CAS revision a later
             # prepared mutation must present.
@@ -499,7 +509,8 @@ class SessionAuthority:
                 results[sid] = exc.reason
         return results
 
-    async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None, queue_while_restarting=False):
+    async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None, queue_while_restarting=False,
+                     _replay_guard=None):
         """``queue_while_restarting``: the caller is an interactive client attached to a restart's
         after-turn wait, which commits the input queued for the next owner. Machine callers (a2a,
         kanban, hosted rooms) keep the plain ``runtime_draining`` refusal and retry against the next
@@ -511,9 +522,9 @@ class SessionAuthority:
             from gateway.session_ingress_media import capture_lease
             with capture_lease():  # captured bytes are held from capture until commit or refusal
                 return await self._submit(actor, request, _authorize_write=_authorize_write,
-                                          queue_only=queue_while_restarting is True)
+                                          queue_only=queue_while_restarting is True, _replay_guard=_replay_guard)
 
-    async def _submit(self, actor, request, *, _authorize_write=None, queue_only=False):
+    async def _submit(self, actor, request, *, _authorize_write=None, queue_only=False, _replay_guard=None):
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
@@ -548,7 +559,7 @@ class SessionAuthority:
             try:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                            session_id=request.ref.session_id, request_id=request.request_id,
-                                           payload=payload, intent=request.intent,
+                                           payload=payload, intent=request.intent, _replay_guard=_replay_guard,
                                            _authorize_write=self._admission_gate(_authorize_write, queue_only=queue_only))
             except Exception:
                 self._release_refused_capture(request, payload)
@@ -635,7 +646,7 @@ class SessionAuthority:
             self._publish_pending(ref)
         return row
 
-    def _settle_cancelled(self, ref, admission_id):
+    def _settle_cancelled(self, ref, admission_id, outcome='cancelled'):
         # The only place a queued row becomes terminal: every observer kind that waits on
         # the admission (native delivery, API/webhook/hosted waiters, ACP and viewer streams)
         # settles here, or a cancelled row that never reaches _drain blocks them forever.
@@ -648,7 +659,7 @@ class SessionAuthority:
             live.event_stream.execution = {'authority_epoch': self.epoch, 'admission_id': admission_id}
             try:
                 live.event_stream.publish(ref.session_id, {
-                    'text': '', 'content': '', 'admission_id': admission_id, 'outcome': 'cancelled'})
+                    'text': '', 'content': '', 'admission_id': admission_id, 'outcome': outcome})
             finally:
                 live.event_stream.execution = running
         # Published once: a later exact retry re-collects media but never repeats the completion.
@@ -1112,6 +1123,8 @@ class SessionAuthority:
                 self.pending_stops.pop(ref.session_id, None)
                 self.pending_steers.pop(ref.session_id, None)
                 self.adopted.pop(ref.session_id, None)
+                from gateway.session_queued_controls import publish_transfers
+                publish_transfers(self, ref, row['generation'])
                 if settled is None:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)

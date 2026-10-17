@@ -330,6 +330,15 @@ Credentials resolve exactly like a `delegation.provider` pin (full runtime-provi
 
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
+To give subagents a toolset the parent itself should not load, list it in `delegation.child_extra_toolsets`. This is set in config only — never by the model — and is useful for keeping always-loaded schemas out of a lean orchestrator's prompt while its children still use them (e.g. a chat orchestrator that delegates browsing):
+
+```yaml
+delegation:
+  child_extra_toolsets: [browser]   # every subagent gets browser_*; the parent does not
+```
+
+Unknown names are ignored with a warning, the blocked toolsets below are still stripped, and a toolset the parent explicitly disables stays disabled for its children.
+
 Certain tools are blocked for subagents even when the parent has them:
 - `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user

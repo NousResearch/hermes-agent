@@ -1356,8 +1356,8 @@ DEFAULT_CONFIG = {
         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
-        # Per-subagent iteration cap (own budget, independent of the parent's).
-        "max_iterations": 250,
+        "child_extra_toolsets": [],  # config-only toolsets every child gets beyond the parent's (e.g. ["browser"])
+        "max_iterations": 250,  # per-subagent iteration cap (own budget, independent of the parent's)
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
         # summary is sized to the parent's remaining context headroom; trimmed text spills to
         # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing

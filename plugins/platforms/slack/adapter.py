@@ -4676,7 +4676,8 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
-                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
+                addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process,
+                sender_is_bot=self._event_declares_bot_sender(event)))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -4738,6 +4739,9 @@ class SlackAdapter(BasePlatformAdapter):
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             channel_context=channel_context,
             reply_expected=reply_expected,
+            # Peer bots may be admitted as conversational senders, but their text must not
+            # operate gateway commands or approve a waiting action.
+            allow_gateway_control=not source.is_bot,
             # thread_ts is the thread root, not an explicit reply (root is in channel_context).
             reply_to_text=None,
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
@@ -6391,6 +6395,19 @@ class SlackAdapter(BasePlatformAdapter):
         match = text and re.match(r"\s*<@([^>|\s]+)(?:\|[^>]*)?>", text)
         return bool(match) and match.group(1) not in self_uids
 
+    def _slack_message_mentions_other_user(self, text: str, self_uids: set) -> bool:
+        """True for a non-self Slack or literal @mention anywhere in ``text``.
+
+        Literal handles cover agent personas which have no Slack user ID. Strip Slack
+        markup first so an ID mention is not mistaken for a handle; a word or dot before
+        ``@`` excludes email addresses.
+        """
+        mentions = re.findall(r"<@([^>|\s]+)(?:\|[^>]*)?>", text or "")
+        if any(uid not in self_uids for uid in mentions):
+            return True
+        without_slack_mentions = re.sub(r"<@[^>]+>", "", text or "")
+        return bool(re.search(r"(?<![\w.])@[A-Za-z][A-Za-z0-9_-]*", without_slack_mentions))
+
     def _slack_is_free_channel(self, channel_id: str) -> bool:
         """Does ``channel_id`` admit messages without an @mention?"""
         return channel_id not in self._slack_require_mention_channels() and (
@@ -6398,17 +6415,19 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_reply_expected(
         self, routing_text: str, bot_uid: Optional[str], *, channel_id: str, addressed: bool,
-        opens_own_session: bool) -> Optional[bool]:
+        opens_own_session: bool, sender_is_bot: bool) -> Optional[bool]:
         """``MessageEvent.reply_expected`` for an admitted message. False (a bare silence marker may
-        stand) only when it opens by @mentioning someone else, or is an unaddressed message that a
+        stand) for a peer bot, when it @mentions someone else, or for an unaddressed message that a
         free-response channel admitted as the start of its own session (a new top-level thread).
         A plain follow-up in a conversation the bot is part of (a thread, or a flat
         ``reply_in_thread: false`` channel) is None: it is usually meant for the bot, so the
         gateway keeps its visible fallback (#110952)."""
+        if sender_is_bot:
+            return False
         self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
         if addressed or self._slack_message_mentions_self(routing_text, self_uids):
             return True
-        if self._slack_message_addressed_to_other_user(routing_text, self_uids):
+        if self._slack_message_mentions_other_user(routing_text, self_uids):
             return False
         return False if opens_own_session and self._slack_is_free_channel(channel_id) else None
 

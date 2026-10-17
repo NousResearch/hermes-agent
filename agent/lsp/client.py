@@ -564,11 +564,16 @@ class LSPClient:
         diagnostics = params.get("diagnostics") or []
         version = params.get("version")
         doc = self._docs.setdefault(uri_to_path(params["uri"]), _DocState(version=-1))
-        is_seed = self._seed_first_push and not doc.seed_seen
+        # version 0 = only a didOpen was ever sent, so this push answers that content and
+        # must stay fresh: tsserver publishes exactly once per didOpen, and swallowing it
+        # (as baseline) starves every open-only waiter (the post-write lint check).  The
+        # baseline swallow only matters once a didChange is in flight (version > 0), where
+        # a versionless push may describe the pre-edit content and must not satisfy a waiter.
+        is_seed = self._seed_first_push and not doc.seed_seen and doc.version > 0
         doc.seed_seen = True
         doc.push = diagnostics if isinstance(diagnostics, list) else []
         if is_seed:
-            # First push is baseline data only: it predates any didChange we sent,
+            # First push after a didChange is baseline data only: it predates the change,
             # so it's stored WITHOUT a freshness tag and never satisfies a waiter.
             return
         # Tag with the echoed version when provided; otherwise credit the current

@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -2034,14 +2035,17 @@ def _retarget_active_profile(old: str, new: str, message: str) -> None:
             print(message)
 
 
-def get_active_profile_name() -> str:
-    """Profile name inferred from HERMES_HOME: ``"default"`` when unset or ``~/.hermes``, the
-    name under ``~/.hermes/profiles/<name>``, ``"custom"`` for any other path."""
-    from hermes_constants import get_hermes_home
-    resolved = get_hermes_home().resolve()
-    if resolved == _get_default_hermes_home().resolve():
+@lru_cache(maxsize=16)
+def _active_profile_name_for(home: str, default_home: str) -> str:
+    """Resolve the profile identity for stable home-path inputs.
+
+    A CLI redraw calls this repeatedly, while a profile switch supplies a different
+    ``home`` key and therefore naturally recomputes the identity.
+    """
+    resolved = Path(home).resolve()
+    if resolved == Path(default_home).resolve():
         return "default"
-    profiles_root = _get_profiles_root().resolve()
+    profiles_root = (Path(default_home) / "profiles").resolve()
     try:
         parts = resolved.relative_to(profiles_root).parts
         if len(parts) == 1 and _PROFILE_ID_RE.match(parts[0]):
@@ -2049,6 +2053,13 @@ def get_active_profile_name() -> str:
     except ValueError:
         pass
     return "custom"
+
+
+def get_active_profile_name() -> str:
+    """Profile name inferred from HERMES_HOME: ``"default"`` when unset or ``~/.hermes``, the
+    name under ``~/.hermes/profiles/<name>``, ``"custom"`` for any other path."""
+    from hermes_constants import get_hermes_home
+    return _active_profile_name_for(str(get_hermes_home()), str(_get_default_hermes_home()))
 
 
 def current_profile_name(default: str | None = None) -> str | None:

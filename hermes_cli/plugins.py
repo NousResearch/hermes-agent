@@ -1604,15 +1604,31 @@ _published_gateway_host_lock = threading.Lock()
 # aimed at a non-launch profile. ``None`` until the TUI/desktop process installs it.
 _published_tui_message_injector: tuple[object, Callable] | None = None
 _published_tui_host_lock = threading.Lock()
+_plugin_home_key_cache: dict[str, Path] = {}
+
+
+def _plugin_home_key_for(home: str) -> Path:
+    """Resolve an active-home input once while preserving the legacy fallback.
+
+    Failed resolution is deliberately not retained: a profile directory can become
+    available later in the process, and the old behaviour retried on the next call.
+    """
+    cached = _plugin_home_key_cache.get(home)
+    if cached is not None:
+        return cached
+    expanded = Path(home).expanduser()
+    try:
+        resolved = expanded.resolve()
+    except Exception:
+        return expanded
+    _plugin_home_key_cache[home] = resolved
+    return resolved
 
 
 def _plugin_home_key() -> Path:
     """Resolved active Hermes home — the key for per-profile plugin managers (plugins capture the
     home at registration, so a process serving several profiles cannot share one manager)."""
-    try:
-        return get_hermes_home().expanduser().resolve()
-    except Exception:
-        return get_hermes_home().expanduser()
+    return _plugin_home_key_for(str(get_hermes_home()))
 
 
 def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:

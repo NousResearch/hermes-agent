@@ -4,6 +4,7 @@ A one-shot's model call is the one long blocking call the owner answers off the 
 dispatch. It runs on the owner's own small pool, never the loop's default executor, and its answer
 lives only as long as the socket that asked for it and the owner that serves it."""
 import asyncio
+import concurrent.futures
 import contextvars
 import gc
 import threading
@@ -168,6 +169,27 @@ def test_owner_shutdown_refuses_new_calls_and_cancels_the_queue():
     # Running and queued alike: one refusal each, and a running call's late result is dropped.
     assert sorted(frame['id'] for frame in frames) == list(range(oneshot._WORKERS + 2))
     assert all(frame == {'jsonrpc': '2.0', 'id': frame['id'], 'error': _DRAINING} for frame in frames), frames
+
+
+def test_owner_shutdown_drops_a_result_that_arrived_but_was_not_yet_written():
+    """The call returned in its thread, but its answer task has not woken to write it when the owner
+    stops: the stop wins, so the request is answered once as draining, never with the late result."""
+    calls = _Calls()
+
+    async def scenario():
+        authority = SimpleNamespace()
+        connection = _connection(authority)
+        oneshot.DeferredReply(calls.work('late')).start(connection, 'late')
+        await async_wait_until(lambda: calls.ran == ['late'])
+        pool = authority._oneshot_pool
+        running = list(pool.calls)
+        calls.gate.set()
+        # Block the loop until the thread has set the result: the answer task cannot run before stop.
+        assert concurrent.futures.wait(running, timeout=10).not_done == set()
+        oneshot.stop(authority)
+        await async_wait_until(lambda: not pool.answers and not pool.calls)
+        return connection.transport.frames
+    assert asyncio.run(scenario()) == [{'jsonrpc': '2.0', 'id': 'late', 'error': _DRAINING}]
 
 
 def test_owner_shutdown_answers_a_call_whose_reply_task_has_not_started_yet():

@@ -168,9 +168,11 @@ async def _answer(pool, transport, rid, call, check):
         raise
     finally:
         stopping.cancel()
-    if not reply.done() or reply.cancelled():
-        # The owner stopped: a queued call was cancelled, a running call's late result is dropped.
-        reply.cancel()
+    if pool.stopping.is_set() or not reply.done() or reply.cancelled():
+        # The owner stopped first: a queued call was cancelled, a running call's late result (also one
+        # that arrived while this task waited to wake) is dropped, its failure consumed unlogged.
+        if not reply.cancel() and not reply.cancelled():
+            reply.exception()
         frame = {'jsonrpc': '2.0', 'id': rid, 'error': {
             'code': 4001, 'message': 'runtime_draining', 'data': {'reason': 'runtime_draining'}}}
     else:

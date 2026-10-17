@@ -113,6 +113,12 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       } else {
         announceDeferredCompress()
       }
+    } else if (sessionId && payload?.kind === 'status' && coerceGatewayText(payload?.text).trim() === 'ready') {
+      // Manual session.compress bookends its dedicated `compressing` status
+      // with the legacy generic status text `ready`, including no-op and
+      // failure exits.
+      reconcileSessionCompacting(sessionId, 'terminal')
+      compactedTurnRef.current.delete(sessionId)
     } else if (sessionId && payload?.kind === 'process') {
       // The gateway's notification poller announces background process
       // completions / watch matches here — re-sync the status stack.

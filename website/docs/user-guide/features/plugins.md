@@ -194,9 +194,11 @@ plugins:
   # A plugin that overruns it is skipped with the reason "load timed out after
   # Ns" (reported like any other load failure: the startup warning and the
   # in-session `/plugins` listing) and the remaining plugins keep loading; the
-  # stuck thread is abandoned. Default 10; set 0 to disable; values above 600
-  # are clamped.
-  load_timeout_seconds: 10
+  # stuck thread is abandoned. Default 30 — generous to slow-but-legitimate
+  # imports, since cold imports of bundled platform SDKs and dashboard auth
+  # providers can exceed 10s on slow storage (#140621); set 0 to disable;
+  # values above 600 are clamped.
+  load_timeout_seconds: 30
 ```
 
 Three ways to flip state:

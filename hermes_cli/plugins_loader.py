@@ -37,11 +37,14 @@ _NS_PARENT = "hermes_plugins"
 _MODULE_NAMESPACE_LOCK = threading.RLock()
 _BARE_MODULE_SCOPE: dict[str, str] = {}  # bare module name -> owning scope_key
 
-# Per-plugin deadline on import + register(): ``plugins.load_timeout_seconds`` (default 10s, 0 disables,
+# Per-plugin deadline on import + register(): ``plugins.load_timeout_seconds`` (default 30s, 0 disables,
 # clamped to the max). A plugin that never returns is skipped with a named reason and loading moves on
 # (#108139). Python cannot kill a thread, so the worker is abandoned as a daemon; the cap bounds how many
 # abandoned loaders one process may accumulate (#98382) — past it, further loads are refused, not run inline.
-_LOAD_TIMEOUT_SECS = 10.0
+# The default must stay generous to slow-but-legitimate imports: cold imports of bundled platform SDKs and
+# the dashboard auth providers exceed 10s on slow storage, and an auth provider that times out keeps a
+# gated dashboard from starting at all for that boot (#140621).
+_LOAD_TIMEOUT_SECS = 30.0
 _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
 _LOADER_THREAD_PREFIX = "plugin-load:"  # names each deadline-bounded load worker; the re-arm guard matches it
@@ -65,7 +68,7 @@ def in_plugin_load_worker() -> bool:
 
 
 def _resolve_plugin_load_timeout() -> float:
-    """Effective per-plugin load deadline from ``plugins.load_timeout_seconds`` (default 10s; ``0`` runs
+    """Effective per-plugin load deadline from ``plugins.load_timeout_seconds`` (default 30s; ``0`` runs
     loads inline with no deadline; clamped to ``_MAX_LOAD_TIMEOUT_SECS``)."""
     default = _LOAD_TIMEOUT_SECS
     try:

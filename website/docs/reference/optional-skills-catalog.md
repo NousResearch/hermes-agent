@@ -38,6 +38,7 @@ hermes skills uninstall <skill-name>
 | [**grok**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok.md) | Delegate coding to xAI Grok Build CLI (features, PRs). |
 | [**honcho**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho.md) | Configure and troubleshoot Honcho memory for Hermes. |
 | [**openhands**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.md) | Delegate coding to OpenHands CLI (model-agnostic, LiteLLM). |
+| [**proactive-agent-souls**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-proactive-agent-souls.md) | Give an agent a tiered proactivity contract in SOUL.md. |
 
 ## blockchain
 

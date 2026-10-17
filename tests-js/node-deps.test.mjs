@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
-import { npmCommand } from '../scripts/build/node-deps.mjs'
+import { npmCommand, npmProgressArgs } from '../scripts/build/node-deps.mjs'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const roots = []
@@ -325,3 +325,9 @@ test('a receipt keyed by the probed version reuses under the manifest version, e
   json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.3' })
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
 }, 30000)
+
+test('npm progress is forced only when stdout is a TTY', () => {
+  expect(npmProgressArgs(true)).toEqual(['--progress=true'])
+  expect(npmProgressArgs(false)).toEqual(['--progress=false'])
+})
+

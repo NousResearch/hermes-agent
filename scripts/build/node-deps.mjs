@@ -69,11 +69,17 @@ function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }
 // cannot clear (ENOTEMPTY, #75584); only deleting node_modules recovers it. npm's
 // debug log names the code while stdio stays on the terminal, so give each run
 // its own logs dir and retry once only on that code. Other failures keep the tree.
+// Builders set CI=1, which turns npm's spinner off. Ask for it back only on a
+// real terminal: forcing --progress=true into a pipe (pm.progress.run_contained)
+// can stall the progress renderer and hides any prompt behind the status line.
+// Kept out of `args`, which keys the receipt. Exported for unit tests.
+export function npmProgressArgs(stdoutIsTTY = process.stdout.isTTY) {
+  return [stdoutIsTTY ? '--progress=true' : '--progress=false']
+}
+
 function runNpmCi(node, npm, args, { source, env }) {
   const logsDir = mkdtempSync(join(tmpdir(), 'hermes-npm-logs-'))
-  // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
-  // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
-  const run = () => execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
+  const run = () => execFileSync(node, [npm, ...args, ...npmProgressArgs(), `--logs-dir=${logsDir}`],
     { cwd: source, env, stdio: 'inherit' })
   try {
     run()

@@ -149,12 +149,21 @@ class LiveTail:
 def run_contained(command: Sequence[str], label: str, *, stream: Optional[IO[str]] = None,
                   hide: Optional[Callable[[str], bool]] = None, indent: str = "",
                   **kwargs) -> subprocess.CompletedProcess:
-    """``subprocess.run(check=True)`` under the output policy."""
+    """``subprocess.run(check=True)`` under the output policy.
+
+    Contained mode captures the child's stdout, so the user cannot see or answer a
+    prompt. Default ``stdin`` to ``DEVNULL`` (callers may still pass ``stdin=…``) so a
+    lifecycle script that waits on input fails closed instead of hanging forever on
+    a frozen ``→ Preparing Node dependencies…`` line (#138154). Verbose mode keeps
+    inherited stdin so an interactive terminal can still answer.
+    """
     if verbose_output():
         out = sys.stdout if stream is None else stream
         out.write(f"{indent}→ {label}…\n")
         out.flush()
         return subprocess.run(command, check=True, **kwargs)
+    # Captured stdout hides prompts; never leave the child blocked on the caller's tty.
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
     tail = LiveTail(label, stream, hide=hide, indent=indent)
     captured = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     encoding="utf-8", errors="replace")

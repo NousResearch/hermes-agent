@@ -350,13 +350,42 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def _on_boot_volume(path: Path) -> bool:
+    """True when *path* lives on the boot volume — the only one launchd's pre-exec opens can reach.
+
+    Unreadable or missing paths answer True so the caller keeps the configured path.
+    """
+    try:
+        return os.stat(path).st_dev == os.stat("/").st_dev
+    except OSError:
+        return True
+
+
+def _launchd_pre_exec_dir(desired: Path, fallback: Path) -> Path:
+    """*desired*, or *fallback* when *desired* sits off the boot volume.
+
+    launchd's ``xpcproxy`` opens the job's ``WorkingDirectory``/``StandardOutPath``/``StandardErrorPath``
+    *before* the osascript identity exists, so macOS denies them on a removable volume and the job parks
+    at ``spawn failed`` (EX_CONFIG 78) with not one gateway log line: ``Service could not initialize:
+    Unable to open stdout path (...), error 0x1 - Operation not permitted``. The osascript grant covers
+    the job's descendants, never launchd's own file opens — so only these three paths move.
+    """
+    probe = desired if desired.exists() else desired.parent
+    if _on_boot_volume(probe):
+        return desired
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
-    working_dir = _gw()._stable_service_working_dir()
+    # launchd-only handle; the job's own redirect below may stay in HERMES_HOME (xpcproxy never opens it).
+    working_dir = _launchd_pre_exec_dir(Path(_gw()._stable_service_working_dir()), Path.home())
     hermes_home = str(_gw().get_hermes_home().resolve())
     log_dir = _gw().get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    plist_log_dir = _launchd_pre_exec_dir(log_dir, Path.home() / "Library" / "Logs" / "Hermes")
     label = _gw().get_launchd_label()
 
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
@@ -368,6 +397,9 @@ def generate_launchd_plist() -> str:
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).
     stdout_log, stderr_log = log_dir / "gateway.log", log_dir / "gateway.error.log"
+    # launchd opens these two itself, before the job exists; HERMES_HOME may be unreachable there.
+    plist_out_log, plist_err_log = ((stdout_log, stderr_log) if plist_log_dir == log_dir
+                                    else (plist_log_dir / "gateway-launchd.log", plist_log_dir / "gateway-launchd.error.log"))
     command = _timestamped_stderr_gateway_command(stderr_log, external_supervisor=True)
     prog_args_xml = "\n        ".join(
         f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
@@ -450,10 +482,10 @@ def generate_launchd_plist() -> str:
     <integer>60</integer>
 {nofile_block}
     <key>StandardOutPath</key>
-    <string>{stdout_log}</string>
+    <string>{plist_out_log}</string>
     
     <key>StandardErrorPath</key>
-    <string>{stderr_log}</string>
+    <string>{plist_err_log}</string>
 </dict>
 </plist>
 """

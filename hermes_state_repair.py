@@ -809,12 +809,17 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                              (probe_session_id, "_health_probe", time.time()))
                 conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                              (probe_session_id, "user", "_fts_health_probe", time.time()))
-                for fts_table in _FTS_TABLES:
-                    try:
-                        conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('flush')")
-                    except sqlite3.OperationalError as exc:
-                        if not (SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc)):
-                            raise
+                # ``flush`` arrived in SQLite 3.44.0. Older FTS5 treats the unknown
+                # command as a config write and raises "SQL logic error" — the same
+                # text genuine shadow-table damage raises — so a version gate is the
+                # only safe skip (#120567). The trigger INSERT above still runs.
+                if sqlite3.sqlite_version_info >= (3, 44, 0):
+                    for fts_table in _FTS_TABLES:
+                        try:
+                            conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('flush')")
+                        except sqlite3.OperationalError as exc:
+                            if not (SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc)):
+                                raise
             except sqlite3.DatabaseError as exc:
                 # IntegrityError is a DatabaseError sibling of OperationalError, not a child: catching only the
                 # latter let the trigram-segment collision report "healthy".

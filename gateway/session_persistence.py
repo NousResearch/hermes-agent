@@ -50,15 +50,16 @@ class SessionPersistenceMixin:
             for sid in targets:
                 self._session_owner_hints.pop(sid, None)
 
-    def fence_retired_routes(self, session_ids) -> None:
-        """Durably retire *session_ids* in the routing index's own database (markers + route
+    def fence_retired_routes(self, session_ids, *, namespace, expiring=()) -> None:
+        """Durably retire *session_ids* in the routing index's own database (fences + route
         drop in one transaction). A delete committed in another profile's store fences only that
-        store; the shared index lives in the launch home, so its saves need the fence here too.
+        store; the shared index lives in the launch home, so its saves need the fence here too,
+        keyed by the deleting profile's routing *namespace* (``retire_gateway_routes``).
         Raises when the routing store cannot take the fence: the delete must not report success."""
         retire = self._routing_db_method("retire_gateway_routes")
         if retire is None:
             raise RuntimeError("routing store unavailable for deletion fence")
-        retire(session_ids)
+        retire(session_ids, namespace=namespace, expiring=expiring)
 
     def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
         """SessionDB for the active profile scope. ``db_path`` pins the store; otherwise
@@ -355,9 +356,10 @@ class SessionPersistenceMixin:
                         type(entry_data).__name__)
                     continue
                 try:
-                    from hermes_state_mutation_retirement import retired_session
+                    from hermes_state_mutation_retirement import route_retired
                     db = self._routing_db
-                    if db is not None and retired_session(db, entry_data['session_id']):
+                    if db is not None and route_retired(db, key, json.dumps(
+                            {'session_id': entry_data['session_id']})):
                         continue
                     self._entries[key] = SessionEntry.from_dict(entry_data)
                     imported += 1

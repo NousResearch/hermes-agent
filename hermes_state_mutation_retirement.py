@@ -3,7 +3,15 @@ import json
 import time
 from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _json, _text
 
+# This store's own retired session (its profile is the store's). Written as ``own`` since the
+# shared routing index also carries other profiles' fences; a marker without ``own`` predates
+# that and still fences every route in the index.
 RETIRED_PREFIX = 'gateway.retired_session.v1.'
+# A multiplexed secondary's retired session, in the routing index every served profile shares
+# (the launch home's state.db): ``<prefix><namespace>:<id>``, keyed by the ``agent:<namespace>:``
+# slot of that profile's routing keys. Only routing saves read it, so the launch profile's own
+# creates, binds and generation walks never see another profile's retirement.
+ROUTE_FENCE_PREFIX = 'gateway.retired_route.v1.'
 # A last viewer's close stored until the owner's idle point (gateway/session_viewer_close).
 VIEWER_CLOSE_PREFIX = 'gateway.viewer_close.v1:'
 
@@ -271,25 +279,90 @@ def entry_session_id(raw):
     return value.get('session_id') if isinstance(value, dict) else None
 
 
-def retire_routes(conn, session_ids, *, expiring=()):
+def _mark_retired(conn, key, *, expires, **fields):
     # OR REPLACE: the marker is a fact, not a receipt; re-retiring an id that was recreated
     # beside its tombstone must not abort the delete that removes it again (and restarts its horizon).
-    # An ``expiring`` (sweep) marker ages out at the horizon and never shortens a permanent one.
+    # An ``expires`` (sweep) marker ages out at the horizon and never shortens a permanent one.
+    value = {'retired_at': time.time(), **fields}
+    if expires:
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE '
+                     "SET value=excluded.value WHERE json_valid(state_meta.value) "
+                     "AND json_extract(state_meta.value, '$.expires')",
+                     (key, json.dumps({**value, 'expires': True})))
+    else:
+        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, json.dumps(value)))
+
+
+def retire_routes(conn, session_ids, *, expiring=()):
     expiring = set(expiring)
     for sid in session_ids:
-        if sid in expiring:
-            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE '
-                         "SET value=excluded.value WHERE json_valid(state_meta.value) "
-                         "AND json_extract(state_meta.value, '$.expires')",
-                         (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time(), 'expires': True})))
-        else:
-            conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
-                         (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time()})))
+        _mark_retired(conn, RETIRED_PREFIX + sid, expires=sid in expiring, own=True)
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
         conn.execute('DELETE FROM state_meta WHERE key=?', (VIEWER_CLOSE_PREFIX + sid,))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
         if entry_session_id(row['entry_json']) in targets:
+            conn.execute('DELETE FROM gateway_routing WHERE scope=? AND session_key=?',
+                         (row['scope'], row['session_key']))
+
+
+def route_namespace(session_key):
+    """The ``<ns>`` slot of an ``agent:<ns>:...`` routing key (``main`` for the launch profile, else
+    the profile's ``_session_key_namespace`` slot); ``main`` for a key outside that shape."""
+    parts = str(session_key or '').split(':')
+    return parts[1] if len(parts) > 2 and parts[0] == 'agent' and parts[1] else 'main'
+
+
+def route_fence_key(namespace, session_id):
+    return f'{ROUTE_FENCE_PREFIX}{namespace}:{session_id}'
+
+
+def route_retired_sql(entry, namespace):
+    """SQL true when a routing save must skip an entry (SQL expressions *entry*: its JSON, and
+    *namespace*: its key's ``route_namespace``), checked only against the profile the route belongs
+    to: this store's own marker for a launch (``main``) route, that profile's fence for a
+    secondary's. A launch-keyed route to an id this store holds no session of can only name
+    another profile's session, so a secondary's fence covers it too (``fence_shared_routes``).
+    An unscoped marker (no ``own``: an earlier release's, written for either) still fences every route."""
+    sid = f"json_extract({entry}, '$.session_id')"
+    return (f"(EXISTS (SELECT 1 FROM state_meta m WHERE m.key = '{RETIRED_PREFIX}' || {sid} AND "
+            f"({namespace} = 'main' OR NOT (json_valid(m.value) AND json_extract(m.value, '$.own') IS NOT NULL))) "
+            f"OR EXISTS (SELECT 1 FROM state_meta f WHERE f.key = '{ROUTE_FENCE_PREFIX}' || {namespace} || ':' || {sid} "
+            f"AND ({namespace} != 'main' OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = {sid}))))")
+
+
+def route_retired(db, session_key, entry_json):
+    """A routing save (or the legacy sessions.json import) must skip this entry."""
+    with db._read_ctx() as conn:
+        return bool(conn.execute(f"SELECT {route_retired_sql('?1', '?2')}",
+                                 (entry_json, route_namespace(session_key))).fetchone()[0])
+
+
+def expiring_retirements(db, session_ids):
+    """The ids among *session_ids* whose own marker in *db* is a sweep's (ages out at the horizon)."""
+    with db._read_ctx() as conn:
+        return {key[len(RETIRED_PREFIX):] for (key,) in conn.execute(
+            "SELECT key FROM state_meta WHERE key IN (SELECT ? || value FROM json_each(?)) "
+            "AND json_valid(value) AND json_extract(value, '$.expires')",
+            (RETIRED_PREFIX, json.dumps(list(session_ids))))}
+
+
+def fence_shared_routes(conn, namespace, session_ids, *, expiring=()):
+    """In the shared routing index (*conn*), fence the routes of *session_ids*, retired in the
+    profile whose routing keys use *namespace*, and drop them. The fence is keyed by (profile, id)
+    and copies the owner's marker: permanent for a delete, aging out with an *expiring* sweep's.
+    Unless this store holds a session of that id, the launch (``main``) namespace is fenced too: a
+    launch-keyed route to it names the retired session."""
+    expiring, owned = set(expiring), {}
+    for sid in session_ids:
+        names = {namespace}
+        if not conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone():
+            names.add('main')
+        for name in names:
+            _mark_retired(conn, route_fence_key(name, sid), expires=sid in expiring)
+        owned[sid] = names
+    for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
+        if route_namespace(row['session_key']) in owned.get(entry_session_id(row['entry_json']), ()):
             conn.execute('DELETE FROM gateway_routing WHERE scope=? AND session_key=?',
                          (row['scope'], row['session_key']))
 
@@ -301,7 +374,7 @@ _EXPIRED = "json_valid(value) AND json_extract(value, '$.retired_at') < ?"
 def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     """Reclaim deletion tombstones retired more than *older_than* seconds ago: the terminal admission
     with its identity pointer and compacted result, terminal workers and a sweep's (``expires``)
-    retired-session marker. A user delete's marker is the deletion fence itself and is never
+    retired-session marker or shared routing fence. A user delete's marker is the deletion fence itself and is never
     reclaimed: it holds only ``retired_at``, and without it a deleted id could be recreated,
     re-admitted or reissued as a Bot Chat generation.
     Tombstones written before ``retired_at`` existed are stamped now and age from this pass."""
@@ -318,5 +391,6 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
         conn.execute('DELETE FROM state_meta WHERE key IN (?,?,?)', (key, RESULT_PREFIX + row['admission_id'],
                      identity_key(row['principal_id'], row['target_session_id'], row['request_id'])))
     conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (WORKER_PREFIX + '*', cutoff))
-    conn.execute(f"DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED} AND json_extract(value, '$.expires')",
-                 (RETIRED_PREFIX + '*', cutoff))
+    for prefix in (RETIRED_PREFIX, ROUTE_FENCE_PREFIX):
+        conn.execute(f"DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED} AND json_extract(value, '$.expires')",
+                     (prefix + '*', cutoff))

@@ -503,7 +503,7 @@ test('Windows source settle bypasses the current cmd launcher beside a stale his
     const prepareLaunch = path.join(root, 'hermes_cli', 'venv_sync.py')
     fs.mkdirSync(path.dirname(prepareLaunch), { recursive: true })
     fs.writeFileSync(prepareLaunch, '')
-    fs.writeFileSync(current, `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
+    fs.writeFileSync(current, `@"${python}" -I "%~dp0hermes-script.py" %*\r\n`)
     fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')
     const invocation = sourceRuntimeSettleCommand(root, { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }, 'win32')
     expect(invocation).toEqual({
@@ -526,7 +526,7 @@ test('Windows source settle bypasses the generated cmd command line', (): void =
     const pythonProbe = spawnSync('python', ['-c', 'import sys; print(sys.executable)'], { encoding: 'utf8' })
     expect(pythonProbe.status, pythonProbe.stderr || String(pythonProbe.error)).toBe(0)
     const python = pythonProbe.stdout.trim()
-    fs.writeFileSync(path.join(bin, 'hermes.cmd'), `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
+    fs.writeFileSync(path.join(bin, 'hermes.cmd'), `@"${python}" -I "%~dp0hermes-script.py" %*\r\n`)
     const prepareLaunch = path.join(root, 'hermes_cli', 'venv_sync.py')
     fs.mkdirSync(path.dirname(prepareLaunch), { recursive: true })
     fs.writeFileSync(prepareLaunch, `from pathlib import Path\ndef prepare_launch(root, args):\n    Path(${JSON.stringify(witness)}).write_text(str(root) + '\\n' + '\\n'.join(args))\n`)

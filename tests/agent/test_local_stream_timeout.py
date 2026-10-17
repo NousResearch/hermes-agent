@@ -40,3 +40,22 @@ class TestIsLocalEndpoint:
         assert is_local_endpoint(url) is False
 
 
+    @pytest.mark.parametrize("url", [
+        "http://inference-gateway.my-namespace.svc.cluster.local:8080/v1",
+        "http://mysvc.default.svc.cluster.local/v1",
+        "http://gateway.cluster.local/v1",
+        "http://mysvc.default.svc",  # short cluster search-domain form
+    ])
+    def test_kubernetes_cluster_dns_is_not_local(self, url):
+        """*.svc.cluster.local ends in .local but is in-cluster DNS, not mDNS (#138053)."""
+        assert is_local_endpoint(url) is False
+
+    @pytest.mark.parametrize("url", [
+        "http://nas.local:11434",
+        "http://byron.local:11434/v1",
+        "http://ollama:11434",  # unqualified Docker Compose / /etc/hosts name
+    ])
+    def test_mdns_and_unqualified_hosts_still_local(self, url):
+        assert is_local_endpoint(url) is True
+
+

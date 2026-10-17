@@ -820,6 +820,55 @@ skills:
 
 Resolved once per session when the system prompt is first built (so the prompt stays cache-stable; edits apply to the next session). Missing or disabled skills warn and are skipped; `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses the list. Profile-scoped. See [CLI — persistent auto-load](./cli.md#persistent-auto-load-via-config).
 
+### Inheriting selected skills in native subagents
+
+`skills.inherit_to_subagents` is an independent, opt-in allowlist for native
+Hermes subagents, including nested and background delegations:
+
+```yaml
+skills:
+  auto_load:
+    - my-workflow
+  inherit_to_subagents:
+    - my-workflow
+    - worker-checklist
+```
+
+```bash
+hermes config set skills.inherit_to_subagents '["my-workflow", "worker-checklist"]'
+```
+
+Main agents still use only `auto_load`. Native subagents use only
+`inherit_to_subagents`; a worker-only entry does not load into the main agent.
+Missing or empty inheritance lists preserve the previous behavior. Repeated
+identifiers (including aliases resolving to the same skill) render once per
+configured prompt. Resolution and rendering reuse the normal skill loader and
+profile configuration, including managed overlays and external skill directories.
+
+The blocks are resolved on the first prompt build and retained in the stable
+prefix for that agent's lifetime. Each new child resolves its own configured
+list, so nested inheritance does not require its parent to copy instructions.
+Existing cached agents are not changed by editing config or skill files.
+
+Missing/disabled skills warn and are skipped. Global disabled skills, applicable
+calling-surface exclusions, and `skills.platform_disabled.subagent` remain in
+effect. Agents without any skills tools and runs with `HERMES_IGNORE_RULES=1`
+do not inject these blocks. The CLI rejects non-list values; malformed lists
+read from a file ignore non-string or blank members, just like `auto_load`.
+Existing essential-skill exceptions are unchanged.
+
+Children retain `skip_context_files=True`: inheritance does not load SOUL.md or
+enable general project-context discovery. Existing explicit-workspace convention
+forwarding and child task instructions are unchanged. Nondelegation internal
+forks that skip context files do not opt in merely by using that flag.
+
+This is prompt guidance, not OS-level enforcement. Independently launched Hermes
+main processes follow their own profile's `auto_load`; third-party agents,
+external ACP transports, and generated scripts need separate propagation or
+executable safeguards. After installing new Hermes source, use a fresh process
+to pick up the implementation; changing a list in an already updated process
+affects newly initialized agents only.
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

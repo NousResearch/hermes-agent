@@ -319,10 +319,12 @@ def _auto_load_parts(agent: Any) -> list[str]:
     HERMES_IGNORE_RULES are read on the first build only) so the prompt stays byte-stable
     across model switches, compression and static-prefix restoration.
 
-    Same gate as ``_skills_prompt``: nothing without the skills toolset, and nothing for agents that skip
-    context files (delegate children, curator/review forks, gateway hygiene agents) — pinned skills are
-    operator guidance for the user's session, not payload for every internal fork."""
-    if getattr(agent, "skip_context_files", False) or not any(
+    Native subagents use only ``skills.inherit_to_subagents``, not the main-agent list.
+    Other context-skipping internal forks remain excluded. Project context isolation and
+    the skills-tool / ignore-rules gates are independent of this opt-in inheritance."""
+    inherited = getattr(agent, "platform", None) == "subagent"
+    key = "inherit_to_subagents" if inherited else "auto_load"
+    if (getattr(agent, "skip_context_files", False) and not inherited) or not any(
             name in agent.valid_tool_names for name in ("skills_list", "skill_view", "skill_manage")):
         return []
     if not getattr(agent, "_auto_load_skills_resolved", False):
@@ -330,11 +332,13 @@ def _auto_load_parts(agent: Any) -> list[str]:
         try:
             if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
                 from agent.skill_commands import build_auto_load_prompt
-                result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None), home_override=_agent_home(agent))
+                kwargs = {"inherited": True} if inherited else {}
+                result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None),
+                                                home_override=_agent_home(agent), **kwargs)
             if result[2]:
-                logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(result[2]))
+                logger.warning("skills.%s: skill(s) not found or disabled, skipped: %s", key, ", ".join(result[2]))
         except Exception:
-            logger.debug("skills.auto_load: injection skipped", exc_info=True)  # config errors never block session start
+            logger.debug("skills.%s: injection skipped", key, exc_info=True)  # config errors never block session start
         agent._auto_load_skills_result = result
         agent._auto_load_skills_resolved = True
     prompt = agent._auto_load_skills_result[0]

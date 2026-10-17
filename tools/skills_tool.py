@@ -572,6 +572,25 @@ def _owned_relative(skill_dir: Optional[Path], skill_md: Path, all_dirs) -> str:
     return target.relative_to(root).as_posix() if root is not None else str(target)
 
 
+def _is_resolved_skill_disabled(
+    resolved_name: str, skill_dir: Optional[Path], skill_md: Path, all_dirs, *, platform: str | None = None,
+) -> bool:
+    """Apply exclusions to their catalog owner; explicit platform checks also cover physical aliases."""
+    if platform is not None:
+        from agent.skill_utils import is_disabled_entry
+        disabled = _get_disabled_skill_names(platform) | _get_disabled_skill_names()
+        if resolved_name in disabled or not disabled:
+            return resolved_name in disabled
+        source = skill_md.resolve()
+        return any(is_disabled_entry(e, disabled) and e["path"].resolve() == source
+                   for e in _skill_catalog(skip_disabled=True, include_hidden=True))
+    rel = _owned_relative(skill_dir, skill_md, all_dirs)
+    return _is_skill_disabled(resolved_name, rel, platform=platform) and (
+        _is_skill_disabled(resolved_name, platform=platform) or any(
+            e["path"] == skill_md and e["load_name"] == rel
+            for e in _skill_catalog(skip_disabled=True, include_hidden=True)))
+
+
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
     """Warn (never block) when loaded from outside the trusted dirs (project + local + external)
     and/or when common prompt-injection patterns appear. The check is on the RESOLVED path:
@@ -625,9 +644,7 @@ def skill_view(
         resolved_name = frontmatter.get("name", skill_md.parent.name)
         # Disabled by declared name, or by the exact path that IS this copy's load name (a same-tier
         # duplicate's row) — whatever alias reached it; an unrelated copy at that path elsewhere is not.
-        rel = _owned_relative(skill_dir, skill_md, all_dirs)
-        if _is_skill_disabled(resolved_name, rel) and (_is_skill_disabled(resolved_name) or any(
-                e["path"] == skill_md and e["load_name"] == rel for e in _skill_catalog(skip_disabled=True, include_hidden=True))):
+        if _is_resolved_skill_disabled(resolved_name, skill_dir, skill_md, all_dirs):
             return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
         if file_path and skill_dir:
             return _serve_skill_file(

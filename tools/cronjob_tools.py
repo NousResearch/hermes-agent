@@ -617,7 +617,8 @@ def _try_dispatch_background_run(
     if dispatch.get("status") == "dispatched":
         return {"claimed": True, "dispatched": True, "delegation_id": dispatch.get("delegation_id")}
 
-    # Pool at capacity (or submit failure): the claim is already taken and must not be stranded.
+    # Pool at capacity, submit failure or chat-execution journal refusal: the claim is already taken
+    # and must not be stranded.
     logger.info(
         "cronjob run: background pool unavailable (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name)

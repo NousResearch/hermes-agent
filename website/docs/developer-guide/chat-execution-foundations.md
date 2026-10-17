@@ -32,6 +32,18 @@ Selected producers reserve immutable resource identities before offering executa
   whichever turn happened to initialize the provider.
 - Linux local non-PTY background-process launches. PID and kernel start ticks are recorded after
   `Popen`; a PID cannot be known before the process exists.
+- Background `delegate_task` units and manual `cronjob(action='run')` background runs, both
+  `async_delegation_thread`. A unit is reserved only after the pool admits it (a capacity, retirement
+  or journal refusal reserves nothing and returns `rejected`), while the dispatching worker is
+  pending and current. It is detached: its pool thread may start, and its subtree may observe tools
+  and reserve its own non-detached resources against the dispatching generation, after that worker
+  completes or a successor generation starts. That holds only while the unit's resource is started
+  and the session is not fenced; a copied context without one, or one whose unit has finished, is
+  refused like any stale identity. A detached row starts once, only through the handle issued to its
+  dispatcher in this process: not from a handle rebuilt from journal rows, not after its submission
+  failed or was cancelled, not after a restart. Such rows stay `reserved` (unresolved). Backend
+  retirement gates only dispatch admission; it does not stop a running unit, and retirement
+  `prepare()` stays not-idle until the unit's worker exits.
 
 Resource identity captures profile home, session key, generation, session ID, kind and a unique
 physical resource ID. Registry notification-owner handoff does not change that execution identity.
@@ -56,10 +68,11 @@ production recovery acceptance or a supported claim-release mechanism.
 ## Boundaries not closed by this change
 
 The registered producers above do not form a complete accounting boundary. In particular, provider
-initialization and lifetime writers, middleware's own effects, delegates and other descendants,
-PTY/remote process domains, scope/environment preflight effects, delivery, and domain-specific
-external mutations still need independently verifiable settlement authority. Existing Stop
-observations are not replaced with durable recovery approval by this change.
+initialization and lifetime writers, middleware's own effects, delegate effects beyond their recorded
+units and resources, other descendants, PTY/remote process domains, scope/environment preflight
+effects, delivery, and domain-specific external mutations still need independently verifiable
+settlement authority. Existing Stop observations are not replaced with durable recovery approval by
+this change.
 
 The journal is trusted-runtime state, not a security boundary against arbitrary same-UID code.
 Do not use age, task status, an open session-catalog row, missing lease, or an empty-looking process

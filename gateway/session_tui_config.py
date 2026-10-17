@@ -341,6 +341,8 @@ async def _set_command_setting(connection, ref, params):
     if value not in _REASONING_DISPLAY_TOGGLES and value != 'reset' and parse_reasoning_effort(value) is None:
         raise RuntimeStoreError('invalid_params')
     live, runner = connection.authority.sessions[ref.session_id], connection.authority.runner
+    from gateway.session_setting_commands import commit_reasoning_command
+    await commit_reasoning_command(connection.authority, connection.actor, ref, value, scope == 'global')
 
     def apply():
         with _profile_runtime_scope(Path(connection.authority.profile_id)):

@@ -258,7 +258,12 @@ def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> 
     cli.reasoning_config = parsed
     cli._reasoning_user_set = True
     if cli.agent is not None:
-        cli.agent.reasoning_config = parsed
+        # The gateway session's agent commits an explicit level even when it equals the inherited one.
+        pin = getattr(cli.agent, "pin_reasoning", None)
+        if pin is not None:
+            pin(parsed)
+        else:
+            cli.agent.reasoning_config = parsed
     saved = persist_global and save_config_value("agent.reasoning_effort", effort)
     if saved:
         CLI_CONFIG.setdefault("agent", {})["reasoning_effort"] = effort

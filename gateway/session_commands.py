@@ -441,6 +441,11 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                 prompt = event.text
         else:
             await before()
+            if canonical == 'reasoning':
+                from gateway.run_config_loaders import GatewayConfigLoadersMixin
+                from gateway.session_setting_commands import commit_reasoning_command
+                await commit_reasoning_command(authority, actor, ref,
+                                               *GatewayConfigLoadersMixin._parse_reasoning_command_args(arg))
             handler = runner._command_handler_table((canonical,))[canonical]
             output = await handler(event)
     if canonical in _APPROVAL_COMMANDS:

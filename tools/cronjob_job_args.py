@@ -104,6 +104,10 @@ def _origin_from_env(
         # Workspace/server scope (Slack team, Discord guild...): Slack session keys embed it,
         # so a continuable cron seed built without it would never resolve a scoped reply.
         "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
+        # Parent channel of a thread/forum-post session: a parent-channel gateway.profile_routes
+        # entry authorizes shared-bot origin delivery into the thread (same rule as inbound
+        # routing); without it the thread's own id is the only anchor and the route misses (#135667).
+        "parent_chat_id": get_session_env("HERMES_SESSION_PARENT_CHAT_ID") or None,
     }
 
 

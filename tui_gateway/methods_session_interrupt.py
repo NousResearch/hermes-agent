@@ -130,6 +130,20 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
     return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
 
 
+def _queue_correction(session: dict, text: str) -> None:
+    """Durably queue a correction that cannot reach the live agent yet.
+
+    ``session.steer`` and ``session.redirect`` bypass ``prompt.submit`` on
+    their queue fallback. Keep their envelope provenance and accept-time row
+    together, just like a regular busy submit.
+    """
+    with session["history_lock"]:
+        envelope = _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+        if envelope is not None:
+            _persist_queued_user_row(session, envelope, display_kind=None)
+        session["last_active"] = time.time()
+
+
 def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):
     """steer/redirect RPC: ``params.text`` (4002, checked before the session) into a live session;
     ``supported(agent)`` gates 4010."""
@@ -145,8 +159,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
         if verb == "redirect" and agent is None and session.get("running"):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
-            session["last_active"] = time.time()
+            _queue_correction(session, text)
             return _ok(rid, {"status": "queued", "text": text})
         # Compression in flight: queue instead of steering/redirecting. A correction that
         # reaches the provider mid-compression aborts the compression (explicit_interrupt)
@@ -154,8 +167,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         # drains when compression finishes (the Discord-gateway contract; mirrors the
         # interrupt→queue demotion in gateway/run_busy.py for the channel busy path).
         if _session_compression_in_flight(session):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
-            session["last_active"] = time.time()
+            _queue_correction(session, text)
             return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)

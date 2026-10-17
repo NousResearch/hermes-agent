@@ -22,6 +22,7 @@ def _desktop_session(monkeypatch, db):
     monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server.git_probe, "branch", lambda _cwd: "")
     resp = server.handle_request({"id": "c", "method": "session.create", "params": {"cols": 96, "source": "desktop"}})
     assert "result" in resp, resp
     sid = resp["result"]["session_id"]
@@ -100,6 +101,61 @@ def test_busy_accept_writes_the_queued_user_row_immediately(monkeypatch, tmp_pat
         # The turn has not run: the cold resume read must already see the accepted message.
         assert any(r["role"] == "user" and "queued text QUEUED-MARKER" in str(r["content"])
                    for r in _active_rows(db, key))
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_queued_prompt_keeps_server_stamped_origin_after_drain(monkeypatch, tmp_path):
+    """A queued local-RPC prompt remains attributable after its accept row is re-placed."""
+    db, sid, key = _accept_busy_then_run_both_turns(monkeypatch, tmp_path)
+    try:
+        row = next(r for r in _active_rows(db, key) if r["content"] == "queued text QUEUED-MARKER")
+        assert row["display_metadata"]["queued_prompt_origin"] == {
+            "session_source": "desktop", "transport": "builtins.str"}
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_redirect_queue_fallback_persists_its_server_stamped_origin(monkeypatch, tmp_path):
+    """A redirect during the deferred agent build has the same durable audit trail as prompt.submit."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        _busy(session)
+        session["agent"] = None
+        response = server.handle_request({
+            "id": "redirect", "method": "session.redirect",
+            "params": {"session_id": sid, "text": "queued redirect"},
+        })
+
+        assert response["result"]["status"] == "queued"
+        row = next(r for r in _active_rows(db, key) if r["content"] == "queued redirect")
+        assert row["display_metadata"]["queued_prompt_origin"]["session_source"] == "desktop"
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_steer_queue_fallback_persists_its_server_stamped_origin(monkeypatch, tmp_path):
+    """A compression-protected steer uses the same durable queue audit trail."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        _busy(session)
+        session["agent"] = types.SimpleNamespace(steer=lambda _text: True)
+        monkeypatch.setattr(server, "_session_compression_in_flight", lambda _session: True)
+        response = server.handle_request({
+            "id": "steer", "method": "session.steer",
+            "params": {"session_id": sid, "text": "queued steer"},
+        })
+
+        assert response["result"]["status"] == "queued"
+        row = next(r for r in _active_rows(db, key) if r["content"] == "queued steer")
+        assert row["display_metadata"]["queued_prompt_origin"]["session_source"] == "desktop"
     finally:
         server._sessions.pop(sid, None)
         db.close()

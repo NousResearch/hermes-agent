@@ -52,19 +52,68 @@ def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
     return AgentPlanUpdate(session_update="plan", entries=entries)
 
 
-def _send_update(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, update: Any) -> None:
-    """Fire-and-forget an ACP session update from a worker thread."""
+# An update the loop never runs is an update the client never sees, and the worker thread
+# cannot wait forever for it. One resubmit covers a refused schedule; a send that reached the
+# loop is never retried because whether its write already left the wire is unknowable.
+_SEND_ATTEMPTS = 2
+_SEND_TIMEOUT = 5.0
+
+
+def _send_update(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, update: Any) -> bool:
+    """Deliver an ACP session update from a worker thread; True when it landed.
+
+    Failures log at WARNING and return False so callers can recover the event. This used to
+    be fire-and-forget with a DEBUG-only swallow: a lost ``tool_call_update`` showed up
+    nowhere, and the ACP client displayed the tool as running forever (#33023).
+    """
     from agent.async_utils import safe_schedule_threadsafe
 
-    future = safe_schedule_threadsafe(
-        conn.session_update(session_id, update), loop, logger=logger, log_message="Failed to send ACP update",
-    )
-    if future is None:
-        return
-    try:
-        future.result(timeout=5)
-    except Exception:
-        logger.debug("Failed to send ACP update", exc_info=True)
+    for attempt in range(1, _SEND_ATTEMPTS + 1):
+        future = safe_schedule_threadsafe(
+            conn.session_update(session_id, update), loop, logger=logger, log_message="Failed to send ACP update",
+        )
+        if future is None:
+            # The loop refused the schedule and safe_schedule_threadsafe closed the
+            # coroutine, so nothing reached the wire — the one resubmit that is provably
+            # safe (#33023).
+            logger.warning(
+                "Could not schedule ACP update for session %s (attempt %d/%d)",
+                session_id, attempt, _SEND_ATTEMPTS,
+            )
+            continue
+        try:
+            future.result(timeout=_SEND_TIMEOUT)
+            return True
+        except Exception:
+            # The coroutine ran, so the write may already be on the wire: cancel() reports
+            # success even then, and resubmitting would deliver the same tool_call_id twice.
+            # Stop here and let the caller requeue instead of guessing.
+            try:
+                future.cancel()
+            except Exception:
+                pass
+            logger.warning(
+                "Failed to send ACP update for session %s (attempt %d/%d)",
+                session_id, attempt, _SEND_ATTEMPTS, exc_info=True,
+            )
+            return False
+    return False
+
+
+def _requeue_undelivered(
+    queue: Deque[str], tool_call_meta: Dict[str, Dict[str, Any]], tc_id: str, meta: Dict[str, Any], name: str,
+    result: Any = None, is_error: bool = False,
+) -> None:
+    """Put a tool call back after its completion failed to deliver (#33023).
+
+    The id is popped before the send, so discarding it there was unrecoverable: the client
+    kept the bubble spinning and nothing — not a later completion, not the turn-end flush —
+    could close it any more. The undelivered result rides along in the metadata, because the
+    next completion pops this id: without it the bubble would close with a *different*
+    call's output."""
+    queue.appendleft(tc_id)
+    tool_call_meta[tc_id] = {**meta, "pending_result": result, "pending_is_error": is_error}
+    logger.warning("Re-queued ACP tool call %s (%s) after its completion failed to deliver", tc_id, name)
 
 
 def _upgrade_queue(tool_call_ids: dict[str, deque[str]], name: str) -> deque[str] | None:
@@ -75,20 +124,41 @@ def _upgrade_queue(tool_call_ids: dict[str, deque[str]], name: str) -> deque[str
     return queue
 
 
+def _take_pending_result(meta: Dict[str, Any]) -> tuple[Any, bool] | None:
+    """Result a requeued call failed to deliver, or None when this id was never requeued (#33023).
+
+    Ids are popped in FIFO order, so when an undelivered call is pushed back to the head the
+    *next* completion is the one that closes it — and that completion is a different call's.
+    """
+    if "pending_result" not in meta:
+        return None
+    return meta.pop("pending_result"), meta.pop("pending_is_error", False)
+
+
 def close_tool_call(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
     tool_call_meta: dict[str, dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
 ) -> str | None:
-    """Close the oldest open ACP tool call for ``name``; returns its id, or None when none is open."""
+    """Close the oldest open ACP tool call for ``name``.
+
+    Returns its id, or None when none is open or the completion could not be delivered — in
+    which case the id goes back to the head of its queue so the next completion or the
+    turn-end flush still closes it."""
     queue = _upgrade_queue(tool_call_ids, name)
     if not queue:
         return None
     tc_id = queue.popleft()
     meta = tool_call_meta.pop(tc_id, {})
-    _send_update(conn, session_id, loop, build_tool_complete(
+    pending = _take_pending_result(meta)
+    if pending is not None:
+        result, is_error = pending
+    delivered = _send_update(conn, session_id, loop, build_tool_complete(
         tc_id, name, result=str(result) if result is not None else None,
         function_args=meta.get("args"), snapshot=meta.get("snapshot"), is_error=is_error,
     ))
+    if not delivered:
+        _requeue_undelivered(queue, tool_call_meta, tc_id, meta, name, result, is_error)
+        return None
     if not queue:
         tool_call_ids.pop(name, None)
     return tc_id
@@ -106,11 +176,19 @@ def flush_open_tool_calls(
     open_calls = [(name, list(queue)) for name, queue in list(tool_call_ids.items()) if queue]
     flushed = 0
     for name, ids in open_calls:
+        undelivered = []
         for tc_id in ids:
             tool_call_meta.pop(tc_id, None)
-            _send_update(conn, session_id, loop, build_tool_abandoned(tc_id, name))
-            flushed += 1
-        tool_call_ids.pop(name, None)
+            if _send_update(conn, session_id, loop, build_tool_abandoned(tc_id, name)):
+                flushed += 1
+            else:
+                # Report only what the client received: a bubble the flush could not close
+                # is still open, and counting it would log success for a silent turn end.
+                undelivered.append(tc_id)
+        if undelivered:
+            tool_call_ids[name] = deque(undelivered)
+        else:
+            tool_call_ids.pop(name, None)
     if flushed:
         logger.debug("Flushed %d ACP tool call(s) left open at turn end", flushed)
     return flushed
@@ -284,13 +362,20 @@ def make_step_cb(
                 # ``prev_tools`` carries the wire ``arguments`` JSON *string*; the content
                 # builders index it as a dict, so an uncoerced string raised inside this
                 # (swallowed) callback and the bubble never closed.
-                _send_update(conn, session_id, loop, build_tool_complete(
+                result, pending_is_error = _take_pending_result(meta) or (result, False)
+                delivered = _send_update(conn, session_id, loop, build_tool_complete(
                     tc_id, tool_name, result=str(result) if result is not None else None,
                     function_args=coerce_tool_args(function_args) if function_args else meta.get("args"),
                     snapshot=meta.get("snapshot"),
+                    # Only a requeued call carries an error flag; the common path keeps the
+                    # default so ``tool.completed`` is built exactly as before.
+                    **({"is_error": pending_is_error} if pending_is_error else {}),
                 ))
-                if not queue:
-                    tool_call_ids.pop(tool_name, None)
+                if delivered:
+                    if not queue:
+                        tool_call_ids.pop(tool_name, None)
+                else:
+                    _requeue_undelivered(queue, tool_call_meta, tc_id, meta, tool_name, result, pending_is_error)
             if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
 

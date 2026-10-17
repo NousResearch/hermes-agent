@@ -309,3 +309,141 @@ class TestToolCallsAlwaysReachATerminalStatus:
             progress("tool.completed", "terminal", None, None, is_error=True,
                      result="[Tool execution cancelled — terminal was skipped. User sent a new message]")
         assert [c.args[1].status for c in mock_conn.session_update.call_args_list] == ["failed"]
+
+
+class TestLostDeliveryIsSurfacedAndRecovered:
+    """Regression for #33023: an update the loop never runs left the client's tool bubble
+    spinning forever. The sender must answer "did it land?" instead of swallowing the failure
+    at DEBUG, and the caller must keep the call id when it did not — the id was popped before
+    the send, so a single failure discarded the only handle on that tool call."""
+
+    def test_send_update_reports_success_once_the_loop_has_it(self, mock_conn, event_loop_fixture):
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as rcts:
+            rcts.return_value = MagicMock(spec=Future)
+            assert _send_update(mock_conn, "session-1", event_loop_fixture, {"type": "noop"}) is True
+
+    def test_send_update_reports_failure_and_warns_when_the_update_never_runs(
+        self, mock_conn, event_loop_fixture,
+    ):
+        stuck = MagicMock(spec=Future)
+        stuck.result.side_effect = TimeoutError("loop never ran it")
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe", return_value=stuck), \
+             patch("acp_adapter.events.logger") as log:
+            assert _send_update(mock_conn, "session-1", event_loop_fixture, {"type": "noop"}) is False
+        assert any("session-1" in str(call) for call in log.warning.call_args_list), \
+            "a dropped update must be visible above DEBUG, with the session it belongs to"
+
+    def test_send_update_reports_failure_when_the_loop_refuses_the_update(
+        self, mock_conn, event_loop_fixture,
+    ):
+        with patch(
+            "acp_adapter.events.asyncio.run_coroutine_threadsafe", side_effect=RuntimeError("loop closed"),
+        ), patch("acp_adapter.events.logger") as log:
+            assert _send_update(mock_conn, "session-1", event_loop_fixture, {"type": "noop"}) is False
+        assert log.warning.called
+
+    def test_send_update_resubmits_after_a_refused_schedule(self, mock_conn, event_loop_fixture):
+        """The loop refused the schedule, so safe_schedule_threadsafe closed the coroutine
+        and nothing reached the wire — the one resubmit that cannot duplicate."""
+        with patch(
+            "acp_adapter.events.asyncio.run_coroutine_threadsafe",
+            side_effect=[RuntimeError("loop closed"), MagicMock(spec=Future)],
+        ), patch("acp_adapter.events.logger"):
+            assert _send_update(mock_conn, "session-1", event_loop_fixture, {"type": "noop"}) is True
+        assert mock_conn.session_update.call_count == 2
+
+    def test_send_update_never_resubmits_after_a_timeout(self, mock_conn, event_loop_fixture):
+        """A started attempt may already have written to the wire: ``cancel()`` reports
+        success even then, so resubmitting delivers the same tool_call_id twice (#33023)."""
+        stuck = MagicMock(spec=Future)
+        stuck.result.side_effect = TimeoutError("loop busy")
+        with patch(
+            "acp_adapter.events.asyncio.run_coroutine_threadsafe", return_value=stuck,
+        ), patch("acp_adapter.events.logger"):
+            assert _send_update(mock_conn, "session-1", event_loop_fixture, {"type": "noop"}) is False
+        assert mock_conn.session_update.call_count == 1
+        stuck.cancel.assert_called_once()
+
+    def test_close_tool_call_keeps_the_id_when_delivery_fails(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        from acp_adapter.events import close_tool_call
+
+        ids = {"terminal": deque(["tc-1", "tc-2"])}
+        meta = {"tc-1": {"args": {"command": "ls"}, "snapshot": None}}
+        with patch("acp_adapter.events._send_update", return_value=False):
+            assert close_tool_call(
+                mock_conn, "s", event_loop_fixture, ids, meta, "terminal", result="ok",
+            ) is None
+        # Re-queued at the head in FIFO order, metadata restored, siblings untouched.
+        assert list(ids["terminal"]) == ["tc-1", "tc-2"]
+        assert meta["tc-1"]["args"] == {"command": "ls"}
+
+    def test_step_closer_keeps_the_id_when_delivery_fails(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        ids = {"terminal": deque(["tc-1"])}
+        meta = {"tc-1": {"args": {"command": "ls"}, "snapshot": None}}
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, meta, {})
+        with patch("acp_adapter.events._send_update", return_value=False):
+            step(1, [{"name": "terminal", "result": "ok"}])
+        assert list(ids["terminal"]) == ["tc-1"]
+        assert meta["tc-1"]["args"] == {"command": "ls"}
+
+    def test_a_call_that_failed_to_close_still_reaches_a_terminal_state_at_turn_end(
+        self, mock_conn, event_loop_fixture,
+    ):
+        from collections import deque
+
+        from acp_adapter.events import close_tool_call, flush_open_tool_calls
+
+        ids = {"terminal": deque(["tc-1"])}
+        meta = {"tc-1": {"args": {"command": "ls"}, "snapshot": None}}
+        with patch("acp_adapter.events._send_update", return_value=False):
+            close_tool_call(mock_conn, "s", event_loop_fixture, ids, meta, "terminal", result="ok")
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as rcts:
+            rcts.return_value = MagicMock(spec=Future)
+            assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta) == 1
+        assert ids == {} and meta == {}
+        assert mock_conn.session_update.call_args_list[-1].args[1].status == "failed"
+
+    def test_a_requeued_call_closes_with_its_own_result_not_the_next_one(self, mock_conn, event_loop_fixture):
+        """Ids are popped in FIFO order, so a requeued undelivered call is closed by the
+        *next* completion — which belongs to a different call. Without carrying the failed
+        result along, ``tc-A``'s bubble showed ``tc-B``'s output (#33023)."""
+        from collections import deque
+
+        from acp_adapter.events import close_tool_call
+
+        ids = {"terminal": deque(["tc-A", "tc-B"])}
+        meta = {"tc-A": {"args": {"command": "ls"}, "snapshot": None}}
+
+        # Only the first send fails; tc-A is pushed back to the head.
+        with patch("acp_adapter.events._send_update", side_effect=[False]):
+            assert close_tool_call(
+                mock_conn, "s", event_loop_fixture, ids, meta, "terminal", result="OUT-A",
+            ) is None
+        assert list(ids["terminal"]) == ["tc-A", "tc-B"]
+
+        # The next completion is tc-B's, but it pops tc-A — it must still say OUT-A.
+        with patch("acp_adapter.events._send_update", return_value=True) as send:
+            close_tool_call(mock_conn, "s", event_loop_fixture, ids, meta, "terminal", result="OUT-B")
+
+        sent = send.call_args.args[3]
+        assert sent.tool_call_id == "tc-A"
+        assert sent.content[0].content.text == "OUT-A", "the requeued call must close with its own result"
+
+    def test_flush_reports_only_what_the_client_received(self, mock_conn, event_loop_fixture):
+        """The turn-end flush ignored _send_update's verdict and counted every id it tried,
+        so a still-saturated loop logged success for bubbles the client never saw close."""
+        from collections import deque
+
+        from acp_adapter.events import flush_open_tool_calls
+
+        ids = {"terminal": deque(["tc-A", "tc-B"])}
+        meta = {"tc-A": {"args": {}}, "tc-B": {"args": {}}}
+        with patch("acp_adapter.events._send_update", side_effect=[True, False]):
+            assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta) == 1
+        # The undelivered id stays open instead of being reported as flushed.
+        assert list(ids["terminal"]) == ["tc-B"]

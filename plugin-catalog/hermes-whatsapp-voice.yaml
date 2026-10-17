@@ -1,6 +1,6 @@
 name: hermes-whatsapp-voice
 repo: https://github.com/ashwanthbalakrishnan5/hermes-whatsapp-voice
-sha: ed8f6b1082c980e09e7c3389f3f357558010d4d4
+sha: e472a47dda4e9986ca44f0ad62cb1b71c893bec0
 title: WhatsApp Voice Calls
 description: >-
   Live voice calls with Hermes over WhatsApp, on the linked-device (personal number) setup most

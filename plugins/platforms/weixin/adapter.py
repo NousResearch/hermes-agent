@@ -101,12 +101,18 @@ def _make_ssl_connector() -> Optional[aiohttp.TCPConnector]:
     """
     try:
         import ssl
-        import certifi
+
+        from agent.ssl_verify import certifi_bundle_path
     except ImportError:
         return None
     if not AIOHTTP_AVAILABLE:
         return None
-    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=certifi.where()), keepalive_timeout=2, enable_cleanup_closed=True)
+    # Re-derived when an install-environment rotation deleted the directory certifi was imported
+    # from, so a long-lived gateway does not pin a cacert.pem that no longer exists (#137255).
+    cafile = certifi_bundle_path()
+    if cafile is None:
+        return None  # no bundle: aiohttp's default (honors SSL_CERT_FILE under trust_env) applies
+    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=cafile), keepalive_timeout=2, enable_cleanup_closed=True)
 
 
 def _new_session(**kwargs: Any) -> aiohttp.ClientSession:

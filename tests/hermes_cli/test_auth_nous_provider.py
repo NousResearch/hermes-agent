@@ -83,6 +83,70 @@ class TestResolveVerifyFallback:
         result = _resolve_verify(auth_state={"tls": {"insecure": "true"}})
         assert result is False
 
+
+def _rotate_certifi_out_from_under_the_process(tmp_path: Path, monkeypatch) -> None:
+    """Import certifi from ``env-a``, then delete the directory it lives in.
+
+    The package manager's environment rotation without a package manager: the replacement
+    ``env-b`` is what the next lookup finds, exactly as the new install generation would be.
+    """
+    import importlib
+    import shutil
+    import sys
+
+    import certifi as real_certifi
+
+    bundle = Path(real_certifi.where()).read_bytes()
+    for name in ("env-a", "env-b"):
+        package = tmp_path / name / "certifi"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text(
+            "import os\n\n\ndef where():\n"
+            "    return os.path.join(os.path.dirname(__file__), 'cacert.pem')\n")
+        (package / "cacert.pem").write_bytes(bundle)
+    monkeypatch.syspath_prepend(str(tmp_path / "env-b"))
+    monkeypatch.syspath_prepend(str(tmp_path / "env-a"))
+    monkeypatch.delitem(sys.modules, "certifi", raising=False)
+    importlib.invalidate_caches()
+    stand_in = importlib.import_module("certifi")
+    monkeypatch.setitem(sys.modules, "certifi", stand_in)
+    assert Path(stand_in.where()).parent == tmp_path / "env-a" / "certifi"
+    shutil.rmtree(tmp_path / "env-a")
+    assert not Path(stand_in.where()).exists()
+
+
+class TestDefaultVerifyAfterAnInstallRotation:
+    """The Nous credential exchange can be the first TLS client a long-lived gateway builds
+    after the package manager replaced the environment certifi was imported from (#137255).
+
+    On macOS that stand pinned ``certifi.where()`` directly, so it kept handing over the
+    deleted bundle and every credential refresh failed until the gateway was restarted.
+    """
+
+    @pytest.mark.platforms("macos")
+    def test_credential_verify_re_derives_the_rotated_bundle(self, tmp_path, monkeypatch):
+        import ssl
+
+        from hermes_cli.auth import _resolve_verify
+
+        for var in ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+            monkeypatch.delenv(var, raising=False)
+        _rotate_certifi_out_from_under_the_process(tmp_path, monkeypatch)
+
+        verify = _resolve_verify(auth_state={"tls": {"insecure": False}})
+
+        # Nothing in the process points at the deleted environment any more, and the value
+        # handed to httpx builds a client (it raised FileNotFoundError before the fix).
+        import certifi
+
+        assert Path(certifi.where()).is_file()
+        with httpx.Client(verify=verify) as client:  # the construction that raised before the fix
+            from typing import Any, cast
+
+            transport = cast(Any, client._transport)
+            assert transport._pool._ssl_context.verify_mode == ssl.CERT_REQUIRED
+
+
 def _setup_nous_auth(
     hermes_home: Path,
     *,

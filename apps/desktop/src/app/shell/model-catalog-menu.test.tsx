@@ -425,6 +425,28 @@ describe('the current model the catalog omits (#57534)', () => {
   })
 })
 
+describe('canonical model identities (#98122)', () => {
+  it('shows the provider-prefixed model slug when routes share a display name', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['gc/grok-4.6', 'grok-cli/grok-4.6'],
+          name: 'Omni Router',
+          slug: 'omni'
+        }
+      ]
+    })
+
+    renderMenu()
+
+    const rows = await screen.findAllByText('Grok 4.6')
+
+    expect(rows).toHaveLength(2)
+    expect(rows[0].closest('[role="menuitem"]')?.textContent).toContain('omni/gc/grok-4.6')
+    expect(rows[1].closest('[role="menuitem"]')?.textContent).toContain('omni/grok-cli/grok-4.6')
+  })
+})
+
 describe('in-flight local downloads', () => {
   const DOWNLOAD_JOB: LocalRuntimeJob = {
     job_id: 'dl1',

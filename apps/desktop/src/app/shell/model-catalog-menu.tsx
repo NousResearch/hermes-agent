@@ -1044,12 +1044,13 @@ function ModelFamilyRow({
       : resolveFastControl(activeId ?? family.id, provider.models ?? [], caps?.fast ?? false, effFast)
 
   // Identity on the left, settings on the right. The name and its variant tag
-  // (`…-flash`, `…-preview`: WHICH model) lead; fast and effort are how this
-  // row is SET, so they sit by the caret that edits them instead of queueing
-  // after the name (#130349). The provider is never a per-row chip; a mixed
-  // Favorites section names it once over its rows. An inherited effort would
-  // be the same chip on every row, so it shows only on the active model and
-  // on a row whose remembered preset chose one.
+  // (`…-flash`, `…-preview`: WHICH model) lead, while the exact provider/model
+  // route remains visible underneath so aggregator routes with the same
+  // prettified name are still distinguishable (#98122). Fast and effort are
+  // how this row is SET, so they sit by the caret that edits them instead of
+  // queueing after the name (#130349). An inherited effort would be the same
+  // chip on every row, so it shows only on the active model and on a row whose
+  // remembered preset chose one.
   const settings = [
     fastControl.kind !== 'none' && fastControl.on && !(fastControl.kind === 'param' && fastControl.canEnable === false)
       ? effTier === 'ultrafast'
@@ -1132,15 +1133,30 @@ function ModelFamilyRow({
         </Tip>
         <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
-          <span className="min-w-0 truncate">
-            <HighlightMatches foldSeparators query={search} text={name} />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5">
+              <span className="min-w-0 truncate">
+                <HighlightMatches foldSeparators query={search} text={name} />
+              </span>
+              {tag ? <ModelChip>{tag}</ModelChip> : null}
+              {decoration.badge ? (
+                <Badge
+                  className="shrink-0 uppercase tracking-wide"
+                  data-model-menu-row-badge=""
+                  size="xs"
+                  variant="muted"
+                >
+                  {decoration.badge}
+                </Badge>
+              ) : null}
+            </span>
+            <span
+              className="block truncate text-[0.625rem] text-(--ui-text-tertiary)"
+              title={`${provider.slug}/${family.id}`}
+            >
+              {provider.slug}/{family.id}
+            </span>
           </span>
-          {tag ? <ModelChip>{tag}</ModelChip> : null}
-          {decoration.badge ? (
-            <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
-              {decoration.badge}
-            </Badge>
-          ) : null}
         </span>
         <ModelResetBadge time={limit.reset} />
         {loadProgress ? (

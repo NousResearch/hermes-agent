@@ -436,7 +436,7 @@ The default profile is simply `~/.hermes` itself. No migration needed — existi
 
 A profile you built on one machine can go to another — your own workstation, a teammate's laptop, or the community. Two paths:
 
-**Send a file.** `/export` packs the profile into one `.tar.gz` — skills, memory, persona, crons, plugins, settings, and (from the desktop) your theme and layout. API keys are stripped. The recipient runs `/import`.
+**Send a file.** `/export` packs the profile into one `.tar.gz` — skills, memory, persona, crons, plugins, settings, and (from the desktop) your theme and layout. API keys are stripped and secret-shaped strings are scrubbed from the archive's text files, but conversation content under `sessions/` (transcripts and failure-diagnostic request dumps) still ships — share an export only with someone you'd trust with those transcripts. The recipient runs `/import`.
 
 Machine-specific PM state is not portable. Export, import, and distribution
 install exclude `installs/`, `tools/`, and `cache/` at a profile's root.

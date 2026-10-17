@@ -147,7 +147,7 @@ class ChatExecutionStore:
             parent = db.execute("SELECT session_id, worker, worker_started FROM executions WHERE session_key=? AND generation=?", (session_key, generation)).fetchone()
             latest = db.execute("SELECT MAX(generation) FROM executions WHERE session_key=?", (session_key,)).fetchone()[0]
             fence = db.execute("SELECT state FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
-            live = parent and parent["worker"] == "pending" and latest == generation
+            live = under is None and parent and parent["worker"] == "pending" and latest == generation
             # Detached authority never mints more detached authority: only a live worker reserves one.
             inherited = kind not in DETACHED_RESOURCE_KINDS and self._detached_admits(db, session_key, generation, under)
             if (not parent or not parent["session_id"] or not parent["worker_started"] or (fence and fence["state"] == "fenced")
@@ -175,9 +175,10 @@ class ChatExecutionStore:
             fence = db.execute("SELECT state FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
             # Detached work was admitted at reservation by its pending, current worker; a queued pool
             # thread starting after that worker settles is not stale.
-            live = parent and ((parent["worker"] == "pending" and latest == generation) or kind in DETACHED_RESOURCE_KINDS)
+            live = under is None and parent and ((parent["worker"] == "pending" and latest == generation) or kind in DETACHED_RESOURCE_KINDS)
+            inherited = kind not in DETACHED_RESOURCE_KINDS and self._detached_admits(db, session_key, generation, under)
             if (not row or row["session_id"] != session_id or row["kind"] != kind or row["state"] != "reserved" or not parent
-                    or (fence and fence["state"] == "fenced") or not (live or self._detached_admits(db, session_key, generation, under))):
+                    or (fence and fence["state"] == "fenced") or not (live or inherited)):
                 db.rollback()
                 return False
             db.execute("UPDATE concurrent_tool_resources SET state='started' WHERE session_key=? AND generation=? AND resource_id=?", (session_key, generation, resource_id))

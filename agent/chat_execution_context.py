@@ -68,6 +68,8 @@ def concurrent_tool_resource_for_submit(resource_id: str, kind="concurrent_tool_
     with store._db() as db:
         parent = db.execute("SELECT session_id FROM executions WHERE session_key=? AND generation=?", (session_key, generation)).fetchone()
     under = _detached_under(home, session_key, generation)
+    if _DETACHED_RESOURCE.get() is not None and under is None:
+        raise RuntimeError("Durable concurrent tool resource reservation refused")
     if parent is None or not parent["session_id"] or not store.reserve_concurrent_tool_resource(session_key, generation, resource_id, kind=kind, under=under):
         raise RuntimeError("Durable concurrent tool resource reservation refused")
     handle = ConcurrentToolResource(home, session_key, generation, parent["session_id"], resource_id, kind)
@@ -86,6 +88,9 @@ def bind_concurrent_tool_resource(handle: ConcurrentToolResource | None) -> Iter
     from gateway.chat_execution_recovery import DETACHED_RESOURCE_KINDS, ChatExecutionStore
     store = ChatExecutionStore(handle.home)
     under = _detached_under(handle.home, handle.session_key, handle.generation)
+    if _DETACHED_RESOURCE.get() is not None and under is None:
+        yield False
+        return
     if handle.kind in DETACHED_RESOURCE_KINDS and not _claim_detached_owner(handle):
         yield False
         return
@@ -157,9 +162,8 @@ def observe_tool_before_execution():
 
     home, session_key, generation = identity
     store = ChatExecutionStore(home)
-    if store.observe_started_worker_tool(session_key, generation):
-        return True
     under = _detached_under(home, session_key, generation)
-    if under is None or not store.observe_started_worker_tool(session_key, generation, under=under):
+    if (_DETACHED_RESOURCE.get() is not None and under is None
+            or not store.observe_started_worker_tool(session_key, generation, under=under)):
         raise RuntimeError("Durable tool observation refused")
     return True

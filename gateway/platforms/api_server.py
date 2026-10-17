@@ -71,7 +71,7 @@ _STATIC_FEATURE_FLAGS = {
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
-    "skills_api": True, "audio_api": False, "realtime_voice": False,
+    "skills_api": True, "audio_api": False, "media_api": True, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
 # /v1/capabilities "endpoints" table: name -> (method, path[, feature]). An entry naming a
@@ -88,6 +88,7 @@ _CAPABILITY_ENDPOINTS = (
     ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown", "run_unknown_resolution")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
+    ("media_read", ("GET", "/api/media", "media_api")),
     ("session_create", ("POST", "/api/sessions")),
     ("session", ("GET", "/api/sessions/{session_id}")),
     ("session_update", ("PATCH", "/api/sessions/{session_id}")),
@@ -136,6 +137,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
+from gateway.platforms import api_server_media as _api_media
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
@@ -1645,51 +1647,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _http_route_table(self) -> list[tuple]:
         """(method, path, handler) rows registered by ``connect()`` (a method so multiplex tests
         can assert the /p/<profile>/ mirrors without a listener)."""
-        routes: list[tuple] = [
-            ("GET", "/health", self._handle_health),
-            ("GET", "/health/detailed", self._handle_health_detailed),
-            ("GET", "/v1/health", self._handle_health),
-            ("GET", "/v1/models", self._handle_models),
-            ("GET", "/api/model/options", self._handle_model_options),
-            ("GET", "/v1/capabilities", self._handle_capabilities),
-            # Browser-control (gated on browser.extension_control.enabled + API key): POST
-            # mints a short-lived ticket, WS consumes it; artifacts are bounded + scope-bound.
-            ("POST", "/v1/browser-control/register", self._handle_browser_control_register),
-            ("GET", "/v1/browser-control/ws", self._handle_browser_control_ws),
-            ("POST", "/v1/artifacts/upload", self._handle_artifact_upload),
-            ("GET", "/v1/artifacts/download/{artifact_id}", self._handle_artifact_download),
-            ("GET", "/v1/skills", self._handle_skills),
-            ("GET", "/v1/toolsets", self._handle_toolsets),
-            ("GET", "/api/sessions", self._handle_list_sessions),
-            ("POST", "/api/sessions", self._handle_create_session),
-            ("GET", "/api/sessions/{session_id}", self._handle_get_session),
-            ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
-            ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
-            ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
-            ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
-            ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
-            ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
-            ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
-            ("POST", "/v1/chat/completions", self._handle_chat_completions),
-            ("POST", "/v1/responses", self._handle_responses),
-            ("GET", "/v1/responses/{response_id}", self._handle_get_response),
-            ("DELETE", "/v1/responses/{response_id}", self._handle_delete_response),
-            # Platform event ingress: authenticated by the target adapter's own verifier,
-            # NOT API_SERVER_KEY (external platforms hold no API server key).
-            ("POST", "/api/platforms/{platform}/events", self._handle_platform_event_callback),
-            ("GET", "/api/jobs", self._handle_list_jobs),
-            ("POST", "/api/jobs", self._handle_create_job),
-            ("GET", "/api/jobs/{job_id}", self._handle_get_job),
-            ("PATCH", "/api/jobs/{job_id}", self._handle_update_job),
-            ("DELETE", "/api/jobs/{job_id}", self._handle_delete_job),
-            ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
-            ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
-            ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+        routes = _api_media._core_routes(self)
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
-        if _CRON_AVAILABLE:
-            # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
-            routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
+        routes.extend(_api_media._http_routes(self))
         return routes
 
     # -- Session header helpers -------------------------------------------------------

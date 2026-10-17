@@ -831,6 +831,18 @@ curl http://localhost:8642/v1/toolsets \
 
 `/v1/skills` returns the same metadata the skills hub uses internally. `/v1/toolsets` returns toolsets resolved for the `api_server` platform with the concrete `tools` list each one expands to. Both are advertised under `endpoints.*` in `/v1/capabilities`.
 
+## Stored images (`GET /api/media`)
+
+The dashboard already returns a stored image as a data URL from `GET /api/media`, but that route is gated by the dashboard session token. A client that only holds `API_SERVER_KEY` can read the same image through the API server:
+
+```bash
+curl "http://localhost:8642/api/media?path=$HERMES_HOME/cache/documents/photo.png" \
+  -H "Authorization: Bearer ***"
+# → {"data_url": "data:image/png;base64,..."}
+```
+
+The path must resolve, symlink-safe, to an image file under `$HERMES_HOME/images`, `$HERMES_HOME/screenshots`, or `$HERMES_HOME/cache`, and stay under the 25 MiB cap. Anything else is refused. `/v1/capabilities` advertises the route as `endpoints.media_read` while `features.media_api` is true, so a client can fall back when the gateway does not have it.
+
 ## Long-term memory scoping (`X-Hermes-Session-Key`)
 
 Multi-user frontends like Open WebUI need a stable per-channel identifier for long-term memory (Honcho, etc.) that is **independent** of the transcript-scoped `X-Hermes-Session-Id` (which rotates on `/new`). Pass `X-Hermes-Session-Key` on `/v1/chat/completions`, `/v1/responses`, or `/v1/runs` and Hermes threads it through to `AIAgent(gateway_session_key=...)`, where the Honcho memory provider uses it to derive a stable scope.

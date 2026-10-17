@@ -56,6 +56,16 @@ class TestRecordAuxiliaryUsage:
         assert r["output_tokens"] == 50
         assert r["api_call_count"] == 1
 
+    def test_records_cost_classification(self, db):
+        db.create_session("s1", source="cli")
+        db.record_auxiliary_usage(
+            "s1", "vision", model="gemini-3-flash", estimated_cost_usd=0.25,
+            cost_status="estimated", cost_source="official_docs_snapshot",
+        )
+        row = _usage_rows(db, "s1")[0]
+        assert row["cost_status"] == "estimated"
+        assert row["cost_source"] == "official_docs_snapshot"
+
     def test_accumulates_same_task_and_model(self, db):
         db.create_session("s1", source="cli")
         for _ in range(3):
@@ -189,6 +199,54 @@ class TestAmbientAccountingContext:
         assert rows[0]["input_tokens"] == 100
         assert rows[0]["output_tokens"] == 20
 
+
+    def test_unknown_cost_does_not_erase_existing_classification(self, db, monkeypatch):
+        from agent.aux_accounting import record_aux_usage, reset_accounting_context, set_accounting_context
+
+        db.create_session("s1", source="cli")
+        token = set_accounting_context(db, "s1")
+        try:
+            monkeypatch.setattr(
+                "agent.usage_pricing.estimate_usage_cost",
+                lambda *args, **kwargs: SimpleNamespace(
+                    amount_usd=0.25, status="estimated", source="official_docs_snapshot"
+                ),
+            )
+            record_aux_usage(_mk_response(), "vision")
+            monkeypatch.setattr(
+                "agent.usage_pricing.estimate_usage_cost",
+                lambda *args, **kwargs: SimpleNamespace(
+                    amount_usd=None, status="unknown", source="none"
+                ),
+            )
+            record_aux_usage(_mk_response(), "vision")
+        finally:
+            reset_accounting_context(token)
+
+        row = _usage_rows(db, "s1")[0]
+        assert row["estimated_cost_usd"] == 0.25
+        assert row["cost_status"] == "estimated"
+        assert row["cost_source"] == "official_docs_snapshot"
+
+    def test_included_cost_sets_subscription_billing_mode(self, db, monkeypatch):
+        from agent.aux_accounting import record_aux_usage, reset_accounting_context, set_accounting_context
+
+        db.create_session("s1", source="cli")
+        monkeypatch.setattr(
+            "agent.usage_pricing.estimate_usage_cost",
+            lambda *args, **kwargs: SimpleNamespace(
+                amount_usd=0, status="included", source="none"
+            ),
+        )
+        token = set_accounting_context(db, "s1")
+        try:
+            record_aux_usage(_mk_response(), "vision")
+        finally:
+            reset_accounting_context(token)
+
+        row = _usage_rows(db, "s1")[0]
+        assert row["cost_status"] == "included"
+        assert row["billing_mode"] == "subscription_included"
 
     def test_moa_tasks_excluded(self, db):
         """MoA advisor usage is already folded into the main-loop delta by

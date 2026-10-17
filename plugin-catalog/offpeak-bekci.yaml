@@ -1,0 +1,63 @@
+# KATALOG GİRDİSİ (yerel kopya) — hermes-agent `plugin-catalog/offpeak-bekci.yaml` girdisinin tek kaynağı.
+# PR: https://github.com/NousResearch/hermes-agent/pull/139797 — dal `add-offpeak-bekci`, fork `onkanat/hermes-agent`.
+# Katalog kuralları: hermes-agent/plugin-catalog/README.md (madde 1-17); `sha` 40-hex zorunlu.
+#
+# GÖVDE EŞİTLİĞİ (ölçülür, iddia edilmez): PR'a giden dosya bu dosyanın yorumsuz gövdesidir —
+# `name:` satırından sonrası birebir aynı olmalı. Doğrulama:
+#   sed -n '/^name:/,$p' plugin-catalog/offpeak-bekci.yaml | shasum -a 256
+#   17.10.2026 (7b9a1c4, gövde): 68570f01a13889df6bdabbfcc930b457d7c31cd67f5b103004e2d80b9e4a659e
+#
+# PIN KURALI: pin = YAYIN AĞACINI taşıyan, yayınlanmış son içerik commit'i (bir commit kendi hash'ini
+# taşıyamaz → sabit nokta yok; `sha:` satırını tazeleyen defterleme commit'i onun üstüne biner).
+# Şu an pin `7b9a1c4…` = **0.1.4** yükü (İngilizce-önce kullanıcı metni + `dil` ayarı; `metinler.py` bu commit'te);
+# yayın ucu `bc23159` = katalog sürüm satırı hizası. Pin tazeleme gerekçesi (0.1.1 → 0.1.2): kuyruk özeti
+# yanıltıcıydı → artık toplam/onaylı/koşuldu yazar; iki yarı (sunucu + masaüstü) BİRLİKTE güncellenmelidir
+# (0.1.1 → 0.1.2'de `desktop/plugin.js` DEĞİŞMEDİ, `bekci_core.py` değişti).
+# BAĞIMLILIK: eklenti hiçbir bağımlılık bildirmez (`requires_env: []` · `python_dependencies: []`) →
+# `--no-deps` GEREKSİZDİR ve **aktif bir eklentiyi değiştirirken reddedilir** ("--no-deps cannot replace
+# an active plugin"); bağımlılık yokken doğru kurulum `hermes plugins install <repo> --ref <pin> --force
+# --enable` (16.10.2026: bir peer makinesinde ölçüldü).
+#
+# TEMİZ KLONDA KABUL (atlanmaz): git clone https://github.com/onkanat/hermes-offpeak-bekci /tmp/x && git -C /tmp/x checkout 7b9a1c4abbe3f30b7869c41f35c9056af676d020 && hermes plugins validate /tmp/x --install-deps   → EXIT=0 (16.10.2026: geçti; bağımlılık olmadığı için --install-deps no-op'tur)
+name: offpeak-bekci
+repo: https://github.com/onkanat/hermes-offpeak-bekci
+sha: 7b9a1c4abbe3f30b7869c41f35c9056af676d020
+title: Off-Peak Watch (offpeak-bekci)
+description: >-
+  Makes Ollama Cloud's off-peak window visible and actionable in Hermes: a desktop status-bar
+  chip shows the countdown and the queue item counts (Ollama off-peak hours: weekdays 18:00-12:00
+  UTC, weekends one block), a one-shot notice fires 30 minutes before the window opens, and
+  approval is taken only from the user (`/offpeak-onayla <id,id>`) — work runs only if approved,
+  and items never enter the queue by themselves. `/offpeak-durum` prints a readable report by
+  default (machine-readable JSON with `/offpeak-durum json`), and `/offpeak-kur` prints the cron
+  job it would install in full plus a `plan_hash`; nothing is installed without a hash-bound
+  approval typed by the user, and the plugin never writes the cron store. One `llm_execution`
+  middleware measures the call rate for Ollama Cloud calls during the peak window and ships
+  measure-only (`kuru_kosu: true`): it records what it would delay and never delays. No network
+  calls, no telemetry, no credential reads; the only local files it touches are the queue ledger
+  and its own JSONL measurement log. Output language is English by default; `dil: tr` selects
+  Turkish. Auto-delivery is host-dependent: in a classic CLI session the request enters the
+  agent queue; on the Ink TUI / desktop-panel host the core asks for a persistent `session_key`,
+  which the command handler does not receive, so the command prints the parameters as a single
+  line of JSON. Injecting into a gateway additionally requires
+  `plugins.entries.offpeak-bekci.allow_gateway_injection: true` (default off); the only in-process
+  way to read that key is the private `gateway.session_context` module (rule 9 -> not used).
+  Requires Hermes >= 0.22.2.
+maintainer: onkanat
+tier: community
+category: desktop
+version: "0.1.4"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/onkanat/hermes-offpeak-bekci#readme
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/onkanat/hermes-offpeak-bekci/555dff262a37a35f615dc03f82320db3bf34ccca/docs/rozet.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_end
+  provides_middleware:
+    - llm_execution
+  # Kayıtlı komutlar manifestte beyan edilmez (şemada alan yok); bilgi amaçlı:
+  # /offpeak-durum · /offpeak-onayla · /offpeak-kur · /offpeak-kaldir
+  requires_env: []

@@ -17,6 +17,7 @@ Design notes:
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -136,15 +137,28 @@ def normalize_origin(url_or_origin: str) -> str:
         raise VaultError("origin is required")
     if "://" not in value:
         raise VaultError(f"origin must include a scheme (got {value!r})")
-    parts = urlsplit(value)
-    scheme = (parts.scheme or "").lower()
-    host = (parts.hostname or "").lower()
+    try:
+        parts = urlsplit(value)
+        scheme = (parts.scheme or "").lower()
+        host = (parts.hostname or "").lower()
+        port = parts.port
+        if ":" in host:
+            if "%" in host:
+                raise ValueError("IPv6 zone identifiers are not browser origins")
+            # Serialize all eight words ourselves: Python versions disagree on
+            # dotted IPv4-mapped output, while URL.origin uses hexadecimal.
+            address = int(ipaddress.IPv6Address(host))
+            words = [f"{(address >> shift) & 0xffff:x}" for shift in range(112, -1, -16)]
+            expanded = ":".join(words)
+            runs = list(re.finditer(r"(?<![0-9a-f])0(?::0)+(?=:|$)", expanded))
+            if runs:
+                run = max(runs, key=lambda m: len(m.group()))
+                expanded = expanded[:run.start()].rstrip(":") + "::" + expanded[run.end():].lstrip(":")
+            host = f"[{expanded}]"
+    except ValueError as exc:
+        raise VaultError("invalid origin; save it again with an explicit bracketed IPv6 host") from exc
     if not scheme or not host:
         raise VaultError(f"could not parse origin from {value!r}")
-    try:
-        port = parts.port
-    except ValueError as exc:
-        raise VaultError(f"invalid port in origin {value!r}") from exc
     if port is None or port == _DEFAULT_PORTS.get(scheme):
         return f"{scheme}://{host}"
     return f"{scheme}://{host}:{port}"

@@ -66,6 +66,13 @@ Subscribes on attach:
 Thread-safe state access via a snapshot lock; tool handlers (sync) read the
 frozen snapshot without awaiting.
 
+Vault page focus attaches and chooses a top-level page in `CDPSupervisor.focus_page`.
+`FrameTrackingMixin._select_child_document` owns asynchronous OOPIF selection: it
+checks page-owned frame provenance, binds the child session and loader, and reads
+the effective origin in an isolated world. Discovery does not authorize credentials;
+the vault still requires the exact origin-pair consent and rechecks the bound route
+and origins before writing.
+
 ### Lifecycle
 
 - **Start:** `SupervisorRegistry.get_or_start(task_id, cdp_url)` — called by

@@ -9,6 +9,10 @@ import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-
 // and verdict output, so a slow-but-valid cold start is never reported as "produced no result".
 const GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS = 60_000
 const GATEWAY_ENSURE_CLIENT_GRACE_MS = 15_000
+// Launch preparation runs before the CLI's own ensure deadline starts. Give an owed
+// update a bounded budget, not a fresh budget for every progress line.
+const SOURCE_COMPLETION_MAX_TOTAL_MS = 30 * 60_000
+const SOURCE_COMPLETION_BANNER_RE = /finishing an interrupted source update|completing source-update dependencies/
 
 /** Run one bounded `hermes ... gateway <verb>` client (`ensure` by default; `restart` for a stale owner). */
 export function runGatewayEnsure(
@@ -32,13 +36,28 @@ export function runGatewayEnsure(
     }
 
     // Only the bounded CLI client is ours. Never retain/kill its detached owner.
-    const timer = setTimeout(() => expire(`${label} timed out`), timeoutMs)
+    const startedAt = performance.now()
+    let completionInProgress = false
+    let timer = setTimeout(() => expire(`${label} timed out`), timeoutMs)
     child.stdout.on('data', data => { stdout += data.toString();
 
  if (stdout.length > 65536) { stdout = stdout.slice(0, 65536); expire(`${label} output exceeded limit`) } })
     // Diagnostics only (never protocol): an older `hermes` without the subcommand, a missing
     // profile or an import crash explain themselves here while stdout stays empty.
-    child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4096) })
+    child.stderr.on('data', data => {
+      // Match across chunks before trimming the diagnostic tail. stdout remains protocol-only.
+      const output = stderr + data.toString()
+      stderr = output.slice(-4096)
+
+      if (!expired && !completionInProgress && SOURCE_COMPLETION_BANNER_RE.test(output)) {
+        completionInProgress = true
+        clearTimeout(timer)
+        timer = setTimeout(
+          () => expire(`${label} timed out while completing a source update`),
+          Math.max(0, Math.max(timeoutMs, SOURCE_COMPLETION_MAX_TOTAL_MS) - (performance.now() - startedAt))
+        )
+      }
+    })
     child.on('error', () => { clearTimeout(timer); clearTimeout(forceTimer); reject(new Error(`Could not run ${label}`)) })
     // A client that exits on SIGTERM still resolves (callers such as restartLocalGatewayOwner log a
     // non-zero exit and re-ensure); only one that outlives the force-kill deadline rejects. An

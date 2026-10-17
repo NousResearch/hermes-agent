@@ -104,8 +104,22 @@ def is_autonomous_silence_response(response: Any) -> bool:
 
 
 def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
-    """Silence markers suppress delivery only for successful agent turns."""
-    return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+    """Silence markers suppress delivery only for successful agent turns.
+
+    The loop's quiet exit on a runtime-notification turn (``notification_no_reply``:
+    the model was handed a completion/delegation notice and added nothing) counts as
+    intentional silence too, and only ever with no text to deliver;
+    ``silence_allowed`` still gates it by turn kind at the delivery seam, so a human
+    turn that somehow carried the reason gets a visible fallback instead of a drop.
+    """
+    if not (isinstance(agent_result, dict) and not agent_result.get("failed")):
+        return False
+    if is_intentional_silence_response(response):
+        return True
+    from agent.turn_empty_response import NOTIFICATION_NO_REPLY_EXIT
+    return agent_result.get("turn_exit_reason") == NOTIFICATION_NO_REPLY_EXIT and not (
+        isinstance(response, str) and response.strip()
+    )
 
 
 def display_kind_for_event(event: Any) -> str | None:

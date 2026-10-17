@@ -65,10 +65,31 @@ class TestMakeToolCallId:
 class TestBuildToolTitle:
 
     def test_terminal_title_truncates_long_command(self):
+        from agent.display import set_tool_preview_max_len
+
         long_cmd = "x" * 200
-        title = build_tool_title("terminal", {"command": long_cmd})
-        assert len(title) < 120
-        assert "..." in title
+        set_tool_preview_max_len(80)
+        try:
+            title = build_tool_title("terminal", {"command": long_cmd})
+            assert len(title) < 120
+            assert "..." in title
+        finally:
+            set_tool_preview_max_len(0)
+
+    def test_title_length_follows_tool_preview_length_setting(self):
+        """#135554: ACP titles defer to the global tool_preview_length (0 = unlimited) instead of
+        a hardcoded 80, matching what the session applies from config like the gateway."""
+        from agent.display import set_tool_preview_max_len
+
+        long_cmd = "y" * 200
+        try:
+            set_tool_preview_max_len(0)
+            assert "..." not in build_tool_title("terminal", {"command": long_cmd})
+            set_tool_preview_max_len(80)
+            title = build_tool_title("terminal", {"command": long_cmd})
+            assert title.endswith("...") and len(title) < 120
+        finally:
+            set_tool_preview_max_len(0)
 
 
 
@@ -93,7 +114,7 @@ class TestBuildToolTitle:
         """ACP titles are the shared agent.display preview, not a parallel per-tool table."""
         from agent.display import build_tool_preview
 
-        assert build_tool_preview(tool_name, args, max_len=80) in build_tool_title(tool_name, args)
+        assert build_tool_preview(tool_name, args) in build_tool_title(tool_name, args)
 
 
 # ---------------------------------------------------------------------------

@@ -155,3 +155,132 @@ def test_double_dash_sets_control_word_goal_and_announces_the_replace():
     assert 'replaced' not in _dispatch(fresh, 'fresh objective').output
     _dispatch(fresh, '--dry-run the migration')
     assert goals.load_goal(mgr.session_id).goal == '--dry-run the migration'
+
+
+def test_progress_asks_the_judge_and_leaves_state_alone(monkeypatch):
+    from dataclasses import asdict
+    from hermes_cli.goal_command import is_goal_control
+
+    goals._DB_CACHE.clear()
+    calls = []
+    monkeypatch.setattr(
+        goals, 'judge_progress',
+        lambda goal, response, **kw: calls.append((goal, response, kw)) or '📊 Goal progress: 42%',
+    )
+    monkeypatch.setattr(goals, 'last_assistant_message_from_db', lambda sid, **kw: 'the agent said this')
+    mgr = goals.GoalManager(session_id='progress-query')
+    mgr.set('original objective')
+    mgr.add_subgoal('also update the docs')
+    before = asdict(goals.load_goal(mgr.session_id))
+    assert is_goal_control('progress') and is_goal_control('progress please')
+
+    result = _dispatch(mgr, 'progress')
+    assert '42%' in result.output
+    assert result.prompt is None and not result.error
+    goal, _response, kw = calls[0]
+    assert goal == 'original objective'
+    assert kw['subgoals'] == ['also update the docs']
+    assert (kw['turns_used'], kw['max_turns']) == (0, 20)
+    assert asdict(goals.load_goal(mgr.session_id)) == before
+
+    assert '(ignored' in _dispatch(mgr, 'progress please').output
+    assert goals.load_goal(mgr.session_id).goal == 'original objective'
+
+
+def test_progress_without_a_goal_never_calls_the_judge(monkeypatch):
+    goals._DB_CACHE.clear()
+    monkeypatch.setattr(goals, 'judge_progress', lambda *a, **k: pytest.fail('judge called with no goal'))
+    mgr = goals.GoalManager(session_id='progress-no-goal')
+    assert _dispatch(mgr, 'progress').output == 'No active goal. Set one with /goal <text>.'
+
+
+def test_last_assistant_message_content_skips_empty_and_pre_goal_rows():
+    history = [
+        {'role': 'assistant', 'content': 'before the goal', 'timestamp': 100.0},
+        {'role': 'user', 'content': 'keep going', 'timestamp': 110.0},
+        {'role': 'assistant', 'content': '', 'timestamp': 120.0},
+        {'role': 'tool', 'content': 'tool output', 'timestamp': 130.0},
+        {'role': 'assistant', 'content': None, 'timestamp': 140.0},
+        {'role': 'assistant', 'content': 'after the goal', 'timestamp': 200.0},
+    ]
+    assert goals.last_assistant_message_content(history) == 'after the goal'
+    assert goals.last_assistant_message_content(history, since=150.0) == 'after the goal'
+    assert goals.last_assistant_message_content(history, since=250.0) == ''
+    assert goals.last_assistant_message_content(history[:5], since=150.0) == ''
+    assert goals.last_assistant_message_content([]) == ''
+    assert goals.last_assistant_message_content(None) == ''
+
+
+def test_progress_reads_the_newest_assistant_text_from_the_db(monkeypatch):
+    import time as _time
+
+    goals._DB_CACHE.clear()
+    session_id = 'progress-db-read'
+    db = goals._get_session_db()
+    assert db is not None, 'no session DB in this environment'
+    db.create_session(session_id, 'test')
+    seen = []
+    monkeypatch.setattr(goals, 'judge_progress', lambda goal, response, **kw: seen.append(response) or 'report')
+
+    mgr = goals.GoalManager(session_id=session_id)
+    mgr.set('ship the widget')
+    base = _time.time()
+    db.append_message(session_id, 'assistant', 'reply from before the goal', timestamp=base - 600)
+    db.append_message(session_id, 'tool', 'tool output', timestamp=base - 500)
+    db.append_message(session_id, 'assistant', '', timestamp=base - 400)
+    db.append_message(session_id, 'assistant', 'newest reply after the goal', timestamp=base)
+
+    assert mgr.progress_report() == 'report'
+    assert seen == ['newest reply after the goal']
+
+
+def test_progress_without_any_assistant_text_never_calls_the_judge(monkeypatch):
+    goals._DB_CACHE.clear()
+    monkeypatch.setattr(goals, 'judge_progress', lambda *a, **k: pytest.fail('judge called with no evidence'))
+    monkeypatch.setattr(goals, 'last_assistant_message_from_db', lambda sid, **kw: '')
+    mgr = goals.GoalManager(session_id='progress-no-evidence')
+    mgr.set('ship the widget')
+    report = mgr.progress_report()
+    assert 'No agent response to assess yet' in report
+
+
+def test_progress_report_renders_the_judge_estimate(monkeypatch):
+    goals._DB_CACHE.clear()
+    seen = {}
+
+    def fake_llm(call_llm, system_prompt, user_prompt, timeout):
+        seen['system'], seen['user'] = system_prompt, user_prompt
+        return ('{"percent": 60, "state": "halfway", "remaining": "wire up the CLI", '
+                '"reason": "two of four files done"}')
+
+    monkeypatch.setattr(goals, '_call_goal_judge_llm', fake_llm)
+    monkeypatch.setattr(goals, 'last_assistant_message_from_db', lambda sid, **kw: 'the agent said this')
+    mgr = goals.GoalManager(session_id='progress-render')
+    mgr.set('ship the widget', contract=goals.GoalContract(verification='pytest -q tests/widget'))
+    report = mgr.progress_report()
+    lines = report.splitlines()
+    assert lines[0].endswith('halfway')
+    assert lines[1] == "  What's left: wire up the CLI"
+    assert 'two of four files done' in lines[2]
+    assert '0/20' in report
+    assert '~60% done' in lines[3] and 'rough estimate' in lines[3]
+    assert 'ship the widget' in seen['user'] and 'Verification' in seen['user']
+    assert 'percent' in seen['system']
+
+    monkeypatch.setattr(
+        goals, '_call_goal_judge_llm',
+        lambda *a, **k: '{"state": "early", "remaining": "start the migration"}',
+    )
+    no_number = mgr.progress_report()
+    assert 'early' in no_number and '%' not in no_number
+
+    monkeypatch.setattr(goals, '_call_goal_judge_llm', lambda *a, **k: 'no idea, sorry')
+    assert 'did not return the expected JSON' in mgr.progress_report()
+    monkeypatch.setattr(goals, '_call_goal_judge_llm', lambda *a, **k: '')
+    assert 'empty reply' in mgr.progress_report()
+
+    def boom(*a, **k):
+        raise RuntimeError('aux down')
+
+    monkeypatch.setattr(goals, '_call_goal_judge_llm', boom)
+    assert 'Progress unavailable' in mgr.progress_report()

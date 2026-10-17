@@ -235,6 +235,34 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "Is the goal satisfied per its completion contract — done, blocked, continue, or wait?"
 )
 
+PROGRESS_SYSTEM_PROMPT = (
+    "You report how far along an autonomous agent is toward a user's stated "
+    "goal. You receive the goal, the agent's most recent response, and how "
+    "much of its turn budget it has used.\n\n"
+    "Judge only from what the response actually shows. Do not credit work "
+    "the response does not evidence, and do not treat a stated intention as "
+    "a completed step.\n\n"
+    "The most useful thing you can say is what is still left to do. Lead "
+    "with that, and keep it concrete enough to check.\n\n"
+    "Reply ONLY with a single JSON object on one line:\n"
+    '{"state": "<not started|early|halfway|nearly done|done>", '
+    '"remaining": "<one sentence: what is still left to do>", '
+    '"reason": "<one sentence: the evidence the response shows>", '
+    '"percent": <int 0-100>}\n'
+    "percent is a coarse estimate drawn from a single response, not a "
+    "measurement. Omit it if you cannot justify a number; never imply more "
+    "precision than one response supports."
+)
+
+PROGRESS_USER_PROMPT_TEMPLATE = (
+    "Goal:\n{goal}\n\n"
+    "{extra_block}"
+    "Turns used: {turns_used}/{max_turns}\n\n"
+    "Agent's most recent response:\n{response}\n\n"
+    "Current time: {current_time}\n\n"
+    "How far along is this goal, and what is left? Reply with the JSON object."
+)
+
 # /goal draft: turn a plain objective into a reviewable contract (after Codex's "draft the goal").
 DRAFT_CONTRACT_SYSTEM_PROMPT = (
     "You turn a user's plain-language objective into a structured completion "
@@ -959,6 +987,94 @@ def judge_goal(
     return verdict, reason, parse_failed, wait_directive, False
 
 
+def _render_progress(data: dict[str, Any], turns_used: int, max_turns: int) -> str:
+    """Render a parsed progress reply: state first, what is left, then the evidence.
+
+    The percentage is deliberately last and labeled as an estimate. The judge sees one response, so a
+    bare number in the headline reads as precision it does not have.
+    """
+    state = str(data.get("state") or "").strip()
+    remaining = str(data.get("remaining") or "").strip()
+    reason = str(data.get("reason") or "").strip()
+    try:
+        percent = max(0, min(100, int(str(data.get("percent")))))
+    except (TypeError, ValueError):
+        percent = None
+    lines = [f"📊 Goal progress — {state}" if state else "📊 Goal progress"]
+    if remaining:
+        lines.append(f"  What's left: {remaining}")
+    if reason:
+        lines.append(f"  Where it stands: {reason}")
+    if max_turns:
+        budget = f"  Turn budget: {turns_used}/{max_turns} used"
+        lines.append(f"{budget} (judge's rough estimate: ~{percent}% done)" if percent is not None else budget)
+    return "\n".join(lines)
+
+
+def judge_progress(
+    goal: str,
+    last_response: Any,
+    *,
+    timeout: Optional[float] = None,
+    subgoals: Optional[list[str]] = None,
+    contract: Optional[GoalContract] = None,
+    turns_used: int = 0,
+    max_turns: int = 0,
+) -> str:
+    """Ask the auxiliary judge how far along the goal is. Never mutates goal state.
+
+    Returns a rendered report, or a plain "unavailable" line. Unlike the after-turn judge this is an
+    on-demand user query, so every failure (no client, API error, unparseable reply) is reported
+    instead of fail-opening to ``continue``.
+    """
+    if not (goal or "").strip():
+        return "No goal set."
+    if timeout is None:
+        timeout = _goal_judge_timeout()
+
+    try:
+        from agent.auxiliary_client import call_llm
+    except ImportError as exc:
+        logger.debug("goal progress: auxiliary client import failed: %s", exc)
+        return "Progress unavailable: the auxiliary judge client is not configured."
+
+    content = last_response
+    if isinstance(content, list):
+        content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    content = str(content or "").strip() or "(no agent response recorded yet)"
+
+    clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    extra_block = ""
+    if contract is not None and not contract.is_empty():
+        block = contract.render_block()
+        if clean_subgoals:
+            block = f"{block}\n{_render_extra_criteria(clean_subgoals)}"
+        extra_block = f"Completion contract (the authoritative definition of done):\n{_truncate(block, 2500)}\n\n"
+    elif clean_subgoals:
+        block = "\n".join(f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1))
+        extra_block = f"Additional criteria the user added (all count toward done):\n{_truncate(block, 2000)}\n\n"
+
+    prompt = PROGRESS_USER_PROMPT_TEMPLATE.format(
+        goal=_truncate(goal, 2000), extra_block=extra_block,
+        turns_used=int(turns_used or 0), max_turns=int(max_turns or 0),
+        response=_truncate(content, _JUDGE_RESPONSE_SNIPPET_CHARS),
+        current_time=safe_strftime(datetime.now(tz=UTC).astimezone(), "%Y-%m-%d %H:%M:%S %Z"),
+    )
+    try:
+        raw = _call_goal_judge_llm(call_llm, PROGRESS_SYSTEM_PROMPT, prompt, timeout)
+    except Exception as exc:
+        logger.info("goal progress: judge call failed (%s)", exc, exc_info=True)
+        return f"Progress unavailable: the judge call failed ({type(exc).__name__})."
+
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        text = (raw or "").strip()
+        if not text:
+            return "Progress unavailable: the judge returned an empty reply."
+        return f"Progress: the judge did not return the expected JSON.\n  {_truncate(text, 500)}"
+    return _render_progress(data, int(turns_used or 0), int(max_turns or 0))
+
+
 def count_active_delegations(session_id: Optional[str]) -> int:
     """Live async delegation batches spawned by this session (fail-safe 0)."""
     if not session_id:
@@ -1016,6 +1132,47 @@ def last_user_message_from_db(session_id: Optional[str]) -> Any:
         rows = db.get_messages(str(session_id), limit=20, latest=True)
         return last_user_message_content(rows)
     except Exception:
+        return ""
+
+
+def last_assistant_message_content(history: Any, *, since: Optional[float] = None) -> Any:
+    """Content of the newest assistant message that actually has text, else ``""``.
+
+    Assistant rows with empty content are the tool-call steps inside a turn, and they are not rare:
+    one live state.db holds 76k empty assistant rows against 92k text ones. Returning the newest
+    assistant row regardless would hand the judge a blank far more often than not. ``since``
+    (epoch) restricts the scan to rows at or after that moment, so a report never assesses a turn
+    that ran before the goal was set.
+    """
+    for msg in reversed(history or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant" or not msg.get("content"):
+            continue
+        if since is not None:
+            try:
+                if float(msg.get("timestamp") or 0) < since:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        return msg.get("content")
+    return ""
+
+
+def last_assistant_message_from_db(session_id: Optional[str], *, since: Optional[float] = None) -> Any:
+    """Newest assistant text of ``session_id`` from the SessionDB — the judge's progress input on
+    surfaces with no live history object at slash-command time; ``""`` on any error.
+
+    Reads 50 rows rather than the newest few: a tool-heavy turn interleaves empty assistant rows
+    with tool results, so the newest assistant text can sit well behind the newest message."""
+    if not session_id:
+        return ""
+    try:
+        db = _get_session_db()
+        if db is None:
+            return ""
+        rows = db.get_messages(str(session_id), limit=50, latest=True)
+        return last_assistant_message_content(rows, since=since)
+    except Exception as exc:
+        logger.debug("goal progress: session read failed: %s", exc, exc_info=True)
         return ""
 
 
@@ -1583,6 +1740,27 @@ class GoalManager:
             return "(no active goal)"
         return self._state.contract.render_block() if self._state.has_contract() else (
             "(no completion contract — set one with /goal draft <objective> or inline field: value lines)")
+
+    def progress_report(self, *, timeout: Optional[float] = None) -> str:
+        """On-demand judge assessment of how far along the goal is (``/goal progress``).
+
+        Read-only by design: it reports the judge's estimate without touching state, the turn
+        counter, or the continuation loop, so it is safe to run while the agent is mid-turn.
+
+        With no assistant text since the goal was set there is nothing to assess, so it says that
+        instead of calling the judge."""
+        state = self._state
+        if state is None or state.status == "cleared":
+            return "No active goal. Set one with /goal <text>."
+        response = last_assistant_message_from_db(self.session_id, since=state.created_at)
+        if not str(response or "").strip():
+            return ("No agent response to assess yet — this reads the newest assistant reply from "
+                    "after the goal was set.")
+        return judge_progress(
+            state.goal, response, timeout=timeout,
+            subgoals=state.subgoals or None, contract=state.contract if state.has_contract() else None,
+            turns_used=state.turns_used, max_turns=state.max_turns,
+        )
 
 
 # ── Kanban worker goal loop ───────────────────────────────────────────

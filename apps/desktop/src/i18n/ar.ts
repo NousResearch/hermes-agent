@@ -11,6 +11,7 @@ import { arDiagnostics } from './ar_diagnostics'
 import { arFirstRun } from './ar_first_run'
 import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 
 export const arOverrides = {
   connectors: {
@@ -40,7 +41,7 @@ export const arOverrides = {
   titlebar: arChrome.titlebar,
   keybinds: arChrome.keybinds,
   language: arSettings.language,
-  settings: arSettings.settings,
+  settings: { ...arSettings.settings, foundry: foundryTranslations['ar'] },
   skills: arCapabilities.skills,
   agents: arCapabilities.agents,
   commandCenter: arCommandCenter.commandCenter,

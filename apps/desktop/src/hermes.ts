@@ -1,3 +1,4 @@
+export * from './api/azure-foundry'
 // The desktop REST/WS client, split by domain under src/api/. This module is
 // the compatibility barrel: every helper keeps its historical `@/hermes`
 // import path while the implementations live in focused files.

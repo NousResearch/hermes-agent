@@ -1378,6 +1378,19 @@ providers:
 
 Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
 
+#### Credentials in Desktop
+
+For Microsoft Foundry, use the built-in provider under **Settings → Providers → API
+Keys → Microsoft Foundry**. Its Microsoft Entra ID option supports Azure CLI login,
+with optional tenant and subscription selection. See the [Foundry setup guide](../guides/azure-foundry.md#azure-cli-login-in-desktop).
+
+For any custom endpoint, choose **Credential command** under **Authentication** to
+configure `key_cmd` without editing YAML. The command runs on the machine hosting the
+selected profile. Leave its input blank when editing to keep the saved command.
+Choosing **API Key** removes the command from that endpoint's configuration. Test
+requires successful inference when a credential command is selected, including for
+services that do not expose a model catalogue.
+
 #### Command-minted credentials (`key_cmd`)
 
 Vision, thinking, and native local-model capability probes materialize the same
@@ -1401,7 +1414,7 @@ providers:
 
 Works with any helper that prints a token — `databricks auth token`, `gcloud auth print-access-token`, `az account get-access-token`, `vault read`, or Claude Code-style `apiKeyHelper` scripts.
 
-The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field (`expires_in` is honored; absolute `expiry`/`expiresOn` ISO timestamps too). Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
+The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field (`expires_in` is honored; absolute `expiry`/`expiresOn` ISO timestamps and Azure CLI UTC epoch `expires_on` too). Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
 
 Precedence: an explicit `--api-key` flag still wins; otherwise `key_cmd` beats a static `api_key`/`key_env` on the same entry. The minted credential applies to the main agent turn and to auxiliary tasks (title generation, compression, vision, embedding) alike.
 

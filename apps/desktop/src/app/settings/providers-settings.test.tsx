@@ -7,6 +7,7 @@ import { ConfirmHost } from '@/components/confirm-host'
 import { $confirmRequest } from '@/store/confirm'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
+const getFoundrySettings = vi.fn()
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
@@ -15,6 +16,8 @@ const setEnvVar = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
+
+vi.mock('@/store/connections', () => ({ $activeConnectionId: atom('local') }))
 
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('alpha'),
@@ -26,6 +29,9 @@ vi.mock('@/store/profile', () => ({
 
 vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn(),
+  getFoundrySettings: (...args: unknown[]) => getFoundrySettings(...args),
+  saveFoundrySettings: vi.fn(),
+  validateFoundrySettings: vi.fn(),
   getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
   disconnectOAuthProvider: (...args: unknown[]) => disconnectOAuthProvider(...args),
   getEnvVars: (...args: unknown[]) => getEnvVars(...args),
@@ -463,4 +469,28 @@ describe('ProvidersSettings', () => {
 
     await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null))
   })
+})
+
+it('opens native Entra setup from the built-in Foundry provider card', async () => {
+  $settingsScopeOverride.set('alpha')
+  getEnvVars.mockResolvedValue({
+    AZURE_FOUNDRY_API_KEY: keyVar({
+      provider: 'azure-foundry',
+      provider_label: 'Azure Foundry',
+      provider_primary: true
+    })
+  })
+  getFoundrySettings.mockResolvedValue({
+    base_url: '',
+    model: '',
+    api_mode: 'codex_responses',
+    auth: { kind: 'api_key' },
+    api_key_set: false,
+    is_current: false
+  })
+  render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Microsoft Foundry' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Microsoft Entra ID' }))
+  expect(screen.getByRole('combobox', { name: 'Get credentials from' })).toBeTruthy()
+  expect(getFoundrySettings).toHaveBeenCalledWith({ connectionId: 'local', profile: 'alpha' })
 })

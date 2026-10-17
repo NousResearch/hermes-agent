@@ -1,4 +1,5 @@
 import { arUpdateChannel } from './ar_update_channel'
+import { customEndpointCredentials } from './custom_endpoint_credentials'
 import type { TranslationOverrides } from './define-locale'
 
 export const arSettings = {
@@ -12,6 +13,7 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    customEndpoints: { credentials: customEndpointCredentials.ar },
     subpages: {
       appearanceTheme: 'السمة',
       appearanceTypography: 'الخطوط والتحجيم',

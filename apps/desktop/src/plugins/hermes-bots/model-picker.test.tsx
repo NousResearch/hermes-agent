@@ -38,11 +38,14 @@ const { hostMock } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { useQuery } = await import('@tanstack/react-query')
-  const { catalogProviderMatches, useI18n } = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
+
+  const { catalogProviderMatches, modelOptionsQueryKey, useI18n } =
+    await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
 
   return {
     Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
     catalogProviderMatches,
+    modelOptionsQueryKey,
     GlyphSpinner: () => <span data-testid="spinner" />,
     host: hostMock,
     Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
@@ -118,6 +121,14 @@ describe('a bot gateway that never answers', () => {
 })
 
 describe('the catalog read', () => {
+  it('refreshes the bot catalog when endpoint settings invalidate model options', async () => {
+    hostMock.requestProfile.mockResolvedValue({ providers: [{ models: ['m1'], slug: 'prov' }] })
+    mount(remoteBot)
+    await waitFor(() => expect(hostMock.requestProfile).toHaveBeenCalledTimes(1))
+    await client.invalidateQueries({ queryKey: ['model-options'] })
+    await waitFor(() => expect(hostMock.requestProfile).toHaveBeenCalledTimes(2))
+  })
+
   it('rides the bot’s own route, unforced, and survives a remount from cache', async () => {
     hostMock.requestProfile.mockResolvedValue({ providers: [{ models: ['m1'], name: 'Prov', slug: 'prov' }] })
 

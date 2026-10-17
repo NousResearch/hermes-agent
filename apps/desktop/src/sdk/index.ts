@@ -1881,7 +1881,7 @@ export { LruCache } from '@/lib/lru-cache'
 export { captureGatewayFileDownload } from '@/lib/media'
 /** True when a saved provider id names this `model.options` row: its slug,
  *  display name, or a custom-provider alias (`custom:<key>` vs the bare key). */
-export { catalogProviderMatches } from '@/lib/model-options'
+export { catalogProviderMatches, modelOptionsQueryKey } from '@/lib/model-options'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors), its translucent tag fill, and the curated picker swatches — so
  *  plugin-rendered identities read the same hue as everywhere else. The

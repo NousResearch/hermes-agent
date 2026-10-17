@@ -1,6 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { customEndpointCredentials } from './custom_endpoint_credentials'
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruBoot } from './ru_boot'
 import { ruClarify } from './ru_clarify'
@@ -11,6 +13,7 @@ import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
+import { ruSettingsSubpages } from './ru_settings_subpages'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
@@ -351,57 +354,9 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
-    subpages: {
-      appearanceTheme: 'Тема',
-      appearanceTypography: 'Шрифты и масштаб',
-      appearanceWindowLayout: 'Окно и расположение',
-      appearanceChatDisplay: 'Отображение чата',
-      appearancePet: 'Питомец',
-      appearanceGeneral: 'Общие',
-      modelMain: 'Основная модель',
-      modelAuxiliary: 'Вспомогательные модели',
-      modelMoa: 'Совместная работа агентов',
-      modelFallbacks: 'Резервные модели',
-      chatBehavior: 'Поведение',
-      chatAttachments: 'Вложения',
-      workspaceProjects: 'Проекты и поиск',
-      workspaceShell: 'Среда оболочки',
-      workspaceFiles: 'Файлы и выполнение',
-      safetyApprovals: 'Подтверждения',
-      safetyPrivacy: 'Приватность и сеть',
-      safetyCheckpoints: 'Контрольные точки',
-      browserProfile: 'Профиль браузера',
-      browserNetwork: 'Локальные и частные URL',
-      memoryPersistent: 'Постоянная память',
-      memoryContext: 'Контекст и сжатие',
-      voiceConversation: 'Голосовой разговор',
-      voiceTranscription: 'Речь в текст',
-      voiceSpeech: 'Текст в речь',
-      advancedRuntime: 'Ограничения агента',
-      advancedTools: 'Доступ к инструментам',
-      advancedTerminal: 'Сервер терминала',
-      advancedOutput: 'Ограничения вывода',
-      advancedDelegation: 'Субагенты',
-      advancedDesktop: 'Приложение и запуск',
-      gatewayConnection: 'Это окно',
-      gatewayDevices: 'Сохранённые подключения',
-      gatewayManagedUpdates: 'Удалённые обновления',
-      gatewayManagedUpdatesUnavailable: 'Нужна версия приложения с поддержкой управляемых обновлений SSH.',
-      gatewayManagedUpdatesEmpty: 'Добавьте SSH в сохранённые подключения, чтобы управлять его обновлениями здесь.',
-      keyboardShortcuts: 'Назначения клавиш',
-      hudGesture: 'Жест HUD',
-      screenCapture: 'Захват экрана',
-      notificationAlerts: 'Системные уведомления',
-      notificationSounds: 'Звуки',
-      archivedSessions: 'Архив и хранение',
-      defaultDirectory: 'Папка проекта по умолчанию',
-      vaultCredentials: 'Сохранённые учётные данные',
-      vaultSources: 'Менеджеры паролей',
-      appUpdates: 'Версия и обновления',
-      uninstall: 'Удаление',
-      billingOverview: 'Обзор',
-      billingPlans: 'Тарифы'
-    },
+    foundry: foundryTranslations['ru'],
+    customEndpoints: { credentials: customEndpointCredentials.ru },
+    subpages: ruSettingsSubpages,
     closeSettings: 'Закрыть настройки',
     exportConfig: 'Экспорт конфигурации',
     importConfig: 'Импорт конфигурации',

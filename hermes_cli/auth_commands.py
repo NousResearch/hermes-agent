@@ -761,7 +761,7 @@ def _print_azure_entra_status() -> None:
                   f"{install_hint('azure-identity')}")
             print("  Then restart Hermes.")
         else:
-            info = describe_active_credential(config=EntraIdentityConfig(scope=scope), timeout_seconds=10.0)
+            info = describe_active_credential(config=EntraIdentityConfig.from_dict(entra if isinstance(entra, dict) else {}), timeout_seconds=10.0)
             env_sources = info.get("env_sources") or []
             if info.get("ok"):
                 print(f"  Status: ✓ token acquired ({', '.join(env_sources) if env_sources else 'default chain'})")

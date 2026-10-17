@@ -386,12 +386,17 @@ def _reap_orphaned_browser_sessions():
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
 
-    tmpdir = _bt._socket_safe_tmpdir()
+    # The producer clamps its budget to SOCKET_TMPDIR_MAX_LEN (``_session_socket_root``), so
+    # every ``agent-browser-*`` dir lives either under the default-budget root or in the /tmp
+    # fallback long names overflow into — both must be scanned (``max_len=0`` forces the
+    # fallback root; the set de-dupes when they coincide).
+    roots = {_bt._socket_safe_tmpdir(), _bt._socket_safe_tmpdir(max_len=0)}
     socket_dirs = []
     # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
-    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
-                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
-        socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
+    for root in roots:
+        for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
+                       f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
+            socket_dirs += glob.glob(os.path.join(root, prefix))
     if not socket_dirs:
         return
 
@@ -673,7 +678,11 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
 
     session_name = session_info.get("session_name", "")
     if session_name:
-        socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+        # Same root calculation as the producer (``_prepare_session_socket_dir``): a session
+        # name longer than the default budget covers lands its socket dir in the /tmp
+        # fallback, and looking it up under the default root would silently rmtree nothing.
+        socket_dir = os.path.join(
+            _session._session_socket_root(session_name), f"agent-browser-{session_name}")
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)

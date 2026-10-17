@@ -349,6 +349,25 @@ class PluginContext:
             logger.warning("Plugin %s: interrupt() failed", self.plugin_id, exc_info=True)
             return False
 
+    def steer(self, text: str) -> bool:
+        """Queue a mid-turn steer message: delivered as its own ``role:user`` row after the
+        current tool batch finishes, with no interrupt.
+
+        This is the programmatic equivalent of the ``/steer`` slash command, and the surface a
+        plugin uses to bring a long-running task to a halt before switching model. Delegates to
+        ``interrupt_control.steer``; returns False for empty text or when no agent is attached.
+        """
+        if not text or not text.strip():
+            return False
+        agent = self._walker_agent()
+        if agent is None:
+            return False
+        try:
+            return bool(agent.steer(text.strip()))
+        except Exception:
+            logger.warning("Plugin %s: steer() failed", self.plugin_id, exc_info=True)
+            return False
+
     @cached_property
     def state(self) -> PluginState:
         """This plugin's profile-scoped durable JSON state facade."""

@@ -52,6 +52,44 @@ def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path
         db.close()
 
 
+try:
+    from psutil import _psosx
+except ImportError:  # the boot-time reference is macOS-only
+    _psosx = None
+
+
+@pytest.mark.skipif(_psosx is None, reason='psutil boot-time drift is macOS-only')
+def test_reservation_survives_an_aged_owner_boot_reference(tmp_path, monkeypatch):
+    """psutil adjusts a macOS create_time() by a boot-time reference frozen when psutil was
+    imported in that process, so after a clock correction a long-lived owner computes births
+    shifted away from what the freshly spawned worker itself reports, and the exact match
+    rejected every managed worker at once (#140580). The owner undoes its own shift before
+    comparing, so a drifted reference still reserves while a forged birth keeps failing."""
+    from gateway.session_worker_reservation import reserve_admission_worker
+    db = SessionDB(tmp_path / 'state.db')
+    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        db.create_session('owned', 'cli')
+        epoch = begin_runtime_epoch(db, instance_id='owner')
+        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
+        admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+        claim_session_input(db, epoch=epoch, session_id='owned')
+        kwargs = dict(admission_id=admitted['admission_id'], process=process, principal_id='human')
+        frame = hello(process)  # the kernel start a fresh worker reports, before the owner ages
+        # The owner's psutil reference predates a 5 s clock correction: its own view of the
+        # worker's birth is shifted, the worker's hello is not.
+        monkeypatch.setattr(_psosx, 'INIT_BOOT_TIME', psutil.boot_time() + 5.0)
+        with pytest.raises(Exception, match='permission_denied'):
+            reserve_admission_worker(authority, hello=frame | {'birth': frame['birth'] + 1}, **kwargs)
+        scope = reserve_admission_worker(authority, hello=frame, **kwargs)
+        assert scope['pid'] == process.pid and scope['session_id'] == 'owned'
+    finally:
+        process.stdin.close()
+        process.wait(timeout=5)
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_reserved_process_uses_existing_authenticated_adoption_and_persistence(tmp_path):
     from gateway.session_worker import worker_request

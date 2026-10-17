@@ -15,6 +15,28 @@ from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_
 MAX_LAUNCHER_HOPS = 3
 
 
+def _kernel_birth(worker):
+    """The worker's kernel-recorded start, undoing this process's psutil clock-update shift.
+
+    psutil adjusts a macOS create_time() by a boot-time reference frozen when psutil was
+    imported in THIS process, so after a clock correction a long-lived owner computes a
+    birth shifted away from what the freshly spawned worker itself reports, and the exact
+    match rejected every managed worker at once (#140580). Reversing the shift with the same
+    reference restores the value both sides see; other platforms (and a psutil without the
+    reference) pass through untouched.
+    """
+    import psutil
+    birth = worker.create_time()
+    try:
+        from psutil._psosx import INIT_BOOT_TIME
+    except ImportError:
+        return birth
+    diff = INIT_BOOT_TIME - psutil.boot_time()
+    if abs(diff) >= 1:  # mirror psutil's own adjust_proc_create_time threshold
+        return birth - diff
+    return birth
+
+
 def verify_worker_identity(process, hello):
     """Return the verified ``(pid, birth)`` of the interpreter behind ``process``.
 
@@ -38,7 +60,10 @@ def verify_worker_identity(process, hello):
             raise RuntimeStoreError('permission_denied')
         worker = psutil.Process(pid)
         birth = worker.create_time()
-        if birth != hello['birth'] or not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE:
+        # Identity compares the kernel-recorded start both sides observe (#140580): the owner
+        # undoes its own psutil clock-correction shift first, so a forged birth (a recycled-pid
+        # claim) still fails the exact match — the epsilon only absorbs float round-trip noise.
+        if not (abs(_kernel_birth(worker) - hello['birth']) <= 1e-3) or not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')
         # psutil's parent() already refuses a recycled ppid (parent born after child).
         chain = [p.pid for p in worker.parents()[:MAX_LAUNCHER_HOPS]]

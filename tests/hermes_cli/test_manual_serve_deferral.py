@@ -10,7 +10,7 @@ from hermes_cli import update_cmd_fleet as fleet
 from hermes_cli import update_cmd_fleet_verify as fleet_verify
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
-from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves
+from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves, warn_pending_manual_serves
 from hermes_constants import get_hermes_home
 
 
@@ -68,6 +68,22 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
     fleet._warn_pending_fleet_restart_on_startup()
     assert "900" not in capsys.readouterr().err
+
+
+def test_manual_reminder_remedy_does_not_assume_a_remote_desktop(monkeypatch, capsys):
+    """A reminder is filed only for a ``manual-serve`` runtime, so no row can show that the reader's
+    Desktop is remote — the remedy line must not advise reconnecting one it cannot see (#107402)."""
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
+    directory = get_hermes_home() / "serve_restart_pending"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "900-1.0.json").write_text(
+        json.dumps({"kind": "serve", "profile": "work", "pid": 900, "create_time": 1000.0}), encoding="utf-8"
+    )
+    warn_pending_manual_serves(startup=True, pending_manual=[])
+    err = capsys.readouterr().err
+    assert "serve [work] pid 900 (started 1970-01-01 00:16 UTC)" in err
+    assert "Ask its owner to relaunch `hermes serve` / `hermes dashboard`." in err
+    assert "reconnect Desktop" not in err
 
 
 @pytest.mark.parametrize("alive", [True, None, False])

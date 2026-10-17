@@ -6,6 +6,7 @@ import math
 import os
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -78,9 +79,52 @@ def retain_receipt_manual_serves(receipt: dict) -> list[dict]:
     return pending
 
 
+def live_manual_serve_reminders() -> tuple[list[dict], list[str]]:
+    """``(rows still owed, names of files that could not be read)``.
+
+    A reminder is discharged by the death of the process it names — the only discharge available
+    without its owner's cooperation — so a provably dead pid prunes its file here. One rule, shared
+    by the startup warning and ``hermes doctor``, so the two cannot disagree about what is owed.
+    """
+    from hermes_cli.process_identity import _pid_alive_matches
+
+    rows: list[dict] = []
+    unreadable: list[str] = []
+    for path in sorted((get_hermes_home() / "serve_restart_pending").glob("*.json")):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8-sig"))
+            if _pid_alive_matches(row["pid"], row["create_time"]) is False:
+                path.unlink(missing_ok=True)
+                continue
+            rows.append(row)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.debug("Could not reconcile manual serve obligation %s: %s", path, exc)
+            unreadable.append(path.name)
+    return rows, unreadable
+
+
+def _started_stamp(created: object) -> str:
+    """``" (started 2026-10-17 05:12 UTC)"`` for a usable epoch creation time, else ``""``.
+
+    ``bool`` is excluded deliberately: ``create_time`` is a filesystem epoch, and a boolean in its
+    place would render 1970.
+    """
+    if not isinstance(created, (int, float)) or isinstance(created, bool) or not math.isfinite(created):
+        return ""
+    try:
+        return f" (started {datetime.fromtimestamp(float(created), tz=UTC):%Y-%m-%d %H:%M} UTC)"
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def describe_manual_serve_reminder(row: dict) -> str:
+    """``serve [work] pid 900 (started 2026-10-17 05:12 UTC)`` — the identity an operator acts on."""
+    described = f"{row.get('kind', 'serve')} [{row.get('profile', 'unknown')}] pid {row.get('pid', 'unknown')}"
+    return described + _started_stamp(row.get("create_time"))
+
+
 def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[dict] | None = None) -> None:
     """Warn about manual debt independently of gateway evidence; optionally reuse a snapshot's failed transfers."""
-    from hermes_cli.process_identity import _pid_alive_matches
     from hermes_cli.update_receipt import read_latest_receipt
 
     stream = sys.stderr if startup else sys.stdout
@@ -94,15 +138,14 @@ def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[di
         else:
             # No usable creation time means identity, not storage, blocked the durable reminder.
             print("    This host could not read the process creation time, so no durable reminder could be filed; ask its owner to relaunch `hermes serve` / `hermes dashboard`, and the warning clears once the pid is confirmed gone.", file=stream)
-    directory = get_hermes_home() / "serve_restart_pending"
-    for path in sorted(directory.glob("*.json")):
-        try:
-            row = json.loads(path.read_text(encoding="utf-8-sig"))
-            if _pid_alive_matches(row["pid"], row["create_time"]) is False:
-                path.unlink(missing_ok=True)
-                continue
-            print(f"  ⚠ {row['kind']} [{row['profile']}] pid {row['pid']}: manual restart still pending; this process may still serve pre-update code.", file=stream)
-            print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard` (reconnect Desktop for an SSH backend).", file=stream)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            logger.debug("Could not reconcile manual serve obligation %s: %s", path, exc)
-            print(f"  ⚠ Manual serve restart reminder could not be verified: {path.name}", file=stream)
+    rows, unreadable = live_manual_serve_reminders()
+    for row in rows:
+        print(f"  ⚠ {describe_manual_serve_reminder(row)}: manual restart still pending; this process may still serve pre-update code.", file=stream)
+        # No "(reconnect Desktop for an SSH backend)" here: a reminder is filed only for a
+        # ``manual-serve`` runtime, and the ledger classifies Desktop's SSH backend
+        # (``--ssh-session-token-file``) as ``desktop-ssh``, which defer_manual_serve skips. So no
+        # row that reaches this line can show the reader's Desktop is remote — the wording it
+        # carried survives where it is true, in report_unaccounted_runtimes' Desktop branch.
+        print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard`.", file=stream)
+    for name in unreadable:
+        print(f"  ⚠ Manual serve restart reminder could not be verified: {name}", file=stream)

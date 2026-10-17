@@ -250,7 +250,7 @@ class PluginContext:
         ``requires_plugins``, #64165). Matches on registry key or manifest name."""
         return any(
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
-            for key, loaded in self._manager._plugins.items()
+            for key, loaded in list(self._manager._plugins.items())
         )
 
     def _segments(self, key: str) -> tuple[str, ...]:
@@ -1541,7 +1541,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 "source": p.manifest.source, "enabled": p.enabled, "tools": len(p.tools_registered),
                 "hooks": len(p.hooks_registered), "middleware": len(p.middleware_registered),
                 "commands": len(p.commands_registered), "error": p.error,
-            } for _key, p in sorted(self._plugins.items())
+            } for _key, p in sorted(self._plugins.copy().items())
         ]
 
     def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
@@ -1621,7 +1621,7 @@ def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
     """
     if manager is None:
         return
-    for loaded in getattr(manager, "_plugins", {}).values():  # tolerates test-double managers
+    for loaded in list(getattr(manager, "_plugins", {}).values()):  # tolerates test-double managers
         module_name = getattr(getattr(loaded, "module", None), "__name__", None)
         if not module_name or not module_name.startswith(f"{_NS_PARENT}."):
             continue
@@ -2224,7 +2224,7 @@ def get_plugin_toolsets() -> list[tuple]:
         if entry:
             toolset_tools.setdefault(entry.toolset, []).append(entry.name)
     toolset_plugin: dict[str, LoadedPlugin] = {}
-    for loaded in manager._plugins.values():
+    for loaded in list(manager._plugins.values()):
         for tool_name in loaded.tools_registered:
             entry = registry.get_entry(tool_name)
             if entry and entry.toolset in toolset_tools:

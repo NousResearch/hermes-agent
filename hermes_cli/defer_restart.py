@@ -59,20 +59,21 @@ def _resolve_target_generation() -> Optional[dict[str, Any]]:
     return {"pid": pid, "start_time": start}
 
 
-def _supervisor_precheck(identity: dict[str, str]) -> tuple[bool, str]:
+def _supervisor_precheck(identity: dict[str, str], target_pid: int) -> tuple[bool, str]:
     """Does a supervisor actually own a restart path for THIS target?
 
-    Bound to the resolved service identity (never "check service A, signal
-    process B"). Promise is limited to: a trusted supervisor-managed restart path
-    exists at acceptance time — not a permanent guarantee.
+    Bound to the resolved service identity AND the resolved target pid (never
+    "check service A, signal process B"). The promise is limited to: at
+    acceptance time, this supervisor will recover a normal protocol exit (75)
+    of this exact process. Not a permanent guarantee.
     """
     kind = identity.get("kind", "")
     service_id = identity.get("service_id", "")
     try:
         if kind == "launchd":
-            return _precheck_launchd()
+            return _precheck_launchd(target_pid)
         if kind == "systemd":
-            return _precheck_systemd(service_id)
+            return _precheck_systemd(service_id, target_pid)
         if kind == "s6":
             return _precheck_s6(service_id)
     except Exception as exc:
@@ -80,10 +81,29 @@ def _supervisor_precheck(identity: dict[str, str]) -> tuple[bool, str]:
     return False, f"unsupported supervisor kind {kind!r}"
 
 
-def _precheck_launchd() -> tuple[bool, str]:
-    """launchd: job registered AND its agent plist opts into KeepAlive."""
+def _launchd_keepalive_recovers_exit75(keepalive: object) -> bool:
+    """True only when the EFFECTIVE KeepAlive semantics relaunch after exit 75.
+
+    Apple's KeepAlive forms: bare ``true`` relaunches unconditionally; the dict
+    form is conditional and may only restart on SUCCESSFUL exits
+    (``{"SuccessfulExit": true}``), which does NOT recover exit 75. Anything we
+    cannot positively attribute to exit-75 recovery is refused (review gate 1).
+    """
+    if keepalive is True:
+        return True
+    if isinstance(keepalive, dict):
+        # Restart on abnormal exit only: {"SuccessfulExit": false} covers 75.
+        return set(keepalive.keys()) == {"SuccessfulExit"} and keepalive.get("SuccessfulExit") is False
+    return False
+
+
+def _precheck_launchd(target_pid: int) -> tuple[bool, str]:
+    """launchd: job registered, KeepAlive recovers exit 75, and it supervises the target."""
+    import plistlib
+
     from hermes_cli.gateway import (
         _launchd_service_registered,
+        _locate_launchd_gateway_service,
         get_launchd_plist_path,
     )
 
@@ -91,22 +111,37 @@ def _precheck_launchd() -> tuple[bool, str]:
     label = plist.stem
     if not plist.is_file():
         return False, f"launchd agent plist missing: {plist}"
-    text = plist.read_text(encoding="utf-8", errors="replace")
-    if "KeepAlive" not in text:
-        return False, f"launchd agent {label} has no KeepAlive (exit would not relaunch)"
+    try:
+        with plist.open("rb") as fh:
+            data = plistlib.load(fh)
+    except Exception as exc:
+        return False, f"launchd agent plist unreadable: {exc}"
+    if not _launchd_keepalive_recovers_exit75(data.get("KeepAlive")):
+        return False, (f"launchd agent {label} KeepAlive does not guarantee relaunch after "
+                       f"exit 75 (got {data.get('KeepAlive')!r})")
     try:
         registered = _launchd_service_registered(label)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return False, f"launchctl probe failed: {exc}"
     if not registered:
         return False, f"launchd job {label} is not loaded"
-    return True, f"launchd job {label} (KeepAlive)"
+    try:
+        _domain, job_pid = _locate_launchd_gateway_service(label)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return False, f"launchctl probe failed: {exc}"
+    if job_pid is None:
+        return False, f"launchd job {label} has no live process (target {target_pid} not supervised)"
+    if job_pid != target_pid:
+        return False, (f"launchd job {label} supervises pid {job_pid}, not target {target_pid} "
+                       f"(a hand-started gateway holds this home)")
+    return True, f"launchd job {label} (KeepAlive relaunches exit 75, owns pid {job_pid})"
 
 
-def _precheck_systemd(service_id: str) -> tuple[bool, str]:
-    """systemd: unit exists, restart policy covers exit 75, not start-limited."""
+def _precheck_systemd(service_id: str, target_pid: int) -> tuple[bool, str]:
+    """systemd: unit exists, restart policy recovers exit 75, and MainPID is the target."""
     cmd = ["systemctl", "--user", "show", service_id,
-           "--property=FragmentPath,Restart,RestartPreventExitStatus,SuccessExitStatus,ActiveState"]
+           "--property=FragmentPath,Restart,RestartPreventExitStatus,SuccessExitStatus,"
+           "ActiveState,MainPID"]
     try:
         result = subprocess.run(cmd, timeout=10, capture_output=True, text=True, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -123,8 +158,12 @@ def _precheck_systemd(service_id: str) -> tuple[bool, str]:
     restart = props.get("Restart", "no")
     prevented = props.get("RestartPreventExitStatus", "").split()
     succeeded = props.get("SuccessExitStatus", "").split()
-    if restart == "no":
-        return False, f"systemd unit {service_id} has Restart=no"
+    # Positive judgment: will THIS policy relaunch after a clean exit 75?
+    # Only `always` and `on-failure` qualify (review gate 1: on-abnormal /
+    # on-abort / on-watchdog / on-success do NOT trigger on a plain non-zero).
+    if restart not in ("always", "on-failure"):
+        return False, (f"systemd unit {service_id} Restart={restart} does not recover "
+                       f"a clean exit 75 (only always/on-failure qualify)")
     if "75" in prevented:
         return False, f"systemd unit {service_id} blocks exit 75 via RestartPreventExitStatus"
     if restart == "on-failure" and "75" in succeeded:
@@ -132,7 +171,14 @@ def _precheck_systemd(service_id: str) -> tuple[bool, str]:
     state = props.get("ActiveState", "")
     if state == "failed":
         return False, f"systemd unit {service_id} is failed (start-limited?)"
-    return True, f"systemd unit {service_id} (Restart={restart})"
+    try:
+        main_pid = int(props.get("MainPID", "0") or "0")
+    except ValueError:
+        main_pid = 0
+    if main_pid != target_pid:
+        return False, (f"systemd unit {service_id} MainPID is {main_pid}, not target "
+                       f"{target_pid} (a hand-started gateway holds this home)")
+    return True, f"systemd unit {service_id} (Restart={restart}, MainPID={main_pid})"
 
 
 def _precheck_s6(service_id: str) -> tuple[bool, str]:
@@ -182,7 +228,7 @@ def cmd_defer_restart(args) -> None:  # noqa: ARG001 - argparse contract
         _print("✗ no running gateway matches this profile/home (exit 3)")
         raise SystemExit(EXIT_NO_TARGET)
 
-    ok, why = _supervisor_precheck(identity)
+    ok, why = _supervisor_precheck(identity, target["pid"])
     if not ok:
         _print(f"✗ supervisor pre-check failed: {why} (exit 4)")
         raise SystemExit(EXIT_NO_SUPERVISOR)
@@ -229,6 +275,10 @@ def cmd_defer_restart(args) -> None:  # noqa: ARG001 - argparse contract
             if outcome == dr.OUTCOME_REJECTED_COOLDOWN:
                 _print(f"✗ gateway refused: cooldown (exit 5)")
                 raise SystemExit(EXIT_COOLDOWN)
+            if outcome == dr.OUTCOME_REJECTED_STOPPING:
+                _print(f"✗ gateway is stopping without a scheduled restart — no recovery "
+                       f"guarantee right now (exit 4)")
+                raise SystemExit(EXIT_NO_SUPERVISOR)
             _print(f"✗ gateway refused: {outcome} {result.get('detail', '')} (exit 6)")
             raise SystemExit(EXIT_UNKNOWN)
         time.sleep(CONFIRM_POLL_S)

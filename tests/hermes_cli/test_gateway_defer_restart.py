@@ -27,10 +27,11 @@ FAKE_IDENTITY = {
 def cli_env(monkeypatch, tmp_path):
     """Sandboxed request dir + fixed identity/target + captured signal."""
     requests_dir = tmp_path / "restart_requests"
+    requests_dir.mkdir(parents=True, exist_ok=True)  # like the real requests_dir()
     monkeypatch.setattr(dr, "requests_dir", lambda: requests_dir)
     monkeypatch.setattr(dr, "compute_service_identity", lambda: dict(FAKE_IDENTITY))
     monkeypatch.setattr(hd, "_resolve_target_generation", lambda: dict(FAKE_GENERATION))
-    monkeypatch.setattr(hd, "_supervisor_precheck", lambda identity: (True, "fake supervisor"))
+    monkeypatch.setattr(hd, "_supervisor_precheck", lambda identity, pid: (True, "fake supervisor"))
 
     signals: list[tuple[int, int]] = []
 
@@ -68,7 +69,7 @@ def test_exit_4_when_no_supervisor_identity(cli_env, monkeypatch):
 
 
 def test_exit_4_when_precheck_fails(cli_env, monkeypatch):
-    monkeypatch.setattr(hd, "_supervisor_precheck", lambda identity: (False, "no KeepAlive"))
+    monkeypatch.setattr(hd, "_supervisor_precheck", lambda identity, pid: (False, "no KeepAlive"))
     assert _run() == hd.EXIT_NO_SUPERVISOR
     assert cli_env["signals"] == []
 
@@ -131,3 +132,61 @@ def test_exit_6_when_gateway_rejects(cli_env, monkeypatch, outcome):
     monkeypatch.setattr(dr, "read_result",
                         lambda rid, o=outcome: {"outcome": o, "request_id": rid, "detail": "x"})
     assert _run() == hd.EXIT_UNKNOWN
+
+
+def test_exit_4_when_gateway_reports_stopping(cli_env, monkeypatch):
+    """A plain stop without a restart path is a refusal, never a success."""
+    monkeypatch.setattr(dr, "read_result",
+                        lambda rid: {"outcome": dr.OUTCOME_REJECTED_STOPPING, "request_id": rid})
+    assert _run() == hd.EXIT_NO_SUPERVISOR
+
+
+# --- supervisor pre-check semantics (review gate 1, item 4) ---------------------
+
+
+def test_launchd_keepalive_successful_exit_true_is_refused():
+    """{"SuccessfulExit": true} only relaunches on exit 0 — no exit-75 recovery."""
+    assert hd._launchd_keepalive_recovers_exit75({"SuccessfulExit": True}) is False
+    assert hd._launchd_keepalive_recovers_exit75({"SuccessfulExit": False}) is True
+    assert hd._launchd_keepalive_recovers_exit75(True) is True
+    assert hd._launchd_keepalive_recovers_exit75(False) is False
+    # Other conditional forms cannot be attributed to exit-75 recovery.
+    assert hd._launchd_keepalive_recovers_exit75({"Crash": True}) is False
+    assert hd._launchd_keepalive_recovers_exit75({"SuccessfulExit": False, "Crash": True}) is False
+    assert hd._launchd_keepalive_recovers_exit75(None) is False
+
+
+@pytest.mark.parametrize("restart,prevented,succeeded,expect_ok", [
+    ("always", "", "", True),
+    ("on-failure", "", "", True),
+    ("always", "75", "", False),
+    ("on-failure", "", "75", False),
+    ("on-abnormal", "", "", False),
+    ("on-abort", "", "", False),
+    ("on-watchdog", "", "", False),
+    ("on-success", "", "", False),
+    ("no", "", "", False),
+])
+def test_systemd_policy_must_recover_exit75(restart, prevented, succeeded, expect_ok, monkeypatch):
+    import subprocess
+
+    props = (f"FragmentPath=/etc/systemd/system/x.service\nRestart={restart}\n"
+             f"RestartPreventExitStatus={prevented}\nSuccessExitStatus={succeeded}\n"
+             f"ActiveState=active\nMainPID={FAKE_GENERATION['pid']}\n")
+
+    monkeypatch.setattr(hd.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, props, ""))
+    ok, why = hd._precheck_systemd("hermes-gateway", FAKE_GENERATION["pid"])
+    assert ok is expect_ok
+
+
+def test_systemd_pid_binding_rejects_hand_started_gateway(monkeypatch):
+    import subprocess
+
+    props = ("FragmentPath=/etc/systemd/system/x.service\nRestart=always\n"
+             "RestartPreventExitStatus=\nSuccessExitStatus=\nActiveState=active\nMainPID=11111\n")
+    monkeypatch.setattr(hd.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, props, ""))
+    ok, why = hd._precheck_systemd("hermes-gateway", FAKE_GENERATION["pid"])
+    assert ok is False
+    assert "MainPID" in why

@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { approvePairing, getMessagingPlatforms } from './api/messaging'
 import { getAuxiliaryModels, getGlobalModelInfo } from './api/models'
 import { getOfficialSkills, getSkillHubSources } from './api/skills'
-import { getTerminalBackends, getToolsetConfig, selectTerminalBackend } from './api/toolsets'
+import {
+  getComputerUseStatus,
+  getTerminalBackends,
+  getToolsetConfig,
+  grantComputerUsePermissions,
+  selectTerminalBackend
+} from './api/toolsets'
 import {
   getHermesConfigRecord,
   getMcpCatalog,
@@ -13,6 +19,7 @@ import {
   getUsageAnalytics,
   installSkillFromHub,
   profileScopeKey,
+  saveHermesConfigRecord,
   saveMcpServers,
   setApiRequestConnection,
   setApiRequestProfile,
@@ -168,6 +175,8 @@ describe('capability helpers are connection-scoped', () => {
     void setToolsetEnabled('browser', true, { connectionId: 'homelab', profile: 'inbox-bot' })
     void saveMcpServers({}, { connectionId: 'homelab', profile: 'inbox-bot' })
     void installSkillFromHub('official/research/arxiv', { connectionId: 'homelab', profile: 'inbox-bot' })
+    void getComputerUseStatus({ connectionId: 'homelab', profile: 'inbox-bot' })
+    void grantComputerUsePermissions({ connectionId: 'homelab', profile: 'inbox-bot' })
 
     for (const call of api.mock.calls) {
       expect((call[0] as { connectionId?: string }).connectionId).toBe('homelab')
@@ -187,6 +196,24 @@ describe('capability helpers are connection-scoped', () => {
     // route — absorb a "This device" pick (v0.20.6 regression, #91564 rung).
     expect(last().profile).toBe('coder')
     expect(last().connectionId).toBe('local')
+
+    void getComputerUseStatus({ connectionId: 'local', profile: 'coder' })
+    expect(last()).toMatchObject({ connectionId: 'local', profile: 'coder', priority: 'foreground' })
+  })
+
+  it('saves a sparse Computer Use target record on the exact capability scope', () => {
+    const scope = { connectionId: 'homelab', profile: 'operator' }
+
+    void saveHermesConfigRecord({ computer_use: { target: 'windows' } }, scope)
+
+    expect(api.mock.calls.at(-1)?.[0]).toMatchObject({
+      connectionId: 'homelab',
+      profile: 'operator',
+      priority: 'foreground',
+      method: 'PUT',
+      path: '/api/config',
+      body: { config: { computer_use: { target: 'windows' } } }
+    })
   })
 
   it('profileScopeKey keeps legacy keys byte-identical and namespaces every explicit pin', () => {

@@ -1,4 +1,5 @@
 import { compactNumber } from '@hermes/shared'
+import { useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
@@ -31,6 +32,7 @@ export function ToolsetDetail({
   const navigate = useNavigate()
   const tools = toolNames(toolset)
   const label = toolsetDisplayLabel(toolset)
+  const [computerUseConfigRevision, setComputerUseConfigRevision] = useState(0)
 
   return (
     <>
@@ -72,7 +74,14 @@ export function ToolsetDetail({
           </div>
         </div>
       )}
-      {toolset.name === 'computer_use' && <ComputerUsePanel onConfiguredChange={onConfiguredChange} />}
+      {toolset.name === 'computer_use' && (
+        <ComputerUsePanel
+          key={profileScopeKey(profile)}
+          onConfiguredChange={onConfiguredChange}
+          onTargetChange={() => void setComputerUseConfigRevision(revision => revision + 1)}
+          profile={profile}
+        />
+      )}
       {/* Real-profile consent toggle ABOVE the backend/provider matrix — the
           config option users kept missing because its only GUI home was the
           generic Settings → Config editor. */}
@@ -88,6 +97,7 @@ export function ToolsetDetail({
         key={`${toolset.name}:${profileScopeKey(profile)}`}
         onConfiguredChange={onConfiguredChange}
         profile={profile}
+        refreshKey={toolset.name === 'computer_use' ? computerUseConfigRevision : undefined}
         toolset={toolset.name}
       />
     </>

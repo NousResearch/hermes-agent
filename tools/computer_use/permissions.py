@@ -87,10 +87,17 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> dict[str, Any]:
     UI keys off: macOS = both TCC grants, elsewhere = driver health (no TCC model); ``None`` = unknown (binary missing /
     probe failed). ``can_grant`` is macOS-only."""
     from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd  # same resolver as the tool itself
+    from tools.computer_use.cua_backend_driver import (
+        _resolve_cua_driver_selection, _runtime_host, computer_use_selection_identity)
     plat, name = sys.platform, configured_backend_name()
-    binary = resolve_cua_driver_cmd(driver_cmd) if name == DEFAULT_BACKEND else None
+    target, driver_platform, binary, target_error = ("auto", None, None, None)
+    if name == DEFAULT_BACKEND:
+        target, driver_platform, binary, target_error = (
+            computer_use_selection_identity() if driver_cmd is None else _resolve_cua_driver_selection(driver_cmd))
+    _, wsl = _runtime_host()
     out: dict[str, Any] = {"platform": plat, "platform_supported": plat in _RUNTIME_PLATFORMS,
+                           "target": target, "is_wsl": wsl, "driver_platform": driver_platform,
+                           "driver_command": binary, "target_error": target_error,
                            "installed": bool(binary), "version": None, "ready": None, "can_grant": plat == "darwin",
                            "checks": [], "source": None, "error": None, **{k: None for k in _BOOLS}}
     if name != DEFAULT_BACKEND:  # another driver is selected: cua-driver probes and TCC grants do not apply
@@ -103,7 +110,7 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> dict[str, Any]:
         out.update(installed=True, version=f"{provider.display_name} (computer_use.backend: {provider.name})",
                    ready=provider.is_available())
         return out
-    if not binary:
+    if not binary or target_error:
         return out
     with suppress(Exception):
         out["version"] = (_run(binary, "--version", timeout=5).stdout or "").strip() or None

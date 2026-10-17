@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
@@ -996,4 +996,51 @@ describe('ToolsetConfigPanel', () => {
       expect(within(selfRow).queryByText('Extract backend')).toBeNull()
     })
   })
+})
+
+it('discards an older provider response after a same-scope target refresh', async () => {
+  let resolveOld!: (value: ToolsetConfig) => void
+
+  const old = new Promise<ToolsetConfig>(resolve => {
+    resolveOld = resolve
+  })
+
+  const ready = config({
+    name: 'computer_use',
+    providers: [
+      {
+        name: 'cua-driver',
+        badge: 'local',
+        tag: 'Desktop control',
+        env_vars: [],
+        post_setup: 'cua_driver',
+        requires_nous_auth: false,
+        is_active: true,
+        status: 'ready'
+      }
+    ]
+  })
+
+  const missing = {
+    ...ready,
+    providers: ready.providers.map(provider => ({ ...provider, status: 'needs_setup' as const }))
+  }
+
+  getToolsetConfig.mockReturnValueOnce(old).mockResolvedValueOnce(missing)
+
+  const { rerender } = render(<ToolsetConfigPanel refreshKey={0} toolset="computer_use" />)
+  await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledTimes(1))
+  // Keep the router/provider wrappers and component identity across rerenders.
+  rerender(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient()}>
+        <ToolsetConfigPanel refreshKey={1} toolset="computer_use" />
+      </QueryClientProvider>
+    </MemoryRouter>
+  )
+  expect(await screen.findByRole('button', { name: 'Run setup' })).toBeTruthy()
+  await act(async () => resolveOld(ready))
+  expect(getToolsetConfig).toHaveBeenCalledTimes(2)
+  expect(screen.queryByText('Installed')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Run setup' })).toBeTruthy()
 })

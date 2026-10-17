@@ -17,6 +17,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field
 from tools import file_state
 from tools.delegate_tool_progress import _quiet, _safe_progress
+from tools.delegate_tool_config import _get_child_scratch_isolation
 from tools.delegate_tool_registry import (
     _capture_gateway_steer_authority, _close_subagent_steering, _register_subagent, _unregister_subagent,
 )
@@ -403,6 +404,23 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
         )
     return None
 
+def _create_isolated_scratch_dir(child_task_id: str):
+    """Create a unique per-child scratch subdirectory and return scratch-info in the
+    same shape as a worktree info dict (``path`` key). This is the non-git fallback
+    for child_scratch_isolation: the child's cwd is seeded here instead of the
+    parent's shared cwd, so parallel children never see each other's files."""
+    from hermes_cli.config import get_hermes_home
+    import os as _os
+    try:
+        base = _os.path.join(str(get_hermes_home()), "cache", "scratch", "subagent")
+        _os.makedirs(base, exist_ok=True)
+        path = _os.path.join(base, child_task_id.replace(os.sep, "-").replace("/", "-"))
+        _os.makedirs(path, exist_ok=True)
+        return {"path": path, "branch": "", "repo_root": "", "base_commit": ""}
+    except Exception as exc:
+        logger.warning("subagent scratch dir creation failed: %s", exc)
+        return None
+
 def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     """Hand ``child.close()`` to a Future done-callback and drain its transports.
 
@@ -736,6 +754,10 @@ class _ChildRun:
         if info is None:
             return redact_child_result(entry_dict, getattr(self.child, "_delegate_output_schema", None), force=False)
         from tools import subagent_worktree
+        # Scratch-dir isolation (non-git fallback): no git inspection/prune — just report the path.
+        if not info.get("branch") and not info.get("repo_root"):
+            entry_dict["scratch_dir"] = {"path": info.get("path", ""), "isolated": True}
+            return entry_dict
         try:
             entry_dict["worktree"] = subagent_worktree.finalize_subagent_worktree(info)
         except Exception as e:
@@ -768,6 +790,15 @@ class _ChildRun:
             # the goal message instead (same turn, no system-prompt mutation).
             from tools.subagent_worktree import build_worktree_context_note
             self.goal = self.goal + build_worktree_context_note(self.worktree_info)
+        elif _get_child_scratch_isolation():
+            # Non-git / non-local fallback: run this child in its OWN scratch
+            # subdirectory instead of the parent's shared cwd, so parallel children
+            # never see or contend for each other's files. Works on any backend.
+            self.worktree_info = _create_isolated_scratch_dir(self.child_task_id)
+            if self.worktree_info is not None:
+                with _quiet("scratch cwd seed failed: %s"):
+                    from tools.terminal_tool import record_session_cwd as _rsc
+                    _rsc(self.child_task_id, self.worktree_info["path"])
         self.wall_start = time.time()
         self.parent_reads_snapshot = list(file_state.known_reads(self.parent_task_id)) if self.parent_task_id else []
 

@@ -26,6 +26,17 @@ interface DeliveredText {
   at: number;
 }
 
+// The CR/LF/CRLF bytes most recently delivered through this forwarder's own
+// send, and when. A mobile IME can echo the Enter it just committed back
+// through xterm's onData; swallowing that echo prevents a double Enter on
+// the composition path (a distinct vector from the split-CRLF fuser).
+const LINE_ENDING_SETS: Record<string, string[]> = {
+  "\r": ["\r", "\r\n"],
+  "\n": ["\n", "\n\r"],
+  "\r\n": ["\r\n", "\r"],
+  "\n\r": ["\n\r", "\n"],
+};
+
 export function createPtyCompositionForwarder(send: (data: string) => void) {
   let pending: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -35,6 +46,9 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   let lastSent: DeliveredText | null = null;
   // Plain text recently delivered to the PTY through xterm's onData.
   let lastTerminalData: DeliveredText | null = null;
+  // Line-ending bytes delivered through this forwarder's send, for echo-drop.
+  let lastSentEnterAt = 0;
+  let lastSentEnter = "";
 
   const clearPending = () => {
     pending = null;
@@ -48,11 +62,23 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
 
   const sendCommitted = (data: string) => {
     lastSent = { text: data, at: Date.now() };
+    if (data === "\r" || data === "\n" || data === "\r\n" || data === "\n\r") {
+      lastSentEnterAt = Date.now();
+      lastSentEnter = data;
+    }
     send(data);
   };
 
   const withinEchoWindow = (entry: DeliveredText | null): entry is DeliveredText =>
     entry !== null && Date.now() - entry.at <= ECHO_WINDOW_MS;
+
+  const enterEchoed = (data: string): boolean => {
+    if (Date.now() - lastSentEnterAt > ECHO_WINDOW_MS) return false;
+    const equivalents = LINE_ENDING_SETS[lastSentEnter] ?? [];
+    // A lone CR/LF echoes as itself; a fused CRLF/LFCR may arrive whole or
+    // as its first half. Match any equivalent form within the window.
+    return equivalents.some((e) => data === e);
+  };
 
   return {
     onCompositionEnd(data: string | null) {
@@ -108,6 +134,13 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     // Returns the portion still worth forwarding: "" for a full duplicate,
     // the new suffix for a strict extension, the input unchanged otherwise.
     filterTerminalData(data: string): string {
+      // A lone CR/LF that echoes the Enter the composition path just
+      // committed is not a new keypress — swallow it so the composer is not
+      // submitted twice. This is the composition-echo vector (distinct from
+      // the split-CRLF fuser, which handles CR and LF arriving separately).
+      if (data === "\r" || data === "\n") {
+        if (enterEchoed(data)) return "";
+      }
       if (!withinEchoWindow(lastSent)) return data;
       if (data === lastSent.text) return "";
       if (data.length > lastSent.text.length && data.startsWith(lastSent.text)) {

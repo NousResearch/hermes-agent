@@ -1785,6 +1785,9 @@ DEFAULT_CONFIG = {
         # globs on the basename (e.g. "*.mdc").
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
+        # Per-project exemptions: absolute directory paths whose AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules
+        # writes skip the approval gate. Matched against the realpath (prefix) so symlinks cannot escape.
+        "protected_instruction_exempt_dirs": [],
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},
         # IDs of supply-chain advisories the user has read and acted on; acked ones stop the startup
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:

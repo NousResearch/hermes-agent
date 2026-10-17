@@ -302,7 +302,9 @@ export function parseMultipleKeypresses(
   let inPaste = prevState.mode === 'IN_PASTE'
   let pasteBuffer = prevState.pasteBuffer
 
-  for (const token of tokens) {
+  for (let ti = 0; ti < tokens.length; ti++) {
+    const token = tokens[ti]!
+
     if (token.type === 'sequence') {
       if (token.value === PASTE_START) {
         inPaste = true
@@ -328,7 +330,31 @@ export function parseMultipleKeypresses(
           if (mouse) {
             keys.push(mouse)
           } else {
-            keys.push(parseKeypress(token.value))
+            const parsed = parseKeypress(token.value)
+
+            // Sticky-modifier (ESC) + CRLF fused in one read: Android/mobile
+            // terminals deliver a modified Enter as ESC followed by the CRLF
+            // newline halves, which the tokenizer splits into an ESC+CR / ESC+LF
+            // sequence token (`\x1b\r` / `\x1b\n`, an Alt+Enter) and a separate
+            // opposite line-ending text token (`\n` / `\r`). Without fusion that
+            // lone CR/LF half re-parses as a second bare Enter -> the composer
+            // submits twice. Fuse the halves into one modified Enter, exactly
+            // like the CRLF-fused Enter recognition above.
+            if (
+              parsed.name === 'return' &&
+              parsed.meta &&
+              ti + 1 < tokens.length &&
+              (token.value === '\x1b\r' || token.value === '\x1b\n')
+            ) {
+              const next = tokens[ti + 1]!
+              const opposite = token.value === '\x1b\r' ? '\n' : '\r'
+
+              if (next.type === 'text' && next.value === opposite) {
+                ti++ // swallow the CR/LF half — it is part of this Alt+Enter
+              }
+            }
+
+            keys.push(parsed)
           }
         }
       }
@@ -800,7 +826,16 @@ function parseKeypress(s: string = ''): ParsedKey {
     return createNavKey(s, 'mouse', false)
   }
 
-  if (s === '\r' || s === '\n' || s === '\x1b\r' || s === '\x1b\n') {
+  // A lone Enter may arrive as CR, LF, or CRLF fused in a single read —
+  // the last is what Android/mobile terminals send for Enter (the CR is
+  // consumed as the newline's carriage-return half, not a separate keypress).
+  // CR and LF are deliberately NOT split points in parseTextKeypresses (an
+  // embedded CR/LF in a text token is paste/newline content, not Enter), so
+  // the fused CRLF reaches parseKeypress whole only when it IS the entire
+  // token — i.e. a lone Enter. Recognize it as `return`. A few terminals
+  // (and some mobile keyboards) emit the halves reversed (LF then CR), so
+  // `\n\r` is recognized the same way.
+  if (s === '\r' || s === '\n' || s === '\r\n' || s === '\n\r' || s === '\x1b\r' || s === '\x1b\n') {
     key.raw = undefined
     key.name = 'return'
     key.meta = s.startsWith('\x1b')

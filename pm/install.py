@@ -437,7 +437,11 @@ def _install(
                 f"no artifact for {target} in the lockfile",
                 "run `hermes pm lock --bump` for this package",
             )
-        with store.scratch() as scratch:
+        with ExitStack() as scratch_stack:
+            try:
+                scratch = scratch_stack.enter_context(store.scratch())
+            except OSError as e:
+                raise InstallError(package.name, f"install failed: {e}") from e
             staged = scratch / "tree"
             try:
                 if copy_from is not None:

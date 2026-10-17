@@ -373,6 +373,53 @@ def record_cooldown(identity_key: str, request_id: str) -> bool:
 # final outcome is NEVER overwritten (first decision wins).
 # ---------------------------------------------------------------------------
 
+#: Append-only audit trail (spec: Audit logging and request retention).
+AUDIT_FILE_NAME = "audit.jsonl"
+
+
+def _audit_path() -> Path:
+    return requests_dir() / AUDIT_FILE_NAME
+
+
+def _sanitize_actor_ref(value: Any) -> str:
+    """Audit-only attribution: a bounded string, never an authorization input."""
+    return value if isinstance(value, str) and len(value) <= 256 else ""
+
+
+def append_audit(
+    request_id: str,
+    outcome: str,
+    *,
+    actor_ref: str = "",
+    generation: Optional[dict[str, Any]] = None,
+    service_key: Optional[str] = None,
+    detail: str = "",
+) -> None:
+    """Atomically append one JSONL audit record (O_APPEND write + fsync).
+
+    Audit is best-effort evidence, never a gate: a failed append is logged and
+    the decision still stands (the result record is the authoritative outcome).
+    """
+    record = {
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
+        "request_id": request_id,
+        "outcome": outcome,
+        "actor_ref": _sanitize_actor_ref(actor_ref),
+        "recorded_at": time.time(),
+        "generation": generation if generation is not None else process_generation(),
+        "service_key": service_key,
+        "detail": detail,
+    }
+    try:
+        fd = os.open(_audit_path(), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, default=str) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception as exc:
+        logger.warning("defer-restart: audit append failed: %s", exc)
+
+
 def write_result(
     request_id: str,
     outcome: str,
@@ -380,11 +427,13 @@ def write_result(
     generation: Optional[dict[str, Any]] = None,
     detail: str = "",
     service_key: Optional[str] = None,
+    actor_ref: str = "",
 ) -> bool:
     """Persist the decision for ``request_id``. Queryable after the writer exits.
 
     Refuses to overwrite an existing final decision (I1): rejections, replays
-    and expiry cleanup must all respect the first decision.
+    and expiry cleanup must all respect the first decision. Every recorded
+    decision is additionally appended to the audit trail (spec).
     """
     path = _result_path(request_id)
     if path.exists():
@@ -403,6 +452,9 @@ def write_result(
     ok = _atomic_write_json(path, payload)
     if ok and not path.exists():  # pragma: no cover - defensive
         return False
+    if ok:
+        append_audit(request_id, outcome, actor_ref=actor_ref,
+                     generation=payload["generation"], service_key=service_key, detail=detail)
     return ok
 
 
@@ -484,6 +536,9 @@ def _validate_payload_shape(payload: Any) -> tuple[bool, str]:
     for key in ("kind", "service_id", "hermes_home"):
         if not isinstance(identity.get(key), str):
             return False, f"bad service_identity.{key}"
+    actor = payload.get("actor_ref")
+    if actor is not None and (not isinstance(actor, str) or len(actor) > 256):
+        return False, "bad actor_ref"
     return True, ""
 
 
@@ -587,6 +642,8 @@ def consume_pending_request(
             write_result(request_id, OUTCOME_REJECTED_INVALID, detail="request file permissions/owner")
         return None, OUTCOME_REJECTED_INVALID, "request file permissions/owner"
 
+    actor = _sanitize_actor_ref(payload.get("actor_ref"))
+
     # Existing decision first (I1): a decided request id is never re-decided,
     # regardless of which generation now sees it.
     existing = read_result(request_id)
@@ -615,7 +672,8 @@ def consume_pending_request(
         with _best_effort():
             _unlink_exclusive(newest)
             write_result(request_id, OUTCOME_REJECTED_INVALID,
-                         detail="orphaned claim: a previous acceptance was never committed")
+                         detail="orphaned claim: a previous acceptance was never committed",
+                         actor_ref=actor)
         return None, OUTCOME_REJECTED_INVALID, "orphaned claim"
 
     if not _generation_matches(payload["target_generation"]):
@@ -628,7 +686,8 @@ def consume_pending_request(
         with _best_effort():
             if not _unlink_exclusive(newest):
                 return None, "", "claim lost to another consumer"
-            write_result(request_id, OUTCOME_REJECTED_INVALID, detail="service identity mismatch")
+            write_result(request_id, OUTCOME_REJECTED_INVALID, detail="service identity mismatch",
+                         actor_ref=actor)
         return None, OUTCOME_REJECTED_INVALID, "service identity mismatch"
 
     identity_key = service_identity_key(mine)
@@ -639,7 +698,7 @@ def consume_pending_request(
                 return None, "", "claim lost to another consumer"
             write_result(request_id, OUTCOME_REJECTED_COOLDOWN,
                          detail=f'cooldown window active until +{COOLDOWN_WINDOW_S:.0f}s',
-                         service_key=identity_key)
+                         service_key=identity_key, actor_ref=actor)
         return None, OUTCOME_REJECTED_COOLDOWN, "cooldown active"
 
     # Claim: the O_EXCL create IS the consume-once gate — only its winner may
@@ -739,6 +798,12 @@ def process_sigusr1_request(schedule_restart, cancel_restart=None) -> None:
             # Replay of an already-ACCEPTED request: the original decision stands
             # (I2) — nothing to schedule and the original result is untouched.
             logger.info("SIGUSR1: deferred restart %s duplicates an accepted request", request_id)
+            with _best_effort():
+                append_audit(request_id, OUTCOME_DUPLICATE,
+                             actor_ref=_sanitize_actor_ref(payload.get("actor_ref")),
+                             generation=payload.get("target_generation"),
+                             service_key=service_identity_key(payload["service_identity"]),
+                             detail="replay of an accepted request")
             continue
         if outcome != OUTCOME_ACCEPTED:
             # Replay of an already-decided (rejected) request: repeat that decision
@@ -758,7 +823,8 @@ def process_sigusr1_request(schedule_restart, cancel_restart=None) -> None:
             # generation can exit, else the restart is cancelled.
             if not write_result_with_retry(request_id, OUTCOME_ACCEPTED,
                                            generation=payload.get("target_generation"),
-                                           service_key=key):
+                                           service_key=key,
+                                           actor_ref=_sanitize_actor_ref(payload.get("actor_ref"))):
                 logger.critical(
                     "defer-restart: could not persist acceptance for %s — cancelling "
                     "the scheduled restart (no exit without a decision, invariant I1)",
@@ -773,12 +839,14 @@ def process_sigusr1_request(schedule_restart, cancel_restart=None) -> None:
             with _best_effort():
                 write_result(request_id, OUTCOME_SUPERSEDED,
                              detail="restart already scheduled for this gateway",
-                             service_key=key)
+                             service_key=key,
+                             actor_ref=_sanitize_actor_ref(payload.get("actor_ref")))
         else:  # "stopping" or unexpected value
             with _best_effort():
                 write_result(request_id, OUTCOME_REJECTED_STOPPING,
                              detail="gateway is stopping without a scheduled restart",
-                             service_key=key)
+                             service_key=key,
+                             actor_ref=_sanitize_actor_ref(payload.get("actor_ref")))
 
 
 # ---------------------------------------------------------------------------

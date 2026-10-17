@@ -278,7 +278,8 @@ def cmd_defer_restart(args) -> None:  # noqa: ARG001 - argparse contract
         "service_identity": identity,
         "target_generation": target,
         "requested_at": time.time(),
-        "actor_ref": {"parent_pid": os.getppid(), "pid": os.getpid()},
+        # Audit-only attribution (bounded string — schema-validated, never an authorization input).
+        "actor_ref": f"cli:{os.getppid()}:{os.getpid()}",
     }
     if not _write_request_file(payload):
         _print("✗ could not persist the restart request file (exit 6)")

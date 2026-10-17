@@ -102,7 +102,7 @@ def test_happy_path_writes_request_and_signals_target(cli_env, monkeypatch):
     assert payload["service_identity"] == FAKE_IDENTITY
     assert payload["target_generation"] == FAKE_GENERATION
     assert payload["request_id"] == pending[0].name[len("pending-"):-len(".json")]
-    assert payload["actor_ref"]["pid"] > 0
+    assert payload["actor_ref"].startswith("cli:")  # bounded audit string (schema)
 
 
 def test_duplicate_and_superseded_map_to_exit_0(cli_env, monkeypatch):

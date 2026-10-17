@@ -345,19 +345,71 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         return None
 
 
-def _dm_dir() -> Path:
+def _uid() -> int | None:
     uid_getter = getattr(os, "getuid", None)
-    uid = uid_getter() if callable(uid_getter) else None
-    path = Path(tempfile.gettempdir()) / (f"{_DM_DIR_NAME}-{uid}" if uid is not None else _DM_DIR_NAME)
-    path.mkdir(mode=0o700, exist_ok=True)
-    # Shared POSIX temp roots need a per-user directory. Fail closed if an
-    # attacker pre-created the expected path or replaced it with a symlink.
+    return uid_getter() if callable(uid_getter) else None
+
+
+def _dm_dir_path() -> Path:
+    """Where the DM directory lives; never creates it (housekeeping must not seed it)."""
+    uid = _uid()
+    return Path(tempfile.gettempdir()) / (f"{_DM_DIR_NAME}-{uid}" if uid is not None else _DM_DIR_NAME)
+
+
+def _dm_dir_denied(path: Path, problem: str) -> PermissionError:
+    return PermissionError(
+        f"DM temp directory {path} {problem}. Hermes will not use it. Usually an elevated (admin) "
+        f"process created it. Remove it from an elevated shell (check `dir /al /s \"{path}\"` "
+        f"shows no links, then `rd /s /q \"{path}\"`) and run Hermes unelevated; the next "
+        "message recreates it owned by you."
+    )
+
+
+def _check_dm_dir_windows(path: Path, info: os.stat_result) -> None:
+    from tools import bot_mode_dm_winacl as winacl
+
+    if getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise _dm_dir_denied(path, "is a link or junction")
+    try:
+        owner = winacl.owner_sid(path)
+    except PermissionError:
+        raise _dm_dir_denied(path, "is not readable by the current user") from None
+    if owner != winacl.current_user_sid():
+        raise _dm_dir_denied(path, f"is owned by another account ({owner})")
+    try:
+        with os.scandir(path):
+            pass
+    except PermissionError:
+        raise _dm_dir_denied(path, "cannot be listed by the current user") from None
+
+
+def _check_dm_dir(path: Path) -> None:
+    # Fail closed if an attacker (POSIX shared temp root) or an elevated process (Windows)
+    # pre-created the expected path, or replaced it with a link.
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode):
         raise PermissionError(f"DM temp path is not a directory: {path}")
+    if os.name == "nt":
+        _check_dm_dir_windows(path, info)
+        return
+    uid = _uid()
     if uid is not None and info.st_uid != uid:
         raise PermissionError(f"DM temp directory is owned by another user: {path}")
-    if stat.S_IMODE(info.st_mode) != 0o700:
+
+
+def _dm_dir() -> Path:
+    path = _dm_dir_path()
+    if os.name == "nt":
+        # mkdir(mode=0o700) yields an OWNER RIGHTS DACL that locks the user out whenever an
+        # elevated process created the folder, and chmod only toggles the read-only bit.
+        from tools import bot_mode_dm_winacl as winacl
+
+        winacl.create_private_directory(path, winacl.current_user_sid())
+        _check_dm_dir(path)
+        return path
+    path.mkdir(mode=0o700, exist_ok=True)
+    _check_dm_dir(path)
+    if stat.S_IMODE(path.lstat().st_mode) != 0o700:
         path.chmod(0o700)
     return path
 
@@ -369,8 +421,10 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
     cutoff = (time.time() if now is None else now) - max_age_hours * 3600
     temp_root = Path(tempfile.gettempdir())
     locations = [(temp_root, "hermes-dm-*.txt"), (temp_root, "hermes-relay-dm-*.txt")]
+    dm_dir = _dm_dir_path()
     with contextlib.suppress(OSError):
-        dm_dir = _dm_dir()
+        # Validate, never create: an unusable directory is reported by the next send, not here.
+        _check_dm_dir(dm_dir)
         locations.append((dm_dir, "*.txt"))
         # Live-delivery intents (``<dm file>.live.json``, message plaintext included) outlive
         # their runner on purpose — a retry replays the same delivery id from them — so the
@@ -389,7 +443,13 @@ def _unlink_dm_file(path: str) -> None:
 def _write_dm_file(content: str) -> str:
     """The message rides a temp file — never inline shell text."""
     cleanup_bot_dm_cache()
-    fd, path = tempfile.mkstemp(prefix="dm-", suffix=".txt", dir=_dm_dir(), text=True)
+    dm_dir = _dm_dir()
+    try:
+        fd, path = tempfile.mkstemp(prefix="dm-", suffix=".txt", dir=dm_dir, text=True)
+    except PermissionError:
+        if os.name != "nt":
+            raise
+        raise _dm_dir_denied(dm_dir, "is not writable by the current user") from None
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)

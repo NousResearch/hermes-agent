@@ -37,23 +37,6 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger("gateway.run")
 
 
-def _holds_admission(authority, session_id) -> bool:
-    """Whether *authority*'s store holds a canonical admission for *session_id*. A parked profile's
-    retained (retiring) store that cannot answer counts as holding one: auto-resume fails closed
-    for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
-    from gateway.session_authorities import admission_owner
-    try:
-        return bool(authority.db._read_one(
-            'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
-            (session_id, admission_owner(authority, session_id))))
-    except Exception as exc:
-        if not getattr(authority, 'retiring', False):
-            raise
-        logger.warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
-                       session_id, getattr(authority, 'profile_id', '?'), exc)
-        return True
-
-
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
     """Install the catalog plugin of every feature that left core (Home Assistant) *home* uses, in
     *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
@@ -630,8 +613,8 @@ class GatewayStartupMixin:
         for entry in candidates:
             # Canonical admissions own restart decisions, including unknown pauses.
             # Legacy synthetic resume must not race their restored FIFO.
-            from gateway.session_authorities import all_authorities
-            if any(_holds_admission(authority, entry.session_id) for authority in all_authorities(self)):
+            from gateway.session_authorities import all_authorities, holds_admission
+            if any(holds_admission(authority, entry.session_id) for authority in all_authorities(self)):
                 continue
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.

@@ -20,6 +20,7 @@ import random
 import re
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -287,20 +288,37 @@ def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
     return credentials
 
 
+def _parse_rfc3339(value: Optional[str]) -> Optional[datetime]:
+    """Parse a Chat API timestamp (``2026-09-29T05:33:00.123456Z``); None if unparseable."""
+    try:
+        return datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
 class _ThreadCountStore:
     """Persisted per-(chat_id, thread_name) inbound counter driving the DM main-flow vs
     side-thread heuristic (0: Chat auto-created the thread for a top-level message; >=1:
     user engaged an existing thread). Persisted because a restart that wiped counts would
     demote active side-threads to main flow and leak context. Format
-    ``{"<chat_id>": {"<thread_name>": <int>}}``; missing/corrupt resets to empty."""
+    ``{"<chat_id>": {"<thread_name>": <int>}}``; missing/corrupt resets to empty.
+
+    Thread-history backfill metadata (``last_seen`` createTime watermark + names of messages
+    the session already holds) lives under the reserved ``__meta__`` key, so readers that only
+    understand int counts drop it silently."""
+
+    _META_KEY = "__meta__"
+    _MAX_SKIP_NAMES = 100
 
     def __init__(self, path: _Path):
         self._path = path
         self._counts: dict[str, dict[str, int]] = {}
+        self._meta: dict[str, dict[str, dict[str, Any]]] = {}
 
     def load(self) -> None:
         """Load counts from disk; missing file → empty, corrupt JSON → empty + warn."""
         self._counts = {}
+        self._meta = {}
         if not self._path.exists():
             return
         try:
@@ -312,8 +330,17 @@ class _ThreadCountStore:
             logger.warning(fmt, self._path, exc)
             return
         # Anything off-schema is dropped silently.
+        raw_meta = data.get(self._META_KEY) if isinstance(data, dict) else None
+        for chat_id, threads in (raw_meta.items() if isinstance(raw_meta, dict) else ()):
+            for thread_name, entry in (threads.items() if isinstance(threads, dict) else ()):
+                if isinstance(chat_id, str) and isinstance(thread_name, str) and isinstance(entry, dict):
+                    skip = entry.get("skip")
+                    self._meta.setdefault(chat_id, {})[thread_name] = {
+                        "t": entry.get("t") if isinstance(entry.get("t"), str) else None,
+                        "skip": [n for n in skip if isinstance(n, str)] if isinstance(skip, list) else [],
+                    }
         for chat_id, threads in (data.items() if isinstance(data, dict) else ()):
-            if isinstance(chat_id, str) and isinstance(threads, dict):
+            if chat_id != self._META_KEY and isinstance(chat_id, str) and isinstance(threads, dict):
                 clean = {t: c for t, c in threads.items() if isinstance(t, str) and isinstance(c, int)}
                 if clean:
                     self._counts[chat_id] = clean
@@ -329,12 +356,44 @@ class _ThreadCountStore:
         self._save()
         return prev
 
+    def _meta_entry(self, chat_id: str, thread_name: str) -> dict[str, Any]:
+        return self._meta.setdefault(chat_id, {}).setdefault(thread_name, {"t": None, "skip": []})
+
+    def get_last_seen(self, chat_id: str, thread_name: str) -> Optional[str]:
+        """createTime of the last inbound already handed to the agent, or None."""
+        return (self._meta.get(chat_id, {}).get(thread_name) or {}).get("t")
+
+    def set_last_seen(self, chat_id: str, thread_name: str, create_time: str) -> None:
+        """Advance the backfill watermark (never moves backwards)."""
+        entry = self._meta_entry(chat_id, thread_name)
+        new, cur = _parse_rfc3339(create_time), _parse_rfc3339(entry.get("t"))
+        if new and cur and new <= cur:
+            return
+        entry["t"] = create_time
+        self._save()
+
+    def add_skip(self, chat_id: str, thread_name: str, message_name: str) -> None:
+        """Remember a message the session already holds (bot replies, commands) so
+        delta backfill doesn't feed it back as new."""
+        skip = self._meta_entry(chat_id, thread_name)["skip"]
+        if not message_name or message_name in skip:
+            return
+        skip.append(message_name)
+        del skip[:-self._MAX_SKIP_NAMES]
+        self._save()
+
+    def get_skip(self, chat_id: str, thread_name: str) -> set[str]:
+        return set((self._meta.get(chat_id, {}).get(thread_name) or {}).get("skip") or [])
+
     def _save(self) -> None:
         """Atomic write; failure is non-fatal (in-memory counts stay consistent)."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-            tmp.write_text(json.dumps(self._counts, separators=(",", ":")), encoding="utf-8")
+            payload: dict[str, Any] = dict(self._counts)
+            if self._meta:
+                payload[self._META_KEY] = self._meta
+            tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
             os.replace(tmp, self._path)
         except OSError as exc:
             logger.warning("[GoogleChat] could not persist thread-count store to %s: %s", self._path, exc)
@@ -434,6 +493,23 @@ class GoogleChatAdapter(BasePlatformAdapter):
             extra, "http_events_audience", "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", self._http_events_url)
         self._http_events_service_account_email = self._str_setting(
             extra, "http_events_service_account_email", "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL").lower()
+        # Thread-history backfill. Chat only delivers @mentions (spaces) / messages sent to the bot
+        # (DMs) and never the bot's own out-of-band posts, so the agent is otherwise blind to the rest
+        # of the thread. The bot identity can't list history in DMs at all, so reads use the SENDER's
+        # user OAuth token (``chat.messages.readonly`` via /setup-files); without one, no backfill.
+        enabled = extra.get("thread_context")  # YAML gives a bool; `or`-chaining would ignore False
+        if enabled is None:
+            enabled = _get_scoped_secret("GOOGLE_CHAT_THREAD_CONTEXT", "") or "true"
+        self._thread_context_enabled = str(enabled).strip().lower() in {"1", "true", "yes", "on"}
+        self._thread_context_limit = max(1, min(200, self._int_setting(
+            extra, "thread_context_limit", "GOOGLE_CHAT_THREAD_CONTEXT_LIMIT", 30)))
+        self._thread_context_max_chars = max(500, self._int_setting(
+            extra, "thread_context_max_chars", "GOOGLE_CHAT_THREAD_CONTEXT_MAX_CHARS", 8000))
+        self._thread_context_timeout = float(max(1, self._int_setting(
+            extra, "thread_context_timeout", "GOOGLE_CHAT_THREAD_CONTEXT_TIMEOUT", 6)))
+        # users/{id} → display name learned from inbound events, for labelling backfilled lines.
+        self._display_names: dict[str, str] = {}
+        self._thread_context_hinted: set[str] = set()  # senders already told to run /setup-files
 
     @staticmethod
     def _int_setting(extra: dict[str, Any], key: str, env_name: str, default: int) -> int:
@@ -916,6 +992,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # OAuth token (lower-cased to match the sanitized token-file lookup).
         if sender_email and space_name:
             self._last_sender_by_chat[space_name] = sender_email.strip().lower()
+        if sender_name and sender.get("displayName"):
+            self._display_names[sender_name] = sender["displayName"]
         chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
         text = (msg.get("argumentText") or msg.get("text") or "").strip()
         # Slash command: emit MessageType.COMMAND with normalized text.
@@ -968,10 +1046,155 @@ class GoogleChatAdapter(BasePlatformAdapter):
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,
             thread_id=session_thread_id, user_id_alt=(sender_name or None), message_id=msg.get("name") or None,
         )
-        return MessageEvent(
+        event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=msg, message_id=msg.get("name") or None,
             media_urls=media_urls, media_types=media_types,
         )
+        # DM main-flow sessions span many threads, so only thread-scoped sessions get backfill.
+        if self._thread_context_enabled and thread_name and space_name and session_thread_id:
+            event.channel_context = await self._thread_context_for_event(
+                msg, source, space_name, thread_name, [sender_email, sender_name],
+                prev_thread_count, is_command=bool(slash) or text.startswith("/"),
+            )
+        return event
+
+    # -- thread-history backfill (user-OAuth reads) ----------------------------
+    def _user_http_factory(self, api: Any) -> Optional[Callable[[], Any]]:
+        """Fresh AuthorizedHttp per request for a cached user-authed client (same
+        thread-safety reason as ``_new_authed_http``)."""
+        creds = next((self._user_creds_by_email[e] for e, a in self._user_chat_api_by_email.items()
+                      if a is api and e in self._user_creds_by_email), None)
+        if creds is None and api is self._user_chat_api:
+            creds = self._user_credentials
+        if creds is None or AuthorizedHttp is None:
+            return None
+        return lambda: AuthorizedHttp(creds, http=httplib2.Http(timeout=30))
+
+    async def _history_chat_api(self, identities: list[str]) -> Optional[Any]:
+        """User-authed client that may read message history: the sender's own token (they
+        can already see the thread; tried by email, then ``users/{id}``), else the legacy
+        single-user token. Never another user's. Logs a /setup-files hint once per sender."""
+        from .oauth import MESSAGES_READONLY_SCOPE, token_has_scope
+        keys = [k.strip().lower() if "@" in k else k.strip() for k in identities if k and k.strip()]
+        hint_key = keys[0] if keys else "__legacy__"
+        missing_scope = False
+        for key in keys + [None]:
+            if token_has_scope(MESSAGES_READONLY_SCOPE, key) is False:
+                missing_scope = True
+                continue
+            api = await self._load_per_user_chat_api(key) if key else (await self._acquire_user_chat_api(None))[0]
+            if api is not None:
+                return api
+        if hint_key not in self._thread_context_hinted:
+            self._thread_context_hinted.add(hint_key)
+            logger.info("[GoogleChat] thread context unavailable for %s: %s", hint_key,
+                        "token lacks chat.messages.readonly — run `/setup-files start` to re-consent"
+                        if missing_scope else "no user OAuth token — run `/setup-files` in the DM to enable it")
+        return None
+
+    def _sender_label(self, sender: dict[str, Any]) -> str:
+        name = sender.get("name") or ""
+        if (sender.get("type") or "").upper() == "BOT":
+            return "Hermes (you)" if not self._bot_user_id or name in {"", self._bot_user_id} else (
+                sender.get("displayName") or "App")
+        return sender.get("displayName") or self._display_names.get(name) or f"User …{name[-4:] or '?'}"
+
+    @staticmethod
+    def _history_text(msg: dict[str, Any]) -> str:
+        text = (msg.get("text") or msg.get("argumentText") or "").strip()
+        if not text and msg.get("attachment"):
+            text = "[attachment: " + ", ".join((a or {}).get("contentName") or "file" for a in msg["attachment"]) + "]"
+        if not text and msg.get("cardsV2"):
+            text = "[card]"
+        return text[:1500] + (" …" if len(text) > 1500 else "")
+
+    async def _fetch_thread_context(self, space_name: str, thread_name: str, current_msg_name: str,
+                                    identities: list[str], since: Optional[str] = None,
+                                    skip_names: Optional[set[str]] = None) -> Optional[str]:
+        """Earlier messages of a thread as a context block. ``since=None`` → full backfill;
+        otherwise only messages newer than ``since`` minus ``skip_names``. Returns ``""``
+        when there is nothing to add and ``None`` when history couldn't be read (no token,
+        API error, timeout) — the caller must not advance the watermark then."""
+        api = await self._history_chat_api(identities)
+        if api is None:
+            return None
+        filt = f"thread.name = {thread_name}" + (f' AND create_time > "{since}"' if since else "")
+        http_factory = self._user_http_factory(api)
+
+        def _list() -> dict[str, Any]:
+            req = api.spaces().messages().list(parent=space_name, filter=filt, orderBy="createTime desc",
+                                               pageSize=self._thread_context_limit)
+            return req.execute(http=http_factory()) if http_factory else req.execute()
+        try:
+            resp = await asyncio.wait_for(self._call_with_retry(_list, op_name="messages.list(thread)"),
+                                          timeout=self._thread_context_timeout)
+        except Exception as exc:
+            logger.warning("[GoogleChat] thread context fetch failed for %s (status=%s): %s", thread_name,
+                           _http_status(exc), _redact_sensitive(str(exc))[:300] or type(exc).__name__)
+            return None
+        skip = (skip_names or set()) | {current_msg_name}
+        lines = [f"{self._sender_label(m.get('sender') or {})}: {body}"
+                 for m in reversed((resp or {}).get("messages") or [])
+                 if m.get("name") not in skip and (body := self._history_text(m))]
+        kept: list[str] = []
+        used = 0
+        for line in reversed(lines):  # newest first, within the char budget
+            if kept and used + len(line) + 1 > self._thread_context_max_chars:
+                break
+            kept.append(line)
+            used += len(line) + 1
+        if not kept:
+            return ""
+        header = ("[Thread context — new messages in this Google Chat thread since your last reply]" if since
+                  else "[Thread context — earlier messages in this Google Chat thread]")
+        if len(kept) < len(lines):
+            header += f"\n(… {len(lines) - len(kept)} older message(s) omitted)"
+        logger.info("[GoogleChat] thread context: %d msgs (%s) for %s", len(kept), "delta" if since else "full",
+                    thread_name)
+        return header + "\n" + "\n".join(reversed(kept)) + "\n[End thread context]"
+
+    def _has_active_session(self, source: Any) -> bool:
+        """Whether the gateway already holds a session for ``source`` (same check as Slack)."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return False
+        try:
+            from gateway.session import build_session_key
+            cfg = getattr(store, "config", None)
+            key = build_session_key(source, group_sessions_per_user=getattr(cfg, "group_sessions_per_user", True),
+                                    thread_sessions_per_user=getattr(cfg, "thread_sessions_per_user", False))
+            store._ensure_loaded()
+            return key in store._entries
+        except Exception:
+            return False
+
+    async def _thread_context_for_event(self, msg: dict[str, Any], source: Any, space_name: str,
+                                        thread_name: str, identities: list[str], prev_thread_count: int,
+                                        *, is_command: bool) -> Optional[str]:
+        """Full backfill when the gateway has no session for this thread yet; a delta since the
+        last inbound otherwise (other people's un-mentioned messages, out-of-band bot posts),
+        minus the bot's own replies. A pre-existing session without a watermark just starts one.
+        Commands don't consume the delta."""
+        store, msg_name = self._thread_count_store, msg.get("name") or ""
+        if is_command:
+            store.add_skip(space_name, thread_name, msg_name)
+            return None
+        # A thread whose root is this very message (``.../messages/X.X``) has no history.
+        root = re.fullmatch(r"spaces/[^/]+/messages/([^./]+)\.([^./]+)", msg_name)
+        if prev_thread_count == 0 and root and root.group(1) == root.group(2) and not msg.get("threadReply"):
+            return None
+        since = store.get_last_seen(space_name, thread_name)
+        context: Optional[str] = ""
+        if not self._has_active_session(source):
+            context = await self._fetch_thread_context(space_name, thread_name, msg_name, identities)
+        elif since:
+            context = await self._fetch_thread_context(space_name, thread_name, msg_name, identities, since,
+                                                       store.get_skip(space_name, thread_name))
+        if context is None:
+            return None  # read failed: keep the watermark so the next turn retries
+        store.set_last_seen(space_name, thread_name, msg.get("createTime")
+                            or datetime.now(UTC).isoformat().replace("+00:00", "Z"))
+        return context or None
 
     async def _download_attachment(self, attachment: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
         """Download an inbound attachment to the local cache; return (path, mime). Bot SA
@@ -1254,6 +1477,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if chat_id and resp_thread:
             try:
                 self._thread_count_store.incr(chat_id, resp_thread)
+                # The session already holds what the bot says; keep delta backfill from re-feeding it.
+                self._thread_count_store.add_skip(chat_id, resp_thread, resp.get("name") or "")
             except Exception:
                 logger.debug("[GoogleChat] outbound thread-count incr failed", exc_info=True)
 
@@ -1780,9 +2005,9 @@ def register(ctx) -> None:
             "until they do, file requests fall back to a text notice with the host path. Do NOT generate interactive "
             "Card v2 buttons — Google Chat interactivity is not yet supported by this gateway; ask for typed "
             "confirmations instead. While you are generating a response, a 'Hermes is thinking…' marker message "
-            "appears in the space and is deleted once your response is ready. You do NOT have access to Google "
-            "Chat-specific APIs — you cannot search space history, list space members, or manage spaces. Do not "
-            "promise to perform these actions; explain that you can only read messages sent directly to you and "
-            "respond in the same space/thread."
+            "appears in the space and is deleted once your response is ready. When the user has authorized it via "
+            "/setup-files, earlier messages of the current thread (including other people's messages and posts you "
+            "sent out-of-band) are provided in a [Thread context] block. Beyond that you cannot search space "
+            "history, list space members, or manage spaces — do not promise to."
         ),
     )

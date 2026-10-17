@@ -137,6 +137,27 @@ def test_show_survives_iso_strings_in_integer_timestamp_columns(kanban_home):
     assert payload["events"] and {e["created_at"] for e in payload["events"]} == {1787936336}  # iso_z
 
 
+def test_stats_compares_iso_created_at_by_value(kanban_home):
+    """`kanban stats` and the dashboard stats route (both ``board_stats``) must read an ISO-8601
+    ``created_at`` written outside the mutators (#97455) by value. SQL ``MIN()`` orders TEXT above
+    every INTEGER, so a text stamp was skipped when older and crashed ``int()`` when alone."""
+    with kbc.connect_closing() as conn:
+        iso_id = kb.create_task(conn, title="iso stamp")
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", ("2026-08-28T14:35:22+00:00", iso_id))
+        conn.commit()
+
+    output = kc.run_slash("stats")
+    assert "invalid literal" not in output
+    assert "Oldest ready task age:" in output
+
+    with kbc.connect_closing() as conn:
+        int_id = kb.create_task(conn, title="int stamp")
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (1787936336, int_id))  # later
+        conn.commit()
+        stats = kb.board_stats(conn)
+    assert stats["oldest_ready_age_seconds"] == stats["now"] - 1787927722  # the ISO card is oldest
+
+
 def test_kanban_edit_updates_documented_task_fields(kanban_home):
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="old title", body="old body", priority=2)

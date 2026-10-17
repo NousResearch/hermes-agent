@@ -272,4 +272,11 @@ class TurnExplainersMixin:
             body = t(_persistence_explanation_key(persistence_cause), **fill)
         else:
             body = None
-        return t("explainer.no_reply_prefix") + body if body else ""
+        if not body:
+            return ""
+        prefix = t("explainer.no_reply_prefix")
+        # Catalog miss (e.g. unparsable/locked locale file in a cron process) makes t() echo the
+        # bare key — never surface raw i18n keys as user-facing text.
+        if prefix == "explainer.no_reply_prefix" or body.startswith("explainer."):
+            return ""
+        return prefix + body

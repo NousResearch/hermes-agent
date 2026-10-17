@@ -4,6 +4,7 @@ Safe printing, quiet-mode gating, deduped context-overflow warnings, and the buf
 chatter that is shown only when every retry/fallback is exhausted.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
+import contextvars
 import logging
 import sys
 
@@ -12,6 +13,54 @@ from agent.session_activity import ActivityProvenance
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+
+#: The status rail of the turn whose provider call is running in this context: bound by
+#: ``perform_api_call`` for the duration of the call (worker threads inherit it through
+#: ``_context_thread_target``), ``None`` everywhere else.
+_TURN_STATUS_SINK: contextvars.ContextVar = contextvars.ContextVar("hermes_turn_status_sink", default=None)
+
+#: Longest message a plugin may put on the rail; the rail is one line, not a log.
+TURN_STATUS_MAX_CHARS = 300
+
+
+#: The kinds ``notify_turn_status`` accepts; anything else is treated as ``lifecycle``.
+TURN_STATUS_KINDS = ("lifecycle", "warn", "activity")
+
+
+def notify_turn_status(message: str, *, kind: str = "lifecycle") -> bool:
+    """Show ``message`` on the status rail of the turn whose provider call is in flight.
+
+    For plugins and provider-supplied clients (``ProviderProfile.create_client``) that do work
+    inside a provider call the user would otherwise not see — waiting out a rate limit,
+    switching credentials — and need to say so on the same surfaces as the core's own notices.
+
+    ``kind``:
+
+    * ``"lifecycle"`` (default) / ``"warn"`` — a status line: the CLI line and
+      ``status_callback`` (TUI, desktop, messaging gateway), like the core's retry notices.
+    * ``"activity"`` — the transient thinking/spinner line, through the same
+      ``_emit_wait_notice`` the core uses for a long provider wait (the CLI spinner widget,
+      ``thinking.delta`` on the TUI, desktop and gateway; the turn is also recorded as
+      active). It never becomes a message, so it is the right channel for a line that
+      updates while a wait counts down.
+
+    Returns ``True`` when the message was handed to a live turn, ``False`` outside a provider
+    call or for an empty message. Never raises: a status line must not be able to fail the
+    call it describes.
+    """
+    sink = _TURN_STATUS_SINK.get()
+    if sink is None or not isinstance(message, str):
+        return False
+    text = " ".join(message.split())
+    if not text:
+        return False
+    if len(text) > TURN_STATUS_MAX_CHARS:
+        text = text[: TURN_STATUS_MAX_CHARS - 1] + "…"
+    try:
+        return sink(kind if kind in TURN_STATUS_KINDS else "lifecycle", text) is not False
+    except Exception:
+        logger.debug("turn status sink failed", exc_info=True)
+        return False
 
 
 class StatusOutputMixin:

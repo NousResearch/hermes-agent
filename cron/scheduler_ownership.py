@@ -41,6 +41,7 @@ def register_ticked_homes(homes) -> None:
     and its worker threads per home ever ticked.
     """
     from cron.store_health import forget_stores, store_key
+    from cron.ticker_downtime import forget_stores as forget_downtime_windows
 
     resolved, stores = {}, {}
     for home in homes:
@@ -61,6 +62,7 @@ def register_ticked_homes(homes) -> None:
         from cron.scheduler import discard_parallel_pools
         discard_parallel_pools(departed)
         forget_stores(departed_stores)
+        forget_downtime_windows(departed_stores)
 
 
 def ticked_homes() -> dict:

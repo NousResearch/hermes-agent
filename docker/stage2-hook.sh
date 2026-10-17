@@ -673,9 +673,17 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     if refuse_symlinked_path "seed" "$HERMES_HOME/auth.json"; then
         :
     else
-        printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
+        # Seed under a restrictive umask so the credential is 0600 from the
+        # first instant — a plain root-context redirect lands 0644 under the
+        # ambient umask and exposes the refresh token on host-shared mounts
+        # until the chmod catches up (same hazard the .env seed guards
+        # against above). The re-tighten is best-effort: under `set -eu` an
+        # aborting chmod would leave the seeded credential behind with the
+        # boot dead partway.
+        (umask 077 && printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json")
         chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
-        chmod 600 "$HERMES_HOME/auth.json"
+        chmod 600 "$HERMES_HOME/auth.json" 2>/dev/null \
+            || echo "[stage2] Warning: could not tighten auth.json permissions" >&2
     fi
 fi
 

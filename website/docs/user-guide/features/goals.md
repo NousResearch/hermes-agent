@@ -186,7 +186,7 @@ After every turn, Hermes calls an auxiliary model with:
 - The agent's most recent final response (last ~4 KB of text)
 - A system prompt telling the judge to reply with strict one-line JSON: `{"verdict": "done" | "blocked" | "continue" | "wait", "reason": "<one-sentence rationale>"}` (wait verdicts add `wait_on_session` / `wait_on_pid` / `wait_for_seconds`; the legacy `{"done": <bool>, "reason": "..."}` shape is still accepted)
 
-The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced. A goal the agent explains is **unachievable** (impossible, out of scope, needs user input) gets a `blocked` verdict instead — never `done`: the goal **pauses** with the judge's reason (`🚫 Goal judged unachievable — paused`), so you can re-scope it with `/goal <text>` or override with `/goal resume` rather than burning budget or having an impossible task waved through as complete.
+The judge is deliberately conservative: it marks a goal `done` only when the response **explicitly** confirms the goal is complete, when the final deliverable is clearly produced. A goal the agent explains is **unachievable** (impossible, out of scope, needs user input) gets a `blocked` verdict instead — never `done`: the goal **pauses** with the judge's reason (`🚫 Goal judged unachievable — paused`), so you can re-scope it with `/goal <text>` or override with `/goal resume` rather than burning budget or having an impossible task waved through as complete. Set `goals.blocked_action: continue` to keep going instead (see [Configuration](#configuration)).
 
 ### Fail-open semantics
 
@@ -232,7 +232,14 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+  # What a judge "blocked" verdict does. "pause" (default) pauses the
+  # goal so you can re-scope or /goal resume. "continue" keeps the goal
+  # active and sends the judge's reason back in the next continuation
+  # prompt, telling the agent to work around it or continue other work.
+  blocked_action: pause
 ```
+
+`blocked_action: continue` is meant for long unattended runs where the agent (or an orchestrator with its own quality gates) already owns its stop conditions, so a judge reading a question or partial blocker as "needs user input" doesn't halt the whole session. The turn budget (`max_turns`) still applies and pauses the goal when exhausted.
 
 ### Choosing the judge model
 

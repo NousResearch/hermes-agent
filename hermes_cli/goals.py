@@ -764,6 +764,19 @@ def _goal_judge_setting(key: str, default, cast):
     return default
 
 
+def _goal_blocked_action() -> str:
+    """Resolve ``goals.blocked_action`` at call time (profile-aware via ``load_config``):
+    ``"pause"`` (default) or ``"continue"``. Unknown/garbage values fall back to ``"pause"``."""
+    try:
+        from hermes_cli.config import load_config
+
+        value = str((load_config().get("goals") or {}).get("blocked_action") or "pause").strip().lower()
+    except Exception:  # health: allow BLE001 -- a config read must never break the goal loop
+        logger.debug("goals.blocked_action unreadable; defaulting to pause", exc_info=True)
+        return "pause"
+    return value if value in {"pause", "continue"} else "pause"
+
+
 def _goal_judge_max_tokens() -> int:
     return _goal_judge_setting("max_tokens", DEFAULT_JUDGE_MAX_TOKENS, int)
 
@@ -1525,6 +1538,24 @@ class GoalManager:
         # instead of burning turns on an unachievable goal or waving it through as complete.
         # BLOCKED verdict: the judge ruled the goal genuinely cannot be satisfied as stated (impossible, out
         # of scope, needs user input). See #100954.
+        # Opt-in ``goals.blocked_action: continue`` (unattended runs whose orchestrator owns its own
+        # stop conditions): record the verdict, keep the goal active, and feed the judge's reason back
+        # so the agent works around it. Still bounded by the turn budget.
+        if verdict == "blocked" and _goal_blocked_action() == "continue":
+            if state.turns_used >= state.max_turns:
+                return self._budget_pause(state, "blocked", reason)
+            self._save()
+            prompt = (
+                f"{self.next_continuation_prompt()}\n\n"
+                f"Note: the goal judge flagged this as blocked: {reason}\n"
+                "Do not stop to wait for the user. Work around the blocker if you can, or continue "
+                "with any other remaining work toward the goal."
+            )
+            return _decision(
+                "active", True, prompt, "blocked", reason,
+                f"↻ Judge reported blocked — continuing per goals.blocked_action "
+                f"({state.turns_used}/{state.max_turns}): {reason}",
+            )
         if verdict == "blocked":
             return self._pause_decision(
                 f"judged unachievable: {reason}", "blocked", reason,

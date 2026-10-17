@@ -694,6 +694,106 @@ async def test_base_send_image_fallback_preserves_metadata():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_index", [0, 1, 2])
+async def test_send_continues_later_chunks_after_generic_timeout(timeout_index):
+    """Uncertain chunks are not retried or allowed to suppress later chunks."""
+    adapter = _make_adapter()
+    attempted = []
+
+    async def mock_send_message(**kwargs):
+        attempted.append(kwargs)
+        if len(attempted) - 1 == timeout_index:
+            raise FakeTimedOut("Timed out waiting for Telegram response")
+        return SimpleNamespace(message_id=len(attempted))
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    result = await adapter.send(chat_id="123", content="A" * 9000, reply_to="462")
+
+    assert len(attempted) == 3
+    assert len({call["text"] for call in attempted}) == 3
+    assert [call["reply_to_message_id"] for call in attempted] == [462, None, None]
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == "Timed out waiting for Telegram response"
+    assert result.raw_response["partial_overflow"] is True
+    assert result.raw_response["delivered_chunks"] == 2
+    assert result.raw_response["total_chunks"] == 3
+    assert "undelivered_chunks" not in result.raw_response
+    assert await adapter._resume_partial_send(result=result, chat_id="123", reply_to="462", metadata=None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later_failure", ["network", "connect", "pool"])
+async def test_send_preserves_deferred_timeout_if_later_chunk_fails(monkeypatch, later_failure):
+    """A later retryable failure must not make an uncertain response retryable."""
+    import plugins.platforms.telegram.adapter as telegram_mod
+
+    adapter = _make_adapter()
+    monkeypatch.setattr(telegram_mod.asyncio, "sleep", AsyncMock())
+    attempted_texts = []
+
+    async def mock_send_message(**kwargs):
+        attempted_texts.append(kwargs["text"])
+        if len(attempted_texts) == 2:
+            raise FakeTimedOut("Timed out waiting for Telegram response")
+        if len(attempted_texts) >= 3:
+            if later_failure != "network":
+                import httpx
+
+                error = FakeTimedOut("Timed out")
+                error.__cause__ = (httpx.ConnectTimeout if later_failure == "connect" else httpx.PoolTimeout)("exhausted")
+                raise error
+            raise FakeNetworkError("Connection reset")
+        return SimpleNamespace(message_id=1)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    result = await adapter.send(chat_id="123", content="A" * 9000)
+
+    assert len(attempted_texts) == 5
+    assert attempted_texts.count(attempted_texts[1]) == 1
+    assert attempted_texts[2] == attempted_texts[3] == attempted_texts[4]
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == "Timed out waiting for Telegram response"
+    assert "undelivered_chunks" not in result.raw_response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("metadata", "later_error"),
+    [
+        ({"thread_id": "32343", "telegram_dm_topic_created_for_send": True}, "Message thread not found"),
+        (
+            {"thread_id": "20197", "telegram_dm_topic_reply_fallback": True, "telegram_reply_to_message_id": "462"},
+            "Message to be replied not found",
+        ),
+    ],
+)
+async def test_send_preserves_deferred_timeout_over_direct_bad_request_failure(metadata, later_error):
+    """Direct failures must not replace uncertainty or expose a resumable tail."""
+    adapter = _make_adapter()
+    attempted_texts = []
+
+    async def mock_send_message(**kwargs):
+        attempted_texts.append(kwargs["text"])
+        if len(attempted_texts) == 2:
+            raise FakeTimedOut("Timed out waiting for Telegram response")
+        if len(attempted_texts) == 3:
+            raise FakeBadRequest(later_error)
+        return SimpleNamespace(message_id=1)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    result = await adapter.send(chat_id="123", content="A" * 9000, metadata=metadata)
+
+    assert len(attempted_texts) == 3
+    assert attempted_texts.count(attempted_texts[1]) == 1
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == "Timed out waiting for Telegram response"
+    assert "undelivered_chunks" not in result.raw_response
+
+
+@pytest.mark.asyncio
 async def test_thread_fallback_only_fires_once():
     """After clearing thread_id, subsequent chunks should also use None."""
     adapter = _make_adapter()

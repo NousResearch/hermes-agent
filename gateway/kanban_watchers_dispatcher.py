@@ -272,6 +272,22 @@ class _KanbanDispatcher:
                     except Exception as exc:
                         logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
                         triage_ids = []
+                    # Re-triaged decompose children must not re-enter the fan-out:
+                    # a settled graph's cards are new work, not rough ideas (#140323).
+                    # Manual ``hermes kanban decompose`` remains the explicit override.
+                    try:
+                        from hermes_cli.kanban_db_graph import decomposed_child_ids
+                        with _kbc().connect_closing() as conn:
+                            settled = decomposed_child_ids(conn, triage_ids)
+                    except Exception as exc:
+                        logger.debug("kanban auto-decompose: lineage probe failed on board %s (%s)", slug, exc)
+                        settled = set()
+                    if settled:
+                        logger.debug(
+                            "kanban auto-decompose [%s]: skipping %d re-triaged decompose children",
+                            slug, len(settled),
+                        )
+                        triage_ids = [tid for tid in triage_ids if tid not in settled]
                     for tid in triage_ids:
                         if attempted >= auto_decompose_per_tick:
                             break

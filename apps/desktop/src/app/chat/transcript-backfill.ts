@@ -389,9 +389,27 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
 
   const firstDurable = refreshedTail.find(message => message.rowId !== undefined)
 
-  const anchor = firstDurable === undefined ? -1 : previous.findIndex(message => message.rowId === firstDurable.rowId)
+  const firstSharedIndex = refreshedTail.findIndex(
+    message => message.rowId !== undefined && previous.some(previousMessage => previousMessage.rowId === message.rowId)
+  )
 
-  const anchorRowId = firstDurable?.rowId
+  const firstShared = firstSharedIndex < 0 ? undefined : refreshedTail[firstSharedIndex]
+
+  const firstSharedRowId = firstShared?.rowId
+
+  // A compaction copy can lead this page with a new physical row id even
+  // though the backend placed it before the live tail by display_order. That
+  // inverted physical id is the proof the later shared row is the anchor;
+  // ordinary out-of-order overlap keeps the stored-id merge below.
+  const compactionCopyLeads =
+    firstSharedRowId !== undefined &&
+    refreshedTail.slice(0, firstSharedIndex).some(message => message.rowId !== undefined && message.rowId > firstSharedRowId)
+
+  const anchorMessage = compactionCopyLeads ? firstShared : firstDurable
+
+  const anchor = anchorMessage === undefined ? -1 : previous.findIndex(message => message.rowId === anchorMessage.rowId)
+
+  const anchorRowId = anchorMessage?.rowId
 
   // A hit on the first row, or a hit after a prefix whose stored ids are all
   // earlier, is the backfill anchor. A hit further down on a row that was

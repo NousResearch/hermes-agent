@@ -217,9 +217,10 @@ def _transport_is_dead(transport) -> bool:
 def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     """Shared hard exemptions for both reapers (the LRU cap applies them WITHOUT the age gate: eligible the moment
     it loses its client): never evict a session mid-turn, awaiting input, still building, owning live delegated
-    work, or on a live transport. Lazy watch sessions never start a build, so their unset agent_ready must not
-    make them immortal."""
-    if session.get("running") or _session_pending_kind(sid) or _session_has_active_delegations(sid, session):
+    work or a pending process completion, or on a live transport. Lazy watch sessions never start a build, so
+    their unset agent_ready must not make them immortal."""
+    if (session.get("running") or _session_pending_kind(sid) or _session_has_active_delegations(sid, session)
+            or _session_awaits_process_completion(session)):
         return False
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):

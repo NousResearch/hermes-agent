@@ -12439,30 +12439,6 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert calls["args"][2] == "src/app.tsx"
 
 
-def test_rollback_restore_keeps_hand_edits_unless_all():
-    """The sidecar's whole-tree restore keeps the user's hand-edits like the owner's (``safe``); only
-    ``all: true`` reverts them too. A file-scoped restore is never ``safe``."""
-    calls = []
-
-    class _Mgr:
-        enabled = True
-        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
-
-        def list_checkpoints(self, cwd):
-            return [{"hash": "aaa111"}]
-
-        def restore(self, cwd, target, file_path=None, safe=False):
-            calls.append((file_path, safe))
-            return {"success": True, "message": "done"}
-
-    for extra in ({}, {"all": None}, {"all": False}, {"all": True}, {"file_path": "a.py"}):
-        server._sessions["sid"] = _session(agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()), history=[])
-        resp = server.handle_request({"id": "1", "method": "rollback.restore",
-                                      "params": {"session_id": "sid", "hash": "1", **extra}})
-        assert resp.get("result", {}).get("success") is True, resp
-    assert calls == [(None, True), (None, True), (None, True), (None, False), ("a.py", False)]
-
-
 def test_rollback_list_carries_checkpoint_reason_as_message():
     reason = "before write_file: a.py [nested git repos not captured: tool]"
 

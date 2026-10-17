@@ -500,6 +500,46 @@ def _run_user_provider_override_case(
         )
 
 
+def test_switch_model_accepts_configured_default_missing_from_provider_listing(monkeypatch, tmp_path):
+    """A provider default remains selectable when its /models listing omits it."""
+    model_id = "accounts/fireworks/routers/deepseek-v4p1-flash-us"
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"model:\n  default: {model_id}\n  provider: fireworks\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        "hermes_cli.models_validate.validate_requested_model",
+        lambda *a, **k: _REJECTED_VALIDATION,
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", lambda *a, **k: None)
+
+    accepted = switch_model(
+        raw_input=model_id,
+        current_provider="fireworks",
+        current_model=model_id,
+        current_base_url="https://api.fireworks.ai/inference/v1",
+        current_api_key="test-key",
+        user_providers={},
+        custom_providers=[],
+    )
+    rejected = switch_model(
+        raw_input="accounts/fireworks/models/deepseek-v4p1-flash-us",
+        current_provider="fireworks",
+        current_model=model_id,
+        current_base_url="https://api.fireworks.ai/inference/v1",
+        current_api_key="test-key",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert accepted.success is True
+    assert rejected.success is False
+
+
 
 
 # =============================================================================

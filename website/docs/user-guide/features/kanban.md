@@ -311,6 +311,24 @@ hermes kanban stats
 
 When the dispatcher picks up `t_abcd` and spawns the `researcher` profile, the very first thing that worker's model does is call `kanban_show()` to read its task. It doesn't run `hermes kanban show t_abcd`.
 
+### Stop a running task
+
+```bash
+hermes kanban stop t_abcd --reason "operator cancelled this work" --json
+```
+
+This operator command blocks the task and immediately reaps its tracked worker,
+without the two-minute grace used for a worker's own handoff. It preserves the
+workspace and run history. It does not archive the task or release its dependent
+cards. It stops this card only, not other cards it created.
+
+Exit code 0 and `stopped: true` confirm no tracked workers remain. If termination
+cannot be confirmed, exit code 1 and `pending_runs` identify retained run records;
+repeat `stop` to retry. Foreign-host workers and workers without verified process
+identity are not signalled. Do not unblock until stop succeeds.
+
+Workers should continue using `kanban_block` to hand off and finish their own turn.
+
 ### Gateway-embedded dispatcher (default)
 
 The dispatcher runs inside the gateway process. Nothing to install, no

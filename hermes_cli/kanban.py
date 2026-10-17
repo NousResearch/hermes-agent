@@ -33,6 +33,7 @@ from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser
+from hermes_cli.kanban_stop import cmd_stop
 
 
 # --- Flag parsing helpers ---
@@ -207,7 +208,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
+    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block", "stop",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
@@ -1326,7 +1327,7 @@ _HANDLERS = {
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
-    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block, "stop": cmd_stop,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,

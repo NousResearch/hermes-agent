@@ -34,7 +34,7 @@ class TestFormatSessionInfo:
                                   {"provider": "custom", "base_url": "", "api_key": ""})
         with p1, p2, p3:
             info = runner._format_session_info()
-        assert "32K" in info
+        assert "32k" in info
         assert "config" in info
 
 
@@ -47,7 +47,7 @@ class TestFormatSessionInfo:
         with p1, p2, p3:
             info = runner._format_session_info()
         assert "localhost:11434" in info
-        assert "8K" in info
+        assert "8k" in info
 
     def test_moa_preset_names_the_billed_aggregator(self, runner, tmp_path):
         """#112359: the preset name hides who pays; /model must name the acting aggregator."""
@@ -67,7 +67,7 @@ class TestFormatSessionInfo:
         """Session-reset banner must honor model.context_length for named custom providers.
 
         Repro: /status shows 262144 from config while the reset banner said
-        ``131K tokens (detected)`` because empty model.base_url + runtime URL
+        ``131k tokens (detected)`` because empty model.base_url + runtime URL
         falsely cleared the pin and fell through to the Qwen family default.
         """
         model = "custom-local-agentw/Qwen-AgentWorld-35B-A3B-Q5_K_XL"
@@ -109,9 +109,9 @@ class TestFormatSessionInfo:
             ),
         ):
             info = runner._format_session_info()
-        assert "262K" in info
+        assert "262k" in info
         assert "config" in info
-        assert "131K" not in info
+        assert "131k" not in info
 
 
 class TestResetNoticeSessionInfo:

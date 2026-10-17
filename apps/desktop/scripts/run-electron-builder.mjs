@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { isMain } from './utils.mjs'
 import { readPackagingInputs, preparationRequired } from './prepared-packaging.mjs'
-import { readNativeInputs } from './prepared-native-deps.mjs'
+import { readNativeInputs, copyTreeSync, removeTreeSync } from './prepared-native-deps.mjs'
 import { pinnedPackageRoot } from './prepare-packaging-tools.mjs'
 
 const source = path.resolve(import.meta.dirname, '../../..')
@@ -78,8 +78,10 @@ function toolsetArguments(inputs) {
   fs.mkdirSync(tools, { recursive: true })
   return Object.entries(inputs.toolsets).map(([name, directory]) => {
     const destination = path.join(tools, name)
-    fs.rmSync(destination, { recursive: true, force: true })
-    fs.cpSync(directory, destination, { recursive: true, verbatimSymlinks: true })
+    // libuv-safe primitives: the native rewrite of rmSync/cpSync silently
+    // no-ops on non-ASCII Windows paths (#127420, see stage-native-deps.mjs).
+    removeTreeSync(destination)
+    copyTreeSync(directory, destination)
     // Upstream parses this as a literal path after slicing file:// (not URL decoding).
     return `-c.toolsets.${name}.url=file://${destination}`
   })

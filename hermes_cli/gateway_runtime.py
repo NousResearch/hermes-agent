@@ -295,7 +295,10 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
     except DiscoveryError as exc:
         # The code stays bounded; the detail names the local node, its owner or mode, and the fix.
         return GatewayDiscovery("inaccessible", reason_code=exc.reason, detail=exc.bounded_detail(500))
-    except PermissionError:
+    except PermissionError as exc:
+        from gateway.runtime_bootstrap_windows import RefusedOwner
+        if isinstance(exc, RefusedOwner):  # the client proved the boundary from the control pipe (#140706)
+            return GatewayDiscovery("inaccessible", reason_code=exc.reason_code, detail=str(exc))
         return _refused(home)
     except (OSError, ValueError, TypeError):
         # Raw peer data, paths and URLs may contain secrets; report bounded codes.

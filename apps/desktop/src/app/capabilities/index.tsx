@@ -1,14 +1,18 @@
 import type * as React from 'react'
 import { useCallback, useMemo, useState } from 'react'
 
+import { capabilityScoped } from '@/api/client'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { notify, notifyError } from '@/store/notifications'
+import { $activeSessionId, sessionOfProfile } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -88,6 +92,32 @@ export function CapabilitiesView({
   const installedSkillNames = useMemo(() => new Set((skills ?? []).map(skill => skill.name)), [skills])
 
   const refreshCapabilities = useCallback(async () => {
+    const gateway = $gateway.get()
+    const profileName = capabilityScoped(scope.profile).profile
+
+    // A scope pinned to another backend has no live socket here; the list queries below refetch it,
+    // but the rescan RPC would land on the active gateway instead. Say so rather than implying a rescan.
+    if (gateway && scope.crossBackend) {
+      notify({ kind: 'info', message: t.connectorsPage.reload.skillsRemote })
+    } else if (gateway) {
+      // The session id only rides along when that chat belongs to the selected profile: a rescan
+      // bound to another profile's chat would scan its workspace and report its project skills.
+      const sessionId = sessionOfProfile($activeSessionId.get(), profileName)
+
+      try {
+        await gateway.request('skills.reload', {
+          ...(sessionId ? { session_id: sessionId } : {}),
+          ...(profileName ? { profile: profileName } : {})
+        })
+      } catch (err) {
+        // A backend without `skills.reload` is not a failure — the invalidations
+        // below still refresh what it can.
+        if (!isMissingRpcMethod(err)) {
+          notifyError(err, t.connectorsPage.reload.skillsFailed)
+        }
+      }
+    }
+
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: SKILLS_QUERY_KEY }),
       queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY }),
@@ -97,7 +127,7 @@ export function CapabilitiesView({
     invalidateSlashCompletions()
 
     void refreshToolCalls(scope.profile)
-  }, [scope.profile])
+  }, [scope.crossBackend, scope.profile, t])
 
   useRefreshHotkey(refreshCapabilities)
 

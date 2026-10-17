@@ -80,13 +80,13 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
+async function renderSkills(entries: string[] = ['/capabilities?tab=toolsets']) {
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // CapabilitiesView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/capabilities?tab=toolsets']}>
+        <MemoryRouter initialEntries={entries}>
           <CapabilitiesView />
         </MemoryRouter>
       </QueryClientProvider>
@@ -494,5 +494,91 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() =>
       expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
     )
+  })
+})
+
+describe('CapabilitiesView skills refresh', { timeout: 60_000 }, () => {
+  async function refreshWith(request: ReturnType<typeof vi.fn>) {
+    const { $gateway } = await import('@/store/gateway')
+    $gateway.set({ request } as never)
+    await renderSkills()
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'r' })
+    })
+  }
+
+  afterEach(async () => {
+    const { $gateway } = await import('@/store/gateway')
+    const { $activeSessionId, $sessions } = await import('@/store/session')
+    $gateway.set(null)
+    $sessions.set([])
+    $activeSessionId.set(null)
+  })
+
+  it('rescans skills on the backend before refetching them', async () => {
+    const request = vi.fn().mockResolvedValue({ output: '' })
+
+    await refreshWith(request)
+
+    await waitFor(() => expect(request).toHaveBeenCalledWith('skills.reload', expect.any(Object)))
+  })
+
+  it('stays quiet against a backend that has no skills.reload', async () => {
+    const { notifyError } = await import('@/store/notifications')
+    const request = vi.fn().mockRejectedValue(Object.assign(new Error('Method not found'), { code: -32601 }))
+
+    await refreshWith(request)
+
+    await waitFor(() => expect(request).toHaveBeenCalled())
+    expect(vi.mocked(notifyError)).not.toHaveBeenCalled()
+  })
+
+  it('binds the rescan to the active chat only when the selected profile owns it', async () => {
+    const { $activeSessionId, $sessions } = await import('@/store/session')
+    const { $gateway } = await import('@/store/gateway')
+    const request = vi.fn().mockResolvedValue({ output: '' })
+    $gateway.set({ request } as never)
+    $sessions.set([{ id: 'chat-1', profile: 'other' } as never])
+    $activeSessionId.set('chat-1')
+    await renderSkills()
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'r' })
+    })
+
+    await waitFor(() => expect(request).toHaveBeenCalledWith('skills.reload', { profile: 'default' }))
+
+    $sessions.set([{ id: 'chat-1', profile: 'default' } as never])
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'r' })
+    })
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('skills.reload', { profile: 'default', session_id: 'chat-1' })
+    )
+  })
+
+  it('does not claim a rescan for a scope pinned to another backend', async () => {
+    const { notify, notifyError } = await import('@/store/notifications')
+    const { $gateway } = await import('@/store/gateway')
+    const request = vi.fn().mockResolvedValue({ output: '' })
+    $gateway.set({ request } as never)
+    await renderSkills(['/capabilities?tab=skills&profile=work&connection=remote'])
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'r' })
+    })
+
+    await waitFor(() => expect(vi.mocked(notify)).toHaveBeenCalledWith(expect.objectContaining({ kind: 'info' })))
+    expect(request).not.toHaveBeenCalled()
+    expect(vi.mocked(notifyError)).not.toHaveBeenCalled()
+  })
+
+  it('reports a rescan that really failed', async () => {
+    const { notifyError } = await import('@/store/notifications')
+    const failure = new Error('skills dir unreadable')
+    const request = vi.fn().mockRejectedValue(failure)
+
+    await refreshWith(request)
+
+    await waitFor(() => expect(vi.mocked(notifyError)).toHaveBeenCalledWith(failure, 'Skills failed to reload'))
   })
 })

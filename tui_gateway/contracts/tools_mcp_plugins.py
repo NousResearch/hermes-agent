@@ -114,10 +114,12 @@ method("reload.env", params=ReloadEnvParams, result=ReloadEnvResult,
 
 
 class ReloadMcpParams(Params):
-    """Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``);
-    ``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing)."""
+    """Without ``confirm`` (or ``always``) the handler may answer ``confirm_required``; ``always`` also persists
+    the invoking profile's opt-out; ``rev`` is the config revision the caller wants loaded (coalescing). The
+    reload acts for ``profile`` when given, else the profile of ``session_id``, else the launch profile."""
 
     session_id: str | None = None
+    profile: str | None = None
     confirm: bool = False
     always: bool = False
     rev: str | None = None
@@ -151,7 +153,8 @@ class ReloadMcpResult(Result):
 
 
 method("reload.mcp", params=ReloadMcpParams, result=ReloadMcpResult,
-       doc="Tear down and rediscover MCP servers for every live session (prompt cache is invalidated).")
+       doc="Reconcile the calling profile's MCP servers with its config and apply the calling chat's new "
+           "selection as a policy generation (deferred while its turn runs; the prompt cache is invalidated).")
 
 
 # ── skills ────────────────────────────────────────────────────────────────────────────────────

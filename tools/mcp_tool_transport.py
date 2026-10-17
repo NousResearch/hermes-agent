@@ -7,6 +7,7 @@ import asyncio
 import os
 import urllib.parse
 import urllib.request
+import weakref
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
@@ -25,6 +26,17 @@ logger = logging.getLogger("tools.mcp_tool")
 _PROBE_INITIALIZE_BODY = (  # JSON-RPC ``initialize`` body for the content-type preflight POST
     '{"jsonrpc":"2.0","id":"_probe","method":"initialize","params":{"protocolVersion":"2025-03-26",'
     '"capabilities":{},"clientInfo":{"name":"hermes-probe","version":"0.1"}}}')
+
+# Per event loop: the MCP loop is stopped and restarted, and an asyncio.Lock binds to the loop that first uses it.
+_stdio_spawn_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+
+def _stdio_spawn_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _stdio_spawn_locks.get(loop)
+    if lock is None:
+        lock = _stdio_spawn_locks[loop] = asyncio.Lock()
+    return lock
 
 
 def _content_type_base(resp) -> str:
@@ -387,7 +399,6 @@ class MCPServerTransportMixin:
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;
         # off-loop because the reaper blocks up to 2s.
         await asyncio.to_thread(_lifecycle._kill_orphaned_mcp_children)
-        pids_before = _lifecycle._snapshot_child_pids()  # so the new child can be identified after spawn
         # Reap any orphaned subprocesses from prior failed connection attempts before spawning a new one.
         # Without this, each retry in the run() reconnect loop spawns a fresh process pair while the
         # previous failed pair lingers — leading to rapid zombie accumulation (see #57355, #57228). The
@@ -399,11 +410,21 @@ class MCPServerTransportMixin:
         # Subprocess stderr goes to ~/.hermes/logs/mcp-stderr.log so banners can't corrupt the TUI.
         _config._write_stderr_log_header(self.name)
         stderr = _config._StderrTee(_config._get_mcp_stderr_log())
+        # One spawn at a time between the two snapshots: two servers connecting together each took their
+        # "before" snapshot ahead of both spawns, so each delta held BOTH children and stopping one server
+        # reaped the other's live process as its orphan (#58414). Held for the spawn only, not the handshake.
+        spawn_lock = _stdio_spawn_lock()
+        spawn_locked = False
         try:
+            await spawn_lock.acquire()
+            spawn_locked = True
+            pids_before = _lifecycle._snapshot_child_pids()  # so the new child can be identified after spawn
             async with _core.stdio_client(server_params, errlog=stderr.sink) as (read_stream, write_stream):
                 # New PIDs for force-kill cleanup, minus non-MCP children (slash_worker, LSP) racing
                 # into the window: they share the TUI's pgid — leaking them would killpg() the TUI.
                 new_pids = _filter_mcp_children(_lifecycle._snapshot_child_pids() - pids_before)
+                spawn_lock.release()
+                spawn_locked = False
                 if new_pids:
                     self._track_spawned_children(new_pids)
                 self._stdio_child_pids = set(new_pids)  # so in-flight calls fail fast when the child dies
@@ -413,12 +434,17 @@ class MCPServerTransportMixin:
                     connect_timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
                     return await self._serve_session(session, connect_timeout, mark_lifecycle=True)
         except Exception as exc:
+            if spawn_locked:  # a failed spawn must not hold the next server's spawn through the stderr drain
+                spawn_lock.release()
+                spawn_locked = False
             # The SDK only sees "Connection closed"; the child's stderr says why (#124264).
             abi_error = node_abi_error(self.name, await asyncio.to_thread(stderr.close))
             if abi_error is not None:
                 raise abi_error from exc
             raise
         finally:  # clean exit, exceptions AND cancellation
+            if spawn_locked:
+                spawn_lock.release()
             stderr.close(timeout=0)
             if new_pids:
                 self._release_spawned_children(new_pids)

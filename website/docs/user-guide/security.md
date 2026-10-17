@@ -225,7 +225,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `tee` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via tee |
 | `>` / `>>` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via redirection |
 | `xargs rm` | xargs with rm |
-| `find -exec rm` / `find -delete` | Find with destructive actions |
+| `find -exec rm` / `find -delete` | Find with destructive actions (also `-exec sudo rm`, `-exec nice rm` and other wrapper spellings, and `-exec {}` running each matched file) |
 | `cp`/`mv`/`install` to `/etc/` | Copy/move file into system config |
 | `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |

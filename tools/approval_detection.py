@@ -607,7 +607,7 @@ _PARAM_DEFAULT_RE = re.compile(r"\$\{[^}:}\s]+:-(?P<default>[^}]*)\}")
 _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
-                          "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
+                          "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot", "doas", "flock"}
 _SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
@@ -620,12 +620,14 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
     "timeout": {"-k", "--kill-after", "-s", "--signal"},
     "stdbuf": {"-e", "--error", "-i", "--input", "-o", "--output"},
     "ionice": {"-c", "--class", "-n", "--classdata"},
+    "doas": {"-a", "-C", "-u"},
+    "flock": {"-w", "--wait", "--timeout", "-E", "--conflict-exit-code"},
 }
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
 }
-_COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
+_COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1, "flock": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
 _SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
 
@@ -990,6 +992,48 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
+_FIND_EXEC_ACTIONS = frozenset({"-exec", "-execdir"})
+# Same key as the `find -exec/-execdir rm` regex rule, so one approval covers both spellings.
+_FIND_EXEC_RM_DESCRIPTION = "find -exec/-execdir rm"
+_FIND_EXEC_MATCHED_FILE_DESCRIPTION = "find -exec runs each matched file as a program"
+
+
+def _find_exec_finding(args: list[str]) -> str | None:
+    """Description when a find -exec/-execdir action reaches rm, or runs the matched file itself,
+    behind any wrapper chain (`-exec sudo rm {} ;`, `-exec nice rm`, `-exec sh {} ;`).
+
+    The regex rule only sees rm directly after -exec, so a wrapper word in between ran a mass
+    delete with no approval. Wrapper semantics (options, positional operands) come from
+    _iter_shell_command_word_spans, the same walker used at top-level command positions; an
+    argument merely named rm (`-exec grep rm {} +`) is data, not a launch. Inspired by Muse Code
+    1.4.6, which closed the same `find -exec <wrapper> rm` gap in its approval review.
+    """
+    index = 0
+    while index < len(args):
+        if args[index] not in _FIND_EXEC_ACTIONS:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(args) and args[end] not in (";", "+"):
+            end += 1
+        argv, index = args[index + 1:end], end + 1
+        words = [_deobfuscate_shell_word_for_detection(word) for _, _, word
+                 in _iter_shell_command_word_spans(" ".join(shlex.quote(arg) for arg in argv))]
+        if any(os.path.basename(word).lower() == "rm" for word in words):
+            return _FIND_EXEC_RM_DESCRIPTION
+        if not words:
+            continue
+        program = words[-1]
+        if program == "{}":
+            return _FIND_EXEC_MATCHED_FILE_DESCRIPTION
+        name = os.path.basename(program).lower()
+        if name in _SHELL_NAMES or _interpreter_family(program):
+            rest = argv[len(argv) - argv[::-1].index(program):] if program in argv else []
+            if next((arg for arg in rest if not arg.startswith("-")), None) == "{}":
+                return _FIND_EXEC_MATCHED_FILE_DESCRIPTION
+    return None
+
+
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
@@ -1018,6 +1062,10 @@ def _execution_flag_findings(command: str):
                     finding = _read_tool_exec_flag(executable_name, args)
                     if finding:
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
+                if executable_name == "find":
+                    description = _find_exec_finding(args)
+                    if description:
+                        yield (description, None)
 
 
 def _skip_shell_whitespace(command: str, pos: int) -> int:

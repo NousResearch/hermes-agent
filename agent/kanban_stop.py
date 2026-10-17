@@ -8,6 +8,7 @@ instead of exiting.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
@@ -48,16 +49,39 @@ def _tool_call_name(tc: Any) -> str:
     return str((getattr(fn, "name", "") if fn is not None else getattr(tc, "name", "")) or "")
 
 
+def _tool_call_id(tc: Any) -> str:
+    """Tool-call identifier from a dict or object tool call."""
+    return str((tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "")) or "")
+
+
+def _terminal_tool_succeeded(msg: dict) -> bool:
+    """Whether a terminal tool result did not carry Hermes' structured error payload."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except ValueError:
+            return True
+    return not (isinstance(content, dict) and content.get("error"))
+
+
 def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
-    """True if this conversation already invoked a terminal kanban tool."""
-    for msg in filter(lambda m: isinstance(m, dict), messages or ()):
-        role = msg.get("role")
-        if role == "assistant" and any(
-            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []
-        ):
+    """True if a terminal kanban handoff succeeded or is still in flight."""
+    transcript = [msg for msg in messages or () if isinstance(msg, dict)]
+    rejected_call_ids = set()
+    for msg in transcript:
+        if msg.get("role") != "tool" or str(msg.get("name") or "") not in _TERMINAL_KANBAN_TOOLS:
+            continue
+        if _terminal_tool_succeeded(msg):
             return True
-        if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
-            return True
+        if msg.get("tool_call_id"):
+            rejected_call_ids.add(str(msg["tool_call_id"]))
+    for msg in transcript:
+        if msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            if _tool_call_name(tool_call) in _TERMINAL_KANBAN_TOOLS and _tool_call_id(tool_call) not in rejected_call_ids:
+                return True
     return False
 
 

@@ -109,6 +109,30 @@ def test_shared_view_is_falsy_without_routes_or_primary_adapters():
     assert SharedRouteAdapters({Platform.DISCORD: object()}, []).get(Platform.DISCORD) is None
 
 
+def test_satellite_local_adapter_and_routed_primary_delivery(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    fitness_home = root / "profiles" / "fitness"
+    fitness_home.mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump(PRIMARY_YAML), encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    primary = _primary_adapter()
+    local = object()
+    token = set_hermes_home_override(str(fitness_home))
+    try:
+        shared = SharedRouteAdapters(
+            {Platform.DISCORD: primary}, _primary_profile_routes_for_current_home(),
+            local_adapters={Platform.SLACK: local},
+        )
+        assert shared.get(Platform.SLACK, {"chat_id": "local"}) is local
+        error, standalone = _run(_job("1543065293755256852"), shared)
+        assert error is None, error
+        assert primary.sent == ["1543065293755256852"]
+        assert standalone == []
+        assert shared.get(Platform.DISCORD, {"chat_id": "not-routed"}) is None
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_guild_scoped_route_authorizes_cron_target_even_when_satellite_has_no_platform_block(
     tmp_path, monkeypatch,
 ):

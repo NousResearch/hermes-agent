@@ -195,7 +195,9 @@ VALID_HOOKS: set[str] = {
     # a successful outbound delivery the gateway decided is complete — kind="final" (non-streamed ledgered
     # final + confirmed streamed final) and kind="cron" (live + standalone lanes). Kwargs: kind, platform,
     # chat_id, thread_id, message_ids (send order, as the adapter reported them), last_message_id, text
-    # (bounded; privacy: full delivered text), session_key, job_id (cron), streamed, profile. Returns ignored;
+    # (bounded; privacy: full delivered text), session_key, session_id (the agent turn's final session id,
+    # as post_llm_call reports it; None for cron and the queued lane), job_id (cron), streamed, profile.
+    # Returns ignored;
     # dispatched off the delivery path (background task / scheduled onto the gateway loop), timeout-bounded.
     # Pair with ctx.platform_actions to act on the delivered message (e.g. set_message_buttons).
     "gateway_message_delivered",

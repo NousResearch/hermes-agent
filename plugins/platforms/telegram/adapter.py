@@ -7140,7 +7140,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, _redact_telegram_error_text(e))
             return False
 
-    async def set_message_buttons(self, chat_id: str, message_id: str, buttons: List[Dict[str, str]]) -> bool:
+    async def set_message_buttons(self, chat_id: str, message_id: str, buttons: list[dict[str, str]]) -> bool:
         """Replace a sent message's inline keyboard, one button per row; ``[]`` removes it. Backs
         ``ctx.platform_actions.set_message_buttons`` (#64176) — the facade validates ``buttons``
         (``label``/``data``, reserved core prefixes) before this runs. Telegram's "message is not

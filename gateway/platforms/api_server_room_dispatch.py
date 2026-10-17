@@ -29,9 +29,12 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     from gateway.session_authorities import active_authority
     authority = active_authority(self.gateway_runner)
     if authority is not None:
-        from gateway.session_api import bind_api_steps, run_steps_off_loop
+        from gateway.session_api import bind_api_steps, hosted_member_session, run_steps_off_loop
         if db is not authority.db:
             raise RuntimeError('profile_mismatch')
+        # A member session the user deleted stays deleted: the room moves to its next generation.
+        identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
+        session_id = (await asyncio.to_thread(hosted_member_session, authority.db, identity))[1]
         # The binding transaction runs off the owner loop, in admission order (as API admission does).
         return (await run_steps_off_loop(authority, bind_api_steps(
             authority, session_id, hosted_dispatch=dispatch.as_mapping()))).session_id

@@ -27,13 +27,14 @@ from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, r
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
-from agent.memory_manager import StreamingContextScrubber
+from agent.memory_context import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
 )
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
+from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
@@ -1368,8 +1369,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                         _unavailable_reason = _mp.unavailable_reason()
                     _warn_memory_provider_unavailable(
                         _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)
-                if agent._memory_manager.providers:
-                    agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
+                if agent._memory_manager.providers and agent._memory_manager.initialize_for_agent(
+                        say=agent._emit_startup_warning, **_memory_provider_init_kwargs(agent, platform)):
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
@@ -2204,38 +2205,6 @@ def _emit_compression_summary(agent, cs):
         _record_codex_gpt55_autoraise_notice(_autoraise)
     # Feasibility check deferred to the first turn near threshold (eager costs ~400ms cold).
     agent._compression_feasibility_checked = False
-
-
-def _snapshot_primary_runtime(agent):
-    # Per-turn restoration snapshot: after a fallback, the next turn restores these so the
-    # preferred model gets a fresh attempt.
-    _cc = agent.context_compressor
-    agent._primary_runtime = {
-        "model": agent.model,
-        "provider": agent.provider,
-        "requested_provider": agent.requested_provider,
-        "base_url": agent.base_url,
-        "api_mode": agent.api_mode,
-        "api_key": getattr(agent, "api_key", ""),
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
-        "client_kwargs": dict(agent._client_kwargs),
-        "use_prompt_caching": agent._use_prompt_caching,
-        "use_native_cache_layout": agent._use_native_cache_layout,
-        "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
-        # Engine state _try_activate_fallback() overwrites (getattr: plugin engines may lack them).
-        "compressor_model": getattr(_cc, "model", agent.model),
-        "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
-        "compressor_api_key": getattr(_cc, "api_key", ""),
-        "compressor_provider": getattr(_cc, "provider", agent.provider),
-        "compressor_context_length": _cc.context_length,
-        "compressor_threshold_tokens": _cc.threshold_tokens,
-    }
-    if agent.api_mode == "anthropic_messages":
-        agent._primary_runtime.update({
-            "anthropic_api_key": agent._anthropic_api_key,
-            "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
-        })
 
 
 def _init_usage_state(agent):

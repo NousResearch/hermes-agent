@@ -216,7 +216,7 @@ class StatusOutputMixin:
         if buf:
             buf.clear()
 
-    def _emit_pending_fallback_notice(self) -> None:
+    def _emit_pending_fallback_notice(self, final_response=None) -> None:
         """Surface the one-shot fallback-switch notice on successful recovery: a provider switch is durable
         state operators must see, unlike the retry chatter ``_clear_status_buffer`` drops. Emitted once, then
         cleared; on terminal failure the buffered switch line is flushed instead (``_flush_status_buffer``)."""
@@ -225,6 +225,15 @@ class StatusOutputMixin:
             return
         # Clear before emitting so a (swallowed) callback error can't leave a stale re-emit.
         self._pending_fallback_notice = None
+        from gateway.response_filters import (
+            is_intentional_silence_response,
+            is_machinery_display_kind,
+        )
+        if (
+            is_machinery_display_kind(getattr(self, "_turn_user_display_kind", None))
+            and is_intentional_silence_response(final_response)
+        ):
+            return
         for item in notice if isinstance(notice, list) else [notice]:
             try:
                 self._emit_diagnostic_status(item)

@@ -149,10 +149,6 @@ def finish_text_response(
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0
-    # Surface the one-shot fallback switch notice before dropping the retry buffer so a
-    # provider/model switch stays visible on success.
-    agent._emit_pending_fallback_notice()
-    agent._clear_status_buffer()
 
     # Defensive: repair malformed role-alternation before API call. Catches cases where the history got
     # wedged into a ``tool → user`` or ``user → user`` tail (e.g. after empty- response scaffolding was
@@ -356,6 +352,11 @@ def finish_text_response(
             final_msg["api_content"] = final_response
         else:
             final_msg["content"] = final_response
+
+    # Surface the one-shot fallback switch only after the final response is settled. A machinery
+    # turn that intentionally ends silent has no chat delivery to accompany this diagnostic.
+    agent._emit_pending_fallback_notice(final_response)
+    agent._clear_status_buffer()
 
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps

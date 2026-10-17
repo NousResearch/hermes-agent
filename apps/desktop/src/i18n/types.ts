@@ -586,6 +586,7 @@ catalog: CatalogTranslations
     switchTo: string
     searchPlaceholder: string
     noResults: string
+    packHint: string
   }
 
   settings: {

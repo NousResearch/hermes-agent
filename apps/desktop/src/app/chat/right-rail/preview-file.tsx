@@ -22,6 +22,7 @@ import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlight
 import { PageLoader } from '@/components/page-loader'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
+import { tableDelimiterForPath } from '@/lib/delimited-table'
 import {
   desktopFileDiff,
   DesktopFileMissingError,
@@ -52,6 +53,8 @@ import { markPreviewTabMissing, openPreview, type PreviewTarget } from '@/store/
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
+
+import { DelimitedTablePreview } from './preview-table'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -745,6 +748,39 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
 
 export type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
+/** The view switcher's modes (left→right) and the active one. `rendersInline`:
+ *  the file pane draws `rendered` itself (Markdown, CSV/TSV table);
+ *  `htmlRendered`: the pane owns `rendered` (live HTML). */
+function planPreviewModes({
+  hasDiff,
+  htmlRendered,
+  rendersInline,
+  userMode
+}: {
+  hasDiff: boolean
+  htmlRendered: boolean
+  rendersInline: boolean
+  userMode: null | PreviewViewMode
+}): { mode: PreviewViewMode; modes: PreviewViewMode[] } {
+  const modes: PreviewViewMode[] = [
+    ...(rendersInline || htmlRendered ? (['rendered'] as const) : []),
+    'source',
+    ...(hasDiff ? (['diff'] as const) : [])
+  ]
+
+  if (userMode && modes.includes(userMode)) {
+    return { mode: userMode, modes }
+  }
+
+  // The pane hands an HTML file over only once Source was picked; that pick
+  // outranks the diff-first default.
+  if (htmlRendered) {
+    return { mode: 'source', modes }
+  }
+
+  return { mode: hasDiff ? 'diff' : rendersInline ? 'rendered' : 'source', modes }
+}
+
 export function LocalFilePreview({
   onClose,
   onSelectRendered,
@@ -1211,25 +1247,14 @@ export function LocalFilePreview({
   }
 
   if (isText && state.text !== undefined) {
-    const isMarkdown = (state.language || target.language) === 'markdown'
-    const hasDiff = Boolean(state.diff && state.diff.trim())
-    // Order the toggle reads left→right; default lands on the most useful view.
-    const modes: PreviewViewMode[] = []
+    const tableDelimiter = tableDelimiterForPath(filePath)
 
-    if (isMarkdown || onSelectRendered) {
-      modes.push('rendered')
-    }
-
-    modes.push('source')
-
-    if (hasDiff) {
-      modes.push('diff')
-    }
-
-    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
-    // The pane hands an HTML file over only once Source was picked; that pick
-    // outranks the diff-first default.
-    const mode = userMode && modes.includes(userMode) ? userMode : onSelectRendered ? 'source' : autoMode
+    const { mode, modes } = planPreviewModes({
+      hasDiff: Boolean(state.diff && state.diff.trim()),
+      htmlRendered: Boolean(onSelectRendered),
+      rendersInline: (state.language || target.language) === 'markdown' || Boolean(tableDelimiter),
+      userMode
+    })
 
     const selectMode = (next: PreviewViewMode) => {
       if (next === 'rendered' && onSelectRendered) {
@@ -1275,7 +1300,9 @@ export function LocalFilePreview({
           }
         />
         <div className="min-h-0 flex-1 overflow-auto">
-          {mode === 'rendered' ? (
+          {mode === 'rendered' && tableDelimiter ? (
+            <DelimitedTablePreview delimiter={tableDelimiter} label={target.label} text={state.text} />
+          ) : mode === 'rendered' ? (
             <MarkdownPreview filePath={filePath} text={state.text} />
           ) : mode === 'diff' ? (
             <FileDiffPanel

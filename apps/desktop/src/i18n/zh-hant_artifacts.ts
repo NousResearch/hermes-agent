@@ -84,6 +84,15 @@ export const zhHantArtifacts = {
     largeBody: (label, size) => `${label} 大小為 ${size}。Hermes 只會顯示前 512 KB。`,
     previewAnyway: '仍然預覽',
     truncated: '顯示前 512 KB。',
+    table: {
+      summary: (rows, columns) => `${rows.toLocaleString()} 列 · ${columns.toLocaleString()} 欄`,
+      clipped: (rows, columns) =>
+        `僅顯示前 ${rows.toLocaleString()} 列與 ${columns.toLocaleString()} 欄。完整內容請見「原始碼」。`,
+      empty: '檔案為空。',
+      unterminatedQuote: '有引號欄位未閉合。請切換到「原始碼」檢視檔案。',
+      column: index => `第 ${index} 欄`,
+      regionLabel: label => `${label} 表格`
+    },
     noInlineTitle: '沒有行內預覽',
     noInlineBody: mimeType => `${mimeType || '此檔案類型'} 仍可作為脈絡附件。`,
     edit: '編輯',

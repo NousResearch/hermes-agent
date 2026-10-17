@@ -82,6 +82,15 @@ export const arArtifacts = {
     largeBody: (label, size) => `حجم ${label} هو ${size}. سيعرض Hermes أول 512 KB فقط.`,
     previewAnyway: 'معاينة على أي حال',
     truncated: 'عرض أول 512 KB.',
+    table: {
+      summary: (rows, columns) => `${rows.toLocaleString()} صف · ${columns.toLocaleString()} عمود`,
+      clipped: (rows, columns) =>
+        `عرض أول ${rows.toLocaleString()} صف و${columns.toLocaleString()} عمود. المصدر يحتوي على الملف كاملًا.`,
+      empty: 'الملف فارغ.',
+      unterminatedQuote: 'حقل بين علامتي اقتباس لم يُغلق. انتقل إلى المصدر لفحص الملف.',
+      column: index => `العمود ${index}`,
+      regionLabel: label => `جدول ${label}`
+    },
     noInlineTitle: 'لا توجد معاينة مضمّنة',
     noInlineBody: mimeType => `${mimeType || 'هذا النوع من الملفات'} لا يزال بالإمكان إرفاقه كسياق.`,
     edit: 'تحرير',

@@ -37,12 +37,24 @@ def local_source(authority, chat_id, user_id):
     return source
 
 
+def _refused_check(exc):
+    """``<reason or error> at <function>:<line>``: where a receipt check raised, and why, followed
+    through every chained ``__cause__`` (``restore_policy`` and ``local_receipt`` wrap the check
+    that failed into a bare ``storage_unavailable``)."""
+    import traceback
+    frames = traceback.extract_tb(exc.__traceback__)
+    cause = exc.reason if isinstance(exc, RuntimeStoreError) else f'{type(exc).__name__}: {exc}'
+    where = f' at {frames[-1].name}:{frames[-1].lineno}' if frames else ''
+    chained = f', caused by {_refused_check(exc.__cause__)}' if exc.__cause__ is not None else ''
+    return f'{cause}{where}{chained}'
+
+
 def restore_local_session(authority, sid):
     from gateway.session_authority import LiveSession
     from gateway.session_local import LocalSessionAdapter
     from gateway.session_policy import restore_policy
-    receipt = local_receipt(authority.db, sid)
     try:
+        receipt = local_receipt(authority.db, sid)
         if receipt['profile_id'] != authority.profile_id:
             raise RuntimeStoreError('profile_mismatch')
         chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
@@ -72,6 +84,8 @@ def restore_local_session(authority, sid):
         with authority.db._read_ctx() as conn:
             validate_local_lineage(conn, receipt)
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        # The client only sees the bounded code: gateway.log names the check that refused (#140099).
+        logging.getLogger(__name__).warning('Local session %s receipt refused: %s', sid, _refused_check(exc))
         if isinstance(exc, RuntimeStoreError):
             raise
         raise RuntimeStoreError('storage_unavailable') from exc

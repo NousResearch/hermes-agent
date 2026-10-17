@@ -5,6 +5,16 @@ import pytest
 
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
+# How each variant ages the receipt once its origin lost ``profile`` (``missing`` keeps just that).
+_AGED = {
+    'missing': lambda receipt, root: None,
+    'null': lambda receipt, root: receipt['entry']['origin'].update(profile=None),
+    'foreign': lambda receipt, root: receipt['entry']['origin'].update(profile='beta'),
+    'route': lambda receipt, root: receipt.update(route=receipt['route'].replace('agent:alpha:', 'agent:main:')),
+    'home': lambda receipt, root: receipt.update(profile_id=str(root)),
+    'user': lambda receipt, root: receipt['entry']['origin'].update(user_id='another'),
+}
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('variant', ['current', 'missing', 'null', 'foreign', 'route', 'home', 'user'])
@@ -37,14 +47,7 @@ async def test_secondary_receipt_restores_without_losing_its_owner(tmp_path, mon
         original = json.loads(json.dumps(receipt))
         if variant != 'current':
             receipt['entry']['origin'].pop('profile')
-            if variant in ('null', 'foreign'):
-                receipt['entry']['origin']['profile'] = None if variant == 'null' else 'beta'
-            elif variant == 'route':
-                receipt['route'] = receipt['route'].replace('agent:alpha:', 'agent:main:')
-            elif variant == 'home':
-                receipt['profile_id'] = str(root)
-            elif variant == 'user':
-                receipt['entry']['origin']['user_id'] = 'another'
+            _AGED[variant](receipt, root)
             authority.db._execute_write(lambda conn: conn.execute(
                 'UPDATE state_meta SET value=? WHERE key=?',
                 (json.dumps(receipt), POLICY_PREFIX + ref.session_id)))

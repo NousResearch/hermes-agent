@@ -103,6 +103,16 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
     rf"|{re.escape(COMPACTION_DONE_STATUS)}"
+    # Fallback-chain switches are plumbing: the recovered reply itself is
+    # the user-visible outcome; the switch notice belongs in logs.
+    r"|switched\s+to\s+fallback\s+model"
+    r"|fallback\s+activated"
+    r"|switching\s+to\s+fallback\s+provider"
+    r"|activating\s+fallback\s+provider"
+    # Production switch notice from try_activate_fallback
+    # (chat_completion_helpers): "Model fallback: <old> via <prov>
+    # unavailable (<reason>); using <new> via <prov>."
+    r"|model\s+fallback\s*:"
     r")",
     re.IGNORECASE | re.DOTALL)
 

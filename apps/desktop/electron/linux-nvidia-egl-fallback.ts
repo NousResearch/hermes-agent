@@ -49,11 +49,31 @@ const OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 export const NVIDIA_EGL_FALLBACK_MARKER_FILENAME = 'nvidia-egl-fallback.json'
 
 /**
+ * Electron `child-process-gone` reason values — the `Details['reason']` union
+ * from electron.d.ts. Kept local so this dependency-free module does not
+ * import electron; a wrong literal here fails to compile against the sets
+ * below.
+ */
+export type ElectronChildGoneReason =
+  | 'clean-exit'
+  | 'abnormal-exit'
+  | 'killed'
+  | 'crashed'
+  | 'oom'
+  | 'launch-failed'
+  | 'integrity-failure'
+  | 'memory-eviction'
+
+/**
  * `child-process-gone` reasons that witness a broken GPU child. `killed` is
  * included on purpose: in #40077 the GPU process exited with exit_code=15 —
  * Chromium's own GPU health check SIGTERM — not a crash reason.
  */
-export const NVIDIA_GPU_DEATH_REASONS: ReadonlySet<string> = new Set(['crashed', 'launch-failure', 'killed'])
+export const NVIDIA_GPU_DEATH_REASONS: ReadonlySet<string> = new Set<ElectronChildGoneReason>([
+  'crashed',
+  'launch-failed',
+  'killed'
+])
 
 export type NvidiaEglMarkerState = 'booting' | 'fallback' | 'ok'
 
@@ -270,26 +290,36 @@ export function decideNvidiaEglFallback(options: {
 
 export interface NvidiaGpuDeathOptions {
   platform?: NodeJS.Platform | string
-  details: { type?: string; reason?: string } | null
+  details: { type?: string; reason?: ElectronChildGoneReason } | null
   /** The fallback is already active this launch (sticky marker or override). */
   fallbackActive: boolean
   /** This process already attempted the one-shot relaunch. */
   relaunchAttempted: boolean
+  /**
+   * A quit is really proceeding (before-quit latched). A shutdown tears down
+   * the zygote and the network service before the GPU child, so the GPU child
+   * then reports launch-failed/crashed on a perfectly healthy host (#134888
+   * feedback: a systemd stop must not arm the SwiftShader marker).
+   */
+  quitting?: boolean
 }
 
 /**
  * Whether a `child-process-gone` event witnesses the #40077 GPU death and
  * should trigger the one-shot SwiftShader relaunch. `killed` counts: the
  * #40077 GPU process exited with exit_code=15, Chromium's health-check
- * SIGTERM, not a crash reason.
+ * SIGTERM, not a crash reason. Deaths that arrive while a quit is already
+ * proceeding are ignored: shutdown teardown kills the zygote first, and the
+ * GPU child's resulting launch-failed/crashed says nothing about the GPU.
  */
 export function shouldRelaunchForNvidiaGpuDeath({
   platform = process.platform,
   details,
   fallbackActive,
-  relaunchAttempted
+  relaunchAttempted,
+  quitting = false
 }: NvidiaGpuDeathOptions): boolean {
-  if (platform !== 'linux' || fallbackActive || relaunchAttempted) {
+  if (platform !== 'linux' || quitting || fallbackActive || relaunchAttempted) {
     return false
   }
 

@@ -493,7 +493,13 @@ function getRepeatDisplay(job: CronJob): string {
 }
 
 function getJobMode(job: CronJob): string {
-  if (job.no_agent) return "no_agent";
+  if (job.no_agent) return "⚡ Script";
+  if (job.script) return "🤖 Script+Agent";
+  return "🤖 Agent";
+}
+
+function getJobModeLabel(job: CronJob): string {
+  if (job.no_agent) return "script";
   if (job.script) return "script+agent";
   return "agent";
 }
@@ -1137,7 +1143,7 @@ export default function CronPage() {
           const deliver = asText(job.deliver);
           const profile = getJobProfile(job);
           const jobKey = getJobKey(job);
-          const mode = getJobMode(job);
+          const mode = getJobModeLabel(job);
           const modelDisplay = getModelDisplay(job);
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
@@ -1175,9 +1181,9 @@ export default function CronPage() {
                           : `${job.skills.length} skills`}
                       </Badge>
                     )}
-                    {mode !== "agent" && (
-                      <Badge tone="outline">{mode}</Badge>
-                    )}
+                    <Badge tone="outline" title={getJobModeLabel(job)}>
+                      {getJobMode(job)}
+                    </Badge>
                     {modelDisplay && (
                       <Badge tone="outline" title={modelDisplay}>
                         model

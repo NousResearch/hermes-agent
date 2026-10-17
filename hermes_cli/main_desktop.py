@@ -1512,8 +1512,9 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     """Electron child env + config-supplied extra flags. ``desktop.*`` config is bridged to env vars
     Electron already reads; an explicit env var wins over config (and over keychain detection)."""
     from hermes_constants import socket_safe_tmpdir, with_hermes_node_path
-    # with_hermes_node_path() copies os.environ when called with no arg.
-    env = with_hermes_node_path()
+    # with_hermes_node_path() copies os.environ when called with no arg. The app is a UI, not an agent:
+    # drop our harness marker so its operator terminal is not treated as an agent's (agent/estop.py).
+    env = {k: v for k, v in with_hermes_node_path().items() if k != "HERMES_AGENT"}
     tmpdir = env.get("TMPDIR", "")
     if sys.platform == "linux" and len(os.fsencode(tmpdir)) > _ELECTRON_TMPDIR_MAX_BYTES:
         # A longer TMPDIR hangs requestSingleInstanceLock(). Only Chromium's socket dir moves:

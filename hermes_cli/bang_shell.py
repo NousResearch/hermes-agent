@@ -94,7 +94,12 @@ def _bang_env() -> dict:
     boundary is unavailable, let the launch fail rather than passing the CLI's full environment.
     """
     from tools.environments.local import build_subprocess_env
-    return build_subprocess_env()
+    env = build_subprocess_env()
+    # Typed by the user, not the agent: drop the agent markers so `!hermes pause` is the operator's
+    # (agent/estop.py); the CLI mirrors its session id into os.environ once an agent exists.
+    for name in ("HERMES_AGENT", "HERMES_SESSION_ID"):
+        env.pop(name, None)
+    return env
 
 
 def run_bang_command(command: str, *, cwd: Optional[str] = None, timeout: int = DEFAULT_TIMEOUT, writer=None) -> int:

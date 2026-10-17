@@ -158,6 +158,11 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_THREAD_ID",
     "HERMES_SESSION_SOURCE",
     "HERMES_SESSION_KEY",
+    "HERMES_SESSION_ID",
+    "HERMES_SINGLE_QUERY_SESSION",
+    # Agent-ancestry marker: a pytest launched from an agent's terminal inherits it, and the
+    # emergency stop (agent/estop.py) refuses to engage under it.
+    "HERMES_AGENT",
     "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION",
     "_HERMES_GATEWAY",

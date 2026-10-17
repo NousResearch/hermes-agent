@@ -426,7 +426,11 @@ const DOWNLOAD_PHASES = new Set([
   'downloading-runtime',
   'unpacking-runtime',
   'verifying-runtime',
-  'downloading'
+  'downloading',
+  'retrying',
+  'waiting',
+  'verifying',
+  'interrupted'
 ])
 
 export function runningModelDownloads(jobs: readonly LocalRuntimeJob[]): LocalRuntimeJob[] {

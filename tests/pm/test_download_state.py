@@ -75,3 +75,18 @@ def test_pause_interrupts_an_owner_wait(tmp_path):
     assert stopped_while_locked
     assert len(errors) == 1 and isinstance(errors[0], DownloadPaused)
     assert destination.read_bytes() == b"complete"
+
+
+@pytest.mark.parametrize("age_days,retained", [(2, True), (8, False)])
+def test_partial_gc_allows_resuming_after_an_overnight_outage(tmp_path, age_days, retained):
+    from pm.download_state import collect_partials
+
+    partials = tmp_path / "partials"
+    partials.mkdir()
+    files = [partials / "model.part", partials / "model.ranges"]
+    for path in files:
+        path.write_bytes(b"saved data")
+        when = time.time() - age_days * 24 * 60 * 60
+        os.utime(path, (when, when))
+    collect_partials(partials)
+    assert all(path.exists() for path in files) is retained

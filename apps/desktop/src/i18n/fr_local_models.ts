@@ -3,6 +3,9 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const frLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  downloadDiscardAction: 'Abandonner',
+  downloadDiscardDetail: 'Supprimer ce téléchargement incomplet. Les fichiers terminés seront conservés.',
+  downloadDiscardFailed: model => `Impossible d’abandonner le téléchargement de ${model}`,
   connectionChanged: 'La connexion des modèles locaux a changé',
   title: 'Modèles locaux',
   runtimeTitle: 'Moteur local',

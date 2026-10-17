@@ -6,6 +6,7 @@ import type * as Notifications from '@/store/notifications'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 vi.mock('@/hermes', () => ({
+  discardLocalDownload: vi.fn(),
   pauseLocalDownload: vi.fn(),
   resumeLocalDownload: vi.fn()
 }))
@@ -19,7 +20,7 @@ vi.mock('@/store/local-runtime-jobs', (): object => ({
   watchLocalRuntimeJobs: vi.fn()
 }))
 
-import { pauseLocalDownload, resumeLocalDownload } from '@/hermes'
+import { discardLocalDownload, pauseLocalDownload, resumeLocalDownload } from '@/hermes'
 
 import {
   downloadStatusText,
@@ -66,6 +67,41 @@ afterEach(() => {
 })
 
 describe('LocalModelDownloadActions', () => {
+  it('offers Discard only for a parked job with explicit backend support', () => {
+    renderActions(job({ status: 'paused' }))
+    expect(screen.queryByRole('button', { name: 'Discard' })).toBeNull()
+    cleanup()
+    renderActions(job({ status: 'running', can_discard: true }))
+    expect(screen.queryByRole('button', { name: 'Discard' })).toBeNull()
+    cleanup()
+    renderActions(job({ status: 'paused', can_discard: true, can_resume: true }))
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy()
+  })
+
+  it('refreshes after Discard and reports a failed request by action', async () => {
+    const { notifyError } = await import('@/store/notifications')
+    const { watchLocalRuntimeJobs } = await import('@/store/local-runtime-jobs')
+    vi.mocked(discardLocalDownload).mockResolvedValue({ ok: true, discarded: false })
+    renderActions(job({ status: 'paused', can_discard: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    await waitFor(() => expect(watchLocalRuntimeJobs).toHaveBeenCalled())
+    expect(discardLocalDownload).toHaveBeenCalledWith('j1', undefined)
+    expect(notifyError).not.toHaveBeenCalled()
+    vi.mocked(discardLocalDownload).mockRejectedValue(new Error('offline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    await waitFor(() => expect(notifyError).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(notifyError).mock.calls[0]?.[1]).toMatch(/discard/i)
+  })
+
+  it('keeps Resume usable after a recoverable interruption', async () => {
+    renderActions(job({ status: 'paused', phase: 'interrupted', can_resume: true }))
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    await waitFor(() => {
+      expect(resumeLocalDownload).toHaveBeenCalledWith('j1', undefined)
+    })
+  })
+
   it('running download without explicit can_pause shows NO control (no guessing about old backends)', () => {
     renderActions(job({}))
 
@@ -174,6 +210,26 @@ const statusCopy = {
 }
 
 describe('downloadStatusText', () => {
+  it.each(['retrying', 'waiting', 'verifying', 'interrupted'])(
+    'shows the %s recovery detail and retained progress without a stale speed',
+    phase => {
+      const text = downloadStatusText(
+        job({
+          phase,
+          detail: 'Saved progress is retained',
+          done_bytes: 1 << 30,
+          total_bytes: 4 * (1 << 30),
+          bytes_per_sec: 24 * (1 << 20),
+          eta_seconds: 120
+        }),
+        statusCopy
+      )
+
+      expect(text).toBe('Saved progress is retained · 1.0 GB of 4.0 GB')
+      expect(isDownloadPhase(job({ kind: 'quickstart', phase }))).toBe(true)
+    }
+  )
+
   it('composes state, bytes, speed and ETA while bytes move', () => {
     const text = downloadStatusText(
       job({ bytes_per_sec: 24 * (1 << 20), done_bytes: 1 << 30, eta_seconds: 120, total_bytes: 4 * (1 << 30) }),
@@ -203,6 +259,30 @@ describe('downloadStatusText', () => {
     )
 
     expect(text).toBe('Paused · 1.0 GB of 4.0 GB')
+  })
+
+  it.each(['retrying', 'waiting', 'verifying'])('a user pause replaces stale %s details', phase => {
+    const text = downloadStatusText(
+      job({
+        detail: 'Connection interrupted. Retrying in 4s',
+        done_bytes: 1 << 30,
+        phase,
+        status: 'paused',
+        total_bytes: 4 * (1 << 30)
+      }),
+      statusCopy
+    )
+
+    expect(text).toBe('Paused · 1.0 GB of 4.0 GB')
+  })
+
+  it('a pause before the first byte also replaces the retry detail', () => {
+    const text = downloadStatusText(
+      job({ detail: 'Retrying in 4s', done_bytes: 0, phase: 'retrying', status: 'paused', total_bytes: null }),
+      statusCopy
+    )
+
+    expect(text).toBe('Paused')
   })
 
   it('a non-download phase shows the phase detail, not a byte counter', () => {

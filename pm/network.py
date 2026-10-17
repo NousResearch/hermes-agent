@@ -17,6 +17,7 @@ from typing import Callable, TypeVar
 _T = TypeVar("_T")
 _ATTEMPTS = 4
 _MAX_DELAY = 30.0
+_MAX_RECOVERY_DELAY = 300.0
 _HTTP_RETRY = frozenset({408, 429, 500, 502, 503, 504})
 _R2_HOSTS = frozenset({"hermes-assets.nousresearch.com"})
 _NETWORK_ERRNOS = frozenset({
@@ -68,7 +69,7 @@ def edge_block(exc: BaseException) -> str | None:
             "retry from another network")
 
 
-def _delay(exc: Exception, attempt: int) -> float:
+def _delay(exc: Exception, attempt: int, *, maximum: float | None = _MAX_DELAY) -> float:
     delay = float(2 ** attempt)
     if isinstance(exc, urllib.error.HTTPError):
         value = exc.headers.get("Retry-After", "") if exc.headers else ""
@@ -84,27 +85,44 @@ def _delay(exc: Exception, attempt: int) -> float:
                 except (TypeError, ValueError, OverflowError):
                     retry_after = 0.0
             delay = max(delay, retry_after)
-    return min(delay, _MAX_DELAY)
+    return delay if maximum is None else min(delay, maximum)
 
 
 def retry_network(
     operation: Callable[[], _T], *, wait: Callable[[float], None] | None = None,
+    progress: Callable[[], int] | None = None,
 ) -> _T:
     """Retry the complete request and body read, never an install or publish.
 
     The caller resets attempt-local buffers and keeps any resumable bytes.
     A download supplies an interruptible wait so pause does not wait for backoff.
+    Downloads supply ``progress``: durable forward progress renews their
+    budget. Metadata and non-resumable requests still get four attempts.
     """
     attempt = 1
+    saved = progress() if progress is not None else 0
     while True:
         try:
             return operation()
         except Exception as exc:
             if isinstance(exc, urllib.error.HTTPError):
                 exc.close()
-            if not is_transient(exc) or attempt >= _ATTEMPTS:
+            if not is_transient(exc):
                 raise
-            delay = _delay(exc, attempt - 1)
+            current = progress() if progress is not None else saved
+            if current > saved:
+                attempt = 0
+                saved = current
+            if attempt >= _ATTEMPTS:
+                raise
+            delay = _delay(exc, max(0, attempt - 1))
+            if progress is not None:
+                # Do not retry a resumable transfer before Retry-After. A
+                # longer server embargo parks it instead of blocking for hours.
+                requested = _delay(exc, 0, maximum=None)
+                if requested > _MAX_RECOVERY_DELAY:
+                    raise
+                delay = max(delay, requested)
             attempt += 1
             logging.getLogger(__name__).warning(
                 "network request failed (%s); retrying in %gs (attempt %d/%d)",

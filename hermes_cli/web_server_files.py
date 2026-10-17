@@ -242,6 +242,13 @@ def _path_text(raw_path: str | None) -> str:
     return text
 
 
+def _translate_docker_container_path(candidate: Path) -> Path | None:
+    """Map an existing Docker-sandbox path to its host-side bind mount."""
+    from gateway.platforms.base import _translate_docker_container_media_path
+
+    return _translate_docker_container_media_path(candidate)
+
+
 def _default_hermes_root_is_opt_data() -> bool:
     raw = os.environ.get("HERMES_HOME", "").strip()
     if not raw:
@@ -336,6 +343,10 @@ def _resolve_managed_path(
         parent = _canonical_path(candidate.parent)
         resolved = parent / candidate.name
     else:
+        if not for_write and not candidate.exists():
+            translated = _translate_docker_container_path(candidate)
+            if translated is not None:
+                candidate = translated
         resolved = _canonical_path(candidate, require_exists=not for_write)
 
     if root is not None and not _path_is_under(root, resolved):

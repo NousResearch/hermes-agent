@@ -1585,6 +1585,26 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
 
 
+def _named_custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    """Live catalog of a named custom provider (``custom:<name>`` -> ``providers.<name>``).
+
+    Probes the entry's OWN ``base_url`` with the entry's OWN credential (inline ``api_key``,
+    ``${VAR}`` template or ``key_env``, read through the profile secret scope) -- the same
+    resolution the picker and ``/model`` switch use. Never ``model.base_url`` and never the
+    generic ``OPENAI_API_KEY``-style fallbacks: those belong to a different endpoint, and sending
+    them here hands one host another host's secret.
+    """
+    from hermes_cli.model_switch import _clean, _entry_configured_key, _scoped_key_env
+
+    entry = _get_provider_config_dict(normalized.split(":", 1)[-1])
+    base_url = _clean(entry.get("base_url") or entry.get("url") or entry.get("api"))
+    if not base_url:
+        return None
+    api_key = _entry_configured_key(entry, _scoped_key_env)
+    api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
+    return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
+
+
 def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     # Live discovery keyed by the resolved AWS region so EU/AP users see eu.*/ap.* ids.
     try:
@@ -1837,12 +1857,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # canonical fetchers would send the provider credential to exactly the host the user
     # deliberately routed away from, recreating the bug on the failure path.
     relay = _configured_relay_base_url(provider or "")
-    if relay and normalized not in _RELAY_AWARE_CATALOG_FETCHERS:
+    if relay and normalized not in _RELAY_AWARE_CATALOG_FETCHERS and not normalized.startswith("custom:"):
         relayed = _relay_model_catalog(normalized, relay)
         if relayed:
             return _chat_catalog_rows(relayed)
         return _static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized))
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
+    if fetcher is None and normalized.startswith("custom:"):
+        # A named custom provider (``providers.<name>``) misses the fetcher table, which would
+        # fall through to an empty static catalog: probe the entry's own endpoint instead.
+        fetcher = _named_custom_catalog
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)
         if models is not None:

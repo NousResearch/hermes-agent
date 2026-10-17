@@ -360,7 +360,10 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+def exhausted_copy(
+    reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None,
+    resets_at: Optional[float] = None, now: Optional[float] = None,
+) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
@@ -371,6 +374,10 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, rese
         from agent.retry_utils import format_reset_window
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
                      "Send /retry after that, or switch models with /model.")
+    elif not first_attempt and reset_seconds is not None and 0 < reset_seconds < 120 and resets_at is not None and (
+        reset_copy := limit_reset_copy(resets_at, now=now)
+    ):
+        situation = f"{reset_copy} Try again after that, or switch models with /model."
     else:
         situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
     return (

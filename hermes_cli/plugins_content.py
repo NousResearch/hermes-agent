@@ -26,8 +26,9 @@ def register_skill(
 ) -> PluginRegistration:
     """Register a read-only skill resolvable as ``'<plugin_name>:<name>'`` via ``skill_view()``,
     listed by ``skills_list`` and in the system prompt's ``<available_skills>`` while the plugin
-    is enabled. Not copied into ``~/.hermes/skills/``. Raises ``ValueError`` (``':'``/invalid
-    chars) or ``FileNotFoundError``."""
+    is enabled. Not copied into ``~/.hermes/skills/``. ``path`` must name the skill's
+    ``SKILL.md`` file. Raises ``ValueError`` (``':'``/invalid chars or non-file path) or
+    ``FileNotFoundError``."""
     from agent.skill_utils import _NAMESPACE_RE
     if ":" in name:
         raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "
@@ -40,6 +41,8 @@ def register_skill(
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"SKILL.md not found at {path}")
+    if not path.is_file():
+        raise ValueError(f"register_skill expects the SKILL.md file path, got {path}")
     namespace = self.manifest.skill_namespace or self.manifest.name
     qualified = f"{namespace}:{name}"
     if self.manifest.portable and qualified in self._manager._plugin_skills:

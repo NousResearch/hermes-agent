@@ -117,6 +117,14 @@ class TestPluginContextRegisterSkill:
         with pytest.raises(FileNotFoundError):
             ctx.register_skill("foo", tmp_path / "nonexistent.md")
 
+    def test_rejects_skill_directory(self, ctx, tmp_path):
+        skill_dir = tmp_path / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("content")
+
+        with pytest.raises(ValueError, match="expects the SKILL.md file path"):
+            ctx.register_skill("foo", skill_dir)
+
     def test_accepts_str_path(self, ctx, tmp_path):
         # Plugin register() helpers commonly pass the SKILL.md location as str
         # (#104404); this used to abort the whole plugin load with

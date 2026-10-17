@@ -118,7 +118,7 @@ class TestScriptModeArchives:
         assert "```\nplain script payload\nline two\n```" in prompt
 
 
-def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatch):
+def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatch, cron_owner):
     from cron.jobs import create_job, save_job_output
     from cron.scheduler_prompt import _inject_context_from
 
@@ -135,7 +135,7 @@ def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatc
     assert "Original prompt noise" not in prompt
 
 
-def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, monkeypatch):
+def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, monkeypatch, cron_owner):
     import os
     from cron.jobs import create_job, save_job_output, OUTPUT_DIR
     from cron.scheduler_prompt import _inject_context_from

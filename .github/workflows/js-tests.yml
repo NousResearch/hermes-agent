@@ -32,7 +32,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(github.repository == 'mekenthompson/hermes-agent' && '{"unit":["checks","ui-1/3","ui-2/3","ui-3/3"]}' || '{"unit":["all"]}') }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
       - name: Set up the locked JS build toolchain

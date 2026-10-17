@@ -136,8 +136,10 @@ def _shadowed_by_builtin(requested_norm: str) -> bool:
     return (canonical or "").strip().lower() == requested_norm
 
 
-def _match_new_style_provider(requested_norm: str, providers: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Scan ``providers:`` (new-style, keyed) for ``requested_norm``."""
+def _match_new_style_provider(
+    requested_norm: str, providers: dict[str, Any], *, resolve_credentials: bool = True,
+) -> Optional[tuple[dict[str, Any], Any]]:
+    """Scan ``providers:`` (new-style, keyed) for ``requested_norm``; ``(entry, config key)``."""
     from hermes_cli.config import is_provider_enabled
     rp = _rp()
     for ep_name, entry in providers.items():
@@ -152,7 +154,7 @@ def _match_new_style_provider(requested_norm: str, providers: dict[str, Any]) ->
         # Resolve credentials only after identity and endpoint validation. Merely scanning an
         # unrelated entry must not read its profile-scoped secret.
         key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
-        api_key = get_secret_str(key_env, "").strip() if key_env else ""
+        api_key = get_secret_str(key_env, "").strip() if key_env and resolve_credentials else ""
         result: dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
                                   "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
         # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.
@@ -165,12 +167,12 @@ def _match_new_style_provider(requested_norm: str, providers: dict[str, Any]) ->
             entry, result, provider_key=_clean(ep_name), key_env=key_env,
             api_mode=rp._parse_api_mode(entry.get("api_mode") or entry.get("transport")),
         )
-        return result
+        return result, ep_name
     return None
 
 
-def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Optional[dict[str, Any]]:
-    """Scan the legacy ``custom_providers:`` list for ``requested_norm``."""
+def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Optional[tuple[dict[str, Any], dict]]:
+    """Scan the legacy ``custom_providers:`` list for ``requested_norm``; ``(result, matched entry)``."""
     for entry in custom_providers:
         name, base_url = (entry.get("name"), entry.get("base_url")) if isinstance(entry, dict) else (None, None)
         if not isinstance(name, str) or not isinstance(base_url, str):
@@ -184,27 +186,79 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
             result["model"] = model_name
         _lift_common_custom_fields(entry, result, provider_key=provider_key, key_env=_clean(entry.get("key_env", "")),
                                    api_mode=_rp()._parse_api_mode(entry.get("api_mode")))
-        return result
+        return result, entry
     return None
 
 
-def _get_named_custom_provider(requested_provider: str) -> Optional[dict[str, Any]]:
+def _get_named_custom_provider(
+    requested_provider: str, *, config: Optional[dict[str, Any]] = None,
+    resolve_credentials: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Resolve a named endpoint. Creation-time config copying supplies its own config snapshot
+    and skips credential reads; ordinary runtime callers keep their existing scoped resolution."""
+    found = _select_named_custom_provider(requested_provider, config=config, resolve_credentials=resolve_credentials)
+    return found[0] if found else None
+
+
+def named_custom_provider_config_path(requested_provider: str, config: dict[str, Any]) -> Optional[tuple]:
+    """The config path (``("providers", key)`` / ``("custom_providers", index)``) of the ONE entry
+    the runtime routes *requested_provider* through, else None. Reads no credential."""
+    found = _select_named_custom_provider(requested_provider, config=config, resolve_credentials=False)
+    return found[1] if found else None
+
+
+def custom_provider_config_path_for_url(base_url: Any, config: dict[str, Any]) -> Optional[tuple]:
+    """The config path of the entry a bare ``custom`` route at *base_url* takes its key from: the
+    first compatible ``custom_providers`` / ``providers`` entry with that URL (trailing slash
+    ignored), the same owner the credential pool seeds from. Reads no credential."""
+    url = str(base_url or "").strip().rstrip("/")
+    if not url or isinstance(config.get("custom_providers"), dict):
+        return None
+    for entry in _rp().get_compatible_custom_providers(config) or ():
+        if isinstance(entry, dict) and str(entry.get("base_url") or "").strip().rstrip("/") == url:
+            return _compatible_entry_path(config, entry)
+    return None
+
+
+def _select_named_custom_provider(
+    requested_provider: str, *, config: Optional[dict[str, Any]], resolve_credentials: bool,
+) -> Optional[tuple[dict[str, Any], Optional[tuple]]]:
+    """``(resolved entry, its config path)`` for the first usable match: ``providers:`` first,
+    then the legacy list view."""
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
         return None
     rp = _rp()
-    config = rp.load_config()
+    if config is None:
+        config = rp.load_config()
     providers = config.get("providers")
-    found = _match_new_style_provider(requested_norm, providers) if isinstance(providers, dict) else None
+    found = (
+        _match_new_style_provider(requested_norm, providers, resolve_credentials=resolve_credentials)
+        if isinstance(providers, dict) else None
+    )
     if found:
-        return found
+        return found[0], ("providers", found[1])
     if isinstance(config.get("custom_providers"), dict):
         logger.warning("custom_providers in config.yaml is a dict, not a list. "
                        "Each entry must be prefixed with '-' in YAML. "
                        "Run 'hermes doctor' for details.")
         return None
     custom_providers = rp.get_compatible_custom_providers(config)
-    return _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
+    found = _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
+    return (found[0], _compatible_entry_path(config, found[1])) if found else None
+
+
+def _compatible_entry_path(config: dict[str, Any], entry: dict[str, Any]) -> Optional[tuple]:
+    """Where a ``get_compatible_custom_providers`` entry lives in *config*. The view keeps the first
+    of identical legacy entries, so the first raw entry normalizing to it is its source."""
+    from hermes_cli.config_providers import _normalize_custom_provider_entry
+    providers = config.get("providers")
+    key = entry.get("provider_key")
+    if key and isinstance(providers, dict):
+        return next((("providers", k) for k in providers if str(k).strip() == key), None)
+    legacy = config.get("custom_providers")
+    return next((("custom_providers", i) for i, raw in enumerate(legacy if isinstance(legacy, list) else ())
+                 if _normalize_custom_provider_entry(raw) == entry), None)
 
 
 def has_named_custom_provider(requested_provider: str) -> bool:
@@ -372,7 +426,10 @@ def _try_resolve_from_custom_pool(
     """Runtime dict from the first credential pool that owns this custom endpoint, else None."""
     rp = _rp()
     try:
-        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
+        # A frozen route's entry owns the pool, never the live one (a live URL edit would drop it).
+        frozen = rp._FROZEN_RUNTIME_CONFIG.get()
+        scope = {} if frozen is None else {"config": frozen}
+        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name, **scope))
     except Exception:
         raw_keys = []
     # Order-preserving dedupe of normalized keys.
@@ -487,8 +544,10 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     rp = _rp()
     base_url = explicit_base_url.strip().rstrip("/")
     # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
-    # custom_providers entry gets its api_key from the pool instead of env fallbacks.
-    pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None)
+    # custom_providers entry gets its api_key from the pool instead of env fallbacks. An explicit
+    # launch key still wins over the pool (R2-M1).
+    explicit_key = (explicit_api_key or "").strip()
+    pool_result = None if rp.has_usable_secret(explicit_key) else rp._try_resolve_from_custom_pool(base_url, "custom", None)
     if pool_result:
         pool_result["source"] = "direct-alias"
         return pool_result
@@ -521,7 +580,7 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
 
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
-                                  target_model: Optional[str] = None) -> Optional[dict[str, Any]]:
+                                  target_model: Optional[str] = None, config=None) -> Optional[dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
     Aliases resolving to "custom" (ollama, vllm, llamacpp, …) are treated like bare ``custom``. A
     llamacpp alias with no explicit base_url resolves to the managed server first; an explicit
@@ -542,13 +601,20 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
-    custom_provider = custom_provider or rp._get_named_custom_provider(requested_provider)
+    if custom_provider is None:
+        custom_provider = (rp._get_named_custom_provider(requested_provider) if config is None
+                           else _get_named_custom_provider(requested_provider, config=config))
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    pool_result = rp._try_resolve_from_custom_pool(
+    explicit_key = (explicit_api_key or "").strip()
+    # The credential pool is the profile's auth store (``hermes auth add``), not config: a frozen
+    # config snapshot still owes a pooled ``providers:`` entry its keys, or the turn ships the
+    # ``no-key-required`` placeholder to a host that wants one (C11 pool rows). An explicit launch
+    # key is the operator's credential for this route and wins over the pool (R2-M1).
+    pool_result = None if rp.has_usable_secret(explicit_key) else rp._try_resolve_from_custom_pool(
         base_url, "custom", custom_provider.get("api_mode"),
         provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
     )
@@ -556,7 +622,6 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
         return pool_result
-    explicit_key = (explicit_api_key or "").strip()
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),

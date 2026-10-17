@@ -313,9 +313,9 @@ DEFAULT_CONFIG = {
         # Bounded linger (seconds) for one-shot CLI runs (-q/-Q/-z) that exit while background processes
         # spawned with notify_on_complete=true are still running. See #90879.
         "oneshot_completion_wait_seconds": 600.0,
-        # Env vars passed into sandboxed terminal/execute_code (skill-declared
-        # required_environment_variables pass through automatically).
+        # Env vars passed into sandboxed terminal/execute_code (plus skill-declared required_environment_variables).
         "env_passthrough": [],
+        "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools
         # Remote-backend sync-back refuses to extract a downloaded state archive larger than this
         # (bytes); raise it for a ~/.hermes tree that legitimately exceeds 2 GiB.
         "sync_back_max_bytes": 2 * 1024 * 1024 * 1024,
@@ -439,20 +439,20 @@ DEFAULT_CONFIG = {
         # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The
         # snapshot dir sidesteps Chrome 136+'s default-profile debugging block and never contends
         # with the running browser. Turning off deletes ~/.hermes/browser-profile/ so credentials
-        # don't outlive consent. Chromium-family only (Chrome, Edge, Brave, Brave Origin, Chromium);
-        # Firefox etc. fails closed. Also gates the browser_exec `local` argument (real-profile
-        # local session even under a cloud backend). Desktop Settings -> Browser.
+        # don't outlive consent. Chromium-family only; a profile that can't be copied (Firefox default,
+        # Windows browser holding its cookies) gives a fresh, signed-out browser plus a note saying why.
+        # Also gates the browser_exec `local` arg (real-profile session under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
         # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
-        # copied. When on, a locked profile still blocks and the agent ASKS first; on approval it
+        # copied (the session runs on a fresh browser). When on, the agent ASKS first; on approval it
         # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
-        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux,
-        # where a running browser instead makes the Login Data / Web Data SQLite backups miss
-        # their deadline; quit the browser by hand there.
+        # so a new session can copy it; no auto-kill. No effect on macOS/Linux, where a running
+        # browser only locks the password/autofill DBs, which are skipped (cookies still copy).
         "real_profile_autoclose": False,
         # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
-        # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
+        # agent the wrong identity. A pin naming a missing directory never falls back to another
+        # profile: the session gets a fresh browser without the user's logins.
         "real_profile_pin": "",
         # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
         # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
@@ -1236,8 +1236,7 @@ DEFAULT_CONFIG = {
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
-    # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
-    # conversation history and are re-sent on every later API call.
+    # Native images (vision_analyze, browser screenshots, replayed user images) are re-sent on every later call.
     "vision": {
         # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for dense phone
         # screenshots of tables the model calls "unreadable" at 256 KB.
@@ -1246,6 +1245,7 @@ DEFAULT_CONFIG = {
         # null = 3 inside delegated subagents (they run unattended), unlimited for the main agent;
         # an explicit number applies everywhere; 0 = unlimited.
         "max_calls_per_image": None,
+        "replay_recent_images": 3,  # newest user images re-sent on turns rebuilt from state.db; 0 = off
     },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
@@ -2091,10 +2091,10 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
-
-        # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
-        # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
+        "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
+        # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
         "signal_interrupt_grace_timeout": 1,
+        "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
@@ -2256,18 +2256,14 @@ DEFAULT_CONFIG = {
     # inserts, /resume listing, and insights queries.
     "sessions": {
         # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
-        # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
-        # are never deleted; stale automation sessions whose process died are *closed*, then get a
-        # full retention window before removal.
-        "auto_prune": True,
+        # latest message / creation) about once per min_interval_hours at CLI/gateway/cron startup.
+        # Open, pinned, or mid-turn sessions are never deleted; stale automation sessions whose
+        # process died are *closed*, then get a full retention window before removal.
+        # Off by default (deleting history is opt-in). While the user's config.yaml has no
+        # auto_prune key, every surface asks once the disk holding state.db runs low
+        # (hermes_cli/prune_advisor.py); either answer writes the key and ends the question.
+        "auto_prune": False,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
-        # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
-        # at CLI/gateway/cron startup. Activity is the freshest of live activity (last_activity_at) / latest
-        # message timestamp / creation time. Sessions that are still open, pinned, or mid-turn are never deleted — the
-        # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
-        # whose process died without closing them; those are *closed*, not deleted, and get a further full
-        # retention window before removal. Default true since #54189: without it state.db grows without
-        # bound (multi-GB installs reported within weeks).
         "retention_days": 90,
         # Auto-archive (soft-hide, never delete) sessions with no activity for auto_archive_days,
         # once per min_interval_hours. Pinned sessions are exempt.
@@ -2711,7 +2707,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 50,  # Config schema version - bump this when adding new required fields
+    "_config_version": 51,  # Config schema version - bump this when adding new required fields
 }
 
 

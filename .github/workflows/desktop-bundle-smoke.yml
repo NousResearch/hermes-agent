@@ -64,7 +64,7 @@ permissions:
 jobs:
   validate:
     name: Require a supported native smoke target
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       TARGET: ${{ inputs.platform }}/${{ inputs.arch }}/${{ inputs.format }}
@@ -103,7 +103,7 @@ jobs:
         shell: bash
         run: printf 'SMOKE_ROOT=%s/bundle-smoke\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # A dispatch tests the artifact of `sha` with the dispatched ref's scripts.
           ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}

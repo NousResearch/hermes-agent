@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 120
     environment: trusted-automation
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Get GitHub App token
         id: app-token
@@ -93,7 +93,7 @@ jobs:
       # (./.github/actions/get-app-token) and cannot resolve without the repo
       # checked out. `build-index` above already does this; this job did not,
       # so the scheduled deploy re-trigger never fired.
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Get GitHub App token
         id: app-token

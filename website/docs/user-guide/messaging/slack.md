@@ -1034,7 +1034,7 @@ slack:
       performance implications.
 ```
 
-Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
+Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel, including slash-command turns (`/hermes <question>` and native `/<command>`), get the prompt injected as an ephemeral system instruction.
 
 ## Per-Channel Skill Bindings
 
@@ -1060,7 +1060,7 @@ slack:
 ```
 
 Notes:
-- The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
+- The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding. A session started by a slash command (`/hermes <question>`) loads the binding too.
 - The skill is loaded only at session start (new session). If you change the binding, run `/new` for it to take effect.
 - Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
 

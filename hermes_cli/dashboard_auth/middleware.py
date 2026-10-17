@@ -164,7 +164,9 @@ async def gated_auth_middleware(
         return await call_next(request)
     # Already authenticated by the token-auth seam (service caller on a registered token
     # route): not a cookie session, must not bounce to /login.
-    if getattr(request.state, "token_authenticated", False) or _path_is_public(request.url.path):
+    if (getattr(request.state, "token_authenticated", False)
+            or getattr(request.state, "native_http_principal", None)
+            or _path_is_public(request.url.path)):
         return await call_next(request)
     # Explicit dashboard tokens are configured administrator credentials for
     # native remote clients. Check them before provider bearer verification so

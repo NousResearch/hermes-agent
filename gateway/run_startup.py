@@ -60,6 +60,21 @@ def recover_left_core_at_gateway_start() -> None:
         recover_left_core_in(root)
 
 
+
+def _own_policy_envs(platform) -> Optional[tuple]:
+    """``(dm_policy_env, group_policy_env, allow_all_env)`` for a platform that declares
+    ``own_policy_env``, else None. The live entry wins; a bundled platform whose entry is absent
+    (plugin disabled, safe mode) or lacks the field (a user plugin overriding it) falls back to the
+    names its ``gateway_env.AUTHZ`` declares, so the startup refusal never weakens."""
+    from gateway.platform_env import authz_field
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform.value)
+    own = authz_field(platform.value, "own_policy_env", entry)
+    if not own:
+        return None
+    return (*own, authz_field(platform.value, "allow_all_env", entry))
+
+
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
 
@@ -596,6 +611,14 @@ class GatewayStartupMixin:
             return 0
         scheduled = 0
         for entry in candidates:
+            # Canonical admissions own restart decisions, including unknown pauses.
+            # Legacy synthetic resume must not race their restored FIFO.
+            from gateway.session_authorities import admission_owner, all_authorities
+            if any(authority.db._read_one(
+                    'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
+                    (entry.session_id, admission_owner(authority, entry.session_id)))
+                   for authority in all_authorities(self)):
+                continue
             # Epoch math: the marker was stamped naive-local by the previous process, possibly
             # on the other side of a DST change; wall-clock subtraction is off by the shift.
             marker = entry.last_resume_marked_at or entry.updated_at
@@ -821,6 +844,9 @@ class GatewayStartupMixin:
         return service
 
     async def _ensure_hosted_room_worker(self):
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.session_hosted_service import ensure_hosted_service
+            return await ensure_hosted_service(self)
         return await asyncio.to_thread(self._start_hosted_room_worker_sync)
 
     async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
@@ -831,6 +857,9 @@ class GatewayStartupMixin:
 
     async def _stop_hosted_room_worker(self, timeout: float = 5.0) -> bool:
         """Pause room execution durably without interrupting accepted turns."""
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.session_hosted_service import stop_hosted_service
+            return await stop_hosted_service(self, timeout=timeout)
         from tui_gateway import methods_groups
         return await asyncio.to_thread(methods_groups.stop_hosted_room_service, timeout=timeout)
 
@@ -1000,14 +1029,18 @@ class GatewayStartupMixin:
     def _start_check_access_policy(self) -> bool:
         """Warn about missing allowlists; return True when startup must be refused."""
         from gateway.run import (
-            _OWN_POLICY_OPEN_ENV, _own_policy_open_startup_violation, _write_runtime_status_quiet
+            _own_policy_open_startup_violation, _write_runtime_status_quiet
         )
         # Plugin platforms declare their own allowed_users_env / allow_all_env.
         allowed_vars = list(self._BUILTIN_ALLOWED_USERS_VARS)
         allow_all_vars = ["GATEWAY_ALLOW_ALL_USERS", *self._BUILTIN_ALLOW_ALL_VARS]
         with suppress(Exception):
             from gateway.platform_registry import platform_registry
-            entries = platform_registry.plugin_entries()
+            # Enabled plugin platforms were materialized by the config passes; an unconfigured
+            # adapter's allowlist var cannot gate anything, so never import one just to read it.
+            entries = [e for e in (*platform_registry.loaded_entries(), *filter(None, (
+                platform_registry.get(p.value) for p, cfg in self.config.platforms.items() if cfg.enabled)))
+                if e.source == "plugin"]
             allowed_vars += [e.allowed_users_env for e in entries if e.allowed_users_env]
             allow_all_vars += [e.allow_all_env for e in entries if e.allow_all_env]
         # An API-server/webhook/local-only gateway has no messaging sender to gate, so the
@@ -1028,9 +1061,7 @@ class GatewayStartupMixin:
         reason = _own_policy_open_startup_violation(self.config)
         if reason:
             platform_value = reason.split(":", 1)[0]
-            allow_all_env = next(
-                (env[2] for p, env in _OWN_POLICY_OPEN_ENV.items() if p.value == platform_value), None
-            )
+            allow_all_env = (_own_policy_envs(Platform(platform_value)) or (None, None, None))[2]
             logger.error(
                 "Refusing to start: %s has dm_policy/group_policy set to 'open' "
                 "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.", platform_value,
@@ -1141,6 +1172,11 @@ class GatewayStartupMixin:
             recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
+        # The gateway owns delegation state: replay durable completions the previous
+        # process never delivered. Explicit here, never at tools import (clients).
+        with _log_suppressed(logging.WARNING, "Could not restore async delegation completions: %s"):
+            from tools.async_delegation import restore_undelivered_completions
+            restore_undelivered_completions(process_registry.completion_queue)
         # Recover the turns the last process left marked (in flight, or reply not yet ledgered).
         # SKIP after a clean exit — the previous process already drained.
         _clean_marker = _hermes_home / ".clean_shutdown"
@@ -1522,6 +1558,8 @@ class GatewayStartupMixin:
         # auto-resume stays visible on the next user message.
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
+        from gateway.run_runtime import recover_gateway_native_sessions
+        await recover_gateway_native_sessions(self)
         # Surface state.db init failures to messaging platforms before the user loses data.
         # See #88235.
         await self._send_session_db_warning_notifications()
@@ -1566,6 +1604,8 @@ class GatewayStartupMixin:
         self._spawn_reconnect_watcher()
         for method in self._POST_RECONNECT_WATCHERS:
             self._spawn_supervised(getattr(self, method), method[1:])
+        from gateway.runtime_downgrade_exit import runtime_downgrade_watcher
+        self._spawn_supervised(lambda: runtime_downgrade_watcher(self), "runtime_downgrade_watcher")
         # Scale-to-zero watcher ONLY when opted in, messaging is relay-only/absent, and a wakeUrl exists.
         try:
             if self._scale_to_zero_should_arm():

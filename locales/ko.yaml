@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (다음 턴에만 적용 — 응답 한 번 후 복원돼요)"
     switch_cancelled: "🟡 모델 전환이 취소됐어요. 현재 모델은 그대로예요({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_텍스트로 답하려면: 전환은 `{prefix}approve`, 현재 모델 유지는 `{prefix}cancel`이라고 답해 주세요._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **활성 에이전트 및 작업**"
     active_agents: "**활성 에이전트:** {count}"
@@ -1966,6 +1968,7 @@ cli:
     desc_switch_anyway: "현재 Hermes 세션에서 이 모델을 사용해요."
     choice_cancel: "취소"
     desc_keep_current_model: "현재 모델을 유지해요."
+    confirm_choice_prompt: "선택 [1/2]: "
     switch_cancelled: "모델 전환이 취소됐어요."
     selection_failed: "✗ 모델 선택 실패: {error}"
     switch_failed: "⚠ {model}(으)로 모델 전환 실패 ({error}); {old_model}을(를) 계속 사용해요."

@@ -34,7 +34,7 @@ jobs:
     runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 

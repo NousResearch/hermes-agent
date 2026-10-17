@@ -31,6 +31,7 @@ from agent.error_classifier import (
     _extract_status_code)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
+from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -50,6 +51,7 @@ from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
     streamed_reasoning_detail_text,
 )
+from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -608,7 +610,7 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
 def _check_stale_giveup(agent) -> None:
     """Raise immediately when the consecutive-stale streak is past the
     give-up threshold — no network attempt, no stale-timeout wait."""
-    _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
+    _giveup = stale_giveup()
     _streak = _stale_streak(agent)
     if _giveup > 0 and _streak >= _giveup:
         raise RuntimeError(
@@ -829,39 +831,6 @@ def should_use_direct_api_call(agent) -> bool:
 # How often an in-flight direct_api_call refreshes last_activity_ts. Must stay well
 # under the async-delegation idle stall threshold (450s) and below the 30s monitor sweep.
 _DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS = 15.0
-
-
-def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
-    """Live phase notice ("⏳ loading <model> into memory — N%" / "⚙ processing
-    prompt — P%") while the managed local server works before the first token;
-    None when neither applies. Otherwise a cold load reads as a generic stall."""
-    try:
-        base = str(getattr(agent, "base_url", "") or "")
-        if not base:
-            return None
-        from urllib.parse import urlparse
-        from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
-        from hermes_cli.local_runtime.supervisor import state_path
-        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
-        managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
-        if not managed or urlparse(base).netloc.lower() != managed:
-            return None
-        model = str(api_kwargs.get("model", ""))
-        progress = get_loading_progress().get(model)
-        if progress is not None:
-            return (f"⏳ loading {model} into memory — {progress['percent']}% "
-                "(responses start once the model is loaded)")
-        prefill = get_prefill_progress(model)
-        if prefill is None:
-            return None
-        processed = int(prefill["processed"])
-        total = estimate_request_context_tokens(api_kwargs)
-        if total and total >= processed:
-            return f"⚙ processing prompt — {max(0, min(100, round(processed / total * 100)))}%"
-        # Counter past the estimate (estimator undercounted): no honest denominator, label-only.
-        return "⚙ processing prompt"
-    except Exception:
-        return None
 
 
 def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
@@ -2201,8 +2170,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     # Compression/resume can orphan a tool result whose parent tool_call was summarized away.
     api_messages = agent._sanitize_api_messages(api_messages)
     # Same send-path vision eviction as the main loop (#89296).
-    from agent.context_compressor import evict_stale_outbound_tool_images
-    evict_stale_outbound_tool_images(api_messages)
+    from agent.context_compressor import evict_stale_outbound_tool_images, outbound_retired_image_ids
+    evict_stale_outbound_tool_images(api_messages, outbound_retired_image_ids(agent))
     # Same per-model image strip as turn_api_request.build_api_request: this path builds
     # api_messages by hand and calls _build_api_kwargs directly, so a model recorded in
     # agent._image_rejecting_models would otherwise get images here → 4xx → no summary.
@@ -2751,6 +2720,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.provider_tool_in_flight = {"yes": False}
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
         self.last_chunk_time = {"t": time.time()}
+        self.prompt_progress = {"progress": None, "t": 0.0}  # latest llama-server prompt progress
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
@@ -2808,9 +2778,9 @@ class _StreamingCall(StreamingWaitMonitor):
         with self.stream_attempt_lock:
             self.stream_attempt_state["current"] += 1
             attempt_id = int(self.stream_attempt_state["current"])
-        self.provider_tool_in_flight["yes"] = False
-        # Attempt-local like provider_tool_in_flight: a tool name from a stream that died
-        # before any text must not label a later attempt's partial stub or its retry decision.
+        # Attempt-local: a dead attempt's prompt progress must not mask the next load notice, and
+        # its tool name (died before any text) must not label a later partial stub or retry.
+        self.provider_tool_in_flight["yes"], self.prompt_progress["progress"] = False, None
         self.result["partial_tool_names"] = []
         return attempt_id
 
@@ -2895,6 +2865,29 @@ class _StreamingCall(StreamingWaitMonitor):
                 diag["first_chunk_at"] = self.last_chunk_time["t"]
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
+
+    def _take_chunk(self, diag, chunk, llamacpp: bool) -> bool:
+        """Count a real chunk; a llama-server prompt-progress chunk (True) is liveness, no first token."""
+        progress = prompt_progress(chunk) if llamacpp else None
+        if progress is None:
+            self._count_chunk(diag, chunk)
+            return False
+        self.last_chunk_time["t"] = now = time.time()
+        self.prompt_progress["progress"], self.prompt_progress["t"] = progress, now
+        self.agent._touch_activity("model reading the prompt")
+        return True
+
+    @staticmethod
+    def _chunk_identity(diag, chunk, model_name, response_id, upstream_provider) -> tuple:
+        """Model, response id and serving provider, as the stream reports them."""
+        if hasattr(chunk, "model") and chunk.model:
+            model_name = chunk.model
+        if response_id is None and isinstance(getattr(chunk, "id", None), str) and chunk.id:
+            response_id = chunk.id
+        if upstream_provider is None and isinstance(getattr(chunk, "provider", None), str) and chunk.provider:
+            upstream_provider = chunk.provider  # OpenRouter stamps who served
+            diag["serving_provider"] = upstream_provider.strip()[:64]  # attribute a mid-stream drop (#90216)
+        return model_name, response_id, upstream_provider
 
     @staticmethod
     def _mark_finish_seen(diag, finish_reason) -> None:
@@ -3064,8 +3057,12 @@ class _StreamingCall(StreamingWaitMonitor):
         detail_watch = RunawayStreamWatch()
         runaway = None
 
+        llamacpp = _streams_llamacpp(self.agent)
+
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
+            if llamacpp:
+                next_api_kwargs = with_prompt_progress(next_api_kwargs)
             return self._open_chat_stream({**next_api_kwargs, "stream": True, "timeout": timeout})
 
         def _flush_pending_stream_text():
@@ -3096,20 +3093,17 @@ class _StreamingCall(StreamingWaitMonitor):
                     self.agent._abort_request_openai_client(self._attempt_request_client, reason=reason)
 
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
-            self._count_chunk(_diag, chunk)
+            is_progress = self._take_chunk(_diag, chunk, llamacpp)
             if self.agent._interrupt_requested:
                 _close_half_read_stream("interrupt_stream_close_failed")
                 break
             if not self._stream_attempt_is_active(stream_attempt_id):
                 self._discard_stale_stream_chunk(stream_attempt_id, chunk)
                 continue
-            if hasattr(chunk, "model") and chunk.model:
-                model_name = chunk.model
-            if response_id is None and isinstance(getattr(chunk, "id", None), str) and chunk.id:
-                response_id = chunk.id
-            if upstream_provider is None and isinstance(getattr(chunk, "provider", None), str) and chunk.provider:
-                upstream_provider = chunk.provider  # OpenRouter stamps who served
-                _diag["serving_provider"] = upstream_provider.strip()[:64]  # attribute a mid-stream drop (#90216)
+            if is_progress:
+                continue
+            model_name, response_id, upstream_provider = self._chunk_identity(
+                _diag, chunk, model_name, response_id, upstream_provider)
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
@@ -3527,7 +3521,10 @@ class _StreamingCall(StreamingWaitMonitor):
         AnthropicBedrock IAM lacking InvokeModelWithResponseStream, a custom anthropic_messages
         provider emitting SSE events out of order (#72833), or a gateway answering
         with contentless SSE keepalive frames (a degraded gateway answers every
-        streaming request that way, so the retry must change channel to make progress)."""
+        streaming request that way, so the retry must change channel to make progress).
+        llama-server stays on streaming: the router can't cancel a non-streamed request."""
+        if _streams_llamacpp(self.agent):
+            return
         if _is_provider_stream_empty_frame_error(e):
             self.agent._disable_streaming = True
             logger.warning(
@@ -3682,6 +3679,9 @@ class _StreamingCall(StreamingWaitMonitor):
         True = handled (caller must not overwrite result); False = propagate ``e``.
         """
         if getattr(self.agent, "_interrupt_requested", False):
+            return False
+        if _streams_llamacpp(self.agent):
+            # Same error either way, and the router can't cancel this probe once its watchdog gives up.
             return False
         status = _extract_status_code(e)
         if status is None or status < 500 or self.deltas_were_sent["yes"]:

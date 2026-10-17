@@ -712,16 +712,13 @@ Six touchpoints:
 
 ### 9. Optional: Platform Hints
 
-**`agent/prompt_builder.py`** — If your platform has specific rendering limitations (no markdown, message length limits, etc.), add an entry to the `PLATFORM_HINTS` dict. This injects platform-specific guidance into the system prompt:
+**`platform_hint=`** on `ctx.register_platform` — If your platform has specific rendering limitations (no markdown, message length limits, etc.), declare a hint on its registry entry (keep the text in a light sibling such as `adapter_hint.py`). It is injected into the system prompt; `agent/prompt_builder.py::PLATFORM_HINTS` holds only core surfaces:
 
 ```python
-PLATFORM_HINTS = {
-    # ...
-    "newplat": (
-        "You are chatting via NewPlat. It supports markdown formatting "
-        "but has a 4000-character message limit."
-    ),
-}
+PLATFORM_HINT = (
+    "You are chatting via NewPlat. It supports markdown formatting "
+    "but has a 4000-character message limit."
+)
 ```
 
 Not all platforms need hints — only add one if the agent's behavior should differ.
@@ -838,7 +835,7 @@ async def disconnect(self):
 
 | Adapter | Pattern | Complexity | Good reference for |
 |---------|---------|------------|-------------------|
-| `bluebubbles.py` | REST + webhook | Medium | Simple REST API integration |
-| `weixin.py` | Long-poll + CDN | High | Media handling, encryption |
+| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | Medium | Simple REST API integration |
+| `plugins/platforms/weixin/adapter.py` | Long-poll + CDN | High | Media handling, encryption |
 | `plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
 | `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |

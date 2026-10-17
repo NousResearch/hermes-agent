@@ -85,7 +85,7 @@ jobs:
       matrix: ${{ fromJSON(github.repository == 'mekenthompson/hermes-agent' && '{"include":[{"name":"macOS-only tests (1/2)","runner":"macos-latest","marker":"macos","slice":"1/2"},{"name":"macOS-only tests (2/2)","runner":"macos-latest","marker":"macos","slice":"2/2"},{"name":"Windows-only tests","runner":"windows-latest-32-core","marker":"windows"}]}' || '{"include":[{"name":"macOS-only tests (1/2)","runner":"macos-latest","marker":"macos","slice":"1/2"},{"name":"macOS-only tests (2/2)","runner":"macos-latest","marker":"macos","slice":"2/2"},{"name":"Windows-only tests","runner":"windows-latest-32-core","marker":"windows"},{"name":"Windows-only tests (arm64)","runner":"windows-latest-32-arm-core","marker":"windows","timeout":60}]}') }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 
@@ -231,7 +231,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 

@@ -9,6 +9,7 @@ import json
 import os
 import threading
 import time
+from tools.delegation_redaction import redact_child_result, redact_child_text
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 from agent.compression_marker import elide
@@ -748,7 +749,7 @@ class _ChildRun:
         """Inspect + prune the child worktree, reporting into the entry (no-op without isolation)."""
         info = self.worktree_info
         if info is None:
-            return entry_dict
+            return redact_child_result(entry_dict, getattr(self.child, "_delegate_output_schema", None), force=False)
         from tools import subagent_worktree
         try:
             entry_dict["worktree"] = subagent_worktree.finalize_subagent_worktree(info)
@@ -757,7 +758,7 @@ class _ChildRun:
             # via the shared factory so the two producers never drift.
             logger.warning("worktree finalize failed: %s", e)
             entry_dict["worktree"] = subagent_worktree.unproven_worktree_payload(info, f"finalize raised: {e}")
-        return entry_dict
+        return redact_child_result(entry_dict, getattr(self.child, "_delegate_output_schema", None), force=False)
 
     def seed_workspace(self) -> None:
         """Seed cwd/container aliases and optional worktree isolation for the child;
@@ -794,8 +795,9 @@ class _ChildRun:
         """Shared tail of every failure path: emit ``subagent.complete`` (``status`` defaults to the entry's), note
         the steer text that won the race with the failure, report the worktree."""
         _safe_progress(
-            self.child_progress_cb, "subagent.complete", preview=preview, status=status or entry["status"],
-            duration_seconds=entry["duration_seconds"], summary=summary,
+            self.child_progress_cb, "subagent.complete", preview=redact_child_text(preview, force=False), status=status or entry["status"],
+            duration_seconds=entry["duration_seconds"],
+            summary=redact_child_text(summary, force=False) if summary is not None else None,
         )
         _append_missed_steer(entry, late_steer)
         return self.attach_worktree(entry)
@@ -978,7 +980,7 @@ class _ChildRun:
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
         }
-        self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
+        _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
         if close_deferred:
             _defer_close_after_timeout(child, future)
@@ -1017,13 +1019,13 @@ class _ChildRun:
             leftover = process_registry.running_owned_by(self.child_task_id)
             if leftover:
                 entry["orphaned_processes"] = [
-                    {"session_id": s.id, "command": s.command[:200], "runtime_seconds": round(time.time() - s.started_at)}
+                    {"session_id": s.id, "command": redact_child_text(s.command, force=False)[:200], "runtime_seconds": round(time.time() - s.started_at)}
                     for s in leftover]
             unread = process_registry.unread_completions_owned_by(self.child_task_id)
             if unread:
                 entry["unread_completions"] = [
-                    {"session_id": s.id, "command": s.command[:200], "exit_code": s.exit_code,
-                     "output_tail": _output_tail(s, 600)} for s in unread]
+                    {"session_id": s.id, "command": redact_child_text(s.command, force=False)[:200], "exit_code": s.exit_code,
+                     "output_tail": redact_child_text(_output_tail(s, len(s.output_buffer)), force=False)[-600:]} for s in unread]
 
     def emit_complete(self, result: dict[str, Any], entry: dict[str, Any], duration: float) -> None:
         """Fire ``subagent.complete`` with the per-branch observability payload (tokens, cost, files touched,
@@ -1031,6 +1033,8 @@ class _ChildRun:
         if not self.child_progress_cb:
             return
         child = self.child
+        # Parent copy + live progress: honour security.redact_secrets=false (persistence boundaries force).
+        entry.update(redact_child_result(entry, getattr(child, "_delegate_output_schema", None), force=False))
         summary = entry["summary"]
         _files_read: list = []
         with _quiet(None):
@@ -1058,7 +1062,7 @@ class _ChildRun:
         if _cost_usd is not None:
             with _quiet(None):
                 complete_kwargs["cost_usd"] = float(_cost_usd)
-        _safe_progress(self.child_progress_cb, "subagent.complete", **complete_kwargs)
+        _safe_progress(self.child_progress_cb, "subagent.complete", **redact_child_result(complete_kwargs, force=False))
 
     def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:
         """Finally-path teardown (idempotent, never raises). Order matters: stop heartbeat → drop registry entry →

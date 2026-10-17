@@ -69,10 +69,12 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
         shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("utils.py", "hermes_constants.py", "hermes_yaml.py", "hermes_bootstrap.py", "setup-hermes.sh"):
         shutil.copy2(ROOT / name, source / name)
-    # The CLI's user-facing text resolves through the i18n kernel (agent.i18n + the English catalog);
-    # the rest of agent/ stays out so the tail cannot grow a dependency on the agent runtime.
+    # The CLI's user-facing text resolves through the i18n kernel (agent.i18n + the English catalog),
+    # and its config/env layer consults the stdlib-only safe-worker policy; the rest of agent/ stays
+    # out so the tail cannot grow a dependency on the agent runtime.
     (source / "agent").mkdir()
-    for name in ("__init__.py", "jiter_preload.py", "i18n.py", "i18n_layers.py", "i18n_languages.py"):
+    for name in ("__init__.py", "jiter_preload.py", "i18n.py", "i18n_layers.py", "i18n_languages.py",
+                 "safe_worker_policy.py"):
         shutil.copy2(ROOT / "agent" / name, source / "agent" / name)
     (source / "locales").mkdir()
     shutil.copy2(ROOT / "locales/en.yaml", source / "locales/en.yaml")

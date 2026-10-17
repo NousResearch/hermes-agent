@@ -45,7 +45,7 @@
     "fast-uri": "3.1.6",
     "browserslist": "4.28.7",
     "js-yaml": "4.3.1",
-    "dompurify": "3.4.13",
+    "dompurify": "3.4.17",
     "mermaid": "11.16.1",
     "image-size": "npm:@nous-research/image-size@2.0.3",
     "tar": "7.5.22"

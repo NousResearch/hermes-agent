@@ -115,7 +115,7 @@ jobs:
     runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (inputs.bundle-arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core') || 'windows-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
       - name: Set up driver tools only
@@ -133,6 +133,8 @@ jobs:
         shell: pwsh
         run: |
           node --test tests/install/e2e-assets/windows-bundled-helpers.test.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/e2e-assets/windows-bundled-processes.test.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Start recording
         uses: ./.github/actions/e2e-screen-record
@@ -197,7 +199,7 @@ jobs:
       # Full history: the driver bare-clones this checkout as the repo the
       # installer/updater talk to, and both OLD and HEAD must be reachable
       # in that clone. A shallow checkout cannot serve either need.
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0

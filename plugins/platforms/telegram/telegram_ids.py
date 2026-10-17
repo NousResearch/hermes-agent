@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any, Union
 
+from gateway.platforms.send_targets import parse_nonempty, regex_groups_parser
+
 # Usernames are 5-32 chars (letters, digits, underscores) with a leading "@"; 4-char legacy handles are tolerated.
 _TELEGRAM_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{4,32}")
 
@@ -29,3 +31,15 @@ def parse_telegram_username_target(target_ref: Any) -> str | None:
     """Return the value when it is an ``@username`` target, else ``None``."""
     value = str(target_ref).strip()
     return value if looks_like_telegram_username(value) else None
+
+
+_SEND_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+
+
+def parse_send_target(ref):
+    """``target_ref_syntax_fn`` for the Telegram ``PlatformEntry``."""
+    # "<chat_id>[:<topic_id>]" or an @username (usernames must not be force-int'd).
+    parsed = regex_groups_parser(_SEND_TARGET_RE)(ref)
+    if parsed:
+        return parsed
+    return parse_nonempty(parse_telegram_username_target(ref) or "")

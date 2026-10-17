@@ -95,6 +95,17 @@ def _orphan(oid):
         )
 
 
+# A redelivery is prefixed with when it was originally due (i18n: gateway.redelivered_due), then the
+# recovered-reply marker, then the body — so a batch that lands after newer live messages can still be
+# ordered by the recipient.
+_DUE_PREFIX = "[Redelivered · originally due "
+
+
+def _assert_stamped(content: str, marker: str, body: str = "the final answer") -> None:
+    assert content.startswith(_DUE_PREFIX), content
+    assert content.endswith(marker + body), content
+
+
 class TestSchemaMigration:
     def test_adds_adapter_profile_to_existing_ledger(self):
         conn = sqlite3.connect(dl._db_path())
@@ -159,6 +170,32 @@ class TestSweep:
         # Claim re-stamps ownership: a second sweep in the same (live)
         # process must not double-claim.
         assert dl.sweep_recoverable() == []
+
+    def test_flushed_backlog_is_chronological_and_reports_created_at(self):
+        """A flushed backlog goes out oldest-first and each claimed row carries its original
+        ``created_at``.
+
+        Regression: the claim queries carried no ORDER BY, so a flush followed SQLite storage
+        order — which ``record_obligation``'s INSERT OR REPLACE rewrites — and the claimed row
+        exposed no timestamp, so a batch landing after newer live messages left the recipient
+        unable to rebuild the real order.
+        """
+        base = time.time() - 3000
+        for oid in ("ob-a", "ob-b", "ob-c"):
+            _record(oid=oid)
+            _orphan(oid)
+        # Insert (rowid) order is the reverse of chronological order on purpose.
+        for oid, ts in (("ob-c", base), ("ob-b", base + 600), ("ob-a", base + 1200)):
+            with dl._connect() as conn:
+                conn.execute(
+                    "UPDATE delivery_obligations SET created_at=?, updated_at=? WHERE obligation_id=?",
+                    (ts, ts, oid),
+                )
+
+        claimed = dl.sweep_recoverable()
+
+        assert [r["obligation_id"] for r in claimed] == ["ob-c", "ob-b", "ob-a"]
+        assert [r["created_at"] for r in claimed] == [base, base + 600, base + 1200]
 
 
 class TestRuntimeFailedSweep:
@@ -479,8 +516,7 @@ class TestGatewayRedeliverySweep:
         await runner._redeliver_pending_obligations()
 
         sent = adapter.send.call_args.kwargs
-        assert sent["content"].startswith(dl.RECOVERED_MARKER)
-        assert sent["content"].endswith("the final answer")
+        _assert_stamped(sent["content"], dl.RECOVERED_MARKER)
 
     @pytest.mark.parametrize("earlier_boot", ["killed_inside_send", "older_build_left_pending"])
     @pytest.mark.asyncio
@@ -506,7 +542,7 @@ class TestGatewayRedeliverySweep:
         await self._runner(second)._redeliver_pending_obligations()
 
         sent = second.send.call_args.kwargs["content"]
-        assert sent == dl.RECOVERED_MARKER + "the final answer"
+        _assert_stamped(sent, dl.RECOVERED_MARKER)
         assert _row("ob-1")["state"] == "delivered"
 
     def test_boot_claimed_row_is_not_reclaimed_by_runtime_sweep_mid_send(self):
@@ -553,9 +589,7 @@ class TestGatewayRedeliverySweep:
             "agent:main:slack:channel:C1"
         )
         assert adapter.send.await_count == 1
-        assert adapter.send.call_args.kwargs["content"].startswith(
-            dl.RECONNECTED_MARKER
-        )
+        _assert_stamped(adapter.send.call_args.kwargs["content"], dl.RECONNECTED_MARKER)
         assert _row("ob-1")["state"] == "delivered"
 
     @pytest.mark.asyncio

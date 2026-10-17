@@ -5450,9 +5450,9 @@ def resolve_provider_client(
         explicit_base_url, explicit_api_key = local
     # Model for concrete providers: caller ``model`` → catalog default (empty for OAuth-gated providers whose
     # lists drift) → configured main model (MoA → aggregator), keeping OAuth aux tasks off the Step-2 fallback.
-    # Excluded: ``auto`` (a stale main slug could pair with any picked provider) and Nous + vision (the
-    # Portal's tier-aware vision recommendation must win over a text-only model).
-    if not model and provider != "auto" and not (provider == "nous" and is_vision):
+    # Excluded: ``auto`` (a stale main slug could pair with any picked provider) and Nous (the Portal's
+    # tier-aware recommendation must win over the main chat model — text lane included, #138309).
+    if not model and provider != "auto" and provider != "nous":
         # ``auto`` is intentionally excluded: `_resolve_auto_route(main_runtime=...)` returns the model paired
         # with the provider it actually selected. Pre-filling an auto call from `_read_main_model()` can
         # leak a stale process-global runtime into a different provider (for example Claude model slug on
@@ -5470,12 +5470,14 @@ def resolve_provider_client(
         # ``_resolve_auto_route`` falls through to the Step-2 chain as before. Do NOT pre-fill a blank ``auto``
         # request from the config/main default here. Claude model sent to Codex after the main lane fell
         # back to gpt-5.5). Let _resolve_auto_route() return the actual current runtime model when the caller did
-        # not explicitly request one. (# compression-current-model) Nous + vision is the one carve-out: the
-        # branch below resolves its model from the Portal's tier-aware vision recommendation
-        # (``_try_nous(vision= True)``), and ``final_model = model or default`` means anything pre-filled
+        # not explicitly request one. (# compression-current-model) Nous is the other carve-out: the
+        # branch below resolves its model from the Portal's tier-aware recommendation
+        # (``_try_nous(vision=...)``), and ``final_model = model or default`` means anything pre-filled
         # here wins over that. The main chat model is routinely text-only (e.g. a ``:free`` chat SKU), so
-        # pre-filling it sends the image to a model that cannot accept one and the Portal 404s. Leave
-        # ``model`` unset and let the Portal slot through; only an explicit caller model may override it.
+        # pre-filling it sends the image to a model that cannot accept one and the Portal 404s; on the
+        # text lane a pre-filled main slug the Portal does not host 400s ``model not found`` and the aux
+        # task hard-fails (#138309). Leave ``model`` unset and let the Portal slot through; only an
+        # explicit caller model may override it.
         model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,

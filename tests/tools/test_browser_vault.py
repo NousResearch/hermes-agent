@@ -592,6 +592,86 @@ class TestBrowserVaultTools:
             redact.clear_vault_redaction_values()
 
 
+class TestCamofoxEvalPath:
+    """Vault fill's non-secret eval (origin reads, input inspection) must work in
+    Camofox mode: the agent-browser CLI has no eval there, and the supervisor
+    registry is empty for a cloud/Camofox session — so the fill falls through to
+    'could not determine the current page origin' unless the Camofox REST
+    /tabs/{id}/evaluate endpoint is used (the same path browser_console uses)."""
+
+    def test_eval_js_uses_camofox_endpoint_in_camofox_mode(self):
+        from tools import browser_vault_tool
+
+        with patch("tools.browser_camofox.is_camofox_mode", return_value=True), \
+             patch.object(browser_vault_tool, "_camofox_eval_res",
+                          return_value={"success": True, "result": "https://ha.fergnet.ca/"}):
+            res = browser_vault_tool._eval_js("default", "window.location.href")
+        assert res == {"success": True, "result": "https://ha.fergnet.ca/"}
+
+    def test_eval_js_falls_through_when_server_lacks_endpoint(self):
+        """404/405/501 from /tabs/{id}/evaluate → _camofox_eval_res returns None →
+        the CLI fallback runs (and fails) instead of being skipped."""
+        from tools import browser_vault_tool
+
+        cli_calls = []
+
+        def fake_run(task_id, command, args):
+            cli_calls.append((command, args))
+            return {"success": False, "error": "no cli"}
+
+        with patch("tools.browser_camofox.is_camofox_mode", return_value=True), \
+             patch.object(browser_vault_tool, "_camofox_eval_res", return_value=None), \
+             patch("tools.browser_tool._last_session_key", lambda t: t), \
+             patch("tools.browser_tool_session._run_browser_command", side_effect=fake_run):
+            res = browser_vault_tool._eval_js("default", "1+1")
+        assert res["success"] is False
+        assert cli_calls == [("eval", ["1+1"])]
+
+    def test_camofox_eval_res_returns_none_on_404(self):
+        from tools import browser_vault_tool
+        from tools import browser_camofox
+
+        def boom(path, body, timeout=None):
+            raise Exception("404 Client Error: Not Found for url: https://camo/evaluate")
+
+        with patch.object(browser_camofox, "_ensure_tab",
+                          return_value={"tab_id": "tab-1", "user_id": "u1", "session_key": "k"}), \
+             patch.object(browser_camofox, "_post", side_effect=boom):
+            res = browser_vault_tool._camofox_eval_res("default", "1+1")
+        assert res is None
+
+    def test_camofox_eval_res_parses_value(self):
+        from tools import browser_vault_tool
+        from tools import browser_camofox
+
+        with patch.object(browser_camofox, "_ensure_tab",
+                          return_value={"tab_id": "tab-1", "user_id": "u1", "session_key": "k"}), \
+             patch.object(browser_camofox, "_post", return_value={"result": "42"}):
+            res = browser_vault_tool._camofox_eval_res("default", "6*7")
+        assert res == {"success": True, "result": 42}
+
+    def test_eval_js_secret_uses_camofox_endpoint_when_no_supervisor(self):
+        """Fail-closed was 'no supervisor → no fill'; Camofox's auth'd REST body is
+        a safe secret channel (never subprocess argv), so the fill may proceed."""
+        from tools import browser_vault_tool
+
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY", {}), \
+             patch("tools.browser_camofox.is_camofox_mode", return_value=True), \
+             patch.object(browser_vault_tool, "_camofox_eval_res",
+                          return_value={"success": True, "result": '{"filled": 1}'}):
+            res = browser_vault_tool._eval_js_secret("default", "document.querySelector('x').value='p'")
+        assert res["success"] is True and res["result"] == '{"filled": 1}'
+
+    def test_eval_js_secret_still_refused_when_camofox_endpoint_missing(self):
+        from tools import browser_vault_tool
+
+        with patch("tools.browser_supervisor.SUPERVISOR_REGISTRY", {}), \
+             patch("tools.browser_camofox.is_camofox_mode", return_value=True), \
+             patch.object(browser_vault_tool, "_camofox_eval_res", return_value=None):
+            res = browser_vault_tool._eval_js_secret("default", "x")
+        assert res["success"] is False and res["error_type"] == "supervisor_required"
+
+
 class TestVaultHardening:
     """Read-deny, backup perms-tightening, canonical dir securing.
 

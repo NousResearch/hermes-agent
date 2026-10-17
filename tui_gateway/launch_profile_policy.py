@@ -131,7 +131,9 @@ def launch_terminal_env() -> dict[str, str]:
     return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
 
 
-def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
+def launch_secret_scope(
+    launch_home: str | Path, *, registration_env: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
     """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
     (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
     its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or
@@ -148,7 +150,14 @@ def launch_secret_scope(launch_home: str | Path) -> dict[str, str]:
     nothing in the files shadows them.
     """
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
-    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
+    # Registration can precede activation. Prefer the host's activation snapshot, but never
+    # capture ambient env on a worker's first post-activation read if that host did not freeze it.
+    if registration_env is None:
+        launch_env = _launch_env()
+    else:
+        with _lock:
+            launch_env = dict(_snapshot) if _snapshot is not None else registration_env
+    scope = {k: v for k, v in launch_env.items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
 

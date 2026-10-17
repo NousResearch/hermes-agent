@@ -190,6 +190,70 @@ def _plugin_home_scope(home: Path):
         reset_hermes_home_override(token)
 
 
+class _PluginSecretScope(Mapping[str, str]):
+    """Registration workers can outlive discovery and the host's multiplex activation.
+
+    Resolve against the owning home when read, not a snapshot taken before plugin secret sources
+    hydrate. The launch helper preserves env-only credentials and freezes that env at activation.
+    """
+
+    def __init__(self, home: Path):
+        import os
+        from agent.secret_scope import _is_process_home, is_multiplex_active
+
+        self.home = home
+        self.launch_env = {}
+        if _is_process_home(home) and not is_multiplex_active():
+            captured = dict(os.environ)
+            if not is_multiplex_active():
+                self.launch_env = captured
+
+    def _mapping(self) -> dict[str, str]:
+        from agent.secret_scope import _is_process_home, build_profile_secret_scope, is_multiplex_active
+        from tui_gateway.launch_profile_policy import launch_secret_scope
+
+        if _is_process_home(self.home):
+            if not is_multiplex_active():
+                import os
+                captured = dict(os.environ)
+                if not is_multiplex_active():
+                    return captured  # preserve the pre-multiplex launch precedence
+            return launch_secret_scope(self.home, registration_env=self.launch_env)
+        return build_profile_secret_scope(self.home)
+
+    def __getitem__(self, key: str) -> str:
+        return self._mapping()[key]
+
+    def __iter__(self):
+        return iter(self._mapping())
+
+    def __len__(self) -> int:
+        return len(self._mapping())
+
+
+@contextmanager
+def _plugin_registration_scope(home: Path):
+    """Bind unscoped native registrations while retaining caller-owned hydrated scopes."""
+    from agent.secret_scope import (
+        current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope,
+    )
+    from hermes_constants import hermes_home_key
+
+    bound_home = current_secret_scope_home()
+    # Existing caller-owned mappings also receive post-discovery secret-source hydration.
+    # Leave those alone; the missing binding is the unscoped registration entry point.
+    if current_secret_scope() is not None and (
+        bound_home is None or hermes_home_key(bound_home) == hermes_home_key(home)
+    ):
+        yield
+        return
+    token = set_secret_scope(_PluginSecretScope(home), profile_home=str(home))
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
+
+
 def _load_error_text(exc: BaseException) -> str:
     """Human-readable load failure; ``sys.exit(0)`` has an empty ``str()`` so name the class and code."""
     if isinstance(exc, SystemExit):
@@ -338,6 +402,10 @@ class PluginLoaderMixin:
         return True
 
     def _register_deferred_platform_tools(self, manifest: PluginManifest, loaded: LoadedPlugin) -> None:
+        with _plugin_registration_scope(self.home_path):
+            self._register_deferred_platform_tools_scoped(manifest, loaded)
+
+    def _register_deferred_platform_tools_scoped(self, manifest: PluginManifest, loaded: LoadedPlugin) -> None:
         """Register a deferred platform's *client* tools without its adapter. Deferring the plugin would
         otherwise defer its outbound tools too, so CLI/TUI processes (which never materialize platforms)
         would miss them in ``hermes tools`` / ``platform_toolsets``. Opt-in is explicit via ``provides_tools``;
@@ -532,7 +600,9 @@ class PluginLoaderMixin:
             return True
 
         try:
-            if run_with_load_deadline(plugin_key, ctx, _import_and_register):
+            with _plugin_registration_scope(self.home_path):
+                registered = run_with_load_deadline(plugin_key, ctx, _import_and_register)
+            if registered:
                 self._attribute_registrations(loaded, plugin_key, registration_start)
                 loaded.enabled = True
                 from hermes_cli.plugins_ledger import _hook_source_of

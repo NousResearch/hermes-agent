@@ -603,6 +603,8 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     frontend = any(
         f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
         or f.startswith("tests-js/")
+        or f.startswith("plugins/platforms/photon/sidecar/")
+        or f == "tests/plugins/platforms/photon/spectrum-poll.test.mjs"
         or (f.startswith("scripts/build/") and f.endswith((".mjs", ".js", ".ts")))
         for f in files
     )

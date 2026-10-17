@@ -399,18 +399,33 @@ def _usage_windows(
     model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
     """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
-    ``model_scoped`` keys build windows that cap only a model family, never the account."""
+    ``model_scoped`` keys build windows that cap only a model family, never the account.
+
+    Non-numeric ``used`` values (e.g. Anthropic's ``"unavailable"`` / ``"N/A"`` sentinels) keep the
+    window with ``used_percent=None`` instead of raising: the renderer already has an
+    ``unavailable`` branch for exactly that state (``AccountUsageWindow.used_percent`` is Optional),
+    and dropping the row hides the window the provider does report. Numeric values are parsed once
+    and scaled to percent when ``fraction`` is set and the parsed number is <= 1.
+    """
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
         used = window.get(used_key)
         if used is None:
             continue
-        used = float(used)
-        if fraction and used <= 1:
-            used *= 100
+        try:
+            used_float = float(used)
+        except (TypeError, ValueError):
+            logger.debug("Non-numeric %s.%s value %r; reporting the window as unavailable", key, used_key, used)
+            windows.append(AccountUsageWindow(
+                label=label, used_percent=None, reset_at=_parse_dt(window.get(reset_key)),
+                scope="model" if key in model_scoped else "account",
+            ))
+            continue
+        if fraction and used_float <= 1:
+            used_float *= 100
         windows.append(AccountUsageWindow(
-            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
+            label=label, used_percent=used_float, reset_at=_parse_dt(window.get(reset_key)),
             scope="model" if key in model_scoped else "account",
         ))
     return windows

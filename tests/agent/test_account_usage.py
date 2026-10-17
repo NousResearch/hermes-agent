@@ -398,3 +398,42 @@ def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_acc
     assert snapshot is not None
     assert refresh_hints == ["pool-B-revoked"]
     assert request_calls == ["Bearer pool-B-revoked", "Bearer pool-B-fresh"]
+
+
+def test_usage_windows_reports_non_numeric_utilization_as_unavailable():
+    """Regression for #54404: Anthropic sends ``"unavailable"`` / ``"N/A"`` sentinels on
+    transient outages; ``float()`` used to raise ValueError, the outer fetcher swallowed
+    it, and the whole snapshot went blank. The row now survives with ``used_percent=None``
+    (the renderer's ``unavailable`` branch) instead of vanishing from the report.
+    """
+    from agent.account_usage import _usage_windows
+
+    mapping = (("five_hour", "Current session"), ("seven_day", "Current week"))
+
+    # All non-numeric: both rows survive as unavailable, no crash, no ValueError escape.
+    only_bad = _usage_windows(
+        {"five_hour": {"utilization": "unavailable"}, "seven_day": {"utilization": "N/A"}},
+        mapping, "utilization", "resets_at", fraction=True,
+    )
+    assert [(w.label, w.used_percent) for w in only_bad] == [
+        ("Current session", None),
+        ("Current week", None),
+    ]
+
+    # Mixed: the numeric window parses; the bad one reports unavailable rather than being
+    # dropped or silently swallowed by the outer fetcher's blanket ``except Exception``.
+    mixed = _usage_windows(
+        {"five_hour": {"utilization": 0.3}, "seven_day": {"utilization": "N/A"}},
+        mapping, "utilization", "resets_at", fraction=True,
+    )
+    assert [(w.label, w.used_percent) for w in mixed] == [
+        ("Current session", 30.0),
+        ("Current week", None),
+    ]
+
+    # A percentage-already form (>1) must NOT be re-multiplied by 100: 75 stays 75.
+    pct = _usage_windows(
+        {"five_hour": {"utilization": 75}},
+        mapping, "utilization", "resets_at", fraction=True,
+    )
+    assert [(w.label, w.used_percent) for w in pct] == [("Current session", 75.0)]

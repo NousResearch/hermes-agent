@@ -15,6 +15,9 @@
     ["Email me at user@example.com.", [], ["user@example.com"]],
     ["COVID-19 and well-known facts stay.", [], ["COVID-19", "well-known"]],
     ["Due 2026/06/02 and status N/A here.", [], ["2026/06/02", "N/A"]],
-    ["The final score was 3:2.", [], ["3:2"]]
+    ["The final score was 3:2.", [], ["3:2"]],
+    ["Add 3/4 cup of milk and 1/2 cup of water.", [], ["3/4 cup", "1/2 cup"]],
+    ["The result is -3/4, or 1.5/2.5 as a ratio.", [], ["-3/4", "1.5/2.5"]],
+    ["Completed 3/4.", [], ["3/4."]]
   ]
 }

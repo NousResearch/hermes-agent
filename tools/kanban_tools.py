@@ -313,8 +313,9 @@ def _board(board: Optional[str], *, quiet_close: bool = False):
     """``with _board(slug) as (kb, conn)``; lazy import so the module loads in non-kanban
     contexts. ``board=None`` keeps the env/symlink resolution chain; an explicit slug
     overrides it per call. ``quiet_close`` swallows close() errors (best-effort bridges)."""
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.kanban_backend import lazy_kanban_db as _lazy_kb, lazy_kanban_db_connect as _lazy_kbc
+    kb = _lazy_kb()
+    kbc = _lazy_kbc()
     conn = kbc.connect(board=board)
     try:
         yield kb, conn
@@ -551,7 +552,9 @@ def register_current_worker_from_env() -> bool:
     if run_id is None or _is_delegated_child_context():
         return True
     try:
-        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_cli.kanban_backend import lazy_kanban_db as _lazy_kb
+        from hermes_cli import kanban_db_dispatch as _kbd
+        kbd = _kbd
         with _board(None, quiet_close=True) as (_kb, conn):
             return kbd.adopt_worker_pid(conn, tid, run_id, os.getpid())
     except Exception:
@@ -574,7 +577,9 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
     _auto_heartbeat_last_attempt = now
     try:
-        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_cli.kanban_backend import lazy_kanban_db as _lazy_kb
+        from hermes_cli import kanban_db_dispatch as _kbd
+        kbd = _kbd
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
                    (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
@@ -935,6 +940,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     Without the claim half, a worker blocked in one long tool call would still
     be reclaimed by ``release_stale_claims``."""
     tid = _worker_guard("kanban_heartbeat", args)
+    from hermes_cli.kanban_backend import lazy_kanban_db as _lazy_kb
     from hermes_cli import kanban_db_dispatch as kbd
     with _board(args.get("board")) as (kb, conn):
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
@@ -1042,7 +1048,8 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
 @_kanban_handler("kanban_attach_url")
 def _handle_attach_url(args: dict, **kw) -> str:
     """Attach a file fetched server-side from an http(s) URL (shared size cap)."""
-    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_backend import get_kanban_db as _get_kb
+    kb = _get_kb()
     tid = _worker_guard("kanban_attach_url", args)
     url = str(_require_text(args, "url")).strip()
     filename = args.get("filename") or args.get("title")

@@ -1,4 +1,4 @@
-"""Checked history rewrites shared by snapshot limits and store maintenance."""
+﻿"""Checked history rewrites shared by snapshot limits and store maintenance."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -52,7 +52,7 @@ class Pruner:
         return output
 
     def reclaim(self) -> None:
-        """Full ``git gc`` — tens of seconds on a GB store, so only the periodic prune calls it.
+        """Full ``git gc`` ΓÇö tens of seconds on a GB store, so only the periodic prune calls it.
         A ref rewrite that ran without it leaves a marker so the next prune reclaims."""
         self._git(["reflog", "expire", "--expire=now", "--all"])
         self._git(["gc", "--prune=now", "--quiet"], timeout=self.timeout * 3)
@@ -111,9 +111,12 @@ class Pruner:
 
     def drop_one_round(self, cap_bytes: int) -> bool:
         """Over the cap on the take path: drop the oldest snapshot of every project once and
-        defer the gc. One round per checkpoint converges over turns; the full loop measured
-        against an unchanging pack once flattened every project to a single snapshot."""
-        if cap_bytes <= 0 or self.dir_size(self.store) <= cap_bytes:
+        defer the gc. Compact first so the measurement can actually move (#138039)."""
+        if cap_bytes <= 0:
+            return False
+        if self.gc_pending():
+            self.reclaim()
+        if self.dir_size(self.store) <= cap_bytes:
             return False
         changed = False
         for ref in self._git(["for-each-ref", "--format=%(refname)", self.refs_prefix]).splitlines():

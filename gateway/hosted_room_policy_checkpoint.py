@@ -106,6 +106,32 @@ def _settled_message(
     return event
 
 
+def _settled_source_users(
+    conn: sqlite3.Connection, *, room_id: str, events: Mapping[int, Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Load canonical user sources required by retained non-pass settlements."""
+    source_ids = {
+        _text(event["payload"], "discussion_event_id")
+        for event in events.values()
+        if event["kind"] == "turn.settled" and not event["payload"].get("passed")
+    }
+    source_ids.difference_update(_text(event, "event_id") for event in events.values())
+    if not source_ids:
+        return []
+    sources = []
+    ids = sorted(source_ids)
+    for offset in range(0, len(ids), 500):
+        batch = ids[offset:offset + 500]
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events "
+            f"WHERE room_id=? AND kind='message.user' AND event_id IN ({placeholders})",
+            (room_id, *batch),
+        ).fetchall()
+        sources.extend(_event_from_room_row(row) for row in rows)
+    return sources
+
+
 class HostedRoomPolicyCheckpoint:
     """Incrementally index room policy without compacting visible history."""
     def __init__(self, db_path: DbPath) -> None:
@@ -168,6 +194,8 @@ class HostedRoomPolicyCheckpoint:
         events_by_seq = {
             int(event["seq"]): event
             for event in (*map(_event_from_room_row, rows), *(json.loads(row["event_json"]) for row in active_rows))}
+        for event in _settled_source_users(conn, room_id=room_id, events=events_by_seq):
+            events_by_seq[int(event["seq"])] = event
         return [events_by_seq[seq] for seq in sorted(events_by_seq)]
 
     # -- per-kind projection handlers (dispatched by _apply_event) -----------

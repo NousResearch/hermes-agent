@@ -72,12 +72,14 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
 def validate_tool_calls(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: list[dict[str, Any]],
     conversation_history: Any, api_call_count: int, effective_task_id: Any,
+    response: Any = None, api_kwargs: Any = None,
 ) -> ToolValidationVerdict:
     """Validate ``assistant_message.tool_calls`` in place (ids uniquified, names
     repaired, dict/empty args normalized to JSON strings). Strikes for invalid names
     advance only when a turn has NO valid call, so a degenerate model still halts at
     3; args cut off mid-stream (routers rewrite ``length`` → ``tool_calls``) are refused
-    outright rather than retried."""
+    outright rather than retried — unless the response's own usage disproves a cut
+    (``response`` + ``api_kwargs``), in which case they take the malformed-JSON recovery path."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
     tool_calls = assistant_message.tool_calls
@@ -184,7 +186,26 @@ def validate_tool_calls(
             not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
             for tc in tool_calls if tc.function.name in invalid_names
         )
-        if _truncated:
+        _malformed_generation = False
+        if _truncated and finish_reason != FINISH_REASON_LENGTH:
+            # The provider did NOT report a length stop. Before blaming a cut, read the
+            # evidence: a reply that ended well under its output budget was not truncated
+            # by anything — the model emitted broken JSON (fused argument bags, a dropped
+            # closing brace) and stopped. Ending the turn there blames the network and
+            # leaves the user to /retry by hand; the invalid-JSON recovery path below lets
+            # the model correct itself instead (qwen-code#12970 class).
+            from agent.tool_call_truncation_evidence import (
+                output_budget_for_request, response_output_tokens, truncation_verdict,
+            )
+            _used = response_output_tokens(agent, getattr(response, "usage", None))
+            _budget = output_budget_for_request(agent, api_kwargs)
+            _verdict_str = truncation_verdict(_used, _budget)
+            logger.info(
+                "tool-call args cut mid-JSON with finish_reason=%r: output_tokens=%s output_budget=%s -> %s",
+                finish_reason, _used, _budget, _verdict_str,
+            )
+            _malformed_generation = _verdict_str == "disproved"
+        if _truncated and not _malformed_generation:
             agent._vprint(
                 f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
                 f"(finish_reason={finish_reason!r}) — refusing to execute.",
@@ -204,7 +225,13 @@ def validate_tool_calls(
 
         agent._invalid_json_retries += 1
         tool_name, error_msg = invalid_json_args[0]
-        agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
+        if _malformed_generation:
+            agent._buffer_vprint(
+                f"⚠️  Tool call arguments for '{tool_name}' ended mid-JSON, but the reply finished "
+                f"normally well under its output cap — malformed generation, not a length cut"
+            )
+        else:
+            agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
 
         if agent._invalid_json_retries < 3:
             agent._buffer_vprint(f"🔄 Retrying API call ({agent._invalid_json_retries}/3)...")
@@ -222,6 +249,15 @@ def validate_tool_calls(
             if tc.function.name not in invalid_names:
                 return "Skipped: other tool call in this response had invalid JSON."
             err = next(e for n, e in invalid_json_args if n == tc.function.name)
+            if _malformed_generation:
+                # Not a token-limit cut (usage disproved it), so "retry with complete
+                # parameters" would reproduce the same broken call. Name the real cause.
+                return (
+                    f"Error: Invalid JSON arguments — the argument object ended before it was "
+                    f"closed ({err}). This was a malformed generation, not an output-length "
+                    f"limit. Emit one tool call at a time with a single, complete, schema-valid "
+                    f"JSON object as its arguments."
+                )
             return (
                 f"Error: Invalid JSON arguments. {err}. "
                 f"For tools with no required parameters, use an empty object: {{}}. "

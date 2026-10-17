@@ -325,9 +325,9 @@ DEFAULT_CONFIG = {
         # Env vars passed into sandboxed terminal/execute_code (plus skill-declared required_environment_variables).
         "env_passthrough": [],
         "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools
-        # Remote-backend sync-back refuses to extract a downloaded state archive larger than this
-        # (bytes); raise it for a ~/.hermes tree that legitimately exceeds 2 GiB.
-        "sync_back_max_bytes": 2 * 1024 * 1024 * 1024,
+        # Remote teardown pulls changed ~/.hermes files back; False (read at sandbox creation) stops it.
+        "sync_back": True,
+        "sync_back_max_bytes": 2 * 1024 * 1024 * 1024,  # refuse a larger state archive; raise past 2 GiB
         # HOME for host tool subprocesses: "auto" = host keeps the real OS-user HOME, containers use
         # HERMES_HOME/home; "real" = force real HOME; "profile" = force HERMES_HOME/home when it
         # exists (strict per-profile isolation).

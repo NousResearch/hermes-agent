@@ -150,47 +150,40 @@ def _stored_round_trip(owner, result, request_id='r'):
     return row['admission_id'], expected
 
 
-def test_a_message_already_carrying_the_old_marker_field_round_trips_unchanged(owner):
-    """Message fields are not format metadata: a distinct reply next to an arbitrary field stays as is."""
-    result = {'result': {'final_response': 'final', 'current_turn_user_idx': 0, 'messages': [
-        {'role': 'user', 'content': 'q'},
-        {'role': 'assistant', 'content': 'distinct', '_content_is_final_response': True}]}, 'usage': {}}
+def _result(*messages, **top):
+    return {'result': {'final_response': REPLY, 'current_turn_user_idx': 0,
+                       'messages': [{'role': 'user', 'content': 'q'}, *messages]}, 'usage': {}, **top}
+
+
+_LEGACY = {'result': {'final_response': REPLY, '_messages_are_turn_suffix': True, 'messages': [
+    {'role': 'tool', 'tool_call_id': 'c1', 'content': 'tool evidence', '_content_is_final_response': True},
+    {'role': 'assistant', 'content': None, '_content_is_final_response': True},
+    {'role': 'assistant', 'content': REPLY}]}, 'usage': {}}
+
+
+@pytest.mark.parametrize('result, copies', [
+    pytest.param(_result({'role': 'assistant', 'content': 'checking', 'tool_calls': [{'id': 'c'}]},
+                         {'role': 'tool', 'tool_call_id': 'c', 'content': 'out'},
+                         {'role': 'assistant', 'content': REPLY, 'reasoning': 'why'}), 1, id='reply-stored-once'),
+    pytest.param(_result({'role': 'assistant', 'content': 'distinct', '_content_is_final_response': True}), 1,
+                 id='distinct-reply-beside-an-old-marker-field'),
+    pytest.param(_result({'role': 'assistant', 'content': REPLY, '_content_is_final_response': True}), 1,
+                 id='old-marker-field-on-the-reply'),
+    *(pytest.param(_result({'role': 'assistant', 'content': None}, _stored=theirs), 1, id=f'own-_stored-{n}')
+      for n, theirs in enumerate(['not ours', {'v': 1, 'reply_ref': 0}, {'v': 1, 'raw': 'x'}])),
+    pytest.param(_LEGACY, None, id='legacy-row-with-any-message-fields'),
+])
+def test_any_stored_row_reads_back_as_the_pre_change_shape(owner, result, copies):
+    """Every row, new or written by an earlier release, decodes to the identical dict, key order
+    included. Message fields are not format metadata, and a producer-built ``_stored`` is never
+    taken for the envelope."""
     admission_id, expected = _stored_round_trip(owner, result)
-    assert json.dumps(admission_result(owner.db, admission_id)) == json.dumps(expected)
-    # The same field on a message whose content IS the reply: stored once, decoded to the identical dict.
-    result['result']['messages'][1]['content'] = 'final'
-    admission_id, expected = _stored_round_trip(owner, result, request_id='r2')
-    assert json.dumps(admission_result(owner.db, admission_id)) == json.dumps(expected)
-
-
-def test_a_legacy_row_with_any_message_fields_reads_back_unchanged(owner):
-    owner.db.create_session('live', source='api_server')
-    row, _expected = _turn(owner, 'live', 1, [])
-    legacy = {'result': {'final_response': REPLY, '_messages_are_turn_suffix': True, 'messages': [
-        {'role': 'tool', 'tool_call_id': 'c1', 'content': 'tool evidence', '_content_is_final_response': True},
-        {'role': 'assistant', 'content': None, '_content_is_final_response': True},
-        {'role': 'assistant', 'content': REPLY}]}, 'usage': {}}
-    old = json.dumps(legacy)
-    owner.db._execute_write(lambda conn: conn.execute('UPDATE state_meta SET value=? WHERE key=?',
-                                                      (old, RESULT_PREFIX + row['admission_id'])))
-    assert json.dumps(admission_result(owner.db, row['admission_id'])) == old
-
-
-@pytest.mark.parametrize('theirs', ['not ours', {'v': 1, 'reply_ref': 0}, {'v': 1, 'raw': 'x'}])
-def test_a_result_that_already_has_the_envelope_key_round_trips_unchanged(owner, theirs):
-    """Even a producer-built ``_stored`` shaped exactly like the envelope is never decoded."""
-    result = {'result': {'final_response': 'final', 'current_turn_user_idx': 0, 'messages': [
-        {'role': 'user', 'content': 'q'}, {'role': 'assistant', 'content': None}]},
-        '_stored': theirs, 'usage': {}}
-    admission_id, expected = _stored_round_trip(owner, result)
-    assert json.dumps(admission_result(owner.db, admission_id)) == json.dumps(expected)
-
-
-def test_the_encoded_row_decodes_to_the_identical_dict_and_key_order(owner):
-    owner.db.create_session('live', source='api_server')
-    row, expected = _turn(owner, 'live', 1, [])
+    if copies is None:  # the row as an earlier release wrote it
+        expected = result
+        owner.db._execute_write(lambda conn: conn.execute('UPDATE state_meta SET value=? WHERE key=?',
+                                                          (json.dumps(result), RESULT_PREFIX + admission_id)))
     with owner.db._read_ctx() as conn:
-        raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (RESULT_PREFIX + row['admission_id'],)).fetchone()[0]
-    assert raw.count(REPLY) == 1
-    assert json.dumps(load_result(raw)) == json.dumps(expected)
+        raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone()[0]
+    assert copies is None or raw.count(REPLY) == copies
+    assert json.dumps(admission_result(owner.db, admission_id)) == json.dumps(expected)
     assert json.dumps(load_result(json.dumps(encode_result(expected)))) == json.dumps(expected)

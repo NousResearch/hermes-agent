@@ -567,11 +567,31 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
 
 
 def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
-    """Append runtime guidance to the current tool result content."""
+    """Add runtime guidance without turning a JSON-object result into mixed text."""
     if decision.action not in {"warn", "halt"} or not decision.message:
         return result
     label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
-    return (result or "") + f"\n\n[{label}: {decision.code}; count={decision.count}; {decision.message}]"
+    guidance = f"[{label}: {decision.code}; count={decision.count}; {decision.message}]"
+    return append_toolguard_advisory(result, guidance, decision.to_metadata())
+
+
+def append_toolguard_advisory(result: str, guidance: str, metadata: dict[str, Any]) -> str:
+    """Keep object receipts parseable; retain existing advisories in insertion order.
+
+    ``guardrail`` matches synthetic blocked results. One advisory is an object;
+    collisions and multiple advisories become a list, preserving the existing value.
+    Textual/non-object receipts receive the textual guidance directly.
+    """
+    parsed = safe_json_loads(result)
+    if not isinstance(parsed, dict):
+        return (result or "") + "\n\n" + guidance
+    if "guardrail" in parsed:
+        previous = parsed["guardrail"]
+        advisories = previous if isinstance(previous, list) else [previous]
+        parsed["guardrail"] = [*advisories, metadata]
+    else:
+        parsed["guardrail"] = metadata
+    return json.dumps(parsed, ensure_ascii=False)
 
 
 def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:

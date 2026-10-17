@@ -276,6 +276,29 @@ class TestBuildToolLabel:
 
 
 
+    def test_process_wait_preview_labels_timeout_unambiguously(self):
+        """#83807: the wait timeout must not render as a bare '<n>s' duration."""
+        result = build_tool_preview(
+            "process_manage",
+            {"action": "wait", "session_id": "proc_abc123", "timeout": 40000},
+        )
+        assert result == "wait proc_abc123 timeout=40000s"
+        assert " 40000s" not in result
+
+    def test_process_wait_preview_omits_missing_timeout(self):
+        result = build_tool_preview(
+            "process_manage", {"action": "wait", "session_id": "proc_abc123"}
+        )
+        assert result == "wait proc_abc123"
+
+    def test_process_non_wait_preview_ignores_timeout(self):
+        result = build_tool_preview(
+            "process_manage",
+            {"action": "poll", "session_id": "proc_abc123", "timeout": 40000},
+        )
+        assert result == "poll proc_abc123"
+        assert "timeout" not in result
+
     def test_disabled_falls_back_to_preview(self):
         from agent.display import (
             build_tool_label,

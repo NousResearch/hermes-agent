@@ -2616,7 +2616,7 @@ PROCESS_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Max seconds for 'wait'.",
+                "description": "Max seconds for 'wait' (unit is seconds, not milliseconds).",
                 "minimum": 1
             },
             "offset": {

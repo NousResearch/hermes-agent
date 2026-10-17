@@ -46,6 +46,9 @@ class SubagentMonitor:
         self.footer_active = False
         self.confirm_key = None
         self.notice = ''
+        # The footer's one-line steer input (``s``): target row key and the typed draft.
+        self.steer_target = None
+        self.steer_draft = ''
 
     @property
     def has_rows(self):
@@ -111,6 +114,8 @@ class SubagentMonitor:
             self.confirm_key = None
         if not self.roster:
             self.footer_active = False
+        if self.steer_target is not None and not any(self._key(r) == self.steer_target for r in self.entries):
+            self.steer_target, self.steer_draft = None, ''  # the child finished while composing
         return changed
 
     def invalidate(self):

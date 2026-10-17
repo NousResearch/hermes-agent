@@ -52,7 +52,8 @@ def test_down_on_an_empty_composer_selects_rows_and_enter_opens_that_rows_log(mo
                 pipe.send_text('\x1b[B')  # Down: into the footer, first row selected
                 await async_wait_until(lambda: monitor.footer_active, what='footer selected')
                 assert monitor.selected_id == 'sa-0'
-                assert t('cli.subagents.select_hint') in monitor.dock_text(columns=100, rows=30, selecting=True)
+                # A subagent row: the hint offers steering too.
+                assert t('cli.subagents.select_hint_steer') in monitor.dock_text(columns=100, rows=30, selecting=True)
                 pipe.send_text('\x1b[B')
                 await async_wait_until(lambda: monitor.selected_id == 'sa-1', what='second row')
                 pipe.send_text('\r')  # Enter opens the selected row's live log, never submits

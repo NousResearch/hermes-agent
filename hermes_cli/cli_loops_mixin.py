@@ -260,9 +260,18 @@ class CLILoopsMixin:
         self._console_print(text, highlight=False, markup=False)
 
     def _cmd_statusbar(self, cmd_original: str):
+        arg = (cmd_original or "").split()[1:2]
+        if arg and arg[0].lower() == "legend":
+            from hermes_cli.cli_status_bar_legend import print_legend
+            print_legend(self)
+            return
         self._status_bar_visible = not self._status_bar_visible
         self._console_print(
             f"  {t('cli.display.status_bar_visible') if self._status_bar_visible else t('cli.display.status_bar_hidden')}")
+
+    def _handle_mouse_command(self, cmd_original: str):
+        from hermes_cli.cli_mouse import handle_mouse_command
+        handle_mouse_command(self, cmd_original)
 
     def _cmd_update(self, cmd_original: str) -> bool:
         # A truthy result means the process is relaunching — leave the REPL.

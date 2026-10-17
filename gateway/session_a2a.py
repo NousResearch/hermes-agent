@@ -91,7 +91,18 @@ async def forward(connection, params):
     from gateway.session_local import stage_local_session
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_local import commit_local_session, local_receipt
-    sid = local_identity(authority.profile_id, actor.subject, key)
+    from hermes_state_mutation_retirement import first_generation
+    from hermes_state_terminal import identity_key
+    # A context whose session the user deleted continues on its next generation (the deleted id
+    # stays retired). An exact retry of an input the deleted session took stays on it and is
+    # refused there, never run again.
+    base = key
+    request_id = lambda n: base if n == 0 else f'{base}:{n}'
+    pinned = lambda conn, sid: conn.execute('SELECT 1 FROM state_meta WHERE key=?', (
+        identity_key(actor.subject, sid, params['input_id']),)).fetchone() is not None
+    generation, sid = first_generation(
+        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), pinned=pinned)
+    key = request_id(generation)
     authority._require_admission_open()
     if authority.db.get_session(sid) is not None:
         receipt = local_receipt(authority.db, sid)

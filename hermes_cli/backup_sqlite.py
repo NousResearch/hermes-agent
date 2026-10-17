@@ -28,6 +28,19 @@ def _close_quietly(conn: Optional[sqlite3.Connection]) -> None:
             conn.close()
 
 
+def _integrity_check_rows(conn: sqlite3.Connection) -> list[str]:
+    from hermes_startup_watchdog import report_startup_progress
+
+    def progress() -> int:
+        report_startup_progress(900.0, phase="state_db_integrity_check")
+        return 0
+
+    # Slow disk reads can separate callbacks by minutes; renew only on SQLite progress.
+    progress()
+    conn.set_progress_handler(progress, 10_000)
+    return [str(row[0]) for row in conn.execute("PRAGMA integrity_check")]
+
+
 def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 

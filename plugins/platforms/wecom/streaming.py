@@ -22,6 +22,7 @@ STREAM_REQUEST_EXPIRED_ERRCODE = 846604
 STREAM_NOT_SUBSCRIBED_ERRCODE = 846609
 STREAM_VERSION_CONFLICT_ERRCODE = 6000
 MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
+
 # SDK queue is 100 frames per reqId; cap intermediates (openclaw uses 85) so finalize has room.
 MAX_INTERMEDIATE_FRAMES = 85
 
@@ -32,6 +33,10 @@ MAX_INTERMEDIATE_FRAMES = 85
 STREAM_SAFE_DURATION_SECONDS = 330.0
 STREAM_KEEPALIVE_INTERVAL_SECONDS = 120.0
 STREAM_KEEPALIVE_ENABLED_DEFAULT = False
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
 
 
 class WeComStreamExpiredError(RuntimeError):
@@ -269,9 +274,31 @@ class WeComStreamMixin:
         # Chat-level expiry only blocks NEW turn creation; a known turn_id may still finalize.
         if not turn_id and chat in self._stream_expired_chats:
             return False
-        inner = lambda: self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=finalize, turn_id=turn_id)
-        # Finalize counts toward 30/min → control lane; intermediates are unmetered (no queue).
-        return await self._enqueue_chat_send(chat, inner, is_control=True) if finalize else await inner()
+        if not finalize:  # intermediates are unmetered (no queue); an oversized preview is cut, the final is not
+            return await self._send_stream_frame_inner(text, chat=chat, reply_to=reply_to, finalize=False, turn_id=turn_id)
+        # The final frame holds at most MAX_STREAM_CONTENT_LENGTH bytes: close the bubble with the head and
+        # send() the rest, as send() splits instead of truncating. The rest goes out after the queued
+        # finalize returns — send() enqueues on the same per-chat queue.
+        head, rest = self._split_stream_final(text)
+        inner = lambda: self._send_stream_frame_inner(head, chat=chat, reply_to=reply_to, finalize=True, turn_id=turn_id)
+        # Finalize counts toward 30/min → control lane.
+        if not await self._enqueue_chat_send(chat, inner, is_control=True):
+            return False  # declined/failed: the caller's send() fallback delivers the whole text
+        if rest:
+            result = await self.send(chat, rest, reply_to=reply_to)
+            if not result.success:
+                logger.error("[%s] Stream final overflow: continuation send failed for chat %s: %s", self.name, chat, result.error)
+        return True
+
+    def _split_stream_final(self, text: str) -> tuple[str, str]:
+        """(head that fits one stream frame, rest for send()); rest is "" when the text fits. Uses the
+        fence-aware splitter at the byte limit and drops its (i/n) labels, since send() labels the rest."""
+        chunks = self.truncate_message(text, self.MAX_STREAM_CONTENT_LENGTH, len_fn=_utf8_len)
+        if len(chunks) == 1:
+            return text, ""
+        n = len(chunks)
+        parts = [chunk.removesuffix(f" ({i}/{n})") for i, chunk in enumerate(chunks, 1)]
+        return parts[0], "\n".join(parts[1:])
 
     def _locate_turn(self, chat: str, reply_to: Optional[str], finalize: bool, turn_id: Optional[str]) -> Optional[StreamTurn]:
         """Find or create the StreamTurn (None = unavailable); a turn locks to its creation req_id."""

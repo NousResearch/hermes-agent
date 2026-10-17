@@ -1,5 +1,6 @@
 """Connection membership against the real authority and temporary SQLite."""
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -169,4 +170,32 @@ async def test_stale_or_mismatched_pair_reports_detached_false_and_keeps_the_liv
             await viewer.close()
         if observer is not None:
             await observer.close()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_sqlite_failure_keeps_the_wire_error_and_logs_its_cause(tmp_path, caplog):
+    """Storage failures retain their client contract while leaving an operator diagnostic."""
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        epoch = begin_runtime_epoch(db, instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
+                                     db=db, epoch=epoch)
+
+        class Connection(AuthorityConnection):
+            def handlers(self):
+                async def probe(ref, params):
+                    raise sqlite3.OperationalError('database is locked')
+                return {'session.storage_probe': probe}
+
+        connection = Connection(authority, object(), {'user_id': 'human'})
+        with caplog.at_level('WARNING', logger='gateway.session_controls'):
+            reply = await connection.dispatch({'id': 9, 'method': 'session.storage_probe', 'params': {
+                'session_id': 'session-9'}})
+        assert reply['error'] == {
+            'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}
+        assert any('session.storage_probe storage failure for profile=test session_id=' in record.getMessage()
+                   and 'database is locked' in record.getMessage() for record in caplog.records)
+        assert 'sqlite3.OperationalError: database is locked' in caplog.text
+    finally:
         db.close()

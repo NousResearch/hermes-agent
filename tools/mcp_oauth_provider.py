@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
@@ -24,6 +24,8 @@ _ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
 # Authorization-server metadata documents the SDK tries in its 401 branch (RFC 8414 / OIDC discovery).
 _ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")
 _DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
+_ENTRA_ORGANIZATIONS_ISSUER = "https://login.microsoftonline.com/organizations/v2.0"
+_ENTRA_TENANT_ISSUER_TEMPLATE = "https://login.microsoftonline.com/{tenantid}/v2.0"
 
 
 def _default_auth_request_user_agent() -> str:
@@ -155,9 +157,11 @@ class HermesProviderMixin:
         self.context.redirect_handler = _with_offline_access
 
     async def _hermes_accept_origin_issued_metadata(self, response):
-        """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
-        it lives under (see ``metadata_issued_by_origin``); the SDK's exact-string check (RFC 8414 §3.3)
-        would reject it and park the connection on an issuer mismatch (Strava, #116233).
+        """Accept narrowly-compatible authorization-server metadata that the SDK would reject.
+
+        This covers a path-scoped server whose issuer is its origin (Strava, #116233) and Entra's
+        published ``organizations`` tenant template. All other RFC 8414 §3.3 mismatches remain with
+        the SDK's exact-string check.
 
         The SDK validates inside its Step 2 loop right after reading the response, so the document is
         installed on the context here and the SDK is handed an empty 204: ``handle_auth_metadata_response``
@@ -171,9 +175,9 @@ class HermesProviderMixin:
         # and response.aread() would wait for that stream to end while holding
         # the OAuth state semaphore.
         req = getattr(response, "request", None)
-        request_path = urlsplit(str(req.url)).path if req is not None else ""
-        if not any(request_path == base or request_path.startswith(f"{base}/")
-                   for base in _ASM_DISCOVERY_PATHS):
+        context = getattr(self, "context", None)
+        auth_server_url = getattr(context, "auth_server_url", None)
+        if req is None or str(req.url) not in authorization_server_metadata_urls(auth_server_url):
             return response
 
         from mcp.shared.auth import OAuthMetadata
@@ -182,11 +186,11 @@ class HermesProviderMixin:
             metadata = OAuthMetadata.model_validate_json(await response.aread())
         except ValidationError:
             return response
-        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+        if not metadata_issuer_matches_advertised_server(metadata, auth_server_url, response):
             return response
         self._hermes_logger.info(
-            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
-            "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
+            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s matches the "
+            "allowed compatibility rule for advertised server %s", response.url, metadata.issuer, auth_server_url)
         self.context.oauth_metadata = metadata
         return type(response)(204, request=response.request)
 
@@ -522,6 +526,22 @@ def _metadata_issuer(context: Any) -> str | None:
     return (str(issuer).rstrip("/") or None) if issuer else None
 
 
+def authorization_server_metadata_urls(auth_server_url: str | None) -> frozenset[str]:
+    """Direct RFC 8414 and OIDC discovery URLs for one advertised authorization server."""
+    if not auth_server_url:
+        return frozenset()
+    parts = urlsplit(str(auth_server_url))
+    path = parts.path.rstrip("/")
+    if (not path or ".." in path.split("/") or parts.username is not None or parts.query or parts.fragment):
+        return frozenset()
+    origin = f"{parts.scheme}://{parts.netloc}"
+    advertised = str(auth_server_url).rstrip("/")
+    return frozenset({
+        f"{origin}/.well-known/oauth-authorization-server{path}",
+        f"{advertised}/.well-known/openid-configuration",
+    })
+
+
 def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
     """Whether *metadata* may stand in for the exact-issuer match of RFC 8414 §3.3 because it is the
     document of the path-scoped authorization server *auth_server_url* and names that server's origin.
@@ -538,7 +558,6 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     Strava's MCP connector publishes exactly this pair (#116233). Anything else (another origin, a
     different path, the root or OIDC fallback documents, a redirect target) still goes through the
     exact-string check."""
-    from urllib.parse import urlsplit
     if not auth_server_url:
         return False
     parts = urlsplit(auth_server_url)
@@ -549,6 +568,30 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+def metadata_issued_by_entra_tenant_template(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Whether Microsoft's direct Entra metadata may use its published tenant template.
+
+    Entra's ``organizations`` authority is a multi-tenant alias. Its OIDC metadata names
+    ``{tenantid}`` as the issuer so tokens bind to the tenant that authenticated the user,
+    rather than to that alias. Accept only that one published pair, read directly from one
+    of the RFC 8414/OIDC discovery URLs derived from the advertised authority. A different
+    tenant alias, host, path, redirect, or issuer remains subject to the SDK's exact match.
+    """
+    if not auth_server_url or response.status_code != 200:
+        return False
+    advertised = str(auth_server_url).rstrip("/")
+    if advertised != _ENTRA_ORGANIZATIONS_ISSUER:
+        return False
+    return (str(response.url) in authorization_server_metadata_urls(auth_server_url)
+            and unquote(str(metadata.issuer).rstrip("/")) == _ENTRA_TENANT_ISSUER_TEMPLATE)
+
+
+def metadata_issuer_matches_advertised_server(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Return whether a narrow Hermes compatibility exception permits this issuer mismatch."""
+    return (metadata_issued_by_origin(metadata, auth_server_url, response)
+            or metadata_issued_by_entra_tenant_template(metadata, auth_server_url, response))
 
 
 def google_offline_access_params(context: Any) -> dict[str, str]:

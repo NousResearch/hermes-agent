@@ -686,6 +686,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
+            carries_current_turn_sidecar = bool(prev.get("display_kind")) and not msg.get("display_kind")
             merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )
@@ -701,8 +702,12 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
             if prev_content:
                 prev[MERGED_TURN_PREFIX] = prev_content
-            # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
+            # Merged content invalidates the surviving row's api_content sidecar; drop it so replay cannot use
+            # stale bytes. A display marker absorbs the current real user turn during a model switch, though:
+            # that turn's sidecar is the exact request bytes (including memory context) and must follow its row.
             drop_stale_api_content(prev)
+            if carries_current_turn_sidecar and isinstance(msg.get("api_content"), str) and msg["api_content"]:
+                prev["api_content"] = msg["api_content"]
             # A display-marker row (e.g. a model-switch marker persisted as role=user on
             # purpose, #48338) merging with a plain user row must not bury the plain row's
             # addressable identity: keeping the marker's display_kind hides the merged pair

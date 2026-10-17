@@ -9,6 +9,7 @@ import json
 import logging
 import sqlite3
 import time
+from contextlib import suppress
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
@@ -618,6 +619,55 @@ class SessionCompressionMixin:
         with self._read_ctx() as conn:
             return self._session_turn_lease_key_on_conn(conn, session_id)
 
+    def _execute_turn_lease_renewal(self, fn, *, patience_s: Optional[float] = None):
+        """Run a holder-fenced renewal without queueing behind this handle's writer.
+
+        The lease refresher is the only caller. It owns no transcript state, so a temporary
+        connection can safely contend at SQLite's write lock while a long local writer keeps
+        ``self._lock``. Keep the usual retry budget and transaction semantics, but do not run
+        checkpoint or FTS maintenance from this latency-sensitive path.
+        """
+        from hermes_state import _connect_tracked_db
+        from hermes_state_lockowners import log_write_lock_holders
+        from hermes_state_errors import is_sqlite_lock_error
+
+        if patience_s is None:
+            patience_s = self._WRITE_PATIENCE_S
+        deadline = time.monotonic() + patience_s
+        while True:
+            self._raise_if_db_corrupt(storage=True)
+            conn = None
+            try:
+                conn = _connect_tracked_db(
+                    str(self.db_path), check_same_thread=False, timeout=1.0, isolation_level=None,
+                )
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    result = fn(conn)
+                    conn.commit()
+                except BaseException:
+                    with suppress(Exception):
+                        conn.rollback()
+                    raise
+                return result
+            except sqlite3.OperationalError as exc:
+                if is_sqlite_lock_error(exc) and self._sleep_before_write_retry(deadline, patience_s):
+                    continue
+                if is_sqlite_lock_error(exc):
+                    log_write_lock_holders(self.db_path, patience_s)
+                    raise sqlite3.OperationalError(
+                        f"database is locked (another Hermes process held the "
+                        f"state.db write lock for over {patience_s:.0f}s — "
+                        "likely a long maintenance operation such as VACUUM, "
+                        "a large WAL checkpoint, or an older pre-update "
+                        "process; the database itself is healthy)"
+                    ) from exc
+                raise
+            finally:
+                self._close_connection_quietly(conn)
+
     def try_acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
     ) -> bool:
@@ -720,17 +770,25 @@ class SessionCompressionMixin:
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
     ) -> bool:
         """Extend a turn lease only while ``holder`` still owns it. ``expires_at`` is stamped before
-        the write-lock wait, so a caller timestamp taken before this call never exceeds it."""
+        the write-lock wait, so a caller timestamp taken before this call never exceeds it.
+
+        Renewals deliberately use a short-lived connection instead of this handle's shared writer:
+        a transcript flush, checkpoint, or FTS merge can hold the process-wide writer lock long
+        enough to exhaust an otherwise healthy turn's authority. The holder-fenced update has no
+        ordering dependency on those writes; SQLite still serializes it with other processes.
+        """
         if not session_id or not holder:
             return False
         expires_at = time.time() + max(0.1, float(ttl_seconds))
+
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
             ).rowcount > 0
-        return bool(self._execute_write(_do, patience_s=patience_s))
+
+        return bool(self._execute_turn_lease_renewal(_do, patience_s=patience_s))
 
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
         """Release a turn lease iff ``holder`` still owns it; idempotent."""

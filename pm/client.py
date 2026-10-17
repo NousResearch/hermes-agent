@@ -40,8 +40,8 @@ def _refuse_cold_runtime(cold: InstallError, arguments) -> InstallError:
                            "run `" + "`, `".join(install_hint(extra) for extra in arguments["extras"]) + "`")
     token = receipt.begin("sync")
     try:
-        receipt.record_refusal("lazy-install", str(exc))
-        receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")
+        receipt.record_refusal("lazy-install", "PM runtime unavailable")
+        receipt.record_step("dependency-sync", False, type(exc).__name__)
     finally:
         receipt.finalize("failed", 1, token=token)
     return exc

@@ -419,8 +419,14 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
             or _looks_like_opaque_credential(value))
 
 
+# ``x-<name>-key`` custom API-key header names (``x-acme-key``, ``x-functions-key``). Each dash
+# segment is whole and the lookbehind stops a mid-word start, so ``x-monkey`` / ``x-keyboard`` /
+# ``inbox-key`` / prose ``*-key`` words do not match. Used by the header and JSON rules.
+_X_KEY_HEADER_NAME = r"(?<![A-Za-z0-9_\-])x-(?:[a-z0-9]+-)*key(?![A-Za-z0-9_\-])"
+
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+_JSON_KEY_NAMES = (r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value"
+                   rf"|raw_secret|secret_input|key_material|{_X_KEY_HEADER_NAME})")
 _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
 # The same field inside a JSON-encoded string (``{"output": "{\\"api_key\\": \\"…\\"}"}``): every tool result
 # that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).
@@ -502,7 +508,7 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
 # values would otherwise leak when a curl command is echoed into tool output.
 SECRET_HEADER_NAME_LIST = ("x-api-key", "x-goog-api-key", "api-key", "apikey", "x-api-token", "x-auth-token", "x-access-token")
-_SECRET_HEADER_NAMES = rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)})"
+_SECRET_HEADER_NAMES = rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)}|{_X_KEY_HEADER_NAME})"
 _SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNORECASE)
 
 # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. The lookbehind
@@ -865,6 +871,25 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     return text
 
 
+def _secret_header_sub(file_read: bool):
+    """re.sub callback for _SECRET_HEADER_RE. Quotes stay outside the mask: a quoted YAML scalar
+    keeps both, and ``-H "x-api-key: v"`` keeps its closing quote (pulling it into the mask turns
+    value corruption into syntax corruption, see _AUTH_HEADER_RE). File reads get the non-reusable
+    sentinel like every other pass, so a config.yaml header cannot be written back (#35519)."""
+    mask = _mask_token_nonreusable if file_read else _mask_token
+
+    def _sub(m):
+        value, lead, trail = m.group(2), "", ""
+        if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0]:
+            lead, trail, value = value[0], value[-1], value[1:-1]
+        elif len(value) >= 2 and value[-1] in "'\"":
+            trail, value = value[-1], value[:-1]
+        if value == "***" or value.startswith("«redacted"):
+            return m.group(0)
+        return f"{m.group(1)}{lead}{mask(value)}{trail}"
+    return _sub
+
+
 def _redact_url_credentials(text: str, code_file: bool) -> str:
     """DB connection-string passwords and bare-token URL userinfo (``://`` text only)."""
     def _redact_db(m):
@@ -958,7 +983,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:
-        text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
+        text = _SECRET_HEADER_RE.sub(_secret_header_sub(file_read), text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
 
     if "BEGIN" in text and "-----" in text:

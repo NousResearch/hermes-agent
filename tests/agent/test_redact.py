@@ -532,6 +532,58 @@ class TestApiKeyHeaders:
         assert "anotherOpaqueSecret" not in result
 
 
+class TestXKeyHeaderNames:
+    """``x-<name>-key`` custom API-key headers (``x-acme-key`` authenticating an MCP server, say):
+    the header line, its config.yaml form and a curl -H were masked on no surface, because the
+    header list only knew fixed names."""
+
+    V = "fakeAcmeKeyValue0123456789abcdef"
+
+    @pytest.mark.parametrize("template", [
+        "x-acme-key: {v}",
+        "      x-acme-key: {v}",            # config.yaml mcp_servers.<x>.headers
+        "X-Acme-Key: {v}",
+        'x-acme-key: "{v}"',
+        "x-functions-key: {v}",
+        "curl -H 'x-acme-key: {v}' http://127.0.0.1:8000/mcp",
+        'curl -H "x-acme-key: {v}" http://127.0.0.1:8000/mcp',
+        '{{"x-acme-key": "{v}"}}',
+    ])
+    def test_x_key_header_masked(self, template):
+        text = template.format(v=self.V)
+        for result in (redact_sensitive_text(text, force=True),
+                       redact_sensitive_text(text, force=True, file_read=True, secret_file=True)):
+            assert self.V not in result
+            assert "acme-key" in result.lower() or "functions-key" in result
+
+    def test_x_acme_key_masked_in_code_file_terminal_output(self):
+        from agent.redact import redact_terminal_output
+
+        out = f"> x-acme-key: {self.V}\n< HTTP/1.1 200 OK"
+        assert self.V not in redact_terminal_output(out, "curl -v http://127.0.0.1:8000/mcp", force=True)
+
+    def test_x_acme_key_file_read_uses_sentinel_and_keeps_quotes(self):
+        out = redact_sensitive_text(f'5|      x-acme-key: "{self.V}"', force=True, file_read=True)
+        assert out == '5|      x-acme-key: "«redacted-secret»"'
+
+    def test_short_header_value_keeps_closing_quote(self):
+        text = 'curl -H "x-acme-key: short123" http://127.0.0.1:8000/mcp'
+        assert redact_sensitive_text(text, force=True) == 'curl -H "x-acme-key: ***" http://127.0.0.1:8000/mcp'
+
+    @pytest.mark.parametrize("text", [
+        "x-monkey: banana",
+        "x-keyboard: us",
+        "x-request-id: 1234567890abcdef",
+        "inbox-key: meeting notes",
+        "primary-key: id",
+        "sort-key: name",
+        "the api-key-rotation-key: guide",
+        "hot-key: ctrl-k",
+    ])
+    def test_other_dash_key_words_unchanged(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+
+
 class TestTelegramTokens:
     def test_bot_token(self):
         text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"

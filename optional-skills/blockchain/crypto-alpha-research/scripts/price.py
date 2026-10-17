@@ -7,7 +7,7 @@ https://docs.dexscreener.com/  (api.dexscreener.com)
 
 Usage:
   python price.py <token_address>             # facts for one token (highest-liquidity pair)
-  python price.py --search "<name or symbol>" # find same-name tokens (brand-squatting check)
+  python price.py --search "<name or symbol>" # search by name/symbol; exactMatch flags same-name tokens
 
 Prints JSON to stdout. Designed to never crash: on any failure it prints
 {"error": "..."} so the calling agent can record "not found" instead of breaking.
@@ -21,7 +21,7 @@ import urllib.error
 DEX_TOKENS = "https://api.dexscreener.com/latest/dex/tokens/"
 DEX_SEARCH = "https://api.dexscreener.com/latest/dex/search?q="
 TIMEOUT = 15
-UA = "crypto-alpha-research-skill/0.1 (+https://github.com/catfrommarss/hermes-skills)"
+UA = "crypto-alpha-research-skill/0.2"
 
 
 def _get(url):
@@ -83,32 +83,48 @@ def token_facts(address):
     return best
 
 
+def _normalized(value):
+    return (value or "").strip().lower()
+
+
 def search_name(query):
     data = _get(DEX_SEARCH + urllib.parse.quote(query))
     pairs = data.get("pairs") or []
+    target = _normalized(query)
     seen = set()
     candidates = []
     for pair in _by_liquidity(pairs):
-        addr = (pair.get("baseToken") or {}).get("address")
+        base = pair.get("baseToken") or {}
+        addr = base.get("address")
         if not addr or addr in seen:
             continue
         seen.add(addr)
-        candidates.append(_summary(pair))
-        if len(candidates) >= 15:
-            break
+        entry = _summary(pair)
+        entry["exactMatch"] = target in (
+            _normalized(base.get("name")),
+            _normalized(base.get("symbol")),
+        )
+        candidates.append(entry)
+    # stable sort: exact matches first, liquidity order preserved within groups
+    candidates.sort(key=lambda c: not c["exactMatch"])
+    candidates = candidates[:15]
     return {
         "query": query,
         "candidatesCount": len(candidates),
+        "exactMatchCount": sum(1 for c in candidates if c["exactMatch"]),
         "note": (
-            "Multiple distinct addresses with the same name = brand-squatting "
-            "risk. Confirm the official contract via the project's own channels."
+            "exactMatch=true entries share the queried name/symbol after "
+            "normalization; several distinct exact-match addresses = "
+            "brand-squatting risk. exactMatch=false entries are fuzzy search "
+            "hits, not same-name evidence. Confirm the official contract via "
+            "the project's own channels."
         ),
         "candidates": candidates,
         "source": "dexscreener",
     }
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Read-only token facts via the public DexScreener API (no key)."
     )
@@ -116,7 +132,7 @@ def main():
     parser.add_argument(
         "--search", metavar="NAME", help="find tokens by name/symbol (brand-squat check)"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         if args.search:
             result = search_name(args.search)

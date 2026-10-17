@@ -1761,7 +1761,14 @@ def switch_model(
         fail = step(st)
         if fail is not None:
             return fail
-    return _build_switch_result(st)
+    result = _build_switch_result(st)
+    from agent.model_selection_context import validate_model_selection
+    try:
+        validate_model_selection(result, st.custom_providers)
+    except ValueError as exc:
+        return st.fail(str(exc), new_model=st.new_model, target_provider=st.target_provider,
+                       provider_label=st.provider_label)
+    return result
 
 
 def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg: Any) -> dict[str, Any]:

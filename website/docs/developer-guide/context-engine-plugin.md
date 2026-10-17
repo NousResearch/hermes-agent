@@ -91,6 +91,7 @@ These have sensible defaults in the ABC. Override as needed:
 |--------|---------|--------------|
 | `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB) |
 | `on_session_end(session_id, messages)` | No-op | You need to flush state, close connections |
+| `shutdown()` | No-op | Agent teardown must release resources this instance opened itself; calls can repeat on shared instances, so never close a backend shared with the registered instance or other agents' clones. |
 | `on_session_reset()` | Resets token counters | You have per-session state to clear |
 | `update_model(model, context_length, ...)` | Updates context_length + threshold | You need to recalculate budgets on model switch |
 | `get_tool_schemas()` | Returns `[]` | Your engine provides agent-callable tools (e.g., `lcm_grep`) |
@@ -311,6 +312,7 @@ def clone_for_agent(self):
 4. should_compress() — checked each turn
 5. compress() — called when should_compress() returns True
 6. on_session_end() — session boundary (CLI exit, /reset, gateway shutdown)
+7. shutdown() — agent teardown, potentially many times per process or on one shared object: release only instance-opened resources, never a backend shared with the registered instance or other agents' clones.
 ```
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.

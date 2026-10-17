@@ -1,0 +1,33 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: atomicmail
+description: Give the agent its own email inbox - read, search, send, and reply (Atomic Mail).
+source: https://atomic-mail.github.io/atomic-mail-agentic/
+
+# Atomic Mail ships a hosted remote MCP server over Streamable HTTP with
+# native MCP OAuth 2.1 (PKCE S256, refresh tokens, Dynamic Client
+# Registration at https://auth.atomicmail.ai/oauth/register). Scopes:
+# mail.read, mail.send. Nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.atomicmail.ai/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - atomic mail
+    - atomicmail
+    - agent email
+    - agent inbox
+  hosts:
+    - atomicmail.io
+    - atomicmail.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Atomic Mail
+  (or run `hermes mcp login atomicmail`). Approve mail.read and mail.send,
+  then restart the session so tools load.

@@ -1,7 +1,7 @@
 name: hermes-vcc-engine
 repo: https://github.com/danbiocchi/hermes-vcc-engine
-sha: ea43932a48114dd4e200aa8802027f11641be646
-description: "Context engine that replaces the LLM-written compaction summary with a deterministic projection of the conversation: requests, commands and exit codes, errors, fixes and files read or changed, each line referencing the original message for recall via session_search. No model call on the normal path. Disclosure — no network calls, shell commands or credentials; reads Hermes's config.yaml through Hermes's own loader; subclasses ContextCompressor and relies on its private methods, falling back to the stock compressor if they are missing."
+sha: 42f9bd007792c972ab8d910ca33d5533ca7a555f
+description: "Instant context compaction: replaces Hermes's LLM-written compaction summary with a deterministic projection built in milliseconds, with no model call. Keeps requests, commands and exit codes, errors, fixes and files read or changed, each line referencing the original message for recall via session_search. Disclosure — no network calls, shell commands or credentials; reads Hermes's config.yaml through Hermes's own loader; subclasses ContextCompressor and relies on its private methods, falling back to the stock compressor if they are missing."
 maintainer: danbiocchi
 tier: community
 category: general
@@ -9,6 +9,10 @@ requires_hermes: ">=0.21.7"
 version: "0.4.0"
 docs_url: https://github.com/danbiocchi/hermes-vcc-engine#readme
 readme: true
+title: "Instant Context Compactor"
+screenshots:
+  - https://raw.githubusercontent.com/danbiocchi/hermes-vcc-engine/42f9bd007792c972ab8d910ca33d5533ca7a555f/docs/img/results.svg
+  - https://raw.githubusercontent.com/danbiocchi/hermes-vcc-engine/42f9bd007792c972ab8d910ca33d5533ca7a555f/docs/img/recall.svg
 platforms: []
 capabilities:
   provides_tools: []

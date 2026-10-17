@@ -15,6 +15,6 @@ capabilities:
   provides_middleware: []
   requires_env:
     - LORECONVO_HERMES_PROJECT
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.0"
 version: "0.10.17"
 docs_url: https://github.com/labyrinth-analytics/loreconvo?tab=readme-ov-file#loreconvo

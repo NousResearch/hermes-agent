@@ -874,17 +874,22 @@ class GeminiNativeClient:
 
     def __init__(
         self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[dict[str, str]] = None,
-        timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,
+        timeout: Any = httpx.USE_CLIENT_DEFAULT, http_client: Optional[httpx.Client] = None, default_query=None, **_: Any,
     ) -> None:
-        if not (api_key or "").strip():
+        if not callable(api_key) and not (api_key or "").strip():
             raise RuntimeError(self.MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
-        self.base_url = normalize_gemini_base_url(base_url)
+        from urllib.parse import urlsplit, urlunsplit
+        parsed = urlsplit(base_url or DEFAULT_GEMINI_BASE_URL)
+        self.base_url = normalize_gemini_base_url(urlunsplit(parsed._replace(query="", fragment="")))
+        self._default_query = httpx.QueryParams(parsed.query).merge(default_query or {})
         self._default_headers = dict(default_headers or {})
+        self._request_timeout = timeout
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         # read=1200: Gemini 4 hops can think for minutes; Google asks for a >=20 min read timeout (its
         # stream limit), and a shorter one cuts long-decode hops off mid-think.
-        self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=1200.0, write=30.0, pool=30.0))
+        self._http = http_client or httpx.Client(timeout=(httpx.Timeout(connect=15.0, read=1200.0, write=30.0, pool=30.0)
+                                                        if timeout is httpx.USE_CLIENT_DEFAULT else timeout))
 
     def close(self) -> None:
         self.is_closed = True
@@ -899,14 +904,14 @@ class GeminiNativeClient:
         self.close()
 
     def _auth_headers(self) -> dict[str, str]:
-        return {"x-goog-api-key": self.api_key}
+        return {"x-goog-api-key": self.api_key() if callable(self.api_key) else self.api_key}
 
     def _headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
 
     def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
-        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
+        return gemini_http_error(response, body_text=body_text, api_key="" if callable(self.api_key) else self.api_key, base_url=self.base_url)
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:
@@ -917,8 +922,11 @@ class GeminiNativeClient:
         self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[dict[str, Any]] = None,
-        timeout: Any = None, **_: Any,
+        timeout: Any = httpx.USE_CLIENT_DEFAULT, extra_headers: Optional[dict[str, str]] = None,
+        extra_query: Optional[dict[str, Any]] = None, **_: Any,
     ) -> Any:
+        if timeout is httpx.USE_CLIENT_DEFAULT:
+            timeout = self._request_timeout
         extra = extra_body if isinstance(extra_body, dict) else {}
         # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
         budget = extra.get("max_output_tokens")
@@ -933,17 +941,21 @@ class GeminiNativeClient:
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:
-            return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout)
-        hops = [self._generate(url + self.GENERATE_METHOD, request, timeout)]
+            return self._stream_completion(model, f"{url}{self.STREAM_METHOD}?alt=sse", request, timeout, extra_headers, extra_query)
+        hops = [self._generate(url + self.GENERATE_METHOD, request, timeout, extra_headers, extra_query)]
         max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
         # Long decode: same request + token, never the partial output. Past the ceiling the last hop's
         # CONTINUATION finish translates to ``length``.
         while (token := continuation_token(hops[-1])) and len(hops) < max_hops:
-            hops.append(self._generate(url + self.GENERATE_METHOD, {**request, "continuationToken": token}, timeout))
+            hops.append(self._generate(url + self.GENERATE_METHOD, {**request, "continuationToken": token}, timeout, extra_headers, extra_query))
         return translate_gemini_response(merge_hop_responses(hops) if len(hops) > 1 else hops[0], model=model)
 
-    def _generate(self, url: str, request: dict[str, Any], timeout: Any) -> dict[str, Any]:
-        response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
+    def _generate(self, url: str, request: dict[str, Any], timeout: Any, extra_headers=None, extra_query=None) -> dict[str, Any]:
+        query = self._default_query.merge(extra_query or {})
+        headers = httpx.Headers(self._headers())
+        headers.update(extra_headers or {})
+        response = self._http.post(url, json=request, headers=headers,
+                                   timeout=timeout, **({"params": query} if query else {}))
         if response.status_code != 200:
             raise self._http_error(response)
         try:
@@ -953,7 +965,8 @@ class GeminiNativeClient:
                 f"Invalid JSON from Gemini native API: {exc}", code="gemini_invalid_json", status_code=response.status_code, response=response,
             ) from exc
 
-    def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any) -> Iterator[_GeminiStreamChunk]:
+    def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any, extra_headers=None, extra_query=None) -> Iterator[_GeminiStreamChunk]:
+        query = self._default_query.merge(extra_query or {})
         tool_call_indices: dict[str, dict[str, Any]] = {}  # shared across hops: they form one model turn
         hop_usage: list[dict[str, Any]] = []
         max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
@@ -963,8 +976,11 @@ class GeminiNativeClient:
         resume, sends = None, 0
         while True:
             try:
-                headers = {**self._headers(), "Accept": "text/event-stream"}
-                with self._http.stream("POST", url, json=body, headers=headers, timeout=timeout) as response:
+                headers = httpx.Headers(self._headers())
+                headers["Accept"] = "text/event-stream"
+                headers.update(extra_headers or {})
+                with self._http.stream("POST", url, json=body, headers=headers,
+                                       timeout=timeout, **({"params": query.set("alt", "sse")} if query else {})) as response:
                     if response.status_code != 200:
                         raise self._http_error(response, read_streaming_error_body(response))
                     for event in _iter_sse_events(response):

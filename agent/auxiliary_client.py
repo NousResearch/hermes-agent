@@ -5310,6 +5310,11 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
+    from agent.opencode_gemini import go_gemini_base, make_go_gemini_client
+    native_base = go_gemini_base(provider, final_model, base_url)
+    if native_base:
+        client = make_go_gemini_client(native_base, api_key=api_key, default_headers=headers)
+        return _route_client(req, client, final_model)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
     # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
     # wrap so call_llm() transparently routes through responses.stream().
@@ -6562,9 +6567,12 @@ _NVIDIA_PROVIDER_NAMES = {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotr
 _GEMINI_NATIVE_PROVIDER_NAMES = {"gemini", "google", "google-gemini", "google-ai-studio"}
 
 
-def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
+def _is_gemini_native_route(provider_norm: str, effective_base: str, model: str = "") -> bool:
     """Gemini native by provider name, else (best-effort) by base URL shape."""
     if provider_norm in _GEMINI_NATIVE_PROVIDER_NAMES:
+        return True
+    from agent.opencode_gemini import go_gemini_base
+    if go_gemini_base(provider_norm, model, effective_base):
         return True
     if not effective_base:
         return False
@@ -6590,7 +6598,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or provider_norm in _NVIDIA_PROVIDER_NAMES
         or base_url_host_matches(effective_base, "integrate.api.nvidia.com")
         or str(task) == "moa_reference"
-        or _is_gemini_native_route(provider_norm, effective_base)
+        or _is_gemini_native_route(provider_norm, effective_base, model)
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")
         or _is_managed_local_endpoint(effective_base)

@@ -1993,6 +1993,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # that specific path; this copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    client_kwargs.pop("_go_gemini_route", None)
     if client_kwargs.get("base_url"):
         client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
     try:
@@ -2037,6 +2038,14 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         )
         return provider_client
     from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
+    from agent.opencode_gemini import main_go_gemini_base, make_go_gemini_client
+    native_base = main_go_gemini_base(agent, client_kwargs.get("base_url"))
+    if native_base:
+        native_kwargs = dict(client_kwargs)
+        native_kwargs.pop("base_url", None)
+        if "http_client" not in native_kwargs:
+            native_kwargs["http_client"] = agent._build_keepalive_http_client(native_base, verify=httpx_verify)
+        return make_go_gemini_client(native_base, **native_kwargs)
     if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
         if client is not None:
@@ -2353,6 +2362,7 @@ def _resolve_switch_context_length(agent, snapshot):
 def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
     """Point the context compressor at the new model (rolls back the switch on failure)."""
     from agent.model_metadata import get_model_context_length
+    from agent.opencode_gemini import compressor_budget as _go_compressor_budget, compressor_provider
     if custom_providers is None:
         try:
             from hermes_cli.config import get_compatible_custom_providers, load_config
@@ -2372,8 +2382,9 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             context_length=new_context_length,
             base_url=agent.base_url,
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-            provider=agent.provider,
+            provider=compressor_provider(agent),
             api_mode=agent.api_mode,
+            **_go_compressor_budget(agent),
         )
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
@@ -2405,6 +2416,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(cc, "model", agent.model),
+        "compressor_max_tokens": getattr(cc, "max_tokens", None),
         "compressor_base_url": getattr(cc, "base_url", agent.base_url),
         "compressor_api_key": getattr(cc, "api_key", ""),
         "compressor_provider": getattr(cc, "provider", agent.provider),

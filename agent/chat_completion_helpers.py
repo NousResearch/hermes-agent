@@ -1991,9 +1991,11 @@ def _update_fallback_context_compressor(agent) -> None:
         config_context_length=getattr(agent, "_config_context_length", None),
         custom_providers=getattr(agent, "_custom_providers", None),
     )
+    from agent.opencode_gemini import compressor_budget, compressor_provider
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
-        api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+        api_key=getattr(agent, "api_key", ""), provider=compressor_provider(agent), api_mode=agent.api_mode,
+        **compressor_budget(agent),
     )
     # Fallback activation is an error path: refresh an EXISTING verdict eagerly (the ceiling was voided by
     # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than

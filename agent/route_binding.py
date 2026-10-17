@@ -115,10 +115,13 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
         agent._use_prompt_caching = False
         agent._use_native_cache_layout = False
     _rebuild_primary_client(agent, rt, reason="restore_primary")
+    from agent.context_compressor import ContextCompressor
     agent.context_compressor.update_model(
         model=rt["compressor_model"], context_length=rt["compressor_context_length"],
         base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
         provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
+        **({"max_tokens": rt["compressor_max_tokens"] or 0}
+           if isinstance(agent.context_compressor, ContextCompressor) and "compressor_max_tokens" in rt else {}),
     )
     # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
     if getattr(agent, "_compression_feasibility_checked", False) is True:

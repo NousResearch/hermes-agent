@@ -289,10 +289,10 @@ def _find_skill_path(name: str) -> Optional[Path]:
 def _staged_base(name: str, target_label: str, staged: Optional[dict[str, dict[str, str]]]) -> str:
     """What an op diffs against: the content earlier ops of the same batch left in this file,
     else the on-disk copy (empty for a file that does not exist yet)."""
-    files = (staged or {}).get(name)
+    skill_dir = _find_skill_path(name)
+    files = (staged or {}).get(str(skill_dir) if skill_dir else name)
     if files and target_label in files:
         return files[target_label]
-    skill_dir = _find_skill_path(name)
     if not skill_dir:
         return ""
     with suppress(Exception):
@@ -370,11 +370,13 @@ def _fold_staged(staged: dict[str, dict[str, str]], action: str, name: str,
     """Record what one op leaves in the staged view the next op diffs against."""
     if not name:
         return
+    skill_dir = _find_skill_path(name)
+    key = str(skill_dir) if skill_dir else name
     if action == "delete":
-        staged.pop(name, None)
+        staged.pop(key, None)
         return
     label = "SKILL.md" if action == "edit" else (op.get("file_path") or "SKILL.md")
-    files = staged.setdefault(name, {})
+    files = staged.setdefault(key, {})
     if action in {"create", "edit"}:
         files["SKILL.md"] = op.get("content") or ""
     elif action == "write_file":

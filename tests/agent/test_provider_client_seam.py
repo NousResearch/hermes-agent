@@ -76,11 +76,28 @@ def test_an_out_of_tree_profile_supplies_the_client_through_create_openai_client
     assert isinstance(_build("openai-api", "https://api.example/v1"), OpenAI)
 
 
-def test_a_broken_plugin_falls_through_instead_of_taking_the_turn_down(registered):
+def test_a_broken_http_plugin_falls_through_instead_of_taking_the_turn_down(registered):
     from agent.agent_runtime_helpers import _provider_supplied_client
 
     registered(_ExplodingProfile(name="seam-boom", base_url="acp://seam-boom"))
     assert _provider_supplied_client(_agent("seam-boom"), {"api_key": "k"}) is None
+
+
+def test_a_broken_process_profile_preserves_its_client_error(registered):
+    """Regression for #139807: launch kwargs must not reach OpenAI after hook failure."""
+    from agent.agent_runtime_helpers import create_openai_client
+
+    registered(_ExplodingProfile(
+        name="seam-process-boom", auth_type="external_process", base_url="process://seam-process-boom",
+    ))
+
+    with pytest.raises(RuntimeError, match="plugin is broken"):
+        create_openai_client(
+            _agent("seam-process-boom"),
+            {"api_key": "k", "base_url": "process://seam-process-boom", "command": "provider-cli"},
+            reason="test",
+            shared=False,
+        )
 
 
 def test_copilot_acp_still_gets_its_acp_client_via_its_profile():

@@ -350,9 +350,23 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
         return False
 
 
+def _kernel_argv_for_pid(pid: int) -> list[str] | None:
+    """The process's argv as the kernel holds it (``KERN_PROCARGS2`` on macOS), via psutil;
+    ``None`` when the process is gone, not ours to read, or psutil is unavailable."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        return psutil.Process(pid).cmdline() or None
+    except psutil.Error:  # NoSuchProcess, AccessDenied, ZombieProcess
+        return None
+
+
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), the kernel argv via psutil
+    (macOS), ``ps -o command=`` + shlex as a last resort, None on Windows (no graceful taskkill
+    window; Desktop manages its backend)."""
     if sys.platform == "win32":
         return None
     try:
@@ -362,6 +376,12 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
                 raw = f.read()
             argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
             return argv or None
+        argv = _kernel_argv_for_pid(pid)
+        if argv:
+            return argv
+        # ``ps`` joins argv with spaces and no quoting, so a token that contains spaces (the
+        # ``-c "<code>"`` of an interpreter relaunch) cannot be recovered from it; the respawn built
+        # from such a split died with a SyntaxError on every update (#136159). Last resort only.
         result = _run_probe(["ps", "-p", str(pid), "-o", "command="], timeout=10)
         if result.returncode != 0:
             return None

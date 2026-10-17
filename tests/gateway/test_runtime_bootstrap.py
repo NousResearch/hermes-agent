@@ -288,3 +288,92 @@ def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_pa
         server.close()
     assert injected.get("reply") == {"echo": "injected"}, injected.get("error")
     assert server._error is None, server._error
+
+
+def _connected_pipe_pair():
+    """An in-process named pipe and a client handle on it (PIPE_WAIT, byte mode)."""
+    import uuid
+    import _winapi
+    name = rf'\\.\pipe\hermes-test-owner-{uuid.uuid4().hex}'
+    server = _winapi.CreateNamedPipe(name, _winapi.PIPE_ACCESS_DUPLEX, 0,  # PIPE_TYPE_BYTE | PIPE_WAIT
+                                     1, 4096, 4096, 0, _winapi.NULL)
+    client = _winapi.CreateFile(name, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE, 0, _winapi.NULL,
+                                _winapi.OPEN_EXISTING, 0, _winapi.NULL)
+    return server, client
+
+
+def _server_process_unreadable(monkeypatch, rbw):
+    """The server PID cannot be opened (a service-hosted gateway at a higher integrity level);
+    this process's own SID stays readable."""
+    real, own = rbw._process_sid, os.getpid()
+    calls = {'n': 0}
+
+    def process_sid(pid):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise PermissionError('cannot verify bootstrap peer process')
+        return real(pid)
+    monkeypatch.setattr(rbw, '_process_sid', process_sid)
+    return real(own)
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize('owner', ['self', 'S-1-5-32-544'])
+def test_client_identifies_an_unopenable_server_by_its_pipe_owner(monkeypatch, owner):
+    """A client cannot open a service-hosted gateway's process, so it falls back to the pipe
+    object's owner: the caller's own SID, or BUILTIN\\Administrators for an elevated server."""
+    import _winapi
+    import gateway.runtime_bootstrap_windows as rbw
+    own = _server_process_unreadable(monkeypatch, rbw)
+    expected = own if owner == 'self' else owner
+    monkeypatch.setattr(rbw, '_pipe_owner_sid', lambda handle: expected)
+    server, client = _connected_pipe_pair()
+    try:
+        assert rbw._peer_subject(client, server=True) == 'sid:' + expected
+    finally:
+        _winapi.CloseHandle(client)
+        _winapi.CloseHandle(server)
+
+
+@pytest.mark.platforms("windows")
+def test_client_refuses_an_unopenable_server_owned_by_another_user(monkeypatch):
+    import _winapi
+    import gateway.runtime_bootstrap_windows as rbw
+    _server_process_unreadable(monkeypatch, rbw)
+    monkeypatch.setattr(rbw, '_pipe_owner_sid', lambda handle: 'S-1-5-21-1-2-3-1001')
+    server, client = _connected_pipe_pair()
+    try:
+        with pytest.raises(PermissionError, match='another user'):
+            rbw._peer_subject(client, server=True)
+    finally:
+        _winapi.CloseHandle(client)
+        _winapi.CloseHandle(server)
+
+
+@pytest.mark.platforms("windows")
+def test_server_side_never_uses_the_pipe_owner_fallback(monkeypatch):
+    """Identifying a CLIENT is unchanged: no token and no readable process stays refused."""
+    import _winapi
+    import gateway.runtime_bootstrap_windows as rbw
+    _server_process_unreadable(monkeypatch, rbw)
+    monkeypatch.setattr(rbw, '_pipe_client_sid', lambda handle: (_ for _ in ()).throw(PermissionError('no token')))
+    monkeypatch.setattr(rbw, '_pipe_owner_sid', lambda handle: pytest.fail('owner fallback used for a client'))
+    server, client = _connected_pipe_pair()
+    try:
+        with pytest.raises(PermissionError):
+            rbw._peer_subject(server, server=False)
+    finally:
+        _winapi.CloseHandle(client)
+        _winapi.CloseHandle(server)
+
+
+@pytest.mark.platforms("windows")
+def test_pipe_owner_sid_reads_a_real_pipe():
+    import _winapi
+    import gateway.runtime_bootstrap_windows as rbw
+    server, client = _connected_pipe_pair()
+    try:
+        assert rbw._pipe_owner_sid(client) in {rbw._process_sid(os.getpid()), 'S-1-5-32-544'}
+    finally:
+        _winapi.CloseHandle(client)
+        _winapi.CloseHandle(server)

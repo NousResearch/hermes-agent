@@ -15,6 +15,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
+_ADMINISTRATORS_SID = 'S-1-5-32-544'  # BUILTIN\Administrators: owner of objects an elevated process creates
+
 
 def _native():
     if os.name != 'nt':
@@ -73,6 +75,37 @@ def _process_sid(pid: int) -> str:
         close(process)
 
 
+def _pipe_owner_sid(handle) -> str:
+    """String SID of the owner of the pipe object behind *handle* (``GetSecurityInfo``, owner only).
+
+    The identity of a pipe SERVER whose process cannot be opened: a gateway hosted by a Windows service
+    runs at a higher integrity level than the Desktop or CLI that dials it, so ``OpenProcess`` on the
+    server PID is denied for the very same user. The pipe object's owner is that service account."""
+    k = ctypes.WinDLL('kernel32', use_last_error=True)
+    a = ctypes.WinDLL('advapi32', use_last_error=True)
+    get_info = _api(a, 'GetSecurityInfo', wintypes.DWORD,
+                    [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                     ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+                     ctypes.POINTER(ctypes.c_void_p)])
+    owner = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    # SE_KERNEL_OBJECT = 6, OWNER_SECURITY_INFORMATION = 0x1
+    if get_info(handle, 6, 0x1, ctypes.byref(owner), None, None, None, ctypes.byref(descriptor)) != 0 or not owner:
+        raise PermissionError('cannot read named-pipe owner')
+    text = wintypes.LPWSTR()
+    convert = _api(a, 'ConvertSidToStringSidW', wintypes.BOOL, [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)])
+    local_free = _api(k, 'LocalFree', ctypes.c_void_p, [ctypes.c_void_p])
+    try:
+        if not convert(owner, ctypes.byref(text)):
+            raise PermissionError('cannot encode named-pipe owner')
+        try:
+            return text.value
+        finally:
+            local_free(ctypes.cast(text, ctypes.c_void_p))
+    finally:
+        local_free(descriptor)
+
+
 class _ImpersonationLeak(RuntimeError):
     """RevertToSelf failed: this thread may still carry the client's identity. Deliberately not an
     OSError, so the serving loop does not swallow it and the worker stops instead."""
@@ -126,7 +159,19 @@ def _peer_subject(handle, *, server: bool) -> str:
         pid = wintypes.ULONG()
         if not get_pid(handle, ctypes.byref(pid)):
             raise PermissionError('cannot identify named-pipe peer')
-        sid = _process_sid(pid.value)
+        try:
+            sid = _process_sid(pid.value)
+        except PermissionError:
+            if not server:
+                raise
+            # A service-hosted gateway's process is not openable from the user's session (it runs at a
+            # higher integrity level); the pipe object it created still names its owner. An elevated
+            # process's objects are owned by BUILTIN\Administrators rather than the user, and only an
+            # elevated local process can create that pipe, so that owner is accepted beside the caller's.
+            owner = _pipe_owner_sid(handle)
+            if owner == _process_sid(os.getpid()) or owner == _ADMINISTRATORS_SID:
+                return 'sid:' + owner
+            raise PermissionError('named-pipe peer belongs to another user')
     if sid != _process_sid(os.getpid()):
         raise PermissionError('named-pipe peer belongs to another user')
     return 'sid:' + sid

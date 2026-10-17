@@ -48,6 +48,7 @@ from tools.vision_tools_image_prep import (
     _VISION_MAX_VALIDATED_AGGREGATE_PIXELS,
     _VISION_MAX_VALIDATED_FRAME_COUNT,
     _crop_image_region,
+    _detect_image_mime_type_from_bytes,
     _determine_mime_type,
     _image_exceeds_dimension,
     _normalize_to_supported_image,
@@ -344,9 +345,12 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
 
 
 def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
-    """``data:<mime>;base64,...`` for a file (MIME from extension when not given)."""
-    mime = mime_type or _determine_mime_type(image_path)
-    return f"data:{mime};base64,{base64.b64encode(image_path.read_bytes()).decode('ascii')}"
+    """``data:<mime>;base64,...`` for a file. The label is sniffed from the magic bytes first —
+    a caller's ``mime_type`` hint and the extension are only fallbacks, so a screenshot the
+    agent saved as JPEG never goes out labeled ``image/png`` (#139253)."""
+    data = image_path.read_bytes()
+    mime = _detect_image_mime_type_from_bytes(data) or mime_type or _determine_mime_type(image_path)
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
 # Absolute hard ceiling for vision payloads (20 MB): no major provider accepts more.

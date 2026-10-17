@@ -48,6 +48,23 @@ export function saveMcpServers(
   })
 }
 
+/** Flip one server's `enabled` bit (the Connectors toggle). Scoped like
+ *  `saveMcpServers`, but on the per-server endpoint: the whole-map replace
+ *  400s when ANY entry in `mcp_servers` fails validation, which turned every
+ *  toggle into a silent no-op for configs with one bad entry. */
+export function setMcpServerEnabledFor(
+  name: string,
+  enabled: boolean,
+  profile?: ProfileScope
+): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
+    path: `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
+    method: 'PUT',
+    body: { enabled }
+  })
+}
+
 /** Capture the source before the first await. Every OAuth RPC, including
  *  cleanup after a foreground switch, belongs to this (connection, profile).
  *  Import the store lazily: it consumes the API barrel during initialization. */

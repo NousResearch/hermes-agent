@@ -2673,7 +2673,8 @@ def test_run_codex_stream_prestream_exhaustion_buffers_one_user_line_with_host_a
     lines = [str(msg) for _kind, msg in agent._retry_status_buffer]
     assert len(lines) == 1, lines
     assert "api.example.com" in lines[0]
-    assert "after 2 attempts" in lines[0]
+    # HERMES_STREAM_RETRIES defaults to 2, the same budget the chat_completions wire uses.
+    assert "after 3 attempts" in lines[0]
     assert f"request {round(len(body) / 1024)} KB" in lines[0]
 
 

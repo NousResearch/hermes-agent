@@ -998,13 +998,13 @@ class TestCodexStreamCallbacks:
 
 
     def test_codex_remote_protocol_error_retries_then_raises(self):
-        """Transport errors from ``responses.create`` retry once then re-raise.
+        """Transport errors from ``responses.create`` retry on the shared stream budget then re-raise.
 
         With the migration from ``responses.stream(...)`` to
         ``responses.create(stream=True)``, there is no longer a separate
         fallback function — the same call IS the streaming path.  When it
-        raises ``httpx.RemoteProtocolError``, we retry once (matching the
-        old behavior on the helper) and re-raise on the second failure.
+        raises ``httpx.RemoteProtocolError``, we retry ``HERMES_STREAM_RETRIES``
+        times (the chat wire's budget) and re-raise once it is spent.
         """
         from run_agent import AIAgent
         import httpx
@@ -1034,8 +1034,8 @@ class TestCodexStreamCallbacks:
         with pytest.raises(httpx.RemoteProtocolError):
             agent._run_codex_stream({}, client=mock_client)
 
-        # 1 initial + 1 retry = 2 calls
-        assert call_count["n"] == 2
+        # 1 initial + 2 retries (HERMES_STREAM_RETRIES default) = 3 calls
+        assert call_count["n"] == 3
 
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent

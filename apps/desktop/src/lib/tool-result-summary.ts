@@ -1,7 +1,7 @@
 // Heuristic JSON → human summary for tool results. Default view; technical
 // mode still gets the raw JSON section.
 
-import { capitalize, normalize } from '@/lib/text'
+import { capitalize, inlineTextPrefix, normalize } from '@/lib/text'
 
 const WRAPPER_KEYS = ['data', 'result', 'output', 'response', 'payload'] as const
 
@@ -63,7 +63,7 @@ const titleCase = (k: string) =>
 const pluralize = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 function clipInline(value: string, max = 180): string {
-  const c = value.replace(/\s+/g, ' ').trim()
+  const c = inlineTextPrefix(value, max + 1)
 
   return c.length > max ? `${c.slice(0, max - 1)}…` : c
 }

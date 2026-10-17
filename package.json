@@ -67,9 +67,7 @@
     "source-map-js": "1.2.2",
     "yaml": "2.9.1",
     "vitest": "4.1.11",
-    "@vitest/mocker": "4.1.11",
-    "minimatch": "10.2.6",
-    "jsdom": "26.1.0"
+    "@vitest/mocker": "4.1.11"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",

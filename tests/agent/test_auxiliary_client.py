@@ -3049,7 +3049,7 @@ class TestAuxiliaryPoolRotationRetry:
         rate_err.status_code = 429
 
         stale_client = MagicMock()
-        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.api_key, stale_client.base_url = "stale-codex-key", "https://chatgpt.com/backend-api/codex"
         stale_client.chat.completions.create.side_effect = [rate_err, rate_err]
 
         fresh_client = MagicMock()
@@ -3063,12 +3063,12 @@ class TestAuxiliaryPoolRotationRetry:
             def has_credentials(self):
                 return True
 
-            def try_refresh_current(self):
-                return None
+            def entries(self):
+                return [SimpleNamespace(runtime_api_key="stale-codex-key")]
 
             def mark_exhausted_and_rotate(self, **kwargs):
                 self.rotate_calls.append(kwargs)
-                return SimpleNamespace(id="cred-b")
+                return SimpleNamespace(id="cred-b", runtime_api_key="fresh-codex-key")
 
         pool = _Pool()
 

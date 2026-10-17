@@ -7,11 +7,47 @@ confirmed the update to its platform before the gateway sees it, so the platform
 (Discord's own missed-message backfill, when enabled, can still pick it up after recovery). Holding it
 here would be a second inbound queue outside the one durable queue, kept for a profile whose store is
 the one that cannot be trusted. So the sender is told, in-channel, to resend, and nothing is admitted.
+
+A transport that answers only after an awaited dispatch (Google Chat HTTP events) has not acknowledged
+the delivery yet: it runs that dispatch in :func:`retryable_ingress` and answers the named, retryable
+:class:`ParkedRouteRefused` instead, so the platform redelivers it.
 """
 import asyncio
+import contextvars
 import logging
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+
+class ParkedRouteRefused(Exception):
+    """An unacknowledged delivery routed to a parked profile: nothing was admitted, answer ``status``."""
+    code, status, headers = 'profile_parked', 503, {'Retry-After': '30'}
+
+    def __init__(self):
+        super().__init__('The routed profile is not being served right now; retry this delivery')
+
+
+class _RetryableIngress:
+    def __init__(self):
+        self.open, self.refused = True, False
+
+
+_retryable_ingress = contextvars.ContextVar('parked_route_retryable_ingress', default=None)
+
+
+@contextmanager
+def retryable_ingress():
+    """Scope an awaited dispatch its transport has not acknowledged. A parked route inside it is only
+    recorded (``scope.refused``) for the caller to raise :class:`ParkedRouteRefused`; no in-chat notice.
+    Closed on exit, so a task that outlives the dispatch still refuses in-channel."""
+    scope = _RetryableIngress()
+    token = _retryable_ingress.set(scope)
+    try:
+        yield scope
+    finally:
+        scope.open = False
+        _retryable_ingress.reset(token)
 
 # Generic on purpose: the chat is not told which profile the route targets or why it is parked.
 # Worded as an outage notice Discord's backfill recognises (``_is_down_notice_content``): the reply
@@ -31,6 +67,13 @@ def drop_rejected_route(adapter, source):
             '[%s] Dropping inbound event for %s: explicit profile route targets an unserved profile', name, chat_id)
         return
     platform = getattr(getattr(source, 'platform', None), 'value', None) or '?'
+    scope = _retryable_ingress.get()
+    if scope is not None and scope.open:
+        scope.refused = True
+        logger.warning(
+            '[%s] Refusing inbound event for %s: routed profile %r on %s is parked (reason=profile_parked); '
+            'nothing was admitted, the delivery is answered retryably', name, chat_id, profile, platform)
+        return
     logger.warning(
         '[%s] Refusing inbound event for %s: routed profile %r on %s is parked (reason=profile_parked); '
         'nothing was admitted, the sender was asked to resend', name, chat_id, profile, platform)

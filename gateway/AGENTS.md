@@ -101,7 +101,9 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   before it; an unresolved identity under multiplexing (route to an unserved profile) is dropped
   with one WARNING at the first seam it reaches, never keyed into `agent:main`
   (`parked_route_refusal.drop_rejected_route`; a route to a *parked* profile also tells the sender
-  in-channel to resend, since a direct bot's update is already confirmed and never redelivered).
+  in-channel to resend, since a direct bot's update is already confirmed and never redelivered; a
+  dispatch its transport has not acknowledged yet, e.g. Google Chat HTTP events, runs in
+  `retryable_ingress()` and answers `ParkedRouteRefused` (503) instead, releasing its dedup claim).
   `_transport_owner`, `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
   `_resolve_profile_for_key` read the identity when present and fall back to their old chain only
   for sources nothing resolved (restored rows, hand-built sources). Never derive a second answer

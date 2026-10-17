@@ -158,8 +158,8 @@ from gateway.browser_control_broker import (
     ControllerScope, ControllerTicketInvalid, browser_control_developer_mode,
     browser_control_protocol_supported, filter_browser_control_capabilities, get_browser_control_broker)
 
-from gateway.platforms._shared import coerce_port as _coerce_port
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.parked_route_refusal import ParkedRouteRefused
+from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
 from hermes_state_errors import SessionActiveWriteGuardError
 
@@ -1562,11 +1562,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response("Platform event must be a JSON object", 400, code="invalid_request")
         try:
             result = await dispatcher(payload)
+        except ParkedRouteRefused as exc:  # nothing admitted, nothing acknowledged: the platform retries it
+            return _error_response(str(exc), exc.status, err_type="server_error", code=exc.code, headers=exc.headers)
         except Exception:
             logger.exception("Platform HTTP event dispatch failed for %s", platform_name)
-            return _error_response(
-                "Platform event dispatch failed", 500, err_type="server_error",
-                code="platform_event_dispatch_failed")
+            return _error_response("Platform event dispatch failed", 500, err_type="server_error", code="platform_event_dispatch_failed")
         return web.json_response(result if isinstance(result, dict) else {})
 
     # -- Multi-profile multiplexing (/p/<profile>/...) --------------------------------

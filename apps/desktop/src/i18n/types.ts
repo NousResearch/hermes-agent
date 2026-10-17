@@ -795,6 +795,9 @@ export interface Translations extends NoticeTranslations {
       reasoningCollapsedDesc: string
       chatTextScaleTitle: string
       chatTextScaleDesc: string
+      chatMaxWidthTitle: string
+      chatMaxWidthDesc: string
+      chatMaxWidthOff: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string

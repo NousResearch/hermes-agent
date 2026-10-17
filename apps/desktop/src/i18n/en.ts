@@ -980,6 +980,10 @@ export const en: Translations = {
       chatTextScaleTitle: 'Chat Text Size',
       chatTextScaleDesc:
         'Scales conversation text and the message editor relative to UI Scale. Sidebars and controls stay the same size.',
+      chatMaxWidthTitle: 'Chat Column Width',
+      chatMaxWidthDesc:
+        'Center the conversation in a readable column on wide windows. This setting is saved per profile.',
+      chatMaxWidthOff: 'Off',
       title: 'Appearance',
       intro: 'Desktop-only. Mode is brightness; theme is palette and chat chrome.',
       colorMode: 'Color Mode',

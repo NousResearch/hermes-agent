@@ -231,6 +231,11 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if tool_name == "terminal":
         data = safe_json_loads(result)
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
+        # A call the handler rejected before running anything (``tool_error``: ``error``, no
+        # exit code -- e.g. notify without background=true) is a failure. Counted as a success
+        # it also cleared other tools' failure streaks (terminal is a PROGRESS_RESET tool).
+        if exit_code is None and isinstance(data, dict) and data.get("error"):
+            return True, " [error]"
         return (True, f" [exit {exit_code}]") if exit_code is not None and exit_code != 0 else (False, "")
 
     if tool_name == "memory":

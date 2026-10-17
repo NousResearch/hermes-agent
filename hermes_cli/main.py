@@ -2682,7 +2682,7 @@ def cmd_dashboard(args):
     # `serve` is the headless backend: no UI build, no SPA mount, neutral
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
-    _headless_backend = getattr(args, "headless_backend", False)
+    _headless_backend = getattr(args, "headless_backend", False) and getattr(args, "ui", None) != "desktop"
     _ssh_owner_nonce = _dashboard_validate_serve_args(args, _headless_backend, _token_file)
     _dashboard_sanitize_desktop_env(_headless_backend)
 

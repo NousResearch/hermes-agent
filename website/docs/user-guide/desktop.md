@@ -20,6 +20,22 @@ Hermes has several front ends that all talk to the same agent:
 Pick whichever fits the moment. They share state, so you can start a session in one and resume it in another.
 :::
 
+## Use the Desktop UI in a browser
+
+From a source install, run `hermes serve --ui desktop` on the backend host and
+open its URL in your browser. This serves the same Desktop renderer with a
+browser host adapter. It uses the backend's existing password/OAuth login,
+session cookies, and WebSocket tickets; it does not launch a second backend.
+Bare `hermes serve` remains headless.
+
+For a VPS, restrict access to trusted devices (for example through WireGuard),
+configure the existing `dashboard.public_url` and authentication provider, and
+use HTTPS for microphone and clipboard features. Native HUD windows, global
+shortcuts, and Desktop installation management remain native-only. Server files,
+Git, and agent work run on the backend host. See the
+[browser implementation guide](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/browser/README.md)
+for build instructions and supported browser equivalents.
+
 ## Install
 
 Download the app from the [Hermes Desktop product page](https://hermes-agent.nousresearch.com/desktop), or follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).

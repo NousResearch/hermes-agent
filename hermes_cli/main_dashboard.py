@@ -907,6 +907,11 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         # answered". Fall through to the bind — never exit 0 on an attach that did not happen.
         return
 
+    if getattr(args, "ui", None) == "desktop" and identity.get("frontend") != "desktop":
+        print("The running Hermes backend does not serve the Desktop browser UI.")
+        print("Restart it with --ui desktop, or use --isolated for a separate server.")
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
     typed = _explicit_endpoint_flags()
     conflict = _endpoint_conflict(args, record, typed)
     if conflict:
@@ -984,7 +989,8 @@ def _route_named_profile_dashboard(
         (_token_file, ["--ssh-session-token-file", _token_file]),
         (args.no_open, ["--no-open"]),
         (getattr(args, "insecure", False), ["--insecure"]),
-        (getattr(args, "skip_build", False), ["--skip-build"])):
+        (getattr(args, "skip_build", False), ["--skip-build"]),
+        (getattr(args, "ui", None) == "desktop", ["--ui", "desktop"])):
         if enabled:
             reexec_argv.extend(extra)
     from tools.environments.local import build_subprocess_env
@@ -1020,6 +1026,10 @@ def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:
     """
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_web_build import _build_web_ui
+    if getattr(args, "ui", None) == "desktop":
+        from hermes_cli.main_browser_frontend import configure_browser_frontend
+        configure_browser_frontend(args, PROJECT_ROOT)
+        return
     skip_build = getattr(args, "skip_build", False)
     if _headless_backend:
         os.environ["HERMES_SERVE_HEADLESS"] = "1"  # set before web_server import

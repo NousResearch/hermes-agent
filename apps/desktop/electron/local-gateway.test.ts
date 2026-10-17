@@ -230,6 +230,19 @@ test('a dial against a replaced local gateway forgets the cached endpoint once a
   expect(ensures).toBe(2)
 })
 
+test('a redial whose re-ensure comes back without a gateway endpoint names that, not a TypeError', async () => {
+  const { localGatewayDial } = await import('./local-gateway')
+  const endpoint = { profile_id: '/h', control_home: null, instance_id: 'dead', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  const mint = vi.fn(async () => { throw new Error('Gateway ticket control socket missing') })
+  const ensure = vi.fn()
+    .mockResolvedValueOnce({ baseUrl: 'http://127.0.0.1:1234', gatewayEndpoint: endpoint })
+    .mockResolvedValueOnce({ baseUrl: 'http://127.0.0.1:1234' })
+
+  await expect(localGatewayDial({ ensure, forget: vi.fn(), launchHome: '/h', mint, prepare: () => 'unused', profile: '' }))
+    .rejects.toThrow('Local gateway connection has no gateway endpoint')
+  expect(mint).toHaveBeenCalledTimes(1)
+})
+
 test('a ready owner running other code than this Hermes is restarted once, then re-ensured', async () => {
   // After `hermes update` the live gateway still serves the old code and answers model calls
   // 503 "Restart required"; attaching to it on every dial pinned the user to it forever.

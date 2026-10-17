@@ -46,6 +46,18 @@ def first_generation(db, derive, *, pinned=None, spent=None):
             generation += 1
 
 
+def keep_passed_fences(conn, derive, session_id):
+    """Make permanent the fences a walk (``derive`` as for :func:`first_generation`) passed on its
+    way to *session_id*, inside the write that binds *session_id*: that successor now holds the
+    conversation, so a sweep marker aging out would send a later walk back to the passed
+    generation. Stops at *session_id* or at the first generation without a marker."""
+    generation = 0
+    while (sid := derive(generation)) != session_id and conn.execute(
+            "UPDATE state_meta SET value=json_remove(value, '$.expires') WHERE key=? AND json_valid(value)",
+            (RETIRED_PREFIX + sid,)).rowcount:
+        generation += 1
+
+
 def has_mutation_receipt(db, principal_id, session_id, request_id):
     for value in (principal_id, session_id, request_id):
         _text(value)
@@ -170,9 +182,13 @@ def retire_mutation_receipts(conn, session_ids):
 # Creation ids of the local conversations a gateway door derives and walks by generation
 # (``first_generation``): Bot Chat and A2A contexts.
 _DERIVED_LOCAL_PREFIXES = ('bot-chat:', 'a2a:')
-# Stored sources of the API sessions whose ids a door derives: the header-less chat and a
-# Responses/Runs chain (``api_server``) and a hosted-room member (``bot_room``).
-_DERIVED_SOURCES = ('api_server', 'bot_room')
+# The API sessions whose ids a door derives: a hosted-room member (``bot_room``), and the
+# ``api-<16 hex>`` ids of a header-less chat (``_derive_chat_session_id``) and of a deleted chat's or
+# Responses/Runs chain's next generation (``implicit_api_session``). A caller-named ``api_server`` id
+# (``POST /api/sessions``, ``X-Hermes-Session-Id``) is never derived. Matched on the id, not on a
+# binding-receipt field, so it also holds for rows an older release bound. Any id can root a
+# Responses/Runs chain: its fence becomes permanent once a chain moves past it (``keep_passed_fences``).
+_DERIVED_API_SQL = ("(source='bot_room' OR (source='api_server' AND id GLOB 'api-" + '[0-9a-f]' * 16 + "'))")
 
 
 def _local_conversations(conn):
@@ -199,10 +215,10 @@ def _local_conversations(conn):
 
 
 def _derived_api_sessions(conn, session_ids):
-    """The ids among *session_ids* whose stored source is a derived API session's."""
+    """The ids among *session_ids* of derived API sessions (``_DERIVED_API_SQL``)."""
     return {row[0] for row in conn.execute(
-        f"SELECT id FROM sessions WHERE source IN ({','.join('?' * len(_DERIVED_SOURCES))}) "
-        "AND id IN (SELECT value FROM json_each(?))", (*_DERIVED_SOURCES, json.dumps(list(session_ids))))}
+        f"SELECT id FROM sessions WHERE {_DERIVED_API_SQL} AND id IN (SELECT value FROM json_each(?))",
+        (json.dumps(list(session_ids)),))}
 
 
 def retire_prunable(conn, session_ids):
@@ -214,10 +230,11 @@ def retire_prunable(conn, session_ids):
 
     A sweep's markers age out at the retry horizon: housekeeping retires thousands of ids a pass
     (cron), and a permanent marker each would grow ``state_meta`` without bound. A derived id's
-    stays (Bot Chat, A2A context, header-less chat, Responses chain, hosted-room member): its
-    conversation resumes on the next generation, and the generation walk stops at the first
-    unfenced id, so an aged-out marker would send the next turn back to the swept generation. A
-    Bot Chat's mailbox receipts also outlive the horizon."""
+    stays (Bot Chat, A2A context, header-less chat, a chain's next generation, hosted-room
+    member): its conversation resumes on the next generation, and the generation walk stops at the
+    first unfenced id, so an aged-out marker would send the next turn back to the swept generation.
+    A Bot Chat's mailbox receipts also outlive the horizon. A caller-named API id is not derived:
+    its marker ages out, so the caller can use that id again, as for any other swept session."""
     swept, (conversations, derived) = set(session_ids), _local_conversations(conn)
 
     def removable(sid):

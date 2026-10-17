@@ -250,6 +250,7 @@ export const zhHantChrome = {
     paneControls: '窗格控制項',
     appControls: '應用程式控制項',
     modelMenu: {
+      pickDeferred: (model: string) => `${model} 將從你的下一則訊息開始生效`,
       search: '搜尋模型',
       noModels: '找不到模型',
       editModels: '編輯模型…',

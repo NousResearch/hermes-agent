@@ -473,15 +473,19 @@ def recover_interrupted_executions() -> int:
                 < HANDOFF_ADOPTION_GRACE_SECONDS
             ):
                 continue
+            # The SELECT ran outside a write transaction and the liveness probe takes time: the
+            # owner may have stamped progress since, so act only on the snapshot that was judged.
             cur = conn.execute(
                 """UPDATE executions
                    SET status='unknown', finished_at=?, error=?,
                        handoff_pending=0, handoff_started_at=NULL
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
-                     AND handoff_started_at IS ?""",
+                     AND handoff_started_at IS ?
+                     AND claimed_at=? AND progress_at IS ?""",
                 (now, reason, row["id"], row["status"], row["process_id"], row["pid"],
-                 row["handoff_pending"], row["handoff_started_at"]),
+                 row["handoff_pending"], row["handoff_started_at"],
+                 row["claimed_at"], row["progress_at"]),
             )
             changed += cur.rowcount
             if cur.rowcount:

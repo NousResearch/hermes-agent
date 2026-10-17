@@ -232,3 +232,69 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
   expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
   expect(request.mock.calls.filter(([method]) => method === 'session.resume')).toHaveLength(1)
 })
+
+it('a pick deferred by a running turn says it applies from the next turn', async () => {
+  const { ctx, request, slash } = harness()
+
+  request.mockImplementation(async (method: string) =>
+    method === 'session.mutate'
+      ? { model: 'picked', operation: 'model', status: 'deferred', execution_generation: 4 }
+      : { session_id: 'owner', revision: 8, execution_generation: 4, info })
+
+  slash('/model picked --tui-session')
+  await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+  expect(ctx.transcript.sys.mock.calls[0][0]).toContain('applies next turn')
+  expect(getUiState().info?.model).toBe('old')
+})
+
+it('a picker-issued --reasoning rides in the one canonical model selection, deferred or not', async () => {
+  const { request, slash } = harness()
+  slash('/model picked --provider custom --reasoning HIGH --tui-session')
+  await flush()
+  await flush()
+
+  const sends = request.mock.calls
+    .filter(([method]) => method === 'session.mutate')
+    .map(([, params]) => [params.operation, params.payload])
+
+  // One request: a busy session defers it and commits model + level together at the boundary.
+  expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: 'high' }]])
+  expect(request.mock.calls.some(([method]) => method === 'config.set')).toBe(false)
+})
+
+it('an unknown --reasoning level is refused like any unsupported model option, mutating nothing', async () => {
+  const { request, slash } = harness()
+  slash('/model picked --reasoning warp --tui-session')
+  await flush()
+  await flush()
+  expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(0)
+})
+
+it('a guarded switch re-asks with the effort riding the confirmed re-send', async () => {
+  resetOverlayState()
+  const { request, slash } = harness()
+  request.mockImplementation(async (method: string, params: any) => {
+    if (method === 'session.resume') {
+      return { revision: 8, execution_generation: 4, info } as any
+    }
+
+    if (params.operation === 'reasoning') {
+      return { effort: params.payload.effort, execution_generation: 6 }
+    }
+
+    return params.payload.confirm === 'tok-1'
+      ? { model: 'pricey', execution_generation: 5 }
+      : { status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey IS EXPENSIVE', target_model: 'pricey' }
+  })
+  slash('/model pricey --reasoning max --tui-session')
+  await flush()
+  getOverlayState().confirm!.onConfirm()
+  await flush()
+  await flush()
+  const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
+  expect(sends).toEqual([
+    { model: 'pricey', reasoning: 'max' },
+    { model: 'pricey', reasoning: 'max', confirm: 'tok-1' }
+  ])
+  expect(getUiState().info?.model).toBe('pricey')
+})

@@ -3305,7 +3305,7 @@ export const jaOverrides = {
       hideNames: '名前を隠す',
       skill: name => `スキル ${name}`,
       kind: { plugin: 'プラグイン', skill: 'スキル' },
-      tier: { official: '公式', community: 'コミュニティ' },
+      tier: { official: '公式', verified: '認証済み', community: 'コミュニティ' },
       targetProfile: profile => `${profile} プロファイルにインストールします`,
       sendFailed: '回答を送信できませんでした。もう一度お試しください。',
       commitLabel: 'コミット',

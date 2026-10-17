@@ -16,7 +16,53 @@ def declared_api_session(db, key):
     with db._read_ctx() as conn:
         row = conn.execute('SELECT value FROM state_meta WHERE key=?',
                            (_DECLARED_PREFIX + key,)).fetchone()
-    return row[0] if row else None
+    if row:
+        return row[0]
+    # Earlier releases kept no declared-key registry: the declared key itself sat in
+    # ``sessions.session_key`` (#139835). The pre-binding lookup finds that conversation, and
+    # ``bind_api_steps`` adopts it under the same key, so later requests hit the registry.
+    legacy = db.find_latest_gateway_session_for_peer(source='api_server', session_key=key)
+    return legacy['id'] if legacy else None
+
+
+def implicit_api_session(db, session_id, request_id=None):
+    """The session a header-less Chat Completions turn lands on. Its id is derived from the
+    conversation's opening, and a deleted id stays retired for good, so a NEW conversation that
+    opens like a deleted one moves to the next generation of that opening, the way a deleted Bot
+    Chat is replaced: the first ``api-<digest(id, n)>`` that is not retired. Read from durable rows
+    only, so every later turn of that conversation (same opening) lands on the same session. An
+    exact retry stays on the generation holding its request id's terminal identity; explicit ids
+    never come here."""
+    from hermes_state_mutation_retirement import first_generation
+    from hermes_state_terminal import identity_key
+    pinned = None if not request_id else lambda conn, sid: conn.execute(
+        'SELECT 1 FROM state_meta WHERE key=?', (identity_key('api', sid, request_id),)).fetchone() is not None
+    derive = lambda n: session_id if n == 0 else 'api-' + hashlib.sha256(f'{session_id}\0{n}'.encode()).hexdigest()[:16]
+    return first_generation(db, derive, pinned=pinned)[1]
+
+
+def continued_api_session(runner, session_id, request_id=None):
+    """The session a new turn on a retained chain (``previous_response_id``, a named conversation)
+    lands on: its stored id, or that id's next generation once the user deleted it (the history
+    comes from the response store). An exact retry stays on the generation holding its identity."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner) if session_id else None
+    return implicit_api_session(authority.db, session_id, request_id) if authority is not None else session_id
+
+
+def room_session_id(identity, generation=0):
+    """``room_<digest>`` of a hosted room member's identity (home install, room, member, target
+    profile); a later generation folds its number into the digest."""
+    seed = '\0'.join(identity) + (f'\0{generation}' if generation else '')
+    return 'room_' + hashlib.sha256(seed.encode()).hexdigest()[:32]
+
+
+def hosted_member_session(db, identity):
+    """``(generation, session_id)`` of the hidden session a hosted room member's dispatches land on:
+    a deleted one stays retired, so the room's next task moves to the next generation. A room
+    retry is replayed by the run's Idempotency-Key, never by this id, so nothing pins it."""
+    from hermes_state_mutation_retirement import first_generation
+    return first_generation(db, lambda n: room_session_id(identity, n))
 
 
 def _served_profile(authority):
@@ -86,23 +132,28 @@ async def run_steps_off_loop(authority, steps, *, orphaned=None):
         raise
 
 
-def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None):
+def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None, caller_key=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
     return run_steps(bind_api_steps(authority, session_id, hosted_dispatch=hosted_dispatch,
-                                    declared_key=declared_key))
+                                    declared_key=declared_key, caller_key=caller_key))
 
 
-def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=None):
-    """``bind_api_session`` as write steps (``run_steps``): the binding transaction is yielded."""
+def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=None, caller_key=None):
+    """``bind_api_session`` as write steps (``run_steps``): the binding transaction is yielded.
+
+    ``caller_key`` is this request's validated ``X-Hermes-Session-Key`` even when an explicit
+    session id selected the conversation (``declared_key`` is set only when the key selected it).
+    It is used only to adopt a row an earlier release stamped with that same key, and is then
+    registered as that session's declared key (and stamped into its binding receipt)."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
         raise RuntimeStoreError('invalid_params')
-    storage_source, title, room_identity = 'api_server', None, None
+    storage_source, title, room_identity, room_generation = 'api_server', None, None, 0
     if hosted_dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch
         dispatch = HostedMemberDispatch.from_mapping(hosted_dispatch)
         room_identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
-        expected = 'room_' + hashlib.sha256('\0'.join(room_identity).encode()).hexdigest()[:32]
+        room_generation, expected = hosted_member_session(authority.db, room_identity)
         if expected != session_id:
             raise RuntimeStoreError('admission_conflict')
         storage_source, title = 'bot_room', f'Group: {dispatch.room_id}'
@@ -129,6 +180,8 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         receipt['declared_key'] = declared_key
     if room_identity is not None:
         receipt.update(storage_source=storage_source, room_identity=room_identity)
+        if room_generation:
+            receipt['room_generation'] = room_generation
 
     def write(conn):
         _epoch(conn, authority.epoch)
@@ -160,8 +213,23 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                 raise RuntimeStoreError('admission_conflict')
             if conn.execute('SELECT 1 FROM sessions WHERE title=? AND id!=?', (title, session_id)).fetchone():
                 raise RuntimeStoreError('admission_conflict')
+        # Earlier API releases stored the caller-declared key directly on the session row
+        # (#139835). A caller presenting that exact key adopts the row onto the canonical route;
+        # the declared-key registry above already refused a key owned by another session, and any
+        # other stored key (another conversation's, a foreign route) still conflicts.
+        legacy_key = declared_key or caller_key
         if row is not None and row['session_key'] not in (None, '', route):
-            raise RuntimeStoreError('admission_conflict')
+            if not legacy_key or row['session_key'] != legacy_key:
+                raise RuntimeStoreError('admission_conflict')
+            # The rewrite below replaces the stamped key with the route: the registry keeps it,
+            # so a later request selecting the conversation by that key still finds this row.
+            owner = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                 (_DECLARED_PREFIX + legacy_key,)).fetchone()
+            if owner is not None and owner[0] != session_id:
+                raise RuntimeStoreError('admission_conflict')
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
+                         (_DECLARED_PREFIX + legacy_key, session_id))
+            receipt['declared_key'] = legacy_key
         existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
                                 (route,)).fetchone()
         if existing is not None and json.loads(existing[0])['session_id'] != session_id:
@@ -211,7 +279,7 @@ def restore_api_session(authority, session_id):
         raise RuntimeStoreError('admission_conflict')
     if receipt.get('storage_source') == 'bot_room':
         identity = receipt['room_identity']
-        expected = 'room_' + hashlib.sha256('\0'.join(identity).encode()).hexdigest()[:32]
+        expected = room_session_id(identity, receipt.get('room_generation', 0))
         if expected != session_id or row['title'] != 'Group: ' + identity[1] or not row['hidden']:
             raise RuntimeStoreError('admission_conflict')
     store = authority.runner.session_store

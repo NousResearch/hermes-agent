@@ -47,7 +47,7 @@ class TestIndicatorDispatch(unittest.TestCase):
         cli_obj = _make_cli()
         with (
             patch("cli._cprint") as mock_cprint,
-            patch("cli.save_config_value", return_value=True),
+            patch("hermes_cli.config_values.save_config_value", return_value=True),
         ):
             result = cli_obj.process_command("/indicator emoji")
 
@@ -68,7 +68,7 @@ class TestHandleIndicatorCommand(unittest.TestCase):
         stub = self._stub("emoji")
         with (
             patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
+            patch("hermes_cli.config_values.save_config_value") as mock_save,
         ):
             cli_mod.HermesCLI._handle_indicator_command(stub, "/indicator")
 
@@ -81,7 +81,7 @@ class TestHandleIndicatorCommand(unittest.TestCase):
         stub = self._stub()  # no display config -> default kaomoji
         with (
             patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
+            patch("hermes_cli.config_values.save_config_value") as mock_save,
         ):
             cli_mod.HermesCLI._handle_indicator_command(stub, "/indicator status")
 
@@ -94,7 +94,7 @@ class TestHandleIndicatorCommand(unittest.TestCase):
         stub = self._stub("kaomoji")
         with (
             patch.object(cli_mod, "_cprint"),
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+            patch("hermes_cli.config_values.save_config_value", return_value=True) as mock_save,
         ):
             cli_mod.HermesCLI._handle_indicator_command(stub, "/indicator unicode")
 
@@ -107,7 +107,7 @@ class TestHandleIndicatorCommand(unittest.TestCase):
         stub = self._stub("kaomoji")
         with (
             patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
+            patch("hermes_cli.config_values.save_config_value") as mock_save,
         ):
             cli_mod.HermesCLI._handle_indicator_command(stub, "/indicator rainbow")
 

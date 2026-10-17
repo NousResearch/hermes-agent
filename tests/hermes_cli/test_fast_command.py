@@ -43,7 +43,7 @@ class TestHandleFastCommand(unittest.TestCase):
         stub = self._make_cli(service_tier=None)
         with (
             patch.object(cli_mod, "_cprint") as mock_cprint,
-            patch.object(cli_mod, "save_config_value") as mock_save,
+            patch("hermes_cli.config_values.save_config_value") as mock_save,
         ):
             cli_mod.HermesCLI._handle_fast_command(stub, "/fast")
 
@@ -58,7 +58,7 @@ class TestHandleFastCommand(unittest.TestCase):
         stub = self._make_cli(service_tier="priority")
         with (
             patch.object(cli_mod, "_cprint"),
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+            patch("hermes_cli.config_values.save_config_value", return_value=True) as mock_save,
         ):
             cli_mod.HermesCLI._handle_fast_command(stub, "/fast normal")
 

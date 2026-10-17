@@ -54,7 +54,7 @@ def _run_display(monkeypatch, result):
     captured: list[str] = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: captured.append(str(s)))
     # Avoid writing to ~/.hermes/config.yaml during the test.
-    monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.config_values.save_config_value", lambda *a, **k: None)
     cli_mod.HermesCLI._apply_model_switch_result(_StubCLI(), result, False)
     return captured
 

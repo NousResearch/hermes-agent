@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Test harness supplies the host's locale registration, as plugin loading does.
@@ -47,5 +47,16 @@ describe('board switcher', () => {
     mount()
 
     expect(await screen.findByText('Shipping')).toBeTruthy()
+  })
+
+  it('offers an aggregate entry before the individual boards', async () => {
+    mount()
+
+    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Board: Shipping' }))
+
+    fireEvent.click(await screen.findByText('All boards'))
+
+    expect(await screen.findByRole('button', { name: 'Board: All boards' })).toBeTruthy()
+    expect(screen.getAllByText('3').length).toBeGreaterThan(0)
   })
 })

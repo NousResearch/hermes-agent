@@ -63,6 +63,7 @@ import {
 
 import {
   $boardSlug,
+  ALL_BOARDS,
   $collapsedLanes,
   $introDismissed,
   $lanesByProfile,
@@ -74,6 +75,7 @@ import {
   deleteTask,
   estimateNew,
   fetchBoard,
+  fetchAllBoards,
   fetchBoards,
   fetchProfiles,
   patchTask,
@@ -303,6 +305,11 @@ function Card({
               so those states stay legible. */}
           {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
             <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
+          )}
+          {task.board_name && (
+            <span className="w-fit rounded bg-(--ui-bg-quaternary) px-1 py-px text-[0.625rem] text-(--ui-text-tertiary)">
+              {task.board_name}
+            </span>
           )}
           <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
             {task.title || task.id}
@@ -1096,12 +1103,13 @@ export function KanbanBoardPage() {
   const qc = useQueryClient()
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
+  const allBoards = slug === ALL_BOARDS
   const [archived, setArchived] = useState(false)
 
   // Live updates ride the events socket (bindApi); this interval is only the
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
   const { data: board, error } = useQuery({
-    queryFn: () => fetchBoard(archived),
+    queryFn: () => (allBoards ? fetchAllBoards() : fetchBoard(archived)),
     queryKey: boardKey(scope, slug, archived),
     refetchInterval: 60_000
   })
@@ -1113,6 +1121,19 @@ export function KanbanBoardPage() {
   const [tenant, setTenant] = useState('')
   const [assignee, setAssignee] = useState('')
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
+
+  // Aggregates are intentionally read-only. Selecting a card returns to its
+  // owning board before mounting the existing drawer, so every drawer action
+  // retains the backend's normal board scope.
+  const openTask = (id: string) => {
+    const task = board?.columns.flatMap(column => column.tasks).find(candidate => candidate.id === id)
+
+    if (task?.board_slug) {
+      $boardSlug.set(task.board_slug)
+    }
+
+    setOpenId(id)
+  }
 
   // A new-task request raised from outside the page (⌘⌥N, the palette row).
   // The command navigates here and parks the lane; the page picks it up on
@@ -1415,10 +1436,10 @@ export function KanbanBoardPage() {
                 columns={columnNames}
                 key={col.name}
                 onAdd={setAddStatus}
-                onDelete={id => deleteMut.mutate(id)}
-                onDropTask={onMove}
-                onMove={onMove}
-                onOpen={setOpenId}
+                onDelete={id => !allBoards && deleteMut.mutate(id)}
+                onDropTask={id => !allBoards && onMove(id, col.name)}
+                onMove={(id, status) => !allBoards && onMove(id, status)}
+                onOpen={openTask}
                 onToggle={() => toggleLane(col.name, auto)}
                 onToggleSelect={toggleSelect}
                 selected={selected}
@@ -1428,7 +1449,7 @@ export function KanbanBoardPage() {
         </div>
       )}
 
-      {selected.size > 0 && (
+      {!allBoards && selected.size > 0 && (
         <SelectionBar
           columns={columnNames}
           onClear={() => setSelected(new Set())}
@@ -1438,7 +1459,7 @@ export function KanbanBoardPage() {
       )}
 
       <NewTaskDialog onClose={() => setAddStatus(null)} parents={parentOptions} target={addStatus} />
-      <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={setOpenId} />
+      <TaskDrawer columns={columnNames} id={openId} onClose={() => setOpenId(null)} onOpen={openTask} />
     </div>
   )
 }

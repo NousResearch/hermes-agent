@@ -89,18 +89,27 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
   )
 
 /** A saved allowlist emptied in its editor is a clear: trimEdits alone reads "" as untouched. */
-function platformChanges(platform: MessagingPlatformInfo, draft: Record<string, string>): MessagingPlatformUpdate {
+function platformChanges(
+  platform: MessagingPlatformInfo,
+  draft: Record<string, string>,
+  configDraft: Record<string, string>
+): MessagingPlatformUpdate {
   const env = trimEdits(draft)
+  const config = Object.fromEntries(
+    (platform.config_fields || [])
+      .filter(field => field.key in configDraft)
+      .map(field => [field.key, configDraft[field.key].trim() ? configDraft[field.key].split(',').map(value => value.trim()).filter(Boolean) : []])
+  )
 
   const clearEnv = platform.env_vars
     .filter(field => field.is_list && field.is_set && draft[field.key]?.trim() === '')
     .map(field => field.key)
 
-  return clearEnv.length ? { env, clear_env: clearEnv } : { env }
+  return { env, ...(clearEnv.length ? { clear_env: clearEnv } : {}), ...(Object.keys(config).length ? { config } : {}) }
 }
 
 const hasChanges = (update: MessagingPlatformUpdate) =>
-  Object.keys(update.env || {}).length + (update.clear_env?.length ?? 0) > 0
+  Object.keys(update.env || {}).length + Object.keys(update.config || {}).length + (update.clear_env?.length ?? 0) > 0
 
 /** Stable row identity: a user id is only unique within its platform. */
 const pairingKey = (user: PairingUser) => `${user.platform}:${user.user_id}`
@@ -167,6 +176,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [approving, setApproving] = useState<null | string>(null)
   const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})
+  const [configEdits, setConfigEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | StatusTone>('all')
   const [refreshing, setRefreshing] = useState(false)
@@ -282,6 +292,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setPlatforms(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
+    setConfigEdits({})
   }
 
   const changeEventsAvailable = useStore($changeEventsAvailable)
@@ -403,7 +414,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   }
 
   async function handleSave(platform: MessagingPlatformInfo) {
-    const update = platformChanges(platform, edits[platform.id] || {})
+    const update = platformChanges(platform, edits[platform.id] || {}, configEdits[platform.id] || {})
 
     if (!hasChanges(update)) {
       return
@@ -416,6 +427,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       // Refresh before dropping the drafts so list editors re-seed from the saved value, not the old one.
       await refreshPlatforms()
       setEdits(current => ({ ...current, [platform.id]: {} }))
+      setConfigEdits(current => ({ ...current, [platform.id]: {} }))
       settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
@@ -597,7 +609,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 actionBar={
                   selected && (
                     <PlatformActionBar
-                      hasEdits={hasChanges(platformChanges(selected, edits[selected.id] || {}))}
+                      hasEdits={hasChanges(platformChanges(selected, edits[selected.id] || {}, configEdits[selected.id] || {}))}
                       onSave={() => void handleSave(selected)}
                       onToggle={enabled => void handleToggle(selected, enabled)}
                       platform={selected}
@@ -628,6 +640,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     approved={approvedByPlatform[selected.id] ?? []}
                     approving={approving}
                     edits={edits[selected.id] || {}}
+                    configEdits={configEdits[selected.id] || {}}
                     onApprove={user => void handleApprove(user)}
                     onClear={key => void handleClear(selected, key)}
                     onEdit={(key, value) =>
@@ -637,6 +650,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                           ...(current[selected.id] || {}),
                           [key]: value
                         }
+                      }))
+                    }
+                    onEditConfig={(key, value) =>
+                      setConfigEdits(current => ({
+                        ...current,
+                        [selected.id]: { ...(current[selected.id] || {}), [key]: value }
                       }))
                     }
                     onRevoke={setPendingRevoke}
@@ -717,10 +736,12 @@ function PlatformRow({
 function PlatformDetail({
   approved,
   approving,
+  configEdits,
   edits,
   onApprove,
   onClear,
   onEdit,
+  onEditConfig,
   onRevoke,
   onTelegramApplied,
   pending,
@@ -730,10 +751,12 @@ function PlatformDetail({
 }: {
   approved: PairingUser[]
   approving: null | string
+  configEdits: Record<string, string>
   edits: Record<string, string>
   onApprove: (user: PairingUser) => void
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
+  onEditConfig: (key: string, value: string) => void
   onRevoke: (user: PairingUser) => void
   onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
   pending: PairingUser[]
@@ -748,6 +771,7 @@ function PlatformDetail({
   const requiredFields = platform.env_vars.filter(field => field.required)
   const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
   const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+  const configFields = platform.config_fields || []
   const hiddenCount = advancedFields.length
 
   return (
@@ -909,6 +933,24 @@ function PlatformDetail({
                 key={field.key}
                 onClear={onClear}
                 onEdit={onEdit}
+                saving={saving}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {configFields.length > 0 && (
+        <section>
+          <SectionTitle>{m.recommended}</SectionTitle>
+          <div className="mt-3 grid gap-1">
+            {configFields.map(field => (
+              <MessagingField
+                edits={configEdits}
+                field={field}
+                key={field.key}
+                onClear={() => undefined}
+                onEdit={onEditConfig}
                 saving={saving}
               />
             ))}

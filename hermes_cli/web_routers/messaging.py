@@ -50,6 +50,7 @@ _restart_gateway_after_whatsapp_onboarding = late("_restart_gateway_after_whatsa
 _telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "hermes_cli.web_server_messaging")
 _whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
+write_platform_config_field = late("write_platform_config_field", "hermes_cli.config")
 load_env = late("load_env", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "gateway.status")
@@ -129,6 +130,19 @@ def _validate_messaging_env_value(rules: dict[str, tuple[Any, str]], key: str, v
 # needs the saved value instead of a redacted preview.
 _ALLOWLIST_KEY_RE = re.compile(r"_ALLOWED(?:_[A-Z]+)?$")
 
+# Slash-command access is a per-platform config.yaml policy. It must never be
+# represented as an environment setting: it is neither a credential nor a
+# process-wide value, and gateway.config_loader already reads it from here.
+_PLATFORM_CONFIG_FIELDS = {
+    "allow_admin_from": {
+        "advanced": False,
+        "description": "Only these allowed users can run every slash command.",
+        "is_list": True,
+        "is_password": False,
+        "prompt": "Slash command admins",
+    },
+}
+
 
 def _messaging_env_info(key: str) -> dict[str, Any]:
     info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
@@ -142,6 +156,37 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
         "is_list": not is_password and bool(_ALLOWLIST_KEY_RE.search(key)),
         "advanced": info.get("advanced", False),
     }
+
+
+def _config_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        values = value
+    elif value is None:
+        values = ()
+    else:
+        values = (value,)
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _platform_config_fields(platform_id: str) -> list[dict[str, Any]]:
+    """Editable policy fields from the effective platform section.
+
+    Older installations may still use a top-level ``telegram:`` section;
+    that spelling wins at runtime, so show it rather than a stale nested value.
+    """
+    config = load_config()
+    nested = (config.get("platforms") or {}).get(platform_id, {})
+    root = config.get(platform_id, {})
+    values = {
+        **(nested if isinstance(nested, dict) else {}),
+        **(root if isinstance(root, dict) else {}),
+    }
+    return [
+        {"key": key, "is_set": bool(items := _config_list(values.get(key))), "value": items, **info}
+        for key, info in _PLATFORM_CONFIG_FIELDS.items()
+    ]
 
 
 def _catalog_lookup(platform_id: str) -> dict[str, Any] | None:
@@ -263,6 +308,7 @@ def _messaging_platform_payload(
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
+        "config_fields": _platform_config_fields(platform_id),
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
@@ -878,9 +924,14 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             raise HTTPException(status_code=409, detail=conflict)
 
     allowed_env = set(entry["env_vars"])
+    allowed_config = set(_PLATFORM_CONFIG_FIELDS)
 
     def _check_allowed(key: str) -> None:
         if key not in allowed_env:
+            raise HTTPException(status_code=400, detail=f"{key} is not configurable for {entry['name']}")
+
+    def _check_config_allowed(key: str) -> None:
+        if key not in allowed_config:
             raise HTTPException(status_code=400, detail=f"{key} is not configurable for {entry['name']}")
 
     def _apply():
@@ -899,11 +950,17 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                     raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
                 _validate_messaging_env_value(env_value_rules, key, trimmed)
                 updates[key] = trimmed
+            for key, values in body.config.items():
+                _check_config_allowed(key)
+                if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                    raise HTTPException(status_code=400, detail=f"{key} must be a list of user IDs")
 
             for key in body.clear_env:
                 remove_env_value(key)
             for key, value in updates.items():
                 save_env_value(key, value)
+            for key, values in body.config.items():
+                write_platform_config_field(platform_id, key, _config_list(values))
 
             if body.enabled is not None:
                 _write_platform_enabled(platform_id, body.enabled)
@@ -914,8 +971,8 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
         # Audit trail for channel config mutations: names only, never values.
         _log.info(
             "Messaging platform updated: platform=%s profile=%s enabled=%s "
-            "env_keys=%s cleared_keys=%s",
-            platform_id, target_profile or "current", body.enabled, sorted(body.env), sorted(body.clear_env),
+            "env_keys=%s cleared_keys=%s config_keys=%s",
+            platform_id, target_profile or "current", body.enabled, sorted(body.env), sorted(body.clear_env), sorted(body.config),
         )
         # A live multiplexer serving this named profile builds the adapter from the new token now
         # (its periodic rescan would otherwise pick it up within a cycle); no gateway restart.

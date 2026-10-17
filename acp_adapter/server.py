@@ -21,6 +21,7 @@ from acp.schema import (
     McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
     SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
+    SessionConfigOptionSelect, SessionConfigSelectOption,
     SetSessionModeResponse, SetSessionModelResponse, TextContentBlock, Usage, UsageUpdate, UserMessageChunk,
 )
 
@@ -33,6 +34,14 @@ from acp_adapter.events import (
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
+from acp_adapter.delegation_notices import (
+    claim_completions,
+    completion_update,
+    live_progress_rows,
+    mark_delivered,
+    progress_update,
+    release,
+)
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
@@ -236,6 +245,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
     _MODE_DEFAULT = "default"
+    # How often the delegation drain looks for finished background batches. Short enough that a
+    # chat UI's rows settle while the person is still reading, long enough to stay free.
+    _DELEGATION_WATCH_INTERVAL_S = 3.0
     # mode id -> (edit approval policy, display name, description)
     _MODES: dict[str, tuple[str, str, str]] = {
         "default": ("ask", "Default", "Ask before edits."),
@@ -261,6 +273,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        # One drain for the process: it routes each finished background delegation to the session
+        # that dispatched it, so a chat UI can settle the children it drew as rows.
+        self._delegation_watcher: Optional[asyncio.Task] = None
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -285,6 +300,68 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         loop = asyncio.get_running_loop()
         loop.call_soon(asyncio.create_task, make_coro())
 
+    # ---- Background delegation completions -----------------------------------
+
+    def _start_delegation_watcher(self) -> None:
+        """Start the process-wide drain that settles background delegation rows.
+
+        ``delegate_task`` detaches a batch and enqueues one completion per delegation on the shared
+        completion queue, which the CLI and the gateway drain between turns. An ACP client is not
+        that drain, so without this a chat UI kept the children it drew as rows "working" long after
+        they finished.
+        """
+        if self._delegation_watcher is not None and not self._delegation_watcher.done():
+            return
+        self._delegation_watcher = asyncio.create_task(self._watch_delegation_completions())
+
+    async def _watch_delegation_completions(self) -> None:
+        while True:
+            await asyncio.sleep(self._DELEGATION_WATCH_INTERVAL_S)
+            try:
+                claimed = await asyncio.to_thread(
+                    claim_completions, self.session_manager.session_ids()
+                )
+            except Exception:
+                logger.debug("Delegation completion drain failed", exc_info=True)
+                continue
+            for session_id, event, claim_id in claimed:
+                await self._emit_delegation_completion(session_id, event, claim_id)
+            # Same cadence as the drain: a running batch reports itself every tick, so the rows a
+            # client drew say what each child is doing instead of sitting silent until it settles.
+            await self._emit_live_delegation_progress()
+
+    async def _emit_live_delegation_progress(self) -> None:
+        """Send each session the live detail of the children it is still waiting on."""
+        for session_id in self.session_manager.session_ids():
+            try:
+                rows = await asyncio.to_thread(live_progress_rows, session_id)
+            except Exception:
+                logger.debug("Live delegation progress failed for %s", session_id, exc_info=True)
+                continue
+            if not rows:
+                continue
+            await self._send(
+                session_id,
+                progress_update(rows),
+                fail_msg="Could not report live delegation progress to %s",
+                level=logging.DEBUG,
+            )
+
+    async def _emit_delegation_completion(
+        self, session_id: str, event: dict, claim_id: Optional[str]
+    ) -> None:
+        """Send one finished delegation to its session, then acknowledge or hand back the claim."""
+        sent = await self._send(
+            session_id,
+            completion_update(event),
+            fail_msg="Could not report a finished delegation to %s",
+            level=logging.DEBUG,
+        )
+        if sent:
+            mark_delivered(event, claim_id)
+        else:
+            release(event, claim_id)
+
     def _session_modes(self, state: SessionState) -> SessionModeState:
         """Edit-approval policy as ACP modes. Zed renders ``config_options`` in the model
         picker's slot; modes (as Claude/Codex use) coexist with the picker."""
@@ -295,6 +372,66 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             current_mode_id=current,
             available_modes=[SessionMode(id=m, name=n, description=d) for m, (_p, n, d) in self._MODES.items()],
         )
+
+    # The reasoning levels a client offers for the session's model, in Hermes' own order.
+    _REASONING_EFFORTS = ("none", "low", "medium", "high")
+    _THOUGHT_LEVEL_CONFIG_ID = "thought_level"
+
+    def _session_reasoning_effort(self, state: SessionState) -> str:
+        """The effort this session runs: the client's choice first, else Hermes' config."""
+        stored = str(getattr(state, "reasoning_effort", "") or "")
+        if stored in self._REASONING_EFFORTS:
+            return stored
+        try:
+            from hermes_constants import resolve_reasoning_config
+            from hermes_cli.config import load_config
+            cfg = resolve_reasoning_config(load_config(), getattr(state, "model", "") or "")
+        except Exception:
+            cfg = None
+        if isinstance(cfg, dict):
+            if cfg.get("enabled") is False:
+                return "none"
+            effort = str(cfg.get("effort") or "")
+            if effort in self._REASONING_EFFORTS:
+                return effort
+        return "medium"
+
+    def _session_config_options(self, state: SessionState) -> list[Any]:
+        """The session's own config options. ACP clients render these beside the model picker;
+        the reasoning effort is the one Hermes has a value for."""
+        return [
+            SessionConfigOptionSelect(
+                id=self._THOUGHT_LEVEL_CONFIG_ID,
+                name="Reasoning effort",
+                description="How much thinking the model may spend on a reply.",
+                category="thought_level",
+                type="select",
+                current_value=self._session_reasoning_effort(state),
+                options=[
+                    SessionConfigSelectOption(value=level, name=level.capitalize())
+                    for level in self._REASONING_EFFORTS
+                ],
+            )
+        ]
+
+    def _apply_reasoning_effort(self, state: SessionState, level: str) -> bool:
+        """Point the session's live agent at `level`, so the next turn uses it."""
+        if level not in self._REASONING_EFFORTS:
+            return False
+        state.reasoning_effort = level
+        agent = getattr(state, "agent", None)
+        if agent is None:
+            return True
+        cfg = getattr(agent, "reasoning_config", None)
+        cfg = dict(cfg) if isinstance(cfg, dict) else {}
+        if level == "none":
+            cfg.pop("effort", None)
+            cfg["enabled"] = False
+        else:
+            cfg.pop("enabled", None)
+            cfg["effort"] = level
+        agent.reasoning_config = cfg
+        return True
 
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
@@ -611,6 +748,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         return {
             "models": self._build_model_state(state),
             "modes": self._session_modes(state),
+            "config_options": self._session_config_options(state),
             "field_meta": self._provenance_meta(state.session_id, getattr(state.agent, "session_id", state.session_id)),
         }
 
@@ -624,12 +762,18 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         # blocking; inline it froze the loop serving every JSON-RPC request (#58083).
         state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
         await self._attach_session_mcp(state, mcp_servers, "New session %s (cwd=%s)", state.session_id, cwd)
+        self._start_delegation_watcher()
         return NewSessionResponse(session_id=state.session_id, **await self._session_response_fields(state))
 
     async def load_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> LoadSessionResponse | None:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+        if state is None:
+            # An empty ACP session is never persisted, so a client reopening such a chat after a
+            # restart holds an id this process has no row for: adopt it rather than report "loaded"
+            # and then refuse every prompt on an unknown session.
+            state = await asyncio.to_thread(self.session_manager.adopt_session, session_id, cwd)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
@@ -640,6 +784,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> ResumeSessionResponse:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+        if state is None:
+            state = await asyncio.to_thread(self.session_manager.adopt_session, session_id, cwd)
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
@@ -1088,6 +1234,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
+        elif str(config_id) == self._THOUGHT_LEVEL_CONFIG_ID:
+            if not self._apply_reasoning_effort(state, str(value)):
+                logger.warning("Session %s: unknown reasoning effort %r", session_id, value)
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):
@@ -1096,4 +1245,4 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             state.config_options = options
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        return SetSessionConfigOptionResponse(config_options=self._session_config_options(state))

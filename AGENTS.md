@@ -5,6 +5,9 @@ applies everywhere, then a routing table. Each area's `AGENTS.md` loads automati
 in that directory; read it before editing there. `python scripts/check` caps this file at 12k chars
 and every root-to-area chain at 30k, so it loads whole on 128k+ models: long form goes in the guide.
 
+This file is the canonical, exhaustive guide. `CLAUDE.md` (root) is a condensed
+orientation layer derived from it — keep the two in sync when conventions change.
+
 **Never give up on the right solution.**
 
 ## What Hermes Is

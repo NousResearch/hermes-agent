@@ -161,6 +161,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._delivered_segment_texts: list[str] = []  # finalized text per past segment
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
+        self._pending_midline = ""
         self._before_finalize_notified = False
         self._reset_message_state()
 

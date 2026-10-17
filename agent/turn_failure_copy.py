@@ -160,9 +160,14 @@ def is_max_iteration_handoff(result: Any) -> bool:
     return bool(str(result.get("final_response") or "").strip())
 
 
+# Beyond this horizon a usage-limit reset is a plan/quota envelope, not a burst throttle:
+# the same threshold at which exhausted_copy switches to naming the reset window (#89401).
+_LONG_RESET_WINDOW_SECONDS = 120
+
 # ---- chat copy tables -----------------------------------------------------------------------
 
-_NEXT_STEPS_RETRY = "Wait a minute and send /retry, or switch models with /model."
+_NEXT_STEPS_RETRY_BASE = "Wait a minute and send /retry"
+_NEXT_STEPS_RETRY = _NEXT_STEPS_RETRY_BASE + ", or switch models with /model."
 _NEXT_STEPS_LOOP = (
     "Your message is saved. Send `continue` to try again, or start a new session with /new. "
     "If it happens again, run `hermes doctor` and share the error details."
@@ -360,19 +365,75 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+def switch_advice_viable(
+    agent: Any, provider: Any, model: Any, reason: str, *,
+    base_url: str = "", reset_seconds: Optional[float] = None,
+) -> bool:
+    """Whether the exhausted-turn copy may advise "switch models with /model".
+
+    Default True (keep the hint) — it is withheld only on POSITIVE proof that the CONFIGURED
+    detour path cannot change the outcome, and the proof must be structural, never inferred
+    from the reason alone (``rate_limit`` also covers RPM/TPM/concurrency throttles where a
+    sibling deployment works fine):
+
+    1. the failure is a rate limit carrying a LONG usage-limit reset window (>= 120s — the
+       same threshold at which :func:`exhausted_copy` stops calling it "a minute"; a short
+       burst throttle recovers imminently and the hint stays useful), AND
+    2. every fallback_providers entry lives on the SAME credential surface as the failed
+       route, so the switch would relist the exact quota that just died for that window.
+
+    Billing never reaches :func:`exhausted_copy` (the billing terminal renders the static
+    family), so no billing case exists here. ``/model`` can reach providers OUTSIDE
+    fallback_providers; this withholds on chain-proof only — deliberately conservative.
+    Identity comparison is delegated to :mod:`agent.backend_identity` (#22548 lesson); note
+    its label rule treats two bare ``custom`` entries as one credential surface even with
+    distinct URLs/keys (pre-existing helper semantics the gate inherits). An empty or
+    malformed chain proves nothing, so the hint stays."""
+    if reason != FailoverReason.rate_limit.value:
+        return True
+    if reset_seconds is None or reset_seconds < _LONG_RESET_WINDOW_SECONDS:
+        return True  # no structured envelope / imminent recovery: hint stays
+    chain = getattr(agent, "_fallback_chain", ()) or ()
+    if not chain:
+        return True
+    from agent.backend_identity import BackendIdentity, same_credential_surface
+    failed = BackendIdentity.build(
+        provider=str(provider or ""), model=str(model or ""), base_url=str(base_url or ""),
+    )
+    for entry in chain:
+        if not isinstance(entry, dict):
+            return True  # malformed entry: no proof, keep the hint
+        candidate = BackendIdentity.build(
+            provider=str(entry.get("provider") or ""), model=str(entry.get("model") or ""),
+            base_url=str(entry.get("base_url") or ""),
+        )
+        if not same_credential_surface(candidate, failed):
+            return True
+    return False
+
+
+def exhausted_copy(
+    reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None,
+    viable_switch: bool = True,
+) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
-    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
+    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401).
+    ``viable_switch`` gates the "switch models with /model" clause — computing it is the caller's
+    job (:func:`switch_advice_viable`); default keeps the hint for every existing caller."""
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
         reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
     # The free-tier cutoff (one attempt) fires on any cooldown over a minute, so it always names the reset.
+    _switch = ", or switch models with /model" if viable_switch else ""
     if reset_seconds is not None and (reset_seconds >= 120 or first_attempt and reset_seconds > 0):
         from agent.retry_utils import format_reset_window
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
-                     "Send /retry after that, or switch models with /model.")
+                     f"Send /retry after that{_switch}.")
     else:
-        situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
+        situation = (
+            f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}" if viable_switch
+            else f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY_BASE}."
+        )
     return (
         f"{lead} — {situation} To avoid this in future, "
         f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"

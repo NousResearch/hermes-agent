@@ -332,7 +332,13 @@ def _decode_env_bytes(raw: bytes) -> str:
 
 
 def _parse_env_text(text: str) -> dict[str, str]:
-    """Tokenize already-read ``.env`` text. See :func:`load_env_file`."""
+    """Tokenize already-read ``.env`` text. See :func:`load_env_file`.
+
+    Interpolation only sees earlier assignments in this file.  A profile scope must
+    not interpolate one profile's dotenv value from another profile's process env.
+    """
+    from dotenv.variables import parse_variables
+
     secrets: dict[str, str] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -343,7 +349,8 @@ def _parse_env_text(text: str) -> dict[str, str]:
         key, sep, value = line.partition("=")
         key = key.strip()
         if sep and key:
-            secrets[key] = _parse_env_value(_strip_inline_comment(value))
+            value = _parse_env_value(_strip_inline_comment(value))
+            secrets[key] = "".join(atom.resolve(secrets) for atom in parse_variables(value))
     return secrets
 
 

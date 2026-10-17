@@ -103,6 +103,17 @@ def test_acquire_writes_pid_and_start_time(marker):
     assert len(lines) == 3
 
 
+def test_acquire_falls_back_when_hardlinks_are_unavailable(marker, monkeypatch):
+    """Regression for #140080: Android builds can omit ``os.link`` entirely."""
+    monkeypatch.delattr(os, "link")
+
+    lock = UpdateLock(path=marker)
+
+    assert lock.acquire() is True
+    assert lock.acquired is True
+    assert marker.exists()
+
+
 def test_second_acquire_is_refused_while_the_first_is_live(marker, other_pid):
     """The bug: two updaters mutating one checkout at the same time."""
     _claim(marker, other_pid)

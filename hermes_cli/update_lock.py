@@ -1374,7 +1374,7 @@ def _publish_exclusive(path: Path, body: bytes) -> bool:
             return True
         except FileExistsError:
             return False
-        except OSError as exc:
+        except (AttributeError, OSError) as exc:
             logger.debug("No hard link for the update marker (%s); exclusive create instead", exc)
     finally:
         with suppress(OSError):

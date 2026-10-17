@@ -337,7 +337,8 @@ def settle_unrecovered_error(
             if agent._has_pending_fallback():
                 _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
                 agent._buffer_diagnostic_status(f"⚠️ {_label} — trying fallback...")
-            reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+            from agent.fallback_cooldown import effective_reset_at
+            reset_at = effective_reset_at(error_context, classified)
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
                 # re-runs the pre-API preflight against the fallback's context window.
@@ -376,7 +377,8 @@ def settle_unrecovered_error(
             return _verdict("continue")
         if agent._has_pending_fallback():
             agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-        reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+        from agent.fallback_cooldown import effective_reset_at
+        reset_at = effective_reset_at(error_context, classified)
         if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.

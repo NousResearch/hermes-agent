@@ -89,7 +89,11 @@ def _guard_homes(path: str = "") -> set[str]:
     if len(raw) > 1 and raw.startswith("~") and raw[1] not in "/\\":
         name = raw[1:].split("/", 1)[0].split("\\", 1)[0]
         expanded = os.path.expanduser(f"~{name}")
-        if not expanded.startswith("~"):
+        # "Still starts with ~" is POSIX's unknown-account sentinel. ``ntpath.expanduser`` looks up
+        # no account at all: it fabricates a sibling of the current user's home, so on Windows every
+        # ``~anything`` would synthesize a guard home out of caller-supplied text. Require the home
+        # to exist -- an account whose home is absent has no credentials to guard either way.
+        if not expanded.startswith("~") and os.path.isdir(expanded):
             homes.add(expanded)
     return {os.path.realpath(h) for h in homes}
 

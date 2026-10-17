@@ -184,6 +184,14 @@ not install JS workspaces or rewrite launchers and shell configuration. `deactiv
 
 ### Manual development and test environment {#manual-development-and-test-environment}
 
+Running the test suite needs no manual environment: activation builds the
+managed test environment from the locked `dev` and `test` dependency groups,
+and `scripts/run_tests.sh` selects it automatically, re-activating when the
+checkout or its dependency inputs changed. The steps below instead build an
+**independent** test interpreter — useful for editors, or for setups where
+activation is unavailable (for example, the Nix dev shell). It is never
+selected automatically.
+
 Use the [PM developer workflow](../reference/package-management.md#developer-workflow) to prepare Python 3.14 first.
 Run these commands from that checkout with its prepared Python. Keep the same
 development `HERMES_HOME`. PM must be able to start before it can build another
@@ -206,16 +214,22 @@ it after a dependency change, stop its processes and intentionally remove only
 that disposable environment first. PM does not delete an existing destination.
 Do not run raw pip or uv commands to change a PM-built environment.
 
-To keep the test environment outside the checkout, replace `.venv` with a fresh absolute
-path. Set `HERMES_PYTHON` to that environment's interpreter:
+The output can live in the checkout (`.venv`) or outside it at a fresh absolute
+path; the runner never discovers either on its own. Select the independent
+interpreter explicitly through `HERMES_PYTHON` in an **unactivated** shell, and
+the runner uses it when it contains pytest:
 
-- POSIX: `export HERMES_PYTHON="/absolute/path/to/hermes-dev/bin/python"`
-- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\hermes-dev\Scripts\python.exe'`
+- POSIX: `export HERMES_PYTHON="$PWD/.venv/bin/python"` (or the external environment's `bin/python`)
+- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\.venv\Scripts\python.exe'`
 
-The canonical runner discovers repository `.venv` automatically. It clears
-`PYTHONPATH`, so pytest must be installed in the interpreter's own environment.
-This test environment does not replace PM's application selection or tool
-store. Do not point a bundled app at it or install into an MSIX payload.
+An activated shell keeps the managed test environment: the activation-provided
+test interpreter wins over `HERMES_PYTHON`. To switch to the independent one,
+use a fresh shell or run `deactivate` first — do not hand-edit activation's
+exports. The runner clears `PYTHONPATH`, so pytest must be installed in the
+interpreter's own environment; an explicit interpreter without pytest is
+ignored in favor of the managed environment. This test environment does not
+replace PM's application selection or tool store. Do not point a bundled app at
+it or install into an MSIX payload.
 
 For an isolated development instance, select a disposable `HERMES_HOME` before
 starting the source command. Use `hermes setup` to configure it rather
@@ -248,9 +262,10 @@ scripts/run_tests.sh
 scripts/run_tests.sh tests/agent/ -v
 ```
 
-On Windows, run the script through Bash. When no local `.venv` or `venv`
-contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
-clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
+On Windows, run the script through Bash. In an unactivated shell the runner
+honors an explicit `HERMES_PYTHON` when it contains pytest; otherwise — and in
+every activated shell — it runs under the activation-managed test environment.
+It clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
 subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
 When `tests/conftest.py` redirects a production `HERMES_HOME` to a temporary
 session home, it sets the internal `HERMES_TEST_SANDBOX_HOME` marker. This lets
@@ -347,7 +362,7 @@ refactor/description   # Code restructuring
 
 ### Before Submitting
 
-1. **Run tests**: `scripts/run_tests.sh` for CI-parity. Use direct `python -m pytest ...` only when the wrapper is unavailable or you are intentionally debugging outside the wrapper.
+1. **Run tests**: `scripts/run_tests.sh` for CI parity. Always use the wrapper — bare `pytest` skips the credential scrub and `HERMES_HOME` isolation.
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: Consider macOS, Linux, WSL2, and native Windows. If you touch file I/O, process management, terminal handling, subprocesses, or signals, run `scripts/check-windows-footguns.py`.
 4. **Keep PRs focused**: One logical change per PR

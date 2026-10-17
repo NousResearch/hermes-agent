@@ -29,6 +29,11 @@ from hermes_cli.kanban_output import (
     _task_to_dict,
 )
 from hermes_cli.kanban_boards import _dispatch_boards
+from hermes_cli.kanban_db_decomposition import convert_decomposition_to_dependency_wait
+from hermes_cli.kanban_evidence_gate import (
+    decomposition_wait_enabled, dependency_wait_message, dependency_wait_reason, evidence_text,
+    gate_applies,
+)
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
@@ -837,7 +842,8 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     disambiguates the guidance the caller gives the worker (``continue`` = not done yet, ``blocked`` =
     judged unachievable — see #100954).
     """
-    if task is None or not task.goal_mode:
+    # Scope is ``kanban.evidence_gate`` (default ``goal_mode`` = upstream); shared with the tool surface.
+    if not gate_applies(task):
         return ("done", None)
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
@@ -879,15 +885,28 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
 
 def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: str,
-                     continue_hint: str) -> Optional[str]:
-    """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
+                     continue_hint: str, *, converted: Optional[dict] = None,
+                     summary: Optional[str] = None, metadata: Optional[dict] = None,
+                     force: bool = False) -> Optional[str]:
+    """Evidence judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
     applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
-    None to allow."""
+    None to allow.
+
+    With ``converted`` (a dict), a ``continue`` rejection of a card that still has open cards it
+    created is turned into a dependency wait on them instead of a refusal (refusing would deadlock:
+    those children usually wait on this card) — ``converted[tid]`` gets the message, None returns."""
     verdict, rejection = _goal_mode_handoff_rejection(kb.get_task(conn, tid), evidence)
     if verdict == "blocked":
         return (f"kanban: goal {handoff} of {tid} rejected: judge ruled "
                 f"the goal unachievable — {rejection}. {blocked_hint}")
     if rejection is not None:
+        if converted is not None and decomposition_wait_enabled():
+            waits = convert_decomposition_to_dependency_wait(
+                conn, tid, reason=dependency_wait_reason(handoff, rejection, summary),
+                metadata=metadata, expected_run_id=_worker_run_id_for(tid), force=force)
+            if waits:
+                converted[tid] = dependency_wait_message(tid, waits)
+                return None
         return f"kanban: goal {handoff} of {tid} rejected by judge: {rejection}. {continue_hint}"
     return None
 
@@ -908,20 +927,24 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     if rc:
         return rc
     fail_msg: dict[str, str] = {}
+    converted: dict[str, str] = {}
+    force = bool(getattr(args, "force", False))
     with kbc.connect_closing() as conn:
         def op(tid):
             gate_err = _goal_gate_error(
-                conn, tid, (summary or args.result or "").strip(), "completion",
+                conn, tid, evidence_text(summary or args.result, metadata), "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
-                "Provide evidence matching the task's acceptance criteria.")
+                "Provide evidence matching the task's acceptance criteria.",
+                converted=converted, summary=summary or args.result, metadata=metadata, force=force)
             if gate_err:
                 fail_msg[tid] = gate_err
                 return False
+            if tid in converted:
+                return True
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                        expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        expected_run_id=_worker_run_id_for(tid), force=force)
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -941,7 +964,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
             return done
 
-        return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
+        return _bulk_apply(ids, op, lambda tid: converted.get(tid) or f"Completed {tid}",
+                           fail_msg.__getitem__)
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
@@ -1038,13 +1062,19 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
     metadata, rc = _parse_metadata_flag(getattr(args, "metadata", None))
     if rc:
         return rc
+    converted: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         gate_err = _goal_gate_error(
-            conn, tid, summary or "", "review handoff",
+            conn, tid, evidence_text(summary, metadata), "review handoff",
             "Record the block with kanban block instead of requesting review.",
-            "Provide acceptance evidence matching the task.")
+            "Provide acceptance evidence matching the task.",
+            converted=converted, summary=summary, metadata=metadata,
+            force=bool(getattr(args, "force", False)))
         if gate_err:
             return _err(gate_err)
+        if tid in converted:
+            print(converted[tid])
+            return 0
         ok, reason = kb.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=getattr(args, "reviewer", None),
             expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True)

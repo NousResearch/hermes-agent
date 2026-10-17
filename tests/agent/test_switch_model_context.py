@@ -389,3 +389,103 @@ def test_later_lmstudio_failure_restores_runtime_capabilities(monkeypatch):
     assert agent.provider == "openrouter"
     assert agent.client is original_client
     assert agent.runtime_capabilities == {"native_compaction": True}
+
+
+def _make_agent_with_configured_compressor(
+    monkeypatch, cfg: dict, *, model: str, provider: str, base_url: str,
+    api_mode: str = "chat_completions",
+):
+    """Bare AIAgent whose compressor is wired EXACTLY as agent_init wires it: the raw
+    configured global threshold from ``_compression_threshold`` (never the autoraise-merged
+    value), with the per-route per-model override layered per derive."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *_args, **_kwargs: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda *_args, **_kwargs: cfg)
+    agent = AIAgent.__new__(AIAgent)
+    agent.model = model
+    agent.provider = provider
+    agent.base_url = base_url
+    agent.api_key = "sk-primary"
+    agent.api_mode = api_mode
+    agent.client = MagicMock()
+    agent.quiet_mode = True
+    agent._config_context_length = None
+    agent._primary_runtime = {}
+    agent.runtime_capabilities = {}
+    agent._create_openai_client = lambda *_args, **_kwargs: MagicMock()
+    from agent.agent_init import _compression_threshold
+    configured_threshold, _notice_enabled = _compression_threshold(agent, cfg.get("compression") or {})
+    agent.context_compressor = ContextCompressor(
+        model=model,
+        threshold_percent=configured_threshold,
+        base_url=base_url,
+        api_key="sk-primary",
+        provider=provider,
+        api_mode=api_mode,
+        quiet_mode=True,
+    )
+    return agent
+
+
+def test_switch_into_codex_route_raises_threshold(monkeypatch):
+    """Entering the Codex route mid-session raises the trigger 0.50 → 0.85."""
+    agent = _make_agent_with_configured_compressor(
+        monkeypatch, {"compression": {"threshold": 0.50}},
+        model="gpt-5.2", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+    )
+    assert agent.context_compressor.threshold_percent == 0.50
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 272_000)
+    agent.switch_model(
+        "gpt-5.6-sol", "openai-codex", api_key="sk-new",
+        base_url="https://chatgpt.com/backend-api/codex", api_mode="codex_responses",
+    )
+    assert agent.context_compressor.threshold_percent == 0.85
+    # The raise is layered per derive — the recompute baseline stays the raw global.
+    assert agent.context_compressor._config_threshold_percent == 0.50
+
+
+def test_switch_out_of_codex_route_restores_global_threshold(monkeypatch):
+    """Leaving the Codex route drops the 0.85 autoraise back to the user's global
+    threshold — the raise is per-route, never a sticky session override (#63009)."""
+    agent = _make_agent_with_configured_compressor(
+        monkeypatch, {"compression": {"threshold": 0.50}},
+        model="gpt-5.6-sol", provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex", api_mode="codex_responses",
+    )
+    assert agent.context_compressor.threshold_percent == 0.85  # raised at construction
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 1_000_000)
+    agent.switch_model(
+        "kimi-k2", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1",
+    )
+    # >=512K window: no small-context floor, so this is exactly the user's global threshold.
+    assert agent.context_compressor.threshold_percent == 0.50
+    assert agent.context_compressor._config_threshold_percent == 0.50
+
+
+def test_switch_model_applies_codex_autoraise_to_custom_codex_responses(monkeypatch):
+    """A custom codex_responses route SHARES the 0.85 autoraise only with proof of the
+    272K Codex cap — here the discovered resolved window."""
+    agent = _make_agent_with_configured_compressor(
+        monkeypatch, {"compression": {"threshold": 0.50}},
+        model="primary-model", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+    )
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 272_000)
+    agent.switch_model(
+        "gpt-5.6-sol", "custom", api_key="sk-new",
+        base_url="https://api.example-codex-proxy.invalid", api_mode="codex_responses",
+    )
+    assert agent.context_compressor.threshold_percent == 0.85
+
+
+def test_switch_model_custom_codex_responses_without_cap_keeps_global_threshold(monkeypatch):
+    """The Responses wire format alone is not proof of the 272K cap: a custom endpoint
+    with a larger/unknown window keeps the user's global threshold (#63009)."""
+    agent = _make_agent_with_configured_compressor(
+        monkeypatch, {"compression": {"threshold": 0.50}},
+        model="primary-model", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+    )
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 1_050_000)
+    agent.switch_model(
+        "gpt-5.6-sol", "custom", api_key="sk-new",
+        base_url="https://api.example-codex-proxy.invalid", api_mode="codex_responses",
+    )
+    assert agent.context_compressor.threshold_percent == 0.50

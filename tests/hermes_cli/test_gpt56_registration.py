@@ -102,6 +102,30 @@ class TestGpt56CodexCompaction:
             is None
         )
 
+    def test_responses_wire_format_alone_does_not_autoraise(self):
+        from agent.auxiliary_client import _compression_threshold_for_model
+
+        # A custom endpoint speaking the Codex Responses wire proves a wire
+        # protocol, not the 272K Codex cap: without an explicit or discovered
+        # cap signal the whole family keeps the global threshold (#63009).
+        for slug in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"):
+            assert (
+                _compression_threshold_for_model(
+                    slug, provider="custom", api_mode="codex_responses"
+                )
+                is None
+            ), slug
+        # ...and the raise returns once the cap is discovered.
+        assert (
+            _compression_threshold_for_model(
+                "gpt-5.6-sol",
+                provider="custom",
+                api_mode="codex_responses",
+                context_length=272_000,
+            )
+            == 0.85
+        )
+
     def test_astra_autoraise_on_codex_unless_900k(self):
         """Astra is 272K-capped on Codex OAuth like 5.6; the -900k opt-in variants are not."""
         from agent.auxiliary_client import _compression_threshold_for_model

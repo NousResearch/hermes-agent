@@ -26,7 +26,9 @@ export function isFallbackSwitchStatus(kind: string | undefined, text: string): 
     return Boolean(text.trim())
   }
 
-  return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
+  return /model fallback|provider fallback|switched to fallback|switching to fallback|provider stream was silent.*reconnecting/i.test(
+    text
+  )
 }
 
 /** status.update / review.summary / notification.show / notification.clear /
@@ -120,9 +122,9 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
     } else if (sessionId && isFallbackSwitchStatus(payload?.kind, coerceGatewayText(payload?.text))) {
-      // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
-      // used to swallow every non-compaction status.update, so the reply came from a different
-      // model with no indication.
+      // A provider/model switch or stale-stream reconnect is durable: the TUI paints it on the
+      // status rail, but Desktop used to swallow every non-compaction status.update, so the reply
+      // could arrive from a different model or after a silent reconnect with no indication.
       const text = coerceGatewayText(payload?.text).trim()
 
       flushQueuedDeltas(sessionId)

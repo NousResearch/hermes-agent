@@ -125,6 +125,8 @@ class TestStreamStaleCircuitBreaker:
 
         agent = _make_anthropic_agent()
         agent._consecutive_stale_streams = 0
+        statuses = []
+        agent.status_callback = lambda kind, text: statuses.append((kind, str(text)))
         unblock = threading.Event()
 
         def _blocking_gen():
@@ -152,6 +154,10 @@ class TestStreamStaleCircuitBreaker:
 
         # At least one stale kill happened; the streak must have advanced.
         assert agent._consecutive_stale_streams >= 1
+        assert any(
+            kind == "lifecycle" and "Provider stream was silent" in text and "reconnecting" in text
+            for kind, text in statuses
+        )
 
     @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
     @pytest.mark.parametrize("slow", ["worker_start", "worker_unwind"])

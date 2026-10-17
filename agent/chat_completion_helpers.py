@@ -3846,6 +3846,9 @@ class _StreamingCall(StreamingWaitMonitor):
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
         self._count_stale_attempt()
+        self.agent._emit_diagnostic_status(
+            f"⚠️ Provider stream was silent for {int(elapsed)}s; reconnecting "
+            f"(stale attempt {getattr(self.agent, '_consecutive_stale_streams', 1)}).")
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
         self.last_chunk_time["t"] = time.time()
         self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")

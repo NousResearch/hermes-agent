@@ -1093,14 +1093,19 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    detector: Optional[Callable[[str], bool]] = None,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
-    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944)."""
+    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944).
+
+    ``detector`` overrides the text-level verdict function at every recursion level (default:
+    ``_direct_lifecycle_scan``). ``scan_deferred_restart`` threads the deferred-restart detector
+    through the SAME referenced-script walk — no parallel scanner to drift."""
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
-    if _direct_lifecycle_scan(command):
+    if (detector or _direct_lifecycle_scan)(command):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
@@ -1108,7 +1113,7 @@ def _contains_unsafe_gateway_action(
     def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script, executed=executed,
+            read_remote_script=read_remote_script, executed=executed, detector=detector,
         )
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
@@ -1184,10 +1189,14 @@ def _contains_unsafe_gateway_action(
 def scan_gateway_lifecycle(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    detector: Optional[Callable[[str], bool]] = None,
 ) -> tuple[bool, Optional[str]]:
     """``(unsafe, refusal)``: *refusal* names a non-lifecycle reason the walk failed closed (budget,
     size, device, live SQLite, cloud) so callers can tell the model; ``None`` when the verdict is a
     real lifecycle command or the command is allowed.
+
+    ``detector`` optionally replaces the text-level verdict (see
+    ``_contains_unsafe_gateway_action``); the walk, budgets and fail-closed rules are identical.
 
     Total by construction: never raises. Direct scans are pure string ops; the referenced-script
     walk (filesystem, remote backends, shlex on decoded bytes) is best-effort defense-in-depth — an
@@ -1199,10 +1208,11 @@ def scan_gateway_lifecycle(
     verdict.
     """
     budget = _LifecycleScanBudget()
+    direct = detector or _direct_lifecycle_scan
     try:
         unsafe = _contains_unsafe_gateway_action(
             command, cwd=cwd, depth=0, visited=set(), budget=budget,
-            read_remote_script=read_remote_script,
+            read_remote_script=read_remote_script, detector=detector,
         )
         return unsafe, budget.refusal if unsafe else None
     except Exception:
@@ -1212,9 +1222,12 @@ def scan_gateway_lifecycle(
             exc_info=True,
         )
         try:
-            return _direct_lifecycle_scan(command), None
+            return direct(command), None
         except Exception:
             # If even the data-argument masker fails, fall to raw regex + submit scan: stay total.
+            if detector is not None:
+                # A custom detector's own crash is "could not scan" — fail closed.
+                return True, "deferred-restart scan crashed"
             return (contains_gateway_lifecycle_command(command)
                     or contains_launchctl_submit_command(command)), None
 
@@ -1290,4 +1303,114 @@ def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None)
             "SIGTERM-respawn loops under launchd/systemd supervision "
             "(#30719). Run `hermes gateway restart` from a shell outside "
             "the running gateway instead."
+        )
+
+
+# --- deferred-restart prohibition (G3, gateway-deferred-restart spec) -------------------------
+#
+# `hermes gateway defer-restart` is DELIBERATELY allowed by the G1 terminal guard in ordinary chat
+# turns — that is the whole point of the deferred channel. In cron it stays forbidden at three
+# layers (definition, pre-execution, runtime), so a scheduled job can never drive a restart loop.
+# The detector below reuses the existing normalization, splice-token and referenced-script walk
+# (no bare regex): `contains_deferred_restart_command` is the text-level verdict, threaded through
+# `scan_gateway_lifecycle(detector=...)` so nested scripts are scanned identically.
+
+_DEFERRED_RESTART_PATTERN = re.compile(r"(?i)\bgateway\s+defer-restart\b")
+
+
+class DeferredRestartBlocked(ValueError):
+    """Raised when a cron payload references the deferred-restart entrypoint (G3)."""
+
+
+def contains_deferred_restart_command(text: str) -> bool:
+    """Return True if *text* references ``hermes gateway defer-restart``.
+
+    Same three passes as ``contains_gateway_lifecycle_command``: raw text after inert-heredoc
+    masking and line-continuation normalization, then each shell-tokenized segment with
+    quotes/escapes resolved (closes splice bypasses like ``defer-re""start``), then the
+    argv-list-punctuation-stripped re-join (``subprocess.run([...])`` Python source)."""
+    if not text:
+        return False
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    text = strip_inert_heredoc_bodies(text)
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    if _DEFERRED_RESTART_PATTERN.search(normalized):
+        return True
+    for segment in _iter_command_segments(normalized):
+        joined = " ".join(segment)
+        if joined and _DEFERRED_RESTART_PATTERN.search(joined):
+            return True
+        stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
+        if stripped != joined and _DEFERRED_RESTART_PATTERN.search(stripped):
+            return True
+    return False
+
+
+def scan_deferred_restart(
+    command: str, *, cwd: Optional[str] = None,
+    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+) -> tuple[bool, Optional[str]]:
+    """``(unsafe, refusal)`` for the deferred-restart entrypoint, via the SAME bounded
+    referenced-script walk and fail-closed rules as ``scan_gateway_lifecycle``."""
+    return scan_gateway_lifecycle(
+        command, cwd=cwd, read_remote_script=read_remote_script,
+        detector=contains_deferred_restart_command,
+    )
+
+
+def check_deferred_restart_job(job: dict) -> None:
+    """G3 chokepoint: scan a job's FULL executable payload (prompt + monitor source + script).
+
+    Every G3 layer funnels through here — definition paths (create/edit/import/re-enable)
+    and the dispatch preflight — so the layers can never drift apart.
+    """
+    combined = "\n".join(part for part in (
+        job.get("prompt") or "",
+        job.get("monitor_script") or "",
+    ) if part)
+    check_deferred_restart_payload(combined, job.get("script") or None)
+
+
+def check_deferred_restart_payload(prompt: Optional[str], script: Optional[str] = None) -> None:
+    """Raise ``DeferredRestartBlocked`` if *prompt* or *script* references the deferred-restart
+    entrypoint. Mirrors ``check_gateway_lifecycle``: the script is read from disk and concatenated
+    with the prompt so a command cannot slip through by being split across the two. Callers let the
+    ``ValueError``-shaped exception propagate."""
+    combined = prompt or ""
+    refusal: Optional[str] = None
+    if script:
+        resolved_script = _resolve_script_path(script)
+        if resolved_script is not None and _on_cloud_path(resolved_script):
+            raise DeferredRestartBlocked(
+                "Blocked: the cron script lives on a cloud-synced path "
+                "(iCloud Drive / ~/Library/CloudStorage). Opening an "
+                "evicted FileProvider placeholder can hang the guard's "
+                "preflight scan indefinitely, so it is refused without "
+                "being read. Move the script to a local, non-cloud path "
+                "(e.g. ~/.hermes/scripts/) and recreate the job."
+            )
+        script_text, refusal = _read_script_for_scanning(script)
+        if script_text:
+            combined = f"{combined}\n{script_text}"
+
+    if refusal:
+        unsafe = True
+    else:
+        unsafe, refusal = scan_deferred_restart(
+            combined, cwd=_resolve_script_directory(script) if script else None
+        )
+    if unsafe and refusal:
+        raise DeferredRestartBlocked(
+            f"Blocked: the deferred-restart guard could not scan this cron job or referenced "
+            f"script: {refusal}. Nothing in the job is known to reference the deferred-restart "
+            "entrypoint, but a script the job executes must be scannable (a regular text file "
+            "under 1 MiB) before it can run."
+        )
+    if unsafe:
+        raise DeferredRestartBlocked(
+            "Blocked: cron job references `hermes gateway defer-restart`. Scheduled jobs must "
+            "not drive gateway restarts — even the deferred channel — or an agent-authored "
+            "payload can produce a fire/restart loop (gateway-deferred-restart spec, G3). "
+            "Run `hermes gateway defer-restart` from an ordinary chat turn instead."
         )

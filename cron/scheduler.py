@@ -3325,6 +3325,19 @@ def _run_one_job_body(
             logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
             return True
 
+        # G3 layer 2 (gateway-deferred-restart spec): fail-closed pre-execution re-check of the
+        # FULL run payload (prompt + script + monitor source), INCLUDING pre-existing jobs created
+        # before this rule existed. Refused before any user script or agent side effect may begin.
+        from cron.lifecycle_guard import DeferredRestartBlocked, check_deferred_restart_job
+        try:
+            check_deferred_restart_job(job)
+        except DeferredRestartBlocked as exc:
+            logger.warning("Cron job %s refused at dispatch (G3): %s", job.get("id"), exc)
+            finish_execution(
+                execution_id, success=False,
+                error=f"Pre-execution guard refused this job: {exc}")
+            return True
+
         # Bind the firing profile's COMPLETE terminal policy for this fire — agent build, run, delivery
         # and bookkeeping (gateway/run.py _profile_runtime_scope does the same per turn) — else the
         # ticker reads process-global TERMINAL_* env another profile pinned (#68559, #98581). A

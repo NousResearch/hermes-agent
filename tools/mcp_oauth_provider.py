@@ -25,6 +25,11 @@ _ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
 _ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")
 _DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
 
+# A concrete Entra tenant endpoint as it appears in an RFC 9207 ``iss``: same front door and ``/v2.0``
+# path shape as the ``{tenantid}`` template, with the tenant spelled out (a GUID on the tenant-specific
+# endpoint, or the encoded placeholder itself).
+_ENTRA_TENANT_ENDPOINT_RE = re.compile(r"^https://login\.microsoftonline\.com/[^/]+/v2\.0/?$")
+
 
 def _default_auth_request_user_agent() -> str:
     """``Hermes-Agent/<version>`` for SDK-built OAuth requests that would otherwise carry no User-Agent at
@@ -104,8 +109,38 @@ class HermesProviderMixin:
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
         self._tolerate_missing_iss_for_known_server()
+        self._normalize_entra_template_redirect_iss()
         self._request_google_offline_access()
         return await super()._perform_authorization()
+
+    def _normalize_entra_template_redirect_iss(self) -> None:
+        """Rewrite an Entra tenant ``iss`` to the discovered template before the SDK compares it.
+
+        The multi-tenant Entra documents name the ``{tenantid}`` template as their issuer (see
+        ``entra_issuer_template_matches``), while the authorization redirect carries RFC 9207 ``iss``
+        with the concrete tenant endpoint the token will come from — ``.../<tenant-guid>/v2.0`` — so
+        the SDK's simple string comparison rejects the very redirect it asked for (#132730). When the
+        discovered issuer is the template, a redirect ``iss`` naming the same Entra front door and
+        ``/v2.0`` path shape is rewritten to the template value; a different host or path shape, a
+        missing ``iss`` and every other server keep the SDK's strict rule. Wraps once per provider."""
+        if not entra_issuer_template_matches(self.context.oauth_metadata, str(self.context.auth_server_url or "")):
+            return
+        inner = self.context.callback_handler
+        if inner is None or getattr(inner, "_hermes_entra_iss", False):
+            return
+
+        async def _with_template_iss():
+            result = await inner()
+            iss = getattr(result, "iss", None)
+            if iss and _ENTRA_TENANT_ENDPOINT_RE.match(str(iss)):
+                self._hermes_logger.info(
+                    "MCP OAuth: rewriting Entra redirect iss %s to the discovered {tenantid} template %s", iss,
+                    self.context.oauth_metadata.issuer)
+                result = result.model_copy(update={"iss": str(self.context.oauth_metadata.issuer)})
+            return result
+
+        _with_template_iss._hermes_entra_iss = True  # type: ignore[attr-defined]
+        self.context.callback_handler = _with_template_iss
 
     def _tolerate_missing_iss_for_known_server(self) -> None:
         """Figma advertises ``authorization_response_iss_parameter_supported`` and then omits ``iss``
@@ -156,8 +191,10 @@ class HermesProviderMixin:
 
     async def _hermes_accept_origin_issued_metadata(self, response):
         """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
-        it lives under (see ``metadata_issued_by_origin``); the SDK's exact-string check (RFC 8414 §3.3)
-        would reject it and park the connection on an issuer mismatch (Strava, #116233).
+        it lives under (see ``metadata_issued_by_origin``), or the ``{tenantid}`` template of a known
+        Entra multi-tenant endpoint (see ``entra_issuer_template_matches``); the SDK's exact-string
+        check (RFC 8414 §3.3) would reject either and park the connection on an issuer mismatch
+        (Strava, #116233; Sentinel, #132730).
 
         The SDK validates inside its Step 2 loop right after reading the response, so the document is
         installed on the context here and the SDK is handed an empty 204: ``handle_auth_metadata_response``
@@ -183,10 +220,16 @@ class HermesProviderMixin:
         except ValidationError:
             return response
         if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
-            return response
-        self._hermes_logger.info(
-            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
-            "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
+            if not entra_issuer_template_matches(metadata, self.context.auth_server_url):
+                return response
+            self._hermes_logger.info(
+                "MCP OAuth: accepting Entra multi-tenant authorization-server metadata from %s whose issuer %s "
+                "is the {tenantid} template of the advertised server %s", response.url, metadata.issuer,
+                self.context.auth_server_url)
+        else:
+            self._hermes_logger.info(
+                "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
+                "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
         self.context.oauth_metadata = metadata
         return type(response)(204, request=response.request)
 
@@ -549,6 +592,34 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+_ENTRA_MULTI_TENANT_SERVERS = frozenset({
+    "https://login.microsoftonline.com/common/v2.0",
+    "https://login.microsoftonline.com/organizations/v2.0",
+})
+_ENTRA_TENANT_TEMPLATE_ISSUER = "https://login.microsoftonline.com/{tenantid}/v2.0"
+
+
+def entra_issuer_template_matches(metadata: Any, auth_server_url: str | None) -> bool:
+    """Whether *metadata* is the document of a known Entra multi-tenant endpoint whose ``issuer``
+    is the documented ``{tenantid}`` template instead of a concrete identifier.
+
+    Entra's ``/common`` and ``/organizations`` endpoints return
+    ``https://login.microsoftonline.com/{tenantid}/v2.0`` as the issuer of their OIDC metadata — the
+    placeholder is only substituted on the tenant-specific endpoint — so the exact-string comparison
+    of RFC 8414 §3.3 rejects Microsoft-hosted MCP servers (Sentinel, #132730) that advertise one of
+    these authorization servers. The boundary stays as narrow as the document's own claim: the
+    advertised server must be exactly one of the two Entra multi-tenant endpoints, and the issuer
+    must be exactly the template on that same host — ``str(AnyHttpUrl)`` percent-encodes the braces
+    (``%7Btenantid%7D``), so the comparison decodes one level and accepts both spellings. A
+    different host, port, path or placeholder still fails the exact-string check, and whoever can
+    publish the document on ``login.microsoftonline.com`` already controls that origin."""
+    from urllib.parse import unquote
+    if not auth_server_url or str(auth_server_url).rstrip("/") not in _ENTRA_MULTI_TENANT_SERVERS:
+        return False
+    issued = unquote(str(getattr(metadata, "issuer", "") or ""))
+    return issued.rstrip("/") == _ENTRA_TENANT_TEMPLATE_ISSUER
 
 
 def google_offline_access_params(context: Any) -> dict[str, str]:

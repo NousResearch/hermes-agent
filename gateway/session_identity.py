@@ -98,7 +98,7 @@ def clear_identity(source: Any) -> None:
     guild's cached voice source is shared by every speaker, and ``profile_routes[].user_id`` routes
     per speaker). ``source.profile`` is the previous event's routing *result*; left in place it
     short-circuits the route and the new speaker runs as the old one."""
-    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home"):
+    for attr in (_IDENTITY_ATTR, "profile_route_rejected", "_authorization_profile_home", "_rejected_route_profile"):
         with suppress(AttributeError):
             delattr(source, attr)
     with suppress(AttributeError):
@@ -257,6 +257,7 @@ def resolve_identity(
                 else runner._profile_name_for_source(source, adapter_profile=adapter_profile))
         except ProfileRouteRejected as exc:
             source.profile_route_rejected = True
+            source._rejected_route_profile = exc.profile  # a parked target is retried (producer_scope)
             raise IdentityUnresolved(f"{where}: {exc}") from exc
         source.profile = routed or adapter_profile
 

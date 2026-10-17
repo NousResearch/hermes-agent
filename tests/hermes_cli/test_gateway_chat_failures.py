@@ -146,6 +146,19 @@ async def test_finite_exit_code_follows_the_committed_result_not_the_outcome(out
 
 
 @pytest.mark.asyncio
+async def test_textless_oneshot_names_the_failure_on_stderr(capsys):
+    """`-z` exits 1 for a completed turn with no reply text, and says so on stderr as the in-process
+    one-shot did (#139666): a script must not get a silent exit 1."""
+    from hermes_cli.gateway_chat_view import GatewayChatView
+
+    view = GatewayChatView(_SettledPeer("completed", {"completed": True, "final_response": ""}),
+                           {"stored_session_id": "stored"}, quiet=True)
+    view.unattended = True
+    assert await asyncio.wait_for(view.run("query", oneshot=True), 2) == 1
+    assert "hermes -z: no final response was produced" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
 async def test_stream_json_result_record_reports_an_unfinished_turn(capsys):
     """The terminal JSONL ``result`` carries the same non-zero exit for a --max-turns stop, plus the
     committed token counts, and the process exit code matches it."""

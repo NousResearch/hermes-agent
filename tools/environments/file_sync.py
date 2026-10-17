@@ -7,8 +7,10 @@ Docker and Singularity use bind mounts (live host FS view) and don't need this.
 
 import hashlib
 import logging
+import ntpath
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import signal
@@ -126,6 +128,34 @@ def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
         except OSError:
             logger.debug("sync_back: could not remove stale temporary entry %s", candidate)
     return removed
+
+
+def _is_unsafe_member_name(name: str) -> bool:
+    """Absolute, drive-qualified, or ``..``-traversing names under either separator: tar
+    names are POSIX, but Windows extraction also treats ``\\`` as a separator."""
+    if name.startswith(("/", "\\")) or ntpath.splitdrive(name)[0]:
+        return True
+    return ".." in re.split(r"[\\/]", name)
+
+
+def _safe_tar_members(tar: tarfile.TarFile, dest: str) -> list[tarfile.TarInfo]:
+    """Members safe to extract into *dest*: regular files and dirs that resolve inside it.
+
+    The explicit check keeps Python 3.11.0-3.11.3 (no ``filter=``) safe; where the data
+    filter exists it is applied on top.
+    """
+    root = os.path.realpath(dest)
+    members: list[tarfile.TarInfo] = []
+    for member in tar.getmembers():
+        name = member.name
+        target = os.path.realpath(os.path.join(root, name))
+        if _is_unsafe_member_name(name) or os.path.commonpath([root, target]) != root:
+            logger.warning("sync_back: skipping unsafe tar member %s", name)
+        elif not (member.isfile() or member.isdir()):
+            logger.warning("sync_back: skipping unsafe tar member %s (links and special files are not extracted)", name)
+        else:
+            members.append(member)
+    return members
 
 
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
@@ -425,7 +455,8 @@ class FileSyncManager:
 
             with tempfile.TemporaryDirectory(prefix=_sync_back_temp_prefix()) as staging:
                 with tarfile.open(tar_path) as tar:
-                    tar.extractall(staging, filter="data")
+                    extract_kwargs = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+                    tar.extractall(staging, members=_safe_tar_members(tar, staging), **extract_kwargs)
 
                 upload_only = self._upload_only_host_paths | _credential_host_paths()
                 applied = 0

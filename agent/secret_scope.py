@@ -20,7 +20,7 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, NamedTuple, Optional, Tuple
 
-from utils import file_signature
+from utils import file_signature, mtime_is_racy
 
 
 # Process-global (describes the deployment mode, not a per-task value): set once
@@ -307,7 +307,10 @@ def _parse_env_value(raw_value: str) -> str:
 # symlink repointed mid-read can't file one file's contents under another's identity.
 # ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
 # calls it for Hermes's own .env writers.
-_ENV_FILE_CACHE: OrderedDict[str, tuple[tuple, dict[str, str]]] = OrderedDict()
+# A same-size rewrite inside one filesystem timestamp tick (4 ms on coarse-clock kernels, whole
+# seconds on some filesystems) keeps every signature field, so while the mtime is that fresh a
+# signature hit also compares the bytes it was parsed from (``utils.mtime_is_racy``).
+_ENV_FILE_CACHE: OrderedDict[str, tuple[tuple, dict[str, str], bytes]] = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 
@@ -363,15 +366,18 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     try:
         with open(env_path, "rb") as handle:
             fingerprint = file_signature(os.fstat(handle.fileno()))
+            racy = mtime_is_racy(fingerprint[0])
             with _ENV_FILE_CACHE_LOCK:
                 cached = _ENV_FILE_CACHE.get(key)
-                if cached is not None and cached[0] == fingerprint:
+                if cached is not None and cached[0] == fingerprint and not racy:
                     _ENV_FILE_CACHE.move_to_end(key)
                     return dict(cached[1])
             raw = handle.read()
             # Same descriptor: a rewrite that landed between the fstat and the read is parsed but not
             # stored under the pre-write fingerprint.
             settled = file_signature(os.fstat(handle.fileno())) == fingerprint
+            if settled and cached is not None and cached[0] == fingerprint and cached[2] == raw:
+                return dict(cached[1])
     except OSError:
         # Gone or unreadable: drop any entry so a stale map cannot outlive the file.
         invalidate_env_file_cache(env_path)
@@ -380,7 +386,7 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     secrets = _parse_env_text(_decode_env_bytes(raw))
     if settled:
         with _ENV_FILE_CACHE_LOCK:
-            _ENV_FILE_CACHE[key] = (fingerprint, dict(secrets))
+            _ENV_FILE_CACHE[key] = (fingerprint, dict(secrets), raw)
             _ENV_FILE_CACHE.move_to_end(key)
             while len(_ENV_FILE_CACHE) > _ENV_FILE_CACHE_MAX:
                 _ENV_FILE_CACHE.popitem(last=False)

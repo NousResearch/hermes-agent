@@ -10,7 +10,7 @@ import uuid
 
 from gateway.config import Platform
 from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
-from gateway.session_results import admission_result
+from gateway.session_results import admission_result, result_reclaimed
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, _json
 
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
@@ -262,6 +262,8 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
     row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
                         session_id=sid, request_id=request_id, payload=payload,
                         _authorize_write=authority._admission_gate(partial(_admit_target, sid, request_id, payload['api_turn_v1']['settings'])))
+    if row['status'] == 'terminal':
+        yield partial(settled_snapshot, authority, row)
     return authority, ref, row
 
 
@@ -360,7 +362,9 @@ async def run_api_turn(adapter, *, approval_notify_callback=None, approval_sessi
             aliases.pop(approval_session_key)
 
 
-async def observe_api_turn(admitted, **kwargs):
+async def observe_api_turn(admitted, settled=None, **kwargs):
+    """``settled``: the terminal row's result as ``settled_snapshot`` read it at admission; a replay
+    consumes that one snapshot, never a second read a background reclaim pass may have reduced."""
     authority, ref, row = admitted
     from hermes_state_runtime import get_session_admission
     # The admission-time snapshot is stale once a drain already running ahead claims and settles
@@ -370,7 +374,8 @@ async def observe_api_turn(admitted, **kwargs):
     if status == 'unknown':
         raise RuntimeStoreError('unknown_execution')
     if status == 'terminal':
-        result, usage = _settled_api_result(authority, row['admission_id'])
+        result, usage = ((settled['result'], settled['usage']) if settled
+                         else _settled_api_result(authority, row['admission_id']))
         callback = kwargs.get('stream_delta_callback')
         if callback:
             callback(result.get('final_response') or '')
@@ -402,6 +407,17 @@ async def observe_api_turn(admitted, **kwargs):
     return _settled_api_result(authority, row['admission_id'])
 
 
+def settled_snapshot(authority, row):
+    """A terminal row's stored result, read once at admission. Past the retry horizon its transcript
+    copies are gone, so a byte-exact replay (output items, tool events, reasoning) is impossible: the
+    key is spent, as an expired Responses key is, and the retry is refused before any response is
+    prepared. Never re-run, never a partial replay passed off as the original."""
+    saved = admission_result(authority.db, row['admission_id']) if row['status'] == 'terminal' else None
+    if result_reclaimed(saved):
+        raise RuntimeStoreError('admission_conflict', field='result', detail='settled past the retry horizon')
+    return saved
+
+
 def _settled_api_result(authority, admission_id):
     saved = admission_result(authority.db, admission_id)
     if saved is None:
@@ -410,6 +426,9 @@ def _settled_api_result(authority, admission_id):
         if current['outcome'] == 'cancelled':
             return {'final_response': '', 'interrupted': True, 'completed': False}, {}
         raise RuntimeStoreError('unknown_execution')
+    if result_reclaimed(saved):
+        # An observer that admitted before the pass reduced it: the same spent-key answer.
+        raise RuntimeStoreError('admission_conflict', field='result', detail='settled past the retry horizon')
     return saved['result'], saved['usage']
 
 

@@ -108,3 +108,82 @@ def terminal_worker_receipt(db, *, execution_id, session_id, generation, sequenc
         if receipt['result_json'] is None:
             raise RuntimeStoreError('stale_generation')
         return json.loads(receipt['result_json'])
+
+
+# A live session's settled result holds its transcript copies (the turn's messages, tool payloads,
+# reasoning, the user row as the model saw it, a second copy of the reply) only while an exact retry
+# may replay them (``RETRY_HORIZON_S``). After that a completed turn keeps its one reply
+# (``final_response``), its outcome flags, failure fields and accounting, and is marked
+# ``reclaimed_at``. A failed, interrupted or partial turn and a cron run stay whole: they are rare.
+# The stamp key carries the expiry, so a batch is one key-range scan. A deleted session's results
+# age with its tombstones.
+HORIZON_PREFIX = 'gateway.admission.result_horizon.v2.'
+_BACKFILL_KEY = 'gateway.admission.result_horizon.backfill.v2'
+# The end of the result key range: a bounded scan, never from the prefix start (``backfill``).
+_RESULT_END = RESULT_PREFIX[:-1] + chr(ord(RESULT_PREFIX[-1]) + 1)
+
+
+def _horizon_key(admission_id, expires_at):
+    return f'{HORIZON_PREFIX}{int(expires_at):012d}:{admission_id}'
+
+
+def _reducible(value):
+    result = value.get('result')
+    return (isinstance(result, dict) and result.get('completed') is not False and 'cron_result' not in result
+            and not any(result.get(flag) for flag in ('failed', 'interrupted', 'partial')))
+
+
+def stamp_result_horizon(conn, admission_id, outcome, value):
+    """In the settlement transaction: a reducible result's retry horizon starts now."""
+    import time
+    from hermes_state_mutation_retirement import RETRY_HORIZON_S
+    if outcome == 'completed' and _reducible(value):
+        conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
+                     (_horizon_key(admission_id, time.time() + RETRY_HORIZON_S), '1'))
+
+
+def backfill_result_horizon(conn, *, now, limit):
+    """Stamp up to *limit* results settled before horizon stamps existed, in key order, from *now*: an
+    upgrade never reduces anything at once. Returns the rows read; fewer than *limit* means done."""
+    from hermes_state_mutation_retirement import RETRY_HORIZON_S
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (_BACKFILL_KEY,)).fetchone()
+    after = json.loads(saved[0]) if saved else ''
+    if after is None:
+        return 0
+    rows = conn.execute('SELECT key, value FROM state_meta WHERE key > ? AND key < ? AND json_valid(value) '
+                        'ORDER BY key LIMIT ?', (RESULT_PREFIX + after, _RESULT_END, limit)).fetchall()
+    for key, raw in rows:
+        admission_id = key[len(RESULT_PREFIX):]
+        value = json.loads(raw)
+        # A result settled since the upgrade already has its own stamp; a second one only finds it reduced.
+        if (conn.execute("SELECT 1 FROM session_admissions WHERE admission_id=? AND status='terminal' "
+                         "AND outcome='completed'", (admission_id,)).fetchone()
+                and 'reclaimed_at' not in value and _reducible(value)):
+            conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
+                         (_horizon_key(admission_id, now + RETRY_HORIZON_S), '1'))
+    cursor = rows[-1][0][len(RESULT_PREFIX):] if len(rows) == limit else None
+    conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (_BACKFILL_KEY, json.dumps(cursor)))
+    return len(rows)
+
+
+def reclaim_settled_results(conn, *, now, limit):
+    """Reduce the results of up to *limit* expired horizon stamps: a key-range scan that examines at
+    most *limit* stamps. Returns the stamps consumed; fewer than *limit* means none are left. A result
+    whose admission left the live ledger (its session was deleted) is left to its tombstone."""
+    from hermes_state_mutation_retirement import _TRANSCRIPT_FIELDS
+    stamps = conn.execute('SELECT key FROM state_meta WHERE key > ? AND key < ? ORDER BY key LIMIT ?',
+                          (HORIZON_PREFIX, f'{HORIZON_PREFIX}{int(now):012d}', limit)).fetchall()
+    for (stamp,) in stamps:
+        admission_id = stamp.split(':', 1)[1]
+        conn.execute('DELETE FROM state_meta WHERE key=?', (stamp,))
+        if not conn.execute("SELECT 1 FROM session_admissions WHERE admission_id=? AND status='terminal' "
+                            "AND outcome='completed'", (admission_id,)).fetchone():
+            continue
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=? AND json_valid(value)',
+                             (RESULT_PREFIX + admission_id,)).fetchone()
+        value = json.loads(saved[0]) if saved else {}
+        if 'reclaimed_at' not in value and _reducible(value):
+            result = {k: v for k, v in value['result'].items() if k not in _TRANSCRIPT_FIELDS}
+            conn.execute('UPDATE state_meta SET value=? WHERE key=?',
+                         (_json({**value, 'result': result, 'reclaimed_at': now}), RESULT_PREFIX + admission_id))
+    return len(stamps)

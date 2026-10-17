@@ -31397,7 +31397,7 @@
       },
       "PromptReceiptResult": {
         "additionalProperties": false,
-        "description": "``result`` / ``usage``: the structured turn result committed at settlement, only with\n``include_result`` on a terminal admission that saved one.",
+        "description": "``result`` / ``usage``: the structured turn result committed at settlement, only with\n``include_result`` on a terminal admission that saved one. ``result_reclaimed``: true once that\nresult passed the exact-retry horizon; its reply, outcome and accounting stand, its transcript\ncopies (``messages``, reasoning, tool payloads) are gone.",
         "properties": {
           "admission_id": {
             "title": "Admission Id",
@@ -31468,6 +31468,18 @@
             ],
             "default": null,
             "title": "Usage"
+          },
+          "result_reclaimed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Result Reclaimed"
           }
         },
         "required": [

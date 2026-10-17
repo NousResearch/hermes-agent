@@ -1,6 +1,8 @@
 """Exact execution results commit with settlement, before delivery/publication."""
 import json
+import time
 from contextvars import ContextVar
+from functools import partial
 
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_session_input
 
@@ -97,6 +99,51 @@ def admission_result(db, admission_id):
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_RESULT_PREFIX + admission_id,)).fetchone()
         return json.loads(saved[0]) if saved else None
+
+
+def result_reclaimed(saved):
+    """A completed turn's result past the retry horizon (``reclaim_settled_results``): its reply,
+    outcome and accounting stand, its transcript copies are gone. ``prompt.receipt`` and the runs
+    projection say so (``result_reclaimed``); only a byte-exact API replay needs what was dropped."""
+    return isinstance(saved, dict) and 'reclaimed_at' in saved
+
+
+_RECLAIM_INTERVAL_S = 3600
+# Rows per write transaction and transactions per pass: a burst of week-old turns, or the first pass
+# after an upgrade, is spread over the hourly passes instead of holding the writer.
+_RECLAIM_BATCH = 200
+_RECLAIM_BATCHES = 25
+_last_reclaim: dict[str, float] = {}
+
+
+def schedule_result_reclaim(authority):
+    """After a settlement, at most hourly per store: the reclaim pass as tracked background work that
+    the drain never awaits (retirement still joins it)."""
+    now = time.time()
+    if now - _last_reclaim.get(authority.db.db_path, 0) < _RECLAIM_INTERVAL_S:
+        return None
+    _last_reclaim[authority.db.db_path] = now
+    from gateway.session_runtime_workers import track_mutation
+    return track_mutation(authority, reclaim_expired_results(authority))
+
+
+async def reclaim_expired_results(authority):
+    """Stamp results settled before horizon stamps existed, then reduce those past the retry horizon,
+    one bounded write transaction per batch off the owner loop. Stops when the owner drains."""
+    import asyncio
+    import hermes_state_terminal as terminal
+    budget = _RECLAIM_BATCHES
+    try:
+        for step in (terminal.backfill_result_horizon, terminal.reclaim_settled_results):
+            while budget and not (authority.retiring or authority.runner._draining):
+                done = await asyncio.to_thread(authority.db._execute_write,
+                                               partial(step, now=time.time(), limit=_RECLAIM_BATCH))
+                budget -= bool(done)
+                if done < _RECLAIM_BATCH:
+                    break
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('Reclaiming settled results past the retry horizon failed')
 
 
 def close_discarded_turn(db, conn, row):

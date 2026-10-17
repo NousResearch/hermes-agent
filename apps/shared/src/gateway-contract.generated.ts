@@ -4512,7 +4512,7 @@ export interface PromptReceiptParams {
   admission_id: string
   include_result?: boolean | null
 }
-/** ``result`` / ``usage``: the structured turn result committed at settlement, only with ``include_result`` on a terminal admission that saved one. */
+/** ``result`` / ``usage``: the structured turn result committed at settlement, only with ``include_result`` on a terminal admission that saved one. ``result_reclaimed``: true once that result passed the exact-retry horizon; its reply, outcome and accounting stand, its transcript copies (``messages``, reasoning, tool payloads) are gone. */
 export interface PromptReceiptResult {
   admission_id: string
   ref: CanonicalSessionRef
@@ -4523,6 +4523,7 @@ export interface PromptReceiptResult {
   execution_generation: number | null
   result?: unknown | null
   usage?: Record<string, unknown> | null
+  result_reclaimed?: boolean | null
 }
 export interface CanonicalSessionRef {
   profile_id: string

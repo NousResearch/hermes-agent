@@ -647,11 +647,13 @@ class AuthorityConnection:
             # The exact structured result the turn committed with settlement (`finish_result`):
             # a finite viewer reads its ledger (tokens, cost, model, exit reason) from here, the same
             # dict the in-process one-shot wrote from `run_conversation`.
-            from gateway.session_results import admission_result
+            from gateway.session_results import admission_result, result_reclaimed
             saved = admission_result(self.authority.db, receipt.admission_id)
             if saved is not None:
                 out['result'] = saved['result']
                 out['usage'] = saved.get('usage') or {}
+                if result_reclaimed(saved):
+                    out['result_reclaimed'] = True  # the reply stands; the transcript copies are gone
         return out
 
     async def cancel(self, ref, params):

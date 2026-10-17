@@ -141,7 +141,7 @@ async def settle_with_retry(authority, live, ref, row, response, outcome, captur
     from gateway.session_runtime_workers import track_mutation
     for delay in (*_SETTLE_RETRY_DELAYS_S, None):
         try:
-            return await asyncio.shield(track_mutation(authority, asyncio.to_thread(
+            await asyncio.shield(track_mutation(authority, asyncio.to_thread(
                 commit_and_publish, authority, live, ref, row, response, outcome, captured, settlement)))
         except (OSError, sqlite3.Error) as exc:
             if delay is None or 'settled' in settlement:
@@ -149,6 +149,11 @@ async def settle_with_retry(authority, live, ref, row, response, outcome, captur
             logger.warning('Settlement of admission %s deferred by storage (%r); retrying in %.1fs',
                            row['admission_id'], exc, delay)
             await asyncio.sleep(delay)
+        else:
+            # Results past the retry horizon: background maintenance the drain never waits for.
+            from gateway.session_results import schedule_result_reclaim
+            schedule_result_reclaim(authority)
+            return
 
 
 def publish_terminal(authority, ref, row, settled, response, captured):

@@ -45,10 +45,13 @@ class PromptReceiptParams(Params):
 
 class PromptReceiptResult(AdmissionStatus):
     """``result`` / ``usage``: the structured turn result committed at settlement, only with
-    ``include_result`` on a terminal admission that saved one."""
+    ``include_result`` on a terminal admission that saved one. ``result_reclaimed``: true once that
+    result passed the exact-retry horizon; its reply, outcome and accounting stand, its transcript
+    copies (``messages``, reasoning, tool payloads) are gone."""
 
     result: JsonValue | None = None
     usage: dict[str, JsonValue] | None = None
+    result_reclaimed: bool | None = None
 
 
 canonical_method("prompt.receipt", params=PromptReceiptParams, result=PromptReceiptResult,

@@ -70,15 +70,18 @@ def find_admission(adapter, durable_key, request_id):
 
 
 def admitted_context(admitted, *, replay=False):
-    from gateway.session_api_turn import observe_api_turn
-    _, ref, row = admitted
+    from gateway.session_api_turn import observe_api_turn, settled_snapshot
+    authority, ref, row = admitted
+    # Before any response is prepared: an expired retry is refused here, and a replay streams the one
+    # snapshot read now, so a reclaim pass cannot turn it into a failure over the original response.
+    settled = settled_snapshot(authority, row)
     payload = row['payload']
     data = payload.get('api_turn_v1', {})
     from gateway.session_api_media import rehydrate_api_images
     return dict(session_id=ref.session_id, user_message=rehydrate_api_images(payload.get('text', ''), data.get('media')),
                 conversation_history=data.get('history') or [],
                 instructions=data.get('settings', {}).get('ephemeral_system_prompt'),
-                run_kwargs={}, run_agent=partial(observe_api_turn, admitted),
+                run_kwargs={}, run_agent=partial(observe_api_turn, admitted, settled=settled),
                 terminal_replay=replay or row['status'] == 'terminal')
 
 

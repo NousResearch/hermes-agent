@@ -91,6 +91,12 @@ def _settled(record):
     return record is not None and record.get('response') is not None
 
 
+def _replaceable(snapshot):
+    """A stored response snapshot a committed result may supersede: none yet, or any that is not
+    ``completed`` (written before the outcome, after the client left, or by an observer failure)."""
+    return snapshot is None or (snapshot.get('response') or {}).get('status') != 'completed'
+
+
 def _responses_fingerprint_keys(body):
     """``truncation`` joins the fingerprint only when sent, so an exact retry of a request
     recorded before it was fingerprinted keeps matching its stored key."""
@@ -344,13 +350,23 @@ class _ResponsesStream:
     def _history_with_user(self) -> list[dict[str, Any]]:
         return list(self.conversation_history) + [{"role": "user", "content": self.user_message}]
 
-    def persist_snapshot(self, response_env: dict[str, Any], *, history=None, session_id=None):
+    def persist_snapshot(self, response_env: dict[str, Any], *, history=None, session_id=None, committed=False):
+        """``committed``: the envelope projects the admission's committed result (``emit_completed``)."""
         if not self.store:
             return
         if self.durable_key and _settled(self.response_store.get(self.durable_key[0])):
             return  # A concurrent observer already committed the exact terminal envelope.
         advance_conversation = self.conversation and (not self.terminal_replay
             or self.response_store.get_conversation(self.conversation) in (None, self.response_id))
+        if self.terminal_replay:
+            existing = self.response_store.get(self.response_id)
+            if not (committed and _replaceable(existing)):
+                # A replay of the committed result may supersede any snapshot but a completed one; its
+                # own failure or disconnect never replaces the response it replays. Either way it still
+                # restores an evicted conversation pointer to the snapshot that stands.
+                if advance_conversation and existing is not None:
+                    self.response_store.set_conversation(self.conversation, self.response_id)
+                return
         self.response_store.put(self.response_id, {
             "response": response_env,
             "conversation_history": self._history_with_user() if history is None else history,
@@ -632,7 +648,7 @@ class _ResponsesStream:
         # a compression-rotated session_id is propagated so chaining resumes the child session.
         sid = result.get("session_id") if isinstance(result, dict) else None
         self.persist_snapshot(
-            env, history=full_history, session_id=sid if isinstance(sid, str) and sid else None)
+            env, history=full_history, session_id=sid if isinstance(sid, str) and sid else None, committed=True)
         self.terminal_snapshot_persisted = True
         if self.durable_key:
             headers = {k: v for k, v in self.response.headers.items() if k.startswith('X-Hermes-')}

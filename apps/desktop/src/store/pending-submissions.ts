@@ -217,6 +217,9 @@ function projectQueue(
   admissionByInput: Map<string, string>,
   stillPending: Set<string>
 ): QueuedPromptEntry[] {
+  // The owner lists its admissions in FIFO order: a card it lists is shown in that order, so an
+  // admission back in its queue place (a steer that never reached the turn) is not shown last.
+  const order = new Map([...receipts.keys()].map((id, index) => [id, index]))
   const next: QueuedPromptEntry[] = []
 
   for (const entry of current) {
@@ -246,6 +249,19 @@ function projectQueue(
       })
     }
   }
+
+  return inOwnerOrder(next, order)
+}
+
+/** Listed cards take the owner's order among the slots they hold; every other card keeps its slot. */
+function inOwnerOrder(entries: QueuedPromptEntry[], order: Map<string, number>): QueuedPromptEntry[] {
+  const slots = entries.flatMap((entry, index) => (order.has(entry.id) ? [index] : []))
+  const listed = slots.map(index => entries[index]).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+  const next = [...entries]
+
+  slots.forEach((slot, index) => {
+    next[slot] = listed[index]
+  })
 
   return next
 }

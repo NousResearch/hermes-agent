@@ -1938,7 +1938,15 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
         return False
     until = pool.next_available_at(model=fb_model)
-    return until is None or until - time.time() > 600
+    if until is None:
+        # ``None`` is next_available_at's "no wait information", not "exhausted": an entry the
+        # availability scan never counts (a Vertex service-account key file has no runtime
+        # API key to lease) leaves the pool with nothing to wait for, and treating that as a
+        # cooldown skips every same-provider fallback (#140568). Only a pool nothing can ever
+        # re-enter rotation from stays skipped.
+        from agent.credential_pool import STATUS_DEAD
+        return all(entry.last_status == STATUS_DEAD for entry in pool.entries())
+    return until - time.time() > 600
 
 
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:

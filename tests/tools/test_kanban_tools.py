@@ -1323,6 +1323,47 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
 # ---------------------------------------------------------------------------
 
 
+def test_attach_path_is_byte_exact_for_large_binary(worker_env, tmp_path):
+    """path= attaches binary byte-exact well past the size where
+    model-produced base64 corrupts."""
+    import hashlib
+    import os
+    from pathlib import Path
+    from tools import kanban_tools as kt
+
+    src = tmp_path / "evidence.zip"
+    payload = os.urandom(200_000)
+    src.write_bytes(payload)
+    d = json.loads(kt._handle_attach({"path": str(src)}))
+    assert "error" not in d, d
+    assert d["size"] == len(payload)
+    listed = json.loads(kt._handle_attachments({}))
+    att = next(a for a in listed["attachments"] if a["id"] == d["attachment_id"])
+    assert att["filename"] == "evidence.zip"
+    stored = Path(att["stored_path"]).read_bytes()
+    assert hashlib.sha256(stored).digest() == hashlib.sha256(payload).digest()
+
+
+def test_attach_rejects_both_or_neither_and_bad_paths(worker_env, tmp_path):
+    from tools import kanban_tools as kt
+
+    assert "error" in json.loads(kt._handle_attach({"filename": "x.txt"}))
+    f = tmp_path / "a.txt"
+    f.write_text("hi")
+    both = json.loads(kt._handle_attach({"path": str(f), "content_base64": "aGk=", "filename": "a.txt"}))
+    assert "error" in both
+    assert "error" in json.loads(kt._handle_attach({"path": "relative/a.txt"}))
+    assert "error" in json.loads(kt._handle_attach({"path": str(tmp_path / "missing.bin")}))
+
+
+def test_attach_base64_fallback_still_works(worker_env):
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_attach({"filename": "n.txt", "content_base64": "aGVsbG8="}))
+    assert "error" not in d, d
+    assert d["size"] == 5
+
+
 def test_attach_url_rejects_non_http_scheme(worker_env):
     from tools import kanban_tools as kt
 

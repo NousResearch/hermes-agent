@@ -459,6 +459,8 @@ class HermesProviderMixin:
                     "Recovered a peer-rotated refresh token instead of clearing the session"
                 )
                 return True
+            if await _is_invalid_grant(response):
+                self._hermes_discard_rejected_grant()
             self.context.clear_tokens()
             return False
         from httpx import HTTPError
@@ -513,6 +515,23 @@ class HermesProviderMixin:
         self.context.current_tokens = previous_tokens
         self.context.update_token_expiry(previous_tokens)
         return False
+
+    def _hermes_discard_rejected_grant(self) -> bool:
+        """Remove the rejected pair from disk; the SDK re-runs ``_initialize`` after a failed refresh,
+        so otherwise this provider and every later process replay it on each reconnect. Runs under the
+        refresh fence, so no fenced peer can rotate the file between the check and the delete."""
+        from tools.mcp_oauth import HermesTokenStorage
+        storage = self.context.storage
+        rejected = getattr(self.context.current_tokens, "refresh_token", None)
+        return isinstance(storage, HermesTokenStorage) and storage.discard_rejected_tokens(rejected)
+
+
+async def _is_invalid_grant(response) -> bool:
+    """RFC 6749 §5.2 ``invalid_grant``: the refresh token itself is invalid, expired or revoked. A 429,
+    5xx, WAF 403 or ``invalid_client`` says nothing about the grant, so it must survive those."""
+    if response.status_code not in (400, 401):
+        return False
+    return re.search(rb"\binvalid_grant\b", await response.aread()) is not None
 
 
 def _metadata_issuer(context: Any) -> str | None:

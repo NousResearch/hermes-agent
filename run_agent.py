@@ -1027,6 +1027,20 @@ class AIAgent(
         results paired with an earlier assistant Todo-tool call count — a forged bare ``role: tool`` message
         must not seed the store (GHSA-5g4g-6jrg-mw3g)."""
         found = self._latest_todo_response(history)
+        if found is None and self.session_id:
+            # A branch's copied history is the visible projection (no tool rows); the persisted latest
+            # result - which itself falls back to the branch parent (#136606) - keeps the seeded list on
+            # a cold-resumed branch. get_latest_todo_result enforces the same pairing rule as the history
+            # scan above (GHSA-5g4g-6jrg-mw3g), so a forged bare tool row cannot seed the store either.
+            db = self._get_session_db_for_recall()
+            content = db.get_latest_todo_result(self.session_id) if db is not None else None
+            if content:
+                try:
+                    data = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    data = None
+                if isinstance(data, dict) and isinstance(data.get("todos"), list):
+                    found = (data["todos"], data.get("revision", 1))
         if found is not None:
             last_todo_response, last_todo_revision = found
             # Restore only when history carries a newer revision than the store holds; empty lists are an

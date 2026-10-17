@@ -211,3 +211,47 @@ def test_subagent_lifecycle_bypasses_tool_progress_off(monkeypatch):
     )
 
     assert events == ["subagent.start"]
+
+
+def test_branch_child_falls_back_to_parents_pre_branch_todo(tmp_path):
+    """A cold-resumed branch keeps the seeded list: the branch parent supplies the todo
+    snapshot when the child's copied (tool-row-free) history has none of its own (#136606).
+    Parent writes after the branch point must not leak; the child's own result always wins."""
+    import time
+
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    pre = {"todos": [{"id": "a", "content": "Pre-branch plan", "status": "in_progress"}], "revision": 4}
+    post = {"todos": [{"id": "b", "content": "Post-branch parent plan", "status": "pending"}], "revision": 5}
+    own = {"todos": [{"id": "c", "content": "Child plan", "status": "pending"}], "revision": 6}
+    try:
+        db.create_session("bp", source="desktop")
+        db.append_message("bp", "assistant", "", tool_calls=[
+            {"id": "bp-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
+        ])
+        db.append_message("bp", "tool", json.dumps(pre), tool_call_id="bp-call", tool_name="todo_list")
+        time.sleep(0.02)
+        db.create_session("bc", source="desktop", parent_session_id="bp",
+                          model_config={"_branched_from": "bp"})
+        # The branch copied only visible rows - no todo tool rows of its own.
+        db.append_message("bc", "user", "branch says hi")
+        time.sleep(0.02)
+
+        assert json.loads(db.get_latest_todo_result("bc")) == pre
+
+        # Parent work after the branch point stays the parent's.
+        db.append_message("bp", "assistant", "", tool_calls=[
+            {"id": "bp-new", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
+        ])
+        db.append_message("bp", "tool", json.dumps(post), tool_call_id="bp-new", tool_name="todo_list")
+        assert json.loads(db.get_latest_todo_result("bc")) == pre
+
+        # The child's own todo result always wins.
+        db.append_message("bc", "assistant", "", tool_calls=[
+            {"id": "bc-call", "type": "function", "function": {"name": "todo_list", "arguments": "{}"}},
+        ])
+        db.append_message("bc", "tool", json.dumps(own), tool_call_id="bc-call", tool_name="todo_list")
+        assert json.loads(db.get_latest_todo_result("bc")) == own
+    finally:
+        db.close()

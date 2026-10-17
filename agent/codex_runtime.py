@@ -200,6 +200,9 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
             set_usage_anchor(agent, anchor)
     for key, value in usage_dict.items():
         setattr(agent, f"session_{key}", getattr(agent, f"session_{key}") + value)
+    # Codex app-server turns bypass conversation_loop's sibling assignment.
+    # Preserve the same canonical usage for turn_finalizer's context-engine hook.
+    agent._last_turn_usage = dict(usage_dict)
     cost_result = estimate_usage_cost(
         agent.model, canonical_usage, provider=agent.provider, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
     )

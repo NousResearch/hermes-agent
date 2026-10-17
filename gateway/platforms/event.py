@@ -110,6 +110,9 @@ class MessageEvent:
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # ``pre_gateway_dispatch`` was already offered this message. Sticky so the lanes an event can
+    # pass through (the adapter's busy path, then its queued turn's dispatch) offer it exactly once.
+    _pre_dispatch_hook_done: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
 

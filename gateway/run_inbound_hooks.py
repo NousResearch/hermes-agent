@@ -71,10 +71,16 @@ class GatewayInboundHooksMixin:
 
         Once per inbound message, at ingress (here, or ``admit_producer`` for webhook/relay), never
         while an admitted row EXECUTES: a messaging turn already passed it before its commit, and a
-        local CLI/TUI/Desktop turn never fired it on main, so a skip must not drop committed input."""
+        local CLI/TUI/Desktop turn never fired it on main, so a skip must not drop committed input.
+        The busy path (``run_busy._handle_active_session_busy_message``) offers it too, which is why
+        the answer is sticky on the event: a follow-up offered there and then queued through the
+        adapter must not be offered again when its own turn is dispatched (#140442)."""
         from gateway.session_ingress import executing_admission
         if executing_admission.get():
             return event
+        if getattr(event, "_pre_dispatch_hook_done", False):
+            return event
+        event._pre_dispatch_hook_done = True
         try:
             from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
             _hook_results = await _ainvoke_hook(
@@ -103,6 +109,7 @@ class GatewayInboundHooksMixin:
                     from gateway.session_ingress_context import carry_callback
                     rewritten = dataclasses.replace(event, text=_new_text)
                     carry_callback(event, rewritten)
+                    rewritten._pre_dispatch_hook_done = True  # replace() re-defaults init=False fields
                     event = rewritten
                 break
             if _action == "allow":

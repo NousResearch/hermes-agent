@@ -1599,6 +1599,12 @@ def _resume_paused_set(token: dict) -> None:
     attempt(lambda: _resume_windows_services(token))
     profiles = dict(token.get("profiles") or {})
     unmapped = list(token.get("unmapped") or [])
+    # The fleet restart already armed ``gateway run --replace`` for these
+    # profiles (#126821): a second resume launch kills that process, and
+    # relaunching them here would double-report an externally supervised
+    # profile as relaunched in the restart receipt.
+    fleet_relaunched = {str(name) for name in (token.get("fleet_relaunched") or [])}
+    profiles = {p: pid for p, pid in profiles.items() if str(p) not in fleet_relaunched}
     if profiles or any(u.get("argv") for u in unmapped):
         launched, launched_unmapped = _relaunch_paused_gateways(profiles, unmapped)
         if launched or launched_unmapped:
@@ -1628,6 +1634,15 @@ def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume,
     """Resume gateways paused for a Windows update and fold the token into ``outcome``'s systemd/launchd-style
     bookkeeping so reconciliation never reports a healthy gateway as unaccounted. Must never abort the update."""
     from hermes_cli.update_cmd import _m
+    if isinstance(_windows_gateway_resume, dict):
+        # The fleet fills exactly one of the two lists per PID: an
+        # external-supervisor restart never touches ``relaunched_profiles``,
+        # and missing it arms a second ``--replace`` that kills the first (#126821).
+        already = [str(name) for name in
+                   ((getattr(outcome, "relaunched_profiles", None) or [])
+                    + (getattr(outcome, "externally_supervised_profiles", None) or []))]
+        if already:
+            _windows_gateway_resume["fleet_relaunched"] = already
     try:
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
     except Exception as _windows_resume_exc:

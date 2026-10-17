@@ -54,6 +54,18 @@ describe('transcript tail cache', () => {
     expect(loaded?.[7].id).toBe('h39')
   })
 
+  it('keeps the largest complete suffix when fewer than eight heavy messages fit', () => {
+    // The old fixed 8-message retry discarded this otherwise cacheable tail:
+    // 3 x 100KB is oversized, while the newest 2 messages fit under the cap.
+    const heavy = Array.from({ length: 3 }, (_, index) => msg(`short-heavy-${index}`, 100_000))
+    saveTranscriptTail('sess-short-heavy', heavy)
+
+    const loaded = loadTranscriptTail('sess-short-heavy')
+
+    expect(loaded).toHaveLength(2)
+    expect(loaded?.map(message => message.id)).toEqual(['short-heavy-1', 'short-heavy-2'])
+  })
+
   it('ignores empty saves and blank ids', () => {
     saveTranscriptTail('', [msg('1')])
     saveTranscriptTail('sess-empty', [])

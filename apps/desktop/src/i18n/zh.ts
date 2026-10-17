@@ -5,6 +5,7 @@ import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhDelegationFieldLabels } from './zh_delegation_fields'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
@@ -1060,14 +1061,7 @@ export const zhOverrides = {
           timeout: '压缩模型超时（秒）'
         }
       },
-      delegation: {
-        model: '子智能体模型',
-        provider: '子智能体提供方',
-        maxIterations: '子智能体轮次上限',
-        maxConcurrentChildren: '并行子智能体',
-        childTimeoutSeconds: '子智能体超时',
-        reasoningEffort: '子智能体推理强度'
-      },
+      delegation: zhDelegationFieldLabels,
       updates: {
         nonInteractiveLocalChanges: '应用内更新本地更改'
       }

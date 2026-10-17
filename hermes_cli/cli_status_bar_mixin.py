@@ -193,7 +193,12 @@ class CLIStatusBarMixin:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
         # Prefer the agent's model name — it updates on fallback; self.model never changes.
-        model_name = (getattr(agent, "model", None) or self.model or t("cli.shared.unknown"))
+        from hermes_cli.status_report import resolve_display_identity
+
+        model_name, provider_id = resolve_display_identity(
+            agent=agent, configured_model=self.model,
+            configured_provider=getattr(self, "provider", None))
+        model_name = model_name or t("cli.shared.unknown")
         # Friendly display: reverse-alias from config ``model_aliases:`` first (turns long
         # Palantir RIDs into the user's short name), else slash/length truncation.
         model_short = _reverse_alias_for_display(model_name)
@@ -205,6 +210,8 @@ class CLIStatusBarMixin:
         model_short = model_short.removesuffix(".gguf")
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
+        if len(provider_id) > 20:
+            provider_id = f"{provider_id[:17]}..."
 
         prompt_start = getattr(self, "_prompt_start_time", None)
         turn_live = prompt_start is not None
@@ -212,6 +219,7 @@ class CLIStatusBarMixin:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "provider": provider_id,
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -989,9 +997,9 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
-        prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
+        Fields: model, provider, context_detail, context_pct, cache_hit, latency, tps,
+        compressions, bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only),
+        duration, prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
         (opt-in only). Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
@@ -1016,6 +1024,7 @@ class CLIStatusBarMixin:
         the two can never drift; ``styled`` selects the graphical context bar."""
         from cli import format_token_count_compact
         model_short = snapshot["model_short"]
+        provider_id = snapshot.get("provider") or ""
         duration_label = snapshot["duration"]
         goal_segment = self._status_bar_goal_segment(snapshot)
         focus_label = snapshot.get("focus_label") or ""
@@ -1039,6 +1048,8 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"☤ {model_short}")])
+            if provider_id and _ok("provider"):
+                segs[-1].append((_DIM, f" via {provider_id}"))
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

@@ -973,7 +973,8 @@ DEFAULT_CONFIG = {
         },
         # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
         # config controls visibility not ordering); empty = default set. Available: model,
-        # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
+        # provider (routing provider for the active model), context_detail, context_pct,
+        # cache_hit, latency, tps, compressions, bg_tasks,
         # bg_processes, bg_subagents, goal, git_branch (⎇ current branch, opt-in only), duration,
         # prompt_elapsed, idle_since, focus, yolo,
         # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop

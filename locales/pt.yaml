@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "Barra de status oculta"
   exit:
     unknown_argument: "✗ Argumento desconhecido: {argument}. Use /exit --delete para remover também o histórico da sessão."
+  leave:
+    usage: "Uso: /leave [--stop]"
+    interrupted_checking: "⚡ Turno atual interrompido. Verificando o estado de saída segura…"
+    agent_running: "o turno atual do agente ainda está a terminar"
+    processes_running: "{count} processo(s) em segundo plano em execução"
+    delegations_running: "{count} delegação(ões) em segundo plano em execução"
+    pending_memory: "{count} escrita(s) de memória pendente(s)"
+    pending_skills: "{count} escrita(s) de competência pendente(s)"
+    interrupted_previous: "o turno anterior da CLI foi interrompido"
+    no_pending_work: "✓ Nenhum trabalho em execução ou pendente detetado. Usa /leave para sair em segurança."
+    unfinished_detected: "⚠ Trabalho inacabado detetado:"
+    recheck_hint: "Usa /leave para verificar novamente, ou /leave --stop para parar o trabalho em segundo plano."
+    durable_note: "Estes registos são duradouros e permanecerão disponíveis após a saída. Consulta-os na próxima sessão se necessário."
+    safe_exiting: "✓ Seguro sair. A encerrar o Hermes…"
+    previous_turn_warning: "⚠ O turno anterior foi interrompido{suffix}. Verifica as escritas pendentes antes de continuar."
   goal:
     barrier_lifted: "▶ Barreira do objetivo removida — retomando."
     paused_interrupted: "⏸ Objetivo pausado — o turno foi interrompido. Use /goal resume para continuar ou /goal clear para parar."

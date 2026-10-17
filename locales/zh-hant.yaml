@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "狀態列已隱藏"
   exit:
     unknown_argument: "✗ 未知參數：{argument}。使用 /exit --delete 可同時刪除工作階段歷史。"
+  leave:
+    usage: "用法：/leave [--stop]"
+    interrupted_checking: "⚡ 目前回合已中斷。正在檢查安全離開狀態…"
+    agent_running: "目前代理回合仍在收尾"
+    processes_running: "{count} 個背景程序執行中"
+    delegations_running: "{count} 個背景委派任務執行中"
+    pending_memory: "{count} 條待寫入記憶"
+    pending_skills: "{count} 條待寫入技能"
+    interrupted_previous: "上一個 CLI 回合被中斷"
+    no_pending_work: "✓ 未偵測到執行中或待處理的工作。使用 /leave 可安全離開。"
+    unfinished_detected: "⚠ 偵測到未完成的工作："
+    recheck_hint: "使用 /leave 重新檢查，或 /leave --stop 停止背景工作。"
+    durable_note: "這些記錄是持久化的，離開後仍可存取。如有需要，可在下次工作階段中查看。"
+    safe_exiting: "✓ 可以安全離開。正在結束 Hermes…"
+    previous_turn_warning: "⚠ 上一個回合被中斷{suffix}。繼續前請檢查待處理的寫入。"
   goal:
     barrier_lifted: "▶ 目標屏障已解除 — 正在恢復。"
     paused_interrupted: "⏸ 目標已暫停 — 回合被中斷。使用 /goal resume 繼續，或 /goal clear 停止。"

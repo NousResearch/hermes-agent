@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "Statusleiste ausgeblendet"
   exit:
     unknown_argument: "✗ Unbekanntes Argument: {argument}. Verwenden Sie /exit --delete, um auch den Sitzungsverlauf zu entfernen."
+  leave:
+    usage: "Verwendung: /leave [--stop]"
+    interrupted_checking: "⚡ Aktueller Durchlauf unterbrochen. Status für sicheres Verlassen wird geprüft…"
+    agent_running: "der aktuelle Agent-Durchlauf läuft noch aus"
+    processes_running: "{count} Hintergrundprozess(e) aktiv"
+    delegations_running: "{count} Hintergrund-Delegation(en) aktiv"
+    pending_memory: "{count} ausstehende Speicher-Schreibvorgänge"
+    pending_skills: "{count} ausstehende Skill-Schreibvorgänge"
+    interrupted_previous: "der vorherige CLI-Durchlauf wurde unterbrochen"
+    no_pending_work: "✓ Keine laufenden oder ausstehenden Arbeiten erkannt. Verwende /leave zum sicheren Beenden."
+    unfinished_detected: "⚠ Unfertige Arbeiten erkannt:"
+    recheck_hint: "Verwende /leave zum erneuten Prüfen oder /leave --stop, um Hintergrundarbeiten zu stoppen."
+    durable_note: "Diese Einträge sind dauerhaft gespeichert und bleiben nach dem Beenden verfügbar. Bei Bedarf in der nächsten Sitzung prüfen."
+    safe_exiting: "✓ Sicher zu verlassen. Hermes wird beendet…"
+    previous_turn_warning: "⚠ Der vorherige Durchlauf wurde unterbrochen{suffix}. Prüfe ausstehende Schreibvorgänge, bevor du fortfährst."
   goal:
     barrier_lifted: "▶ Ziel-Sperre aufgehoben — wird fortgesetzt."
     paused_interrupted: "⏸ Ziel pausiert — Zug wurde unterbrochen. Verwenden Sie /goal resume zum Fortsetzen oder /goal clear zum Beenden."

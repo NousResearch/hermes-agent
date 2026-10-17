@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "شريط الحالة مخفي"
   exit:
     unknown_argument: "✗ وسيطة غير معروفة: {argument}. استخدم /exit --delete لحذف سجل الجلسة أيضًا."
+  leave:
+    usage: "الاستخدام: /leave [--stop]"
+    interrupted_checking: "⚡ تمت مقاطعة الدور الحالي. جارٍ التحقق من حالة الخروج الآمن…"
+    agent_running: "دور الوكيل الحالي لا يزال قيد الإنهاء"
+    processes_running: "{count} عملية/عمليات خلفية قيد التشغيل"
+    delegations_running: "{count} مهمة/مهام تفويض خلفية قيد التشغيل"
+    pending_memory: "{count} كتابة/كتابات ذاكرة معلّقة"
+    pending_skills: "{count} كتابة/كتابات مهارة معلّقة"
+    interrupted_previous: "تمت مقاطعة دور CLI السابق"
+    no_pending_work: "✓ لم يتم اكتشاف أي عمل قيد التشغيل أو معلّق. استخدم /leave للخروج بأمان."
+    unfinished_detected: "⚠ تم اكتشاف عمل غير مكتمل:"
+    recheck_hint: "استخدم /leave لإعادة التحقق، أو /leave --stop لإيقاف العمل الخلفي."
+    durable_note: "هذه السجلات دائمة وستظل متاحة بعد الخروج. راجعها في الجلسة التالية إذا لزم الأمر."
+    safe_exiting: "✓ من الآمن المغادرة. جارٍ إنهاء Hermes…"
+    previous_turn_warning: "⚠ تمت مقاطعة الدور السابق{suffix}. راجع الكتابات المعلّقة قبل المتابعة."
   goal:
     barrier_lifted: "▶ رُفع حاجز الهدف — جارٍ الاستئناف."
     paused_interrupted: "⏸ الهدف متوقّف مؤقتًا — قُطع الدور. استخدم /goal resume للمتابعة، أو /goal clear للإيقاف."

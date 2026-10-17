@@ -2428,6 +2428,21 @@ cli:
     status_bar_hidden: "Status bar hidden"
   exit:
     unknown_argument: "✗ Unknown argument: {argument}. Use /exit --delete to also remove session history."
+  leave:
+    usage: "Usage: /leave [--stop]"
+    interrupted_checking: "⚡ Current turn interrupted. Checking safe-leave status…"
+    agent_running: "current agent turn is still cleaning up"
+    processes_running: "{count} background process(es) running"
+    delegations_running: "{count} background delegation(s) running"
+    pending_memory: "{count} pending memory write(s)"
+    pending_skills: "{count} pending skill write(s)"
+    interrupted_previous: "the previous CLI turn was interrupted"
+    no_pending_work: "✓ No running or pending work detected. Use /leave to exit safely."
+    unfinished_detected: "⚠ Unfinished work detected:"
+    recheck_hint: "Use /leave to recheck, or /leave --stop to stop background work."
+    durable_note: "These records are durable and will remain available after exit. Review them in the next session if needed."
+    safe_exiting: "✓ Safe to leave. Exiting Hermes…"
+    previous_turn_warning: "⚠ Previous turn was interrupted{suffix}. Review pending writes before continuing."
   goal:
     barrier_lifted: "▶ Goal barrier lifted — resuming."
     paused_interrupted: "⏸ Goal paused — turn was interrupted. Use /goal resume to continue, or /goal clear to stop."

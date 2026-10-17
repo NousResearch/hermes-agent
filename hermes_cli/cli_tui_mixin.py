@@ -974,6 +974,10 @@ class CLITuiMixin:
             self._last_ctrl_c_time = now
             print("\n" + t("cli.tui.interrupting_again_hint"))
             request_hard_interrupt(self.agent)
+            try:
+                self._print_leave_preflight(self._leave_preflight(), interrupted=True)
+            except Exception:
+                pass
         else:
             self._tui_clear_or_exit(event)
 

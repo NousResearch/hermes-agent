@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "Durum çubuğu gizli"
   exit:
     unknown_argument: "✗ Bilinmeyen argüman: {argument}. Oturum geçmişini de silmek için /exit --delete kullanın."
+  leave:
+    usage: "Kullanım: /leave [--stop]"
+    interrupted_checking: "⚡ Geçerli tur kesildi. Güvenli çıkış durumu kontrol ediliyor…"
+    agent_running: "geçerli ajan turu hâlâ sonlanıyor"
+    processes_running: "{count} arka plan işlemi çalışıyor"
+    delegations_running: "{count} arka plan görevi çalışıyor"
+    pending_memory: "{count} bekleyen bellek yazımı"
+    pending_skills: "{count} bekleyen beceri yazımı"
+    interrupted_previous: "önceki CLI turu kesintiye uğradı"
+    no_pending_work: "✓ Çalışan veya bekleyen iş algılanmadı. Güvenli çıkmak için /leave kullanın."
+    unfinished_detected: "⚠ Tamamlanmamış iş algılandı:"
+    recheck_hint: "Yeniden kontrol için /leave, arka plan işini durdurmak için /leave --stop kullanın."
+    durable_note: "Bu kayıtlar kalıcıdır ve çıkıştan sonra da erişilebilir kalır. Gerekirse bir sonraki oturumda inceleyin."
+    safe_exiting: "✓ Güvenli çıkılabilir. Hermes kapatılıyor…"
+    previous_turn_warning: "⚠ Önceki tur kesintiye uğradı{suffix}. Devam etmeden önce bekleyen yazımları kontrol edin."
   goal:
     barrier_lifted: "▶ Hedef engeli kaldırıldı — devam ediliyor."
     paused_interrupted: "⏸ Hedef duraklatıldı — tur kesildi. Devam etmek için /goal resume, durdurmak için /goal clear kullanın."

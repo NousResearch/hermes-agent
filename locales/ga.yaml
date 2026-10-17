@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "Barra stádais folaithe"
   exit:
     unknown_argument: "✗ Argóint anaithnid: {argument}. Úsáid /exit --delete chun stair an tseisiúin a bhaint freisin."
+  leave:
+    usage: "Úsáid: /leave [--stop]"
+    interrupted_checking: "⚡ Cuireadh isteach ar an tslise reatha. Stádas scortha sábháilte á sheiceáil…"
+    agent_running: "tá slise reatha an ghníomhaí fós ag críochnú"
+    processes_running: "{count} cúlchóras á rith"
+    delegations_running: "{count} tarmligean cúil á rith"
+    pending_memory: "{count} scríobh cuimhne ar feitheamh"
+    pending_skills: "{count} scríobh scileanna ar feitheamh"
+    interrupted_previous: "cuireadh isteach ar an tslise CLI roimhe seo"
+    no_pending_work: "✓ Níor aimsíodh obair ar siúl ná ar feitheamh. Úsáid /leave chun slán a fhágáil."
+    unfinished_detected: "⚠ Obair neamhchríochnaithe aimsithe:"
+    recheck_hint: "Úsáid /leave chun seiceáil arís, nó /leave --stop chun obair chúl a stopadh."
+    durable_note: "Tá na taifid seo buan agus beidh siad ar fáil tar éis duit slán a fhágáil. Féach orthu sa chéad seisiún eile más gá."
+    safe_exiting: "✓ Sábháilte slán a fhágáil. Hermes á dhúnadh…"
+    previous_turn_warning: "⚠ Cuireadh isteach ar an tslise roimhe seo{suffix}. Féach ar na scríobhanna ar feitheamh sula leanann tú ar aghaidh."
   goal:
     barrier_lifted: "▶ Bac na sprice bainte — ag atosú."
     paused_interrupted: "⏸ Sprioc ar sos — cuireadh isteach ar an seal. Úsáid /goal resume le leanúint ar aghaidh, nó /goal clear le stopadh."

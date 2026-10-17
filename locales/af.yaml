@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "Statusbalk versteek"
   exit:
     unknown_argument: "✗ Onbekende argument: {argument}. Gebruik /exit --delete om ook die sessiegeskiedenis te verwyder."
+  leave:
+    usage: "Gebruik: /leave [--stop]"
+    interrupted_checking: "⚡ Huidige beurt onderbreek. Veilig-verlaat-status word nagegaan…"
+    agent_running: "huidige agentbeurt is nog besig om af te handel"
+    processes_running: "{count} agtergrondproses(se) loop"
+    delegations_running: "{count} agtergronddelegasie(s) loop"
+    pending_memory: "{count} hangende geheueskryfwerk"
+    pending_skills: "{count} hangende vaardigheidskryfwerk"
+    interrupted_previous: "die vorige CLI-beurt is onderbreek"
+    no_pending_work: "✓ Geen lopende of hangende werk bespeur nie. Gebruik /leave om veilig af te sluit."
+    unfinished_detected: "⚠ Onvoltooide werk bespeur:"
+    recheck_hint: "Gebruik /leave om weer te kontroleer, of /leave --stop om agtergrondwerk te stop."
+    durable_note: "Hierdie rekords is duursaam en bly beskikbaar na afloop. Hersien dit in die volgende sessie indien nodig."
+    safe_exiting: "✓ Veilig om te verlaat. Hermes word afgesluit…"
+    previous_turn_warning: "⚠ Die vorige beurt is onderbreek{suffix}. Hersien hangende skryfwerk voordat jy voortgaan."
   goal:
     barrier_lifted: "▶ Doelwit-versperring opgehef — hervat."
     paused_interrupted: "⏸ Doelwit gepouseer — beurt is onderbreek. Gebruik /goal resume om voort te gaan, of /goal clear om te stop."

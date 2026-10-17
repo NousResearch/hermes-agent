@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "상태 표시줄 숨김"
   exit:
     unknown_argument: "✗ 알 수 없는 인자: {argument}. 세션 기록까지 삭제하려면 /exit --delete를 사용해 주세요."
+  leave:
+    usage: "사용법: /leave [--stop]"
+    interrupted_checking: "⚡ 현재 턴이 중단되었습니다. 안전 종료 상태를 확인하는 중…"
+    agent_running: "현재 에이전트 턴이 아직 정리 중입니다"
+    processes_running: "백그라운드 프로세스 {count}개 실행 중"
+    delegations_running: "백그라운드 위임 작업 {count}개 실행 중"
+    pending_memory: "대기 중인 메모리 쓰기 {count}건"
+    pending_skills: "대기 중인 스킬 쓰기 {count}건"
+    interrupted_previous: "이전 CLI 턴이 중단되었습니다"
+    no_pending_work: "✓ 실행 중이거나 대기 중인 작업이 없습니다. /leave로 안전하게 종료하세요."
+    unfinished_detected: "⚠ 미완료 작업이 감지되었습니다:"
+    recheck_hint: "/leave로 다시 확인하거나, /leave --stop으로 백그라운드 작업을 중지하세요."
+    durable_note: "이러한 기록은 영구 저장되며 종료 후에도 사용할 수 있습니다. 필요하면 다음 세션에서 확인하세요."
+    safe_exiting: "✓ 안전하게 종료할 수 있습니다. Hermes를 종료하는 중…"
+    previous_turn_warning: "⚠ 이전 턴이 중단되었습니다{suffix}. 계속하기 전에 대기 중인 쓰기를 확인하세요."
   goal:
     barrier_lifted: "▶ 목표 장벽이 해제됐어요 — 재개해요."
     paused_interrupted: "⏸ 목표 일시 중지됨 — 턴이 중단됐어요. 계속하려면 /goal resume, 중지하려면 /goal clear를 사용해 주세요."

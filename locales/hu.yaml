@@ -2345,6 +2345,21 @@ cli:
     status_bar_hidden: "Állapotsor elrejtve"
   exit:
     unknown_argument: "✗ Ismeretlen argumentum: {argument}. A munkamenet-előzmények törléséhez: /exit --delete."
+  leave:
+    usage: "Használat: /leave [--stop]"
+    interrupted_checking: "⚡ A jelenlegi kör megszakadt. A biztonságos kilépés állapotának ellenőrzése…"
+    agent_running: "az aktuális ügynöki kör még befejeződik"
+    processes_running: "{count} háttérfolyamat fut"
+    delegations_running: "{count} háttér-delegálás fut"
+    pending_memory: "{count} függő memóriaírás"
+    pending_skills: "{count} függő képességírás"
+    interrupted_previous: "a előző CLI-kör megszakadt"
+    no_pending_work: "✓ Nem észlelhető futó vagy függő munka. Biztonságos kilépéshez használja a /leave parancsot."
+    unfinished_detected: "⚠ Befejezetlen munka észlelve:"
+    recheck_hint: "Újraellenőrzéshez használja a /leave, a háttérmunka leállításához a /leave --stop parancsot."
+    durable_note: "Ezek a rekordok tartósak, és kilépés után is elérhetők maradnak. Szükség esetén a következő munkamenetben tekintse át."
+    safe_exiting: "✓ Biztonságosan kiléphet. A Hermes bezárása…"
+    previous_turn_warning: "⚠ Az előző kör megszakadt{suffix}. Folytatás előtt ellenőrizze a függő írásokat."
   goal:
     barrier_lifted: "▶ Célkorlát feloldva — folytatás."
     paused_interrupted: "⏸ Cél szüneteltetve — a kör megszakadt. Folytatás: /goal resume, leállítás: /goal clear."

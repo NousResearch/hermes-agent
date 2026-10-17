@@ -509,6 +509,17 @@ class CLIChatTurnMixin:
         pending_message, _show_interrupt_marker = self._chat_resolve_interrupt(
             turn, agent_thread, interrupt_msg, response)
 
+        # Persist an interruption marker so a later /leave or a resumed CLI session
+        # can warn the user even after the in-memory turn state is gone; a turn that
+        # completes normally clears it. Read-only failure: never blocks the turn.
+        try:
+            if turn.result and turn.result.get("interrupted"):
+                self._persist_interrupted_turn_marker(pending_message or interrupt_msg or "")
+            else:
+                self._clear_interrupted_turn_marker()
+        except Exception:
+            pass
+
         self._chat_print_reasoning_box(turn)
         self._chat_print_response_panel(turn, response)
 

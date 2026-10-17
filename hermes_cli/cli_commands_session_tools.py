@@ -13,6 +13,7 @@ import argparse
 import importlib
 import io
 import shlex
+import time
 from contextlib import redirect_stdout
 from io import StringIO
 
@@ -112,6 +113,141 @@ class CLICommandsSessionToolsMixin:
             request_hard_interrupt(self.agent)
         from agent.memory_provider import spawn_context_thread
         spawn_context_thread(_stop_background_work, name="cli-stop").start()
+
+    # ---- /leave (safe exit) ----------------------------------------------------------------
+    def _leave_preflight(self) -> dict:
+        """Collect local, read-only state used by ``/leave`` and the Ctrl+C interrupt print.
+
+        Observable state only: the running-agent flag, the process/delegation registries, and
+        durable pending memory/skill writes. Never mutates anything, never raises.
+        """
+        try:
+            from tools.process_registry import process_registry
+            processes = process_registry.list_sessions()
+        except Exception:
+            processes = []
+        running_processes = [p for p in processes if p.get("status") == "running"]
+
+        try:
+            from tools.async_delegation import list_async_delegations
+            delegations = list_async_delegations()
+        except Exception:
+            delegations = []
+        running_delegations = [
+            d for d in delegations if d.get("status") in ("running", "stalling")
+        ]
+
+        pending_memory = pending_skills = []
+        try:
+            from tools.write_approval import list_pending
+            pending_memory = list_pending("memory")
+            pending_skills = list_pending("skills")
+        except Exception:
+            pass
+
+        return {
+            "agent_running": bool(getattr(self, "_agent_running", False)),
+            "processes": running_processes,
+            "delegations": running_delegations,
+            "pending_memory": pending_memory,
+            "pending_skills": pending_skills,
+            "interrupted_turn": self._get_interrupted_turn_marker(),
+        }
+
+    def _get_interrupted_turn_marker(self):
+        """Read the durable marker for the last interrupted CLI turn, if any."""
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return None
+        try:
+            marker = db.get_session_model_config_value(
+                session_id, "_cli_interrupted_turn"
+            )
+            return marker if isinstance(marker, dict) else None
+        except Exception:
+            return None
+
+    def _persist_interrupted_turn_marker(self, prompt: str) -> None:
+        """Persist enough context to warn after a restart or resume.
+
+        Stored in the session's existing ``model_config`` JSON (no schema migration).
+        """
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return
+        try:
+            db.patch_session_model_config(
+                session_id,
+                {"_cli_interrupted_turn": {
+                    "timestamp": time.time(),
+                    "prompt": str(prompt or "")[:500],
+                }},
+            )
+        except Exception:
+            pass
+
+    def _clear_interrupted_turn_marker(self) -> None:
+        """Clear the marker after a subsequent turn completes normally."""
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            return
+        try:
+            db.patch_session_model_config(session_id, {"_cli_interrupted_turn": None})
+        except Exception:
+            pass
+
+    def _print_leave_preflight(self, state: dict, *, interrupted: bool = False) -> None:
+        """Print a concise, actionable safe-leave status report."""
+        if interrupted:
+            _cp(f"  {t('cli.leave.interrupted_checking')}")
+        findings = []
+        if state["agent_running"]:
+            findings.append(t("cli.leave.agent_running"))
+        if state["processes"]:
+            findings.append(t("cli.leave.processes_running", count=len(state["processes"])))
+        if state["delegations"]:
+            findings.append(t("cli.leave.delegations_running", count=len(state["delegations"])))
+        if state["pending_memory"]:
+            findings.append(t("cli.leave.pending_memory", count=len(state["pending_memory"])))
+        if state["pending_skills"]:
+            findings.append(t("cli.leave.pending_skills", count=len(state["pending_skills"])))
+        if state.get("interrupted_turn"):
+            findings.append(t("cli.leave.interrupted_previous"))
+        if not findings:
+            _cp(f"  {t('cli.leave.no_pending_work')}")
+            return
+        _cp(f"  {t('cli.leave.unfinished_detected')}")
+        for finding in findings:
+            _cp(f"    • {finding}")
+        _cp(f"  {t('cli.leave.recheck_hint')}")
+
+    def _handle_leave_command(self, cmd_original: str) -> bool:
+        """Handle /leave — keep the REPL alive while observable unfinished work remains.
+
+        Read-only preflight over process/delegation registries and durable pending writes;
+        ``--stop`` stops background work first and re-runs the check. Returns False only
+        when the CLI may exit.
+        """
+        parts = cmd_original.split()
+        if any(part != "--stop" for part in parts[1:]):
+            _cp(f"  {t('cli.leave.usage')}")
+            return True
+        state = self._leave_preflight()
+        if "--stop" in parts and (state["processes"] or state["delegations"]):
+            self._handle_stop_command()
+            state = self._leave_preflight()
+        if any((state["agent_running"], state["processes"], state["delegations"])):
+            self._print_leave_preflight(state)
+            return True
+        if any((state["pending_memory"], state["pending_skills"], state.get("interrupted_turn"))):
+            self._print_leave_preflight(state)
+            _cp(f"  {t('cli.leave.durable_note')}")
+            return False
+        _cp(f"  {t('cli.leave.safe_exiting')}")
+        return False
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status. On the gateway both run there:

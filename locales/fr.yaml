@@ -2601,6 +2601,21 @@ cli:
     status_bar_hidden: "Barre d'état masquée"
   exit:
     unknown_argument: "✗ Argument inconnu : {argument}. Utilisez /exit --delete pour supprimer aussi l'historique de la session."
+  leave:
+    usage: "Utilisation : /leave [--stop]"
+    interrupted_checking: "⚡ Tour actuel interrompu. Vérification de l'état de sortie sécurisée…"
+    agent_running: "le tour actuel de l'agent se termine encore"
+    processes_running: "{count} processus en arrière-plan en cours"
+    delegations_running: "{count} délégation(s) en arrière-plan en cours"
+    pending_memory: "{count} écriture(s) mémoire en attente"
+    pending_skills: "{count} écriture(s) de compétence en attente"
+    interrupted_previous: "le tour précédent de la CLI a été interrompu"
+    no_pending_work: "✓ Aucun travail en cours ou en attente détecté. Utilisez /leave pour quitter en sécurité."
+    unfinished_detected: "⚠ Travail inachevé détecté :"
+    recheck_hint: "Utilisez /leave pour revérifier, ou /leave --stop pour arrêter les tâches en arrière-plan."
+    durable_note: "Ces enregistrements sont durables et resteront disponibles après la sortie. Consultez-les lors de la prochaine session si nécessaire."
+    safe_exiting: "✓ Vous pouvez quitter sans risque. Fermeture de Hermes…"
+    previous_turn_warning: "⚠ Le tour précédent a été interrompu{suffix}. Vérifiez les écritures en attente avant de continuer."
   goal:
     barrier_lifted: "▶ Barrière d'objectif levée — reprise."
     paused_interrupted: "⏸ Objectif en pause — le tour a été interrompu. Utilisez /goal resume pour continuer, ou /goal clear pour arrêter."

@@ -2328,6 +2328,21 @@ cli:
     status_bar_hidden: "ステータスバーを非表示"
   exit:
     unknown_argument: "✗ 不明な引数: {argument}。セッション履歴も削除するには /exit --delete を使用してください。"
+  leave:
+    usage: "使い方: /leave [--stop]"
+    interrupted_checking: "⚡ 現在のターンが中断されました。安全終了の状態を確認しています…"
+    agent_running: "現在のエージェントのターンがまだ後処理中です"
+    processes_running: "バックグラウンドプロセス {count} 件が実行中"
+    delegations_running: "バックグラウンド委任 {count} 件が実行中"
+    pending_memory: "保留中のメモリ書き込み {count} 件"
+    pending_skills: "保留中のスキル書き込み {count} 件"
+    interrupted_previous: "前回の CLI ターンが中断されました"
+    no_pending_work: "✓ 実行中または保留中の作業は検出されませんでした。/leave で安全に終了できます。"
+    unfinished_detected: "⚠ 未完了の作業が検出されました："
+    recheck_hint: "/leave で再確認、または /leave --stop でバックグラウンド作業を停止できます。"
+    durable_note: "これらの記録は永続化されており、終了後も利用できます。必要に応じて次のセッションで確認してください。"
+    safe_exiting: "✓ 安全に終了できます。Hermes を終了しています…"
+    previous_turn_warning: "⚠ 前回のターンは中断されました{suffix}。続行する前に保留中の書き込みを確認してください。"
   goal:
     barrier_lifted: "▶ 目標の待機が解除されました — 再開します。"
     paused_interrupted: "⏸ 目標を一時停止しました — ターンが中断されました。続けるには /goal resume、停止するには /goal clear を使用してください。"

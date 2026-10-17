@@ -260,7 +260,8 @@ def cancel_session_input(db, *, epoch: int, admission_id: str) -> dict:
         row = _admission(conn, admission_id)
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
-        if row['status'] == 'started':
+        # A steer in transfer reads as its running claim and settles with it: as started, not cancellable.
+        if row['status'] == 'started' or row['outcome'] == STEERING:
             raise RuntimeStoreError('stale_generation')
         if row['status'] == 'queued':
             conn.execute(_CANCEL_QUEUED, (admission_id,))

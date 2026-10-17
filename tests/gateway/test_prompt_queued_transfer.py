@@ -241,6 +241,33 @@ async def test_a_late_transfer_is_never_a_follow_up_that_a_restart_can_discard(t
 
 
 @pytest.mark.asyncio
+async def test_a_cancel_that_read_the_row_queued_before_a_steer_took_it_is_refused(tmp_path, monkeypatch):
+    """Reviewer repro (round 3): prompt.cancel read the row queued, then prompt.steer_queued handed it to
+    the running turn before the cancel's write. The cancel must not succeed while that transfer goes
+    on: it is refused by name, nothing stays owed, and the transfer still settles with its claim."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    turn = Turn(monkeypatch)
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(turn.claimed.wait(), 30)
+        queued = await _submit(authority, 'follow-up')
+        conn = _connection(authority)
+        stale = await authority.receipt(ACTOR, REF, queued.admission_id)
+        assert 'error' not in await _call(conn, 'prompt.steer_queued', admission_id=queued.admission_id)
+        with monkeypatch.context() as patched:
+            async def read_before_the_steer(*args):
+                return stale
+            patched.setattr(authority, 'receipt', read_before_the_steer)  # both of the cancel's reads
+            reply = await _call(conn, 'prompt.cancel', admission_id=queued.admission_id)
+        turn.release.set()
+        await _drained(authority)
+    assert reply.get('error', {}).get('data', {}).get('reason') == 'stale_generation', reply
+    assert queued.admission_id not in authority.cancel_obligations
+    assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
+
+
+@pytest.mark.asyncio
 async def test_a_transfer_stays_listed_as_steering_until_its_claim_settles(tmp_path, monkeypatch):
     """Reviewer repro (returned prompt stays hidden): a pending snapshot taken while a steer is in
     transfer still lists it, marked ``steering``, so no client retires an admission that may go back to

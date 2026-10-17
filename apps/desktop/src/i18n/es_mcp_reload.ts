@@ -5,7 +5,7 @@ export const esMcpReload: NonNullable<TranslationOverrides['connectorsPage']>['r
   action: 'Recargar servidores MCP',
   title: '¿Recargar servidores MCP?',
   description:
-    'Esto reconcilia los servidores MCP de este perfil con la configuración y actualiza las herramientas de este chat. El próximo mensaje reenvía el prompt completo, lo que consume tokens de la caché de prompt.',
+    'Esto reconcilia los servidores MCP de este perfil con la configuración. Si cambian las herramientas de este chat, el próximo mensaje inicia un nuevo prefijo de caché de prompt; una recarga sin cambios no reenvía el prompt.',
   confirm: 'Recargar ahora',
   deferred:
     'Servidores MCP actualizados para este perfil. Este chat conserva sus herramientas hasta que termine su turno en curso; vuelve a recargar entonces (o reabre el chat).',

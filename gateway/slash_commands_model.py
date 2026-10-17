@@ -443,6 +443,9 @@ class GatewayModelCommandsMixin:
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
+        if live is None and not one_turn and not ctx.reasoning_effort:
+            # A deliberate switch supersedes reasoning pinned by the previous model or router.
+            self._set_session_reasoning_override(ctx.session_key, result.reasoning_config)
         if level:
             # Committed with the local pick: only the config write-through and the reply remain.
             saved = (ctx.persist_global and global_error is None

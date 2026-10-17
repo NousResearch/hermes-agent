@@ -194,4 +194,36 @@ describe('useRuntimeMessageRepository', () => {
       'assistant-2'
     ])
   })
+
+  it('drops a rehydrated duplicate after compaction when ids differ but content is identical (#101938)', () => {
+    // Context compaction can re-insert the carried-forward tail as new rows
+    // with new ids. The desktop then sees two copies of the same logical
+    // message; id-only dedup misses them and assistant-ui renders both.
+    const original: ChatMessage = {
+      id: 'assistant-stream-101938',
+      role: 'assistant',
+      timestamp: 1_234_567_890,
+      parts: [
+        { type: 'text', text: 'Here is the answer.' },
+        { type: 'tool-call', toolCallId: 'call_101938', toolName: 'terminal', args: {}, argsText: '' }
+      ] as ChatMessage['parts']
+    }
+
+    const duplicate: ChatMessage = {
+      id: 'assistant-rehydrated-101938',
+      role: 'assistant',
+      timestamp: 1_234_567_890,
+      parts: [
+        { type: 'text', text: 'Here is the answer.' },
+        { type: 'tool-call', toolCallId: 'call_101938', toolName: 'terminal', args: {}, argsText: '' }
+      ] as ChatMessage['parts']
+    }
+
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([text('user-1', 'user', 'hi'), original, duplicate])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['user-1', 'assistant-stream-101938'])
+    expect(feedToRepository(result.current).map(item => item.id)).toEqual(['user-1', 'assistant-stream-101938'])
+  })
 })

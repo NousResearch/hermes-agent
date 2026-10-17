@@ -1637,6 +1637,41 @@ class TestCallLlmPaymentFallback:
         assert "temperature" not in primary_client.chat.completions.create.call_args.kwargs
         assert mock_chain.call_args.kwargs["reason"] == "structured provider error"
 
+    def test_committed_sse_rate_limit_triggers_configured_fallback(self):
+        """An APIStatusError after an HTTP-200 SSE commit is still a route failure (#139739)."""
+        import anthropic
+        import httpx
+
+        request = httpx.Request("POST", "https://relay.example/v1/messages")
+        rate_limit = anthropic.APIStatusError(
+            "rate limit",
+            response=httpx.Response(200, request=request),
+            body={"type": "error", "error": {
+                "type": "rate_limit_error", "message": "Max rate limit reached",
+            }},
+        )
+        primary_client = MagicMock()
+        primary_client.base_url = "https://relay.example/v1"
+        primary_client.chat.completions.create.side_effect = rate_limit
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "virtual-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom", "virtual-model", "https://relay.example/v1", "test-key", None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "fallback-model", "fallback_chain[0](backup)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")):
+            call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}],
+                     temperature=0.3)
+
+        assert fallback_client.chat.completions.create.called
+        assert mock_chain.call_args.kwargs["reason"] == "structured provider error"
+
     def test_429_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit errors should trigger fallback to next provider."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

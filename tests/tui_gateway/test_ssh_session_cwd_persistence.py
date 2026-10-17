@@ -13,14 +13,7 @@ import pytest
 
 from tui_gateway import server
 from hermes_state import SessionDB
-
-
-class _ImmediateThread:
-    def __init__(self, *, target, **_kwargs):
-        self._target = target
-
-    def start(self):
-        self._target()
+from tests.fakes.immediate_thread import ImmediateThread
 
 
 @pytest.fixture
@@ -36,7 +29,7 @@ def backend(monkeypatch):
 def db(tmp_path, monkeypatch):
     db = SessionDB(db_path=tmp_path / "state.db")
     monkeypatch.setattr(server, "_get_db", lambda: db)
-    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(server.git_probe, "branch", lambda _cwd: None)
     monkeypatch.setattr(server.git_probe, "common_repo_root", lambda _cwd: None)
     yield db

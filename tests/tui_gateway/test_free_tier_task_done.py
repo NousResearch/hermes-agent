@@ -11,6 +11,7 @@ import pytest
 from tui_gateway import server
 from hermes_cli import anon_auth, free_tier_offer
 from tui_gateway.free_tier_task_done import note_task_done
+from tests.fakes.immediate_thread import ImmediateThread
 
 CLEAN = {"completed": True, "final_response": "Here is your plan.", "user_intervened": False}
 
@@ -73,14 +74,6 @@ def test_a_correction_rpc_during_the_task_disqualifies_it(method, params):
     assert not _recorded()
 
 
-class _ImmediateThread:
-    def __init__(self, target=None, daemon=None, **kw):
-        self._target = target
-
-    def start(self):
-        self._target()
-
-
 @pytest.mark.parametrize("touch,recorded_turns,records_at_each_complete", [
     (None, [1], [1]), ("steer", [], [0]), ("typed", [2], [0, 1]),
 ], ids=["untouched", "steered-over-rpc", "typed-while-busy"])
@@ -122,7 +115,7 @@ def test_prompt_submit_records_only_untouched_turns(monkeypatch, touch, recorded
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
-    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
     session = _session(agent=_Agent(), running=False, history_version=0, image_counter=0, cols=80,
                        slash_worker=None, show_reasoning=False, tool_progress_mode="all", pending_title=None)

@@ -6,6 +6,7 @@ import threading
 import types
 
 from tui_gateway import server
+from tests.fakes.immediate_thread import ImmediateThread
 
 
 def _session(agent=None, **extra):
@@ -124,13 +125,6 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
                 ],
             }
 
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self._target = target
-
-        def start(self):
-            self._target()
-
     class _FakeDB:
         def replace_messages(
             self,
@@ -153,7 +147,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
     )
 
     try:
-        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server.threading, "Thread", ImmediateThread)
         monkeypatch.setattr(server, "_get_usage", lambda _a: {})
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: None)

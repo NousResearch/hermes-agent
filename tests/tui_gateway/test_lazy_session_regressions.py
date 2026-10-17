@@ -12,6 +12,7 @@ import threading
 import time
 import types
 from unittest.mock import MagicMock, patch
+from tests.fakes.immediate_thread import ImmediateThread
 
 
 
@@ -147,14 +148,8 @@ class TestPendingTitleValueError:
             server, "_sync_session_key_after_compress", lambda *a, **kw: None
         )
 
-        class _ImmediateThread:
-            def __init__(self, target=None, daemon=None, **kw):
-                self._target = target
-            def start(self):
-                self._target()
-
         server._sessions["sid"] = session
-        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server.threading, "Thread", ImmediateThread)
 
         try:
             server.handle_request({

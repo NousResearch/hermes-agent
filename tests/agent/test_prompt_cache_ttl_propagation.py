@@ -252,3 +252,11 @@ class TestAuxFallbackReplanThreadsTtl:
                 messages, None, destination=destination
             )
             assert _collect_cache_controls(out_msgs) == [], destination.provider
+        # A caller that decorated its own request (MoA advisor, iteration 1 of a
+        # per-iteration fan-out) will replay that prefix: its markers survive the replan.
+        from agent.prompt_caching import apply_anthropic_cache_control
+        advisor = apply_anthropic_cache_control(messages, cache_ttl="1h", native_anthropic=True)
+        out_msgs, _ = auxiliary_client._replan_synchronous_cache_sections(
+            advisor, None, destination=auxiliary_client._FallbackDestination(
+                "anthropic", "https://api.anthropic.com", "anthropic_messages", "claude-opus-4.8"))
+        assert _collect_cache_controls(out_msgs), "a pre-decorated advisor request must keep caching"

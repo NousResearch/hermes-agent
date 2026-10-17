@@ -15,10 +15,11 @@
  */
 
 import { readFileSync, renameSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
 import { join } from 'path'
 
 import type { Theme } from '../theme.js'
+
+import { resolveHermesHome } from './hermesHome.js'
 
 interface BootThemeFile {
   /** The resolved background hex that detection settled on, if any. */
@@ -34,10 +35,12 @@ interface BootThemeFile {
   version: 1
 }
 
-// Profile-aware: the Python launcher exports HERMES_HOME (set by
-// _apply_profile_override) before spawning the TUI. Falling back to
-// ~/.hermes matches get_hermes_home()'s default.
-const bootFilePath = () => join(process.env.HERMES_HOME ?? join(homedir(), '.hermes'), 'tui-theme-boot.json')
+// Profile-aware: resolveHermesHome mirrors hermes_constants — an exported
+// HERMES_HOME (named profiles) wins, otherwise the platform default, which on
+// native Windows is %LOCALAPPDATA%\hermes rather than ~/.hermes. The TUI used to
+// fall back to ~/.hermes, so a default-profile Windows launch cached its theme
+// somewhere the Python side never looks.
+const bootFilePath = () => join(resolveHermesHome(), 'tui-theme-boot.json')
 
 // Never touch the user's real ~/.hermes from test runs (the TS suite has no
 // HERMES_HOME isolation fixture).

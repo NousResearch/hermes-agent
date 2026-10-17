@@ -276,3 +276,44 @@ class TestDeepSeekAuxModel:
         assert deepseek_profile.default_aux_model
         assert _get_aux_model_for_provider("deepseek") == deepseek_profile.default_aux_model
 
+
+class TestDeepSeekResponsesReasoningEfforts:
+    """Behavior contract for DeepSeek's Responses-API effort declaration.
+
+    agent.transports.codex clamps a requested effort onto the vocabulary the
+    provider profile declares. Without a declaration it falls back to the built-in
+    Codex ladder, which stops at "xhigh" - so a configured "max" reached the wire
+    as "xhigh", and DeepSeek maps that to "high". These tests pin the level the
+    request actually carries, not the declaration's spelling.
+    """
+
+    @staticmethod
+    def _wire_effort(effort):
+        from agent.transports import codex
+
+        return codex._resolve_reasoning(
+            "deepseek-flash",
+            {
+                "provider": "deepseek-responses",
+                "base_url": "https://api.deepseek.com",
+                "reasoning_config": {"enabled": True, "effort": effort},
+            },
+        )
+
+    def test_max_reaches_the_wire_as_max(self, deepseek_profile):
+        assert self._wire_effort("max") == ("max", True)
+
+    def test_ultra_never_reaches_the_wire(self, deepseek_profile):
+        # ultra is Hermes-internal (the Codex product tier); DeepSeek's top wire
+        # level is max, so a requested ultra clamps down to it.
+        assert self._wire_effort("ultra") == ("max", True)
+
+    def test_medium_is_not_downgraded(self, deepseek_profile):
+        # DeepSeek maps medium to high server-side; clamping it to low (what a
+        # canonical-only declaration would do) would silently weaken the ask.
+        assert self._wire_effort("medium") == ("medium", True)
+
+    def test_non_deepseek_models_stay_undeclared(self, deepseek_profile):
+        assert deepseek_profile.supported_reasoning_efforts("gpt-6-astra") is None
+
+

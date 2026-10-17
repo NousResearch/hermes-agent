@@ -7,6 +7,8 @@ composed and then silently dropped.
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent import codex_runtime
 from agent.transports import codex_app_server_session as sess_mod
 
@@ -114,6 +116,25 @@ def test_runtime_retires_thread_when_an_in_place_switch_changes_the_codex_provid
     for provider, requested in (("openai-codex", "openai-codex"), ("openai-codex", "openai-codex"),
                                 ("custom", "custom:my-gateway")):
         agent.provider, agent.requested_provider = provider, requested
+        codex_runtime._ensure_codex_session(agent)
+        agent._codex_session.ensure_started()
+    starts = [p.get("modelProvider") for (m, p) in client.requests if m == "thread/start"]
+    assert starts == [None, "my-gateway"]
+    assert client.closed == 1
+
+
+@pytest.mark.parametrize("label", ["custom:my-gateway", "my-gateway"])
+def test_runtime_retires_thread_when_model_switches_onto_a_named_provider(monkeypatch, label):
+    """``/model`` (``_swap_switch_runtime``) sets ``provider`` and ``requested_provider`` to the configured name
+    itself (``custom:<name>`` or the bare key), not startup's ``provider="custom"``. The switch still retires
+    the thread (#130735) and starts one carrying the named provider's modelProvider."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "load_config", lambda: {"providers": {"my-gateway": {"api": "https://gw.example/v1"}}})
+    client = _FakeClient()
+    monkeypatch.setattr(sess_mod, "CodexAppServerClient", lambda **kw: client)
+    agent = _agent(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.5")
+    for provider in ("openai-codex", label):
+        agent.provider = agent.requested_provider = provider
         codex_runtime._ensure_codex_session(agent)
         agent._codex_session.ensure_started()
     starts = [p.get("modelProvider") for (m, p) in client.requests if m == "thread/start"]

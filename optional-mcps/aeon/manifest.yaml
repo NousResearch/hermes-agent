@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: aeon
+description: Run and manage your Aeon agent's skills, runs, memory, strategy, and settings.
+source: https://www.aeon.fun/connect
+
+# Official vendor-hosted remote MCP (URL-only - Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# and Client ID Metadata Documents (verified live: RFC 9728 protected-resource
+# metadata -> AS metadata with registration_endpoint); Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+# Users sign in with GitHub and pick which Aeon agent (repo) Hermes may use.
+transport:
+  type: http
+  url: https://www.aeon.fun/connect/mcp
+
+auth:
+  type: oauth
+
+# Tool selection at install time:
+# No `default_enabled` - the install-time checklist starts with every tool
+# pre-checked. Write tools (update_skill, update_strategy, update_soul,
+# update_instance_settings, install_pack) are annotated and commit to the
+# user's own repo; secrets are never readable over MCP.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - aeon
+    - aeon agent
+  hosts:
+    - aeon.fun
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Aeon (or run `hermes mcp login aeon`). Sign in with GitHub, pick
+  the Aeon agent to use, then restart the session so tools load.

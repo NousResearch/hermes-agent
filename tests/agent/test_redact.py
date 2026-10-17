@@ -1417,6 +1417,37 @@ class TestSecretFileAssignmentRedaction:
         assert redact_sensitive_text(wide, force=True, file_read=True, secret_file=True) == wide
         assert time.perf_counter() - started < 1.0
 
+    @pytest.mark.parametrize("command, text, kept", [
+        (
+            "cat ~/.hermes/config.yaml",
+            "providers:\n"
+            "  my-proxy:\n"
+            "    base_url: https://proxy.example.test/v1\n"
+            "    api_key: {key}\n"
+            "    token_url: https://auth.example.test/oauth2/token\n",
+            ["base_url: https://proxy.example.test/v1", "token_url: https://auth.example.test/oauth2/token"],
+        ),
+        (
+            "cat ~/.bashrc",
+            "export OPENAI_BASE_URL=https://proxy.example.test/v1\n"
+            "export api_key={key}\n"
+            "export auth_callback=https://app.example.test/oauth2/cb\n",
+            ["OPENAI_BASE_URL=https://proxy.example.test/v1", "auth_callback=https://app.example.test/oauth2/cb"],
+        ),
+    ], ids=["config_yaml", "shell_rc"])
+    def test_url_elsewhere_in_secret_file_does_not_disable_line_assignments(self, command, text, kept):
+        """A URL anywhere in the text (a custom provider's base_url) used to switch the line-anchored
+        YAML / config passes off, so the api_key next to it reached the model in cleartext from both
+        read_file and ``cat``. URL values on their own lines must still pass through."""
+        from agent.redact import redact_terminal_output
+
+        text = text.format(key=self.SYNTH)
+        for out in (redact_sensitive_text(text, force=True, file_read=True, secret_file=True),
+                    redact_terminal_output(text, command)):
+            assert self.SYNTH not in out
+            for line in kept:
+                assert line in out
+
 
 class TestHermesHomePathClassification:
     """``_is_secret_file_arg`` must see the RESOLVED Hermes home: a managed Windows home

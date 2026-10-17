@@ -569,7 +569,18 @@ def _flock_unlock(lock_fh: Any) -> None:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
-_LAUNCHER_SUPERVISED_MARKERS = ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD")
+_LAUNCHER_SUPERVISED_MARKERS = (
+    "HERMES_SUPERVISED_CHILD",
+    "HERMES_S6_SUPERVISED_CHILD",
+    # #127822 follow-up: a WinSW + SCM service launcher does not set the
+    # generic HERMES_SUPERVISED_CHILD marker, but it does set
+    # HERMES_GATEWAY_DETACHED (the flag the gateway runner uses to detach
+    # itself from the parent console). Treat it the same way: a
+    # detached-gateway child is non-interactive by construction, and
+    # the only way that flag gets set is a generated launcher, never
+    # an interactive user shell.
+    "HERMES_GATEWAY_DETACHED",
+)
 
 
 def _launcher_launched_child(environ: Optional[Dict[str, str]] = None) -> bool:

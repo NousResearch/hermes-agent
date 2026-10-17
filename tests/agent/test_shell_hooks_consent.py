@@ -247,6 +247,34 @@ class TestSupervisedLaunchNeverBlocks:
         assert registered == []
         assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
 
+    def test_gateway_detached_marker_skips_the_prompt(self, tmp_path, monkeypatch):
+        """#127822 follow-up: a WinSW + SCM service launcher does not set
+        HERMES_SUPERVISED_CHILD, but it does set HERMES_GATEWAY_DETACHED
+        (the flag the gateway runner uses to detach itself from the
+        parent console). The detached-gateway child is non-interactive
+        by construction, so the consent prompt must degrade to skip
+        instead of blocking until the watchdog kills the process.
+        """
+        from hermes_cli import plugins
+
+        script = _write_hook_script(tmp_path)
+        plugins._plugin_manager = plugins.PluginManager()
+        monkeypatch.setenv("HERMES_GATEWAY_DETACHED", "1")
+        for marker in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
+                       "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_GATEWAY_DETACHED"):
+            monkeypatch.delenv(marker, raising=False)
+
+        with patch("sys.stdin") as mock_stdin, patch(
+            "builtins.input", side_effect=AssertionError("prompt blocked startup"),
+        ):
+            mock_stdin.isatty.return_value = True
+            registered = shell_hooks.register_from_config(
+                {"hooks": {"on_session_start": [{"command": str(script)}]}},
+                accept_hooks=False,
+            )
+        assert registered == []
+        assert shell_hooks.allowlist_entry_for("on_session_start", str(script)) is None
+
     @pytest.mark.parametrize(
         "ambient",
         [
@@ -268,7 +296,7 @@ class TestSupervisedLaunchNeverBlocks:
         from hermes_cli import plugins
 
         for marker in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
-                       "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"):
+                       "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_GATEWAY_DETACHED"):
             monkeypatch.delenv(marker, raising=False)
         for name, value in ambient.items():
             monkeypatch.setenv(name, value)
@@ -288,7 +316,8 @@ class TestSupervisedLaunchNeverBlocks:
         """HERMES_SUPERVISED_CHILD=0/false is an explicit opt-out, not a launcher write."""
         from hermes_cli import plugins
 
-        for marker in ("HERMES_S6_SUPERVISED_CHILD", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "INVOCATION_ID"):
+        for marker in ("HERMES_S6_SUPERVISED_CHILD", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+                       "HERMES_GATEWAY_DETACHED", "INVOCATION_ID"):
             monkeypatch.delenv(marker, raising=False)
         monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "0")
         script = _write_hook_script(tmp_path)

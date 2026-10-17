@@ -31,10 +31,14 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
 # machinery kinds may vanish on a bare silence marker.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
-# Async-result cards a gateway producer may name on its own internal event (with a display_text),
-# the same rows the in-process TUI persisted. A closed set: never a client-chosen presentation.
+# Async-result cards the in-process TUI persisted: a producer's internal event naming one (with a
+# display_text) persists as that row kind instead of internal_notification.
 PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
 MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+# What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
+# receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
+# nameable; never a client-chosen presentation such as ``hidden``.
+PRODUCER_CARD_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64

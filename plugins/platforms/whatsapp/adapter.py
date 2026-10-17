@@ -17,6 +17,7 @@ from typing import Dict, Optional, Any
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
+from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
@@ -1230,13 +1231,42 @@ def _is_connected(config) -> bool:
     return (gateway_mod.get_env_value("WHATSAPP_ENABLED") or "").strip().lower() in {"true", "1", "yes"}
 
 
+# System-prompt platform hint (PlatformEntry.platform_hint); cached-prompt bytes, keep stable.
+_PLATFORM_HINT = (
+    "You are on WhatsApp. Standard markdown auto-converts to WhatsApp syntax (*bold*, _italic_, ~strike~, "
+    "monospace) \u2014 write markdown freely, bullets included. No tables \u2014 use bullets or labeled lines. "
+    "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
+    "Images (.jpg, .png, .webp) send as photos, videos (.mp4, .mov) play "
+    "inline, other files arrive as documents; image URLs via ![alt](url) send as photos."
+)
+
+
+# WhatsApp JIDs (@g.us, @s.whatsapp.net, @lid, broadcast/newsletter) are native targets the adapter
+# accepts verbatim — explicit, never home-channel. E.164 numbers use core's phone rule.
+_SEND_JID_RE = re.compile(r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$", re.IGNORECASE)
+
 
 def register(ctx) -> None:
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        target_ref_syntax_fn=regex_stripped_parser(_SEND_JID_RE),
+        # Media goes through Baileys /send-media; ``mentions`` force the standalone route too.
+        standalone_send=StandaloneSendPolicy(label="WhatsApp", media=True, captionable=True,
+                                             forward_force_document=True, mentions=True, text_direct=True),
         name="whatsapp", label="WhatsApp", adapter_factory=WhatsAppAdapter, check_fn=check_whatsapp_requirements,
+        dashboard_description="Use Hermes through the bundled WhatsApp bridge with QR-based auth.",
+        docs_url="https://github.com/tulir/whatsmeow",
+        dashboard_env_vars=(
+            "WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_DM_POLICY", "WHATSAPP_ALLOWED_USERS",
+        ),
+        dashboard_required_env=(),
         is_connected=_is_connected, required_env=["WHATSAPP_ENABLED"],
         install_hint="WhatsApp requires a Node.js bridge — see the WhatsApp messaging docs",
-        setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="WHATSAPP_ALLOWED_USERS",
-        allow_all_env="WHATSAPP_ALLOW_ALL_USERS", cron_deliver_env_var="WHATSAPP_HOME_CHANNEL",
+        setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, cron_deliver_env_var="WHATSAPP_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="💬", allow_update_command=True,
+        platform_hint=_PLATFORM_HINT,
+        # Baileys bridge supports /edit.
+        display_tier="medium",
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

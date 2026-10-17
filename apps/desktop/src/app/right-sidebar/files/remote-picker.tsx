@@ -11,8 +11,14 @@ import { displayPath, pathLeaf } from '@/lib/display-path'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 
+import { buildRemotePathCrumbs } from './remote-picker-paths'
+
 function clean(path: string) {
-  return path.replace(/\/+$/, '') || '/'
+  if (/^[A-Za-z]:[\\/]$/.test(path)) {
+    return path
+  }
+
+  return path.replace(/[\\/]+$/, '') || '/'
 }
 
 function parentDir(path: string) {
@@ -22,7 +28,13 @@ function parentDir(path: string) {
     return '/'
   }
 
-  const parent = value.slice(0, value.lastIndexOf('/'))
+  const separatorIndex = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'))
+
+  if (/^[A-Za-z]:[\\/]/.test(value) && separatorIndex === 2) {
+    return value.slice(0, 3)
+  }
+
+  const parent = value.slice(0, separatorIndex)
 
   return parent || '/'
 }
@@ -95,6 +107,13 @@ export function RemoteFolderPicker() {
           setError(result.error)
           setEntries([])
 
+          // A stale/default path must not trap the user in an unreadable
+          // location. Return to the backend root so another folder can be
+          // selected instead of leaving the dialog at a dead end.
+          if (currentPath !== '/') {
+            setCurrentPath('/')
+          }
+
           return
         }
 
@@ -106,6 +125,10 @@ export function RemoteFolderPicker() {
         if (active) {
           setError(err instanceof Error ? err.message : String(err))
           setEntries([])
+
+          if (currentPath !== '/') {
+            setCurrentPath('/')
+          }
         }
       })
       .finally(() => {
@@ -119,18 +142,7 @@ export function RemoteFolderPicker() {
     }
   }, [currentPath, pending])
 
-  const crumbs = useMemo(() => {
-    const parts = clean(currentPath).split('/').filter(Boolean)
-    const out = [{ label: '/', path: '/' }]
-    let acc = ''
-
-    for (const part of parts) {
-      acc += `/${part}`
-      out.push({ label: part, path: acc })
-    }
-
-    return out
-  }, [currentPath])
+  const crumbs = useMemo(() => buildRemotePathCrumbs(currentPath), [currentPath])
 
   const cancelNewFolder = () => {
     setNewFolderName(null)
@@ -274,7 +286,7 @@ export function RemoteFolderPicker() {
           <div className="min-w-0 truncate text-xs text-muted-foreground">{displayPath(currentPath)}</div>
           <div className="flex shrink-0 items-center gap-2">
             <Button
-              disabled={newFolderName !== null || Boolean(error)}
+              disabled={newFolderName !== null}
               onClick={() => setNewFolderName('')}
               size="sm"
               variant="ghost"

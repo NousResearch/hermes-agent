@@ -104,7 +104,10 @@ class ContextEngine(ABC):
         ``focus_topic`` comes from manual ``/compress <focus>`` (prioritise that topic);
         ``force`` asks to bypass an engine-owned cooldown; ``memory_context`` is provider
         text for the handoff prompt. Older engines may omit optional parameters — the
-        host filters them by signature.
+        host filters them by signature. Engines may explicitly name ``host_state``
+        to receive a detached snapshot of todos, the active/paused goal (including
+        its contract and subgoals), and ``plan_path`` (currently None). Generic
+        ``**kwargs`` alone does not opt in; mutating a snapshot never updates the host.
         """
 
     def prune_tool_results_only(
@@ -136,7 +139,9 @@ class ContextEngine(ABC):
         re-derived on the selected list). ``request_messages`` is the assembled request
         (system prompt + history + ephemeral prefill); ``conversation_messages`` is the
         persisted history for reference only (do not mutate); ``budget_tokens`` is the
-        model's context length or 0 if unknown.
+        model's context length or 0 if unknown. An override explicitly naming
+        ``host_state`` receives the same detached workflow snapshot as ``compress``;
+        the default and generic ``**kwargs`` overrides receive no new argument.
         """
         return None
 

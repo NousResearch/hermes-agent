@@ -544,7 +544,34 @@ export const esOverrides = {
     exitHud: 'Salir del modo HUD',
     resetHudLayout: 'Restablecer el tamaño y la posición del HUD',
     layoutEditor: 'Editor de diseño',
-    layoutEditorTitle: mod => `Editor de diseño — clic ${mod} restablece el diseño`
+    layoutEditorTitle: mod => `Editor de diseño — clic ${mod} restablece el diseño`,
+    computerUse: {
+      name: 'Computer Use',
+      preparing: 'Preparando…',
+      active: 'Controlando el escritorio',
+      failed: 'La acción falló',
+      dismiss: 'Cerrar',
+      screen: 'Pantalla',
+      desktop: 'Escritorio',
+      typedChars: count => (count === 1 ? '1 carácter' : `${count} caracteres`),
+      actions: {
+        capture: 'Captura',
+        click: 'Clic',
+        double_click: 'Doble clic',
+        right_click: 'Clic derecho',
+        middle_click: 'Clic central',
+        drag: 'Arrastrar',
+        scroll: 'Desplazar',
+        type: 'Escribir',
+        key: 'Tecla',
+        set_value: 'Establecer valor',
+        wait: 'Esperar',
+        list_apps: 'Listar apps',
+        list_windows: 'Listar ventanas',
+        focus_app: 'Enfocar app',
+        launch: 'Abrir'
+      }
+    }
   },
   keybinds: {
     title: 'Atajos de teclado',

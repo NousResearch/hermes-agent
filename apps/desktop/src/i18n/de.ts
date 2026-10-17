@@ -541,7 +541,34 @@ export const deOverrides = {
     exitHud: 'HUD-Modus beenden',
     resetHudLayout: 'HUD-Größe und -Position zurücksetzen',
     layoutEditor: 'Layout-Editor',
-    layoutEditorTitle: mod => `Layout-Editor — ${mod}-Klick setzt das Layout zurück`
+    layoutEditorTitle: mod => `Layout-Editor — ${mod}-Klick setzt das Layout zurück`,
+    computerUse: {
+      name: 'Computer Use',
+      preparing: 'Wird vorbereitet…',
+      active: 'Steuert den Desktop',
+      failed: 'Aktion fehlgeschlagen',
+      dismiss: 'Schließen',
+      screen: 'Bildschirm',
+      desktop: 'Desktop',
+      typedChars: count => (count === 1 ? '1 Zeichen' : `${count} Zeichen`),
+      actions: {
+        capture: 'Aufnahme',
+        click: 'Klick',
+        double_click: 'Doppelklick',
+        right_click: 'Rechtsklick',
+        middle_click: 'Mittelklick',
+        drag: 'Ziehen',
+        scroll: 'Scrollen',
+        type: 'Eingabe',
+        key: 'Taste',
+        set_value: 'Wert setzen',
+        wait: 'Warten',
+        list_apps: 'Apps auflisten',
+        list_windows: 'Fenster auflisten',
+        focus_app: 'App fokussieren',
+        launch: 'Starten'
+      }
+    }
   },
   keybinds: {
     title: 'Tastaturkürzel',

@@ -541,7 +541,34 @@ export const frOverrides = {
     exitHud: 'Quitter le mode HUD',
     resetHudLayout: 'Réinitialiser la taille et la position du HUD',
     layoutEditor: 'Éditeur de disposition',
-    layoutEditorTitle: mod => `Éditeur de disposition — ${mod}-clic réinitialise la disposition`
+    layoutEditorTitle: mod => `Éditeur de disposition — ${mod}-clic réinitialise la disposition`,
+    computerUse: {
+      name: 'Computer Use',
+      preparing: 'Préparation…',
+      active: 'Pilotage du bureau',
+      failed: 'Action échouée',
+      dismiss: 'Fermer',
+      screen: 'Écran',
+      desktop: 'Bureau',
+      typedChars: count => (count === 1 ? '1 caractère' : `${count} caractères`),
+      actions: {
+        capture: 'Capture',
+        click: 'Clic',
+        double_click: 'Double-clic',
+        right_click: 'Clic droit',
+        middle_click: 'Clic du milieu',
+        drag: 'Glisser',
+        scroll: 'Défilement',
+        type: 'Saisie',
+        key: 'Touche',
+        set_value: 'Définir la valeur',
+        wait: 'Attente',
+        list_apps: 'Lister les apps',
+        list_windows: 'Lister les fenêtres',
+        focus_app: "Activer l'app",
+        launch: 'Lancer'
+      }
+    }
   },
   keybinds: {
     title: 'Raccourcis clavier',

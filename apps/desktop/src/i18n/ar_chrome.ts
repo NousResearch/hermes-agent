@@ -43,7 +43,34 @@ export const arChrome = {
     exitHud: 'إنهاء وضع HUD',
     resetHudLayout: 'إعادة تعيين حجم HUD وموضعه',
     layoutEditor: 'محرر التخطيط',
-    layoutEditorTitle: modifier => `محرر التخطيط — انقر مع ${modifier} لإعادة ضبط التخطيط`
+    layoutEditorTitle: modifier => `محرر التخطيط — انقر مع ${modifier} لإعادة ضبط التخطيط`,
+    computerUse: {
+      name: 'Computer Use',
+      preparing: 'جارٍ التحضير…',
+      active: 'يتحكم في سطح المكتب',
+      failed: 'فشل الإجراء',
+      dismiss: 'إغلاق',
+      screen: 'الشاشة',
+      desktop: 'سطح المكتب',
+      typedChars: count => (count === 1 ? 'حرف واحد' : `${count} أحرف`),
+      actions: {
+        capture: 'التقاط',
+        click: 'نقرة',
+        double_click: 'نقرة مزدوجة',
+        right_click: 'نقرة يمنى',
+        middle_click: 'نقرة وسطى',
+        drag: 'سحب',
+        scroll: 'تمرير',
+        type: 'كتابة',
+        key: 'مفتاح',
+        set_value: 'تعيين القيمة',
+        wait: 'انتظار',
+        list_apps: 'عرض التطبيقات',
+        list_windows: 'عرض النوافذ',
+        focus_app: 'التركيز على التطبيق',
+        launch: 'تشغيل'
+      }
+    }
   },
   keybinds: {
     title: 'اختصارات لوحة المفاتيح',

@@ -321,7 +321,34 @@ export const zhOverrides = {
     exitHud: '退出 HUD 模式',
     resetHudLayout: '重置 HUD 大小和位置',
     layoutEditor: '布局编辑器',
-    layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
+    layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`,
+    computerUse: {
+      name: 'Computer Use',
+      preparing: '准备中…',
+      active: '正在操作桌面',
+      failed: '操作失败',
+      dismiss: '关闭',
+      screen: '屏幕',
+      desktop: '桌面',
+      typedChars: count => `${count} 个字符`,
+      actions: {
+        capture: '截图',
+        click: '点击',
+        double_click: '双击',
+        right_click: '右键点击',
+        middle_click: '中键点击',
+        drag: '拖动',
+        scroll: '滚动',
+        type: '输入',
+        key: '按键',
+        set_value: '设置值',
+        wait: '等待',
+        list_apps: '列出应用',
+        list_windows: '列出窗口',
+        focus_app: '聚焦应用',
+        launch: '启动'
+      }
+    }
   },
 
   keybinds: {

@@ -559,6 +559,33 @@ export interface Translations extends NoticeTranslations {
     resetHudLayout: string
     layoutEditor: string
     layoutEditorTitle: (modifier: string) => string
+    computerUse: {
+      name: string
+      preparing: string
+      active: string
+      failed: string
+      dismiss: string
+      screen: string
+      desktop: string
+      typedChars: (count: number) => string
+      actions: {
+        capture: string
+        click: string
+        double_click: string
+        right_click: string
+        middle_click: string
+        drag: string
+        scroll: string
+        type: string
+        key: string
+        set_value: string
+        wait: string
+        list_apps: string
+        list_windows: string
+        focus_app: string
+        launch: string
+      }
+    }
   }
 
   keybinds: {

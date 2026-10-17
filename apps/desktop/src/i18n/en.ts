@@ -532,7 +532,34 @@ export const en: Translations = {
     exitHud: 'Exit HUD mode',
     resetHudLayout: 'Reset HUD size and position',
     layoutEditor: 'Layout editor',
-    layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
+    layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`,
+    computerUse: {
+      name: 'Computer Use',
+      preparing: 'Preparing…',
+      active: 'Operating desktop',
+      failed: 'Action failed',
+      dismiss: 'Dismiss',
+      screen: 'Screen',
+      desktop: 'Desktop',
+      typedChars: count => (count === 1 ? '1 character' : `${count} characters`),
+      actions: {
+        capture: 'Capture',
+        click: 'Click',
+        double_click: 'Double-click',
+        right_click: 'Right-click',
+        middle_click: 'Middle-click',
+        drag: 'Drag',
+        scroll: 'Scroll',
+        type: 'Type',
+        key: 'Key',
+        set_value: 'Set value',
+        wait: 'Wait',
+        list_apps: 'List apps',
+        list_windows: 'List windows',
+        focus_app: 'Focus app',
+        launch: 'Launch'
+      }
+    }
   },
 
   keybinds: {

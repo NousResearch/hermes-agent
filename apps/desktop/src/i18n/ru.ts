@@ -218,7 +218,35 @@ export const ruOverrides = {
     enterHud: 'Режим HUD',
     exitHud: 'Выйти из режима HUD',
     layoutEditor: 'Редактор раскладки',
-    layoutEditorTitle: mod => `Редактор раскладки — ${mod}-клик сбрасывает раскладку`
+    layoutEditorTitle: mod => `Редактор раскладки — ${mod}-клик сбрасывает раскладку`,
+    computerUse: {
+      name: 'Computer Use',
+      preparing: 'Подготовка…',
+      active: 'Управление рабочим столом',
+      failed: 'Действие не выполнено',
+      dismiss: 'Закрыть',
+      screen: 'Экран',
+      desktop: 'Рабочий стол',
+      typedChars: count =>
+        `${count} ${count % 10 === 1 && count % 100 !== 11 ? 'символ' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'символа' : 'символов'}`,
+      actions: {
+        capture: 'Снимок',
+        click: 'Клик',
+        double_click: 'Двойной клик',
+        right_click: 'Правый клик',
+        middle_click: 'Средний клик',
+        drag: 'Перетаскивание',
+        scroll: 'Прокрутка',
+        type: 'Ввод',
+        key: 'Клавиша',
+        set_value: 'Установка значения',
+        wait: 'Ожидание',
+        list_apps: 'Список приложений',
+        list_windows: 'Список окон',
+        focus_app: 'Фокус на приложении',
+        launch: 'Запуск'
+      }
+    }
   },
   keybinds: {
     title: 'Горячие клавиши',

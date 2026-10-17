@@ -202,9 +202,14 @@ class CLISessionMixin:
     def _show_status(self):
         """Show compact startup status line."""
         from cli import get_tool_definitions
+        from hermes_cli.gateway_tools_notify import gateway_store
+        store = gateway_store(self)  # a gateway session's tools are the gateway's: never enumerated here
+        inventory = store.banner_inventory() if store is not None else None
         # Avoid pulling the full tool registry into the bare Termux prompt path.
-        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1":
+        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1" or (store is not None and inventory is None):
             tool_status = t("cli.session.status_tools_deferred")
+        elif inventory is not None:
+            tool_status = t("cli.session.status_tools_count", count=len(inventory["tools"] or []))
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
                                          disabled_toolsets=self.disabled_toolsets, quiet_mode=True)

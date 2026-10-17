@@ -213,8 +213,22 @@ def _ws_auth_reason(ws: WebSocket) -> tuple[Optional[str], str]:
     uses — e.g. a token-mode Remote desktop connection). The legacy in-process
     ``_SESSION_TOKEN`` is rejected in gated mode: a leaked ``_SESSION_TOKEN``
     must not grant access.
+
+    Either mode: a local Desktop (no static token) presents the private one-use
+    ``X-Hermes-Gateway-Ticket`` grant its REST calls use (``authenticate_native_ws``).
+    A socket that sends that header is judged by it alone: on a core socket
+    (``/api/ws``, ``/api/pty``, the audio streams) the grant is refused
+    (``native_invalid``) even when a valid ``token`` query credential rides along.
+    That is intended; only the plugin WebSocket gate accepts the grant.
     """
+    from hermes_cli.dashboard_auth.native_http import HEADER, authenticate_native_ws
     from hermes_cli.web_server import _SESSION_TOKEN, app
+    if HEADER in ws.headers:
+        grant = authenticate_native_ws(ws)
+        if grant is None:
+            return "native_invalid", "native"
+        ws._hermes_auth_identity = {"user_id": grant["subject"], "provider": "local"}
+        return None, "native"
     auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
         # Lazy import — keeps this function importable in test harnesses

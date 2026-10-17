@@ -86,6 +86,31 @@ class TestClassifyFetchFailure:
         )
         assert "SSH authentication failed" in msg
 
+    def test_ssh_port_22_timeout_reports_blocked_port(self):
+        # A firewall dropping port 22 is a reachability problem, not auth,
+        # and used to fall through to the generic message (#133439).
+        msg = update_cmd._classify_fetch_failure(
+            "ssh: connect to host github.com port 22: Operation timed out\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "port 22 is blocked" in msg
+        assert "ssh.github.com" in msg
+        assert "https://github.com/NousResearch/hermes-agent.git" in msg
+
+    def test_ssh_port_22_refused_reports_blocked_port(self):
+        msg = update_cmd._classify_fetch_failure(
+            "ssh: connect to host github.com port 22: Connection refused\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "port 22 is blocked" in msg
+
+    def test_ssh_port_22_publickey_denial_stays_auth(self):
+        msg = update_cmd._classify_fetch_failure(
+            "git@github.com: Permission denied (publickey).\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "port 22" not in msg
+
     def test_unknown_falls_back_to_generic(self):
         msg = update_cmd._classify_fetch_failure("fatal: something novel")
         assert msg == "✗ Failed to fetch updates from origin."

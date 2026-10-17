@@ -318,6 +318,31 @@ def _recorded_venv(project_root: Path) -> Path | None:
     return environment
 
 
+def stale_dependency_generation(project_root: Path | None = None) -> bool:
+    """Does this process run a committed generation the record has since moved past?
+
+    ``True`` means an optional dependency the caller is about to report missing
+    IS installed: PM committed a newer environment after this process booted, and
+    activation only happens at boot, so a restart — not an install — is the
+    remedy. Any doubt reads as not stale, keeping today's install advice; the
+    check is deliberately uncached so a commit that lands while the process runs
+    is noticed on the next failure.
+    """
+    import sys
+
+    from pm.paths import repo_root
+
+    root = repo_root() if project_root is None else project_root
+    prefix = Path(sys.prefix).resolve()
+    if not prefix.is_relative_to((install_state_dir(root) / "environments").resolve()):
+        return False  # not running from a PM generation (dev checkout, payload, bare interpreter)
+    try:
+        committed = committed_venv(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return committed is not None and prefix != committed.resolve()
+
+
 def venv_bin_dir(venv: Path, *, windows: bool | None = None) -> Path:
     """``Scripts`` on Windows, ``bin`` elsewhere. Returned unconditionally — callers
     differ on whether a missing venv is an error. *windows* lets a POSIX process

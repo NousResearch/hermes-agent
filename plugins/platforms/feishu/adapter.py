@@ -20,6 +20,7 @@ Session keys prefer union_id (user_id_alt) over open_id (user_id) for stability.
 from __future__ import annotations
 
 from pm import install_hint
+from pm.environments import stale_dependency_generation
 import asyncio
 import collections
 import concurrent.futures
@@ -4312,6 +4313,11 @@ _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery (cron without gateway) via a transient adapter."""
     if not await asyncio.to_thread(_load_lark_oapi):
+        if stale_dependency_generation():
+            return send_error(
+                "Feishu support is installed but this process started before it was committed. "
+                "Restart the gateway to use it."
+            )
         return send_error("Feishu dependencies not installed. Run `hermes setup` to install Feishu support.")
     try:
         adapter = FeishuAdapter(pconfig)

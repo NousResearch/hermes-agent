@@ -67,22 +67,30 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
 
   const bidi = getBidi()
   const { levels } = bidi.getEmbeddingLevels(plainText, 'auto')
+  const mirroredCharacters = bidi.getMirroredCharactersMap(plainText, levels) as Map<number, string>
 
   // Map bidi levels back to ClusteredChar indices.
   // Each ClusteredChar may be multiple code units in the joined string.
   const charLevels: number[] = []
+  const reordered: ClusteredChar[] = mirroredCharacters.size === 0 ? [...characters] : []
   let offset = 0
 
   for (let i = 0; i < characters.length; i++) {
+    const character = characters[i]!
+
     charLevels.push(levels[offset]!)
-    offset += characters[i]!.value.length
+
+    if (mirroredCharacters.size > 0) {
+      reordered.push(mirrorCluster(character, offset, mirroredCharacters))
+    }
+
+    offset += character.value.length
   }
 
   // Get reorder segments from bidi-js, but we need to work at the
   // ClusteredChar level, not the string level. We'll implement the
   // standard bidi reordering: find the max level, then for each level
   // from max down to 1, reverse all contiguous runs >= that level.
-  const reordered = [...characters]
   const maxLevel = Math.max(...charLevels)
 
   for (let level = maxLevel; level >= 1; level--) {
@@ -108,6 +116,18 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   }
 
   return reordered
+}
+
+function mirrorCluster(character: ClusteredChar, sourceOffset: number, mirrors: Map<number, string>): ClusteredChar {
+  let localOffset = 0
+  let value = ''
+
+  for (const codePoint of character.value) {
+    value += mirrors.get(sourceOffset + localOffset) ?? codePoint
+    localOffset += codePoint.length
+  }
+
+  return value === character.value ? character : { ...character, value }
 }
 
 function reverseRange<T>(arr: T[], start: number, end: number): void {

@@ -25,12 +25,15 @@ export type ComposerModelSource = '' | 'default' | 'manual'
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
-// The composer's model/effort/fast is sticky UI state, NOT the profile default
-// (that lives in Settings → Model). Persisting it in localStorage makes a pick
-// follow across Cmd+N and app restarts instead of snapping back to the default.
-// Model/provider/source are scoped to the remote (connection, profile) owner so
-// a provider authenticated on one profile cannot contaminate another profile's
-// session.create. Local/single-backend users retain the historical bare keys.
+// The composer's model/effort/fast is sticky UI state for NEW drafts only
+// (Cmd+N follows the last pick instead of snapping to Settings → Model).
+// It must never be applied to an already-created session: one global pill
+// leaking Gemini from Maintenance onto a grok chat is how sessions got
+// switch_model'd after send / gateway restart. Live chats bind to their
+// own session.model. Model/provider/source are scoped to the remote
+// (connection, profile) owner so a provider authenticated on one profile
+// cannot contaminate another profile's session.create. Local/single-backend
+// users retain the historical bare keys.
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'

@@ -1,14 +1,14 @@
 name: bot-forge
 repo: https://github.com/BkashJEE/hermes-bot-forge
-sha: b313916b25aa631af7b473cd0ac1d72737b0aa72
-description: "Say \"make me a <role>\" and your agent spawns a complete Bot Mode Bot — name, face, SOUL.md, memory, tools, skills, routines, gateway — tested, with rollback. Then hire a whole crew in one call, ask what is waiting on you, and edit, teach, share and health-check Bots by chatting. Disclosure — spawns the hermes CLI to create and run Bot profiles under HERMES_HOME/profiles/, and installs its own small companion hook plugin (bot-forge-marks, two hooks, no tools) into each Bot profile it manages, enabling it in that profile's config.yaml; never the root profile. Disclosure — when a Bot journals a blocked/failed entry, the plugin emails its title and summary to your own address via the SMTP account in Hermes' EMAIL_* settings (TLS verified; off with notify_blocked or notify_email false); adopt_bots (off by default) installs the companion hook into every profile on load."
+sha: 7b1fd7a4e8d26f0e4757d59388e66a6bcb6a1bb7
+description: "Say \"make me a <role>\" and your agent spawns a complete Bot Mode Bot — name, face, SOUL.md, memory, tools, skills, routines, gateway — tested, with rollback. Then hire a whole crew in one call, ask what is waiting on you, and edit, teach, share and health-check Bots by chatting. Disclosure — spawns the hermes CLI to create and run Bot profiles under HERMES_HOME/profiles/, and installs its own small companion hook plugin (bot-forge-marks, two hooks, no tools) into each Bot profile it manages, enabling it in that profile's config.yaml; never the root profile. Disclosure — when a Bot journals a blocked/failed entry, the plugin emails its title and summary to your own address via the SMTP account in Hermes' EMAIL_* settings (TLS verified; off with notify_blocked or notify_email false); adopt_bots (off by default) installs the companion hook into every profile on load. Disclosure — handoff_agent and ask_agent accept reading_only, which runs the receiving Bot's turn with only the web and vision toolsets via `hermes chat -t`; it restricts that turn and is not a sandbox. Disclosure — share_agent's optional publish argument posts the Bot template (never chats or credentials, secret-scanned first) as an unlisted gist via the user's own signed-in gh CLI, and import_agent reads one back over https only. Disclosure — create_agent writes a shared policy file at HERMES_HOME/shared/BOT-POLICY.md if missing and inlines it into each new Bot's SOUL.md; update_agent can rewrite a Bot's SOUL.md to refresh it, backed up first. Disclosure — create_agent installs a second hooks-only plugin (bot-forge-sentinel, no tools) into each Bot, answering pre_tool_call to refuse or escalate that Bot's own declared approvals; off with enforce_approvals false. Disclosure — handoff_agent runs a turn in another Bot's own chat under the same environment allowlist as ask_agent, and request_takeover writes a blocked journal entry asking the user to take that Bot's screen for a sign-in."
 maintainer: BkashJEE
 tier: community
 category: automation
 requires_hermes: ">=0.21"
 docs_url: https://github.com/BkashJEE/hermes-bot-forge#readme
-version: "0.15.3"
-image: https://raw.githubusercontent.com/BkashJEE/hermes-bot-forge/b313916b25aa631af7b473cd0ac1d72737b0aa72/docs/social-preview.png
+version: "0.21.0"
+image: https://raw.githubusercontent.com/BkashJEE/hermes-bot-forge/7b1fd7a4e8d26f0e4757d59388e66a6bcb6a1bb7/docs/social-preview.png
 platforms: []
 capabilities:
   provides_tools:
@@ -19,13 +19,18 @@ capabilities:
     - copy_agent
     - list_agents
     - check_agents
+    - check_policies
     - check_install
     - agent_journal
     - ask_agent
+    - handoff_agent
+    - request_takeover
     - share_agent
     - import_agent
     - hide_agent
     - delete_agent
-  provides_hooks: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
   provides_middleware: []
   requires_env: []

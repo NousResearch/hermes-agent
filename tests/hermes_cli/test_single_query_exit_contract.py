@@ -13,7 +13,11 @@ from types import SimpleNamespace
 import pytest
 
 import cli
-from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+from hermes_cli.kanban_db import (
+    KANBAN_INFRASTRUCTURE_EXIT_CODE,
+    KANBAN_RATE_LIMIT_EXIT_CODE,
+    KANBAN_TERMINAL_PROVIDER_EXIT_CODE,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +68,19 @@ def test_dispatcher_spawned_worker_signals_a_terminal_provider_error(monkeypatch
     assert _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason}) == KANBAN_TERMINAL_PROVIDER_EXIT_CODE
     monkeypatch.delenv("HERMES_KANBAN_TASK")
     assert _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason}) == 1
+
+
+@pytest.mark.parametrize("reason", ["session_persistence_failed", "session_persistence_failed:disk"])
+def test_dispatcher_worker_signals_local_persistence_failure_as_infrastructure(monkeypatch, reason):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    code = _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason})
+    assert code == KANBAN_INFRASTRUCTURE_EXIT_CODE
+
+
+def test_plain_cli_persistence_failure_keeps_regular_exit_code(monkeypatch):
+    assert _run_non_quiet(
+        monkeypatch, {"failed": True, "failure_reason": "session_persistence_failed:disk"}
+    ) == 1
 
 
 def test_dispatcher_spawned_worker_keeps_a_plain_failure_at_one(monkeypatch):

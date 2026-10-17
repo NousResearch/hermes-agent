@@ -33,6 +33,11 @@ def turn_exit_code(
         return 0
     if kanban_worker:
         reason = result.get("failure_reason")
+        if isinstance(reason, str) and reason.startswith("session_persistence_failed"):
+            # Local persistence breakage is infrastructure, not a task failure: the
+            # dispatcher books it without spending the card's retry budget.
+            from hermes_cli.kanban_db import KANBAN_INFRASTRUCTURE_EXIT_CODE
+            return KANBAN_INFRASTRUCTURE_EXIT_CODE
         if reason in transient_reasons:
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE

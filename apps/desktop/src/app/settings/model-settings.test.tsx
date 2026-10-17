@@ -479,6 +479,81 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('asks before an aux assignment the backend guards, and resends it with the ack (#140545)', async () => {
+    clearNotifications()
+    // A contributor-tier main model trips the selection guard, so `POST /api/model/set`
+    // answers `{ok: false, confirm_required: true}` and writes NOTHING. Auxiliary rows
+    // used to drop that answer on the floor: no prompt, no resend, the row just repainted.
+    setModelAssignment
+      .mockResolvedValueOnce({
+        ok: false,
+        scope: 'auxiliary',
+        provider: 'nous',
+        model: 'hermes-4',
+        confirm_required: true,
+        confirm_message: '!!! CONTRIBUTOR TIER — TRAINS ON YOUR DATA !!!'
+      })
+      .mockResolvedValueOnce({ ok: true, provider: 'nous', model: 'hermes-4', gateway_tools: [] })
+
+    renderModelSettings()
+
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    fireEvent.click(setToMainButtons[0])
+
+    // The refusal reaches the user as the same confirm prompt the main slot uses, and it
+    // carries the backend's own warning rather than a generic one.
+    let prompt: ReturnType<typeof $notifications.get>[number] | undefined
+    await waitFor(() => {
+      prompt = $notifications.get().find(entry => entry.action?.label === 'Confirm')
+      expect(prompt).toBeTruthy()
+    })
+    expect(prompt?.message).toContain('TRAINS ON YOUR DATA')
+    expect(setModelAssignment).toHaveBeenCalledTimes(1)
+
+    act(() => prompt?.action?.onClick())
+
+    await waitFor(() => expect(setModelAssignment).toHaveBeenCalledTimes(2))
+    expect(setModelAssignment).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        model: 'hermes-4',
+        provider: 'nous',
+        scope: 'auxiliary',
+        task: 'vision',
+        confirm_expensive_model: true
+      })
+    )
+  })
+
+  it('writes nothing when the aux assignment guard prompt is declined (#140545)', async () => {
+    clearNotifications()
+    setModelAssignment.mockResolvedValueOnce({
+      ok: false,
+      scope: 'auxiliary',
+      provider: 'nous',
+      model: 'hermes-4',
+      confirm_required: true,
+      confirm_message: '!!! CONTRIBUTOR TIER — TRAINS ON YOUR DATA !!!'
+    })
+
+    renderModelSettings()
+
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    fireEvent.click(setToMainButtons[0])
+
+    let prompt: ReturnType<typeof $notifications.get>[number] | undefined
+    await waitFor(() => {
+      prompt = $notifications.get().find(entry => entry.action?.label === 'Confirm')
+      expect(prompt).toBeTruthy()
+    })
+
+    act(() => prompt?.onDismiss?.())
+
+    // Declining is free: the refusal was never acknowledged, so no second write is sent.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull())
+    expect(setModelAssignment).toHaveBeenCalledTimes(1)
+    expect(setModelAssignment).not.toHaveBeenCalledWith(expect.objectContaining({ confirm_expensive_model: true }))
+  })
+
   it('keeps config-backed settings usable when live model metadata times out (#63214)', async () => {
     getGlobalModelInfo.mockRejectedValueOnce(new Error('Model metadata request timed out'))
 

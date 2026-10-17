@@ -39,17 +39,24 @@ function confirmModelWarning(message: string): Promise<boolean> {
   })
 }
 
-export async function setMainModelAssignment(
-  request: Omit<ModelAssignmentRequest, 'scope'>,
+/**
+ * THE guarded assignment flow — every `/api/model/set` caller in the desktop
+ * routes scoped writes through here so a `confirm_required` refusal is answered
+ * once, for every scope. `scope` comes from the request itself, so the main slot
+ * and each auxiliary row share one handshake (#140545).
+ *
+ * A refusal is a decision, not an error: it is never persisted, so the caller's
+ * state only moves on an explicit Confirm.
+ */
+export async function setGuardedModelAssignment(
+  request: ModelAssignmentRequest,
   scopeProfile?: ProfileScope,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   // Only pass the extra arg when a scope override exists, so unscoped callers
   // keep the exact legacy call shape.
-  const assign = (body: Omit<ModelAssignmentRequest, 'scope'>) =>
-    scopeProfile == null
-      ? setModelAssignment({ ...body, scope: 'main' })
-      : setModelAssignment({ ...body, scope: 'main' }, scopeProfile)
+  const assign = (body: ModelAssignmentRequest) =>
+    scopeProfile == null ? setModelAssignment(body) : setModelAssignment(body, scopeProfile)
 
   let result = await assign(request)
 
@@ -80,4 +87,13 @@ export async function setMainModelAssignment(
   }
 
   return result
+}
+
+/** Main-slot assignment: the guarded flow pinned to `scope: 'main'`. */
+export async function setMainModelAssignment(
+  request: Omit<ModelAssignmentRequest, 'scope'>,
+  scopeProfile?: ProfileScope,
+  options?: { skipConfirmPrompt?: boolean }
+): Promise<ModelAssignmentResponse> {
+  return setGuardedModelAssignment({ ...request, scope: 'main' }, scopeProfile, options)
 }

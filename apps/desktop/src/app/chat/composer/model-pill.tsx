@@ -15,6 +15,7 @@ import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $showModelPricing } from '@/store/model-pricing'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
 import { useComposerModelPillLabel } from './contrib'
@@ -72,6 +73,7 @@ export function ModelPill({
   const restoreSelection = useRef<(() => void) | null>(null)
   const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
+  const showPricing = useStore($showModelPricing)
 
   // The `composer.modelPicker` hotkey, routed to exactly one surface (the pane
   // under the pointer, else the active composer — see requestModelMenuToggle).
@@ -222,7 +224,7 @@ export function ModelPill({
       </Tip>
       <DropdownMenuContent
         align="end"
-        className="w-72 p-0"
+        className={cn('p-0', showPricing ? 'w-96' : 'w-72')}
         onCloseAutoFocus={event => {
           if (restoreSelection.current) {
             event.preventDefault()

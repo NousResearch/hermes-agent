@@ -566,6 +566,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
+        if self._has_unknown(session_id) and await self._refresh_unknown_for_prompt(session_id):
+            return PromptResponse(stop_reason='cancelled')
         if self._has_unknown(session_id):
             raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         prepared = await self._prepare_submit(session_id, prompt)
@@ -726,6 +728,52 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         return any(row.get("status") == "unknown"
                    for row in self._snapshots[session_id].get("pending", []))
 
+    async def _refresh_unknown_for_prompt(self, session_id):
+        # Stop during the owner's read must cancel the still-unsent editor input.
+        self._submitting.add(session_id)
+        try:
+            await self._refresh_unknown(session_id)
+        except BaseException:
+            self._pending_cancels.discard(session_id)
+            raise
+        finally:
+            self._submitting.discard(session_id)
+        cancelled = session_id in self._pending_cancels
+        self._pending_cancels.discard(session_id)
+        return cancelled
+
+    async def _refresh_unknown(self, session_id):
+        """Ask the owner whether another viewer has acknowledged a cached lost turn."""
+        client = await self._client()  # A reconnect may already supply a fresh snapshot.
+        cached = self._snapshots.get(session_id)
+        if cached is None:
+            raise GatewayClientError("not_found")
+        if not self._has_unknown(session_id):
+            return
+        # Freeze the snapshot's pending watermark before the pump can advance its reply cursor.
+        cached.setdefault("_pending_watermark", (cached.get("replay_epoch"), cached.get("last_sequence", 0)))
+        fresh = await client.rpc("session.resume", session_id=session_id)
+        cached = self._snapshots.get(session_id)
+        if cached is None:
+            raise GatewayClientError("not_found")
+        # Only pending state received while the RPC was in flight can supersede its snapshot.
+        epoch, sequence = cached.get("_pending_watermark",
+                                     (cached.get("replay_epoch"), cached.get("last_sequence", 0)))
+        if "pending" in fresh and (
+            fresh.get("replay_epoch") != epoch or fresh.get("last_sequence", 0) >= sequence
+        ):
+            cached["pending"] = fresh["pending"]
+            # The snapshot supplies only pending state here. Do not consume earlier message,
+            # approval, or tool events that the editor's event pump has not projected yet.
+            cached["_pending_watermark"] = (fresh.get("replay_epoch"), fresh.get("last_sequence", 0))
+
+    def _pending_event_is_new(self, session_id, event):
+        """Keep a pre-refresh pending event from restoring an already-discarded lost turn."""
+        fence = self._snapshots.get(session_id, {}).get("_pending_watermark")
+        sequence = event.get("seq")
+        return (fence is None or sequence is None or event.get("replay_epoch") != fence[0]
+                or sequence > fence[1])
+
     def _blocked_admission(self, session_id, admission_id):
         return self._has_unknown(session_id) and any(
             row.get("admission_id") == admission_id and row.get("status") in {"queued", "unknown"}
@@ -764,7 +812,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
-            await self._project_session_state(kind, sid, editor_id, payload)
+            await self._project_session_state(kind, sid, editor_id, payload, event)
             return
         if kind == "session.replay_gap":
             raise GatewayClientError("session_replay_gap")
@@ -815,7 +863,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             finally:
                 self._settling.discard(aid)
 
-    async def _project_session_state(self, kind, sid, editor_id, payload):
+    async def _project_session_state(self, kind, sid, editor_id, payload, event):
         if kind == "session.usage":
             await self._project_usage(sid, editor_id, payload)
             return
@@ -841,8 +889,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         if kind == "session.info" and sid in self._snapshots and "pending" in payload:
             async with self._changed:
-                self._snapshots[sid]["pending"] = payload["pending"]
-                self._changed.notify_all()
+                if self._pending_event_is_new(sid, event):
+                    self._snapshots[sid]["pending"] = payload["pending"]
+                    self._snapshots[sid]["_pending_watermark"] = (event.get("replay_epoch"), event.get("seq", 0))
+                    self._changed.notify_all()
         await self._project_title(sid, editor_id, payload.get("title"))
 
     async def _project_usage(self, sid, editor_id, stats):

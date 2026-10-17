@@ -303,9 +303,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
-    except ImportError:
-        return {"error": "python-telegram-bot not installed. Run: "
-                f"{install_hint('telegram')}"}
+    except ImportError as _imp_err:
+        # The ImportError can come from ANY import inside this block — the
+        # package itself, but also the adapter helpers / gateway.base imported
+        # for thread-id handling and chunking.  Name the module that actually
+        # failed instead of blaming python-telegram-bot, and keep the traceback
+        # so a misdiagnosis costs someone an hour of reinstalling.
+        _missing = getattr(_imp_err, "name", None) or type(_imp_err).__name__
+        logger.error("Telegram send could not import %r (sender file: %s)", _missing, __file__, exc_info=True)
+        _hint = (f" Run: {install_hint('telegram')}"
+                 if str(_missing).split(".")[0] == "telegram" else "")
+        return {"error": f"Telegram send could not import module {_missing!r}{_hint}"}
     except Exception as e:
         return _error(f"Telegram send failed: {e}")
 

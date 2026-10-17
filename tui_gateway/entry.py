@@ -309,6 +309,10 @@ def _serve():
         logger.warning("TUI message injector did not install", exc_info=True)
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
+    # Stdio harnesses also outlive checkout updates; arm the shared model-switch guard.
+    from gateway.code_skew import record_boot_fingerprint
+
+    record_boot_fingerprint()
     from hermes_cli.observability.shared_metrics_process import begin_process
 
     begin_process("tui")

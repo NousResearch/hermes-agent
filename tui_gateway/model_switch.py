@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import os
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -13,6 +14,25 @@ _registry = HandlerRegistry()
 
 
 _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
+
+
+def _model_switch_skew_guard() -> str | None:
+    """Refuse risky lazy imports when an update replaced this live backend's checkout."""
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
+        hint = ("use Restart backend in Hermes Desktop, or quit and reopen the app, "
+                "to load the new code")
+    else:
+        hint = "quit and relaunch Hermes to load the new code"
+    return (
+        f"Restart required: this backend is running code from {boot_rev} but the checkout "
+        f"on disk is now {disk_rev}. Switching models would risk a stale-module crash — {hint}."
+    )
 
 
 def _snapshot_agent_model_runtime(agent) -> dict:
@@ -311,6 +331,8 @@ def _apply_model_switch(
     persist_override: bool | None = None, count_switch: bool = True) -> dict:
     """``count_switch=False``: an internal swap (config adoption, MoA one-shot and its restore), not a
     user's /model pick, so it stays out of the shared-metrics switch count."""
+    if skew := _model_switch_skew_guard():
+        raise ValueError(skew)
     from hermes_cli.model_switch import switch_model
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)

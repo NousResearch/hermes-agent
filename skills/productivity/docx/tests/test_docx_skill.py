@@ -342,6 +342,74 @@ class TestRevisions:
         assert proc.returncode == 1
 
 
+class TestTextContents:
+    """docx_read.py --text reads the text Paragraph.text leaves out."""
+
+    def test_tracked_changes_read_as_accepted(self, tracked: Path,
+                                              tmp_path: Path):
+        accepted = tmp_path / "accepted.docx"
+        run("docx_revisions.py", "accept-all", tracked, "-o", accepted)
+        text = run("docx_read.py", tracked, "--text")
+        assert text["body"] == ["Base ADDED"]
+        assert text["tables"] == [[["Cell CELLADD"]]]
+        assert text == run("docx_read.py", accepted, "--text")
+
+    def test_content_controls_and_text_boxes(self, tmp_path: Path):
+        from docx.oxml import parse_xml
+        ns = (f'xmlns:w="{W}" '
+              'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+              'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+              'xmlns:v="urn:schemas-microsoft-com:vml"')
+
+        def r(text: str) -> str:
+            return f'<w:r><w:t xml:space="preserve">{text}</w:t></w:r>'
+
+        box = f"<w:txbxContent><w:p>{r('Callout')}</w:p></w:txbxContent>"
+        body = parse_xml(
+            f"<w:body {ns}>"
+            f"<w:p>{r('Client: ')}"
+            '<w:del w:id="7" w:author="a"><w:r><w:delText>Old</w:delText>'
+            "<w:tab/></w:r></w:del>"
+            '<w:moveFrom w:id="8" w:author="a"><w:r><w:t>moved away</w:t>'
+            "</w:r></w:moveFrom>"
+            f"<w:sdt><w:sdtPr/><w:sdtContent>{r('Acme')}"
+            "</w:sdtContent></w:sdt></w:p>"
+            # A ruby base is read without the guide printed above it.
+            f"<w:p><w:r><w:ruby><w:rubyPr/><w:rt>{r('kanji')}</w:rt>"
+            f"<w:rubyBase>{r('漢字')}</w:rubyBase></w:ruby></w:r></w:p>"
+            f"<w:sdt><w:sdtPr/><w:sdtContent><w:p>{r('Block control')}</w:p>"
+            "</w:sdtContent></w:sdt>"
+            # Word writes a text box twice: DrawingML and a VML fallback copy.
+            f"<w:p>{r('Host')}<w:r><mc:AlternateContent>"
+            '<mc:Choice Requires="wps"><w:drawing><wps:wsp><wps:txbx>'
+            f"{box}</wps:txbx></wps:wsp></w:drawing></mc:Choice>"
+            f"<mc:Fallback><w:pict><v:shape><v:textbox>{box}</v:textbox>"
+            "</v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>"
+            "</w:body>")
+        doc = Document()
+        section_properties = doc.element.body[-1]
+        for element in list(body):
+            section_properties.addprevious(element)
+        path = tmp_path / "containers.docx"
+        doc.save(str(path))
+        assert run("docx_read.py", path, "--text")["body"] == [
+            "Client: Acme", "漢字", "Block control", "Host", "Callout"]
+
+    def test_plain_paragraphs_read_as_before(self, tmp_path: Path):
+        from docx.shared import Inches
+        doc = Document()
+        doc.add_paragraph("First line\twith a tab")
+        doc.add_paragraph("")
+        doc.add_paragraph("Second").add_run().add_break()
+        # A tab stop is a w:tab in the paragraph properties, not text.
+        doc.add_paragraph("Tab stop").paragraph_format.tab_stops.add_tab_stop(
+            Inches(1))
+        path = tmp_path / "plain.docx"
+        doc.save(str(path))
+        expected = [p.text for p in Document(str(path)).paragraphs]
+        assert run("docx_read.py", path, "--text")["body"] == expected
+
+
 class TestComments:
     @pytest.fixture()
     def base(self, tmp_path: Path) -> Path:

@@ -1205,6 +1205,11 @@ export interface SkillInfo {
   description: string
   enabled: boolean
   name: string
+  /** Declared trigger phrases from the skill's frontmatter (`triggers:`), in whatever language the
+   *  author wrote them. The composer offers a skill on these in addition to its name, which is what
+   *  makes a skill reachable when the user types their own language and not the skill's name.
+   *  A skill with no declarations sends `[]`; the field is absent only on a backend older than it. */
+  triggers?: string[]
   /** Total observed activity (use + view + patch). Absent on older backends. */
   usage?: number
   /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed,

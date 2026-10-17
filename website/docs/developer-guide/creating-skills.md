@@ -56,6 +56,9 @@ platforms: [macos, linux]          # Optional — restrict to specific OS platfo
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
+    triggers: ["the words you would type", "عبارة بلغتك"]  # Optional — phrases the desktop
+                                        #   composer offers this skill on, in any language.
+                                        #   Matched whole-word and literally; max 12.
     related_skills: [other-skill-name]
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available

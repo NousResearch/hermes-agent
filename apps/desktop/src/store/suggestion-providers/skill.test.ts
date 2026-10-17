@@ -2,15 +2,31 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
-import { collidesWithWorkspace, skillHit, skillPattern, skillTouchedInMessages, stripSlashTokens } from './skill'
+import {
+  collidesWithWorkspace,
+  foldArabic,
+  skillHit,
+  skillPattern,
+  skillTouchedInMessages,
+  stripSlashTokens,
+  triggerPattern,
+  triggerPhrases
+} from './skill'
 
 // skillHit is the provider's real predicate: a whole-word match that the user
 // has finished typing (at least one character follows it).
 const hits = (name: string, draft: string) => skillHit(skillPattern(name), draft.toLowerCase())
 
+// The same predicate over a declared trigger phrase, which is what lets a skill be
+// offered to a user who types their own language instead of the skill's name. It runs on the
+// provider's REAL haystack (slash tokens stripped, then lowercased) — a helper that skipped the
+// sanitizer would pass a trigger the provider can never fire, e.g. one beginning with "/".
+const hitsTrigger = (phrase: string, draft: string) =>
+  skillHit(triggerPattern(phrase), foldArabic(stripSlashTokens(draft).toLowerCase()))
+
 // Exercises the provider's real haystack sanitizer, not a copy of it.
 const hitsAfterSanitize = (name: string, draft: string) =>
-  skillHit(skillPattern(name), stripSlashTokens(draft).toLowerCase())
+  skillHit(skillPattern(name), foldArabic(stripSlashTokens(draft).toLowerCase()))
 
 describe('skillPattern + skillHit', () => {
   it('matches the exact name as a completed whole word', () => {
@@ -149,5 +165,150 @@ describe('draft haystack sanitization (slash-prefixed skills, #91626)', () => {
     // Stripping the slash token must not blind the provider to a genuine
     // prose mention elsewhere in the draft.
     expect(hitsAfterSanitize('github-auth', '/github-auth loaded. Is github-auth any good? ')).toBe(true)
+  })
+})
+
+describe('triggerPattern — declared phrases reach a skill by the words the user types', () => {
+  it('matches a phrase in another language, which the name alone never could', () => {
+    // The case that motivated this: an English-named skill and a draft written in
+    // Arabic. `pdf-editing` cannot be typed as a name by a user who writes "أدمج ملفين".
+    expect(hitsTrigger('دمج ملفين', 'دمج ملفين pdf وأرسلهم للعميل')).toBe(true)
+    expect(hitsTrigger('ملف pdf', 'رتب لي ملف pdf هذا فضلاً')).toBe(true)
+    // The name still misses the same draft — that is the gap the triggers close.
+    expect(hits('pdf-editing', 'دمج ملفين pdf وأرسلهم للعميل')).toBe(false)
+  })
+
+  it('keeps the completed-word rule: a phrase still being typed does not fire', () => {
+    expect(hitsTrigger('دمج ملفين', 'دمج ملفين')).toBe(false)
+    expect(hitsTrigger('دمج ملفين', 'دمج ملفين ')).toBe(true)
+  })
+
+  it('requires a word boundary, so a phrase inside a longer word does not fire', () => {
+    expect(hitsTrigger('دمج', 'أدمج الملفين')).toBe(false) // "أدمج" is one word
+    expect(hitsTrigger('دمج', 'دمج الملفين')).toBe(true)
+    expect(hitsTrigger('ملفات', 'ملفاته كثيرة هنا')).toBe(false) // a letter follows
+    expect(hitsTrigger('ملفات', 'ملفات كثيرة هنا')).toBe(true)
+  })
+
+  it('treats whitespace inside a phrase as flexible', () => {
+    expect(hitsTrigger('دمج   ملفين', 'دمج ملفين pdf')).toBe(true)
+    expect(hitsTrigger('دمج ملفين', 'دمج    ملفين pdf')).toBe(true)
+  })
+
+  it('escapes the phrase, so punctuation is literal', () => {
+    expect(hitsTrigger('a+b', 'type a+b here')).toBe(true)
+    expect(hitsTrigger('a+b', 'type aab here')).toBe(false)
+    expect(hitsTrigger('c++', 'use c++ now')).toBe(true)
+  })
+
+  it('an empty or whitespace phrase never matches (a blank entry is not a wildcard)', () => {
+    expect(hitsTrigger('', 'anything at all')).toBe(false)
+    expect(hitsTrigger('   ', 'anything at all')).toBe(false)
+  })
+
+  it('is case-insensitive on the Latin part and caller-lowercased on the rest', () => {
+    expect(hitsTrigger('File PDF', 'send the file pdf now')).toBe(true)
+    expect(hitsTrigger('file pdf', 'SEND THE FILE PDF NOW')).toBe(true)
+  })
+
+  it('a slash-leading trigger fires only where the draft itself starts with it', () => {
+    // Measured, not assumed. stripSlashTokens removes whitespace-PREFIXED "/token" (which is why
+    // "/api/v1" survives mid-prose and "run /github-auth" does not), so a phrase starting with "/"
+    // has exactly one live position: the very start of the draft. It is unreliable rather than dead —
+    // it fires on "/pdf please" and not on "use /pdf now".
+    expect(hitsTrigger('/pdf', '/pdf please')).toBe(true)
+    expect(hitsTrigger('/pdf', 'use /pdf now')).toBe(false)
+  })
+})
+
+describe('triggerPhrases — the payload contract, defended', () => {
+  it('accepts a list, trims it, and drops blanks', () => {
+    expect(triggerPhrases(['  دمج ملفين  ', '', '   ', 'file pdf'])).toEqual(['دمج ملفين', 'file pdf'])
+  })
+
+  it('drops non-string entries instead of stringifying them', () => {
+    // `5` becoming the phrase "5" is a phrase nobody wrote — the backend refuses scalars for the
+    // same reason, and this is the second guard.
+    expect(triggerPhrases([5, null, undefined, true, { a: 1 }, ['x'], 'kept'])).toEqual(['kept'])
+  })
+
+  it('a non-array payload yields no phrases instead of throwing', () => {
+    // A string has `.length` (so it would pass a length gate) but no `.map`: this is the shape that
+    // would throw inside the composer's render path, from an older or malformed backend.
+    expect(triggerPhrases('short, phrases')).toEqual([])
+    expect(triggerPhrases(undefined)).toEqual([])
+    expect(triggerPhrases(null)).toEqual([])
+    expect(triggerPhrases(7)).toEqual([])
+  })
+
+  it('caps the list', () => {
+    expect(triggerPhrases(Array.from({ length: 40 }, (_, i) => `p${i}`))).toHaveLength(12)
+  })
+})
+
+describe('foldArabic — the spelling variants Arabic writers type interchangeably', () => {
+  // Every draft below carries a trailing word on purpose: skillHit only fires on a COMPLETED word
+  // (at least one character after the match), which is the pill's real contract — the user is mid-draft,
+  // not typing a bare phrase. A fixture that ended AT the phrase would assert false for the wrong reason,
+  // and would have hidden a fold that wrongly merges two words.
+  // The reported case, from the owner's own machine: a skill declaring `تدقيق الأرقام` was offered when
+  // the draft carried the hamza and missed when it did not. Both spellings are the same phrase to a
+  // reader, so they must be the same phrase to the matcher.
+  it('folds every alef variant, in both directions', () => {
+    for (const variant of ['أ', 'إ', 'آ', 'ٱ']) {
+      expect(hitsTrigger(`تدقيق ${variant}رقام`, 'تدقيق ارقام الآن')).toBe(true)
+      expect(hitsTrigger('تدقيق ارقام', `تدقيق ${variant}رقام الآن`)).toBe(true)
+    }
+  })
+
+  it('drops diacritics and the tatweel', () => {
+    expect(hitsTrigger('كشف حساب', 'كَشْف حِسَاب الآن')).toBe(true)
+    expect(hitsTrigger('كشف حساب', 'كشــــــف حساب الآن')).toBe(true)
+  })
+
+  it('folds a decomposed spelling the same as a composed one', () => {
+    const composed = 'الأرقام'
+    const decomposed = composed.normalize('NFD')
+    expect(decomposed).not.toBe(composed)
+    expect(foldArabic(decomposed)).toBe(foldArabic(composed))
+    expect(hitsTrigger(composed, `${decomposed} الآن`)).toBe(true)
+  })
+
+  // The defect this test was written to catch: folding marks before composing turns the DECOMPOSED
+  // رؤية into روية, so the same words would merge in one encoding and stay apart in the other.
+  it('keeps a hamza-on-waw distinct in both encodings', () => {
+    const composed = 'رؤية'
+    const decomposed = composed.normalize('NFD')
+    expect(foldArabic(decomposed)).toBe(foldArabic(composed))
+    expect(hitsTrigger(composed, `${decomposed} الآن`)).toBe(true) // same word, either spelling
+    expect(hitsTrigger('روية', `${decomposed} الآن`)).toBe(false) // and never the other one
+    expect(hitsTrigger('روية', `${composed} الآن`)).toBe(false)
+  })
+
+  it('is idempotent, and leaves blank input alone', () => {
+    const once = foldArabic('الأرقامُ')
+    expect(foldArabic(once)).toBe(once)
+    expect(foldArabic('')).toBe('')
+    expect(foldArabic('   ')).toBe('   ')
+  })
+
+  // The exclusions asserted, not merely documented: an unbounded fold is exactly how this feature
+  // would start offering skills on unrelated prose, which is the failure the whole feature is at risk of.
+  it('does NOT fold what would merge two different words', () => {
+    expect(hitsTrigger('كتابة', 'كتابه الآن')).toBe(false) // ة / ه
+    expect(hitsTrigger('مصطفى', 'مصطفي الآن')).toBe(false) // ى / ي
+    expect(hitsTrigger('رؤية', 'روية الآن')).toBe(false) // ؤ / و
+    expect(hitsTrigger('مسؤول', 'مسوول الآن')).toBe(false) // ؤ / و
+  })
+
+  it('keeps the word boundaries the pattern was built on', () => {
+    expect(hitsTrigger('الأرقام', 'بالأرقام الآن')).toBe(false) // no prefix
+    expect(hitsTrigger('الأرقام', 'الأرقامية الآن')).toBe(false) // no suffix
+    expect(hitsTrigger('الأرقام', 'تدقيق الأرقام الآن')).toBe(true)
+  })
+
+  it('leaves Latin matching exactly as it was', () => {
+    expect(hitsTrigger('file pdf', 'SEND THE FILE PDF NOW')).toBe(true)
+    expect(hitsTrigger('file pdf', 'files pdf now')).toBe(false)
   })
 })

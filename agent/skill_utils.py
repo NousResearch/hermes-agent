@@ -716,6 +716,36 @@ def _hermes_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
     return hermes if isinstance(hermes, dict) else {}
 
 
+# Cap on declared trigger phrases per skill. Every entry becomes a regex in a matcher that runs on
+# every keystroke sample, and the desktop clamps to the same number; a mirrored-value test in
+# tests/tools/test_skills_triggers.py keeps the two literals from drifting apart.
+MAX_TRIGGERS = 12
+
+
+def extract_skill_triggers(frontmatter: dict[str, Any]) -> list[str]:
+    """Declared trigger phrases — ``metadata.hermes.triggers`` first, then top level.
+
+    What they are for: the desktop composer offers a skill when the draft NAMES it, so a skill whose
+    name the user never types (a different language, or a name that is a common word) is never
+    offered. A declared phrase list, authored in the user's own words, is the only signal that reaches
+    it. The precedence matches tags/related_skills: the agentskills.io location first, then top level.
+
+    Accepts a YAML list (inline or block sequence) or the comma-separated string form. Anything else —
+    a number, a mapping, a nested list — is not a phrase list and yields ``[]``: a scalar would
+    otherwise reach the matcher as its stringification (``7`` -> ``"7"``), which is a phrase nobody
+    wrote, and the desktop drops non-strings for the same reason.
+    """
+    hermes = _hermes_metadata(frontmatter)
+    raw = hermes.get("triggers") or frontmatter.get("triggers")
+    if isinstance(raw, str):
+        values = [part.strip().strip("\"'") for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple)):
+        values = [item.strip() for item in raw if isinstance(item, str)]
+    else:
+        return []
+    return [value for value in values if value][:MAX_TRIGGERS]
+
+
 # ``session_platforms`` is the gateway-channel gate: session platforms the skill
 # is FOR (hidden from the index elsewhere), unlike ``platforms:`` (host OS).
 _CONDITION_KEYS = ("fallback_for_toolsets", "requires_toolsets", "fallback_for_tools", "requires_tools", "session_platforms")

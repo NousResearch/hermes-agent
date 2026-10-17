@@ -19,18 +19,22 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, Path]]:
     deliver them through ``SharedRouteAdapters`` or fail closed instead of the owning profile's
     adapters, and race the other standalone gateways for each store's ``cron/.tick.lock``."""
     from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_is_standalone
+    from hermes_constants import get_hermes_home
 
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
-    if active != "default":
-        own_home = get_profile_dir(active)
-        if profile_is_standalone(own_home):
-            return [(active, own_home)]
+    # "custom" labels a HERMES_HOME outside ``profiles/``; get_profile_dir("custom") would name
+    # ``profiles/custom`` instead, so use the home itself.
+    own_home: Path | None = get_hermes_home() if active == "custom" else None
+    if own_home is None:
+        try:
+            own_home = get_profile_dir(active)
+        except ValueError:  # get_profile_dir refuses a name that is not a valid profile id
+            pass
+    if active != "default" and own_home is not None and profile_is_standalone(own_home):
+        return [(active, own_home)]
     from gateway.run import _multiplex_profile_homes  # late: gateway.run imports this module
 
     homes = _multiplex_profile_homes(config)
-    if any(name == active for name, _home in homes):
+    if own_home is None or any(name == active for name, _home in homes):
         return homes
-    try:
-        return homes + [(active, get_profile_dir(active))]
-    except ValueError:  # get_profile_dir refuses a name that is not a valid profile id
-        return homes
+    return homes + [(active, own_home)]

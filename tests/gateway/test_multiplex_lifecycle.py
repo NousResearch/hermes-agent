@@ -89,6 +89,34 @@ def test_cron_tick_homes_of_a_standalone_gateway_are_only_its_own(
     assert cron_homes == [("solo", default_home / "profiles" / "solo")]
 
 
+@pytest.mark.parametrize("standalone", [True, False])
+def test_cron_tick_homes_use_a_custom_home_outside_the_profiles_root(
+    tmp_path, monkeypatch, standalone
+):
+    """A HERMES_HOME under ``~/.hermes`` but outside ``profiles/`` is labelled "custom", while
+    get_profile_dir("custom") names ``profiles/custom``: the ticker must check and tick the home
+    itself."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    (default_home / "profiles" / "worker").mkdir(parents=True)
+    (default_home / "profiles" / "worker" / "config.yaml").write_text("{}\n")  # identity marker
+    custom_home = default_home / "bots" / "solo"
+    custom_home.mkdir(parents=True)
+    (custom_home / "config.yaml").write_text(
+        "gateway:\n  standalone: true\n" if standalone else "{}\n")
+    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+
+    import gateway.run as gateway_run
+
+    cron_homes = gateway_run._cron_tick_profile_homes(GatewayConfig(multiplex_profiles=False))
+
+    if standalone:
+        assert cron_homes == [("custom", custom_home)]
+    else:
+        assert cron_homes[-1] == ("custom", custom_home)
+        assert [name for name, _home in cron_homes] == ["default", "worker", "custom"]
+
+
 def test_cron_tick_homes_of_the_host_still_skip_standalone_profiles(
     tmp_path, monkeypatch
 ):

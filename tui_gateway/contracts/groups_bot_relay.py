@@ -9,6 +9,8 @@ Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py`
 
 from __future__ import annotations
 
+from pydantic import StrictBool
+
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
 from .registry import method
@@ -223,6 +225,23 @@ class GroupsStateResult(Result):
 
 method("groups.state", params=GroupsStateParams, result=GroupsStateResult,
        doc="One hosted room's replay cursor and fenced authority state, plus live driver status.")
+
+
+class GroupsMemberYoloParams(RoomParams):
+    member_id: str
+    enabled: StrictBool | None = None
+
+
+class GroupsMemberYoloResult(Result):
+    room_id: str
+    member_id: str
+    session_key: str
+    enabled: bool
+    effective_enabled: bool
+
+
+method("groups.member.yolo", params=GroupsMemberYoloParams, result=GroupsMemberYoloResult,
+       doc="Read or set YOLO for one existing local room participant session; omit enabled to read.")
 
 
 # ── groups.send / rename / log ────────────────────────────────────────────────────────────────

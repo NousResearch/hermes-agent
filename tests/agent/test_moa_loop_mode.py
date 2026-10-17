@@ -782,7 +782,7 @@ def test_reference_guidance_appended_at_end_in_tool_loop():
     # cache-reusable across steps.
     assert messages[1]["content"] == "ORIGINAL TASK"
     # The reference block is appended as a new trailing turn, not merged upstream.
-    assert messages[-1]["role"] == "user"
+    assert messages[-1]["role"] == "assistant"
     assert messages[-1]["content"] == "REFERENCE BLOCK"
     assert len(messages) == 5
 

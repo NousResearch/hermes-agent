@@ -116,7 +116,7 @@ class GatewayInboundHooksMixin:
         return qc if isinstance(qc, dict) else {}
 
     def _hm_command_key(self, command: str) -> tuple[str, str]:
-        from hermes_cli.commands import resolve_command
+        from hermes_cli.commands import _iter_plugin_command_entries, resolve_command
 
         builtin = resolve_command(command)
         if builtin is not None:
@@ -124,12 +124,8 @@ class GatewayInboundHooksMixin:
         if command in self._hm_quick_commands():
             return "quick", command
         plugin_name = command.replace("_", "-")
-        try:
-            from hermes_cli.plugins import get_plugin_command_handler
-            if get_plugin_command_handler(plugin_name) is not None:
-                return "plugin", plugin_name
-        except Exception as exc:
-            logger.debug("Plugin command lookup failed: %s", exc)
+        if any(name == plugin_name for name, _description, _hint in _iter_plugin_command_entries()):
+            return "plugin", plugin_name
         return "unknown", command
 
     @staticmethod

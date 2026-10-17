@@ -117,18 +117,33 @@ async def test_plugin_alias_uses_registered_policy_and_hook(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_exec_quick_key_takes_precedence_over_plugin_alias(tmp_path, monkeypatch):
+@pytest.mark.parametrize('quick_name,plugin_spelling', [('my_cmd', 'my-cmd'), ('my-cmd', 'my_cmd')])
+async def test_exec_quick_key_takes_precedence_over_plugin_alias(
+    tmp_path, monkeypatch, quick_name, plugin_spelling,
+):
     calls = _plugin(monkeypatch)
-    runner = _runner({'allow_admin_from': ['owner'], 'user_allowed_commands': ['my_cmd']})
+    runner = _runner({'allow_admin_from': ['owner'], 'user_allowed_commands': [quick_name]})
     marker = tmp_path / 'quick'
     runner.config.quick_commands = {
-        'my_cmd': {'type': 'exec', 'command': f'printf QUICK > {shlex.quote(str(marker))}; printf QUICK'}
+        quick_name: {'type': 'exec', 'command': f'printf QUICK > {shlex.quote(str(marker))}; printf QUICK'}
     }
     source = _make_source(user_id='reader')
-    result = await runner._handle_message(_make_event('/my_cmd', source))
+    result = await runner._handle_message(_make_event('/' + quick_name, source))
     assert result == 'QUICK'
     assert marker.read_text() == 'QUICK'
     assert calls == []
-    result = await runner._handle_message(_make_event('/my-cmd', source))
+    result = await runner._handle_message(_make_event('/' + plugin_spelling, source))
     assert '/my-cmd is admin-only here' in result
     assert calls == []
+
+
+@pytest.mark.parametrize('listed', ['reload-mcp', 'reload_mcp'])
+@pytest.mark.parametrize('typed', ['reload-mcp', 'reload_mcp'])
+def test_builtin_allowlist_resolves_registered_aliases(listed, typed):
+    from gateway.slash_access import policy_from_extra
+
+    extra = {'allow_admin_from': ['owner'], 'user_allowed_commands': [listed]}
+    runner = _runner(extra)
+    policy = policy_from_extra(extra, 'dm')
+    assert policy.can_run('reader', typed, command_key=runner._hm_command_key) is True
+    assert policy.can_run('reader', 'restart', command_key=runner._hm_command_key) is False

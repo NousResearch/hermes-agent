@@ -128,13 +128,26 @@ class ReloadMcpStatus(WireEnum):
     reloaded = "reloaded"
 
 
+class ReloadMcpSession(WireEnum):
+    applied = "applied"
+    unchanged = "unchanged"
+    busy = "busy"
+
+
 class ReloadMcpResult(Result):
+    """``session``: what the calling local session's MCP servers did (a new policy generation, nothing to
+    change, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect
+    beside what did apply; ``session_servers``: the MCP servers that session's committed policy runs."""
+
     status: ReloadMcpStatus
     message: str | None = None
     loaded_rev: str | None = None
     coalesced: bool | None = None
     turn_isolation: bool | None = None
     host_ack: JsonValue | None = None
+    session: ReloadMcpSession | None = None
+    unavailable: list[str] | None = None
+    session_servers: list[str] | None = None
 
 
 method("reload.mcp", params=ReloadMcpParams, result=ReloadMcpResult,
@@ -574,10 +587,25 @@ class LegacyPluginRow(Result):
     name: str
     version: str
     enabled: bool
+    # The canonical gateway's rows also carry the load details the classic CLI's /plugins prints.
+    key: str | None = None
+    tools: int | None = None
+    hooks: int | None = None
+    commands: int | None = None
+    error: str | None = None
+
+
+class PluginToolsetRow(Result):
+    key: str
+    label: str
+    description: str
 
 
 class PluginsListResult(Result):
     plugins: list[LegacyPluginRow]
+    # The canonical gateway's plugin toolsets and portable MCP servers (the classic CLI's /tools reads them).
+    toolsets: list[PluginToolsetRow] | None = None
+    portable_mcp_servers: list[str] | None = None
 
 
 method("plugins.list", params=PluginsListParams, result=PluginsListResult,

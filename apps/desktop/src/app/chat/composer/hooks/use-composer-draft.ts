@@ -34,6 +34,7 @@ import {
 } from '@/store/composer-draft-retry'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
+import { migrateQueuedPrompts } from '@/store/composer-queue'
 import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
 
 import {
@@ -581,7 +582,14 @@ export function useComposerDraft({
     // of vanishing. Keyed on the scope alone: the runtime id can land a resume
     // later than the route flips the scope, so it is not a usable signal here.
     if ((isFreshDraftScope(draftScopeRef.current) || !draftScopeRef.current) && activeQueueSessionKey) {
-      adoptNewSessionDraft(activeQueueSessionKey)
+      const freshKey = draftScopeRef.current || freshDraftScope()
+
+      // A follow-up queued while session.create was in flight sits under the
+      // fresh key; it belongs to this chat too. The queue re-key never moves
+      // fresh → stored (#139190), so only this announced handoff does.
+      if (adoptNewSessionDraft(activeQueueSessionKey)) {
+        migrateQueuedPrompts(freshKey, activeQueueSessionKey)
+      }
     } else if (!activeQueueSessionKey) {
       // The reverse handoff: a session the user was typing into turned out
       // to be gone and the window dropped to a fresh draft (#111868). The

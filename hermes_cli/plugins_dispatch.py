@@ -46,7 +46,12 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "on_session_identity",
     # Fail-open consumer on every inbound gateway message: a hung plugin must not stall the profile.
     "post_gateway_admission",
+    # Observer on every local session's commands, fired by the gateway (gateway/session_commands.py).
+    "pre_command",
 }
+# Hooks whose calls are told apart by another payload field: one session's commands are one
+# sequence, so a still-running callback skips that session's next command, not another session's.
+_HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {"pre_command": ("session_key",)}
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
@@ -158,7 +163,7 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
-def _hook_call_identity(kwargs: dict[str, Any]) -> Optional[str]:
+def _hook_call_identity(kwargs: dict[str, Any], hook_name: str = "") -> Optional[str]:
     """Identity of the call this callback fires for, or ``None`` when the event has none.
 
     Concurrent invocations of the same tool in one session must not collapse into one
@@ -167,7 +172,7 @@ def _hook_call_identity(kwargs: dict[str, Any]) -> Optional[str]:
     payload; nothing new is plumbed. Deliberately not ``api_request_id`` — one API request
     carries many tool calls, which would re-collapse the keys.
     """
-    for field in ("tool_call_id", "turn_id"):
+    for field in _HOOK_CALL_IDENTITY_FIELDS.get(hook_name, ("tool_call_id", "turn_id")):
         value = kwargs.get(field)
         if isinstance(value, str) and value:
             return value
@@ -320,7 +325,7 @@ class PluginDispatchMixin:
         # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
         # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
         suppression_key = (hook_name, id(cb))
-        gate_key = (*suppression_key, _hook_call_identity(kwargs))
+        gate_key = (*suppression_key, _hook_call_identity(kwargs, hook_name))
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)

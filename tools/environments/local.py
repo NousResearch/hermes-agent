@@ -84,19 +84,39 @@ def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HO
         if m := _BG_GROUP_RE.match(f.name):
             group_newest[m.group(1)] = max(group_newest.get(m.group(1), 0.0), mt)
 
+    def group_touched(stem: str) -> bool:
+        # Re-stat every member right before each delete: the snapshot above is a candidate
+        # list, and a session that writes its .log after it must keep the whole group.
+        for sfx in ("log", "pid", "exit"):
+            try:
+                if (root / f"{stem}.{sfx}").stat().st_mtime >= cutoff:
+                    return True
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+        return False
+
     removed = 0
-    for f, mt in mtimes.items():
+    for f in mtimes:
         m = _BG_GROUP_RE.match(f.name)
         if m:
-            if group_newest[m.group(1)] >= cutoff:
+            if group_newest[m.group(1)] >= cutoff or group_touched(m.group(1)):
                 continue
         elif subtree_touched_since(f, cutoff):
             continue
         try:
             shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink()
-            removed += 1
         except OSError:
             continue
+        # rmtree ignores errors: only a path that is really gone counts as removed, and only
+        # an explicit lstat proves absence (lexists() swallows OSError from lstat).
+        try:
+            os.lstat(f)
+        except FileNotFoundError:
+            removed += 1
+        except OSError:
+            pass
     return removed
 
 
@@ -779,8 +799,11 @@ def _make_run_env(env: dict, execution_context=None) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping. The process env is
     the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
     (``strip_launch_profile_env``, a no-op for the launch profile) so the backend's own ``env``
-    and the served profile's declared passthrough names are what the child sees."""
-    merged = dict(strip_launch_profile_env(os.environ.copy()) | env)
+    and the served profile's declared passthrough names are what the child sees. A local session's
+    client toolchain (PATH, venv, nvm/pyenv/conda: ``agent.session_client_env``) replaces the daemon's
+    beneath the backend's own ``env``; a session execution context applies on top."""
+    from agent.session_client_env import toolchain_environ
+    merged = dict(toolchain_environ(strip_launch_profile_env(os.environ.copy())) | env)
     if execution_context is not None:
         merged = execution_context.apply_env(merged)
     run_env = _scrubbed_env([(merged, True)], frozenset(),

@@ -91,6 +91,10 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
                                              source=db.TITLE_SOURCE_DERIVED)
     receipt = dict(profile_id=saved['profile_id'], principal_id=saved['principal_id'],
                    request_id=request_id, session_id=child, route=route, entry=entry.to_dict(), policy=policy)
+    # The copied policy holds the parent's picks; the child's refresh must keep them as picks, not defaults.
+    # Always written: a receipt without it predates the field, and picks_on reads that one's lineage.
+    from hermes_state_mutation_prepared import picks_on
+    receipt['picks'] = sorted(picks_on(conn, session_id))
     conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                  (route, _json(entry.to_dict()), now.timestamp()))
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (POLICY_PREFIX + child, _json(receipt)))

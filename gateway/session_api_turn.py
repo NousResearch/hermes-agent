@@ -257,28 +257,39 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
         check_api_settings(adapter, settings)
         from gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
-    ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
+    ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key,
+                                    caller_key=kwargs.get('gateway_session_key'))
     check_api_turn(authority, ref, payload)
     row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
                         session_id=sid, request_id=request_id, payload=payload,
-                        _authorize_write=authority._admission_gate(partial(_admit_target, sid, request_id, payload['api_turn_v1']['settings'])))
+                        _authorize_write=authority._admission_gate(partial(
+                            _admit_target, sid, request_id, payload['api_turn_v1']['settings'],
+                            client_key=bool(kwargs.get('request_id')))))
     return authority, ref, row
 
 
-def _admit_target(session_id, request_id, settings, conn):
+def _admit_target(session_id, request_id, settings, conn, *, client_key=True):
     """Inside the admission's own off-loop transaction: one target per request id, and the
     session's settings for its later payload-less (internal) turns, committed with the admitted
     turn rather than by the drain on the owner loop (N50)."""
-    _one_target(session_id, request_id, conn)
+    _one_target(session_id, request_id, conn, client_key=client_key)
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                  (_SETTINGS_PREFIX + session_id, _json(settings)))
 
 
-def _one_target(session_id, request_id, conn):
+def _one_target(session_id, request_id, conn, *, client_key=True):
     """One API request id (an Idempotency-Key) names one admission. The ledger keys identity by
-    target too, so the same key aimed at another session would otherwise run the work again."""
+    target too, so the same key aimed at another session would otherwise run the work again.
+    A deleted session's admission is gone from the ledger but its tombstone still spends the key
+    (a target that already holds the key replays before this guard runs). Only a client key can
+    name a tombstone: a server-minted id (key-less turn, run id) is fresh, so it skips that scan."""
     if conn.execute("SELECT 1 FROM session_admissions WHERE principal_id='api' AND request_id=? "
                     'AND target_session_id!=? LIMIT 1', (request_id, session_id)).fetchone():
+        raise RuntimeStoreError('admission_conflict')
+    if not client_key:
+        return
+    from hermes_state_terminal import terminal_api_admissions
+    if any(row['target_session_id'] != session_id for row in terminal_api_admissions(conn, request_id)):
         raise RuntimeStoreError('admission_conflict')
 
 
@@ -302,16 +313,17 @@ def owns_api_run(adapter, run_id, owner_scope):
 
 
 def recover_api_turns(adapter):
-    """Recover committed work only after the real API adapter is published."""
-    from gateway.session_authorities import all_authorities, owner_scope
-    for authority in all_authorities(adapter.gateway_runner):
+    """Recover committed work only after the real API adapter is published. A parked profile's
+    retained (retiring) authority is not served: its store is never read here."""
+    from gateway.session_authorities import owner_scope, serving_authorities
+    for authority in serving_authorities(adapter.gateway_runner):
         # Startup is unscoped (the launch profile's home): each profile's media root, config and
         # API bindings must pair with its own state.db, never the launch profile's.
         with owner_scope(authority):
-            _recover_api_turns(adapter, authority)
+            recover_authority_api_turns(adapter, authority)
 
 
-def _recover_api_turns(adapter, authority):
+def recover_authority_api_turns(adapter, authority):
     from hermes_state_runtime import list_session_admissions
     from gateway.session_ingress_media import collect_unheld_api_images
     import logging

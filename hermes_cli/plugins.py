@@ -604,20 +604,20 @@ class PluginContext:
         self, content: str, role: str = "user", *, session_key: str | None = None,
         origin: Mapping[str, Any] | None = None,
     ) -> bool:
-        """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
-
-        CLI uses the attached REPL queues. Ink TUI and desktop use a separate injector
-        from the messaging gateway and queue onto the live session named by ``session_key``
-        (the durable key, not the ephemeral UI session id). ``origin`` (a
-        ``SessionSource.to_dict()``-shaped mapping: platform, chat_id, chat_type, thread_id,
-        user_id, ...) instead names a messaging chat: the gateway starts (or continues) that
-        chat's session in THIS plugin's own profile and runs a turn there; the plugin cannot
-        target another profile. Non-CLI injection needs ``session_key`` or ``origin`` plus
-        ``plugins.entries.<plugin_id>.allow_gateway_injection`` in the plugin's profile config.
-        ``True`` means a host accepted the request, not that the turn completed.
-        """
+        """Queue *content* for a session (``session_key``) or a chat in this plugin's own profile
+        (``origin``); ``True`` means a host accepted it. Contract: plugins_injection.py, plugin docs."""
         from hermes_cli.plugins_injection import inject_plugin_message
         return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
+
+    def session_cwd(self) -> str:
+        """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
+        from hermes_cli.plugin_session import context_cwd
+        return context_cwd(self._manager)
+
+    def session_surface(self) -> str:
+        """The calling session's client (``cli``/``tui``/``desktop``/``acp``) or messaging platform."""
+        from hermes_cli.plugin_session import context_surface
+        return context_surface(self._manager)
 
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's

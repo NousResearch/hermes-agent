@@ -490,6 +490,11 @@ def _launch_tui(
         env.pop("HERMES_TUI_CWD", None)
 
     _apply_tui_python_env(env)
+    # This shell's allowlisted environment, sent as each session's ``client_env`` (LC-8, T3): taken from
+    # the shell before the launcher's own edits (NODE_OPTIONS heap, TUI pins) so the session gets the
+    # PATH / venv / HERMES_* values the user exported.
+    from hermes_cli.gateway_chat import shell_client_env
+    env["HERMES_TUI_CLIENT_ENV"] = json.dumps(shell_client_env())
 
     skills_value = ""
     if skills:

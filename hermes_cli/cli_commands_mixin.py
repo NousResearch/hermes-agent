@@ -34,7 +34,7 @@ from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
-    _dim_line, _gt, _lines, _pr, _probe, _save, _say_block, _shlex_args, _t, _tn)
+    _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -620,15 +620,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         restored = dict(hash=result["restored_to"], reason=result["reason"])
         print(f"  {_t('rollback.restored_file', file=file_path, **restored)}" if file_path
               else f"  {_t('rollback.restored_all', **restored)}")
-        skipped = result.get("skipped_user_edits") or []
-        if skipped:
-            _pr(*_lines(_gt("rollback.kept_user_edits", files=_summarize_paths(skipped))))
-        oversize = result.get("skipped_oversize") or []
-        if oversize:
-            print(f"  {_gt('rollback.kept_oversize', files=_summarize_paths(oversize))}")
-        failed = result.get("failed_deletes") or []
-        if failed:
-            print(f"  {_gt('rollback.failed_deletes', files=_summarize_paths(failed))}")
+        _rollback_kept(result)
         print(f"  {_t('rollback.snapshot_saved')}")
         # Also undo the last conversation turn so the agent's context matches the restored files.
         if self.conversation_history:
@@ -1539,7 +1531,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             if out is not None:
                 return print(out)
         from hermes_cli.gateway_tools import handle_skills_slash  # + the gateway's rescan
-        handle_skills_slash(cmd, ChatConsole())
+        handle_skills_slash(cmd, ChatConsole(), cli=self)
 
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""

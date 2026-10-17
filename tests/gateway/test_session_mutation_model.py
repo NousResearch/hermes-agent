@@ -23,6 +23,29 @@ class CatalogModel(Model):
         self.wfile.write(payload)
 
 
+def test_model_commit_republishes_session_info(monkeypatch):
+    """A canonical picker switch must repaint the intro/header from its committed policy."""
+    from types import SimpleNamespace
+
+    from gateway.session_contract import SessionRef
+    from gateway.session_mutations import _project_committed
+    from gateway import session_local
+
+    published = []
+    authority = SimpleNamespace(
+        sessions={"session": SimpleNamespace(event_stream=SimpleNamespace(
+            publish=lambda sid, payload, *, event_type: published.append((sid, payload, event_type))))},
+        runner=SimpleNamespace(_set_session_reasoning_override=lambda *_args: None),
+        _schedule=lambda _ref: None,
+    )
+    monkeypatch.setattr(session_local, "publish_local_policy", lambda *_args: None)
+    monkeypatch.setattr(session_local, "local_session_info", lambda *_args: {"model": "switched"})
+
+    _project_committed(authority, SessionRef("profile", "session"), "model", {})
+
+    assert published == [("session", {"model": "switched"}, "session.info")]
+
+
 @pytest.mark.platforms("linux")
 def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tmp_path):
     root = Path(__file__).resolve().parents[2]
@@ -67,7 +90,7 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
             from hermes_cli.gateway_chat_view import GatewayChatView
             from acp_adapter.gateway_server import GatewayACPAgent
             class Client:
-                async def rpc(self, method, **kwargs):
+                async def rpc(self, method, _timeout=None, **kwargs):  # the client budget is never on the wire
                     return await call(method, **kwargs)
             client = Client()
             view = GatewayChatView(client, before)
@@ -137,6 +160,7 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
         return 'ok'
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _handle_message=handle,
+                             _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,

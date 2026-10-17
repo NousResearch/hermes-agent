@@ -293,6 +293,13 @@ class CLITuiRuntimeMixin:
                 offer_interactive(cprint=_cprint)
             except Exception:
                 logger.debug("sandbox image switch offer failed", exc_info=True)
+            # Low disk + auto-prune never decided: ask once (either answer ends it for good).
+            try:
+                from hermes_cli.prune_advisor import offer_interactive as _offer_auto_prune
+                from cli import _cprint
+                _offer_auto_prune(cprint=_cprint)
+            except Exception:
+                logger.debug("auto-prune offer failed", exc_info=True)
 
         if self._resumed and self._preload_resumed_session():
             self._display_resumed_history()
@@ -485,7 +492,11 @@ class CLITuiRuntimeMixin:
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
             print(f"{_DIM}{t('cli.tui.shutting_down')}{_RST}", flush=True)
-        if self.agent and self._agent_running:
+        from hermes_cli.cli_shutdown import _gateway_owns_session_end
+        if self.agent and self._agent_running and not (
+                self._detach_on_exit and _gateway_owns_session_end(self.agent)):
+            # A gateway turn left by Ctrl+D is not interrupted: ``end_session`` below detaches this
+            # viewer and the owner closes the row once the turn settles (gateway/session_viewer_close).
             with suppress(Exception):
                 request_hard_interrupt(self.agent)
         if self._voice_recorder:
@@ -528,7 +539,6 @@ class CLITuiRuntimeMixin:
                     logger.debug("Could not delete session on exit: %s", e)
         # run_conversation() fires on_session_end on normal completion; only fire here mid-turn. A gateway
         # turn fires it in the gateway when the interrupted turn finalizes.
-        from hermes_cli.cli_shutdown import _gateway_owns_session_end
         if self.agent and self._agent_running and not _gateway_owns_session_end(self.agent):
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
         _run_cleanup()

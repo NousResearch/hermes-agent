@@ -73,8 +73,10 @@ output_path, exit_code_path, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
 env = dict(os.environ, PYTHONUNBUFFERED="1")
 with open(output_path, "wb") as f:
     rc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).wait(timeout=3600)
-with open(exit_code_path, "w", encoding="utf-8") as f:
+# Temp + replace: the gateway watcher polls the exit code and reads an empty file as failure.
+with open(exit_code_path + ".tmp", "w", encoding="utf-8") as f:
     f.write(str(rc))
+os.replace(exit_code_path + ".tmp", exit_code_path)
 """.strip()
 
 
@@ -145,7 +147,9 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         f" > {shlex.quote(str(output_path))} 2>&1; "
         # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
-        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
+        # Temp + mv: the gateway watcher polls the exit code and reads an empty file as failure.
+        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path) + '.tmp')}"
+        f" && mv -f {shlex.quote(str(exit_code_path) + '.tmp')} {shlex.quote(str(exit_code_path))}")
     # Preferred: setsid creates a new session, fully detached; fallback start_new_session=True
     # calls os.setsid() in the child.
     setsid_bin = shutil.which("setsid")
@@ -226,11 +230,15 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _telegramize_command_mentions
         return _telegramize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
-    def _checkpoint_manager(self):
-        """A CheckpointManager from gateway config, or None when checkpoints are disabled."""
+    def _checkpoint_manager(self, source=None):
+        """A CheckpointManager from a local session's frozen policy, else gateway config; None when disabled."""
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
+        from gateway.session_authorities import active_authority
+        from gateway.session_policy import policy_for_source
         from tools.checkpoint_manager import CheckpointManager
-        cp = _checkpoint_agent_kwargs(_load_gateway_config())
+        policy = policy_for_source(self, source) if source is not None else None
+        cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
+                                      else _load_gateway_config())
         if not cp["checkpoints_enabled"]:
             return None
         # AIAgent kwargs are ``checkpoint_<field>``; CheckpointManager takes the bare field names.
@@ -587,6 +595,15 @@ class GatewaySlashCommandsMixin(
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
 
+    async def _handle_autoprune_command(self, event: MessageEvent) -> str:
+        """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""
+        from hermes_cli.prune_advisor import answered
+        reply = _execute("autoprune", args=event.get_command_args()).text
+        if event.get_command_args().strip() and answered():  # a failed save or `status` keeps it
+            from gateway.run_housekeeping_disk import clear_local_auto_prune_notice
+            clear_local_auto_prune_notice(self, event.source)
+        return reply
+
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
         return _execute("version").text
@@ -714,7 +731,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from tools.checkpoint_manager import format_checkpoint_list
-        mgr = self._checkpoint_manager()
+        mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
         cwd = self._terminal_cwd()
@@ -765,7 +782,7 @@ class GatewaySlashCommandsMixin(
         cwd = self._terminal_cwd()
         if mode == "session":
             # Cumulative checkpoint-baseline diff.
-            mgr = self._checkpoint_manager()
+            mgr = self._checkpoint_manager(event.source)
             if mgr is None:
                 return t("gateway.diff.not_enabled")
             if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree

@@ -302,7 +302,7 @@ def merge_tree(src: Path, dst: Path) -> None:
         retry_held(lambda: item.replace(target))
 
 
-def tree_digest(root: Path) -> str:
+def tree_digest(root: Path, *, onerror=None) -> str:
     """Deterministic sha256 over a directory tree: walk every file, sort
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
@@ -312,11 +312,16 @@ def tree_digest(root: Path) -> str:
     ``__pycache__`` directories are skipped: CPython writes .pyc caches
     into them the first time the staged interpreter runs (uv venv/uv sync
     in a bundle build; first boot of a shipped app), so they are runtime
-    state, not package bytes — the digest is over what pm published."""
+    state, not package bytes — the digest is over what pm published.
+
+    ``onerror`` is os.walk's scandir hook. The default keeps the historic
+    behavior of silently skipping an unreadable subtree (it then digests
+    as different bytes); pass a raising hook to tell "unreadable" apart
+    from "changed" instead of mixing both into one mismatch."""
     import hashlib
 
     files: list[tuple[str, Path]] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=onerror):
         descend = []
         for name in sorted(dirnames):
             path = Path(dirpath) / name

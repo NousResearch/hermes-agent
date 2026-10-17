@@ -23,6 +23,9 @@ TITLE_SOURCE_DERIVED = "derived"
 TITLE_SOURCE_LLM = "llm"
 TITLE_SOURCE_USER = "user"
 
+# Shared by SessionDB mixins when a model_config merge targets no session.
+_MODEL_CONFIG_ROW_MISSING = object()
+
 
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
 # embeds the whole skill body, so scaffolded rows take a wider excerpt (whole message under budget, else head +

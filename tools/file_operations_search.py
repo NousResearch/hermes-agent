@@ -279,7 +279,8 @@ class SearchMixin:
     """File-name and content search via rg with find/grep fallbacks. Requires
     ``_exec``, ``_has_command``, ``_expand_path``, ``_escape_shell_arg``,
     ``_escape_native_tool_arg``, ``env``, ``cwd``, ``_command_cache``,
-    ``_rg_resolution_cache`` and ``_rg_modified_capability`` from the host class."""
+    ``_rg_resolution_cache``, ``_rg_modified_capability`` and
+    ``_find_printf_capability`` from the host class."""
 
     # --- rg resolution --------------------------------------------------------
 
@@ -334,6 +335,20 @@ class SearchMixin:
         r"(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?"
         r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
         r"(?:\s+\(rev [^)]+\))?\s*$")
+
+    def _find_printf_supported(self) -> bool:
+        """Cached probe: does this host's ``find`` understand ``-printf``?
+
+        BSD/macOS find rejects the predicate, GNU find prints the format. Probing
+        once beats inferring support from an empty result: a legitimate zero-match
+        traversal prints nothing too, so that inference reran the whole walk through
+        a lane that leaked pruned hidden dirs as matches (#140390).
+        """
+        if self._find_printf_capability is not None:
+            return self._find_printf_capability
+        result = self._exec("find -H . -maxdepth 0 -printf '%y' 2>/dev/null", timeout=10)
+        self._find_printf_capability = result.exit_code == 0 and result.stdout.strip() == "d"
+        return self._find_printf_capability
 
     def _modified_rg_capability_error(self, executable: str) -> Optional[str]:
         """Cached actionable error unless rg can sort exactly (full SemVer, >= 14)."""
@@ -768,22 +783,23 @@ class SearchMixin:
         escaped_pattern = self._escape_shell_arg(pattern)
         q_roots = [escaped_path]
         hidden_prune = self._hidden_prune_expr(q_roots)
-        cmd = (
-            f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-            f"! -name '.*' -name {escaped_pattern} -printf '%T@ %p\\n' "
-            f"2>/dev/null | sort -rn"
-        )
+        if self._find_printf_supported():
+            cmd = (
+                f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
+                f"! -name '.*' -name {escaped_pattern} -printf '%T@ %p\\n' "
+                f"2>/dev/null | sort -rn"
+            )
+        else:
+            # BSD find: no -printf. The explicit -print is load-bearing — an
+            # expression with no action anywhere gets an implicit -print over the
+            # WHOLE expression, so the pruned hidden-dir arm printed itself as a
+            # match whenever this lane ran (#140390).
+            cmd = (
+                f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
+                f"! -name '.*' -name {escaped_pattern} -print 2>/dev/null"
+            )
         result = self._exec(cmd, timeout=30)
         stdout, limit_reason = _search_stdout_and_limit(result)
-
-        if not stdout.strip() and not limit_reason:
-            # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = (
-                f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-                f"! -name '.*' -name {escaped_pattern} 2>/dev/null"
-            )
-            result = self._exec(cmd_simple, timeout=30)
-            stdout, limit_reason = _search_stdout_and_limit(result)
 
         dirs = []
         for line in stdout.strip().split('\n'):

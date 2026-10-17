@@ -452,6 +452,62 @@ class TestSearchFilesIncludesDirectories:
         assert str(visible_dir) in result.files
         assert str(hidden_dir) not in result.files
 
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    def test_rg_lane_zero_match_glob_returns_no_hidden_directories(self, tmp_path):
+        """A directory probe that matches nothing must return nothing (#140390).
+
+        The no-``-printf`` compat lane carried no action, so find's implicit
+        ``-print`` dumped every pruned hidden directory as a result — and a
+        legitimate zero-match run was exactly what triggered that lane.
+        """
+        root = tmp_path / "repo"
+        (root / ".hidden_dir" / "inner").mkdir(parents=True)
+        (root / ".git" / "objects").mkdir(parents=True)
+        (root / "work").mkdir()
+        (root / "work" / "a.txt").write_text("x")
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("*.bak*", path=str(root), target="files", limit=30)
+
+        assert result.error is None
+        assert result.files == []
+        assert result.total_count == 0
+
+    def test_directory_probe_compat_lane_keeps_matches_and_drops_pruned_dirs(self, tmp_path, monkeypatch):
+        """The BSD/``-printf``-less lane must still report real matches only."""
+        root = tmp_path / "repo"
+        (root / ".hidden_dir").mkdir(parents=True)
+        (root / ".git").mkdir()
+        match = root / "visible.bak"
+        match.mkdir()
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        monkeypatch.setattr(ops, "_find_printf_supported", lambda: False)
+        dirs, reason = ops._search_directories_with_find("*.bak*", str(root), 30)
+
+        assert reason is None
+        assert str(match) in dirs
+        assert not any(os.path.basename(d).startswith(".") for d in dirs)
+
+    def test_zero_match_directory_probe_traverses_once(self, tmp_path, monkeypatch):
+        """Support is probed, not inferred from an empty result: a zero-match run
+        no longer pays for a second full traversal."""
+        root = tmp_path / "repo"
+        (root / ".hidden_dir").mkdir(parents=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        commands = []
+        real_exec = ops._exec
+
+        def spy(command, *args, **kwargs):
+            commands.append(command)
+            return real_exec(command, *args, **kwargs)
+
+        monkeypatch.setattr(ops, "_exec", spy)
+        ops._search_directories_with_find("*.bak*", str(root), 30)
+
+        assert len([c for c in commands if "-mindepth 1" in c]) == 1
+
     def test_find_lane_never_returns_the_search_root_itself(self, tmp_path, monkeypatch):
         """The root is excluded by path identity — not by ``-mindepth 1``, which
         would also exclude the depth-0 operand match a symlinked root depends on

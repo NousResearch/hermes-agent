@@ -223,6 +223,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         self._command_cache: dict[str, bool] = {}
         self._rg_resolution_cache: dict[str, str] = {}
         self._rg_modified_capability: dict[str, Optional[str]] = {}
+        # None = not probed yet; see SearchMixin._find_printf_supported.
+        self._find_printf_capability: Optional[bool] = None
 
     def _exec(self, command: str, cwd: str | None = None, timeout: int | None = None,
               stdin_data: str | None = None) -> ExecuteResult:

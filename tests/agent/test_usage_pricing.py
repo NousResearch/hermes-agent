@@ -920,6 +920,19 @@ def test_anthropic_fast_mode_responses_price_from_the_fast_rate_row():
     )
 
 
+def test_claude_sonnet_5_5_prices_from_the_official_snapshot():
+    # $2 in / $10 out / $0.20 cache read / $2.50 5m cache write per 1M (platform.claude.com pricing).
+    result = estimate_usage_cost("claude-sonnet-5-5", _anthropic_usage(), provider="anthropic")
+    assert result.status == "estimated"
+    assert result.pricing_version == "anthropic-pricing-2026-10"
+    # 100k * $2 + 10k * $10 + 200k * $0.20 + 50k * $2.50, per 1M
+    assert result.amount_usd == Decimal("0.465")
+    # Vendor-prefixed, dotted ids (the model catalog's spelling) resolve to the same row.
+    assert estimate_usage_cost("anthropic/claude-sonnet-5.5", _anthropic_usage(), provider="anthropic").amount_usd == (
+        result.amount_usd
+    )
+
+
 def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None

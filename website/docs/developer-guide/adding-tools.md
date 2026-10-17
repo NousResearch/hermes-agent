@@ -143,7 +143,7 @@ Tool modules with a top-level `registry.register()` call are auto-discovered by 
 
 ## Async Handlers
 
-If your handler needs async code, mark it with `is_async=True`:
+Handlers declared with `async def` (including bound methods and partials) are detected automatically. Synchronous wrappers returning coroutines, decorated functions that hide their coroutine nature, and callable objects with async `__call__` still need `is_async=True`. General awaitable-return detection is not performed:
 
 ```python
 async def weather_tool_async(location: str) -> str:

@@ -640,8 +640,20 @@ describe('the catalog renders per-model pricing', () => {
 
     renderMenu()
 
-    await screen.findByText('$1.60/$8.00')
+    const price = await screen.findByText('$1.60/$8.00')
     expect(screen.queryByText('−20%')).not.toBeNull()
+
+    // Pricing must keep its width while the identity column is allowed to
+    // shrink. This is what lets a content-sized host menu preserve full names
+    // until it reaches the viewport cap.
+    const row = price.closest('[role="menuitem"]')!
+    const nameContainer = Array.from(row.children).find(child => child.classList.contains('flex-1'))
+    const name = nameContainer?.querySelector('.truncate')
+    const priceCell = price.parentElement
+
+    expect(nameContainer?.classList.contains('min-w-0')).toBe(true)
+    expect(name?.classList.contains('min-w-0')).toBe(true)
+    expect(priceCell?.classList.contains('shrink-0')).toBe(true)
   })
 
   it('renders a free label for free-tier models', async () => {

@@ -328,9 +328,12 @@ def _session_db_read_probe_statements() -> tuple:
 
 
 def _open_session_db_at_path(db_path: Path, *, read_only: bool):
-    """Browsing never initializes, repairs or upgrades the owner's session store.
+    """Browsing never initializes or repairs the owner's session store.
 
-    Owner startup reconciles schema; explicit mutation APIs retain their writable
+    Owner startup reconciles schema. The one write a browse may do: a store that lags
+    SCHEMA_SQL (missing table/column, not corruption) with NO gateway owning it gets the
+    missing declared tables/columns once, in one short locked transaction (#140315); an
+    owned store is refused by name instead. Explicit mutation APIs retain their writable
     acquisition until their separate owner-RPC migration.
     """
     import sqlite3
@@ -352,7 +355,11 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             status_code=503,
             detail="Session store is not initialized. Start this profile's gateway to initialize it.")
 
-    try:
+    from hermes_state_reconcile import (
+        DeclarativeDriftError, is_declarative_drift_error, reconcile_drift_for_browse,
+    )
+
+    def _open_probed():
         db = SessionDB(db_path=db_path, read_only=True)
         try:
             conn = getattr(db, "_conn", None)
@@ -363,6 +370,22 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
         except BaseException:
             db.close()
             raise
+
+    try:
+        try:
+            return _open_probed()
+        except sqlite3.OperationalError as exc:
+            # A missing declared table/column is upgrade drift, not corruption (#140315): catch
+            # an unowned store up once under its runtime lock, refuse by name when a gateway
+            # owns it. Never destructive: additive DDL only, no repair from browse.
+            if not is_declarative_drift_error(exc):
+                raise
+            try:
+                reconcile_drift_for_browse(db_path)
+            except DeclarativeDriftError as drift:
+                _log.warning("session store at %s is behind SCHEMA_SQL: %s", db_path, drift)
+                raise HTTPException(status_code=503, detail=str(drift)) from exc
+            return _open_probed()
     except (sqlite3.DatabaseError, UnicodeDecodeError) as exc:
         from hermes_state_errors import is_malformed_db_error
         if isinstance(exc, sqlite3.DatabaseError) and is_malformed_db_error(exc):

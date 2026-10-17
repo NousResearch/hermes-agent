@@ -4,6 +4,8 @@ import hashlib
 import json
 import uuid
 
+from cron.export_writers import writer_custody_for as _writer_custody_for
+
 
 class CronExecutionUnknown(RuntimeError):
     """The owner may have accepted this fire; never book it as failed or re-fire."""
@@ -13,6 +15,25 @@ def journal_path(job_id, request_id):
     from hermes_constants import get_hermes_home
     key = hashlib.sha256(json.dumps([job_id, request_id]).encode()).hexdigest()
     return get_hermes_home() / 'cron' / 'admissions' / (key + '.json')
+
+
+def _authority_owner_home():
+    from hermes_constants import get_hermes_home
+    return get_hermes_home()
+
+
+@_writer_custody_for(_authority_owner_home)
+def _save_admission_journal(job_id, request_id, record):
+    from utils import atomic_json_write
+
+    journal = journal_path(job_id, request_id)
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+
+
+@_writer_custody_for(_authority_owner_home)
+def _remove_admission_journal(job_id, request_id):
+    journal_path(job_id, request_id).unlink(missing_ok=True)
 
 
 def _pause_identity(paused):
@@ -30,13 +51,12 @@ def pause_for_unknown(job_id, execution_id, reason):
     """The firer pauses the job for this fire's unverified admission and records that exact pause
     on the fire's journal, so the receipt that later proves the run terminal can lift it."""
     from cron.jobs import pause_job
-    from utils import atomic_json_write
     paused = pause_job(job_id, reason=reason)
     journal = journal_path(job_id, execution_id)
     if paused and journal.exists():
         record = json.loads(journal.read_text(encoding='utf-8-sig'))
         record['pause_recorded'] = _pause_identity(paused)
-        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+        _save_admission_journal(job_id, execution_id, record)
 
 
 def _lift_pause(job_id, pause):
@@ -56,14 +76,12 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     from gateway.session_cron import owner_for_home, operation
     from hermes_cli.gateway_client import connect_gateway
     from hermes_constants import get_hermes_home
-    from utils import atomic_json_write
 
     request_id = execution_id or job.get('execution_id')
     if not request_id:
         request_id = job['execution_id'] = uuid.uuid4().hex
     params = {'job_id': job['id'], 'request_id': request_id,
               'extra_prompt': extra_prompt}
-    root = get_hermes_home() / 'cron' / 'admissions'
     journal = journal_path(params['job_id'], params['request_id'])
     record = {'params': params, 'receipt': None}
     if journal.exists():
@@ -74,8 +92,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     owner = owner_for_home(get_hermes_home())
 
     def save():
-        root.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+        _save_admission_journal(params['job_id'], params['request_id'], record)
 
     async def observe(call):
         nonlocal attempted
@@ -160,7 +177,6 @@ def reconcile_pending(*, allow_connect=True):
     from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
                                 _save_compose_deliver)
     from cron.scheduler_bookkeeping import fail_empty_response, finish_completed_run
-    from utils import atomic_json_write
     import logging
 
     root = get_hermes_home() / 'cron' / 'admissions'
@@ -178,7 +194,7 @@ def reconcile_pending(*, allow_connect=True):
             if row is not None and row['job_id'] == params['job_id'] and row['status'] in {'completed', 'failed'}:
                 # The firer booked this attempt's terminal outcome itself (ownership lost, shutdown
                 # interrupt, a crashed tail): the receipt is not a result to save or deliver again.
-                journal.unlink(missing_ok=True)
+                _remove_admission_journal(params['job_id'], params['request_id'])
                 continue
             if 'refusal' in record:
                 state = {'status': 'terminal', 'result': record['refusal'], 'job': record['job']}
@@ -200,7 +216,7 @@ def reconcile_pending(*, allow_connect=True):
                 # the same failed run the in-submit refusal books. Only ``unknown`` pauses.
                 current = get_job(params['job_id'])
                 if current is None:
-                    journal.unlink(missing_ok=True)
+                    _remove_admission_journal(params['job_id'], params['request_id'])
                     continue
                 error = 'Cron admission missing: the owner never admitted this fire'
                 state = {'status': 'terminal', 'job': current,
@@ -209,7 +225,7 @@ def reconcile_pending(*, allow_connect=True):
                 if state['status'] == 'unknown' and not record.get('pause_recorded'):
                     reason = 'Canonical cron unknown; no automatic re-execution'
                     record['pause_recorded'] = _pause_identity(pause_job(params['job_id'], reason=reason))
-                    atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+                    _save_admission_journal(params['job_id'], params['request_id'], record)
                 continue
             success, output, answer, error = state['result']
             job = dict(state['job'], **(state.get('job_flags') or {}))

@@ -30,7 +30,7 @@ import json
 
 import pytest
 
-from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
+from agent.compression_marker import MODEL_ONLY_DISPLAY_METADATA_KEY
 
 import tui_gateway.server as srv
 

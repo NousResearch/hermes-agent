@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
+from cron.export_writers import writer_custody_for as _writer_custody_for
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -959,12 +960,9 @@ def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance
         _forced_releases.append(entry)
         del _forced_releases[:-_FORCED_RELEASE_HISTORY]
     try:
-        path = _get_hermes_home() / "cron" / "inflight_forced_releases.jsonl"
-        _ensure_cron_dir(path.parent)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        _append_forced_release_record(entry)
     except Exception as e:  # never let telemetry break a tick
-        logger.debug("Could not append forced-release record: %s", e)
+        logger.debug("Could not append forced-release record: %s", e, exc_info=True)
 
 
 def _latest_executions_for_releasable_claims() -> dict:
@@ -1266,13 +1264,9 @@ def _write_usage_audit(record: dict) -> None:
     """Append one JSONL line to cron/usage_audit.jsonl. NEVER raises — a logger bug must not
     break cron jobs (the whole write is inside one try)."""
     try:
-        path = _usage_audit_path()
-        _ensure_cron_dir(path.parent)
-        line = json.dumps(record, ensure_ascii=False)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        _append_usage_audit_record(record)
     except Exception as e:
-        logger.warning("usage_audit write failed: %s", e)
+        logger.warning("usage_audit write failed: %s", e, exc_info=True)
 
 
 def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
@@ -1305,6 +1299,27 @@ def _get_hermes_home() -> Path:
     profile's home (its .env, config.yaml, scripts, skills).
     """
     return _hermes_home or get_hermes_home()
+
+
+def _scheduler_owner_home() -> Path:
+    return Path(_get_hermes_home())
+
+
+@_writer_custody_for(_scheduler_owner_home)
+def _append_forced_release_record(entry: dict) -> None:
+    path = _get_hermes_home() / "cron" / "inflight_forced_releases.jsonl"
+    _ensure_cron_dir(path.parent)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+@_writer_custody_for(_scheduler_owner_home)
+def _append_usage_audit_record(record: dict) -> None:
+    path = _usage_audit_path()
+    _ensure_cron_dir(path.parent)
+    line = json.dumps(record, ensure_ascii=False)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
 def _get_lock_paths() -> tuple[Path, Path]:

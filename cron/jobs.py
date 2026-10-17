@@ -34,6 +34,11 @@ from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
+from cron.export_writers import (
+    _bound_writer_custody,
+    writer_custody as _writer_custody,
+)
+from hermes_cron_export_custody import CronCustodyRefused
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -183,6 +188,18 @@ def _current_cron_store() -> _CronStorePaths:
     return _CronStorePaths.for_dir(home / "cron")
 
 
+def _writer_owner_home() -> Path:
+    """Resolve custody from the active jobs store, including ``use_cron_store`` overrides."""
+    return _current_cron_store().cron_dir.parent
+
+
+@contextlib.contextmanager
+def _writer_custody_context():
+    """Hold one source-owned shared lease across a jobs-store mutation."""
+    with _bound_writer_custody(_writer_owner_home):
+        yield
+
+
 @contextlib.contextmanager
 def use_cron_store(home: str | Path):
     """Route cron storage to ``home`` without mutating process globals."""
@@ -287,13 +304,10 @@ def _release_flock(lock_fd) -> None:
 
 
 @contextlib.contextmanager
+@_writer_custody
 def _jobs_lock():
-    """Serialize a load_jobs→modify→save_jobs critical section: in-process RLock (parallel tick
-    threads) plus a cross-process flock on ``<cron dir>/.jobs.lock`` (gateway vs. CLI writes —
-    otherwise a `cron pause` could be clobbered and keep firing). Nested calls in one thread
-    reuse the held lock. Without a flock backend, or on flock timeout (logged loudly), it
-    degrades to in-process-only locking: a briefly torn cross-process write beats a dead
-    scheduler."""
+    """Serialize load/modify/save with the RLock and bounded cross-process flock; nested calls
+    reuse the held lock, and unavailable/slow flock degrades to in-process locking."""
     depth = getattr(_jobs_lock_state, "depth", 0)
     if depth:
         _jobs_lock_state.depth = depth + 1
@@ -1051,12 +1065,13 @@ def _append_telemetry_record(filename: str, entry: dict[str, Any], recent: list)
     recent.append(entry)
     del recent[:-_TELEMETRY_RECENT_HISTORY]
     try:
-        path = _current_cron_store().cron_dir / filename
-        _ensure_cron_dir(path.parent)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        with _writer_custody_context():
+            path = _current_cron_store().cron_dir / filename
+            _ensure_cron_dir(path.parent)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
     except Exception as exc:
-        logger.debug("Could not append %s record: %s", filename, exc)
+        logger.debug("Could not append %s record: %s", filename, exc, exc_info=True)
 
 
 def _record_persisted_error_recovery(job: dict[str, Any], previous_next_run: str) -> None:
@@ -1235,14 +1250,19 @@ def compute_next_run(schedule: dict[str, Any], last_run_at: Optional[str] = None
 
 # --- Ticker heartbeat (liveness signal for `hermes cron status`) ---
 
+def _write_marker_unlocked(name: str, text: str, tmp_prefix: str) -> None:
+    ensure_dirs()
+    atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix, mode=0o600)
+
+
 def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
     """Atomic (never torn) best-effort marker write; failures swallowed so markers never break the
     tick."""
     try:
-        ensure_dirs()
-        atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix, mode=0o600)
-    except Exception:
-        pass
+        with _writer_custody_context():
+            _write_marker_unlocked(name, text, tmp_prefix)
+    except (CronCustodyRefused, OSError, TypeError, ValueError) as exc:
+        logger.debug("Could not write marker %s: %s", name, exc, exc_info=True)
 
 
 def record_ticker_heartbeat(success: bool = False) -> None:
@@ -1259,9 +1279,13 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     """
     # ``<epoch> <pid>``: a killed ticker's last stamp reads fresh for ~3 minutes, so a reader with no
     # other proof of the scheduler (the in-process serve/Desktop ticker) checks the writer is alive.
-    _write_marker("ticker_heartbeat", f"{time.time()} {os.getpid()}", ".hb_")
-    if success:
-        _write_marker("ticker_last_success", str(time.time()), ".hb_")
+    try:
+        with _writer_custody_context():
+            _write_marker_unlocked("ticker_heartbeat", f"{time.time()} {os.getpid()}", ".hb_")
+            if success:
+                _write_marker_unlocked("ticker_last_success", str(time.time()), ".hb_")
+    except (CronCustodyRefused, OSError, TypeError, ValueError) as exc:
+        logger.debug("Could not write ticker heartbeat: %s", exc, exc_info=True)
 
 
 def _read_marker_fields(name: str) -> list[str]:
@@ -1319,8 +1343,11 @@ def record_ticker_error(message: str) -> None:
 
 def clear_ticker_error() -> None:
     """Remove the last-tick-error marker after a successful tick. Best-effort."""
-    with contextlib.suppress(OSError):
-        (_current_cron_store().cron_dir / "ticker_last_error").unlink()
+    try:
+        with _writer_custody_context():
+            (_current_cron_store().cron_dir / "ticker_last_error").unlink()
+    except (CronCustodyRefused, OSError, TypeError, ValueError) as exc:
+        logger.debug("Could not clear ticker error: %s", exc, exc_info=True)
 
 
 def get_ticker_last_error() -> Optional[str]:
@@ -1913,8 +1940,16 @@ def create_job(
         if value is not None:
             job[key] = value
 
-    with _jobs_lock():
-        save_jobs(load_jobs() + [job])
+    try:
+        with _jobs_lock():
+            save_jobs(load_jobs() + [job])
+    except CronCustodyRefused as exc:
+        # Preserve the public first-writer contract for a deleted named profile.  The custody
+        # adapter fails closed before the old ``_ensure_cron_dir`` path can recreate it.
+        owner_home = _current_cron_store().cron_dir.parent
+        if _is_named_profile_path(owner_home) and not owner_home.exists():
+            raise FileNotFoundError(owner_home / "cron") from exc
+        raise
     return job
 
 
@@ -3381,6 +3416,7 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     return deleted
 
 
+@_writer_custody
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()

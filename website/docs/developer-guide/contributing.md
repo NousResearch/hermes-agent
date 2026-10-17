@@ -154,6 +154,10 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
 | **Python 3.14** | Current development uses PM's pinned interpreter. The broader `>=3.11,<3.15` package metadata keeps old updaters working, not the current runtime on older Python. |
 | **Node.js** | Use the PM pin or a version accepted by root `package.json` engines |
 
+On native Windows, use the [Windows clone command](../reference/package-management.md#prepare-a-checkout)
+before preparing dependencies. A deeply nested checkout can otherwise fail with
+`Filename too long` while writing the repository's documentation paths.
+
 ### PM developer environment
 
 Use the [PM developer workflow](../reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,

@@ -25,6 +25,8 @@ PUBLIC_CONTRACT_VERSION = 1
 _MAX_GOAL_CHARS = 16_000
 _MAX_CONTEXT_CHARS = 32_000
 _MAX_METADATA_BYTES = 8_192
+_MAX_SCHEMA_ERRORS = 10
+_MAX_SCHEMA_TEXT_CHARS = 1_000
 _MAX_RESULT_CHARS = 32_000
 _TERMINAL_RETENTION_SECONDS = 3_600
 
@@ -59,6 +61,10 @@ class SubagentLaunchRequest:
     correlation_id: Optional[str] = None
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     timeout_seconds: Optional[float] = None
+    # Native ``delegate_task`` task inputs: local paths / http(s) / data: image URLs for the child's first turn, and a
+    # JSON Schema its final answer is validated against (one correction turn). Snapshotted when launched.
+    images: Optional[tuple[str, ...]] = None
+    output_schema: Optional[Mapping[str, Any]] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -246,13 +252,52 @@ def _coerce_request(request: Any) -> SubagentLaunchRequest:
     unknown = set(values) - {field.name for field in dataclasses.fields(SubagentLaunchRequest)}
     if unknown:
         raise SubagentLifecycleError(f"Unknown request fields: {', '.join(sorted(map(str, unknown)))}.")
-    for name in ("allowed_toolsets", "blocked_tools"):
+    for name in ("allowed_toolsets", "blocked_tools", "images"):
         if isinstance(values.get(name), list):
             values[name] = tuple(values[name])
     try:
         return SubagentLaunchRequest(**values)
     except TypeError as exc:
         raise SubagentLifecycleError(f"Malformed subagent launch request: {exc}") from exc
+
+
+def _prepare_native_inputs(request: SubagentLaunchRequest) -> tuple[Optional[list[str]], Optional[dict[str, Any]]]:
+    """Validate ``images``/``output_schema`` with the native ``delegate_task`` coercers, before any child exists.
+
+    Returns ``(images, schema)`` where the schema is a JSON snapshot (later caller mutation cannot reach the child).
+    """
+    from tools.delegate_tool_tasks import _normalize_task_images
+    from tools.delegation_output_schema import coerce_output_schema
+    raw_images = list(request.images) if isinstance(request.images, (tuple, list)) else request.images
+    images, error = _normalize_task_images({"images": raw_images}, 0)
+    if error:
+        raise SubagentLifecycleError(error.replace("Task 0 ", "", 1))
+    raw_schema = dict(request.output_schema) if isinstance(request.output_schema, Mapping) else request.output_schema
+    schema, error = coerce_output_schema(raw_schema)
+    if error:
+        raise SubagentLifecycleError(error)
+    if schema is None:
+        return images, None
+    try:
+        text = json.dumps(schema, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise SubagentLifecycleError("output_schema must be JSON-serializable.") from exc
+    # Native delegation appends the contract after caller-context validation. Do not impose
+    # schema-only or combined-size caps that native delegate_task does not have.
+    return images, json.loads(text)
+
+
+def _schema_receipt(raw: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """Bounded native schema-validation verdict from a worker entry; ``None`` unless a schema was validated."""
+    if not isinstance(raw.get("schema_valid"), bool):
+        return None
+    receipt: dict[str, Any] = {"schema_valid": raw["schema_valid"]}
+    errors = raw.get("schema_errors")
+    if isinstance(errors, list) and errors:
+        receipt["schema_errors"] = [str(e)[:_MAX_SCHEMA_TEXT_CHARS] for e in errors[:_MAX_SCHEMA_ERRORS]]
+    if isinstance(raw.get("schema_note"), str):
+        receipt["schema_note"] = raw["schema_note"][:_MAX_SCHEMA_TEXT_CHARS]
+    return receipt
 
 
 def _coerce_handle(handle: Any) -> Optional[SubagentHandle]:
@@ -280,6 +325,7 @@ class SubagentLifecycleService:
             raise SubagentLifecycleError("No active Hermes parent session is available.")
         request = _coerce_request(request)
         self._validate_request(request, parent)
+        images, schema = _prepare_native_inputs(request)
         parent_session_id = _session_id_of(parent)
         if request.parent_session_id and request.parent_session_id != parent_session_id:
             raise SubagentLifecycleError("parent_session_id does not match the active session.")
@@ -299,12 +345,19 @@ class SubagentLifecycleService:
             creds = _resolve_delegation_credentials(routing_cfg, parent)
         except ValueError as exc:
             raise SubagentLifecycleError(str(exc)) from exc
+        from tools.delegation_output_schema import append_output_contract
         child = _build_child_preserving_parent_tools(
-            task_index=0, goal=request.goal, context=request.context,
+            task_index=0, goal=request.goal,
+            context=append_output_contract(request.context, schema) if schema is not None else request.context,
             toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
             model=request.model or creds["model"], max_iterations=DEFAULT_MAX_ITERATIONS,
             task_count=1, parent_agent=parent, role=request.role, **_credential_overrides(creds, routing_cfg),
         )
+        # Same child attributes the native task path sets; the shared worker reads them before the first turn.
+        if schema is not None:
+            child._delegate_output_schema = schema
+        if images:
+            child._delegate_images = images
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
             raise SubagentLifecycleError("Hermes failed to assign a child identity.")
@@ -432,6 +485,7 @@ class SubagentLifecycleService:
                 error_classification=None if state == SubagentState.SUCCEEDED else status.upper(),
                 usage_metadata={"api_calls": raw.get("api_calls", 0)} if is_dict else {},
                 tool_execution_summary={"duration_seconds": raw.get("duration_seconds", 0)} if is_dict else {},
+                structured_payload=_schema_receipt(raw),
             )
         except Exception as exc:
             state = SubagentState.FAILED

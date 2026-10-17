@@ -194,3 +194,32 @@ def test_rollback_restore_keeps_hand_edits_unless_all(tmp_path):
                 assert forced['success'] is True and not forced.get('skipped_user_edits'), forced
                 assert (work / 'mine.txt').read_text() == 'original mine\n'
         asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_rollback_restore_reads_a_null_all_as_omitted(tmp_path):
+    """The published contract declares ``all`` nullable (``RollbackRestoreParams``): a client sending
+    its declared default gets the safe restore, like one sending nothing or ``false``."""
+    with owner(tmp_path) as (home, _peer, desc):
+        work = tmp_path / 'work'
+        work.mkdir()
+        (work / 'agent.txt').write_text('original\n')
+        (work / 'mine.txt').write_text('original mine\n')
+        out = {}
+
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='null-all', source='tui', toolsets=[],
+                                 cwd=str(work), checkpoints=True))['result']['session_id']
+                await asyncio.to_thread(_checkpoint, home, work, 'before write_file')
+                [row] = (await _git_rpc(ws, 'rollback.list', session_id=sid))['result']['checkpoints']
+                await asyncio.to_thread(_agent_write, home, work / 'agent.txt', 'agent\n')
+                for case, extra in (('omitted', {}), ('null', {'all': None}), ('false', {'all': False}),
+                                    ('true', {'all': True})):
+                    (work / 'mine.txt').write_text('hand edit\n')
+                    reply = await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash'], **extra)
+                    out[case] = (reply.get('result', {}).get('skipped_user_edits')
+                                 or reply.get('error', {}).get('message'), (work / 'mine.txt').read_text())
+        asyncio.run(probe())
+    kept = (['mine.txt'], 'hand edit\n')
+    assert out == {'omitted': kept, 'null': kept, 'false': kept, 'true': (None, 'original mine\n')}, out

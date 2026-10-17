@@ -160,7 +160,7 @@ async def rollback(connection, ref, params, *, kind):
     fields = _ROLLBACK_FIELDS[kind]
     if any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
            for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params) or (
-               not isinstance(params.get('all', False), bool)):
+               params.get('all') is not None and not isinstance(params['all'], bool)):  # nullable: null is omitted
         raise RuntimeStoreError('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority

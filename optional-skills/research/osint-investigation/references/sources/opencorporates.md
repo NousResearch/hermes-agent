@@ -72,15 +72,15 @@ Path: `scripts/fetch_opencorporates.py`
 
 ```bash
 # Search globally by name
-python3 SKILL_DIR/scripts/fetch_opencorporates.py --query "Example Corp" \
+python SKILL_DIR/scripts/fetch_opencorporates.py --query "Example Corp" \
     --out data/oc.csv
 
 # Restrict to a jurisdiction
-python3 SKILL_DIR/scripts/fetch_opencorporates.py --query "Example Corp" \
+python SKILL_DIR/scripts/fetch_opencorporates.py --query "Example Corp" \
     --jurisdiction us_ny --out data/oc_ny.csv
 
 # Set token via env or flag
-OPENCORPORATES_API_TOKEN=xxx python3 SKILL_DIR/scripts/fetch_opencorporates.py \
+OPENCORPORATES_API_TOKEN=xxx python SKILL_DIR/scripts/fetch_opencorporates.py \
     --query "Microsoft" --out data/oc.csv
 ```
 

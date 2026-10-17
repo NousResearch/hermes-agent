@@ -86,7 +86,7 @@ done < dangling_shas.txt
 
 ```bash
 # Find all archived snapshots of a specific issue
-curl -s "https://web.archive.org/cdx/search/cdx?url=github.com/OWNER/REPO/issues/NUMBER&output=json&limit=50&fl=timestamp,statuscode,original" | python3 -m json.tool
+curl -s "https://web.archive.org/cdx/search/cdx?url=github.com/OWNER/REPO/issues/NUMBER&output=json&limit=50&fl=timestamp,statuscode,original" | python -m json.tool
 
 # Fetch the best snapshot
 # Use the timestamp from the CDX result:
@@ -94,7 +94,7 @@ curl -s "https://web.archive.org/cdx/search/cdx?url=github.com/OWNER/REPO/issues
 curl -s "https://web.archive.org/web/TIMESTAMP/https://github.com/OWNER/REPO/issues/NUMBER" > issue_NUMBER_archived.html
 
 # Find all snapshots of the repo in a date range
-curl -s "https://web.archive.org/cdx/search/cdx?url=github.com/OWNER/REPO*&output=json&from=20240101&to=20240201&limit=200&fl=timestamp,urlkey,statuscode" | python3 -m json.tool
+curl -s "https://web.archive.org/cdx/search/cdx?url=github.com/OWNER/REPO*&output=json&from=20240101&to=20240201&limit=200&fl=timestamp,urlkey,statuscode" | python -m json.tool
 ```
 
 ### Via GitHub API (Limited — Only Non-Deleted Content)
@@ -127,7 +127,7 @@ ORDER BY created_at
 git show SHA:path/to/file.py > recovered_file.py
 
 # Or via API (base64 encoded content):
-curl -s "https://api.github.com/repos/OWNER/REPO/contents/path/to/file.py?ref=SHA" | python3 -c "
+curl -s "https://api.github.com/repos/OWNER/REPO/contents/path/to/file.py?ref=SHA" | python -c "
 import sys, json, base64
 d = json.load(sys.stdin)
 print(base64.b64decode(d['content']).decode())
@@ -141,7 +141,7 @@ print(base64.b64decode(d['content']).decode())
 After recovering any deleted content, immediately record it:
 
 ```bash
-python3 SKILL_DIR/scripts/evidence-store.py --store evidence.json add \
+python SKILL_DIR/scripts/evidence-store.py --store evidence.json add \
   --source "git fetch origin FORCE_PUSHED_SHA" \
   --content "Recovered commit: FORCE_PUSHED_SHA | Author: attacker@example.com | Date: 2024-01-15 | Added file: malicious.sh" \
   --type git \

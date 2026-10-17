@@ -70,19 +70,19 @@ Path: `scripts/fetch_gdelt.py`
 
 ```bash
 # Recent news mentioning an entity
-python3 SKILL_DIR/scripts/fetch_gdelt.py --query "Nous Research" \
+python SKILL_DIR/scripts/fetch_gdelt.py --query "Nous Research" \
     --timespan 6m --out data/gdelt.csv
 
 # Phrase-exact (use double quotes inside single quotes for the shell)
-python3 SKILL_DIR/scripts/fetch_gdelt.py --query '"Dillon Rolnick"' \
+python SKILL_DIR/scripts/fetch_gdelt.py --query '"Dillon Rolnick"' \
     --timespan 1y --out data/gdelt.csv
 
 # Filter to a country / language
-python3 SKILL_DIR/scripts/fetch_gdelt.py --query "Microsoft" \
+python SKILL_DIR/scripts/fetch_gdelt.py --query "Microsoft" \
     --source-country US --source-lang English --out data/gdelt.csv
 
 # Date range
-python3 SKILL_DIR/scripts/fetch_gdelt.py --query "Microsoft" \
+python SKILL_DIR/scripts/fetch_gdelt.py --query "Microsoft" \
     --start 2024-01-01 --end 2024-12-31 --out data/gdelt.csv
 ```
 

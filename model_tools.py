@@ -28,6 +28,9 @@ from utils import file_signature
 logger = logging.getLogger(__name__)
 
 _post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar("post_tool_call_hook_suppressed", default=False)
+_transform_tool_result_hook_suppressed: ContextVar[bool] = ContextVar(
+    "transform_tool_result_hook_suppressed", default=False
+)
 
 
 @contextmanager
@@ -39,6 +42,16 @@ def suppress_post_tool_call_hook(suppressed: bool = True):
         yield
     finally:
         _post_tool_call_hook_suppressed.reset(token)
+
+
+@contextmanager
+def suppress_transform_tool_result_hook():
+    """Keep programmatic RPC results machine-readable for their caller."""
+    token = _transform_tool_result_hook_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _transform_tool_result_hook_suppressed.reset(token)
 
 # Platform-bundle names already flagged in disabled_toolsets (advisory logged once per name).
 _WARNED_DISABLED_BUNDLES: set = set()
@@ -853,6 +866,8 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: dict[st
     Runs after post_tool_call and before the result enters context. Fail-open;
     first string return wins. Gated on has_hook so the no-listener path is cheap.
     """
+    if _transform_tool_result_hook_suppressed.get():
+        return result
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if has_hook("transform_tool_result"):

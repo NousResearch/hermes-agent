@@ -144,6 +144,19 @@ def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mo
     assert entries["offhost"]["image"] == "" and entries["offhost"]["version"] == "1.4.0"
 
 
+def test_non_https_docs_url_is_dropped_not_fatal(mod, tmp_path):
+    # docsUrl is the one field the docs site renders as an <a href>, so a
+    # javascript: value must never survive extraction; the entry stays.
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "scripted", docs_url="javascript:alert(document.domain)")
+    _write_entry(catalog, "linked", docs_url="https://example.com/docs")
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["scripted"]["docsUrl"] == ""
+    assert entries["linked"]["docsUrl"] == "https://example.com/docs"
+
+
 def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
     """Detail-page inputs: screenshots follow the image host rule (off-host dropped, never fatal), readme
     resolves to the raw README at the PINNED sha (GitHub and GitLab, subdir-aware) BY DEFAULT, is off for

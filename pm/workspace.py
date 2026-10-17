@@ -7,6 +7,7 @@ failure propagates without changing plugin configuration or the live venv.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from collections.abc import Mapping
@@ -72,6 +73,36 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     setuptools = metadata.get("tool", {}).get("setuptools", {})
     patterns = setuptools.get("packages", {}).get("find", {}).get("include", ["*"])
     package_roots = {pattern.split(".", 1)[0] for pattern in patterns}
+    source_root = source.resolve()
+    # A Docker build may place the PM runtime store under a Python package root
+    # (currently tools/). Copy the package source, but not the published binary
+    # entries listed in that store's facts.json.
+    try:
+        from pm.environments import store_root as resolve_store_root
+
+        runtime_override = os.environ.get("HERMES_RUNTIME_DIR")
+        runtime_store = Path(runtime_override).expanduser().resolve() if runtime_override else None
+        if runtime_store is None or not runtime_store.is_relative_to(source_root):
+            runtime_store = resolve_store_root(source_root, honor_runtime_override=False).resolve()
+    except (OSError, RuntimeError, ValueError):
+        runtime_store = None
+    pm_entries: set[Path] = set()
+    if runtime_store is not None and runtime_store.is_relative_to(source_root):
+        facts_path = runtime_store / "facts.json"
+        if facts_path.is_file():
+            try:
+                facts = json.loads(facts_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise InstallError("venv", f"cannot safely snapshot PM store: invalid {facts_path}") from exc
+            packages = facts.get("packages") if isinstance(facts, dict) else None
+            if not isinstance(packages, dict):
+                raise InstallError("venv", f"cannot safely snapshot PM store: invalid {facts_path}")
+            for fact in packages.values():
+                entry = fact.get("entry") if isinstance(fact, dict) else None
+                if isinstance(entry, str) and entry:
+                    path = (runtime_store / entry).resolve()
+                    if path != runtime_store and path.is_relative_to(runtime_store):
+                        pm_entries.add(path)
     files = {"pyproject.toml", "setup.py", "setup.cfg"}
     readme = project.get("readme")
     if isinstance(readme, str):
@@ -89,8 +120,17 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
     nested_excluded = excluded - {"dist"}
     def ignore(directory, names):
-        return [name for name in names if name in nested_excluded or name.startswith(".")
-                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+        ignored = []
+        for name in names:
+            path = Path(directory) / name
+            try:
+                in_pm_store = any(path.resolve().is_relative_to(entry) for entry in pm_entries)
+            except (OSError, RuntimeError, ValueError):
+                in_pm_store = False
+            if (name in nested_excluded or name.startswith(".") or name.endswith(".egg-info")
+                    or path.is_symlink() or in_pm_store):
+                ignored.append(name)
+        return ignored
 
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded

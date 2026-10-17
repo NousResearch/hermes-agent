@@ -2,7 +2,13 @@ import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import { $desktopBoot } from '@/store/boot'
-import { initializeConnectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
+import {
+  $activeConnectionId,
+  forgetConnection,
+  initializeConnectionsRegistry,
+  refreshConnectionsRegistry,
+  selectConnection
+} from '@/store/connections'
 import { isAuxiliaryWindow, isPeerInstanceWindow } from '@/store/windows'
 
 const RETRY_DELAYS_MS = [1_000, 2_000]
@@ -16,6 +22,7 @@ export function useConnectionsRegistry(): void {
     let failed = false
     let pending = false
     let requested = false
+    let removedActive: string | null = null
     let retries = 0
     let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -30,9 +37,14 @@ export function useConnectionsRegistry(): void {
       pending = true
 
       try {
-        await refreshConnectionsRegistry()
+        const registry = await refreshConnectionsRegistry()
+        if (disposed) return
         failed = false
         retries = 0
+        if (removedActive && registry && $activeConnectionId.get() === removedActive) {
+          await selectConnection(registry.primary)
+          removedActive = null
+        }
       } catch (error) {
         failed = true
 
@@ -61,7 +73,16 @@ export function useConnectionsRegistry(): void {
       }
     }
 
-    const off = window.hermesDesktop?.connections?.onChanged?.(() => void refresh())
+    const off = window.hermesDesktop?.connections?.onChanged?.(payload => {
+      if (payload.reason !== 'removed') {
+        void refresh()
+        return
+      }
+
+      forgetConnection(payload.connectionId)
+      if ($activeConnectionId.get() === payload.connectionId) removedActive = payload.connectionId
+      void refresh()
+    })
     window.addEventListener('focus', onFocus)
     void refresh()
 

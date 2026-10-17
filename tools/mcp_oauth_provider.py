@@ -83,7 +83,10 @@ class HermesProviderMixin:
       (some authorization servers/WAFs reject httpx's default); unset falls back to the shared
       ``Hermes-Agent/<version>`` default, since a header-less token POST is 403'd by WAF-fronted
       authorization servers (#115329).
-    - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs."""
+    - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs.
+    - A refresh triggered by a request without ``MCP-Protocol-Version`` (a new session's
+      ``initialize``) is built with the last negotiated version, else the SDK's latest, so it
+      still names the RFC 8707 ``resource`` like every other refresh of the grant."""
 
     _hermes_logger: logging.Logger = logger
 
@@ -221,6 +224,8 @@ class HermesProviderMixin:
     # Locked descriptor while this provider owns the refresh fence; cleared by
     # _hermes_release_refresh_fence. Never shared across instances.
     _hermes_fence: int | None = None
+    # Last MCP-Protocol-Version seen on a request through this provider (see _refresh_token).
+    _hermes_protocol_version: str | None = None
 
     async def async_auth_flow(self, request):
         """Guarantee fence release even if the auth generator is abandoned.
@@ -239,6 +244,10 @@ class HermesProviderMixin:
         the original request with the winner's access token, never POSTing
         the burned refresh token.
         """
+        headers = getattr(request, "headers", None)
+        negotiated = headers.get("MCP-Protocol-Version") if headers is not None else None
+        if negotiated:
+            self._hermes_protocol_version = negotiated
         while True:
             inner = super().async_auth_flow(request)
             discovery_failures: list[str] = []
@@ -299,6 +308,13 @@ class HermesProviderMixin:
         refreshes inside one process.
         """
         self._coerce_client_secret_post()
+        if not self.context.protocol_version:
+            # The SDK takes the version from the triggering request and adds RFC 8707 ``resource``
+            # only when it is set (or protected-resource metadata is known). A new session's
+            # ``initialize`` carries no version, so that refresh left ``resource`` out and the
+            # authorization server rejected a token that refreshed fine from any other request.
+            from mcp.types import LATEST_PROTOCOL_VERSION
+            self.context.protocol_version = self._hermes_protocol_version or LATEST_PROTOCOL_VERSION
         await self._hermes_acquire_refresh_fence()
         try:
             # Re-read under the fence: a peer may have rotated while we waited

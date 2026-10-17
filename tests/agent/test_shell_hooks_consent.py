@@ -31,7 +31,7 @@ def _isolated_home(tmp_path, monkeypatch):
 
 def _write_hook_script(tmp_path: Path) -> Path:
     script = tmp_path / "hook.sh"
-    script.write_text("#!/usr/bin/env bash\nprintf '{}\\n'\n")
+    script.write_text("#!/usr/bin/env bash\nprintf '{}\\n'\n", encoding="utf-8")
     script.chmod(0o755)
     return script
 
@@ -245,7 +245,7 @@ class TestAllowlistOps:
         """If the command uses ~ the approval must still find the file."""
         monkeypatch.setenv("HOME", str(tmp_path))
         target = tmp_path / "hook.sh"
-        target.write_text("#!/usr/bin/env bash\n")
+        target.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         target.chmod(0o755)
 
         shell_hooks._record_approval("on_session_start", "~/hook.sh")

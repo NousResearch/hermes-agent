@@ -141,6 +141,9 @@ class TestVaultStore:
         assert normalize_origin("https://Example.com:443/login?x=1") == "https://example.com"
         assert normalize_origin("http://localhost:8931/") == "http://localhost:8931"
         assert normalize_origin("http://site.test:80") == "http://site.test"
+        assert normalize_origin("http://[fd00:db8::1]/login") == "http://[fd00:db8::1]"
+        assert normalize_origin("http://[FD00:DB8::1]:8080/") == "http://[fd00:db8::1]:8080"
+        assert normalize_origin("http://[::1]:80") == "http://[::1]"
         with pytest.raises(VaultError):
             normalize_origin("example.com")
 

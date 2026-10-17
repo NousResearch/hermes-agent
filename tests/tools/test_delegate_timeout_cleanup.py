@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import Future
 from types import SimpleNamespace
 
+import pytest
+
+import tools.terminal_tool as tt
 from tools import delegate_tool
+from tools import delegate_tool_child_run as dcr
 
 
 class _SlowUnwindingChild:
@@ -100,4 +105,92 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     assert child.closed.wait(timeout=10)
     assert not child.close_while_running, (
         "timed-out child.close() raced its still-running conversation thread"
+    )
+
+
+# ── Child terminal-state lifecycle (clear_task_env_overrides on cleanup) ─────
+
+
+class _NoopHeartbeat:
+    """Stand-in for _Heartbeat in _ChildRun.cleanup (stop() is the only touch)."""
+
+    def stop(self):
+        pass
+
+
+def _seed_child_run(task_index: int, subagent_id=None, parent_task_id="parent-task-lifecycle"):
+    """Drive the real seed_workspace() so the child's cwd record + container alias exist."""
+    parent = SimpleNamespace(_current_task_id=parent_task_id, session_id="parent-session-lifecycle")
+    child = SimpleNamespace(session_id=f"child-session-lifecycle-{task_index}", close=lambda: None)
+    run = dcr._ChildRun(child, parent, task_index, "goal", subagent_id, None)
+    run.seed_workspace()
+    assert run.child_task_id
+    return run, child
+
+
+def _child_has_terminal_state(child_task_id: str) -> bool:
+    return bool(tt._container_aliases.get(child_task_id)) or tt.get_session_cwd(child_task_id) is not None
+
+
+@pytest.fixture(autouse=True)
+def _lifecycle_terminal_state():
+    """Snapshot and restore the process-global terminal state the lifecycle touches.
+
+    seed_workspace()/cleanup() mutate module-level dicts in tools.terminal_tool; restoring
+    the exact snapshots keeps fixture leakage out of neighboring tests in this file.
+    """
+    cwd_before = dict(tt._session_cwd)
+    aliases_before = dict(tt._container_aliases)
+    overrides_before = dict(tt._task_env_overrides)
+    yield
+    tt._session_cwd.clear()
+    tt._session_cwd.update(cwd_before)
+    with tt._container_alias_lock:
+        tt._container_aliases.clear()
+        tt._container_aliases.update(aliases_before)
+    tt._task_env_overrides.clear()
+    tt._task_env_overrides.update(overrides_before)
+
+
+def test_normal_cleanup_clears_child_terminal_state_and_preserves_parent():
+    tt.record_session_cwd("parent-task-lifecycle", "/tmp/parent-lifecycle")
+    tt.register_container_alias("parent-task-lifecycle", None)
+    run, _child = _seed_child_run(0)
+
+    assert _child_has_terminal_state(run.child_task_id), "seed_workspace must seed the child record"
+    run.cleanup(heartbeat=_NoopHeartbeat(), child_pool=None, leased_cred_id=None, close_deferred=False)
+
+    assert not _child_has_terminal_state(run.child_task_id), (
+        "normal cleanup must clear the child's cwd record and container alias"
+    )
+    assert tt.get_session_cwd("parent-task-lifecycle") == "/tmp/parent-lifecycle"
+    assert tt._container_aliases.get("parent-task-lifecycle") == "default"
+
+
+def test_timed_out_child_keeps_terminal_state_until_worker_future_completes():
+    tt.record_session_cwd("parent-task-lifecycle", "/tmp/parent-lifecycle")
+    tt.register_container_alias("parent-task-lifecycle", None)
+    run, _child = _seed_child_run(1)
+    child_task_id = run.child_task_id
+
+    worker_future = Future()
+    worker_future.set_running_or_notify_cancel()
+    dcr._defer_close_after_timeout(_child, worker_future, child_task_id)
+
+    run.cleanup(heartbeat=_NoopHeartbeat(), child_pool=None, leased_cred_id=None, close_deferred=True)
+
+    assert _child_has_terminal_state(child_task_id), (
+        "a timed-out child keeps its terminal state while its worker future is still running"
+    )
+
+    worker_future.set_result(None)
+    deadline = threading.Event()
+    # The done-callback runs on the future's completing thread; poll briefly for it.
+    for _ in range(100):
+        if not _child_has_terminal_state(child_task_id):
+            deadline.set()
+            break
+        deadline.wait(0.05)
+    assert deadline.is_set(), (
+        "the deferred done-callback must clear the child's terminal state once the worker future completes"
     )

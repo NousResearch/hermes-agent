@@ -558,12 +558,41 @@ class LSPClient:
             cur = cur[part]
         return cur
 
+    def _track_doc(self, path: str) -> "_DocState":
+        """Return the ``_DocState`` for ``path``, creating it under the cap.
+
+        Sync insert path for notification handlers (``_handle_publish_diagnostics``
+        is sync, so ``_evict_lru_docs`` cannot be awaited here). Eviction drops the
+        oldest never-opened (version -1) entries only — opened docs are
+        server-mirrored and need an async didClose, which ``open_file``'s
+        ``_evict_lru_docs`` call (and the pull path below) still handles. The
+        just-added entry is never the victim, so this never drops what it stored;
+        spillover stays bounded whenever older never-opened entries exist.
+        """
+        doc = self._docs.get(path)
+        if doc is None:
+            doc = self._docs[path] = _DocState(version=-1)
+            self._enforce_docs_cap_sync()
+        else:
+            self._docs[path] = self._docs.pop(path)  # mark recently used
+        return doc
+
+    def _enforce_docs_cap_sync(self) -> None:
+        """Sync half of the MAX_TRACKED_FILES cap: evict oldest version<0 entries."""
+        while len(self._docs) > MAX_TRACKED_FILES:
+            for key, doc in list(self._docs.items())[:-1]:
+                if doc.version < 0:
+                    del self._docs[key]
+                    break
+            else:
+                return
+
     def _handle_publish_diagnostics(self, params: Any) -> None:
         if not isinstance(params, dict) or not isinstance(params.get("uri"), str):
             return
         diagnostics = params.get("diagnostics") or []
         version = params.get("version")
-        doc = self._docs.setdefault(uri_to_path(params["uri"]), _DocState(version=-1))
+        doc = self._track_doc(uri_to_path(params["uri"]))
         is_seed = self._seed_first_push and not doc.seed_seen
         doc.seed_seen = True
         doc.push = diagnostics if isinstance(diagnostics, list) else []
@@ -670,9 +699,10 @@ class LSPClient:
         for doc_path, report, tag in reports:
             items = report.get("items") if isinstance(report, dict) else None
             if isinstance(items, list):
-                d = self._docs.setdefault(doc_path, _DocState(version=-1))
+                d = self._track_doc(doc_path)
                 d.pull = items
                 d.pull_version = d.version if tag is None else tag
+        await self._evict_lru_docs()
 
     async def wait_for_diagnostics(self, path: str, version: int, *, mode: str = "document",
                                    timeout: Optional[float] = None) -> bool:

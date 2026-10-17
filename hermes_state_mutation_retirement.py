@@ -28,11 +28,11 @@ def _compact_result(conn, admission_id):
     """A retired result keeps the exact-retry outcome (final response, flags, usage/accounting)
     but not the transcript copies a turn result carries (cumulative ``messages``, reasoning, the
     settled ``_turn_user_row``)."""
-    from hermes_state_terminal import RESULT_PREFIX
+    from hermes_state_terminal import RESULT_PREFIX, load_result
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone()
     if saved is None:
         return
-    value = json.loads(saved[0])
+    value = load_result(saved[0])
     result = value.get('result')
     if isinstance(result, dict):
         value['result'] = {**{k: v for k, v in result.items() if k not in _TRANSCRIPT_FIELDS}, 'messages': []}

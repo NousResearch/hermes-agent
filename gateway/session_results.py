@@ -1,11 +1,10 @@
 """Exact execution results commit with settlement, before delivery/publication."""
-import json
 from contextvars import ContextVar
 
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_session_input
 
 execution_result: ContextVar[dict | None] = ContextVar("execution_result", default=None)
-from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX
+from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
 
 
 def record_unexecuted_failure(reply):
@@ -81,7 +80,7 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
                                  (_RESULT_PREFIX + row['admission_id'],)).fetchone()
             if saved is None:
                 raise RuntimeStoreError('storage_unavailable')
-            result = json.loads(saved[0])
+            result = load_result(saved[0])
             return dict(current), result['result'].get('final_response') or ''
     outcome, stored = prepared or prepare_result(row, response, outcome, result)
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
@@ -96,7 +95,7 @@ def admission_result(db, admission_id):
             return None
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_RESULT_PREFIX + admission_id,)).fetchone()
-        return json.loads(saved[0]) if saved else None
+        return load_result(saved[0]) if saved else None
 
 
 def close_discarded_turn(db, conn, row):

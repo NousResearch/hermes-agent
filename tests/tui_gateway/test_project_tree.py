@@ -461,6 +461,78 @@ def test_discovered_repo_with_no_sessions_becomes_zero_session_project():
     assert fresh["repos"][0]["groups"] == []
 
 
+def test_discovered_repo_inside_a_declared_project_nests_under_it():
+    # A superproject's submodules live inside its own folder. The scan finds them, and each one
+    # belongs UNDER the project that holds the folder — dropping it here is what made nested
+    # discovery find nothing in the case it exists for.
+    project = _project("p_app", "App", ["/www/app"])
+    discovered = [{"root": "/www/app/vendor/lib", "label": "lib", "sessions": 0, "last_active": 5}]
+
+    tree = pt.build_tree([project], [], discovered, resolve=None, hydrate=False)
+
+    child = next(p for p in tree["projects"] if p["id"] == "/www/app/vendor/lib")
+    assert child["isAuto"] is True
+    assert child["parentId"] == "p_app"
+
+
+def test_a_discovered_subproject_keeps_no_session_count_of_its_own():
+    # The payload aggregates sessions onto the scanned root, but none of them is LOADED here, and the
+    # scan's aggregate is wider than what this row would render: a badge N with an empty drill-in
+    # talks past the parent's own count. Its own loaded sessions are counted on the row that holds
+    # them (see the test below).
+    project = _project("p_app", "App", ["/www/app"])
+    discovered = [{"root": "/www/app/vendor/lib", "label": "lib", "sessions": 7, "last_active": 9}]
+
+    tree = pt.build_tree([project], [], discovered, resolve=None, hydrate=False)
+
+    child = next(p for p in tree["projects"] if p["id"] == "/www/app/vendor/lib")
+    assert child["sessionCount"] == 0
+    assert child["lastActive"] == 0.0
+    assert child["sessionIds"] == []
+
+
+def test_a_chat_in_a_nested_repo_stays_in_that_repos_row():
+    # A superproject's submodules live in its own folder, and the scan finds them. A chat started in
+    # one belongs to THAT repo — the user picked it there — so the row that owns it is the one that
+    # renders it, with the lanes the chat actually worked in. The container project counts its own
+    # sessions only: a session is placed once.
+    project = _project("p_app", "App", ["/www/app"])
+    discovered = [{"root": "/www/app/vendor/lib", "label": "lib", "sessions": 1, "last_active": 9}]
+    sessions = [_session("/www/app/vendor/lib", branch="main", repo_root="/www/app/vendor/lib")]
+
+    tree = pt.build_tree([project], sessions, discovered, resolve=None, hydrate=True)
+
+    child = next(p for p in tree["projects"] if p["id"] == "/www/app/vendor/lib")
+    assert child["sessionCount"] == 1
+    assert child["sessionIds"] == [sessions[0]["id"]]
+    assert [s["id"] for repo in child["repos"] for g in repo["groups"] for s in g["sessions"]] == [
+        sessions[0]["id"]
+    ]
+    assert tree["scoped_session_ids"] == [sessions[0]["id"]]
+
+    container = next(p for p in tree["projects"] if p["id"] == "p_app")
+    assert container["sessionCount"] == 0
+
+
+def test_a_discovered_repo_nobody_owns_keeps_the_count_the_scan_saw():
+    discovered = [{"root": "/www/fresh", "label": "fresh", "sessions": 3, "last_active": 9}]
+
+    tree = pt.build_tree([], [], discovered, resolve=None, hydrate=False)
+
+    fresh = next(p for p in tree["projects"] if p["id"] == "/www/fresh")
+    assert fresh["sessionCount"] == 3
+
+
+def test_discovered_repo_that_is_a_projects_own_folder_does_not_duplicate_its_row():
+    # The one case worth refusing: the repo IS the declared project, so the project row already is it.
+    project = _project("p_app", "App", ["/www/app"])
+    discovered = [{"root": "/www/app", "label": "app", "sessions": 0, "last_active": 5}]
+
+    tree = pt.build_tree([project], [], discovered, resolve=None, hydrate=False)
+
+    assert [p["id"] for p in tree["projects"]] == ["p_app"]
+
+
 def test_seeded_folder_repo_does_not_duplicate_a_session_derived_repo():
     # When a folder already has sessions (same git root), seeding must not add a
     # second repo for the same path.
@@ -737,3 +809,145 @@ def test_cwdless_session_with_repo_root_stays_in_its_explicit_project():
     assert owned["id"] in explicit["sessionIds"]
     assert owned["id"] in [s["id"] for s in _sessions_of(explicit)]
     assert _home_session_ids(tree) == [detached["id"]]
+
+
+def test_nested_folder_nests_the_project_and_leaves_membership_alone():
+    """`parentId` is display grouping: the child keeps its own sessions.
+
+    A parent that also listed its nested child's sessions is the exact class of
+    duplicate-listings bug the folder index was hardened against, so anchor it.
+    """
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    child = _project("p_align", "Align", ["/www/dev/m4l/align"])
+    parent_session = _session("/www/dev", branch="main")
+    child_session = _session("/www/dev/m4l/align", branch="main")
+
+    tree = pt.build_tree(
+        [parent, child], [parent_session, child_session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_dev"]["parentId"] is None
+    assert by_id["p_align"]["parentId"] == "p_dev"
+    assert [s["id"] for s in _sessions_of(by_id["p_dev"])] == [parent_session["id"]]
+    assert [s["id"] for s in _sessions_of(by_id["p_align"])] == [child_session["id"]]
+
+
+def test_parent_is_the_nearest_ancestor_not_the_outermost():
+    outer = _project("p_ws", "Workspace", ["/www"])
+    mid = _project("p_dev", "Dev", ["/www/dev"])
+    leaf = _project("p_align", "Align", ["/www/dev/m4l/align"])
+
+    tree = pt.build_tree([outer, mid, leaf], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_align"]["parentId"] == "p_dev"
+    assert by_id["p_dev"]["parentId"] == "p_ws"
+    assert by_id["p_ws"]["parentId"] is None
+
+
+def test_equal_and_sibling_folders_stay_top_level():
+    """Only a STRICT ancestor nests: identical folders are peers, not parent/child."""
+    a = _project("p_a", "A", ["/www/a"])
+    b = _project("p_b", "B", ["/www/b"])
+    same = _project("p_same", "Same", ["/www/a"])
+    deeper = _project("p_deep", "Deep", ["/www/a/deep"])
+    # Same-folder copy is a peer; the deeper one is A's child.
+    tree = pt.build_tree([a, b, same, deeper], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_a"]["parentId"] is None
+    assert by_id["p_b"]["parentId"] is None
+    assert by_id["p_same"]["parentId"] is None
+    assert by_id["p_deep"]["parentId"] == "p_a"
+
+
+def test_any_declared_folder_nesting_is_enough_for_a_parent():
+    """A multi-folder project nests under the first of its folders that has an ancestor."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    child = _project("p_multi", "Multi", ["/elsewhere/loose", "/www/dev/m4l/multi"])
+
+    tree = pt.build_tree([parent, child], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_multi"]["parentId"] == "p_dev"
+
+
+def test_home_bucket_never_gets_a_parent():
+    project = _project("p_dev", "Dev", ["/www/dev"])
+    tree = pt.build_tree([project], [_session(None)], [], resolve=lambda _cwd: None)
+
+    home = _home(tree)
+    assert home is not None
+    assert home["parentId"] is None
+
+
+def test_explicit_parent_overrides_folder_containment():
+    """A stored `parent_id` wins over what the folders imply — this is what a drag writes."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    other = _project("p_other", "Other", ["/www/elsewhere"])
+    child = _project("p_align", "Align", ["/www/dev/m4l/align"], parent_id="p_other")
+
+    tree = pt.build_tree([parent, other, child], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_align"]["parentId"] == "p_other"
+    assert by_id["p_dev"]["parentId"] is None
+
+
+def test_explicit_top_level_keeps_a_nested_folder_project_at_the_top():
+    """Dragging a project out stores "" — it must not fall back to folder containment."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    child = _project("p_align", "Align", ["/www/dev/m4l/align"], parent_id="")
+
+    tree = pt.build_tree([parent, child], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_align"]["parentId"] is None
+
+
+def test_parent_not_in_the_tree_falls_back_to_the_top_level():
+    """A parent that was archived or deleted must not hide the child's row."""
+    project = _project("p_dev", "Dev", ["/www/dev"])
+    orphan = _project("p_x", "Orphan", ["/www/x"], parent_id="p_gone")
+
+    tree = pt.build_tree([project, orphan], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_x"]["parentId"] is None
+
+
+def test_a_project_with_no_nested_folder_still_nests_when_told_to():
+    """Nesting is a stored link, so a subproject can live anywhere on disk."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    child = _project("p_remote", "Remote", ["/opt/remote"], parent_id="p_dev")
+
+    tree = pt.build_tree([parent, child], [], [], resolve=None)
+
+    by_id = {p["id"]: p for p in tree["projects"]}
+    assert by_id["p_remote"]["parentId"] == "p_dev"
+
+
+def test_effective_parent_map_resolves_containment_when_unset():
+    """The map the RPC layer validates moves against: explicit wins, otherwise containment."""
+    parent = _project("p_dev", "Dev", ["/www/dev"])
+    nested = _project("p_align", "Align", ["/www/dev/m4l/align"])
+    moved = _project("p_moved", "Moved", ["/www/dev/m4l/align"], parent_id="")
+
+    resolved = pt.effective_parent_map([parent, nested, moved])
+
+    assert resolved == {"p_dev": None, "p_align": "p_dev", "p_moved": None}
+
+
+def test_a_stored_loop_is_broken_instead_of_rendered():
+    """The store refuses new loops, but a projects.db written before that guard can hold one.
+
+    Both rows would otherwise reach the wire as each other's child — the sidebar draws that as two rows
+    nested inside one another, on every build, until some other move happens to repair it. The row the
+    walk reaches first drops to the top level, which is what breaks the cycle.
+    """
+    a = _project("p_a", "A", ["/www/a"], parent_id="p_b")
+    b = _project("p_b", "B", ["/www/b"], parent_id="p_a")
+
+    resolved = pt.effective_parent_map([a, b])
+
+    assert resolved == {"p_a": None, "p_b": "p_a"}

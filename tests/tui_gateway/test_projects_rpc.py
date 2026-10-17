@@ -90,6 +90,19 @@ def test_create_list_roundtrip(tmp_path):
     assert listing["active_id"] == created["project"]["id"]
 
 
+def test_create_with_parent_id_nests_the_new_project(tmp_path):
+    """The handler half of the same contract: `parent_id` reaches `create_project` and sticks."""
+    parent = _call("projects.create", {"name": "Parent", "folders": [str(tmp_path / "parent")]})["project"]
+
+    child = _call(
+        "projects.create",
+        {"name": "Child", "folders": [str(tmp_path / "child")], "parent_id": parent["id"]},
+    )["project"]
+
+    assert child["parent_id"] == parent["id"]
+    assert parent["parent_id"] is None
+
+
 def test_add_folder_and_for_cwd(tmp_path):
     folder = tmp_path / "repo"
     folder.mkdir()
@@ -206,6 +219,78 @@ def test_scan_time_is_not_treated_as_session_activity(tmp_path):
     assert active["last_active"] > idle["last_active"]
 
 
+def test_scan_finds_a_repo_nested_inside_another(tmp_path):
+    """A discovered repo may CONTAIN other repos, and containment nests them as subprojects.
+
+    The walk stops at the first `.git` unless `repo_scan_nested` is on, so this is opt-in: a monorepo's
+    internal checkouts are noise for most people, and descending costs more than the flat walk.
+    """
+    from hermes_cli import projects_db as pdb
+    from tui_gateway import server
+
+    outer = tmp_path / "outer"
+    (outer / "packages" / "inner").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer / "packages" / "inner", check=True)
+
+    policy = {"enabled": True, "nested": False, "roots": [str(tmp_path)], "exclude_paths": []}
+
+    with pdb.connect_closing() as conn:
+        server._scan_discovered_repos_remote(conn, policy)
+        flat = {r["root"] for r in pdb.list_discovered_repos(conn)}
+    assert str(outer / "packages" / "inner") not in flat
+
+    policy["nested"] = True
+
+    with pdb.connect_closing() as conn:
+        server._scan_discovered_repos_remote(conn, policy)
+        found = {r["root"] for r in pdb.list_discovered_repos(conn)}
+
+    # Both, not just the outer one.
+    assert str(outer) in found
+    assert str(outer / "packages" / "inner") in found
+
+
+def test_scan_does_not_descend_into_a_git_object_store(tmp_path):
+    """Nested discovery must not turn `.git` internals into projects."""
+    from hermes_cli import projects_db as pdb
+    from tui_gateway import server
+
+    outer = tmp_path / "outer"
+    (outer / ".git" / "modules" / "shadow").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer / ".git" / "modules" / "shadow", check=True)
+
+    policy = {"enabled": True, "nested": True, "roots": [str(tmp_path)], "exclude_paths": []}
+
+    with pdb.connect_closing() as conn:
+        server._scan_discovered_repos_remote(conn, policy)
+        found = {r["root"] for r in pdb.list_discovered_repos(conn)}
+
+    assert str(outer) in found
+    assert not any(os.sep + ".git" + os.sep in root for root in found)
+
+
+def test_discovered_repos_nest_under_the_repo_containing_them(tmp_path):
+    """Two DISCOVERED repos, one inside the other, render as parent + subproject."""
+    outer = tmp_path / "outer"
+    inner = outer / "packages" / "inner"
+    inner.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=inner, check=True)
+
+    _call("projects.record_repos", {"repos": [{"root": str(outer)}, {"root": str(inner)}]})
+
+    projects = _call("projects.tree")["projects"]
+    by_id = {p["path"]: p for p in projects}
+
+    assert str(outer) in by_id
+    assert str(inner) in by_id
+    # Display grouping only: the child renders under its parent, and neither owns the other's path.
+    assert by_id[str(inner)]["parentId"] == by_id[str(outer)]["id"]
+    assert by_id[str(outer)]["parentId"] in (None, "")
+
+
 def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeypatch):
     """A backend scan that can't fully walk its roots must NOT wipe the cache.
 
@@ -246,7 +331,7 @@ def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeyp
 
     monkeypatch.setattr(server.os, "walk", _flaky_walk)
 
-    policy = {"enabled": True, "roots": [good, bad_root], "exclude_paths": []}
+    policy = {"enabled": True, "nested": False, "roots": [good, bad_root], "exclude_paths": []}
 
     with pdb.connect_closing() as conn:
         authoritative = server._scan_discovered_repos_remote(conn, policy)
@@ -258,6 +343,60 @@ def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeyp
     assert good in joined
     # The seeded repo that the partial scan never saw is still cached.
     assert seed in joined
+
+
+def test_remote_scan_without_roots_searches_the_working_directory(monkeypatch, tmp_path):
+    """No configured roots is not \"scan nothing\": the workspace stands in (#53328 keeps it off $HOME)."""
+    from hermes_cli import projects_db as pdb
+
+    workspace = tmp_path / "workspace"
+    repo = workspace / "service"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=outside, check=True)
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "terminal": {"cwd": str(workspace)},
+            "desktop": {"repo_scan_enabled": True, "repo_scan_roots": [], "repo_scan_exclude_paths": []},
+        },
+    )
+
+    with pdb.connect_closing() as conn:
+        server._scan_discovered_repos_remote(conn, {"enabled": True, "roots": [], "exclude_paths": []})
+        found = {r["root"] for r in pdb.list_discovered_repos(conn)}
+
+    assert str(repo) in found
+    assert str(outside) not in found
+
+
+def test_remote_scan_without_roots_or_workspace_scans_nothing(monkeypatch, tmp_path):
+    """A profile that never configured a Working Directory has no workspace to scan."""
+    from hermes_cli import projects_db as pdb
+
+    repo = tmp_path / "service"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    for cwd in (".", "", os.sep, os.path.expanduser("~")):
+        monkeypatch.setattr(
+            server,
+            "_load_cfg",
+            lambda cwd=cwd: {
+                "terminal": {"cwd": cwd},
+                "desktop": {"repo_scan_enabled": True, "repo_scan_roots": [], "repo_scan_exclude_paths": []},
+            },
+        )
+
+        with pdb.connect_closing() as conn:
+            server._scan_discovered_repos_remote(conn, {"enabled": True, "roots": [], "exclude_paths": []})
+            found = {r["root"] for r in pdb.list_discovered_repos(conn)}
+
+        assert str(repo) not in found
 
 
 def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
@@ -292,7 +431,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
     # and wipe the cache.
     missing_root = str(tmp_path / "missing-root")
 
-    policy = {"enabled": True, "roots": [good, missing_root], "exclude_paths": []}
+    policy = {"enabled": True, "nested": False, "roots": [good, missing_root], "exclude_paths": []}
 
     with pdb.connect_closing() as conn:
         authoritative = server._scan_discovered_repos_remote(conn, policy)
@@ -326,7 +465,7 @@ def test_remote_scan_full_authoritative_replaces_cache(tmp_path):
     with pdb.connect_closing() as conn:
         pdb.record_discovered_repos(conn, [(stale, "stale-repo")])
 
-    policy = {"enabled": True, "roots": [str(scandir)], "exclude_paths": []}
+    policy = {"enabled": True, "nested": False, "roots": [str(scandir)], "exclude_paths": []}
 
     with pdb.connect_closing() as conn:
         authoritative = server._scan_discovered_repos_remote(conn, policy)

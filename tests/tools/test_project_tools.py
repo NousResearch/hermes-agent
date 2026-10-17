@@ -226,3 +226,75 @@ def test_idempotent_create_from_a_session_keeps_profile_active_pointer(gui_sessi
     assert tab["cwd"] == str(folders["existing"])
     with pdb.connect_closing() as conn:
         assert pdb.get_active_id(conn) == foreground
+
+
+def test_agent_nests_and_moves_a_project_without_moving_any_session(monkeypatch, tmp_path):
+    """Nesting is display grouping: the tree changes, neither project's sessions move."""
+    _use_projects_db(monkeypatch, tmp_path)
+    folders = {name: tmp_path / name for name in ("home", "a", "b")}
+    for folder in folders.values():
+        folder.mkdir()
+    with pdb.connect_closing() as conn:
+        home = pdb.create_project(conn, name="Home", folders=[str(folders["home"])])
+        pdb.set_active(conn, home)
+
+    a = json.loads(project_tools.project_create("Alpha", path=str(folders["a"]), parent="Home"))
+    b = json.loads(project_tools.project_create("Beta", path=str(folders["b"])))
+
+    # create with a parent nests the new project; Beta starts at the top level.
+    assert a["success"] is True
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, a["id"]).parent_id == home
+        assert pdb.get_project(conn, b["id"]).parent_id is None
+
+    # list reports the nesting, so an agent can see the shape it is working on.
+    listed = json.loads(project_tools.project_list())
+    parents = {p["id"]: p["parent_id"] for p in listed["projects"]}
+    assert parents[a["id"]] == home
+    assert parents[b["id"]] is None
+
+    # Creating a project switches into it — the pre-existing contract, unchanged here. What matters for
+    # a MOVE is that it does not: only the sidebar grouping changed.
+    listed = json.loads(project_tools.project_list())
+    active_after_creates = listed["active_id"]
+    assert active_after_creates in (a["id"], b["id"])
+
+    moved = json.loads(project_tools.project_move("Beta", parent="Alpha"))
+    assert moved["success"] is True
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, b["id"]).parent_id == a["id"]
+
+    # An omitted parent puts it back at the top level — "" (not null), so folder containment
+    # cannot pull it back under the project whose folders surround it.
+    outdented = json.loads(project_tools.project_move("Beta"))
+    assert outdented["parent_id"] == ""
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, b["id"]).parent_id == ""
+    listed = json.loads(project_tools.project_list())
+    assert {p["id"]: p["parent_id"] for p in listed["projects"]}[b["id"]] == ""
+
+    # The move left the active pointer exactly where the creates left it.
+    with pdb.connect_closing() as conn:
+        assert pdb.get_active_id(conn) == active_after_creates
+
+
+def test_agent_move_refuses_a_loop_and_an_unknown_project(monkeypatch, tmp_path):
+    _use_projects_db(monkeypatch, tmp_path)
+    with pdb.connect_closing() as conn:
+        home = pdb.create_project(conn, name="Home", folders=[str(tmp_path / "home")])
+        child = pdb.create_project(
+            conn, name="Child", folders=[str(tmp_path / "child")], parent_id=home)
+
+    loop = json.loads(project_tools.project_move("Home", parent="Child"))
+    assert loop["success"] is False
+
+    missing = json.loads(project_tools.project_move("Child", parent="Nope"))
+    assert missing["success"] is False
+    assert "nope" in missing["error"].lower()
+
+    self_nest = json.loads(project_tools.project_move("Home", parent="Home"))
+    assert self_nest["success"] is False
+
+    with pdb.connect_closing() as conn:
+        assert pdb.get_project(conn, home).parent_id is None
+        assert pdb.get_project(conn, child).parent_id == home

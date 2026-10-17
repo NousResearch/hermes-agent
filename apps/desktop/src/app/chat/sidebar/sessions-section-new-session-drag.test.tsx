@@ -117,6 +117,7 @@ const baseProps = () => ({
   open: true,
   pinned: false,
   sessions: [] as SessionInfo[],
+  projectTree: undefined as SidebarProjectTree[] | undefined,
   workingSessionIdSet: new Set<string>()
 })
 

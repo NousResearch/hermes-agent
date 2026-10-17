@@ -17,6 +17,9 @@ const OFFSET_Y = 12
 export interface DragGhost {
   /** Reposition the chip near the current pointer point. */
   moveTo(x: number, y: number): void
+  /** Rewrite the chip's text — for drags whose meaning changes with the target
+   *  ("Move to project" vs "Top level"), so the chip can say what the release does. */
+  setLabel(label: string): void
   /** Remove the chip from the DOM. Idempotent. */
   destroy(): void
 }
@@ -35,6 +38,9 @@ export function createDragGhost(label: string): DragGhost {
   return {
     moveTo(x, y) {
       el.style.transform = `translate3d(${x + OFFSET_X}px, ${y + OFFSET_Y}px, 0)`
+    },
+    setLabel(label) {
+      el.textContent = label
     },
     destroy() {
       el.remove()

@@ -12,6 +12,7 @@ import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
+import { frRepoScanDescriptions, frRepoScanLabels } from './fr_repo_scan'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
@@ -1190,11 +1191,7 @@ export const frOverrides = {
         personality: 'Personnalité',
         showReasoning: 'Blocs de raisonnement'
       },
-      desktop: {
-        repoScanEnabled: 'Découverte automatique de dépôts',
-        repoScanRoots: 'Racines de découverte de dépôts',
-        repoScanExcludePaths: 'Chemins de dépôt exclus'
-      },
+      ...frRepoScanLabels,
       agent: {
         maxTurns: "Étapes max. de l'agent",
         imageInputMode: "Pièces jointes d'image",
@@ -1365,11 +1362,7 @@ export const frOverrides = {
         personality: "Style par défaut de l'assistant pour les nouvelles sessions.",
         showReasoning: 'Afficher les sections de raisonnement quand le backend les fournit.'
       },
-      desktop: {
-        repoScanEnabled: 'Analyser les dossiers locaux à la recherche de dépôts Git à afficher dans Projets.',
-        repoScanRoots: 'Dossiers à analyser. Laissez vide pour analyser votre répertoire personnel.',
-        repoScanExcludePaths: 'Dossiers et leurs descendants à ignorer lors de la découverte de dépôts.'
-      },
+      ...frRepoScanDescriptions,
       timezone: 'Identifiant de fuseau horaire IANA. Si vide, utilise le fuseau horaire du système.',
       browser: {
         useRealProfile:

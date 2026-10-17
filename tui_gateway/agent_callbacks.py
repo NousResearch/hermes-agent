@@ -206,8 +206,9 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if session is None or not os.path.isdir(resolved):
         return
-    # explicit switch supersedes a settle-adopted cwd
-    session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
+    # explicit switch supersedes a settle-adopted cwd — and pins it, like any other deliberate move
+    # (`_set_session_cwd`), so the settle cannot then drag the chat to a repo the agent merely visited.
+    session.update(cwd=resolved, explicit_cwd=True, cwd_pinned=True, cwd_from_settle=False)
     _register_session_cwd(session)
     _persist_session_cwd_and_schedule_git_meta(session, resolved)
     try:

@@ -7,7 +7,8 @@ order the runtime guard (``check_all_command_guards``) applies them:
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
 rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
-``command_allowlist``, 7. dangerous-pattern detection (would prompt).
+``command_allowlist`` — both the manual command text/glob entries and the pattern key an
+``[a]lways`` choice persists, 7. dangerous-pattern detection (would prompt).
 """
 
 from __future__ import annotations
@@ -99,12 +100,23 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
                    "only hardline/deny rules would block",
         )
 
-    # 6. Permanent command_allowlist.
+    # 6. Permanent command_allowlist. Two entry kinds live here: manual command TEXT (possibly
+    #    a shell-style glob like ``podman *``) and the PATTERN KEY every ``[a]lways`` choice
+    #    persists. The runtime consents to a flagged command by KEY — ``is_approved(session_key,
+    #    pattern_key)`` in the human gate, ``_is_permanently_approved(pattern_key)`` under
+    #    cron/-q deny mode — so a text-only check here reports ``ask-approval`` for a standing
+    #    approval the runtime would auto-approve.
+    is_dangerous, pattern_key, description = approval_detection.detect_dangerous_command(command)
     if approval_floors._command_matches_permanent_allowlist(command):
         return result("allow", detail="matches command_allowlist in config.yaml (permanently approved)")
+    if is_dangerous and approval._is_permanently_approved(pattern_key):
+        return result(
+            "allow", rule=pattern_key,
+            detail="matches a standing pattern-key approval in command_allowlist "
+                   f"(pattern key: {pattern_key!r}); the runtime auto-approves it",
+        )
 
     # 7. Dangerous-pattern detection → would prompt.
-    is_dangerous, pattern_key, description = approval_detection.detect_dangerous_command(command)
     if is_dangerous:
         return result(
             "ask-approval", rule=description,

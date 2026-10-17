@@ -10,12 +10,15 @@ import sys
 from http.server import BaseHTTPRequestHandler
 from threading import Event
 
+import pytest
+
 from tests.hermes_cli.test_local_download_jobs import client as client  # noqa: PLC0414 -- pytest fixture re-export
 from tests.pm._fixtures import threaded_server
 from tests.waiting import wait_until
 
 
-def test_restore_skips_live_plan_and_recovers_after_owner_process_dies(client):
+@pytest.mark.parametrize("outcome", ["complete", "terminated"])
+def test_restore_skips_live_plan_and_reconciles_owner_exit(client, outcome):
     from hermes_cli.web_routers import local_models as lm
 
     block = 1 << 20
@@ -35,7 +38,8 @@ def test_restore_skips_live_plan_and_recovers_after_owner_process_dies(client):
                 return
             self.wfile.write(payload[:8 * block])
             self.wfile.flush()
-            release.wait(20)
+            if release.wait(20) and outcome == "complete":
+                self.wfile.write(payload[8 * block:])
 
         def log_message(self, *args):
             pass
@@ -57,12 +61,20 @@ def test_restore_skips_live_plan_and_recovers_after_owner_process_dies(client):
             side = lm.download_plans._root().parent / (hashlib.sha256(url.encode()).hexdigest() + ".ranges")
             wait_until(side.is_file, timeout=10)
             assert client.get("/api/local-models/jobs").json()["jobs"] == []
+            if outcome == "complete":
+                release.set()
+                _, error = child.communicate(timeout=5)
+                assert child.returncode == 0, error.decode()
         finally:
-            child.kill()
-            child.communicate(timeout=5)
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=5)
             release.set()
 
     restored = client.get("/api/local-models/jobs").json()["jobs"]
+    if outcome == "complete":
+        assert restored == [] and dest.read_bytes() == payload
+        return
     assert len(restored) == 1
     assert restored[0]["status"] == "paused" and restored[0]["can_resume"]
     assert restored[0]["done_bytes"] == 8 * block

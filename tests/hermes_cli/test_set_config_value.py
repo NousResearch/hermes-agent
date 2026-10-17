@@ -596,6 +596,68 @@ class TestValidateConfigKey:
         assert not is_known, "Sub-key typo under a known top-level key must still be flagged"
 
 
+class TestReasoningEffortSchemaKey:
+    """``agent.reasoning_effort`` is a live key: the runtime resolves it in
+    ``hermes_constants.resolve_reasoning_config`` — the single chokepoint for CLI, gateway, TUI, cron
+    and ``/model`` — and the docs tell users to set it with ``hermes config set agent.reasoning_effort``.
+    Left unseeded in ``DEFAULT_CONFIG["agent"]``, both ``config set`` and ``config get`` flagged it
+    "not a recognized config key — Hermes may not read it" with a bogus near-miss
+    (``agent.reasoning_echo``) (#140221).
+    """
+
+    def test_validates_as_known(self):
+        from hermes_cli.config import _validate_config_key
+        is_known, suggestion = _validate_config_key("agent.reasoning_effort")
+        assert is_known, (
+            "Expected agent.reasoning_effort to validate as known "
+            f"(got suggestion {suggestion!r})"
+        )
+
+    def test_set_writes_the_value_without_the_unrecognized_notice(
+        self, _isolated_hermes_home, capsys
+    ):
+        set_config_value("agent.reasoning_effort", "high")
+
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        assert "not a recognized config key" not in captured.err
+        assert "Did you mean: agent.reasoning_echo" not in captured.out
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["reasoning_effort"] == "high"
+
+    def test_the_saved_value_is_the_one_the_runtime_resolves(
+        self, _isolated_hermes_home, capsys
+    ):
+        set_config_value("agent.reasoning_effort", "high")
+        capsys.readouterr()
+
+        from hermes_constants import resolve_reasoning_config
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert resolve_reasoning_config(saved) == {"enabled": True, "effort": "high"}
+
+    def test_get_does_not_hedge_about_the_live_key(self, _isolated_hermes_home, capsys):
+        set_config_value("agent.reasoning_effort", "high")
+        capsys.readouterr()
+
+        config_command(argparse.Namespace(
+            config_command="get", key="agent.reasoning_effort", json=False))
+
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "high"
+        assert captured.err == ""
+
+    def test_seeded_empty_default_explains_itself(self):
+        """The seeded default must be the runtime's own "unset" value: ``""`` parses to None, so an
+        untouched config keeps the provider's default thinking level instead of pinning one."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from hermes_constants import resolve_reasoning_config
+
+        assert DEFAULT_CONFIG["agent"]["reasoning_effort"] == ""
+        assert resolve_reasoning_config(DEFAULT_CONFIG) is None
+
+
 # ---------------------------------------------------------------------------
 # display.skin → touch the skin file (live re-affirm broadcast)
 # ---------------------------------------------------------------------------

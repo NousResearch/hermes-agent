@@ -198,6 +198,11 @@ $GAPI gmail search "is:unread" --max 10
 $GAPI gmail search "from:boss@company.com newer_than:1d"
 $GAPI gmail search "has:attachment filename:pdf newer_than:7d"
 
+# More than one page: --page-info prints {results, nextPageToken} (null on the last page);
+# pass the token back with the same query
+$GAPI gmail search "is:unread" --max 50 --page-info
+$GAPI gmail search "is:unread" --max 50 --page-info --page-token TOKEN
+
 # Read full message (returns JSON with body text)
 $GAPI gmail get MESSAGE_ID
 
@@ -222,6 +227,9 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 # List events (defaults to next 7 days)
 $GAPI calendar list
 $GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
+
+# Next page: same --calendar, and the timeMin/timeMax --page-info echoed as --start/--end
+$GAPI calendar list --page-info --page-token TOKEN --start TIMEMIN --end TIMEMAX
 
 # Create event (ISO 8601 with timezone required)
 $GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
@@ -314,6 +322,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
+- **`--page-info`** (Gmail search, Calendar list): `{results, nextPageToken}`, plus `timeMin`/`timeMax` for Calendar
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
 - **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`

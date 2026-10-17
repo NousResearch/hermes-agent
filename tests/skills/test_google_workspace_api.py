@@ -117,7 +117,8 @@ def test_api_calendar_list_uses_events_list(api_module):
         return MagicMock(returncode=0, stdout="{}", stderr="")
 
     args = api_module.argparse.Namespace(
-        start="", end="", max=25, calendar="primary", func=api_module.calendar_list,
+        start="", end="", max=25, calendar="primary", page_token="", page_info=False,
+        func=api_module.calendar_list,
     )
 
     with patch.object(api_module.subprocess, "run", side_effect=capture_run):
@@ -208,9 +209,50 @@ def test_gmail_search_empty_result_prints_json_array(
     monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
     monkeypatch.setattr(api_module, "build_service", lambda *_args: service)
 
-    api_module.gmail_search(api_module.argparse.Namespace(query="is:unread", max=10))
+    api_module.gmail_search(
+        api_module.argparse.Namespace(query="is:unread", max=10, page_token="", page_info=False))
 
     assert json.loads(capsys.readouterr().out) == []
+
+
+def test_gmail_search_continues_a_page_and_reports_whether_more_remain(api_module, monkeypatch, capsys):
+    """A token continues the same query, and --page-info tells a bounded page from the last one."""
+    calls = []
+
+    def fake_gws(cmd, params=None, **_kw):
+        calls.append((cmd[-1], params))
+        if cmd[-1] == "list":
+            return {"messages": [{"id": "m1"}], "nextPageToken": "tok2"}
+        return {"id": "m1", "threadId": "t1", "snippet": "hi", "payload": {"headers": []}}
+
+    monkeypatch.setattr(api_module, "_run_gws", fake_gws)
+    args = api_module.argparse.Namespace(query="from:a", max=1, page_token="tok1", page_info=True)
+
+    api_module.gmail_search(args)
+    page = json.loads(capsys.readouterr().out)
+    assert calls[0][1] == {"userId": "me", "q": "from:a", "maxResults": 1, "pageToken": "tok1"}
+    assert page["nextPageToken"] == "tok2" and [m["id"] for m in page["results"]] == ["m1"]
+
+    args.page_info = False  # the default output stays a bare array
+    api_module.gmail_search(args)
+    assert isinstance(json.loads(capsys.readouterr().out), list)
+
+
+def test_calendar_list_continuation_keeps_the_time_range(api_module, monkeypatch, capsys):
+    service = MagicMock()
+    service.events().list().execute.return_value = {"items": [{"id": "e1", "start": {"date": "2026-10-06"}}]}
+    monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+    monkeypatch.setattr(api_module, "build_service", lambda *_args: service)
+    args = api_module.argparse.Namespace(
+        start="", end="", max=1, calendar="work", page_token="tok1", page_info=True)
+
+    api_module.calendar_list(args)
+
+    sent = service.events().list.call_args.kwargs
+    page = json.loads(capsys.readouterr().out)
+    assert sent["pageToken"] == "tok1" and sent["calendarId"] == "work"
+    assert (page["timeMin"], page["timeMax"]) == (sent["timeMin"], sent["timeMax"])
+    assert page["nextPageToken"] is None
 
 
 def _tabbed_doc():

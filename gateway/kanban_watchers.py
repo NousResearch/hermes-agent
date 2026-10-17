@@ -305,6 +305,18 @@ class GatewayKanbanWatchersMixin:
                     # See #49638.
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
+                    # The concurrency caps are the other safety lever a user
+                    # pulls under load (`kanban.max_in_progress` lowered while
+                    # the host swaps). Same rule as auto-decompose: re-read
+                    # every tick, never only at boot. A read error keeps the
+                    # previous settings rather than dropping the cap.
+                    try:
+                        _fresh = _resolve_dispatcher_settings(
+                            (_load_config() or {}).get("kanban", {}) or {}, _kb
+                        )
+                        dispatcher.settings = _fresh
+                    except Exception:  # health: allow BLE001 -- a bad config read keeps the previous caps; the tick must still run
+                        logger.debug("kanban dispatcher: live settings re-read failed; keeping previous", exc_info=True)
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)

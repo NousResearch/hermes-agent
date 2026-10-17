@@ -421,7 +421,10 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
         print("    to salvage transcripts into a separate output.")
         return False
     restored = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-    return bool(restored.get("valid"))
+    if restored.get("valid"):
+        return True
+    print(f"  ✗ Auto-restore replaced state.db from snapshot {snap_state}, but the post-restore integrity check failed.")
+    return False
 
 
 def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
@@ -442,17 +445,19 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
         if not snap_root.exists():
             print("  ⚠ No pre-update snapshot for this home")
             return
-        for snap_dir in sorted((d for d in snap_root.iterdir() if d.is_dir()), reverse=True):
+        candidates = []
+        for snap_dir in (d for d in snap_root.iterdir() if d.is_dir()):
             snap_state = snap_dir / "state.db"
-            if not snap_state.exists():
+            try:
+                candidates.append((snap_state.stat().st_mtime_ns, snap_dir, snap_state))
+            except OSError:
                 continue
+        for _mtime, snap_dir, snap_state in sorted(candidates, reverse=True):
             if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
                 continue
             try:
                 if _restore_state_db_from_snapshot(state_path, snap_state):
                     print(f"  ✓ Auto-restored from snapshot {snap_dir.name} ({label})")
-                else:
-                    print("  ✗ Auto-restore did not complete; see the restore diagnostic above.")
             except OSError as exc:
                 print(f"  ✗ Auto-restore file copy failed: {exc}")
             return

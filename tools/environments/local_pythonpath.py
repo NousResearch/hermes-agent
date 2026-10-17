@@ -137,6 +137,68 @@ def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
         env.pop(_marker, None)
 
 
+def _hermes_environments_roots(env) -> list:
+    """All pm-managed environments trees (installs/<key>/environments/*).
+
+    Covers EVERY generation — past and future — not just the currently committed one:
+    dependency rebuilds rotate the generation hash, and stale-but-inherited
+    site-packages paths from older generations are still Hermes-owned (they live in
+    our private installs tree) yet failed the exact-match ownership check, leaking
+    into every child process env (pip satisfied-by-venv false positives, --user
+    installs landing on the wrong interpreter).
+
+    Ownership stays narrow on purpose: only the venv's OWN top-level artifacts
+    (``site-packages`` dirs for PYTHONPATH, ``venv/bin`` dirs for PATH) count.
+    Arbitrary descendants of a generation directory are still treated as user
+    paths, preserving the documented descendant policy
+    (test_pythonpath_descendants_are_not_owned). Both home spellings are included:
+    a checkout can run from /Volumes/... while install_state_dir derives
+    /Users/... aliases (symlinked to the same tree); lexical containment misses
+    the alias, so callers resolve."""
+    roots = []
+    try:
+        from pm.environments import install_state_dir
+        for alias in _state()._hermes_repo_root_aliases:
+            try:
+                candidate = install_state_dir(alias) / "environments"
+                roots.append(candidate)
+                try:
+                    roots.append(candidate.resolve())
+                except Exception:
+                    pass
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return roots
+
+
+def _path_under_roots(entry: str, roots, leaf_names) -> bool:
+    """True if *entry* sits directly-under-lineage under any of *roots* AND its
+    final component is one of *leaf_names* (the venv's own artifact dirs)."""
+    try:
+        p = Path(entry)
+        if p.name not in leaf_names:
+            return False
+        candidates = [p]
+        try:
+            candidates.append(p.resolve())
+        except Exception:
+            pass
+        for pc in candidates:
+            for r in roots:
+                if pc.is_relative_to(r):
+                    return True
+                try:
+                    if pc.is_relative_to(r.resolve()):
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return False
+
+
 def _strip_hermes_owned_pythonpath(env: dict) -> None:
     """Remove Hermes-owned PYTHONPATH entries: only exact matches of the repo root
     (any launcher spelling) and runtime site-packages — never descendants, which are
@@ -150,12 +212,18 @@ def _strip_hermes_owned_pythonpath(env: dict) -> None:
     if not pp:
         return
     owned_paths = [*_get_hermes_site_packages(env), *_state()._hermes_repo_root_aliases]
+    env_roots = _hermes_environments_roots(env)
     entries = pp.split(os.pathsep)
-    stripped = [e for e in entries if e and any(_same_path(Path(e), p) for p in owned_paths)]
-    kept = [e for e in entries if e not in stripped]
+    kept = []
+    for e in entries:
+        if not e:
+            continue
+        if any(_same_path(Path(e), p) for p in owned_paths):
+            continue
+        if env_roots and _path_under_roots(e, env_roots, ("site-packages",)):
+            continue
+        kept.append(e)
     if kept:
         env["PYTHONPATH"] = os.pathsep.join(kept)
     else:
         env.pop("PYTHONPATH", None)
-    if stripped:
-        logger.debug("Stripped Hermes-owned entries from PYTHONPATH: %s", stripped)

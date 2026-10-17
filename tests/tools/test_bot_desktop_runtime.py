@@ -39,6 +39,19 @@ def test_the_image_bakes_the_same_apt_packages_the_runtime_would_install() -> No
     assert baked - required <= {"chromium"}, f"unexpected extra packages: {sorted(baked - required)}"
 
 
+@pytest.mark.parametrize("pm", sorted(runtime.PACKAGES))
+def test_the_at_spi_bus_package_is_in_every_distro_list(pm):
+    """`cua-driver`'s accessibility tree talks to `org.a11y.Bus`, whose launcher
+    (`/usr/libexec/at-spi-bus-launcher`) ships in `at-spi2-core`. The Base image carries
+    `libatspi2.0-*`/`libatk-bridge2.0-*` but not the bus itself, so the screen comes up fine while
+    `hermes computer-use doctor` reports `ax_capability: ❌` and `get_window_state` returns empty
+    trees — a silent downgrade that `screen status` never mentions (verified on Debian 13 against
+    the published `-desktop` tag)."""
+    assert "at-spi2-core" in runtime.PACKAGES[pm], (
+        f"{pm} installs no AT-SPI bus; computer_use UI inspection would return empty trees"
+    )
+
+
 def test_no_running_screen_returns_none_without_grabbing(monkeypatch):
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":99"})
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)

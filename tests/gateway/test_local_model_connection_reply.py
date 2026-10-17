@@ -249,3 +249,39 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
                 assert detail in result["final_response"] and "/login" not in result["final_response"]
             else:
                 assert detail not in result["final_response"] and "/login" in result["final_response"]
+
+
+def test_turn_runner_host_side_resolution_failure_does_not_send_user_to_login(monkeypatch):
+    """A local OSError under resolution (the CA bundle deleted by an install-environment rotation)
+    is not a credential verdict: messaging users get the gateway-log reply, never /login (#140344).
+    The same chain with an AuthError in it keeps the sign-in reply (control)."""
+    from types import SimpleNamespace
+    import gateway.run as gateway_run
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session import SessionSource
+    from gateway.turn_context import TurnContext
+    from hermes_cli.auth import AuthError
+
+    def _raising(cause):
+        def _resolve(**_kwargs):
+            try:
+                raise cause
+            except Exception as exc:
+                raise RuntimeError(str(exc)) from exc
+        return _resolve
+
+    monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 30)
+    replies = {}
+    for label, cause in (("oserror", FileNotFoundError(2, "No such file or directory")),
+                         ("auth", AuthError("No usable credentials found for provider 'nous'."))):
+        runner = SimpleNamespace(_resolve_session_agent_runtime=_raising(cause),
+                                 _get_system_prompt_for_channel=lambda *a, **k: "",
+                                 _ephemeral_system_prompt="", _adapter_for_source=lambda _s: None)
+        ctx = TurnContext(source=SessionSource(platform=Platform.DISCORD, chat_id="T1", chat_type="thread"),
+                          session_key="discord:T1", user_config={}, message="retry")
+        result = TurnRunner(runner, ctx).run_sync()
+        assert result["failed"] is True and result["api_calls"] == 0
+        replies[label] = (result["final_response"], result["failure_reason"])
+    assert "/login" not in replies["oserror"][0] and "hermes logs" in replies["oserror"][0]
+    assert replies["oserror"][1] == "unknown"
+    assert "/login" in replies["auth"][0] and replies["auth"][1] == "auth_permanent"

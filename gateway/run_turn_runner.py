@@ -131,6 +131,36 @@ def _settle_api_runtime_lock(agent, result, captured):
         result.update(final_response='', failed=True, completed=False, error=str(exc))
 
 
+def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, str]:
+    """``(chat text, failure_reason)`` for a model/credential resolution failure before the turn."""
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_state_runtime import RuntimeStoreError
+    if isinstance(exc, RuntimeStoreError):
+        # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
+        # daemon restart): keep it in the reply so clients can act on it, and do not suggest
+        # /login — the profile's own credentials were never in play.
+        return (f"⚠️ This session's launch credentials are no longer available ({exc.reason}), so this "
+                "message wasn't processed. Start a new session from the CLI to bind them again.", "auth_permanent")
+    if is_rate_limited_auth_error(exc.__cause__):
+        # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+        from gateway.run import _gateway_provider_error_reply
+        return _gateway_provider_error_reply(str(exc)), "auth_permanent"
+    if platform == Platform.LOCAL:
+        # The local operator reads the terminal: the resolver's own sentence ("provider 'custom'
+        # resolved without credentials ...") is the diagnosis; /login is not.
+        return f"⚠️ {exc}", "auth_permanent"
+    chain: list[BaseException] = []
+    link: BaseException | None = exc
+    while link is not None and link not in chain:
+        chain.append(link)
+        link = link.__cause__ or link.__context__
+    if any(isinstance(e, OSError) for e in chain) and not any(isinstance(e, AuthError) for e in chain):
+        # A host-side failure (a CA bundle deleted under a long-lived process, an unreadable file)
+        # with no credential verdict: /login cannot fix it, the gateway log can (#140344).
+        return t("gateway.errors.generic_failed"), "unknown"
+    return t("gateway.errors.no_credentials"), "auth_permanent"
+
+
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -1191,31 +1221,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # a FAILED turn: a one-shot client exits non-zero, transcript persistence closes the
             # turn, and an API receipt reports failure, never a completed turn with an apology.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc, exc_info=True)
-            from hermes_state_runtime import RuntimeStoreError
             from agent.turn_failure_copy import stamp_failure
-            resolution_error = str(exc)
-
-            def _unresolved(text: str) -> dict:
-                return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
-                                      "failed": True, "completed": False, "error": resolution_error},
-                                     "auth_permanent", False)
-            if isinstance(exc, RuntimeStoreError):
-                # Session-policy refusals carry a stable reason code (e.g. a CLI launch key
-                # revoked by daemon restart): keep it in the reply so clients can act on it, and
-                # do not suggest /login — the profile's own credentials were never in play.
-                return _unresolved(f"⚠️ This session's launch credentials are no longer available "
-                                   f"({exc.reason}), so this message wasn't processed. Start a new "
-                                   "session from the CLI to bind them again.")
-            from hermes_cli.auth import is_rate_limited_auth_error
-            if is_rate_limited_auth_error(exc.__cause__):
-                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
-                from gateway.run import _gateway_provider_error_reply
-                return _unresolved(_gateway_provider_error_reply(str(exc)))
-            if ctx.source.platform == Platform.LOCAL:
-                # The local operator reads the terminal: the resolver's own sentence ("provider
-                # 'custom' resolved without credentials ...") is the diagnosis; /login is not.
-                return _unresolved(f"⚠️ {exc}")
-            return _unresolved(t("gateway.errors.no_credentials"))
+            text, reason = _resolution_failure_reply(exc, ctx.source.platform)
+            return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                  "failed": True, "completed": False, "error": str(exc)}, reason, False)
         from gateway.session_authorities import active_authority
         from gateway.session_worker_construct import session_routing
         pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing

@@ -1240,6 +1240,76 @@ class TestOptionalSkillSourceLiveRepoFallback:
         assert src.search("never-heard-of-it") == []
 
 class TestQuarantineBundleBinaryAssets:
+    @pytest.mark.platforms("posix")
+    def test_hub_install_lock_excludes_a_second_file_handle(self, tmp_path):
+        """A second install handle must fail instead of racing lock.json or staging files."""
+        import fcntl
+        import tools.skills_hub as hub
+        from tools.skills_hub_install import hub_install_lock
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            with hub_install_lock():
+                with (hub_dir / "install.lock").open("a+") as contender:
+                    with pytest.raises(BlockingIOError):
+                        fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_quarantine_bundle_uses_a_fresh_directory_per_request(self, tmp_path):
+        """Concurrent scans of one named bundle must never share a staging tree."""
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo", files={"SKILL.md": "---\\nname: demo\\n---\\n"},
+                source="official", identifier="official/demo", trust_level="builtin",
+            )
+            first = quarantine_bundle(bundle)
+            second = quarantine_bundle(bundle)
+
+        assert first != second
+        assert (first / "SKILL.md").exists()
+        assert (second / "SKILL.md").exists()
+
+    @pytest.mark.require_symlinks
+    def test_quarantine_bundle_refuses_a_symlinked_quarantine_root(self, tmp_path):
+        """A hub-owned staging root must not redirect scanner writes outside the profile."""
+        import tools.skills_hub as hub
+
+        skills_dir = tmp_path / "skills"
+        hub_dir = skills_dir / ".hub"
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        hub_dir.mkdir(parents=True)
+        (hub_dir / "quarantine").symlink_to(redirected, target_is_directory=True)
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo", files={"SKILL.md": "---\\nname: demo\\n---\\n"},
+                source="official", identifier="official/demo", trust_level="builtin",
+            )
+            with pytest.raises(ValueError, match="quarantine directory"):
+                quarantine_bundle(bundle)
+
+        assert not list(redirected.iterdir())
+
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
         import tools.skills_hub as hub
 

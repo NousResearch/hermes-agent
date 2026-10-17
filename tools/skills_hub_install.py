@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import os
 import shutil
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -64,10 +67,10 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     skill_name = _validate_skill_name(bundle.name)
     # Validate every path before touching disk so a bad member aborts cleanly.
     validated_files = [(_validate_bundle_rel_path(rel_path), content) for rel_path, content in bundle.files.items()]
-    dest = _quarantine_dir() / skill_name
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
+    quarantine_dir = _quarantine_dir()
+    if _is_path_redirect(quarantine_dir):
+        raise ValueError(f"Unsafe quarantine directory: {quarantine_dir}")
+    dest = Path(tempfile.mkdtemp(prefix=f"{skill_name}-", dir=quarantine_dir))
     for rel_path, file_content in validated_files:
         file_dest = dest.joinpath(*rel_path.split("/"))
         file_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -78,6 +81,46 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
             # translate to os.linesep on Windows and desync content_hash from bundle_content_hash.
             file_dest.write_text(file_content, encoding="utf-8", newline="")
     return dest
+
+
+@contextmanager
+def hub_install_lock():
+    """Hold one profile's Skills Hub install lock, or fail without waiting.
+
+    The lock spans fetch through lock.json persistence so simultaneous CLI and
+    dashboard installs cannot replace a scanned bundle or lose provenance.
+    """
+    from tools.skills_hub import _hub_dir, ensure_hub_dirs
+
+    ensure_hub_dirs()
+    lock_path = _hub_dir() / "install.lock"
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        try:
+            if os.name == "posix":
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                import msvcrt
+                handle.seek(0)
+                if lock_path.stat().st_size == 0:
+                    handle.write(" ")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except (BlockingIOError, OSError) as exc:
+            raise RuntimeError(
+                "Another Skills Hub install is already running for this profile; try again shortly."
+            ) from exc
+        try:
+            yield
+        finally:
+            if os.name == "posix":
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            else:
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _category_skill_dirs(directory: Path) -> list[str]:

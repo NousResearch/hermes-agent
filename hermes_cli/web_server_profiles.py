@@ -454,12 +454,13 @@ def _profile_cli_args(profile: Optional[str]) -> list[str]:
     return ["-p", profiles_mod.normalize_profile_name(requested)]
 
 
-def _hub_action_name(verb: str, key: str) -> str:
+def _hub_action_name(verb: str, key: str, profile: Optional[str] = None) -> str:
     """Unique per-skill hub action name (+ registered log file): ``_spawn_hermes_action``
     tracks one process/log per name, so a shared "skills-install" would make concurrent
     row-level actions overwrite each other. Slug (readable) + hash (collision-proof)."""
     slug = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:48] or "skill"
-    digest = hashlib.sha1(key.encode()).hexdigest()[:8]
+    profile_key = (profile or "current").strip().lower()
+    digest = hashlib.sha1(f"{profile_key}:{key}".encode()).hexdigest()[:8]
     name = f"skills-{verb}-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(name, f"action-{name}.log")
     return name

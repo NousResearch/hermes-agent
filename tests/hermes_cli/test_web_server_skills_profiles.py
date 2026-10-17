@@ -7,6 +7,8 @@ process. Before the ``profile`` parameter existed, toggling a skill after
 These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
+from types import SimpleNamespace
+
 import pytest
 import hermes_yaml as yaml
 import hermes_cli.web_server_gateway as _web_server_gateway
@@ -125,6 +127,49 @@ class TestProfileScopedSkills:
 
 
 class TestProfileScopedHubActions:
+    def test_hub_action_names_do_not_collide_between_profiles(self):
+        assert _web_server_profiles._hub_action_name(
+            "install", "official/demo", "default"
+        ) != _web_server_profiles._hub_action_name(
+            "install", "official/demo", "worker_alpha"
+        )
+
+    def test_hub_scan_quarantines_under_the_requested_profile(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Preview scans must stage and inspect under their requested profile too."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_routers import skills as skills_router
+        from tools.skills_hub_models import SkillBundle
+
+        seen_homes = []
+        bundle = SkillBundle(
+            name="demo", files={"SKILL.md": "---\\nname: demo\\n---\\n"},
+            source="official", identifier="official/demo", trust_level="builtin",
+        )
+
+        def _quarantine(_bundle):
+            seen_homes.append(get_hermes_home())
+            path = get_hermes_home() / "skills" / ".hub" / "quarantine" / "scan-demo"
+            path.mkdir(parents=True)
+            return path
+
+        result = SimpleNamespace(
+            skill_name="demo", source="official", trust_level="builtin", verdict="clean",
+            summary="clean", findings=[],
+        )
+        monkeypatch.setattr(skills_router, "_resolve_hub_skill", lambda *_args: (None, bundle))
+        monkeypatch.setattr("tools.skills_hub_install.quarantine_bundle", _quarantine)
+        monkeypatch.setattr("tools.skills_guard.scan_skill", lambda *_args, **_kwargs: result)
+        monkeypatch.setattr("tools.skills_guard.should_allow_install", lambda *_args, **_kwargs: (True, ""))
+
+        response = client.get(
+            "/api/skills/hub/scan", params={"identifier": "official/demo", "profile": "worker_alpha"}
+        )
+
+        assert response.status_code == 200, response.text
+        assert seen_homes == [isolated_profiles["worker_alpha"]]
+
     def test_hub_install_spawns_with_profile_flag(
         self, client, isolated_profiles, monkeypatch
     ):
@@ -151,7 +196,7 @@ class TestProfileScopedHubActions:
         assert calls == [
             (
                 ["-p", "worker_alpha", "skills", "install", "official/demo", "--yes"],
-                _web_server_profiles._hub_action_name("install", "official/demo"),
+                _web_server_profiles._hub_action_name("install", "official/demo", "worker_alpha"),
             )
         ]
 

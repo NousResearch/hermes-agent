@@ -1,7 +1,9 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
+import { $videoPlaybackSpeed } from '@/store/video-playback-speed'
 
 import { MarkdownImage, MarkdownTextContent, MessageTextContent } from './markdown-text'
 
@@ -56,7 +58,66 @@ describe('MarkdownTextContent remote images', () => {
 // broken-image icon even though the file is valid, so MarkdownImage must route
 // video/audio sources to the proper <video>/<audio> element.
 describe('MarkdownImage media routing', () => {
-  afterEach(cleanup)
+  const originalDesktop = window.hermesDesktop
+  beforeEach(() => {
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: {} })
+  })
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    $videoPlaybackSpeed.set(1)
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: originalDesktop })
+    vi.restoreAllMocks()
+  })
+
+  it('defers remote players, preserves video speed, and releases only removed sources', async () => {
+    $connection.set({ mode: 'remote', profile: 'work' } as never)
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+
+    const view = render(
+      <StrictMode>
+        {Array.from({ length: 8 }, (_, i) => (
+          <MarkdownImage alt="media" key={i} src={`/tmp/clip-${i}.${i % 2 ? 'mp4' : 'wav'}`} />
+        ))}
+      </StrictMode>
+    )
+
+    await waitFor(() => expect(view.container.querySelectorAll('audio,video')).toHaveLength(8))
+    const players = Array.from(view.container.querySelectorAll<HTMLMediaElement>('audio,video'))
+
+    for (const player of players) {
+      expect(player.src).toMatch(/^hermes-media:\/\/remote\//)
+      expect(player.preload).toBe('none')
+      fireEvent.play(player)
+      fireEvent.pause(player)
+      expect(player.getAttribute('src')).not.toBeNull()
+    }
+
+    const video = view.container.querySelector('video')!
+    video.playbackRate = 2
+    fireEvent.rateChange(video)
+    expect($videoPlaybackSpeed.get()).toBe(2)
+    expect(pause).not.toHaveBeenCalled()
+    view.unmount()
+    expect(pause).toHaveBeenCalledTimes(8)
+    expect(load).toHaveBeenCalledTimes(8)
+    expect(players.every(player => !player.hasAttribute('src'))).toBe(true)
+  })
+
+  it('keeps local preload and replacement remote sources intact', async () => {
+    const view = render(<MarkdownImage alt="local" src="file:///tmp/note.mp3" />)
+    await waitFor(() => expect(view.container.querySelector('audio')).not.toBeNull())
+    expect(view.container.querySelector('audio')!.preload).toBe('metadata')
+    $connection.set({ mode: 'remote' } as never)
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    view.rerender(<MarkdownImage alt="remote" src="/tmp/first.mp4" />)
+    await waitFor(() => expect(view.container.querySelector('video')?.src).toContain('first.mp4'))
+    view.rerender(<MarkdownImage alt="remote" src="/tmp/second.mp4" />)
+    await waitFor(() => expect(view.container.querySelector('video')?.src).toContain('second.mp4'))
+    expect(pause).toHaveBeenCalledTimes(1)
+  })
 
   it('renders a <video> (not a broken <img>) for a video source', async () => {
     const { container } = render(<MarkdownImage alt="clip" src="file:///tmp/clip.mp4" />)

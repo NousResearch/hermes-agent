@@ -240,6 +240,33 @@ describe('createMediaProtocolHandler', () => {
     expect(fetchRemote.mock.calls[0]?.[2]).toBe('HEAD')
   })
 
+  it.each(['token', 'bearer', 'cookie'] as const)('forwards cancellation through the %s transport', async auth => {
+    const incoming = new Request('hermes-media://remote/clip.mp4')
+
+    const fetcher = vi.fn(async (_url: string, _headers: Headers, _method: string, signal?: AbortSignal) => {
+      expect(signal).toBe(incoming.signal)
+
+      return new Response(null)
+    })
+
+    const deps = dependencies({
+      ensureRemoteBearer: async () => (auth === 'bearer' ? 'access' : null),
+      resolveRemoteConnection: async () => ({
+        mode: 'remote',
+        baseUrl: 'https://gateway.test',
+        authMode: auth === 'token' ? 'token' : 'oauth',
+        token: 'token'
+      }),
+      fetchRemote: fetcher,
+      fetchRemoteWithCookies: fetcher
+    })
+
+    const response = await createMediaProtocolHandler(deps)(incoming)
+    expect(response.status).toBe(200)
+    expect(fetcher).toHaveBeenCalledOnce()
+    expect(fetcher.mock.calls[0][3]).toBe(incoming.signal)
+  })
+
   it('rejects protocol methods other than GET and HEAD', async () => {
     const deps = dependencies()
 

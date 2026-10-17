@@ -47,8 +47,13 @@ type MediaRequestMethod = 'GET' | 'HEAD'
 export interface MediaProtocolDependencies {
   ensureRemoteBearer: (baseUrl: string) => Promise<null | string>
   fetchLocal: (resolvedPath: string, headers: Headers, method: MediaRequestMethod) => Promise<Response>
-  fetchRemote: (url: string, headers: Headers, method: MediaRequestMethod) => Promise<Response>
-  fetchRemoteWithCookies: (url: string, headers: Headers, method: MediaRequestMethod) => Promise<Response>
+  fetchRemote: (url: string, headers: Headers, method: MediaRequestMethod, signal?: AbortSignal) => Promise<Response>
+  fetchRemoteWithCookies: (
+    url: string,
+    headers: Headers,
+    method: MediaRequestMethod,
+    signal?: AbortSignal
+  ) => Promise<Response>
   resolveLocalFile: (filePath: string) => Promise<string>
   resolveRemoteConnection: (scope: MediaRemoteScope) => Promise<MediaRemoteConnection>
 }
@@ -111,7 +116,9 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
 }
 
 export function createMediaProtocolHandler(dependencies: MediaProtocolDependencies) {
-  return async (request: Pick<Request, 'headers' | 'method' | 'url'>): Promise<Response> => {
+  return async (
+    request: Pick<Request, 'headers' | 'method' | 'url'> & Partial<Pick<Request, 'signal'>>
+  ): Promise<Response> => {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method not allowed', {
         headers: { allow: 'GET, HEAD' },
@@ -178,10 +185,10 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
           requestWithBearer: bearer => {
             headers.set('authorization', `Bearer ${bearer}`)
 
-            return dependencies.fetchRemote(endpoint, headers, method)
+            return dependencies.fetchRemote(endpoint, headers, method, request.signal)
           },
           requestWithCookie: async () => {
-            const response = await dependencies.fetchRemoteWithCookies(endpoint, headers, method)
+            const response = await dependencies.fetchRemoteWithCookies(endpoint, headers, method, request.signal)
 
             // Fetch resolves HTTP errors; translate only the auth verdict so
             // the shared fallback can preserve a failed native refresh.
@@ -201,7 +208,7 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
 
       headers.set('x-hermes-session-token', connection.token)
 
-      return await dependencies.fetchRemote(endpoint, headers, method)
+      return await dependencies.fetchRemote(endpoint, headers, method, request.signal)
     } catch (error) {
       const status = readStatusCode(error)
 

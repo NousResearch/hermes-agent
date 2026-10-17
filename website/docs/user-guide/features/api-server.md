@@ -714,7 +714,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session. `include_compacted=true` also returns the turns a context compaction archived (default: live transcript only). `inline_images=false` renders image attachments as `[image]` placeholders instead of inline data URIs — the transcript travels in kilobytes, for clients reading over a network |
-| `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
+| `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics). Optional body: `up_to` copies only the first N messages of the live transcript (same order as `messages?order=oldest`; out of range = `400 invalid_up_to`, nothing written) — branch from message N for rewind / edit-and-resend / retry with another model; `keep_source: true` leaves the source session open instead of ending it as `branched`. Advertised as `features.session_fork_up_to` / `session_fork_keep_source` |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, `tool.failed` (a tool that finished with an error), then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
 
@@ -725,6 +725,11 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 curl -X POST http://localhost:8642/api/sessions/$ID/fork \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -d '{"title": "explore alt path"}'
+
+# branch from message 2 (rewind / edit-and-resend) and keep the original session open
+curl -X POST http://localhost:8642/api/sessions/$ID/fork \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -d '{"up_to": 2, "keep_source": true, "title": "alt from message 2"}'
 
 # stream a turn over SSE
 curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \

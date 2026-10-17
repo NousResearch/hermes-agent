@@ -1868,7 +1868,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         (path → ``_transcribe_one_clip`` result) skips clips an earlier pass already transcribed."""
         from gateway.run import _probe_audio_duration
         audio_paths = list(dict.fromkeys(audio_paths))
-        if not getattr(self.config, "stt_enabled", True):
+        if not getattr(self._stt_config(), "stt_enabled", True):
             notes = []
             for path in audio_paths:
                 abs_path = os.path.abspath(path)

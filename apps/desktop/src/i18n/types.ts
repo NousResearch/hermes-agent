@@ -2954,6 +2954,8 @@ export interface Translations extends NoticeTranslations {
     followUpPlaceholders: readonly string[]
     startVoice: string
     openDirective: string
+    previewMarkdown: string
+    editMarkdown: string
     queueMessage: string
     steer: string
     redirect: string

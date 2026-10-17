@@ -11,6 +11,8 @@ export const arChat = {
     followUpPlaceholders: ['اكتب متابعة...', 'أضف توجيها...', 'اسأل سؤالا آخر...'],
     startVoice: 'بدء الصوت',
     openDirective: 'فتح',
+    previewMarkdown: 'معاينة Markdown',
+    editMarkdown: 'تحرير Markdown',
     queueMessage: 'إضافة الرسالة للطابور',
     steer: 'توجيه',
     stop: 'إيقاف',

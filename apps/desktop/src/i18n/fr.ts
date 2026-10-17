@@ -3830,6 +3830,8 @@ export const frOverrides = {
     ],
     startVoice: 'Démarrer la conversation vocale',
     openDirective: 'Ouvrir',
+    previewMarkdown: 'Aperçu Markdown',
+    editMarkdown: 'Modifier le Markdown',
     queueMessage: "Mettre le message en file d'attente",
     steer: "Diriger l'exécution en cours",
     redirect: "Rediriger l'exécution en cours",

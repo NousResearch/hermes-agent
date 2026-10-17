@@ -3816,6 +3816,8 @@ export const esOverrides = {
     ],
     startVoice: 'Iniciar conversación de voz',
     openDirective: 'Abrir',
+    previewMarkdown: 'Vista previa de Markdown',
+    editMarkdown: 'Editar Markdown',
     queueMessage: 'Poner mensaje en cola',
     steer: 'Guiar la ejecución actual',
     redirect: 'Redirigir la ejecución actual',

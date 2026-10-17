@@ -8,7 +8,8 @@ import {
   useEffect,
   useId,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
@@ -18,12 +19,15 @@ import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
 import { OnboardingSkip } from '@/components/onboarding/skip-setup'
+import { Button } from '@/components/ui/button'
+import { Tip } from '@/components/ui/tooltip'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { Eye, Pencil } from '@/lib/icons'
 import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -59,6 +63,7 @@ import {
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS } from './contrib'
+import { GHOST_ICON_BTN } from './control-classes'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
@@ -87,6 +92,7 @@ import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
+import { ComposerMarkdownPreview } from './markdown-preview'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
@@ -221,6 +227,7 @@ export function ChatBar({
   useComposerMicroActions(statusSessionId, busy)
 
   const composerRef = useRef<HTMLFormElement | null>(null)
+  const [markdownPreviewText, setMarkdownPreviewText] = useState<string | null>(null)
   // The dock wraps the strips + status stack + composer; the thread's bottom
   // clearance measures this, while the pop-out drag still tracks the composer.
   const composerDockRef = useRef<HTMLDivElement | null>(null)
@@ -1120,6 +1127,20 @@ export function ChatBar({
     />
   )
 
+  const leaveMarkdownPreview = () => setMarkdownPreviewText(null)
+
+  const toggleMarkdownPreview = () => {
+    if (markdownPreviewText !== null) {
+      leaveMarkdownPreview()
+      window.requestAnimationFrame(focusInput)
+
+      return
+    }
+
+    syncDraftFromEditor()
+    setMarkdownPreviewText(draftRef.current)
+  }
+
   const controls = (
     <ComposerControls
       autoSpeak={autoSpeak}
@@ -1144,8 +1165,18 @@ export function ChatBar({
       hideModelPill={guidedChat}
       minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
-      onQueue={queueDraft}
-      onSteer={canSteer ? () => steerDraft('steer') : undefined}
+      onQueue={() => {
+        leaveMarkdownPreview()
+        queueDraft()
+      }}
+      onSteer={
+        canSteer
+          ? () => {
+              leaveMarkdownPreview()
+              steerDraft('steer')
+            }
+          : undefined
+      }
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
@@ -1156,6 +1187,7 @@ export function ChatBar({
 
   const input = (
     <div className={cn('relative', inputWidthClass)}>
+      {markdownPreviewText !== null && <ComposerMarkdownPreview text={markdownPreviewText} />}
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
@@ -1171,7 +1203,8 @@ export function ChatBar({
           // Inside the native Wayland HUD drag region: a drag region swallows
           // the page's mouse input whole, so the input must opt back out or it
           // becomes unclickable. Buttons use the global no-drag rule.
-          hudNativeDrag && '[-webkit-app-region:no-drag]'
+          hudNativeDrag && '[-webkit-app-region:no-drag]',
+          markdownPreviewText !== null && 'hidden'
         )}
         contentEditable={!inputDisabled}
         data-placeholder={placeholder}
@@ -1229,7 +1262,7 @@ export function ChatBar({
         spellCheck={false}
         suppressContentEditableWarning
       />
-      <ComposerDirectiveActions editorRef={editorRef} />
+      {markdownPreviewText === null && <ComposerDirectiveActions editorRef={editorRef} />}
       {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
         so the composer-state binding (text + IME + paste + form-submit hookup)
         wires up. We render the real input UI ourselves above via the
@@ -1394,6 +1427,7 @@ export function ChatBar({
                 return
               }
 
+              leaveMarkdownPreview()
               submitDraft()
             }}
             ref={composerRef}
@@ -1516,6 +1550,22 @@ export function ChatBar({
                       start, detached from the cluster (#116332). */}
                     <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
                       <ContribSlot area={COMPOSER_AREAS.actions} />
+                      <Tip
+                        label={markdownPreviewText === null ? t.composer.previewMarkdown : t.composer.editMarkdown}
+                        placement="control"
+                      >
+                        <Button
+                          aria-label={markdownPreviewText === null ? t.composer.previewMarkdown : t.composer.editMarkdown}
+                          aria-pressed={markdownPreviewText !== null}
+                          className={GHOST_ICON_BTN}
+                          onClick={toggleMarkdownPreview}
+                          size="icon"
+                          type="button"
+                          variant="ghost"
+                        >
+                          {markdownPreviewText === null ? <Eye className="size-4" /> : <Pencil className="size-4" />}
+                        </Button>
+                      </Tip>
                       {controls}
                     </div>
                   </div>

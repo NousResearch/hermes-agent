@@ -7,6 +7,8 @@ must require the spawn-time start fingerprint to match, never bare PID existence
 
 import os
 import signal
+import subprocess
+import sys
 import time
 
 import pytest
@@ -58,6 +60,28 @@ def test_recycled_pid_is_reclaimed_without_being_signalled(board):
     assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 1
     assert killed == []
     assert kb.get_task(conn, tid2).status == "ready"
+
+
+def test_orphan_http_server_does_not_keep_dead_run_alive(board):
+    """A dev server left by a dead worker is not this run's liveness signal."""
+    conn = board
+    server = subprocess.Popen(
+        [sys.executable, "-m", "http.server", "0"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        dead_pid = os.getpid() + 100_000_000
+        tid = _claimed_running(conn, pid=dead_pid, started_at="old-boot|1")
+
+        assert kbd.detect_stale_running(conn, stale_timeout_seconds=1) == [tid]
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "ready"
+        assert server.poll() is None, "fixture orphan server must survive the dead-run reclaim"
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
 
 
 def test_matching_fingerprint_keeps_the_live_worker(board):

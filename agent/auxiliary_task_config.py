@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from contextvars import ContextVar
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,21 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
     except Exception:  # health: allow BLE001 -- plugin discovery must never break aux config reads
         logger.debug("plugin auxiliary task lookup failed for %r", task, exc_info=True)
     return task_config
+
+
+def _as_seconds(raw: Any) -> Optional[float]:
+    with contextlib.suppress(ValueError, TypeError):
+        return float(raw)
+    return None
+
+
+def _user_set_task_timeout(task: str) -> Optional[float]:
+    """``auxiliary.<task>.timeout`` (> 0) from config.yaml alone, so a schema default never counts as a choice."""
+    from hermes_cli.config_effective import load_user_config_effective
+    aux = load_user_config_effective().get("auxiliary")
+    block = aux.get(task) if isinstance(aux, dict) else None
+    seconds = _as_seconds(block.get("timeout")) if isinstance(block, dict) else None
+    return seconds if seconds is not None and seconds > 0 else None
 
 
 # The fields that together pick WHERE a call goes. They travel as one unit: a provider pinned on an

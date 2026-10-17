@@ -130,6 +130,42 @@ async def test_a_steer_settles_steered_only_when_a_drain_of_the_turn_took_it(tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('retry', [False, True])
+async def test_a_steer_write_that_committed_but_reported_failure_is_still_settled_by_its_claim(
+        tmp_path, monkeypatch, retry):
+    """Reviewer repro: the transfer commits, then the write reports a failure. The claim's fence must
+    survive it: an exact retry delivers the committed transfer, and without one the claim's settlement
+    puts the undelivered prompt back in its queue place (never left ``steering`` until a restart)."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    turn = Turn(monkeypatch)
+    original = session_queued_controls.steer_session_input
+
+    def committed_then_failed(*args, **kwargs):
+        original(*args, **kwargs)
+        raise sqlite3.OperationalError('disk I/O error')
+    monkeypatch.setattr(session_queued_controls, 'steer_session_input', committed_then_failed)
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(turn.claimed.wait(), 30)
+        queued = await _submit(authority, 'follow-up')
+        conn = _connection(authority)
+        failed = await _call(conn, 'prompt.steer_queued', admission_id=queued.admission_id)
+        assert 'error' in failed, failed
+        if retry:
+            again = await _call(conn, 'prompt.steer_queued', admission_id=queued.admission_id)
+            assert (again['result']['status'], again['result']['outcome']) == ('started', None), again
+        turn.release.set()
+        await _drained(authority)
+    if retry:
+        assert (turn.agent.steers, turn.ran) == (['follow-up'], ['running'])
+        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
+    else:
+        assert (turn.agent.steers, turn.ran) == ([], ['running', 'follow-up'])
+        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
+
+
+@pytest.mark.asyncio
 async def test_a_turn_that_ends_between_the_steer_commit_and_delivery_gets_its_prompt_back(tmp_path, monkeypatch):
     """The receiving execution returns after the steer committed but before the text reached its agent:
     the admission is put back in its FIFO place (never reported steered) and runs as its own turn."""

@@ -122,6 +122,12 @@ async def steer_queued(connection, ref, params):
     authority.authorize(connection.actor, ref, 'session:control')
     receipt, row = await _queued(connection, ref, admission_id)
     if row['status'] == 'terminal' and row['outcome'] in (STEERING, 'steered'):
+        if row['outcome'] == STEERING:
+            # A transfer committed under an uncertain failure is still fenced to its claim: deliver it.
+            with authority.sessions[ref.session_id].event_stream.lock:
+                agent = _receiving_agent(authority, ref.session_id, row['generation'])
+                if agent is not None:
+                    _deliver(authority, ref.session_id, row['generation'], agent, admission_id, row['payload']['text'])
         return asdict(receipt)  # an exact retry replays the committed transfer
     if receipt.status != 'queued':
         raise RuntimeStoreError('admission_started')
@@ -144,7 +150,9 @@ async def steer_queued(connection, ref, params):
         # The storage wait runs with no lock held; the registration above is the claim's fence.
         committed, fresh = await tracked_write(authority, partial(
             steer_session_input, authority.db, epoch=authority.epoch, admission_id=admission_id, generation=generation))
-    except BaseException:
+    except RuntimeStoreError:
+        # A definite refusal: nothing committed. Any other failure may follow a commit, so the fence
+        # stays and the claim's settlement decides the row (a no-op when nothing committed).
         with live.event_stream.lock:
             _unregister(authority, session_id, generation, admission_id)
         raise

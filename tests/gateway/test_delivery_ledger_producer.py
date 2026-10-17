@@ -8,12 +8,14 @@ block the send.
 """
 
 import asyncio
+import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway import delivery_ledger as dl
+from gateway import shutdown_flush
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -111,6 +113,109 @@ class TestProducerHook:
         assert len(rows) == 1
         assert rows[0][1] == "delivered"
         assert rows[0][2] == "final answer"
+
+    @pytest.mark.asyncio
+    async def test_durable_inbound_is_retained_until_outbound_transfer(self, tmp_path, monkeypatch):
+        """The real adapter path acks only after creating the durable reply row."""
+        adapter = _Adapter()
+        event = _event()
+        flush_dir = tmp_path / "pending_messages"
+        flush_dir.mkdir()
+        monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: flush_dir)
+        assert shutdown_flush.record_durable_inbound_event(
+            "agent:main:slack:channel:C1", event
+        )
+
+        await _run(adapter, event)
+
+        assert adapter.sent == ["final answer"]
+        assert _rows()[0][1] == "delivered"
+        assert shutdown_flush.recover_durable_inbound_events() == []
+
+    @pytest.mark.asyncio
+    async def test_empty_terminal_keeps_durable_inbound_for_visible_retry(
+        self, tmp_path, monkeypatch
+    ):
+        """No text means no durable terminal reply transfer to acknowledge."""
+        adapter = _Adapter()
+        event = _event()
+        flush_dir = tmp_path / "pending_messages"
+        flush_dir.mkdir()
+        monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: flush_dir)
+        assert shutdown_flush.record_durable_inbound_event(
+            "agent:main:slack:channel:C1", event
+        )
+
+        await _run(adapter, event, response=None)
+
+        assert adapter.sent == []
+        assert [restored.text for restored in shutdown_flush.recover_durable_inbound_events()] == [
+            "hello agent"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_tts_caption_marks_the_existing_outbound_transfer_delivered(
+        self, tmp_path, monkeypatch
+    ):
+        """Voice-caption delivery is terminal even when it skips a text send."""
+        adapter = _Adapter()
+        adapter.platform = Platform.TELEGRAM
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        event = _event()
+        event.message_type = MessageType.VOICE
+        flush_dir = tmp_path / "pending_messages"
+        flush_dir.mkdir()
+        monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: flush_dir)
+        audio = tmp_path / "answer.ogg"
+        audio.write_bytes(b"voice")
+        monkeypatch.setattr("tools.tts_tool.check_tts_requirements", lambda: True)
+        monkeypatch.setattr(
+            "tools.tts_tool.text_to_speech_tool",
+            lambda **_kwargs: json.dumps({"success": True, "file_path": str(audio)}),
+        )
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="voice-1"))
+        assert shutdown_flush.record_durable_inbound_event(
+            "agent:main:slack:channel:C1", event
+        )
+
+        await _run(adapter, event, response="spoken answer")
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.sent == []
+        assert _rows()[0][1] == "delivered"
+        assert shutdown_flush.recover_durable_inbound_events() == []
+
+    @pytest.mark.asyncio
+    async def test_durable_inbound_survives_crash_during_background_dispatch(
+        self, tmp_path, monkeypatch
+    ):
+        """handle_message returning after task spawn is not an acknowledgement."""
+        adapter = _Adapter()
+        event = _event()
+        flush_dir = tmp_path / "pending_messages"
+        flush_dir.mkdir()
+        monkeypatch.setattr(shutdown_flush, "_get_flush_dir", lambda: flush_dir)
+        assert shutdown_flush.record_durable_inbound_event(
+            "agent:main:slack:channel:C1", event
+        )
+
+        started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def blocked_handler(_event):
+            started.set()
+            await never.wait()
+
+        adapter._message_handler = blocked_handler
+        await adapter.handle_message(event)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert [restored.text for restored in shutdown_flush.recover_durable_inbound_events()] == [
+            "hello agent"
+        ]
+
+        for task in list(adapter._session_tasks.values()):
+            task.cancel()
+        await asyncio.gather(*list(adapter._session_tasks.values()), return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_send_failure_leaves_failed_row(self):

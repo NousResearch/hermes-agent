@@ -1,16 +1,24 @@
 """Native admission keeps main's inbound contract: real adapter events run a turn (N78-N80)."""
 import ast
+from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from gateway import shutdown_flush as spool
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
-from gateway.session_envelope import restore_native, snapshot_native
+from gateway.session_envelope import (
+    _native_metadata, _snapshot_native, _validate_native, restore_native, snapshot_native,
+)
 from gateway.session_results import execution_result
 from hermes_state_runtime import RuntimeStoreError
 from tests.waiting import async_wait_until
@@ -79,6 +87,10 @@ async def test_real_whatsapp_bridge_events_run_a_turn_through_native_admission(t
             await async_wait_until(lambda: len(sent) > index and not adapter._background_tasks,
                                    timeout=20, what=f'reply to {shape["nativeType"]}')
             assert sent[index] == 'ok', sent
+            # Execution carries exactly the obligation id the adapter spooled (none when the
+            # adapter did not spool, e.g. command-shaped text) beside the adapter's own metadata.
+            spooled = event.metadata.get('_hermes_durable_inbound_id')
+            assert turns[index][1].pop('_hermes_durable_inbound_id', None) == spooled, turns
             assert turns[index] == (text, metadata), turns
     finally:
         authority.db.close()
@@ -127,3 +139,84 @@ async def test_native_codec_closed_metadata_contract_and_reply_expected(tmp_path
                     and any(k.arg == 'metadata' for k in node.keywords)):
                 producers.add(path.relative_to(REPO).as_posix())
     assert producers == {'plugins/platforms/whatsapp/adapter.py'}, producers
+
+
+@pytest.fixture
+def world(tmp_path, monkeypatch):
+    flush_dir = tmp_path / "flush"
+    flush_dir.mkdir()
+    monkeypatch.setattr(spool, "_get_flush_dir", lambda: flush_dir)
+    adapter = object()
+    key = "agent:main:telegram:dm:owner"
+    runner = SimpleNamespace(
+        config=SimpleNamespace(),
+        _is_user_authorized_for_source=lambda *args, **kwargs: True,
+        _adapter_for_source=lambda source: adapter,
+        _adapter_flag=lambda *args: False,
+        _adapter_profile_for_source=lambda source: None,
+        session_store=SimpleNamespace(_generate_session_key=lambda source: key),
+    )
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="owner", user_id="owner", chat_type="dm")
+    event = MessageEvent(text="ordinary owner text", source=source, message_id="message-1",
+                         timestamp=datetime(2026, 1, 1))
+    return runner, event, key, flush_dir
+
+
+def test_spooled_telegram_metadata_is_accepted_without_mutating_event(world):
+    runner, event, key, _ = world
+    assert spool.record_durable_inbound_event(key, event)
+    metadata = deepcopy(event.metadata)
+    assert metadata["_hermes_durable_inbound_path"]
+    assert metadata["_hermes_durable_inbound_id"]
+    assert _native_metadata(event) == {}
+    assert _validate_native(runner, event)["platform"] == "telegram"
+    assert event.metadata == metadata
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_foreign_metadata_still_refuses_native_admission(world, durable):
+    runner, event, key, _ = world
+    if durable:
+        assert spool.record_durable_inbound_event(key, event)
+    event.metadata["foreign_key"] = "not gateway bookkeeping"
+    assert _native_metadata(event) is None
+    with pytest.raises(RuntimeStoreError, match="invalid_params"):
+        _validate_native(runner, event)
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_whatsapp_metadata_projection_is_unchanged(world, durable):
+    runner, event, key, _ = world
+    event.source.platform = Platform.WHATSAPP
+    expected = {"whatsapp_native_type": "locationMessage", "whatsapp_from_owner": True,
+                "whatsapp_native": {"location": {"latitude": 1.5, "longitude": 2.5}}}
+    event.metadata = deepcopy(expected)
+    if durable:
+        assert spool.record_durable_inbound_event(key, event)
+    assert _native_metadata(event) == expected
+    assert _validate_native(runner, event)["platform"] == "whatsapp"
+    event.metadata["foreign_key"] = True
+    assert _native_metadata(event) is None
+
+
+def test_native_round_trip_keeps_obligation_until_terminal_acknowledgement(world):
+    runner, event, key, flush_dir = world
+    assert spool.record_durable_inbound_event(key, event)
+    inbound_id = spool.durable_inbound_obligation_id(event)
+    payload = json.loads(json.dumps(_snapshot_native(runner, event, None)))
+    restored = restore_native(payload)
+    assert spool.durable_inbound_obligation_id(restored) == inbound_id
+    assert "_hermes_durable_inbound_path" not in restored.metadata
+    assert restored.original_inputs()[0]["inbound_id"] == inbound_id
+    assert _native_metadata(restored) == {}
+    _validate_native(runner, restored)
+    assert len(list(flush_dir.glob("inbound-*.json"))) == 1
+    spool.acknowledge_durable_inbound_event(restored)
+    assert list(flush_dir.glob("inbound-*.json")) == []
+
+
+def test_unspooled_native_envelope_has_no_obligation(world):
+    runner, event, _, _ = world
+    payload = _snapshot_native(runner, event, None)
+    assert "durable_inbound_id" not in payload["native_text_v1"]
+    assert spool.durable_inbound_obligation_id(restore_native(payload)) == ""

@@ -118,8 +118,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
-        run_still_current: Optional[Callable[[], bool]] = None):
+        run_still_current: Optional[Callable[[], bool]] = None,
+        on_before_first_effect: Optional[Callable[[], Any]] = None):
         self.adapter = adapter
+        # Awaited once before the FIRST externally visible effect (send/edit/frame/draft), so a
+        # caller can durably record that this turn's output has begun (gateway: inbound spool
+        # ``output_started``).  A failing hook is logged, never blocks streaming.
+        self._on_before_first_effect = on_before_first_effect
+        self._first_effect_announced = False
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
@@ -271,6 +277,19 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     final_response_sent = property(lambda self: self._final_response_sent)
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
+
+    async def _announce_first_effect(self) -> None:
+        """Run the before-first-effect hook exactly once (see ``__init__``)."""
+        if self._first_effect_announced:
+            return
+        self._first_effect_announced = True
+        if self._on_before_first_effect is not None:
+            try:
+                result = self._on_before_first_effect()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.warning("before-first-effect hook failed", exc_info=True)
 
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
@@ -556,9 +575,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 # Boundary produces its own finalize and resets state, so it must
                 # run before got_done/segment_break processing.
                 if tick.approval_boundary is not None:
+                    await self._announce_first_effect()
                     await self._handle_approval_boundary(*tick.approval_boundary)
                     continue
                 if tick.got_reopen_seed:
+                    await self._announce_first_effect()
                     await self._eager_reopen_seed()
                     continue
 
@@ -578,6 +599,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # is split again below. A plain first send would let the adapter split it and
                     # adopt only the LAST chunk as the preview; the next seal then overwrites that
                     # chunk with the head of the whole remainder (duplicated + lost text, #25349).
+                    await self._announce_first_effect()
                     await self._seal_overflow_heads()
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
@@ -597,12 +619,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     await self._push_update(tick)
 
                 if tick.got_done:
+                    if self._accumulated or self._message_id or self._last_sent_text:
+                        await self._announce_first_effect()  # a no-stream turn stays replayable
                     await self._finalize_turn(tick)
                     return
 
                 if tick.commentary_text is not None:
+                    await self._announce_first_effect()
                     await self._deliver_commentary(tick.commentary_text)
                 if tick.got_segment_break:
+                    if self._accumulated or self._message_id:
+                        await self._announce_first_effect()
                     await self._end_segment(tick)
 
                 # Done last so the waiter unblocks only once everything queued
@@ -635,6 +662,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         The empty seed frame shows "typing" before the first token; on failure → edit path."""
         self._use_native_streaming = self._resolve_native_streaming()
         if self._use_native_streaming:
+            await self._announce_first_effect()  # the seed frame is already visible
             logger.debug("Stream consumer using native-stream transport (chat=%s)", self.chat_id)
             if await self._try_seed_frame("Native streaming seed frame raised; disabling native",
                                           exc_info=True):
@@ -944,6 +972,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         platforms apply formatting; is_turn_final=False because this handler owns the flags.
         Only a successful edit confirms delivery — a partial send may be just "Let me
         search…", not the answer."""
+        if self._accumulated or self._message_id:
+            await self._announce_first_effect()
         best_effort_ok = False
         if self._accumulated and self._message_id:
             with contextlib.suppress(Exception):

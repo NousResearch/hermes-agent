@@ -207,6 +207,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     # ── stream consumer / interim commentary wiring ─────────────────────────────────────────
 
+
+    async def _mark_output_started(self) -> None:
+        """Before the first visible stream effect, settle the durable inbound spool as
+        ``indeterminate`` (no output owner exists yet; see ``mark_durable_inbound_output_started``)."""
+        event = self._ctx.inbound_event
+        if event is None:
+            return
+        from gateway.shutdown_flush import mark_durable_inbound_output_started
+        await asyncio.to_thread(mark_durable_inbound_output_started, event)
+
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
         if ctx.mute_notification_reply:
@@ -252,6 +262,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                         ),
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
+                        on_before_first_effect=self._mark_output_started,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
                     # #105341: a consumer created only for interim commentary (text streaming off)

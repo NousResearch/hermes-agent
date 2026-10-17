@@ -1040,27 +1040,31 @@ def build_resume_recovery_note(
     reason: Optional[str], message: str = "", *, interactive: bool = True) -> str:
     """Build the resume-pending recovery system note for an interrupted turn (empty ``message`` = auto-resume).
 
-    Interactive platforms report the restore and ask what next; non-interactive ones finish the work.
-
-    On non-interactive event platforms (webhook, API server — adapters with ``interactive_resume = False``)
-    nobody can answer; the resumed turn must instead complete the interrupted work, or the task is silently
-    abandoned behind a "restored" acknowledgement that goes nowhere (#57056).
+    An empty auto-resume has no new human instruction.  On every platform it
+    must continue the preserved, unanswered task instead of emitting a
+    restore-only acknowledgement.  A real new message is steering for that
+    task unless it explicitly cancels or replaces it.
     """
     reason_phrase = (
         "a gateway restart" if reason == "restart_timeout"
         else "a gateway shutdown" if reason == "shutdown_timeout" else "a gateway interruption")
     if message:
         resume_guidance = (
-            "Address the user's NEW message below FIRST and focus on what the user is asking now.")
+            "Continue the interrupted task from the preserved conversation history. "
+            "Treat the user's NEW message below as steering or a correction to that task "
+            "unless it explicitly cancels or replaces the task.")
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any unfinished work from the conversation history."
+            "Do NOT re-run tool calls whose results already appear in the history — "
+            "resume from the first step that has no recorded result."
         )
     elif interactive:
         resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next.")
+            "Continue the interrupted task from the preserved conversation history using "
+            "the latest unanswered real user request without waiting for another message "
+            "or emitting a restore-only acknowledgement.")
         tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any unfinished work from the conversation history."
+            "Do NOT re-run tool calls whose results already appear in the history — "
+            "resume from the first step that has no recorded result."
         )
     else:
         resume_guidance = (

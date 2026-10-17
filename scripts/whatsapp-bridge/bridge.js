@@ -37,6 +37,7 @@ import {
   addMentions,
   buildPollPayload,
   createReconnectScheduler,
+  createSendThrottle,
   createVersionResolver,
   installConsoleStamps,
   buildLocationPayload,
@@ -151,6 +152,12 @@ function enqueueSend(fn) {
   return task;
 }
 
+// Anti-ban throttle: optional human-like pre-send delay, WHATSAPP_SEND_DELAY_MS.
+// Applied inside the serialised queue so concurrent handlers never skip the
+// wait, and a send's timeout clock starts AFTER the delay (the delay is
+// intentional, not lost time). 0/absent = legacy unthrottled behaviour.
+const throttledSend = createSendThrottle(process.env.WHATSAPP_SEND_DELAY_MS, { enqueueSend });
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -163,7 +170,7 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
       timeoutMs,
     );
   });
-  return enqueueSend(() =>
+  return throttledSend(() =>
     Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
       .finally(() => clearTimeout(timer))
   );

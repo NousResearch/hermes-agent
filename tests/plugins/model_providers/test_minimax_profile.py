@@ -149,3 +149,86 @@ class TestMinimaxOauthAliases:
         for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
             resolved = providers.get_provider_profile(alias)
             assert resolved is not None and resolved.name == "minimax-oauth", alias
+
+
+def test_m31_chat_completions_effort_reaches_wire(minimax_profile):
+    """PR #127088: the sibling /v1 route must transmit effort without a forbidden disable.
+
+    Exercise real provider discovery, the transport and SDK serialization against a
+    local HTTP transport; no MiniMax credentials or live inference are needed.
+    """
+    import json
+
+    import httpx
+    from openai import OpenAI
+    from agent.transports.chat_completions import ChatCompletionsTransport
+
+    profile, _ = minimax_profile
+    bodies = []
+
+    def capture(request):
+        assert request.url.path == "/v1/chat/completions"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "id": "test", "object": "chat.completion", "created": 0,
+            "model": bodies[-1]["model"],
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
+                         "finish_reason": "stop"}],
+        })
+
+    cases = [
+        ({"enabled": True, "effort": effort}, expected)
+        for effort, expected in (
+            ("low", "low"), ("medium", "medium"), ("high", "high"),
+            ("xhigh", "xhigh"), ("max", "max"), ("minimal", "low"), ("ultra", "max"),
+        )
+    ] + [(config, None) for config in (
+        None, {}, {"enabled": True}, {"enabled": False},
+        {"enabled": False, "effort": "high"}, {"effort": "none"}, {"effort": "invalid"},
+    )]
+    with OpenAI(api_key="test-only", base_url="https://api.minimax.io/v1",
+                http_client=httpx.Client(transport=httpx.MockTransport(capture))) as client:
+        for model in ("MiniMax-M3.1-Flash-Preview", "minimax/MiniMax-M3.1-Flash-Preview",
+                      "MiniMax-M3.1", "MiniMax-M3-1", "vendor/MiniMax-M3-1-Flash-Preview"):
+            for config, expected in cases:
+                kwargs = ChatCompletionsTransport().build_kwargs(
+                    model=model, messages=[{"role": "user", "content": "ping"}],
+                    provider_profile=profile, reasoning_config=config,
+                    base_url="https://api.minimax.io/v1/",
+                )
+                client.chat.completions.create(**kwargs)
+                body = bodies[-1]
+                assert body.get("reasoning_effort") == expected, (model, config, body)
+                if expected is None:
+                    assert "reasoning_effort" not in body
+                assert not {"thinking", "reasoning", "output_config", "extra_body"} & body.keys()
+
+
+def test_m31_openai_effort_preserves_sibling_contracts(minimax_profile):
+    """M3 keeps its toggle; M2, version lookalikes and other routes remain untouched."""
+    from agent.transports.chat_completions import ChatCompletionsTransport
+
+    profile, _ = minimax_profile
+    global_route = "https://api.minimax.io/v1"
+    for model, base_url in [
+        (model, global_route) for model in (
+            "MiniMax-M3", "minimax/MiniMax-M3", "MiniMax-M2.7", "MiniMax-M3-Flash",
+            "MiniMax-M3.10", "MiniMax-M3.11-Flash", "MiniMax-M3-10", "MiniMax-M3-1x",
+            "not-minimax-m3.1", "vendor/other-model",
+        )
+    ] + [("MiniMax-M3.1-Flash-Preview", route) for route in (
+        "https://api.minimax.io/anthropic", "https://api.minimaxi.com/v1",
+        "https://api.minimax.io.example.com/v1", "https://api.minimax.io/v1/other",
+    )]:
+        for config in (None, {"enabled": True, "effort": "low"}, {"enabled": False}):
+            kwargs = ChatCompletionsTransport().build_kwargs(
+                model=model, messages=[{"role": "user", "content": "ping"}],
+                provider_profile=profile, reasoning_config=config, base_url=base_url,
+            )
+            expected = {}
+            if model in ("MiniMax-M3", "minimax/MiniMax-M3"):
+                expected["reasoning_split"] = True
+                if config is not None:
+                    expected["thinking"] = {"type": "adaptive" if config["enabled"] else "disabled"}
+            assert kwargs.get("extra_body", {}) == expected, (model, base_url, config)
+            assert "reasoning_effort" not in kwargs

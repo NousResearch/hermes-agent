@@ -269,11 +269,39 @@ export async function redialLocalGateway<TEndpoint, TResult>(deps: {
   }
 }
 
-function dialNonce(url: string): string | null {
+/** A fresh one-use local dial: mint `purpose` for the routed profile's home and hand it to
+ *  `prepare`, re-ensuring once when the cached owner is gone (`redialLocalGateway`). */
+export function localGatewayDial<T extends { baseUrl: string; gatewayEndpoint?: GatewayEndpoint }>(opts: {
+  ensure: () => Promise<T>
+  forget: () => Promise<void> | void
+  launchHome: string
+  mint?: typeof mintLocalGatewayTicket
+  prepare: (baseUrl: string, ticket: string) => string
+  profile: string
+  purpose?: 'interactive' | 'native-http'
+}): Promise<string> {
+  const { mint = mintLocalGatewayTicket, purpose = 'interactive' } = opts
+
+  return redialLocalGateway({
+    ensure: opts.ensure,
+    forget: opts.forget,
+    // A shared-primary descriptor answers for a sibling profile too: the ticket must name
+    // THAT profile's home or its sessions are another owner's.
+    use: async current => {
+      // Callers check the first descriptor; a re-ensure may still answer without one.
+      if (!current.gatewayEndpoint) {throw new Error('Local gateway connection has no gateway endpoint')}
+
+      return opts.prepare(current.baseUrl, await mint(await routedTicketEndpoint(current.gatewayEndpoint, opts.profile, opts.launchHome), purpose))
+    }
+  })
+}
+
+function dialOf(url: string): { nonce: string; origin: string; pathname: string } | null {
   try {
     const parsed = new URL(url)
+    const nonce = parsed.searchParams.get('native_dial')
 
-    return parsed.pathname === '/api/ws' ? parsed.searchParams.get('native_dial') : null
+    return nonce ? { nonce, origin: parsed.origin, pathname: parsed.pathname } : null
   } catch {
     return null
   }
@@ -281,35 +309,50 @@ function dialNonce(url: string): string | null {
 
 // A one-use ticket crosses private IPC, then leaves the URL before dialing.
 // Public descriptors and persisted connection state never contain credentials.
+// A plugin socket's native-http grant never enters a URL at all: main attaches
+// it as the header its REST twin sends, to that one dial only.
 export function createLocalGatewayDials() {
-  const pending = new Map<string, { ticket: string; webContentsId: number; expires: number }>()
+  const pending = new Map<string, { ticket: string; webContentsId: number; expires: number; origin: string; pathname: string; header: boolean }>()
+
+  const reserve = (url: URL, ticket: string, webContentsId: number, header: boolean) => {
+    for (const [key, value] of pending) {if (value.expires <= Date.now()) {pending.delete(key)}}
+
+    if (pending.size >= 100) {throw new Error('Too many pending gateway dials')}
+    // Keyed by the one-use nonce, not the full URL: a loopback proxy the app dials
+    // through (tests, tunnels) rewrites host:port but carries the query through.
+    // A header grant is the exception: main attaches it, so it is bound to its origin.
+    const nonce = crypto.randomUUID()
+    url.searchParams.set('native_dial', nonce)
+    pending.set(nonce, { ticket, webContentsId, expires: Date.now() + 25_000, origin: url.origin, pathname: url.pathname, header })
+
+    return url.toString()
+  }
 
   return {
     prepare(origin: string, ticket: string, webContentsId: number) {
-      for (const [key, value] of pending) {if (value.expires <= Date.now()) {pending.delete(key)}}
-
-      if (pending.size >= 100) {throw new Error('Too many pending gateway dials')}
-      // Keyed by the one-use nonce, not the full URL: a loopback proxy the app dials
-      // through (tests, tunnels) rewrites host:port but carries the query through.
-      const nonce = crypto.randomUUID()
-      const url = `${origin.replace(/^http/, 'ws')}/api/ws?native_dial=${nonce}`
-      pending.set(nonce, { ticket, webContentsId, expires: Date.now() + 25_000 })
-
-      return `${url}&ticket=${encodeURIComponent(ticket)}`
+      return `${reserve(new URL(`${origin.replace(/^http/, 'ws')}/api/ws`), ticket, webContentsId, false)}&ticket=${encodeURIComponent(ticket)}`
+    },
+    /** `path`: an `/api/plugins/<id>/...` path (query allowed) the caller already validated. */
+    preparePlugin(origin: string, path: string, ticket: string, webContentsId: number) {
+      return reserve(new URL(path, origin.replace(/^http/, 'ws')), ticket, webContentsId, true)
     },
     headers(details: { url: string; webContentsId?: number; resourceType: string; requestHeaders?: Record<string, string> }) {
-      const nonce = dialNonce(details.url)
-      const grant = nonce ? pending.get(nonce) : undefined
+      const dial = dialOf(details.url)
+      const grant = dial ? pending.get(dial.nonce) : undefined
 
-      if (!nonce || !grant || grant.webContentsId !== details.webContentsId || details.resourceType !== 'webSocket') {return null}
-      pending.delete(nonce)
+      if (!dial || !grant || grant.pathname !== dial.pathname || grant.webContentsId !== details.webContentsId
+          || details.resourceType !== 'webSocket' || (grant.header && grant.origin !== dial.origin)) {return null}
+
+      pending.delete(dial.nonce)
 
       if (grant.expires <= Date.now()) {return null}
       const headers = { ...details.requestHeaders }
 
-      for (const key of Object.keys(headers)) {if (key.toLowerCase() === 'origin') {delete headers[key]}}
+      for (const key of Object.keys(headers)) {
+        if (['origin', 'x-hermes-gateway-ticket'].includes(key.toLowerCase())) {delete headers[key]}
+      }
 
-      return headers
+      return grant.header ? { ...headers, 'X-Hermes-Gateway-Ticket': grant.ticket } : headers
     }
   }
 }

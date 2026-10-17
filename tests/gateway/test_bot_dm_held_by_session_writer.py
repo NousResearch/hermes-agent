@@ -225,6 +225,21 @@ async def test_an_older_owner_without_the_marker_stays_ambiguous(held, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_a_settled_receipt_states_only_what_settle_serialized(held):
+    """``settle`` doesn't re-check the writer (it may release between the refusal and the settle),
+    so the stored receipt says the id was settled as not sent, never that a writer held the chat."""
+    from tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result, settle_held_delivery
+    held.release()
+    delivery_id = 'd' * 64
+    answer = await asyncio.to_thread(settle_held_delivery, held.home, find_canonical_live_owner(held.home),
+                                     'ping', delivery_id=delivery_id)
+    assert answer['refused'] is True and answer['reason'] == 'runtime_coordination_required', answer
+    receipt = read_delivery_result(held.home, delivery_id)
+    assert 'held' not in receipt['error'] and 'not sent' in receipt['error'], receipt
+    assert _admissions(held) == [] and held.executed == []
+
+
+@pytest.mark.asyncio
 async def test_a_refusal_alone_leaves_the_id_open_for_a_same_id_retry(held):
     """Only the Bot DM tool's settle records a not-sent disposition. A producer that retries its
     queued record under the same id (the cron drain) after a held refusal still admits it once."""

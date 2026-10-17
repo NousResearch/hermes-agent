@@ -704,7 +704,12 @@ async def _settle(connection, params):
     sent": with no receipt and no admission row for ``bot:<id>``, a terminal ``refused`` receipt
     bound to the full identity is written, and every later ``deliver`` of the id answers with it
     instead of admitting. An admitted id gets its receipt; an in-flight pin stays unknown. Only the
-    Bot DM tool calls this, so cron's same-id retries of a refusal are unchanged."""
+    Bot DM tool calls this, so cron's same-id retries of a refusal are unchanged.
+
+    The writer is not re-checked: it may release between the refusal and this call, and "nothing
+    was admitted" is all that is serialized here. So the receipt claims only that, and any
+    ``session:submit`` principal of the profile can settle an id it never delivered: the trust
+    ``deliver`` already grants it over that id."""
     authority, actor = connection.authority, connection.actor
     home, key, message, author, category = _delivery_params(authority, actor, params)
     async with mailbox_lock(authority):
@@ -733,7 +738,7 @@ def _not_sent_record(authority, actor, home, key, message, author, category):
     from gateway.session_automation import automation_notification_metadata
     record = dict(delivery_id=key, profile_home=str(home), session_id=authority.db.get_compression_tip(row['id']),
                   principal_id=actor.subject, message=message, status='failed', refused=True, reply='',
-                  error='Bot Chat is held by another session writer', reason='runtime_coordination_required')
+                  error='Settled as not sent after a session-writer refusal', reason='runtime_coordination_required')
     record.update(automation_notification_metadata({'notification_category': category}))
     if author is not None:
         record['author'] = dict(author)

@@ -196,6 +196,8 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** User titles keyed by thread id. Empty values reset to the root-message title. */
+  threadTitles?: Record<string, string>
   /** Whether user text may create sticky member holds. Defaults to true for
    *  rooms written by older builds; the room settings switch can disable it. */
   holdDetection?: boolean

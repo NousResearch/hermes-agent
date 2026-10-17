@@ -651,8 +651,9 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 
     SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
     task's source phase so the next tick re-spawns the same kind of worker —
-    unless the circuit breaker already gave up, leaving it blocked. Host-local
-    only (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
+    unless the circuit breaker already gave up, leaving it blocked. A worker
+    that survives termination keeps its claim (reclaim deferred). Host-local only
+    (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
     """
     timed_out: list[str] = []
     now = int(time.time())
@@ -691,18 +692,16 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
                              "identity; not signalled", tid, pid)
             continue
-        # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
-        # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
-        # mismatch) is never signalled: the worker is already gone.
-        killed = False
-        kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
-            with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
-            # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
+        # SIGTERM/SIGKILL via the shared host-local seam; a recycled PID is never signalled.
+        termination = _terminate_reclaimed_worker(pid, row["claim_lock"], signal_fn=signal_fn,
+                                                  started_at=started_at)
+        if _worker_survived_termination(termination):
+            # Still alive (or refused): hold the claim and retry next tick, never release it
+            # beside a running worker (the next dispatch would start a duplicate).
+            _defer_reclaim_for_live_worker(conn, tid, row["claim_lock"], now, termination,
+                                           reason="max_runtime_worker_alive")
+            continue
+        killed = bool(termination.get("sigkill"))
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):

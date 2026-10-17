@@ -1472,10 +1472,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             intents.voice_states = True
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
-            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
+            from gateway.platforms.base import proxy_kwargs_for_bot, resolve_proxy_url, safe_url_for_log
             proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             if proxy_url:
-                logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
+                logger.info("[%s] Using proxy for Discord: %s", self.name, safe_url_for_log(proxy_url))
             # proxy= for HTTP, connector= for SOCKS; allowed_mentions per _build_allowed_mentions.
             # Close any existing client first: a zombie client also fires on_message -> double responses.
             # Without this, the old client remains connected to Discord gateway and both fire on_message,

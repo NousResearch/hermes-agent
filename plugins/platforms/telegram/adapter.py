@@ -143,7 +143,7 @@ from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
+    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, safe_url_for_log, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 
@@ -3007,7 +3007,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 {"transport": TelegramFallbackTransport(fallback_ips, **_transport_kwargs)},
                 {"transport": TelegramFallbackTransport(fallback_ips, **_updates_transport_kwargs)})
         elif proxy_url:
-            logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
+            logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, safe_url_for_log(proxy_url))
             request, get_updates_request = _pair(_with_limits(), {"limits": _updates_limits}, proxy=proxy_url)
         else:
             if disable_fallback:

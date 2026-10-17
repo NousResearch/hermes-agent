@@ -45,7 +45,8 @@ class GatewayDiscovery:
     reason_code: str | None = None
     # Human-readable cause behind a bounded ``reason_code`` when the owner published one (the
     # multiplexer's park reason), or the redacted output tail of a start this call made that died
-    # (``runtime_exited``); never raw peer data.
+    # (``runtime_exited``), or the unsafe local control node a discovery refused (path, owner uid or
+    # mode, and the fix); never raw peer data.
     detail: str | None = None
 
 
@@ -292,7 +293,8 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
     except TimeoutError:
         return GatewayDiscovery("inaccessible", reason_code="control_timeout")
     except DiscoveryError as exc:
-        return GatewayDiscovery("inaccessible", reason_code=exc.reason)
+        # The code stays bounded; the detail names the local node, its owner or mode, and the fix.
+        return GatewayDiscovery("inaccessible", reason_code=exc.reason, detail=exc.bounded_detail(500))
     except PermissionError:
         return _refused(home)
     except (OSError, ValueError, TypeError):

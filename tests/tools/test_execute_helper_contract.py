@@ -44,6 +44,16 @@ def test_schema_helper_instructions_work_across_kernel_lifetimes():
         assert result["kernel"]["reused"] is reused
 
 
+def test_schema_keeps_validated_batch_code_on_the_same_path():
+    """Regression for #138928: batch scale-up must not silently replace a validated path."""
+    description = registry.get_schema("execute_code")["description"].lower()
+
+    assert "same code path" in description
+    assert "parameterize" in description
+    assert "canary" in description
+    assert "explicit user approval" in description
+
+
 def test_missing_helper_recovery_instructions_execute():
     for helper in ("json_parse", "shell_quote", "retry"):
         failed = run(f"print({helper})", reset=True)

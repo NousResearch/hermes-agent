@@ -430,6 +430,11 @@ _IMAGE_CORRUPT_PHRASES = (
     # recovers instead of exhausting retries. (issue #76884; complements the proactive full-decode
     # validation in tools/vision_tools._normalize_to_supported_image)
     "failed to decode image",
+    # xAI undersized raster (Teams emoticon sprites). Quoted JSON code so
+    # invalid_image_format / _url do not match. Same recovery as corrupt:
+    # strip the image, retry text-only; do not remember the model as blind.
+    '"invalid_image"',
+    "below the minimum of",
 )
 
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:

@@ -1140,3 +1140,182 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+# ── Teams emoticon sprites → text, not vision ────────────────────────────────
+
+
+_PARTY_POPPER_URL = (
+    "https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions"
+    "/v2/assets/emoticons/1f389_partypopper/default/20_f.png"
+)
+_PARTY_POPPER_HTML = (
+    '<p>Lets GO thanks <img itemid="1f389_partypopper" alt="🎉" '
+    'itemtype="http://schema.skype.com/Emoji" '
+    f'src="{_PARTY_POPPER_URL}"></p>'
+)
+
+
+class TestTeamsEmoticonAttachments:
+    """20×20 Teams emoji sprites must become Unicode text. Screenshots stay images."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _make_activity(self, attachments, text="Lets GO thanks"):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = "activity-emoji-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.v2"
+        activity.conversation.conversation_type = "personal"
+        activity.conversation.name = "Test Chat"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = attachments
+        activity.entities = []
+        activity.reply_to_id = None
+        activity.recipient = MagicMock()
+        activity.recipient.id = "28:bot-id"
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _emoticon_attachment(self):
+        att = MagicMock()
+        att.content_type = "image/png"
+        att.content_url = _PARTY_POPPER_URL
+        att.name = "1f389_partypopper"
+        return att
+
+    def _html_body(self, content=_PARTY_POPPER_HTML):
+        att = MagicMock()
+        att.content_type = "text/html"
+        att.content_url = None
+        att.name = ""
+        att.content = content
+        return att
+
+    def _screenshot_attachment(self):
+        att = MagicMock()
+        att.content_type = "image/png"
+        att.content_url = "https://smba.example.com/screenshot.png"
+        att.name = "screenshot.png"
+        return att
+
+    @pytest.mark.anyio
+    async def test_party_popper_becomes_text_not_image(self):
+        from gateway.platforms.event import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(
+            side_effect=AssertionError("must not fetch emoticon sprite"),
+        )
+        cached = []
+
+        async def fake_cache(url, *a, **kw):
+            cached.append(url)
+            raise AssertionError(f"must not cache emoticon {url}")
+
+        with patch.object(_teams_mod, "cache_image_from_url", fake_cache):
+            await adapter._on_message(self._make_ctx(
+                self._make_activity([self._emoticon_attachment()]),
+            ))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+        assert "🎉" in event.text
+        assert "Lets GO thanks" in event.text
+        assert cached == []
+        adapter._fetch_attachment_bytes.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_html_and_sprite_do_not_duplicate_emoji(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(
+            side_effect=AssertionError("must not fetch emoticon sprite"),
+        )
+        await adapter._on_message(self._make_ctx(
+            self._make_activity([self._html_body(), self._emoticon_attachment()]),
+        ))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text.count("🎉") == 1
+        assert event.media_urls == []
+
+    @pytest.mark.anyio
+    async def test_real_screenshot_still_photo(self):
+        from gateway.platforms.event import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG" + b"\0" * 32)
+
+        async def fake_cache(url, *a, **kw):
+            return "/tmp/screenshot.png"
+
+        with patch.object(_teams_mod, "cache_image_from_url", fake_cache):
+            await adapter._on_message(self._make_ctx(
+                self._make_activity([self._screenshot_attachment()], text="see this"),
+            ))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/screenshot.png"]
+        assert "🎉" not in event.text
+
+    @pytest.mark.anyio
+    async def test_mixed_screenshot_and_party_popper(self):
+        from gateway.platforms.event import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(
+            side_effect=AssertionError("screenshot uses cache_image_from_url, popper must not fetch"),
+        )
+
+        async def fake_cache(url, *a, **kw):
+            if "emoticons" in url or "personal-expressions" in url:
+                raise AssertionError(f"must not cache emoticon {url}")
+            return "/tmp/screenshot.png"
+
+        with patch.object(_teams_mod, "cache_image_from_url", fake_cache):
+            await adapter._on_message(self._make_ctx(
+                self._make_activity(
+                    [self._screenshot_attachment(), self._emoticon_attachment()],
+                    text="Lets GO thanks",
+                ),
+            ))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/screenshot.png"]
+        assert "🎉" in event.text
+        adapter._fetch_attachment_bytes.assert_not_called()
+
+
+class TestTeamsEmoticonHelpers:
+    def test_unicode_from_party_popper_id(self):
+        from plugins.platforms.teams.emoticons import emoticon_to_text
+
+        assert emoticon_to_text(itemid="1f389_partypopper") == "🎉"
+        assert emoticon_to_text(itemid="1f389") == "🎉"
+        assert emoticon_to_text(url=_PARTY_POPPER_URL) == "🎉"
+
+    def test_cdn_url_is_emoticon(self):
+        from plugins.platforms.teams.emoticons import is_emoticon_url
+
+        assert is_emoticon_url(_PARTY_POPPER_URL)
+        assert not is_emoticon_url("https://smba.example.com/screenshot.png")
+        assert not is_emoticon_url("https://contoso.sharepoint.com/photo.png")
+

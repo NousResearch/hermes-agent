@@ -206,6 +206,11 @@ _IMAGE_TOO_LARGE_PATTERNS = (
 _IMAGE_CORRUPT_PATTERNS = (
     "invalid png image", "invalid jpeg image", "base64 string of provided image cannot be decoded",
     "downloaded response does not contain a valid jpg, png, webp, or ico image",
+    # xAI JSON code (quoted so invalid_image_format / _url do not match) +
+    # undersized-raster wording (Teams 20×20 emoticon = 400 px; floor is 512).
+    # Shrinking cannot grow them; strip-and-retry as text.
+    '"invalid_image"',
+    "below the minimum of",
 )
 
 # 400s rejecting list-type ``content`` in tool messages (Xiaomi MiMo "text is

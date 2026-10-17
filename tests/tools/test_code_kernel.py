@@ -180,6 +180,23 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertEqual(result["status"], "success", result)
         self.assertIn("raw-passthrough", result["output"])
 
+    def test_print_loop_retains_bounded_stdout_and_still_spills(self):
+        # The kernel used to buffer every printed char before clipping, so a print loop grew it
+        # without bound (~2x the printed volume in RSS). The retained text stays capped; the
+        # overflow still surfaces as truncation + a spill file.
+        code = (
+            "import sys\n"
+            "for i in range(120_000): print('%07d' % i + 'y' * 92)\n"
+            "sys.stderr.write('retained=%d' % len(sys.stdout.getvalue()))\n"
+        )
+        with _kernel_config():
+            result = _run(code)
+        self.assertEqual(result["status"], "success", result)
+        retained = int(result["output"].rsplit("retained=", 1)[1])
+        self.assertLess(retained, 6_000_000)  # 12 MB printed
+        self.assertTrue(result["stdout_truncated"])
+        self.assertTrue(Path(result["stdout_spill_path"]).read_text(encoding="utf-8-sig").startswith("0000000y"))
+
 
 class TestModelFacingReset(unittest.TestCase):
     def test_reset_is_reachable_from_a_model_call_despite_stale_kernel_mode(self):

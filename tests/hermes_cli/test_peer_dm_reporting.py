@@ -22,6 +22,35 @@ from hermes_cli.subcommands import peer as peer_mod
 SESSION = "20260916_bot_chat"
 
 
+@pytest.mark.parametrize("failure_fields,detail", [
+    ({"error": "quota exhausted"}, "quota exhausted"),
+    ({"failure_reason": "auth"}, "auth"),
+    ({}, "No failure detail returned"),
+])
+def test_failed_turn_without_reply_uses_structured_detail(monkeypatch, capsys, failure_fields, detail):
+    monkeypatch.setattr(peer_mod, "_ensure_bot_chat", lambda *_: SESSION)
+    monkeypatch.setattr(peer_mod, "_request", lambda *a, **kw: {"failed": True, **failure_fields})
+    code = peer_mod._peer_dm(SimpleNamespace(json=False), "hello", "mini", None, "http://peer", "key")
+    output = capsys.readouterr()
+    assert code == 1
+    assert not output.out
+    assert detail in output.err
+    assert "accepted the message" in output.err
+
+
+@pytest.mark.parametrize("fields", [{}, {"failed": False}])
+def test_no_failure_is_inferred_from_successful_or_legacy_reply_text(monkeypatch, capsys, fields):
+    reply = "Example error: 429 Too Many Requests"
+    monkeypatch.setattr(peer_mod, "_ensure_bot_chat", lambda *_: SESSION)
+    monkeypatch.setattr(peer_mod, "_request", lambda *a, **kw: {
+        "message": {"content": reply}, **fields})
+    code = peer_mod._peer_dm(SimpleNamespace(json=False), "hello", "mini", None, "http://peer", "key")
+    output = capsys.readouterr()
+    assert code == 0
+    assert output.out.strip() == reply
+    assert not output.err
+
+
 def _run(monkeypatch, capsys, *, base="http://192.168.2.55:8642", raise_on_post=None, raise_on_session=None):
     def _ensure(base, key):
         if raise_on_session is not None:

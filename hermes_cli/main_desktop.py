@@ -1727,6 +1727,14 @@ def cmd_gui(args: argparse.Namespace):
         print(f"✗ Desktop GUI build failed: {exc}")
         if build_lock is not None:
             build_lock.release()
+        # A missing C++ toolchain is the one failure the npm log wall cannot
+        # convey: the install died on `make: g++: No such file or directory`
+        # (exit 127) with no named remedy. Diagnose it here so the user gets
+        # the distro install command instead of re-running npm ci by hand (#102081).
+        from hermes_cli.native_build_hint import linux_native_build_toolchain_hint
+        toolchain_hint = linux_native_build_toolchain_hint()
+        if toolchain_hint:
+            print(toolchain_hint)
         raise SystemExit(1) from exc
 
     # Best-effort and idempotent; a failure must never stop the app from launching.

@@ -154,25 +154,41 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
     inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream.
-    A refusal then tries the in-process detached-sibling takeover, then the cross-process same-Desktop
-    one; and a Desktop backend re-checks the registry for a lease a sibling took over (see
-    ``_desktop_lease_revoked``) instead of serving a second writer under its stale token."""
+    A runtime whose cached token is no longer the registry's entry — any surface: a Desktop, TUI or CLI
+    lease can be superseded by another client of this home — re-checks the registry and immediately
+    retries a cross-process takeover if the current interactive holder is provably idle; otherwise it
+    stands down. A registry that cannot be read refuses instead of assuming the token is ours. A bare
+    claim refusal then tries the in-process detached-sibling takeover and cross-process handoff, never
+    serving a second writer under a stale token."""
     if (canonical := _canonical_ledger_refusal(session)) is not None:
         return canonical
     if (held := session.get("active_session_lease")) is not None:
-        if not _desktop_lease_revoked(session, held):
+        if not _lease_claims_registry_entry(held):
             return None
-        # A sibling runtime of the SAME Desktop instance took this chat over while this one had no
-        # client; its entry carries a NEW lease id, so this stale token can no longer release it and
-        # serving a turn under it would be the double writer the fence exists to prevent. Drop it and
-        # go through the claim path again (which re-takes the lease if the situation still holds).
+        if (current := _cached_lease_is_current(held)) is None:
+            # "Cannot read the registry" is NOT proof this token is still ours, and guessing is how a
+            # second writer gets in. Refuse; the row of whoever holds the chat now stays untouched.
+            logger.warning("Session %s: cannot verify cached lease %s against the active-session "
+                           "registry; refusing the turn", sid, getattr(held, "lease_id", ""))
+            return _ownership_unavailable_refusal()
+        if current:
+            return None
+        # Another client of this home took this chat over (a cross-client supersede: the entry carries
+        # a NEW lease id), so this stale token can no longer release it and serving a turn under it
+        # would be the double writer the fence exists to prevent. Drop it and go through the claim
+        # path again (which re-takes the lease if the situation still holds).
         # Another client of this home owns the chat now: the user continued it elsewhere (another
-        # computer, the dashboard, a CLI). Re-claiming here would start a tug-of-war with that
-        # client, so stand down and say so; a NEW message in THIS window claims again and wins only
-        # once the other side is idle or hung.
+        # computer, the dashboard, a CLI). A NEW message in THIS window claims again and wins only
+        # once the other side is provably idle or hung; a busy holder keeps the chat and we stand down.
         session.pop("active_session_lease", None)
         session.pop("_lease_client_attached", None)
         stale_key = str(session.get("session_key") or "")
+        # The chat's previous client may already be idle (its turn finished): take it over at once
+        # when the registry proves that, rather than refusing a message sent a moment after it ended.
+        # Same fail-closed predicate as any other cross-client takeover; a busy or unjudgeable holder
+        # still stands us down below.
+        if _take_over_cross_runtime_lease(sid, session, stale_key):
+            return None
         logger.info("Session %s: another client of this home owns the chat now; standing down", sid)
         try:
             from hermes_cli.active_sessions import (
@@ -447,27 +463,40 @@ def _take_over_cross_runtime_lease(sid: str, session: dict, key: str) -> bool:
     logger.info("Session %s took over lease for %s from another client of this home", sid, key)
     return True
 
-def _desktop_lease_revoked(session: dict, lease) -> bool:
-    """True when this Desktop backend's own lease is no longer the registry's entry for the chat.
+def _lease_claims_registry_entry(lease) -> bool:
+    """Whether ``lease`` is a live claim on a registry entry THIS runtime must be able to verify.
 
-    Only a Desktop backend can be superseded by a sibling (see ``_lease_metadata``), and only the
-    registry knows: the superseding entry carries a NEW lease id, so this stale token's ``release()``
-    is already a no-op and serving a turn under it would run a second writer. A registry that cannot
-    be read answers False — unprovable ownership keeps today's behaviour, and the takeover predicate
-    itself fails closed.
+    False for an inert borrowed token (``enabled=False``: the compute-host child's PARENT owns the
+    registry slot, see ``_install_borrowed_lease``) and for a token whose ``release()`` already
+    dropped its row. Both keep their existing, deliberately different paths: there is no row of ours
+    left to re-verify, and re-claiming one is the claim path's decision, not this guard's.
     """
-    if not _desktop_instance_id() or str(getattr(lease, "surface", "") or "").strip().lower() != "desktop":
-        return False
-    if not getattr(lease, "enabled", False) or getattr(lease, "released", False):
-        return False
+    return bool(getattr(lease, "enabled", False)) and not getattr(lease, "released", False)
+
+
+def _cached_lease_is_current(lease) -> bool | None:
+    """True when the registry still holds ``lease``; False when another client replaced or dropped it;
+    None when that cannot be read (the caller fails CLOSED).
+
+    Surface-agnostic on purpose: every lease in one registry belongs to one HERMES_HOME, and any
+    interactive holder can be superseded (``_holder_may_be_superseded``), so the registry — not the
+    ``desktop``/``tui``/``cli`` label cached in this process — decides who owns the chat. The
+    superseding entry carries a NEW lease id, which makes this stale token's ``release()`` a no-op
+    and serving a turn under it a second writer.
+    """
     try:
-        from hermes_cli.active_sessions import active_session_registry_snapshot
-        entries = active_session_registry_snapshot(registry_home=session.get("profile_home"))
+        from hermes_cli.active_sessions import active_session_lease_is_current
+        return active_session_lease_is_current(lease)
     except Exception:
-        logger.debug("Cannot verify active session lease %s against the registry",
+        logger.debug("Cannot verify cached active session lease %s",
                      getattr(lease, "lease_id", ""), exc_info=True)
-        return False
-    return not any(str(entry.get("lease_id") or "") == str(lease.lease_id) for entry in entries)
+        return None
+
+
+def _ownership_unavailable_refusal():
+    """Typed fail-closed refusal for a cached lease this runtime cannot prove is still its own row."""
+    from hermes_cli.active_sessions import ActiveSessionRefusal, SESSION_COORDINATION_UNAVAILABLE
+    return ActiveSessionRefusal(_SESSION_OWNERSHIP_UNAVAILABLE, SESSION_COORDINATION_UNAVAILABLE)
 
 
 def _sync_lease_client_attachment(session: dict | None, attached: bool) -> None:

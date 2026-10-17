@@ -26,6 +26,7 @@ import pytest
 
 from hermes_cli import active_sessions
 from hermes_cli.active_sessions import (
+    SESSION_COORDINATION_UNAVAILABLE,
     SESSION_NOT_OWNED,
     ActiveSessionLease,
     _state_path,
@@ -101,6 +102,37 @@ def desktop_session(home: Path, key: str) -> dict:
     }
 
 
+def leased_session(
+    home: Path, key: str, *, surface: str = "tui", lease_id: str = "tui-lease-1",
+    enabled: bool = True, released: bool = False,
+) -> dict:
+    """A live session record that still CACHES the lease it claimed.
+
+    Lease identity is (pid, live_session_id) in the registry, and the cached token is what the
+    turn-admission fast path used to trust blindly: its ``lease_id`` is exactly what a superseding
+    claim replaces. ``enabled=False`` is the inert borrowed token a compute-host child adopts
+    (``_install_borrowed_lease``); ``released=True`` is a token whose row is already gone.
+    """
+    session = {
+        "session_key": key,
+        "source": surface,
+        "profile_home": str(home),
+        "history_lock": threading.Lock(),
+        "running": False,
+    }
+    session["active_session_lease"] = ActiveSessionLease(
+        lease_id=lease_id, session_id=key, surface=surface, enabled=enabled, released=released,
+        state_path=_state_path(home), lock_path=home / "runtime" / "active_sessions.lock",
+    )
+    return session
+
+
+def pin_turn_isolation(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    """Pin ``dashboard.turn_isolation`` for ``_holder_turns_may_run_isolated``."""
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config",
+                        lambda cfg=None: {"turn_isolation": enabled})
+
+
 def write_turn_marker(home: Path, key: str, pid: int, *, age: float = 0.0) -> None:
     """The durable turn marker a running backend leaves (``<home>/desktop/interrupted_turns.json``).
 
@@ -159,6 +191,51 @@ def test_another_desktop_instance_takes_the_chat_over_when_the_holder_is_idle(
 
     assert server._ensure_active_session_slot("sid-new", session) is None
     assert [e["pid"] for e in read_ledger(home)] == [os.getpid()]
+
+
+def test_a_chat_handed_to_an_idle_client_is_taken_back_at_once(
+    tmp_path: Path, foreign_pid: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a message sent just after the other client's turn ended must not stand down.
+
+    The session still holds the token it lost to the sibling (its lease id is gone from the registry,
+    so the cached-lease guard reads it as superseded). The holder has no turn marker, so the registry
+    proves it idle and the takeover must succeed at once instead of "another client owns the chat now".
+    """
+    home = tmp_path / "home"
+    key = "chat-stand-down"
+    write_ledger(home, [holder_entry(key, pid=foreign_pid, instance=INSTANCE_B, attached=False)])
+    set_desktop_instance(monkeypatch, INSTANCE_A)
+    session = desktop_session(home, key)
+    session["active_session_lease"] = ActiveSessionLease(
+        lease_id="our-revoked-lease", session_id=key, surface="desktop", track_liveness=True,
+        state_path=_state_path(home), lock_path=home / "runtime" / "active_sessions.lock",
+    )
+
+    assert server._ensure_active_session_slot("sid-stand-down", session) is None
+    assert [e["pid"] for e in read_ledger(home)] == [os.getpid()]
+
+
+def test_a_holder_still_busy_keeps_the_chat_and_we_stand_down(
+    tmp_path: Path, foreign_pid: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart: a holder whose turn is still progressing is not taken over; we stand down."""
+    home = tmp_path / "home"
+    key = "chat-stand-down-busy"
+    write_ledger(home, [holder_entry(key, pid=foreign_pid, instance=INSTANCE_B, attached=False)])
+    write_turn_marker(home, key, foreign_pid, age=0.0)
+    set_desktop_instance(monkeypatch, INSTANCE_A)
+    session = desktop_session(home, key)
+    session["active_session_lease"] = ActiveSessionLease(
+        lease_id="our-revoked-lease", session_id=key, surface="desktop", track_liveness=True,
+        state_path=_state_path(home), lock_path=home / "runtime" / "active_sessions.lock",
+    )
+
+    refusal = server._ensure_active_session_slot("sid-stand-down-busy", session)
+    assert refusal is not None
+    assert [e["pid"] for e in read_ledger(home)] == [foreign_pid]
+
+
 def test_a_holder_without_any_desktop_identity_is_taken_over_too(
     tmp_path: Path, foreign_pid: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -322,10 +399,16 @@ def test_the_holder_publishes_its_client_transport_state_on_transitions(
 def test_a_superseded_runtime_stands_down_instead_of_reclaiming(
     tmp_path: Path, foreign_pid: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Re-claiming would start a tug-of-war with the client that just took the chat over."""
+    """Re-claiming would start a tug-of-war with a peer whose turn is still running.
+
+    The peer here is mid-turn (a fresh progress marker), so the registry does NOT prove it idle and
+    the superseded runtime must stand down rather than reclaim. An IDLE peer is taken back at once
+    instead; see ``test_a_chat_handed_to_an_idle_client_is_taken_back_at_once``.
+    """
     home = tmp_path / "home"
     key = "chat-8"
     write_ledger(home, [holder_entry(key, pid=foreign_pid, attached=False)])
+    write_turn_marker(home, key, foreign_pid, age=0.0)
     set_desktop_instance(monkeypatch, INSTANCE_A)
     session = desktop_session(home, key)
     # A token this process still believes it owns, already replaced in the registry by a peer.
@@ -356,3 +439,164 @@ def test_the_desktop_instance_identity_is_read_off_the_ssh_lock_path(
     monkeypatch.setattr(active_sessions, "_DESKTOP_INSTANCE_ID", "")
     web_server._apply_ssh_desktop_identity(None)
     assert active_sessions.desktop_instance_id() == ""
+
+
+# ---------------------------------------------------------------------------------------------------
+# D1: the supersede asymmetry. ``_holder_may_be_superseded`` lets a Desktop atomically take a provably
+# idle TUI/CLI lease, but the turn-admission resolver only consulted the registry for a DESKTOP
+# surface, so a superseded TUI kept serving turns under a lease id the registry had already replaced.
+# Every enabled, unreleased cached token is now re-verified against the registry it was claimed in,
+# whatever the surface; an unreadable registry fails CLOSED instead of reading "no proof" as "mine".
+# ---------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("surface", ["tui", "cli"])
+def test_a_superseded_tui_or_cli_never_serves_its_stale_lease(
+    tmp_path: Path, foreign_pid: int, monkeypatch: pytest.MonkeyPatch, surface: str,
+) -> None:
+    """D1 regression: a Desktop took this chat over; the TUI's next prompt may not run under its token.
+
+    The Desktop is mid-turn, so it is not idle and the TUI must stand down with the same refusal a
+    Desktop gets — not take the ``return None`` fast path that only looked at Desktop surfaces.
+    (RED before the fix: the respawned TUI served a turn beside the live Desktop, two writers.)
+    """
+    home = tmp_path / "home"
+    key = f"chat-d1-{surface}"
+    write_ledger(home, [holder_entry(key, pid=foreign_pid, surface="desktop", instance=INSTANCE_B,
+                                     attached=True, lease_id="desktop-lease-2")])
+    write_turn_marker(home, key, foreign_pid, age=0.0)
+    session = leased_session(home, key, surface=surface)
+
+    refusal = server._ensure_active_session_slot("sid-tui-late", session)
+
+    assert refusal is not None and refusal.reason == SESSION_NOT_OWNED
+    assert "active_session_lease" not in session
+    assert [e["lease_id"] for e in read_ledger(home)] == ["desktop-lease-2"], "the holder's row is untouched"
+
+
+def test_a_superseded_tui_takes_the_chat_back_once_the_desktop_is_idle(
+    tmp_path: Path, foreign_pid: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of D1: an IDLE holder hands the chat back, with a FRESH lease id.
+
+    Same rule as the Desktop handback: the registry must prove the current holder is idle. Serving
+    the old token instead would be a second writer; refusing forever would fence the user out of
+    the window they are typing in.
+    """
+    home = tmp_path / "home"
+    key = "chat-d1-idle"
+    write_ledger(home, [holder_entry(key, pid=foreign_pid, surface="desktop", instance=INSTANCE_B,
+                                     attached=True, lease_id="desktop-lease-2")])
+    pin_turn_isolation(monkeypatch, False)  # no marker: the Desktop's turn concluded
+    session = leased_session(home, key, surface="tui")
+
+    assert server._ensure_active_session_slot("sid-tui-late", session) is None
+
+    lease = session["active_session_lease"]
+    assert lease.lease_id != "tui-lease-1", "a fresh claim, never the superseded token"
+    entry, = read_ledger(home)
+    assert entry["lease_id"] == lease.lease_id and entry["pid"] == os.getpid()
+    lease.release()
+
+
+def test_a_tui_whose_registry_row_vanished_reclaims_instead_of_serving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cached token whose row is GONE (reaped, dropped) is not a licence to run lease-less."""
+    home = tmp_path / "home"
+    key = "chat-d1-row-gone"
+    write_ledger(home, [holder_entry("another-chat", pid=os.getpid(), attached=True,
+                                     lease_id="another-lease")])
+    session = leased_session(home, key, surface="tui")
+
+    assert server._ensure_active_session_slot("sid-tui-late", session) is None
+
+    rows = {entry["session_id"]: entry for entry in read_ledger(home)}
+    lease = session["active_session_lease"]
+    assert lease.lease_id != "tui-lease-1"
+    assert rows[key]["lease_id"] == lease.lease_id and rows[key]["pid"] == os.getpid()
+    assert rows["another-chat"]["lease_id"] == "another-lease", "another owner's row is never rewritten"
+    lease.release()
+
+
+@pytest.mark.parametrize("surface", ["desktop", "tui"])
+def test_an_unreadable_registry_refuses_a_cached_lease_instead_of_serving_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, surface: str,
+) -> None:
+    """"Cannot read the registry" is not proof the cached token is still ours: refuse, touch nothing.
+
+    For a Desktop this is a deliberate tightening of the old "unprovable ownership keeps today's
+    behaviour" — the same fail-closed reading ``try_acquire_active_session`` already gives a missing
+    proof, and never a licence to run a second writer.
+    """
+    home = tmp_path / "home"
+    state = _state_path(home)
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("{ this is not the registry", encoding="utf-8")
+    before = state.read_bytes()
+    if surface == "desktop":
+        set_desktop_instance(monkeypatch, INSTANCE_A)
+    session = leased_session(home, "chat-d1-unreadable", surface=surface)
+    held = session["active_session_lease"]
+
+    refusal = server._ensure_active_session_slot("sid-tui-late", session)
+
+    assert refusal is not None
+    assert getattr(refusal, "reason", None) == SESSION_COORDINATION_UNAVAILABLE
+    assert state.read_bytes() == before, "a refusal must not rewrite a registry it could not read"
+    assert session["active_session_lease"] is held, "neither dropped nor re-claimed"
+
+
+@pytest.mark.parametrize("surface", ["desktop", "tui"])
+def test_a_current_cached_lease_keeps_serving_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, surface: str,
+) -> None:
+    """Invariant 2: the registry still holds this exact lease id -> the turn runs, nothing is rewritten."""
+    home = tmp_path / "home"
+    key = "chat-still-current"
+    if surface == "desktop":
+        set_desktop_instance(monkeypatch, INSTANCE_A)
+    session = leased_session(home, key, surface=surface)
+    held = session["active_session_lease"]
+    write_ledger(home, [holder_entry(key, pid=os.getpid(), surface=surface, attached=True,
+                                     lease_id=held.lease_id)])
+    before = read_ledger(home)
+
+    assert server._ensure_active_session_slot("sid-current", session) is None
+    assert session["active_session_lease"] is held
+    assert read_ledger(home) == before
+
+
+@pytest.mark.parametrize("surface", ["desktop", "tui"])
+def test_an_inert_borrowed_lease_keeps_its_parent_owned_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, surface: str,
+) -> None:
+    """Invariant 3: the compute-host child's ``enabled=False`` token has no row of its own to verify.
+
+    The PARENT owns the registry slot; the child must neither claim a second one nor be fenced out
+    by the parent's own entry — and it must not even read the registry (no lock/state file appears).
+    """
+    home = tmp_path / "home"
+    session = leased_session(home, "chat-borrowed", surface=surface,
+                             lease_id="borrowed:parent-lease", enabled=False)
+    held = session["active_session_lease"]
+
+    assert server._ensure_active_session_slot("sid-child", session) is None
+
+    assert session["active_session_lease"] is held
+    assert not (home / "runtime").exists(), "the inert path stays out of the registry entirely"
+
+
+def test_a_released_token_keeps_its_existing_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invariant 3: ``release()`` already dropped the row and every releaser pops the token.
+
+    A lingering released token therefore keeps the historical no-op reading — it is not re-claimed
+    here (that is the claim path's job) and the guard does not read the registry for it.
+    """
+    home = tmp_path / "home"
+    session = leased_session(home, "chat-released", surface="tui", released=True)
+    held = session["active_session_lease"]
+
+    assert server._ensure_active_session_slot("sid-released", session) is None
+    assert session["active_session_lease"] is held
+    assert not (home / "runtime").exists()

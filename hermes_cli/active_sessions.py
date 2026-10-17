@@ -709,6 +709,40 @@ def mark_active_session_client_attachment(lease: ActiveSessionLease, *, attached
         return False
 
 
+def active_session_lease_is_current(lease: ActiveSessionLease) -> Optional[bool]:
+    """Whether ``lease`` is still the registry's entry for its session, or None when unprovable.
+
+    The lease id IS the ownership token: a superseding claim (``try_acquire_active_session``'s
+    ``supersede``) replaces the entry under a NEW id, and a same-process handoff
+    (``transfer_active_session``) deliberately keeps the id while the stored session id rotates —
+    so membership of the lease id, never of the session id or the surface, answers "is this token
+    still mine". A caller that cannot get an answer must fail CLOSED: serving a turn under a token
+    the registry no longer holds is the second writer the fence exists to prevent.
+
+    Read-only by construction: the row of whoever holds the session now is left exactly as it is.
+    The read is TARGETED at ``lease.session_id`` for the same reason the claim path's is (#113683):
+    an unrelated entry whose liveness cannot be judged must not turn this into "unprovable". It runs
+    against the lease's OWN registry (``_lease_paths``), like every other operation on this token —
+    that registry can be pinned to a different home than the caller's profile (#85431).
+    """
+    state_path, lock_path = _lease_paths(lease)
+    try:
+        with _FileLock(lock_path):
+            loaded = _read_live_entries(
+                state_path, track_liveness=lease.track_liveness,
+                warn="Active-session registry is unavailable; cannot verify a cached lease",
+                target_session_id=lease.session_id,
+            )
+    except Exception:
+        logger.debug("Active-session registry unreadable while verifying lease %s",
+                     lease.lease_id, exc_info=True)
+        return None
+    if loaded is None:
+        return None
+    lease_id = str(lease.lease_id)
+    return any(str(entry.get("lease_id") or "") == lease_id for entry in loaded[1])
+
+
 def release_active_session(lease: ActiveSessionLease) -> None:
     # Prefer the registry the lease was acquired against: the caller may be
     # running under a profile HERMES_HOME override.

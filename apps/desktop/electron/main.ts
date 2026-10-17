@@ -44,6 +44,7 @@ import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
 import { HERMES_API_EXPECTED_404 } from './api-expected-404'
+import { shouldLogExpectedNotFoundApiFailure } from './api-request-failure'
 import {
   destroyKeepaliveAgents,
   htmlResponseError,
@@ -16553,6 +16554,11 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     // contract is unchanged; only Electron's logging is bypassed. Every other
     // failure still rejects and still logs in full.
     if (isNotFoundApiError(error)) {
+      if (shouldLogExpectedNotFoundApiFailure(request)) {
+        rememberLog(formatApiRequestFailure(request, error))
+        flushDesktopLogBufferSync()
+      }
+
       return { [HERMES_API_EXPECTED_404]: String((error as any)?.message ?? error) }
     }
 

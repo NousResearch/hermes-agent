@@ -301,6 +301,29 @@ STRATEGIES: list[tuple[str, Callable[[str, str], list[Span]]]] = [
 # unique replacement, never safe under replace_all.
 SIMILARITY_STRATEGIES = frozenset({"block_anchor", "context_aware"})
 
+# Deterministic strategies that normalize layout or unicode but never escape
+# semantics: a match through one of these proves the file holds text the
+# uncorrected, escaped anchor itself was meant for.
+_ESCAPE_PRESERVING_STRATEGIES = tuple(
+    (name, strategy_fn)
+    for name, strategy_fn in STRATEGIES
+    if name != "escape_normalized" and name not in SIMILARITY_STRATEGIES
+)
+
+
+def _anchor_matches_preserving_escapes(content: str, old_string: str) -> bool:
+    """True when the uncorrected anchor matches through an escape-preserving strategy.
+
+    A verified escape-drift correction claims the file only holds the de-escaped
+    form; when the uncorrected anchor still matches (e.g. a genuinely escaped
+    occurrence with a whitespace difference), that claim does not hold and the
+    strategy chain must keep its match/ambiguity semantics.
+    """
+    return any(
+        strategy_fn(content, old_string)
+        for _name, strategy_fn in _ESCAPE_PRESERVING_STRATEGIES
+    )
+
 
 def boundary_note(strategies: Iterable[Optional[str]], target: str = "old_string's",
                   where: str = "") -> Optional[str]:
@@ -384,10 +407,19 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     # All consumers, including validation and approval previews, must use the
     # same correction policy before a fuzzy strategy can match ambiguous text.
     from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
+    raw_old_string, raw_new_string = old_string, new_string
     try:
         old_string, new_string, correction_note = maybe_correct_escape_drift(old_string, new_string, content)
     except AmbiguousEscapeDriftError as exc:
         return content, 0, None, str(exc)
+    if old_string != raw_old_string and _anchor_matches_preserving_escapes(
+        content, raw_old_string
+    ):
+        # The uncorrected anchor still matches genuinely escaped text (e.g. the
+        # intended occurrence with a whitespace difference), so the corrected
+        # form's verbatim hit is a competing candidate, not evidence of wire
+        # drift. Stand down and let the strategy chain keep its semantics.
+        old_string, new_string, correction_note = raw_old_string, raw_new_string, None
     if old_string == new_string:
         return content, 0, None, IDENTICAL_STRINGS_ERROR
 

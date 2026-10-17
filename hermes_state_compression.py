@@ -105,6 +105,55 @@ def _walk_compression_chain(session_id: str, step) -> list[str]:
     return chain
 
 
+# created_source values the creator upsert treats as unset (NULLIF(..., 'unknown')).
+_UNSET_CREATED_SOURCES = (None, "unknown")
+_CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE id = ?"
+# Is any ancestor unset, walking up parent_session_id through ancestors on the same surface?
+# One query, so a fully stamped chain is skipped without the per-hop validated walk below.
+_UNSET_ANCESTOR_SQL = """
+    WITH RECURSIVE up(pid, n) AS (
+        SELECT parent_session_id, 1 FROM sessions WHERE id = ?
+        UNION ALL
+        SELECT s.parent_session_id, up.n + 1 FROM up JOIN sessions s ON s.id = up.pid
+        WHERE s.created_source = ? AND up.n < ?
+    )
+    SELECT 1 FROM up JOIN sessions s ON s.id = up.pid
+    WHERE NULLIF(s.created_source, 'unknown') IS NULL
+    LIMIT 1
+"""
+
+
+def stamp_compression_ancestors(conn, session_id: str) -> None:
+    """Copy *session_id*'s ``created_source`` onto compression ancestors that have none.
+
+    A list page shows a compressed conversation as its root, painted as the tip, and filters on
+    the root's ``created_source``. Automatic compression publishes the child before any writer
+    knows the surface, so the turn's usage write stamps only the tip. Stamping the chain here,
+    in that same transaction, keeps the root matchable without a list-time chain walk. Each hop
+    must be the parent's preferred continuation (``_CHAIN_STEP_SQL``); ``unknown`` counts as
+    unset, as in the creator upsert. An ancestor already on the same surface is walked through
+    (a NULL root behind a stamped mid segment still gets stamped); another surface stops it.
+    A chain with no unset ancestor returns after one query (``_UNSET_ANCESTOR_SQL``).
+    """
+    row = conn.execute(_CREATED_ROW_SQL, (session_id,)).fetchone()
+    surface = row["created_source"] if row else None
+    if surface in _UNSET_CREATED_SOURCES:
+        return
+    if conn.execute(_UNSET_ANCESTOR_SQL, (session_id, surface, _CHAIN_CAP)).fetchone() is None:
+        return
+    current, parent_id = session_id, row["parent_session_id"]
+    for _ in range(_CHAIN_CAP):
+        parent = parent_id and conn.execute(_CREATED_ROW_SQL, (parent_id,)).fetchone()
+        if not parent or parent["created_source"] not in (*_UNSET_CREATED_SOURCES, surface):
+            return
+        step = conn.execute(_CHAIN_STEP_SQL, (parent_id,)).fetchone()
+        if step is None or step["id"] != current:
+            return
+        if parent["created_source"] != surface:
+            conn.execute("UPDATE sessions SET created_source = ? WHERE id = ?", (surface, parent_id))
+        current, parent_id = parent_id, parent["parent_session_id"]
+
+
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
@@ -249,19 +298,27 @@ class SessionCompressionMixin:
         # Pin/archive are compression-lineage flags; canonical branch/reset verbs also publish through
         # here, and their child is its own conversation, so it starts unpinned and visible.
         continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
+        # Copy a real creating surface. Automatic compression passes the parent's live
+        # label (``local`` after the peer refresh); reset, branch and the compress
+        # mutation pass the policy label. ``local`` and ``unknown`` are not surfaces,
+        # so those stay NULL. Compression sets ``_session_db_created`` and does not
+        # create the child again. The turn's ``update_token_counts(source=...)`` fills
+        # that NULL; auxiliary usage must not write ``unknown`` into it first.
+        from gateway.session_policy import created_surface
+        created_source = created_surface(parent["created_source"]) or created_surface(source)
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.
         conn.execute(
             """INSERT INTO sessions (
-                   id, source, model, model_config, system_prompt,
+                   id, source, created_source, model, model_config, system_prompt,
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, pinned, started_at,
                    archived, auto_archived
-                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                child_session_id, source, model, json.dumps(model_config) if model_config else None,
+                child_session_id, source, created_source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
@@ -330,7 +387,7 @@ class SessionCompressionMixin:
             """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                       user_id, session_key, chat_id, chat_type,
                       thread_id, display_name, origin_json, profile_name, tool_names,
-                      archived, auto_archived, pinned, model_config
+                      archived, auto_archived, pinned, model_config, created_source
                FROM sessions WHERE id = ?""",
             (parent_session_id,),
         ).fetchone()

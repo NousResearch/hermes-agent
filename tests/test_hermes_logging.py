@@ -1033,3 +1033,85 @@ class TestRolloverPreservesLogOwnership:
         monkeypatch.setattr(os, "chown", _refuse)
         self._rolled_handler(log_path)
         assert log_path.exists()
+
+
+class TestCapUncappedSidecarLogs:
+    """#135812: sidecar logs written by raw append handles or other processes have no
+    rotating handler, so nothing bounds them; setup_logging caps them in place."""
+
+    @pytest.fixture(autouse=True)
+    def _small_caps(self, monkeypatch):
+        """Shrink the thresholds so tests write kilobytes, not 8 MB."""
+        monkeypatch.setattr(hermes_logging, "_SIDECAR_LOG_MAX_BYTES", 8192)
+        monkeypatch.setattr(hermes_logging, "_SIDECAR_LOG_KEEP_BYTES", 2048)
+
+    @staticmethod
+    def _oversize_log(log_dir, name="gateway-stdio.log", rows=120):
+        lines = [f"sidecar-row-{i:04d} " + "x" * 96 + "\n" for i in range(rows)]
+        path = log_dir / name
+        path.write_text("".join(lines), encoding="utf-8")
+        return path, lines
+
+    def test_oversize_sidecar_keeps_a_suffix_of_whole_lines_under_a_marker(self, tmp_path):
+        path, lines = self._oversize_log(tmp_path)
+        size = path.stat().st_size
+        assert size > 8192
+
+        capped = hermes_logging.cap_uncapped_sidecar_logs(tmp_path)
+
+        assert [name for name, _ in capped] == ["gateway-stdio.log"]
+        assert capped[0][1] == size
+        written = path.read_text(encoding="utf-8")
+        assert path.stat().st_size < size
+        rows = written.splitlines(keepends=True)
+        marker, body = rows[0], rows[1:]
+        assert marker.startswith("[hermes] log capped in place on ")
+        assert f"of {size} head bytes" in marker
+        # The kept rows are a strict suffix of the original whole lines: the cut
+        # landed on a line boundary and the tail (not the head) survived.
+        original = "".join(lines).splitlines(keepends=True)
+        assert body == original[len(original) - len(body):]
+        assert body and body[-1] == lines[-1]
+
+    def test_a_live_append_handle_continues_at_the_new_eof(self, tmp_path):
+        path, _lines = self._oversize_log(tmp_path, name="update.log")
+        writer = path.open("ab")  # exactly how the updater/gateway sidecars hold the file
+        try:
+            hermes_logging.cap_uncapped_sidecar_logs(tmp_path)
+            writer.write(b"post-cap row\n")
+            writer.flush()
+        finally:
+            writer.close()
+        content = path.read_bytes()
+        # No hole before the append point and the row lands exactly once, at the end.
+        assert content.endswith(b"post-cap row\n")
+        assert content.count(b"post-cap row\n") == 1
+        assert content.startswith(b"[hermes] log capped in place on ")
+
+    def test_small_and_missing_files_are_left_alone(self, tmp_path):
+        kept = tmp_path / "gateway-stdio.log"
+        kept.write_text("still small\n", encoding="utf-8")
+        # bootstrap-installer.log / update.log / ... do not exist here.
+
+        assert hermes_logging.cap_uncapped_sidecar_logs(tmp_path) == []
+
+        assert kept.read_text(encoding="utf-8") == "still small\n"
+
+    def test_capping_is_idempotent_below_the_trigger(self, tmp_path):
+        path, _lines = self._oversize_log(tmp_path, name="mcp-stderr.log")
+        assert hermes_logging.cap_uncapped_sidecar_logs(tmp_path)
+        after_first = path.read_bytes()
+
+        assert hermes_logging.cap_uncapped_sidecar_logs(tmp_path) == []
+
+        assert path.read_bytes() == after_first
+
+    def test_setup_logging_caps_an_oversize_sidecar(self, hermes_home):
+        log_dir = hermes_home / "logs"
+        log_dir.mkdir(parents=True)
+        self._oversize_log(log_dir, name="bootstrap-installer.log")
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        capped = (log_dir / "bootstrap-installer.log").read_bytes()
+        assert capped.startswith(b"[hermes] log capped in place on ")

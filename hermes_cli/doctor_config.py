@@ -541,6 +541,120 @@ def _check_config_drift(should_fix: bool, f: Finding) -> None:
     _check_channel_record_hygiene()
 
 
+@doctor_check("Compression trigger check skipped", "({e})")
+def _check_compression_trigger(should_fix: bool, f: Finding) -> None:
+    """Name the compression trigger that will actually install, and which setting binds it (#117915).
+
+    ``compression.threshold_tokens`` (optional, default ``null``) silently overrides the configured
+    30% ratio on a 1M-window model once set, and before this the only proof was grepping ``threshold=``
+    out of ``agent.log``, and the startup line quoted the capped number as if it were the ratio.
+
+    Purely informational: it appends nothing to ``f.issues``/``f.manual_issues`` and never changes
+    doctor's exit status. Window resolution is
+    offline on purpose (config pin > custom provider > static catalog) — a doctor run must not
+    probe the network; steps that would are skipped and the line says so.
+    """
+    from contextlib import suppress
+
+    from agent.context_compressor import compression_trigger_report, resolve_model_threshold
+    from agent.model_metadata import (
+        DEFAULT_CONTEXT_LENGTHS, _config_override_context_length, _longest_key_match,
+    )
+    from hermes_cli.config import load_config, read_raw_config_readonly, split_model_config_default
+
+    def _offline_window(model: str, base_url: str, provider: str, custom_providers: list, pin=None):
+        """``(window, source)`` from config only — a doctor run must never probe the network."""
+        if isinstance(pin, int) and not isinstance(pin, bool) and pin > 0:
+            return pin, "context_length override"
+        window = _config_override_context_length(model, base_url, provider, custom_providers)
+        if window:
+            return window, "custom provider config"
+        hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+        return (hit[1], "static catalog") if hit else (None, None)
+
+    cfg = load_config()
+    comp = cfg.get("compression") or {}
+    if not comp.get("enabled", True):
+        check_ok("Automatic compression disabled (compression.enabled: false)")
+        return
+
+    model_cfg = cfg.get("model") or {}
+    model, default_provider = split_model_config_default(model_cfg.get("default") or model_cfg.get("model"))
+    provider = str(model_cfg.get("provider") or default_provider or "").strip()
+    if not model:
+        check_info("No model.default configured — set it to see the compression trigger")
+        return
+
+    custom_providers = model_cfg.get("custom_providers") or cfg.get("custom_providers") or []
+    base_url = str(model_cfg.get("base_url") or "")
+    window, window_src = _offline_window(model, base_url, provider, custom_providers, model_cfg.get("context_length"))
+    if window is None:
+        check_warn(f"Compression trigger unknown for {model}", "(set model.context_length for an exact number)")
+        return
+
+    try:
+        threshold = float(comp.get("threshold", 0.5) or 0.5)
+    except (TypeError, ValueError):
+        threshold = 0.5
+    model_thresholds = {
+        str(key): float(value)
+        for key, value in (comp.get("model_thresholds") or {}).items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+    ratio_pct = resolve_model_threshold(model, model_thresholds, threshold, provider)
+    try:
+        cap = int(comp["threshold_tokens"]) if comp.get("threshold_tokens") is not None else None
+    except (TypeError, ValueError):
+        cap = None
+
+    # The trigger is pct x (window - max_tokens), so quoting the ratio against the raw window
+    # is wrong on any route that reserves output tokens. Mirrors _compressor_max_tokens: an
+    # explicit model.max_tokens, else the native-Gemini default, else no reservation.
+    max_tokens = model_cfg.get("max_tokens")
+    if not (isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0):
+        max_tokens = None
+    if max_tokens is None and provider.lower() in {"gemini", "google", "google-gemini", "google-ai-studio"}:
+        with suppress(Exception):
+            from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+            max_tokens = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+
+    # A summariser with a smaller window clamps the installed trigger down to its own
+    # (#114707); report it when config says so.
+    aux_ceiling = _offline_window(
+        str((cfg.get("auxiliary") or {}).get("compression", {}).get("model") or ""),
+        str((cfg.get("auxiliary") or {}).get("compression", {}).get("base_url") or ""),
+        str((cfg.get("auxiliary") or {}).get("compression", {}).get("provider") or ""),
+        custom_providers,
+        (cfg.get("auxiliary") or {}).get("compression", {}).get("context_length"),
+    )[0]
+    if aux_ceiling is not None and aux_ceiling >= window:
+        aux_ceiling = None  # only a smaller aux window can clamp
+
+    rep = compression_trigger_report(
+        context_length=window, ratio_percent=ratio_pct, cap=cap, max_tokens=max_tokens, aux_ceiling=aux_ceiling,
+    )
+    window_line = f"Compression trigger: {rep['effective_tokens']:,} of {window:,} tokens for {model}"
+    ratio_line = f"(ratio {int(round(rep['ratio_percent'] * 100))}% asks for {rep['ratio_tokens']:,}; {window_src})"
+
+    if rep["binding"] == "threshold_tokens":
+        # The cap is what set the trigger: say so, and say whether the user wrote it or we shipped it.
+        check_warn(window_line, ratio_line)
+        raw_comp = read_raw_config_readonly().get("compression") or {}
+        provenance = (
+            f"compression.threshold_tokens: {cap} — set in config.yaml"
+            if "threshold_tokens" in raw_comp
+            else f"compression.threshold_tokens: {cap} — shipped default, not set in config.yaml"
+        )
+        check_info(provenance)
+        check_info("set compression.threshold_tokens to null for ratio-only triggering, or raise it above the ratio trigger")
+    else:
+        check_ok(window_line, ratio_line)
+        if rep["cap"] is not None:
+            check_info(f"compression.threshold_tokens: {rep['cap']:,} — present but does not bind (ratio triggers first)")
+        else:
+            check_info("compression.threshold_tokens: null — no absolute cap, ratio-only triggering")
+
+
 @doctor_check("xAI retirement check skipped", "({e})")
 def _check_xai_retirement(should_fix: bool, f: Finding) -> None:
     from hermes_cli.config import load_config

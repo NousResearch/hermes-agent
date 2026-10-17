@@ -25,6 +25,7 @@ from hermes_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apike
 from hermes_cli.doctor_tools import _safe_which
 
 from hermes_cli.doctor_config import (
+    _check_compression_trigger,
     _check_config_drift,
     _check_config_file,
     _check_env_file,
@@ -115,6 +116,7 @@ DOCTOR_CHECKS = (
     ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
     ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),
+    ('Compression Trigger', _check_compression_trigger),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
     ('Auth Providers', _check_auth_providers),

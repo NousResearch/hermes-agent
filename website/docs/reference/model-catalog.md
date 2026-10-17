@@ -110,6 +110,21 @@ model_catalog:
 
 The exclusion is matched case-insensitively against every key a provider can surface under — the Hermes id and models.dev id (built-in mapped providers), the overlay pid and resolved Hermes slug (overlay providers), and the canonical slug (canonical providers) — so a single entry like `copilot` hides the provider regardless of which section emits it. It is honored by every `/model` picker surface: the gateway interactive/text pickers, the TUI picker, and the interactive `hermes model` CLI picker. An empty list (or omitting the key) has no effect.
 
+### Limiting the models shown and selected
+
+`allowed_models` narrows every picker and `/model` switch to exact provider/model pairs. It is useful when a provider exposes a large catalog but only a few models are approved for normal use. Omit it or leave it empty to keep the existing full picker.
+
+```yaml
+model_catalog:
+  allowed_models:
+    - provider: bedrock
+      model: anthropic.claude-sonnet-4
+    - provider: nous
+      model: solar-pro-4
+```
+
+Provider and model matching is case-insensitive. Each entry must include both fields. Individual malformed entries are dropped; a present non-empty list with no valid pairs is an empty allowlist (nothing selectable) rather than the unrestricted catalog.
+
 ## Updating the manifest
 
 Maintainers:

@@ -2043,9 +2043,9 @@ DEFAULT_CONFIG = {
         # CLI refetches on the next /model or `hermes model` once the cache is older. Network
         # failures silently use the stale cache. Legacy `ttl_hours` is honoured if set.
         "ttl_minutes": 20,
-        # Per-provider override URLs for self-hosted curation lists using the same schema, e.g.
-        # providers: {openrouter: {url: https://example.com/my-curation.json}}.
+        # Same-schema curation URL overrides: {openrouter: {url: https://example.com/my-curation.json}}.
         "providers": {},
+        "allowed_models": [],  # Non-empty: pickers and /model accept only these provider/model pairs.
     },
     # Per-model metadata overrides. Fields: context_window, supports_tools,
     # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over

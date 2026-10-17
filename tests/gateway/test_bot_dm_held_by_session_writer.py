@@ -240,6 +240,48 @@ async def test_a_settled_receipt_states_only_what_settle_serialized(held):
 
 
 @pytest.mark.asyncio
+async def test_a_retiring_or_retired_owner_refuses_settle_through_a_retained_connection(held):
+    """Retirement joins a settle it already tracks; one arriving later (a stale connection) must be
+    refused before it writes: receipt files carry no epoch and the mailbox lock is this authority's
+    own, so nothing else keeps it from racing the home's next owner."""
+    from gateway import run_runtime
+    from hermes_cli.gateway_client import GatewayRPCError
+    from tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result, settle_held_delivery
+    owner = find_canonical_live_owner(held.home)
+    held.authority.retiring = True
+    for reason, delivery_id in (('runtime_draining', 'e' * 64), ('runtime_retired', 'f' * 64)):
+        if reason == 'runtime_retired':
+            assert await run_runtime._retire_profile_authority(held.authority, timeout=1.0) is True
+            assert held.authority.retired
+        with pytest.raises(GatewayRPCError) as refused:
+            await asyncio.to_thread(settle_held_delivery, held.home, owner, 'ping', delivery_id=delivery_id)
+        assert str(refused.value) == reason
+        assert read_delivery_result(held.home, delivery_id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_settle_refused_by_a_retired_owner_keeps_the_unknown_outcome(held, monkeypatch):
+    """The owner refused the DM (writer held), then retired before the tool's settle: that refusal
+    settles nothing, so the tool keeps the intent and gives the ambiguous answer, never 'NOT sent'."""
+    from gateway import run_runtime
+    from tools import bot_live_delivery
+    loop = asyncio.get_running_loop()
+    settle = bot_live_delivery.authority_settle
+
+    def retire_then_settle(home, params):
+        assert asyncio.run_coroutine_threadsafe(
+            run_runtime._retire_profile_authority(held.authority, timeout=1.0), loop).result(30) is True
+        return settle(home, params)
+
+    monkeypatch.setattr(bot_live_delivery, 'authority_settle', retire_then_settle)
+    result = await _send(held, 'ping')
+    assert result.get('status') == 'ambiguous' and 'Do not resend' in result['error'], result
+    assert 'NOT sent' not in result['error'], result
+    assert [path.name for path in held.dm_dir.glob('*.live.json')], 'an unsettled refusal keeps its intent'
+    assert bot_live_delivery.read_delivery_result(held.home, result['delivery_id']) is None
+
+
+@pytest.mark.asyncio
 async def test_a_refusal_alone_leaves_the_id_open_for_a_same_id_retry(held):
     """Only the Bot DM tool's settle records a not-sent disposition. A producer that retries its
     queued record under the same id (the cron drain) after a held refusal still admits it once."""

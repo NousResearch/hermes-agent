@@ -697,7 +697,12 @@ async def _deliver(connection, params):
 
 
 async def settle(connection, params):
+    from gateway.session_authorities import require_serving
     from gateway.session_runtime_workers import track_mutation
+    # Retirement joins tracked work but cannot fence a later write: receipts carry no epoch and
+    # mailbox_lock is this authority's own, so a stale connection is refused before it schedules.
+    require_serving(connection.authority)
+    connection.authority._require_admission_open()
     return await asyncio.shield(track_mutation(connection.authority, _settle(connection, params)))
 
 

@@ -2,9 +2,10 @@ name: xchat
 repo: https://github.com/NousResearch/hermes-official-plugins
 sha: 82e9e4b89099d1ca32a4917874e245bce36ac881
 subdir: xchat
-description: 'X Chat gateway platform: run Hermes as a bot in X''s end-to-end encrypted DMs. Messages are
-  decrypted and encrypted locally with X''s official Chat XDK, so X only routes ciphertext. Encrypted media,
-  threaded replies, group mention gating and cron delivery.'
+description: 'X Chat gateway platform: talk to Hermes in X''s end-to-end encrypted DMs. Hermes runs as the X
+  account you connect: chat with it in your own self-chat ("message yourself"), or give it a separate account and
+  DM that. Messages are decrypted and encrypted locally with X''s official Chat XDK, so X only routes ciphertext.
+  Encrypted media, threaded replies, group mention gating and cron delivery.'
 maintainer: NousResearch
 tier: official
 category: platform

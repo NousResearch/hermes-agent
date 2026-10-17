@@ -25,9 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core.cli_tmux._classic import require_tmux
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
-
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 WORDS = {1: 60, 2: 260, 3: 130}
@@ -39,6 +38,7 @@ def _reply(turn: int) -> str:
 
 
 def test_resizes_keep_each_transcript_line_once_in_tmux_scrollback(tmp_path: Path) -> None:
+    require_tmux()
     sock = f"hermes-e2e-{uuid.uuid4().hex[:8]}"
     home = tmp_path / "home"
     (tmp_path / "work").mkdir()

@@ -192,6 +192,12 @@ def all_authorities(runner):
     return [authority] if authority is not None else []
 
 
+def serving_authorities(runner):
+    """``all_authorities`` minus retiring ones: what startup recovery and service creation cover.
+    Shutdown keeps ``all_authorities``, so a retained authority's live writer is still settled."""
+    return [a for a in all_authorities(runner) if not getattr(a, 'retiring', False)]
+
+
 def require_serving(authority):
     """Refuse a verb reached through a stale connection to a retired authority: its ownership is
     released, and until a successor bumps the epoch its own epoch still passes the store fence."""

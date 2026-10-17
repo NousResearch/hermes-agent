@@ -174,11 +174,17 @@ def release_profile_home(runner, home):
     registry = getattr(runner, 'session_authorities', None)
     if registry is not None and registry.for_home(home) is not None:
         raise RuntimeError('Profile authority must retire before ownership is released')
+    _withdraw_profile_home(runner, home)
+    process_ownership.release(home)
+
+
+def _withdraw_profile_home(runner, home):
+    """Drop *home* from the served set every startup consumer reads (adapters, served status, cron
+    ticks, ingress, spool recovery) without releasing its ``gateway.lock``."""
     reserved = getattr(runner.config, '_runtime_profile_homes', None)
     if reserved is not None:
         runner.config._runtime_profile_homes = tuple(
             entry for entry in reserved if Path(entry[1]).resolve() != home)
-    process_ownership.release(home)
 
 
 def _authority_tasks(authority):
@@ -379,12 +385,39 @@ async def recover_bot_mailbox(authority):
 
 async def start_gateway_runtime_api(runner):
     from gateway.run_api import start_gateway_api
-    from gateway.session_authorities import owner_scope
     runner.session_api = await start_gateway_api(runner)
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
     for authority in _authorities(runner):
+        await _recover_profile_bot_mailbox(runner, authority)
+
+
+async def _recover_profile_bot_mailbox(runner, authority):
+    """Startup Bot Chat recovery of one served profile. A secondary whose durable leftovers cannot
+    be recovered is parked like one whose store cannot be opened (retired, unreserved, named under
+    ``parked_profiles``): under multiplex it would otherwise take every other profile down with it,
+    on every restart (#140018). The launch profile's failure still aborts the start."""
+    from gateway.session_authorities import owner_scope
+    try:
         with owner_scope(authority):
             await recover_bot_mailbox(authority)
+    except Exception as exc:
+        registry = getattr(runner, 'session_authorities', None)
+        name = None if registry is None else registry.profile_name(authority)
+        if name is None:
+            raise  # the launch profile's store is the process's own; nothing to park it behind
+        logger.error("[MULTIPLEX] Profile '%s' not served: startup recovery failed: %s", name, exc,
+                     exc_info=True)
+        home = await asyncio.to_thread(Path(authority.profile_id).resolve)
+        if not await _retire_profile_authority(authority):
+            # A writer outlived Stop: the lock and the retiring authority stay for shutdown to
+            # settle, but the profile leaves the served set, so later boot never starts it.
+            _withdraw_profile_home(runner, home)
+            park_profile(runner, name, f'startup recovery failed; ownership retained: {exc}')
+            return
+        registry.remove(home)
+        _publish_served_set(runner)
+        release_profile_home(runner, home)
+        park_profile(runner, name, f'startup recovery failed: {exc}')
 
 
 async def recover_gateway_native_sessions(runner):
@@ -394,8 +427,8 @@ async def recover_gateway_native_sessions(runner):
     transport. The authority preflights every queued sender before any claim.
     """
     import logging
-    from gateway.session_authorities import owner_scope
-    authorities = _authorities(runner)
+    from gateway.session_authorities import owner_scope, serving_authorities
+    authorities = serving_authorities(runner)
     if not authorities:
         return {}
     from gateway.session_hosted_service import ensure_hosted_service

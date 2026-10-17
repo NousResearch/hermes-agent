@@ -20,6 +20,10 @@ export const deNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'Dieser Server konnte das frühere Senden dieser Nachricht nicht bestätigen; sie wurde möglicherweise bereits ausgeführt. Prüfe die Unterhaltung, bevor du sie erneut sendest.',
+    mcpReloadDeferred:
+      'Dieser Chat ist beschäftigt: Die MCP-Änderung gilt, sobald sein Durchlauf endet und MCP erneut geladen wird, oder wenn du den Chat wieder öffnest',
+    mcpReloadNotInChat: server => `${server} ist in diesem Chat nicht aktiviert`,
+    mcpReloadUnavailable: servers => `Keine Verbindung: ${servers}`,
     sessionCommands: deSessionCommands
   },
   keepAwakeOffer: {

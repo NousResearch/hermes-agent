@@ -135,14 +135,16 @@ class GatewayClient:
 
     async def rpc(self, method, *, _timeout=None, **params):
         """Send one request and await its answer; ``_timeout`` (seconds, never sent on the wire)
-        overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer."""
+        overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer (``math.inf``: no
+        deadline; the answer, a hang-up or the caller's cancel ends the wait)."""
         self.sequence += 1
         rid = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[rid] = future
         try:
             await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
-            return await asyncio.wait_for(future, DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout)
+            budget = DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout
+            return await asyncio.wait_for(future, None if budget == float("inf") else budget)
         finally:
             self.pending.pop(rid, None)
 

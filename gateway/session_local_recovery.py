@@ -176,3 +176,12 @@ def recover_local_sessions(authority, *, schedule=False):
                 authority._schedule(ref)
         except RuntimeStoreError as exc:
             logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)
+    if schedule:
+        # A last-viewer close the previous owner stopped before completing (#134889 LC-6b).
+        from gateway.session_viewer_close import rearm_persisted_closes, settle_viewer_close
+        from gateway.session_runtime_workers import track_mutation
+        for sid in rearm_persisted_closes(authority):
+            authority._schedule(SessionRef(authority.profile_id, sid))
+            if any(row['status'] == 'unknown' for row in list_session_admissions(authority.db, session_id=sid)):
+                # A hard-killed owner's turn: the drain pauses on it, so the close resolves it.
+                track_mutation(authority, settle_viewer_close(authority, sid))

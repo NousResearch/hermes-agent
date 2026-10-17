@@ -810,10 +810,23 @@ def _codex_event_has_content(event: Any) -> bool:
     event_type = _event_field(event, "type")
     if event_type in _CODEX_PROGRESS_DELTA_TYPES:
         return bool(_event_field(event, "delta"))
-    if event_type == "response.output_item.added":
+    if event_type in ("response.output_item.added", "response.output_item.done"):
         item = _event_field(event, "item")
-        return "function_call" in str(_event_field(item, "type") or "") and any(
-            bool(_event_field(item, field)) for field in ("id", "call_id", "name", "arguments"))
+        if "function_call" in str(_event_field(item, "type") or ""):
+            return any(bool(_event_field(item, field)) for field in ("id", "call_id", "name", "arguments"))
+        if event_type == "response.output_item.done":
+            # A completed item with no preceding deltas is still authoritative output (the assembler
+            # appends it); a nonempty message body or reasoning summary therefore counts as progress,
+            # while payload-less completed items stay non-progress so keepalive-only streams time out.
+            if _output_text_of(item):
+                return True
+            summary_parts = _event_field(item, "summary", [])
+            return any(
+                str(_event_field(part, "text", "") or "").strip()
+                for part in (summary_parts if isinstance(summary_parts, list) else [])
+                if _event_field(part, "type", "") == "summary_text"
+            )
+        return False
     return False
 
 

@@ -451,6 +451,17 @@ class TestContentBearingProgress:
                 item=SimpleNamespace(type="function_call"),
             ),
             {"type": "response.output_text.delta", "delta": ""},
+            SimpleNamespace(type="response.output_item.done", item=None),
+            SimpleNamespace(type="response.output_item.done", item=SimpleNamespace(type="message", content=[])),
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(type="message", content=[SimpleNamespace(type="output_text", text="")]),
+            ),
+            SimpleNamespace(type="response.output_item.done", item=SimpleNamespace(type="reasoning", summary=[])),
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(type="reasoning", summary=[SimpleNamespace(type="summary_text", text="  ")]),
+            ),
         ],
     )
     def test_codex_empty_and_structural_events_are_not_progress(self, event):
@@ -472,6 +483,34 @@ class TestContentBearingProgress:
                 ),
             ),
             {"type": "response.output_text.delta", "delta": "token"},
+            # Nonempty completed items with no preceding deltas: authoritative output the assembler
+            # appends, so they must count as first substantive progress (gh-133905).
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Completed output, without any delta frames.")],
+                ),
+            ),
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(
+                    type="reasoning",
+                    id="rs_demo",
+                    status="completed",
+                    summary=[SimpleNamespace(type="summary_text", text="A completed reasoning summary.")],
+                ),
+            ),
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=SimpleNamespace(type="function_call", call_id="call_1", name="lookup", arguments="{}"),
+            ),
+            {
+                "type": "response.output_item.done",
+                "item": {"type": "message", "content": [{"type": "output_text", "text": "raw json frame"}]},
+            },
         ],
     )
     def test_codex_nonempty_deltas_are_progress(self, event):

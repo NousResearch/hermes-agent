@@ -24,7 +24,8 @@ _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
 _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
-_CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
+_CTX_MAX_COMMENT_BYTES  = 2 * 1024   # older comments
+_CTX_MAX_LATEST_COMMENT_BYTES = 8 * 1024  # latest comment/checkpoint
 
 
 def _ctx_cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
@@ -198,9 +199,9 @@ def _ctx_role_history(lines: list[str], conn: sqlite3.Connection, task: Task, no
 
 
 def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
-    """Newest ``_CTX_MAX_COMMENTS`` comments. The explicit "comment from
-    worker" framing stops an operator-controlled HERMES_PROFILE like
-    "hermes-system" being read as a system directive above an
+    """Newest ``_CTX_MAX_COMMENTS`` comments; the latest gets a larger cap.
+    The explicit "comment from worker" framing stops an operator-controlled
+    HERMES_PROFILE like "hermes-system" being read as a system directive above an
     attacker-influenceable body (defense-in-depth)."""
     shown, omitted_note = _ctx_tail(comments, _CTX_MAX_COMMENTS, "comment")
     if not shown:
@@ -208,12 +209,13 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
     lines.append("## Comment thread")
     if omitted_note:
         lines.append(omitted_note)
-    for c in shown:
+    for index, c in enumerate(shown):
         # Render author with explicit "comment from worker" framing so operator-controlled HERMES_PROFILE
         # values like "hermes-system" or "operator" can't be misread by the next worker as a system
         # directive above the (attacker-influenceable) comment body. Defense-in-depth — the LLM-controlled
         # author-forgery surface was already closed in #22435. See #22452.
         safe_author = (c.author or "").replace("`", "")
         lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
-        lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
+        limit = _CTX_MAX_LATEST_COMMENT_BYTES if index == len(shown) - 1 else _CTX_MAX_COMMENT_BYTES
+        lines.append(_ctx_cap(c.body, limit))
         lines.append("")

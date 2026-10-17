@@ -222,18 +222,21 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            lineage_tips_only: bool = False, **filters) -> tuple[str, list]:
+                            lineage_tips_only: bool = False, include_open: bool = False,
+                            **filters) -> tuple[str, list]:
         """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
         AND together, only ended sessions are ever candidates, ``archived`` is tri-state
         (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
         ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
         their tip, never on their own age — matching an old ancestor would fan out over the lineage
-        and hide its OPEN, recently active tip (#115489)."""
+        and hide its OPEN, recently active tip (#115489). ``include_open`` lifts the ended guard
+        for reversible archive only — never for prune/delete (#139597: desktop sessions never set
+        ``ended_at``)."""
         unknown = set(filters) - _PRUNE_FILTER_NAMES
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
                             f"keyword argument {min(unknown)!r}")
-        clauses = ["s.ended_at IS NOT NULL"]
+        clauses = [] if include_open else ["s.ended_at IS NOT NULL"]
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
         params: list = []
@@ -293,7 +296,10 @@ class SessionMaintenanceMixin:
 
     def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str | None = None,
                                  **filters) -> int:
-        """Count open sessions a matching prune skips (``ended_at`` guard inverted); visibility-only."""
+        """Count open sessions a matching prune/archive skips (``ended_at`` guard inverted);
+        visibility-only. With ``include_open`` the selection already contains them: nothing is skipped."""
+        if filters.get("include_open"):
+            return 0
         where, params = self._prune_where(older_than_days, source, filters)
         ended_guard = "s.ended_at IS NOT NULL"
         if not where.startswith(ended_guard):
@@ -385,6 +391,10 @@ class SessionMaintenanceMixin:
         ancestor is deleted only together with every continuation after it (``whole_lineages``).
         ``deleted_ids`` (the owning gateway) receives the removed ids, so it can retire their
         in-memory routes and live sessions after the commit."""
+        if filters.get("include_open"):
+            # Deletion is not reversible, so the ended-session guard is structural here: the
+            # archive-only escape hatch (#139597) must never reach the delete path.
+            raise ValueError("prune_sessions() never deletes open sessions: include_open is archive-only")
         where, where_params = self._prune_where(older_than_days, source, filters, whole_lineages=True)
         removed_ids: list[str] = []
         def _do(conn):

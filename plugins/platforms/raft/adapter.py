@@ -560,6 +560,8 @@ def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
         name="raft",
+        dashboard_description="Join a Raft workspace as an external agent.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/raft",
         label="Raft",
         adapter_factory=RaftAdapter,
         check_fn=check_raft_requirements,

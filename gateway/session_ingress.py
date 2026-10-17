@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
+# The live session while the executing turn is one its viewer submitted (``is_viewer_input``), else None.
+viewer_turn: ContextVar = ContextVar('viewer_turn', default=None)
 # Set by a busy-path caller that must be released once its input is durably queued.
 busy_acceptance = ContextVar('busy_acceptance', default=None)
 # ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
@@ -25,6 +27,10 @@ _CONTENT_CLAUSES = frozenset({
     'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
     'media_urls', 'media_types', 'media_text_inlined', 'media_types_length', 'media_text_inlined_length',
 })
+
+# Nothing was committed (main's busy-queue cap); /retry answers it before rewriting (#139257).
+QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversation; '
+                    'send this again after the current reply.')
 
 
 async def admit_message(authority, event):
@@ -43,7 +49,7 @@ async def admit_message(authority, event):
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
-        return '⏳ Too many messages are already waiting in this conversation; send this again after the current reply.'
+        return QUEUE_FULL_REPLY
     if receipt.status == 'terminal':
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
@@ -256,6 +262,8 @@ async def execute_admission(authority, ref, row):
     is_api = live.source.platform == Platform.API_SERVER
     author = event.metadata.get('turn_author')
     author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
+    from gateway.session_operator import is_viewer_input
+    viewer_token = viewer_turn.set(live if is_viewer_input(row) else None)
     api_token = api_execution.set(None)
     captured = {}
     result_token = execution_result.set(captured)
@@ -321,6 +329,7 @@ async def execute_admission(authority, ref, row):
         execution_result.reset(result_token)
         api_execution.reset(api_token)
         admission_author.reset(author_token)
+        viewer_turn.reset(viewer_token)
 
 
 async def _execution_scope(authority, home):

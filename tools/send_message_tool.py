@@ -5,14 +5,14 @@ import asyncio
 import json
 import logging
 import os
-from functools import partial
+import re
 
 from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
 from tools.send_message_targets import (
-    _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target, unknown_platform_error,
+    _HOME_CHANNEL_ENV_OVERRIDES, resolve_send_target, unknown_platform_error,
 )
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
@@ -20,6 +20,10 @@ from tools.send_message_senders import (
     _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
     _send_matrix_via_adapter, _send_telegram)
 from tools.registry import tool_error
+
+# A bare Slack user id (session metadata / home-channel config) is opened as a DM; same shape the
+# slack plugin's target parser turns into ``user:U...``.
+_SLACK_USER_ID_RE = re.compile(r"^\s*(U[A-Z0-9]{8,})\s*$")
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
 # (the agent must not fire cross-platform messages on its own); cron delivery, the
@@ -266,11 +270,12 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
-        # Only custom plugin handlers receive the complete typed request. ``mentions`` is a WhatsApp-only
-        # contract (the CLI rejects it elsewhere); other platforms' standalone senders don't accept the kwarg.
+        # Only custom plugin handlers receive the complete typed request. ``mentions`` is only for platforms
+        # whose StandaloneSendPolicy declares it (WhatsApp; the CLI rejects it elsewhere); other platforms'
+        # standalone senders don't accept the kwarg.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
         mentions = args.get("mentions")
-        if mentions and platform_name == "whatsapp":
+        if mentions and entry is not None and entry.standalone_send is not None and entry.standalone_send.mentions:
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
@@ -612,17 +617,16 @@ def _platform_max_length(platform):
         return None
 
 
-# Plugin platforms whose media (Discord: all) sends deliberately bypass the live adapter for the
-# registry ``standalone_sender_fn`` (Discord: forums/threads/multipart; Slack: files_upload_v2;
-# WhatsApp: Baileys /send-media). platform -> (error label, run discover_plugins first,
-# caption-capable, media_files sentinel for non-final chunks, forward force_document)
-_PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "feishu": ("Feishu", True, False, None, False),
-                            "qqbot": ("QQ Bot", True, True, None, False),
-                            "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True),
-                            # Signal: attachments ride the JSON-RPC param on the final chunk.
-                            "signal": ("Signal", True, False, [], False),
-                            "weixin": ("Weixin", True, False, None, False),
-                            "yuanbao": ("Yuanbao", True, False, None, False)}
+def _standalone_send_policy(platform_name):
+    """The plugin's ``StandaloneSendPolicy`` (None = generic routing). Cron calls
+    ``_send_to_platform`` directly, so discover first when the name is not yet registered
+    (idempotent manifest scan; only this platform's adapter is materialized)."""
+    from gateway.platform_registry import platform_registry
+    if not platform_registry.is_registered(platform_name):
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    entry = platform_registry.get(platform_name)
+    return entry.standalone_send if entry is not None else None
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
@@ -630,13 +634,15 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption. WhatsApp re-pings recipients on every message that carries
     ``mentions``, so only the first payload of a logical send gets them."""
-    label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
-    sender, err = _plugin_standalone_sender(platform_name, label=label, discover=discover)
+    from gateway.platforms.send_targets import StandaloneSendPolicy
+    policy = _standalone_send_policy(platform_name) or StandaloneSendPolicy()
+    sender, err = _plugin_standalone_sender(platform_name, label=policy.label or None)
     if err:
         return err
-    extra = {"force_document": force_document} if pass_force else {}
+    extra = {"force_document": force_document} if policy.forward_force_document else {}
     first_only = {"mentions": mentions} if mentions else {}
-    if captionable:
+    empty_media = [] if policy.empty_list_between_chunks else None
+    if policy.captionable:
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
         if caption is not None:
@@ -666,11 +672,6 @@ _CHUNKED_ROUTES = {
     "slack": (False, [], _via_adapter_route),
     "wecom": (True, None, _via_adapter_route)}
 
-# Text-only senders for built-in platforms (generic path; media is dropped with a
-# warning). Signature: (pconfig, chat_id, chunk, thread_id) -> result.
-_TEXT_SENDERS = {name: partial(_registry_standalone_send, name)
-                 for name in ("whatsapp", "email", "sms", "dingtalk", "feishu", "wecom", "signal", "qqbot", "yuanbao")}
-
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and qqbot"
 
 
@@ -693,8 +694,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
-    if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
-            or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
+    policy = _standalone_send_policy(platform_name)
+    if policy is not None and (policy.all_sends or (policy.mentions and mentions) or (media_files and policy.media)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
                                              mentions=mentions)
@@ -712,9 +713,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                               f"target {platform_name} had only media attachments")}
         warning = (f"MEDIA attachments were omitted for {platform_name}; "
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
-    text_sender = _TEXT_SENDERS.get(platform_name)
-    if text_sender is not None:
-        send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)
+    if policy is not None and policy.text_direct:
+        # Text-only straight to the plugin's standalone sender (media dropped with the warning above).
+        send_one = lambda chunk, is_last: _registry_standalone_send(platform_name, pconfig, chat_id, chunk, thread_id)
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)

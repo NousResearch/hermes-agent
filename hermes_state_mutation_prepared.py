@@ -89,3 +89,51 @@ def editor_mcp_in_transaction(db, conn, session_id, payload, prepared):
 
 POLICY_HANDLERS = {'model': model_in_transaction, 'reasoning': reasoning_in_transaction,
                    'workspace': workspace_in_transaction, 'editor_mcp': editor_mcp_in_transaction}
+
+
+_RECEIPTS = "FROM state_meta WHERE key GLOB 'gateway.mutation.v1.*' AND json_valid(value) "
+
+
+def picks_on(conn, session_id, before=None):
+    """The policy edits (``reasoning``, ``workspace``) a ``session.mutate`` committed for *session_id* (below
+    revision *before*): their receipts (kept for exact retries, also past deletion) are the durable record of
+    the user's pick. A branch copied its parent's policy, picks included, under its own id: its local
+    receipt's ``picks``; a branch stored before that field has its parent's as they stood at its branch."""
+    bound = '' if before is None else " AND json_extract(value, '$.result.revision')<?"
+    picked = {row[0] for row in conn.execute(
+        "SELECT DISTINCT json_extract(value, '$.result.operation') " + _RECEIPTS +
+        "AND json_extract(value, '$.result.operation') IN ('reasoning', 'workspace') "
+        "AND json_extract(value, '$.result.session_id')=?" + bound, (session_id, *(() if before is None else (before,))))}
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
+    if saved is None:
+        return picked
+    if 'picks' in (receipt := json.loads(saved[0])):
+        return picked | set(receipt['picks'])
+    # The parent's branch receipt names this session and the parent's revision the branch committed at.
+    branched = conn.execute(
+        "SELECT json_extract(value, '$.result.session_id'), json_extract(value, '$.result.revision') " + _RECEIPTS +
+        "AND json_extract(value, '$.result.operation')='branch' "
+        "AND json_extract(value, '$.result.branched_session_id')=?", (session_id,)).fetchone()
+    return picked | picks_on(conn, *branched) if branched else picked
+
+
+def policy_picks(db, session_id):
+    with db._read_ctx() as conn:
+        return picks_on(conn, session_id)
+
+
+def commit_refreshed_policy(db, *, epoch, session_id, old, new, generation):
+    """The owner's config refresh of an idle session: *new* replaces exactly *old* at *generation* (a
+    concurrent mutation or turn wins) and opens the next policy generation. Returns that generation."""
+    from hermes_state_mutation_guards import require_idle
+    from hermes_state_runtime import _epoch
+
+    def write(conn):
+        _epoch(conn, epoch)
+        snapshot = local_snapshot(db, conn, session_id)
+        require_idle(db, conn, list({session_id, snapshot['target']}))
+        current = conn.execute('SELECT runtime_generation FROM sessions WHERE id=?', (session_id,)).fetchone()
+        if snapshot['receipt']['policy'] != old or current is None or current[0] != generation:
+            raise RuntimeStoreError('revision_conflict')
+        return _commit_policy(db, conn, session_id, {'snapshot': snapshot, 'policy': new})[1]
+    return db._execute_write(write)

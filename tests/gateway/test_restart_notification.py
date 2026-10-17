@@ -318,6 +318,34 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
     assert not notify_path.exists()
 
 
+@pytest.mark.asyncio
+async def test_send_restart_notification_cleans_up_malformed_marker(tmp_path, monkeypatch):
+    """Malformed markers must be unlinked cleanly without UnboundLocalError."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({"platform": "telegram"}))  # missing chat_id
+
+    runner, _ = make_restart_runner()
+    delivered = await runner._send_restart_notification()
+    assert delivered is None
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_preserves_marker_when_transport_none(tmp_path, monkeypatch):
+    """Marker must be preserved for replay when transport is not yet ready."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({"platform": "telegram", "chat_id": "42"}))
+
+    runner, _ = make_restart_runner()
+    runner.adapters.clear()  # No live adapter -> transport is None
+
+    delivered = await runner._send_restart_notification()
+    assert delivered is False
+    assert notify_path.exists()
+
+
 
 
 @pytest.mark.asyncio

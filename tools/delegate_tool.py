@@ -705,16 +705,16 @@ def delegate_task(
     overall_start = time.monotonic()
     _live_home = _parent_live_home(parent_agent)
     origin = _capture_origin()
+    # Build before the transcripts exist: a construction failure leaves no transcript dir behind, and pinned
+    # batches label each transcript with the model/provider the child actually resolved.
+    children, err = _build_children(
+        task_list, task_schemas, default_creds, top_role=top_role, max_iterations=default_max_iter,
+        parent_agent=parent_agent, routing_cfg=routing_cfg, live_deleg_id=None, live_writers=[], task_images=task_images,
+        resolved_routes=resolved_routes,
+    )
+    if err:
+        return tool_error(err)
     has_pins = any(_task_has_route_pin(task) for task in task_list)
-    children = []
-    if has_pins:
-        children, err = _build_children(
-            task_list, task_schemas, default_creds, top_role=top_role, max_iterations=default_max_iter,
-            parent_agent=parent_agent, routing_cfg=routing_cfg, live_deleg_id=None, live_writers=[], task_images=task_images,
-            resolved_routes=resolved_routes,
-        )
-        if err:
-            return tool_error(err)
     task_routes = _child_route_metadata(children) if has_pins else None
     from tools.delegation_live_log import batch_route_metadata
     creds = batch_route_metadata(task_routes) if has_pins else default_creds
@@ -731,27 +731,17 @@ def delegate_task(
     # its parent IS the home; None falls back to today's ambient resolve
     # (with a warning — that fallback is exactly the #91996 failure mode).
     from tools.delegation_live_log import create_live_transcripts
-    live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
-        home=_live_home, task_routes=task_routes,
-    )
-    _announce_batch(parent_agent, len(task_list), live_deleg_id)
-    if has_pins:
-        try:
-            for i, _, child in children:
-                _attach_live_transcript(child, i, live_deleg_id, live_writers)
-        except BaseException:
-            _rollback_built_children(parent_agent, children)
-            raise
-    else:
-        # Preserve log/setup ordering for calls that inherit the shared route.
-        children, err = _build_children(
-            task_list, task_schemas, default_creds, top_role=top_role, max_iterations=default_max_iter,
-            parent_agent=parent_agent, routing_cfg=routing_cfg, live_deleg_id=live_deleg_id,
-            live_writers=live_writers, task_images=task_images, resolved_routes=resolved_routes,
+    try:
+        live_deleg_id, live_writers, live_paths = create_live_transcripts(
+            task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+            home=_live_home, task_routes=task_routes,
         )
-        if err:
-            return tool_error(err)
+        _announce_batch(parent_agent, len(task_list), live_deleg_id)
+        for i, _, child in children:
+            _attach_live_transcript(child, i, live_deleg_id, live_writers)
+    except BaseException:
+        _rollback_built_children(parent_agent, children)
+        raise
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,

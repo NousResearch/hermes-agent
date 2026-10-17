@@ -458,6 +458,26 @@ def test_constructor_value_error_rolls_back_and_returns_a_tool_error():
     assert parent._active_children == []
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_construction_failure_creates_no_live_transcripts(pinned):
+    """Pinned and inherited batches share one build path: children exist before any transcript or announcement."""
+    parent = _make_mock_parent()
+    task = {"goal": "Only task with enough length", **({"provider": "lmstudio-x121"} if pinned else {})}
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value={}),
+        patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=_fake_resolve),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=ValueError("route rejected")),
+        patch("tools.delegation_live_log.create_live_transcripts") as create,
+        patch("tools.delegate_tool._announce_batch") as announce,
+    ):
+        raw = delegate_task(tasks=[task], parent_agent=parent)
+
+    assert "route rejected" in json.loads(raw)["error"]
+    create.assert_not_called()
+    announce.assert_not_called()
+
+
 def test_schema_advertises_provider_and_model():
     props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
     assert "provider" in props

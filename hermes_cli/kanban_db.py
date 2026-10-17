@@ -2582,17 +2582,6 @@ def _verify_created_cards(
     return verified, phantom
 
 
-# Matches ``kanban_create`` (12 hex) and ``_new_task_id`` (8 hex) ids; 8+ for forward compat.
-_TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
-
-
-def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str]:
-    """``t_<hex>`` references in ``text`` that don't resolve to a task (deduped; advisory)."""
-    if not text:
-        return []
-    return _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
-
-
 class HallucinatedCardsError(ValueError):
     """``complete_task`` refused: ``created_cards`` has ids that don't exist or
     weren't created by this worker (``.phantom``). A ``ValueError`` so tool
@@ -2873,25 +2862,6 @@ def _completed_event_payload(
         if cleaned:
             payload["artifacts"] = cleaned
     return payload
-
-
-def _flag_phantom_prose_refs(
-    conn: sqlite3.Connection, task_id: str, run_id: Optional[int],
-    summary: Optional[str], result: Optional[str], verified_cards: list[str],
-) -> None:
-    """Advisory post-commit scan of summary+result for unresolvable ``t_<hex>``
-    references; emits ``suspected_hallucinated_references`` in its own txn so
-    the completion is already durable. Never blocks."""
-    scan_text = " ".join(filter(None, [summary, result]))
-    if not scan_text:
-        return
-    phantom_refs = [p for p in _scan_prose_for_phantom_ids(conn, scan_text) if p not in set(verified_cards)]
-    if phantom_refs:
-        with write_txn(conn):
-            _append_event(
-                conn, task_id, "suspected_hallucinated_references",
-                {"phantom_refs": phantom_refs, "source": "completion_summary"}, run_id=run_id,
-            )
 
 
 def _merge_completion_prose_artifacts(
@@ -4254,4 +4224,9 @@ from hermes_cli.kanban_db_dispatch import (
     _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
+)
+from hermes_cli.kanban_db_phantom import (
+    _flag_phantom_prose_refs,
+    board_for_connection,
+    board_for_store_path,
 )

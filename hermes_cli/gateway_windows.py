@@ -223,12 +223,11 @@ def _is_access_denied(detail: str) -> bool:
 
 
 def _is_running_as_admin() -> bool:
-    """Return True when the current Windows process is elevated."""
+    """Return True when the current Windows process is elevated (the shared ``TokenElevation``
+    probe; ``IsUserAnAdmin`` is deprecated and answered the same question a second way)."""
     _assert_windows()
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
+    from hermes_dir_acl import process_is_elevated
+    return process_is_elevated()
 
 
 def _current_profile_cli_args() -> list[str]:

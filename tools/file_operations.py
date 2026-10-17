@@ -628,9 +628,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return head_result.exit_code == 0 and _has_bom(head_result.stdout)
 
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
+        label = filename.lstrip('/')  # absolute paths must not join as a//home/... (#134718)
         return ''.join(difflib.unified_diff(
             old_content.splitlines(keepends=True), new_content.splitlines(keepends=True),
-            fromfile=f"a/{filename}", tofile=f"b/{filename}"))
+            fromfile=f"a/{label}", tofile=f"b/{label}"))
 
     # --- READ ---------------------------------------------------------------
 

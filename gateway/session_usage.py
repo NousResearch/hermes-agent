@@ -124,7 +124,7 @@ def tui_usage(stats: dict) -> dict:
         usage.update(context_used=used, context_max=maximum,
                      context_percent=max(0, min(100, round(used / maximum * 100))),
                      context_source=source, context_estimated=source != "provider_usage")
-    if stats.get("context_length") is not None:
+    if stats.get("context_source") is not None:  # a compressor, sized or not (``_get_usage``'s ``if comp``)
         usage["compressions"] = stats.get("compression_count") or 0
     prompt_total, cache_read = stats.get("prompt_tokens") or 0, stats.get("cache_read_tokens") or 0
     if prompt_total > 0 and cache_read > 0:
@@ -147,6 +147,13 @@ def usage_frame(stats: dict) -> dict:
     ``payload.usage``, so its context / cache-hit / tokens-per-second meters render their empty
     placeholder for as long as the frame carries the counters alone. Publishing both serves either
     viewer from one frame, and leaves the counters untouched for every existing consumer.
+
+    ``usage`` is the embedded ticker's ``server._get_usage`` view (same keys, same rules, same
+    omissions; ``avg_latency_s`` / ``avg_tps`` are rounded from the counters' two decimals), so a
+    Desktop bundle that reads only ``payload.usage`` fills its meters here too. The
+    top-level counters on this event are deprecated: new viewers read ``usage`` (or call
+    ``session.stats`` for the counters). They stay for ``hermes_cli.gateway_agent``, the Ink TUI and
+    Desktop's ``usageFromTick`` until those read ``usage``.
     """
     return {"usage": tui_usage(stats), **stats}
 

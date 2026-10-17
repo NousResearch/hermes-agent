@@ -3,11 +3,70 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { cacheHitLabel, contextBarLabel, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { $currentUsage } from '@/store/session'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 const SID = 'session-1'
+
+// What gateway/session_usage.py::publish_usage sends a local viewer: the embedded ticker's nested
+// `usage` view plus the deprecated top-level counters (#140194).
+const GATEWAY_FRAME = {
+  active_subagents: 0,
+  api_calls: 3,
+  avg_latency_s: 3.0,
+  cache_read_tokens: 36_000,
+  cache_write_tokens: 800,
+  completion_tokens: 380,
+  compression_count: 0,
+  config_context_length: 200_000,
+  context_length: 200_000,
+  context_source: 'provider_usage',
+  context_tokens: 42_000,
+  fallback_model: null,
+  input_tokens: 1_200,
+  last_prompt_tokens: 42_000,
+  last_turn_tokens: 0,
+  model: 'claude-opus-5-5',
+  output_tokens: 380,
+  prompt_tokens: 42_000,
+  provider: 'anthropic',
+  rate_limit: null,
+  reasoning_tokens: 0,
+  tokens_per_s: 63.33,
+  total_tokens: 42_380,
+  usage: {
+    active_subagents: 0,
+    avg_latency_s: 3.0,
+    avg_tps: 63.3,
+    cache_hit_pct: 86,
+    calls: 3,
+    completion: 380,
+    compressions: 0,
+    context_estimated: false,
+    context_max: 200_000,
+    context_percent: 21,
+    context_source: 'provider_usage',
+    context_used: 42_000,
+    input: 1_200,
+    model: 'claude-opus-5-5',
+    output: 380,
+    prompt: 42_000,
+    reasoning: 0,
+    total: 42_380
+  }
+}
+
+const METERS = ['[██░░░░░░░░] 21%', '42k/200k', '86%', '63 t/s']
+
+const meters = (usage: Parameters<typeof contextBarLabel>[0]) => [
+  contextBarLabel(usage),
+  usageContextLabel(usage),
+  cacheHitLabel(usage),
+  tokensPerSecondLabel(usage)
+]
+
 // $currentUsage mirrors the primary session; ClientSessionState.usage drives
 // the same status bar when a secondary tile is focused.
 const BASELINE = { calls: 2, compressions: 1, input: 500, output: 40, total: 540 }
@@ -82,6 +141,24 @@ describe('useMessageStream status-bar usage scoping', () => {
       total: 1_280
     })
     expect(sessionStates.get(SID)?.usage).toEqual($currentUsage.get())
+  })
+
+  it('paints the status-bar meters from the gateway frame', () => {
+    $currentUsage.set({ calls: 0, input: 0, output: 0, total: 0 })
+    mountStream()
+
+    act(() => stream.handleEvent({ payload: GATEWAY_FRAME, session_id: SID, type: 'session.usage' }))
+
+    expect(meters($currentUsage.get())).toEqual(METERS)
+
+    // A bundle older than usageFromTick merged only `payload.usage`; the nested view alone fills the
+    // same meters, and the deprecated counters alone still map to them too.
+    const { usage: nested, ...counters } = GATEWAY_FRAME
+
+    expect(meters(nested)).toEqual(METERS)
+    $currentUsage.set({ calls: 0, input: 0, output: 0, total: 0 })
+    act(() => stream.handleEvent({ payload: counters, session_id: SID, type: 'session.usage' }))
+    expect(meters($currentUsage.get())).toEqual(METERS)
   })
 
   it('maps latency and active subagents from a canonical tick the same way Ink does', () => {

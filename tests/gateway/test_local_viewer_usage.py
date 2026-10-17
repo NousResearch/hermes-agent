@@ -150,6 +150,31 @@ def test_usage_frame_carries_the_tui_view_the_desktop_status_bar_reads():
     assert usage['avg_tps'] == 10.0 and usage['cache_hit_pct'] == 9 and usage['compressions'] == 1
 
 
+def _parity_agents():
+    yield pytest.param(_agent(), id='steady')
+    # A compressor that does not know its window yet: the ticker still reports its compactions.
+    unsized = _agent()
+    unsized.context_compressor.context_length = 0
+    yield pytest.param(unsized, id='unsized-compressor')
+    # Nothing measured yet: no context, cache, latency or throughput figures, never zeros.
+    yield pytest.param(SimpleNamespace(model='fake-model', session_api_calls=0, context_compressor=None,
+                                       get_rate_limit_state=lambda: None), id='fresh')
+
+
+@pytest.mark.parametrize('agent', list(_parity_agents()))
+def test_published_usage_view_matches_the_embedded_ticker(agent):
+    """An older Desktop bundle reads only ``payload.usage`` off ``session.usage``, as the embedded
+    backend's ticker sends it (``{'usage': server._get_usage(agent)}``). The gateway frame's nested
+    view is that same object, computed from the same agent."""
+    from gateway.session_usage import publish_usage
+    from tui_gateway.server import _get_usage
+    published = []
+    publish_usage(_turn(Platform.LOCAL, published, agent), agent)
+    kind, frame = published[-1]
+    assert kind == 'session.usage'
+    assert frame['usage'] == _get_usage(agent)
+
+
 def test_turn_end_publishes_the_agents_banner_info():
     """Main re-emitted ``session.info`` at every turn end; the first turn's carries the built agent's
     ``system_prompt`` (the banner's ``▸ System Prompt — N chars`` row, FINDINGS row 2) and tools."""

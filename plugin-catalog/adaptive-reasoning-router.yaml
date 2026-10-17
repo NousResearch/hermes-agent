@@ -1,0 +1,25 @@
+name: adaptive-reasoning-router
+title: Adaptive Reasoning Router
+repo: https://github.com/linyubin/adaptive-reasoning-router
+sha: 3d9feb42153cf7ebd3f0e923bc33dc06c389eb95
+description: >-
+  Per-turn reasoning-effort routing: classifies each user turn's difficulty with
+  zero-latency heuristics (Chinese + English patterns) and rewrites the outbound
+  request's reasoning_effort down for simple questions (light -> low, short factual
+  lookups -> medium) while complex turns keep the configured effort. Registers the
+  public llm_request middleware only; touches the main loop's first call per turn
+  so tool-loop continuity and prompt-cache keys are preserved. No network calls,
+  no telemetry, no credentials.
+maintainer: linyubin
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+docs_url: https://github.com/linyubin/adaptive-reasoning-router#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_request
+  requires_env: []

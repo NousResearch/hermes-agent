@@ -12,6 +12,11 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    localModels: {
+      downloadDiscardAction: 'تجاهل',
+      downloadDiscardDetail: 'إزالة هذا التنزيل غير المكتمل. ستبقى الملفات المكتملة.',
+      downloadDiscardFailed: model => `تعذر تجاهل تنزيل ${model}`
+    },
     subpages: {
       appearanceTheme: 'السمة',
       appearanceTypography: 'الخطوط والتحجيم',

@@ -1,6 +1,9 @@
 import type { Translations } from './types'
 
 export const enLocalModels: Translations['settings']['localModels'] = {
+  downloadDiscardAction: 'Discard',
+  downloadDiscardDetail: 'Remove this unfinished download. Completed files will stay.',
+  downloadDiscardFailed: model => `Could not discard the download of ${model}`,
   connectionChanged: 'Local models connection changed',
   title: 'Local Models',
   runtimeTitle: 'Local runtime',

@@ -120,6 +120,18 @@ export function resumeLocalDownload(
   })
 }
 
+export function discardLocalDownload(
+  jobId: string,
+  scope?: LocalModelsScope
+): Promise<{ ok: boolean; discarded: boolean }> {
+  return hermesApi<{ ok: boolean; discarded: boolean }>({
+    ...(scope ?? profileScoped()),
+    body: { job_id: jobId },
+    method: 'POST',
+    path: '/api/local-models/download/discard'
+  })
+}
+
 export function activateLocalModel(modelId: string, scope?: LocalModelsScope): Promise<{ job_id: string }> {
   return hermesApi<{ job_id: string }>({
     ...(scope ?? profileScoped()),

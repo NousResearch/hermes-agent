@@ -196,6 +196,7 @@ def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out["can_pause"] = bool(pause is not None and out["status"] == "running"
                             and out["phase"] in _DOWNLOAD_PHASES and not out["pause_requested"])
     out["can_resume"] = out["status"] == "paused" and "resume" in running
+    out["can_discard"] = out["status"] == "paused" and bool(job.get("plan_key")) and "discard" in running
     if out["total_bytes"]:
         out["percent"] = min(100, round(out["done_bytes"] / out["total_bytes"] * 100))
     # A rate and ETA describe a transfer in motion; a parked or settled job
@@ -248,7 +249,7 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             status = "paused" if recoverable else "error"
             job["error"] = str(exc)
             if recoverable:
-                job.update(phase="interrupted", detail="Download interrupted. Saved progress is retained; resume when the connection returns")
+                job.update(phase="interrupted", detail=_interrupted_detail(job.get("done_bytes", 0)))
         finally:
             try:
                 if status != "paused" and on_exit is not None:
@@ -264,7 +265,7 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
         if not guard.acquire(blocking=False):
             return False
         with _JOBS_LOCK:
-            if not initial and job["status"] != "paused":
+            if _JOBS.get(job["job_id"]) is not job or not initial and job["status"] != "paused":
                 guard.release()
                 return False
             pause.clear()
@@ -286,8 +287,25 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             raise
         return True
 
+    def discard() -> bool:
+        if not guard.acquire(blocking=False):
+            return False
+        try:
+            key = job.get("plan_key")
+            if (_JOBS.get(job["job_id"]) is not job or job["status"] != "paused"
+                    or not key or not download_plans.discard_plan(key)):
+                return False
+            if on_exit is not None:
+                on_exit()
+            with _JOBS_LOCK:
+                _RUNNING.pop(job["job_id"], None)
+                _JOBS.pop(job["job_id"], None)
+            return True
+        finally:
+            guard.release()
+
     if resumable:
-        _RUNNING[job["job_id"]] = {"resume": start, "pause": pause}
+        _RUNNING[job["job_id"]] = {"resume": start, "pause": pause, "discard": discard}
     if start_paused:
         job["status"] = "paused"
     else:
@@ -545,11 +563,25 @@ def _restore_download_plans() -> None:
             saved_total = record.get("total_bytes")
             if type(saved_total) is int and saved_total > 0:
                 total = saved_total
-            job.update(phase="interrupted", detail="Download interrupted. Resume to continue from saved progress",
+            job.update(phase="interrupted", detail=_interrupted_detail(done),
                        done_bytes=done, total_bytes=total or None, ranges=ranges)
             _spawn_job(job, "lr-model-recovery",
                        lambda job=job, plan=plan: _run_download_plan(job, plan, job["target"]),
                        download_label=job["target"], resumable=True, start_paused=True)
+        # GC or another process can remove a recipe after this process parked it.
+        with _JOBS_LOCK:
+            parked = [job for job in _JOBS.values() if job["status"] == "paused"]
+        for job in parked:
+            key = job.get("plan_key")
+            discard = _RUNNING.get(job["job_id"], {}).get("discard")
+            if key and not download_plans.has_plan(key) and discard:
+                discard()
+
+
+def _interrupted_detail(done: int) -> str:
+    if done:
+        return "Download interrupted. Resume to continue from saved progress"
+    return "Download interrupted. No saved bytes remain. Resume to start the download again"
 
 
 def _download_optional(job: dict[str, Any], plan) -> bool:
@@ -869,6 +901,15 @@ async def local_models_download_resume(body: JobIdBody):
         raise HTTPException(status_code=404, detail="unknown download job")
     resume = _RUNNING.get(body.job_id, {}).get("resume")
     return {"ok": True, "resumed": bool(resume and resume())}
+
+
+@router.post("/api/local-models/download/discard")
+async def local_models_download_discard(body: JobIdBody):
+    """Forget a parked download; completed files and shared partials stay."""
+    if body.job_id not in _JOBS:
+        raise HTTPException(status_code=404, detail="unknown download job")
+    discard = _RUNNING.get(body.job_id, {}).get("discard")
+    return {"ok": True, "discarded": bool(discard and await run_in_threadpool(discard))}
 
 
 @router.delete("/api/local-models/models/{model_id}")

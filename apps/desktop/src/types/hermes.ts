@@ -1549,6 +1549,7 @@ export interface LocalRuntimeJob {
    * (server start, default assignment, non-download quickstart legs). */
   can_pause?: boolean
   can_resume?: boolean
+  can_discard?: boolean
   /** The backend has accepted a pause request; the status flips when the
    * downloader actually parks. */
   pause_requested?: boolean

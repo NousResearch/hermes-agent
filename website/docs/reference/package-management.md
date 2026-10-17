@@ -145,6 +145,11 @@ plan can also be rediscovered after restarting the backend, including split
 weights and companion assets. Resume checks the remote identity again and
 reuses completed files and valid coverage, never the preallocated file length.
 Partial-cache garbage collection gives inactive downloads seven days to resume.
+Saved plans expire on the same schedule, measured from the latest checkpoint.
+A running process holds the plan's ownership lock, so another process cannot
+restore it as an abandoned download. Paused model downloads offer **Discard**
+beside **Resume**. Discard removes the pending plan and job. Completed files
+remain, and shared partial files follow normal cache cleanup.
 ETags remain representation validators, not expected SHA-256 hashes; the model
 catalog's existing optional-hash policy is unchanged.
 

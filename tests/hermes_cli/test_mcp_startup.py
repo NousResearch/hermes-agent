@@ -19,16 +19,24 @@ from hermes_cli import mcp_startup
 def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
+    saved_retry_attempts = mcp_startup._mcp_discovery_retry_attempts
+    saved_retry_timer = mcp_startup._mcp_discovery_retry_timer
     try:
         mcp_startup._mcp_discovery_started = set()
         mcp_startup._mcp_discovery_thread = {}
+        mcp_startup._mcp_discovery_retry_attempts = {}
+        mcp_startup._mcp_discovery_retry_timer = {}
         yield
     finally:
+        for timer in list(mcp_startup._mcp_discovery_retry_timer.values()):
+            timer.cancel()
         thread = mcp_startup._current_home_thread()
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
         mcp_startup._mcp_discovery_thread = saved_thread
+        mcp_startup._mcp_discovery_retry_attempts = saved_retry_attempts
+        mcp_startup._mcp_discovery_retry_timer = saved_retry_timer
 
 
 def _agent_args(**overrides) -> Namespace:
@@ -345,6 +353,7 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict, status: s
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
             get_mcp_status=lambda: [{"name": "demo", "connected": connected, "status": status}],
+            mcp_servers_awaiting_connect=lambda: ([] if (connected or status == "lazy") else ["demo"]),
         ),
     )
 
@@ -518,3 +527,74 @@ def test_server_added_after_discovery_is_connected_by_the_next_agent_build(monke
     configured["linear"] = {"url": "https://mcp.example.test/linear"}  # hermes mcp add linear
     build_agent()
     assert len(runs) == 2
+
+
+# --- timed discovery retry after a failed pass --------------------------------
+
+
+def test_failed_background_pass_arms_a_timed_retry(monkeypatch):
+    """A background pass that ends with configured servers still unconnected must schedule a
+    timed re-run instead of waiting for the next agent build: an idle Desktop whose cold-start
+    pass was cancelled (GIL pressure aborts every in-flight connect) never rebuilt an agent, so
+    the day's first session stayed tool-less until a manual restart."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls)
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None, info=lambda *_a, **_k: None,
+                                   warning=lambda *_a, **_k: None)
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+    assert calls["mcp"] == 1
+
+    home_key = mcp_startup.hermes_home_key()
+    timer = mcp_startup._mcp_discovery_retry_timer.get(home_key)
+    assert timer is not None, "a failed pass must arm a retry timer"
+    timer.cancel()
+    timer.function()  # fire the retry immediately
+
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+    assert calls["mcp"] == 2, "the fired retry re-ran discovery"
+    # The retry pass ALSO ended with the server unconnected -> the ladder armed the next timer.
+    assert home_key in mcp_startup._mcp_discovery_retry_timer
+
+
+def test_discovery_retry_ladder_backs_off_and_is_bounded(monkeypatch):
+    """Delays double per attempt up to the cap; the ladder stops after the attempt cap; a pass
+    that leaves nothing pending resets it."""
+    _install_retry_stubs(monkeypatch, connected=False, calls={"mcp": 0})
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None, info=lambda *_a, **_k: None,
+                                   warning=lambda *_a, **_k: None)
+    home_key = mcp_startup.hermes_home_key()
+    delays: list = []
+    real_timer = threading.Timer
+
+    def spy_timer(delay, function, *a, **k):
+        delays.append(delay)
+        t = real_timer(0, function, *a, **k)  # never actually wait in the test
+        t.start = lambda: None  # armed but not fired
+        return t
+
+    monkeypatch.setattr(mcp_startup.threading, "Timer", spy_timer)
+
+    for _ in range(mcp_startup._DISCOVERY_RETRY_MAX_ATTEMPTS + 3):
+        mcp_startup._maybe_arm_discovery_retry(home_key, logger=logger, thread_name="t")
+        armed = mcp_startup._mcp_discovery_retry_timer.pop(home_key, None)  # simulate it fired
+        if armed is not None:
+            armed.cancel()
+    assert len(delays) == mcp_startup._DISCOVERY_RETRY_MAX_ATTEMPTS
+    assert delays[0] == mcp_startup._DISCOVERY_RETRY_BASE_DELAY_S
+    assert delays[-1] == mcp_startup._DISCOVERY_RETRY_MAX_DELAY_S
+    assert all(d <= mcp_startup._DISCOVERY_RETRY_MAX_DELAY_S for d in delays)
+
+    # Healthy pass: nothing pending -> the ladder resets and can arm again.
+    monkeypatch.setattr(mcp_startup, "_servers_awaiting_connect", list)
+    mcp_startup._maybe_arm_discovery_retry(home_key, logger=logger, thread_name="t")
+    assert mcp_startup._mcp_discovery_retry_attempts.get(home_key, 0) == 0
+    monkeypatch.setattr(mcp_startup, "_servers_awaiting_connect", lambda: ["demo"])
+    mcp_startup._maybe_arm_discovery_retry(home_key, logger=logger, thread_name="t")
+    assert len(delays) == mcp_startup._DISCOVERY_RETRY_MAX_ATTEMPTS + 1
+    assert delays[-1] == mcp_startup._DISCOVERY_RETRY_BASE_DELAY_S  # ladder restarted from the base

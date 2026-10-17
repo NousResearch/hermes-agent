@@ -1008,6 +1008,20 @@ class PluginContext:
         self._manager._subscribe_event(self.plugin_id, event, callback)
         logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
 
+    def register_skill_validation(self, callback: Callable) -> PluginRegistration:
+        """Attach one namespaced validation record to dashboard skill-detail responses.
+
+        ``callback(skill, content_hash)`` returns a mapping containing the same
+        ``content_hash`` when its record still applies, or ``None`` to omit it.
+        The dashboard never interprets the rest of that mapping.
+        """
+        if not callable(callback):
+            raise TypeError("register_skill_validation callback must be callable")
+        return self._register_entry(
+            "skill_validation", self.plugin_id, self._manager._skill_validators, callback,
+            "Plugin %s registered skill validation: %s", self.plugin_id,
+        )
+
     from hermes_cli.plugins_content import register_automation_blueprint, register_skill
 
 # -- scoped provider registrars ------------------------------------------------------------------
@@ -1184,6 +1198,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
+        self._skill_validators: dict[str, Callable] = {}
         self._plugin_skills: dict[str, dict[str, Any]] = {}
         self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
         self._portable_mcp_servers: dict[str, dict[str, Any]] = {}
@@ -1531,6 +1546,30 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def get_telegram_handler_factories(self) -> list[tuple]:
         """Back-compat alias for ``get_platform_handler_factories("telegram")``."""
         return self.get_platform_handler_factories("telegram")
+
+    def get_skill_validation(self, skill: Mapping[str, Any], content_hash: str) -> dict[str, dict[str, Any]]:
+        """Return current plugin validation records for one dashboard skill.
+
+        Records are namespaced by the registering plugin and are carried only
+        when they explicitly name this instruction-tree digest.  A plugin can
+        therefore retain its own state while its callback drops or resets stale
+        data after a skill changes.
+        """
+        current: dict[str, dict[str, Any]] = {}
+        for plugin_id, callback in list(self._skill_validators.items()):
+            try:
+                record = callback(skill, content_hash)
+            except Exception:
+                logger.exception("Plugin %s skill validation failed", plugin_id)
+                continue
+            if isinstance(record, Mapping) and record.get("content_hash") == content_hash:
+                try:
+                    json.dumps(record)
+                except (TypeError, ValueError):
+                    logger.warning("Plugin %s returned non-JSON skill validation", plugin_id)
+                    continue
+                current[plugin_id] = dict(record)
+        return current
 
     def list_plugins(self) -> list[dict[str, Any]]:
         """Return a list of info dicts for all discovered plugins."""

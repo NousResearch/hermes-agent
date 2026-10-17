@@ -1619,6 +1619,16 @@ auxiliary:
     timeout: 30
     # max_concurrency: 2       # Optional: cap simultaneous title-generation calls
 
+  # Post-turn self-improvement review (memory + skill lessons)
+  background_review:
+    enabled: true              # false skips automatic reviews (/refine still works)
+    bundled_writes: "deny"     # "deny" keeps the review fork from writing the LOCAL copy of a
+                               # bundled/hub-installed skill — that copy is upstream's, matched
+                               # by an exact directory hash, so a write strands the skill as
+                               # user_modified; the change is staged as an upstream patch under
+                               # <HERMES_HOME>/pending/skill-upstream/<skill>/ instead.
+                               # "allow" restores ungated writes.
+
   # Kanban triage specifier — `hermes kanban specify <id>` (or the
   # dashboard's ✨ Specify button on Triage-column cards) uses this
   # slot to expand a one-liner into a concrete spec and promote the

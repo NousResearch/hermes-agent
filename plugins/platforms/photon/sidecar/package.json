@@ -19,6 +19,7 @@
     "spectrum-ts": "12.7.0"
   },
   "overrides": {
+    "undici": "7.30.0",
     "protobufjs": "8.7.1",
     "@opentelemetry/core": "2.10.0",
     "@opentelemetry/resources": "2.10.0",

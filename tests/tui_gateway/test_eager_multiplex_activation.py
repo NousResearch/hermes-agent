@@ -32,6 +32,18 @@ def test_activates_for_a_real_second_profile(two_profile_host):
     assert secret_scope.is_multiplex_active()
 
 
+def test_activation_routes_logs_per_profile_home(two_profile_host, monkeypatch):
+    """The secondary's records must reach its own logs/ even when no cron ticker starts (a live
+    gateway owns cron), else its model/cwd lines land in the launch profile's agent.log."""
+    (two_profile_host / "config.yaml").write_text("{}\n", encoding="utf-8")
+    import hermes_logging
+
+    routed = []
+    monkeypatch.setattr(hermes_logging, "enable_profile_log_routing", lambda homes: routed.append(set(homes)))
+    assert launch_profile_policy.activate_multi_profile_hosting_eagerly() is True
+    assert routed and two_profile_host.resolve() in routed[0] and len(routed[0]) == 2
+
+
 def test_the_retired_opt_out_no_longer_disarms_the_credential_guard(two_profile_host, monkeypatch):
     """``gateway.multiplex_profiles: false`` is retired as a topology opt-out, so it must not
     disarm this guard: a multi-home host that skipped activation because of a stale ``false``

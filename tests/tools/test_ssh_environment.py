@@ -206,6 +206,26 @@ class TestTerminalToolConfig:
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
 
+    @requires_ssh
+    @pytest.mark.parametrize("setting, expected", [(None, True), ("false", False)])
+    def test_ssh_persistent_reaches_the_environment(self, monkeypatch, setting, expected):
+        """terminal.persistent_shell (bridged to TERMINAL_PERSISTENT_SHELL) reaches SSHEnvironment."""
+        from tools.terminal_tool import _get_env_config
+        from tools.terminal_tool_lifecycle import _create_configured_env
+        _setup_ssh_env(monkeypatch, persistent=True)
+        monkeypatch.delenv("TERMINAL_SSH_PERSISTENT")
+        if setting is None:
+            monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
+        else:
+            monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", setting)
+        config = _get_env_config()
+        env = _create_configured_env(config, "ssh", image="", cwd="~", timeout=30,
+                                     task_id="ssh-persist-config", host_cwd=None)
+        try:
+            assert env._persist_env is expected
+        finally:
+            env.cleanup()
+
 
 class TestSSHPreflight:
     def test_ensure_ssh_available_raises_clear_error_when_missing(self, monkeypatch):
@@ -342,14 +362,12 @@ class TestOneShotSSH:
         assert "hello" in r["output"]
 
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "TERMINAL_SSH_PERSISTENT=false is a dead knob: _get_env_config() reads it into "
-        "ssh_config['persistent'], but SSHEnvironment never takes it since the spawn-per-call "
-        "rewrite, so every SSH session persists exported env through its snapshot."))
     def test_state_does_not_persist(self):
-        _run("export HERMES_ONESHOT_TEST=yes")
-        r = _run("echo $HERMES_ONESHOT_TEST")
-        assert r["output"].strip() == ""
+        """Exports stay in their own command; cwd still carries (file tools rely on it)."""
+        home = _run("pwd")["output"].strip()
+        _run("mkdir -p oneshot && cd oneshot && export HERMES_ONESHOT_TEST=yes")
+        r = _run("echo ${HERMES_ONESHOT_TEST:-unset}; pwd")
+        assert r["output"].split() == ["unset", f"{home}/oneshot"]
 
 
 @requires_ssh

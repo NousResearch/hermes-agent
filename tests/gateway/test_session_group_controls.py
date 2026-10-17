@@ -134,7 +134,7 @@ def test_groups_list_pages_the_actor_visible_rooms(tmp_path):
         actor = SimpleNamespace(subject='me')
         pages, params = [], {'limit': 2}
         while True:
-            page = _group(authority, actor, tmp_path, 'groups.list', params)
+            page = _group(authority, actor, 'groups.list', params)
             pages.append([room['room_id'] for room in page['rooms']])
             if page['next_offset'] is None:
                 break

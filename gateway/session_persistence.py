@@ -50,6 +50,16 @@ class SessionPersistenceMixin:
             for sid in targets:
                 self._session_owner_hints.pop(sid, None)
 
+    def fence_retired_routes(self, session_ids) -> None:
+        """Durably retire *session_ids* in the routing index's own database (markers + route
+        drop in one transaction). A delete committed in another profile's store fences only that
+        store; the shared index lives in the launch home, so its saves need the fence here too.
+        Raises when the routing store cannot take the fence: the delete must not report success."""
+        retire = self._routing_db_method("retire_gateway_routes")
+        if retire is None:
+            raise RuntimeError("routing store unavailable for deletion fence")
+        retire(session_ids)
+
     def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
         """SessionDB for the active profile scope. ``db_path`` pins the store; otherwise
         ``_default_db_path()`` follows the context-local HERMES_HOME (resolved per call so

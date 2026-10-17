@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's _PLATFORM_DEFAULTS row for this platform moved onto its register() call as display_tier; the growth is only that kwarg
 """Buzz platform adapter (Block's Nostr-based human+agent community relay).
 
 Outbound and polling go through the ``buzz`` CLI ("JSON in, JSON out", never a shell);
@@ -218,22 +219,26 @@ def _replace_media_refs(text: str, replacements: list[tuple[int, int, str]]) -> 
     return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+\n", "\n", text)).strip()
 
 
-def _load_nostr_auth():
-    """Import sibling nostr_auth loader-agnostically (the test loader imports this file as a bare module)."""
+def _load_sibling(name: str):
+    """Import a sibling module loader-agnostically (the test loader imports this file as a bare module)."""
+    import importlib
     try:
-        from . import nostr_auth  # type: ignore[no-redef]
-        return nostr_auth
+        return importlib.import_module(f".{name}", __package__) if __package__ else _load_sibling_file(name)
     except ImportError:
-        import importlib.util
-        path = Path(__file__).with_name("nostr_auth.py")
-        spec = importlib.util.spec_from_file_location("plugin_adapter_buzz_nostr_auth", path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        return _load_sibling_file(name)
 
 
-_nostr_auth = _load_nostr_auth()
+def _load_sibling_file(name: str):
+    import importlib.util
+    path = Path(__file__).with_name(f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"plugin_adapter_buzz_{name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_nostr_auth = _load_sibling("nostr_auth")
 
 # bech32 (BIP-173) npub <-> hex so mention detection and allow-lists accept either form.
 from gateway.authz_mixin import (
@@ -1890,7 +1895,6 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
     return _apply_yaml_bridge(extra, _YAML_BRIDGE)
 
 
-
 def _env_enablement() -> Optional[dict]:
     """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the owning profile's env so env-only setups
     show in gateway status; None if unconfigured. Reads go through the profile scope: a served secondary sees
@@ -1905,7 +1909,6 @@ def _env_enablement() -> Optional[dict]:
     ))
     home = _seed_extra_from_env((), home_env="BUZZ_HOME_CHANNEL", home_default=(seed.get("channels") or [""])[0])
     return {"relay_url": relay, **seed, **home}
-
 
 
 async def _standalone_send(
@@ -2005,6 +2008,7 @@ def interactive_setup() -> None:
 def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
     ctx.register_platform(
+        **_load_sibling("send_targets").SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="buzz", label="Buzz", adapter_factory=lambda cfg: BuzzAdapter(cfg), check_fn=check_requirements,
         validate_config=validate_config, is_connected=is_connected, required_env=["BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY"],
         install_hint="Requires the buzz CLI binary (https://github.com/block/buzz) on PATH or at BUZZ_CLI_PATH",
@@ -2019,4 +2023,6 @@ def register(ctx):
             "by @-mentioning your name or npub in channels; direct messages "
             "reach you without a mention. Keep responses conversational."
         ),
+        # Nostr: edits in place but channels are shared community spaces.
+        display_tier="medium",
     )

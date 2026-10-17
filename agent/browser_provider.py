@@ -34,6 +34,10 @@ class BrowserProvider(ProviderBase):
     ``get_setup_schema`` may add ``"post_setup"`` (e.g. ``"agent_browser"``) to trigger the install hook.
     """
 
+    # Providers whose sessions must never fall back to a host-local browser can
+    # override this. Keep the desktop-friendly behavior unless they opt out.
+    allow_local_fallback = True
+
     @abc.abstractmethod
     def is_available(self) -> bool:
         """True when this provider can service calls. Cheap check only (env var, token readable, dep

@@ -82,6 +82,33 @@ class TestTimeoutErrorFormatting:
         if not stderr:
             assert "hermes pm install chromium" in err
 
+    def test_daemon_output_is_redacted_before_becoming_tool_error(self):
+        secret = "daemon-secret"
+        result = bt_session._interpret_browser_command_output(
+            "open", "not JSON ws://cloud.example/devtools?token=daemon-secret", "", 1
+        )
+
+        assert secret not in result["error"]
+        assert "token=***" in result["error"]
+
+    def test_command_exception_is_redacted_before_logging(self, monkeypatch, caplog):
+        secret = "daemon-secret"
+        monkeypatch.setattr(bt_session._cloud, "_get_browser_engine", lambda: "auto")
+        monkeypatch.setattr(bt_session._cloud, "_is_headed_mode", lambda: False)
+        monkeypatch.setattr(bt_session, "_agent_browser_argv", lambda _: ["agent-browser"])
+        monkeypatch.setattr(
+            bt_session,
+            "_spawn_and_collect",
+            Mock(side_effect=RuntimeError("ws://cloud.example/devtools?token=daemon-secret")),
+        )
+
+        _engine, result = bt_session._dispatch_browser_command(
+            "task", {"session_name": "session"}, "agent-browser", "open", [], 30, None
+        )
+
+        assert secret not in result["error"]
+        assert secret not in caplog.text
+
 
 
 

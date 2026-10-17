@@ -69,3 +69,19 @@ class TestCloudProviderRuntimeFallback:
 
         assert session["fallback_from_cloud"] is True
         assert "invalid session" in session["fallback_reason"]
+
+    def test_provider_can_disable_local_fallback(self, monkeypatch):
+        """A cloud-only provider error never starts local Chromium (#138798)."""
+        provider = Mock()
+        provider.allow_local_fallback = False
+        provider.create_session.side_effect = RuntimeError(
+            "ws://cloud.example/devtools?token=daemon-secret"
+        )
+        create_local = Mock()
+        monkeypatch.setattr(bt_session, "_create_local_session", create_local)
+
+        with pytest.raises(RuntimeError, match="Mock could not create a browser session") as exc_info:
+            bt_session._create_cloud_session_or_fallback("task-8", provider)
+
+        create_local.assert_not_called()
+        assert "daemon-secret" not in str(exc_info.value)

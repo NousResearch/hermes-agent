@@ -771,7 +771,9 @@ def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypa
         settling.join(timeout=2)
     notice = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert (notice["status"], notice["reply"]) == ("settled", "PONG")
+    # §4.8/P11: the runner's notice is sender-facing, so it carries ENUM B — the storage word
+    # stays "settled" in the mailbox, the sender reads "delivered".
+    assert (notice["status"], notice["reply"]) == ("delivered", "PONG")
 
 
 @pytest.mark.parametrize("lookup", ["raises", "holds"])

@@ -146,7 +146,7 @@ def build_api_request(
             api_kwargs, task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
             session_id=agent.session_id or "", platform=agent.platform or "", model=agent.model,
             provider=agent.provider, base_url=agent.base_url, api_mode=agent.api_mode,
-            api_call_count=api_call_count,
+            api_call_count=api_call_count, request_kind="turn",
         )
         api_kwargs = _llm_request_mw.payload
         _original_api_kwargs = _llm_request_mw.original_payload

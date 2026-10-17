@@ -395,6 +395,28 @@ def _price_reference_response(
         return usage, None, None, None
 
 
+def _moa_request_middleware(request: dict[str, Any], request_kind: str, agent: Any = None) -> dict[str, Any]:
+    from hermes_cli.middleware import apply_request_middleware_or_original
+
+    # call_llm consumes canonical messages even on Responses routes. Present the
+    # same input key as the turn middleware, then restore the auxiliary boundary.
+    responses = request.get("api_mode") == "codex_responses"
+    payload = {**request, "input": request["messages"]} if responses else request
+    if responses:
+        payload.pop("messages")
+    filtered = apply_request_middleware_or_original(
+        payload, request_kind=request_kind,
+        **{key: request.get(key) for key in ("model", "provider", "api_mode", "base_url")},
+        task_id=getattr(agent, "_current_task_id", None) or getattr(agent, "task_id", None),
+        **{key: getattr(agent, key, None) for key in ("session_id", "platform")},
+    )
+    if filtered is payload:
+        return request
+    if responses:
+        filtered["messages"] = filtered.pop("input")
+    return filtered
+
+
 def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
@@ -424,23 +446,20 @@ def _run_reference(
         # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
+        request = _moa_request_middleware(dict(
+            task="moa_reference", messages=trimmed, temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
+            extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+        ), "moa_reference", agent)
+        trimmed = request["messages"]
         if agent is not None:
             from agent.auxiliary_client import aux_progress_hook
 
             with aux_progress_hook(_reference_liveness_hook(agent, label)):
-                response = call_llm(
-                    task="moa_reference", messages=trimmed, temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-                    extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
-                )
+                response = call_llm(**request)
         else:
-            response = call_llm(
-                task="moa_reference", messages=trimmed, temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-                extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
-            )
+            response = call_llm(**request)
         output_text = _extract_text(response) or "(empty response)"
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
@@ -956,10 +975,10 @@ def aggregate_moa_context(
         agg_messages = _maybe_apply_moa_cache_control(
             [{"role": "user", "content": synth_prompt}], _with_cache_disabled(agg_runtime, cache_disabled), cache_ttl=cache_ttl,
         )
-        synthesis = _extract_text(call_llm(
+        synthesis = _extract_text(call_llm(**_moa_request_middleware(dict(
             task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
             reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
-        ))
+        ), "moa_aggregator", agent)))
     except Exception as exc:
         logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
         synthesis = ""
@@ -1221,12 +1240,20 @@ class MoAChatCompletions:
         merged = destination in remembered
         if merged:
             agg_messages = merge_same_role_messages(agg_messages)
-        send = functools.partial(
-            call_llm, task="moa_aggregator", temperature=prepared["aggregator_temperature"],
+        send_kwargs = dict(
+            task="moa_aggregator", temperature=prepared["aggregator_temperature"],
             max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+
+        def send(messages):
+            nonlocal agg_messages
+            request = _moa_request_middleware(
+                {**send_kwargs, "messages": messages}, "moa_aggregator", getattr(self, "_agent", None),
+            )
+            agg_messages = request["messages"]
+            return call_llm(**request)
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:

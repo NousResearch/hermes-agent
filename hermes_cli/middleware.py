@@ -60,6 +60,28 @@ def _safe_copy(payload: Any) -> Any:
         return dict(payload) if isinstance(payload, dict) else payload
 
 
+def _invoke_llm_request_middleware(**kwargs: Any) -> List[Any]:
+    """Keep a failed callback from publishing a partially mutated request."""
+    from hermes_cli.plugins import _delivery_manager
+
+    manager = _delivery_manager()
+    results = []
+    for callback in list(manager._middleware.get(LLM_REQUEST_MIDDLEWARE, [])):
+        # Same composition and per-callback copies as PluginManager.invoke_middleware.
+        call_kwargs = {**kwargs, "request": _safe_copy(kwargs["request"]),
+                       "original_request": _safe_copy(kwargs["original_request"])}
+        try:
+            result = callback(**call_kwargs)
+        except (Exception, SystemExit) as exc:
+            manager._report_hook_failure(LLM_REQUEST_MIDDLEWARE, callback, kwargs, exc, surface="Middleware")
+            raise RuntimeError("LLM request middleware failed") from exc
+        if result is not None:
+            results.append(result)
+            if isinstance(result, dict) and isinstance(result.get("request"), dict):
+                kwargs["request"] = result["request"]
+    return results
+
+
 def _apply_request_chain(
     kind: str, payload_key: str, trace: list[dict[str, Any]], original: Any, **kwargs: Any
 ) -> RequestMiddlewareResult:
@@ -67,7 +89,12 @@ def _apply_request_chain(
     from hermes_cli.plugins import invoke_middleware
 
     current = kwargs[payload_key]
-    for result in invoke_middleware(kind, _payload_key=payload_key, **middleware_payload(**kwargs)):
+    results = (
+        _invoke_llm_request_middleware(**middleware_payload(**kwargs))
+        if kind == LLM_REQUEST_MIDDLEWARE
+        else invoke_middleware(kind, _payload_key=payload_key, **middleware_payload(**kwargs))
+    )
+    for result in results:
         if not isinstance(result, dict):
             continue
         next_payload = result.get(payload_key)
@@ -97,6 +124,22 @@ def apply_llm_request_middleware(request: dict[str, Any], **context: Any) -> Req
         LLM_REQUEST_MIDDLEWARE, "request", [], original_request,
         request=_safe_copy(original_request), original_request=original_request, **context,
     )
+
+
+def apply_request_middleware_or_original(
+    request: Dict[str, Any], *, request_kind: str, **context: Any,
+) -> Dict[str, Any]:
+    """Filter a provider request without letting middleware failure prevent the call.
+
+    The existing no-listener fast path preserves the payload's identity and cache bytes.
+    Middleware works on request-local copies, so failure also preserves the original.
+    """
+    try:
+        result = apply_llm_request_middleware(request, request_kind=request_kind, **context)
+        return result.payload if result.changed else request
+    except Exception:
+        logger.debug("LLM request middleware failed (%s); sending original", request_kind, exc_info=True)
+        return request
 
 
 def apply_tool_request_middleware(

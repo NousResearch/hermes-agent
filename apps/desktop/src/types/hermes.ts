@@ -1403,6 +1403,12 @@ export interface SessionSearchResult {
    *  for untitled sessions. The sidebar maps it onto the synthesized row so
    *  search hits show the actual name, not the matched-message snippet. */
   title?: string | null
+  /** Owning profile of the matched conversation, stamped on every hit by the
+   *  backend (`_serving_profile` in web_routers/sessions.py). The All-profiles
+   *  search fan-out fans one scoped request per profile, so without it the
+   *  synthesized row cannot paint its profile chip. Absent on older backends
+   *  that predate the field; the sidebar treats that as the default profile. */
+  profile?: string
 }
 
 export interface SessionSearchResponse {

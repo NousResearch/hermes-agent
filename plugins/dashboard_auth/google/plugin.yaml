@@ -1,0 +1,8 @@
+name: google
+version: 1.0.0
+description: "Dashboard auth provider — Google OAuth 2.0 / OpenID Connect (authorization-code + PKCE). Auto-activates when HERMES_DASHBOARD_GOOGLE_CLIENT_ID + HERMES_DASHBOARD_GOOGLE_CLIENT_SECRET are set (env vars, or dashboard.oauth.google_client_id/google_client_secret in config.yaml). Verifies the Google ID token locally (RS256, via the discovered jwks_uri) and supports an optional email allowlist (DASHBOARD_ALLOWED_USERS/GATEWAY_ALLOWED_USERS env vars, or dashboard.oauth.google_allowed_users in config.yaml), re-checked on every token refresh."
+author: kozliatko
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_GOOGLE_CLIENT_ID
+  - HERMES_DASHBOARD_GOOGLE_CLIENT_SECRET

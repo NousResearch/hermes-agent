@@ -14,6 +14,7 @@ from pathlib import Path
 import queue
 import sys
 import threading
+from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self.lock = threading.RLock()
         self.failure = None
         self.path = Path(outbox_dir) / 'pending.json'
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(self.path.parent, mode=0o700, parents=True, exist_ok=True)
         if self.path.parent.is_symlink() or self.path.is_symlink():
             raise WorkerPersistenceError('unsafe_outbox')
         os.chmod(self.path.parent, 0o700)

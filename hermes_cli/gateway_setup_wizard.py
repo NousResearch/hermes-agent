@@ -6,9 +6,12 @@ intercepting the moved code.
 """
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 def _gw():
@@ -326,15 +329,48 @@ def _builtin_setup_fn(key: str):
     }.get(key)
 
 
+def _legacy_setup_config(platform: dict):
+    """``PlatformConfig`` for a plugin's legacy ``setup_fn(config)`` (#97065).
+
+    Read the way the gateway reads it: ``merge_platform_sections`` folds ``gateway.platforms.<key>``,
+    the top-level ``platforms.<key>`` block and ``gateway.<key>`` subsections into one block and
+    stamps ``extra._enabled_explicit``. Reading a single spelling (as ``load_config()["platforms"]``
+    does) hands a plugin configured through ``gateway.platforms.<key>`` a default-constructed
+    config — ``enabled=False``, no token — so the wizard would write a config that disagrees with
+    the one the gateway loads on restart. ``gateway/relay/__init__.py`` reads a plugin block the
+    same way.
+    """
+    from gateway.config import PlatformConfig
+    from gateway.config_loader import merge_platform_sections, read_yaml_layers
+    from hermes_constants import get_hermes_home
+
+    try:
+        cfg = read_yaml_layers(get_hermes_home())
+        if not isinstance(cfg, dict):
+            return PlatformConfig()
+        gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        block = merge_platform_sections(cfg, gateway, {}).get(platform["key"], {})
+    except Exception:
+        logger.warning("Could not read the %s platform config for setup_fn", platform["key"], exc_info=True)
+        return PlatformConfig()
+    return PlatformConfig.from_dict(block if isinstance(block, dict) else {})
+
+
 def _configure_platform(platform: dict) -> None:
     """Plugin ``setup_fn`` -> built-in by key -> ``_setup_standard_platform`` (``vars``) -> env-var hint.
-    Bundled plugins auto-load; user plugins must already be in ``plugins.enabled``."""
+    Bundled plugins auto-load; user plugins must already be in ``plugins.enabled``.
+
+    ``setup_fn`` is dispatched by signature (``gateway.plugin_dispatch``): the documented
+    ``setup_fn()`` is called bare, while a third-party ``setup_fn(config)``
+    (keet-platform) gets the platform's ``PlatformConfig`` instead of a TypeError (#97065)."""
     entry = platform.get("_registry_entry")
     fn = entry.setup_fn if entry is not None else None
     if fn is None:
         fn = _builtin_setup_fn(platform["key"])
     if fn is not None:
-        fn()
+        from gateway.plugin_dispatch import invoke_setup_fn
+
+        invoke_setup_fn(fn, lambda: _legacy_setup_config(platform))
         return
     if platform.get("vars"):
         _gw()._setup_standard_platform(platform)

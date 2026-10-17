@@ -267,9 +267,18 @@ Common examples:
 | `/title My Session` | Name the current session |
 | `/status` | Show session info — model/profile/tokens/duration — followed by a local **Session recap** block (recent turn counts, top tools used, files touched, latest user prompt + assistant reply). Pure local compute; no LLM call. |
 | `/context [all]` | Visual context-usage breakdown — glyph block grid + per-category token table (system prompt / tools / skills / memory / conversation / free space). `/context all` adds per-skill and per-toolset costs. |
-| `/sessions` | Open an interactive session picker right inside the classic CLI (same surface the TUI uses). Type to filter, arrow keys to navigate, Enter to resume. |
+| `/sessions` | Open the saved-session keyboard browser in the classic CLI. Arrow keys or `j`/`k` navigate, `/` searches, and Enter resumes the selected session. Bare `/resume` opens the same browser. |
 
 For the full built-in CLI and messaging lists, see [Slash Commands Reference](../reference/slash-commands.md).
+
+The classic CLI browser includes every eligible saved CLI session, not just the ten most recent.
+Rows retain their original numbers while scrolling or searching. After closing the browser,
+`/resume 23` resumes the session displayed as 23; new arrivals do not shift that saved numbering.
+Opening another session list refreshes the numbers.
+Use Page Up/Down to scroll by a page, Home/End or `g`/`G` to jump to either end, and Escape,
+`q`, or Ctrl+C to cancel without switching sessions. Both commands require an idle agent.
+When stdin or stdout is not a terminal, they print a compact recent-session list without prompting;
+`/resume <number>`, `/resume <id>`, and `/resume <title>` remain available.
 
 For setup, providers, silence tuning, and messaging/Discord voice usage, see [Voice Mode](features/voice-mode.md).
 

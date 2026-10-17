@@ -5,12 +5,23 @@ import type * as ClientApi from './client'
 vi.mock('@/lib/legacy-session-owner-backfill', () => ({ maybeBackfillLegacySessionOwners: vi.fn() }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', async importOriginal => ({
-  ...await importOriginal<typeof ClientApi>(), hermesApi: vi.fn()
+  ...(await importOriginal<typeof ClientApi>()),
+  hermesApi: vi.fn()
 }))
 import { hermesApi, setApiRequestConnection, setApiRequestProfile } from './client'
-import { deleteSession, renameSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote } from './sessions'
+import {
+  deleteSession,
+  renameSession,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote
+} from './sessions'
 
-beforeEach(() => { vi.mocked(hermesApi).mockReset(); setApiRequestConnection('owner'); setApiRequestProfile('work') })
+beforeEach(() => {
+  vi.mocked(hermesApi).mockReset()
+  setApiRequestConnection('owner')
+  setApiRequestProfile('work')
+})
 
 it('concurrent equal sidebar edits share the missing-snapshot verdict on older standalone servers', async () => {
   vi.mocked(hermesApi).mockImplementation(async request => {
@@ -27,7 +38,9 @@ it('concurrent equal sidebar edits share the missing-snapshot verdict on older s
   ])
 
   expect(results.map(result => result.status)).toEqual(['fulfilled', 'fulfilled'])
-  expect(vi.mocked(hermesApi).mock.calls.filter(([request]) => !request.method || request.method === 'GET')).toHaveLength(1)
+  expect(
+    vi.mocked(hermesApi).mock.calls.filter(([request]) => !request.method || request.method === 'GET')
+  ).toHaveLength(1)
 })
 
 it('a missing-route response from a write never selects an unfenced retry', async () => {
@@ -57,7 +70,10 @@ it('uses owner snapshots and preserves the exact delete identity after a lost re
 
     writes.push(request)
 
-    if (lost) { lost = false; throw new Error('network disconnected after commit') }
+    if (lost) {
+      lost = false
+      throw new Error('network disconnected after commit')
+    }
 
     return { deleted_ids: ['delete-me'], revision: 13 } as never
   })
@@ -76,22 +92,33 @@ it('uses owner snapshots and preserves the exact delete identity after a lost re
 })
 
 it('all sidebar mutations use real counters and surface conflicts without a blind write', async () => {
-  const calls = [() => renameSession('sidebar', 'name', 'work'),
-    () => setSessionArchived('sidebar', true, 'work'), () => setSessionPinnedRemote('sidebar', false, 'work'),
-    () => setSessionUnreadRemote('sidebar', true, 'work')]
+  const calls = [
+    () => renameSession('sidebar', 'name', 'work'),
+    () => setSessionArchived('sidebar', true, 'work'),
+    () => setSessionPinnedRemote('sidebar', false, 'work'),
+    () => setSessionUnreadRemote('sidebar', true, 'work')
+  ]
 
   vi.mocked(hermesApi).mockImplementation(async request => {
     if (!request.method || request.method === 'GET') {
       return { exists: true, runtime_revision: 19, runtime_generation: 4 } as never
     }
 
-    expect(request.body).toMatchObject({ expected_revision: 19, expected_generation: 4,
-      request_id: expect.any(String), profile: 'work' })
+    expect(request.body).toMatchObject({
+      expected_revision: 19,
+      expected_generation: 4,
+      request_id: expect.any(String),
+      profile: 'work'
+    })
     throw new Error('revision_conflict')
   })
 
-  for (const invoke of calls) { await expect(invoke()).rejects.toThrow('revision_conflict') }
-  vi.mocked(hermesApi).mockReset().mockResolvedValue({ exists: true } as never)
+  for (const invoke of calls) {
+    await expect(invoke()).rejects.toThrow('revision_conflict')
+  }
+  vi.mocked(hermesApi)
+    .mockReset()
+    .mockResolvedValue({ exists: true } as never)
   await expect(renameSession('unknown-counter', 'name')).rejects.toThrow(/snapshot/)
   expect(hermesApi).toHaveBeenCalledTimes(1)
 })
@@ -103,7 +130,9 @@ it('sidebar edits fall back to the base write only when the backend lacks the fe
   const routeMissing = '404: {"detail":"No such API endpoint: /api/sessions/old/mutation-snapshot"}'
   const writes: Array<{ path: string; method?: string; body?: unknown }> = []
   vi.mocked(hermesApi).mockImplementation(async request => {
-    if (!request.method || request.method === 'GET') { throw new Error(routeMissing) }
+    if (!request.method || request.method === 'GET') {
+      throw new Error(routeMissing)
+    }
     writes.push(request as never)
 
     return { ok: true } as never
@@ -115,19 +144,31 @@ it('sidebar edits fall back to the base write only when the backend lacks the fe
   await setSessionUnreadRemote('old', false, 'work')
   await deleteSession('old', { connectionId: 'server', profile: 'work' })
   expect(writes.map(write => [write.method, write.body])).toEqual([
-    ['PATCH', { title: 'name', profile: 'work' }], ['PATCH', { archived: true, pinned: false, profile: 'work' }],
-    ['PATCH', { pinned: true, profile: 'work' }], ['PATCH', { unread: false, profile: 'work' }], ['DELETE', undefined]])
+    ['PATCH', { title: 'name', profile: 'work' }],
+    ['PATCH', { archived: true, pinned: false, profile: 'work' }],
+    ['PATCH', { pinned: true, profile: 'work' }],
+    ['PATCH', { unread: false, profile: 'work' }],
+    ['DELETE', undefined]
+  ])
   expect(new URL(writes[4].path, 'http://localhost').search).toBe('?profile=work')
 
-  for (const refusal of ['404: {"detail":"Profile \'work\' does not exist."}', '403: permission_denied',
-    '503: {"detail":"session_authority_unavailable"}', 'Request timed out']) {
+  for (const refusal of [
+    '404: {"detail":"Profile \'work\' does not exist."}',
+    '403: permission_denied',
+    '503: {"detail":"session_authority_unavailable"}',
+    'Request timed out'
+  ]) {
     writes.length = 0
-    vi.mocked(hermesApi).mockReset().mockImplementation(async request => {
-      if (!request.method || request.method === 'GET') { throw new Error(refusal) }
-      writes.push(request as never)
+    vi.mocked(hermesApi)
+      .mockReset()
+      .mockImplementation(async request => {
+        if (!request.method || request.method === 'GET') {
+          throw new Error(refusal)
+        }
+        writes.push(request as never)
 
-      return { ok: true } as never
-    })
+        return { ok: true } as never
+      })
     await expect(renameSession('old', 'name', 'work')).rejects.toThrow(refusal)
     expect(writes).toEqual([])
   }
@@ -136,14 +177,19 @@ it('sidebar edits fall back to the base write only when the backend lacks the fe
 // N21: an older headless `hermes serve` (SSH remotes) answers an unmatched GET with its own fixed
 // catch-all body, formatted by Electron's httpStatusError. That is the same route verdict.
 it('sidebar edits on an older headless serve fall back to the base write', async () => {
-  const headless = '404: {"error":"Headless backend (hermes serve): web UI disabled \u2014 use `hermes dashboard` for the browser UI."}'
+  const headless =
+    '404: {"error":"Headless backend (hermes serve): web UI disabled \u2014 use `hermes dashboard` for the browser UI."}'
   const writes: Array<{ method?: string; body?: unknown }> = []
-  vi.mocked(hermesApi).mockReset().mockImplementation(async request => {
-    if (!request.method || request.method === 'GET') { throw new Error(headless) }
-    writes.push(request as never)
+  vi.mocked(hermesApi)
+    .mockReset()
+    .mockImplementation(async request => {
+      if (!request.method || request.method === 'GET') {
+        throw new Error(headless)
+      }
+      writes.push(request as never)
 
-    return { ok: true } as never
-  })
+      return { ok: true } as never
+    })
 
   await renameSession('ssh', 'name', 'work')
   await setSessionArchived('ssh', true, 'work')
@@ -151,17 +197,25 @@ it('sidebar edits on an older headless serve fall back to the base write', async
   await setSessionUnreadRemote('ssh', false, 'work')
   await deleteSession('ssh', { connectionId: 'server', profile: 'work' })
   expect(writes.map(write => [write.method, write.body])).toEqual([
-    ['PATCH', { title: 'name', profile: 'work' }], ['PATCH', { archived: true, pinned: false, profile: 'work' }],
-    ['PATCH', { pinned: true, profile: 'work' }], ['PATCH', { unread: false, profile: 'work' }], ['DELETE', undefined]])
+    ['PATCH', { title: 'name', profile: 'work' }],
+    ['PATCH', { archived: true, pinned: false, profile: 'work' }],
+    ['PATCH', { pinned: true, profile: 'work' }],
+    ['PATCH', { unread: false, profile: 'work' }],
+    ['DELETE', undefined]
+  ])
 
   // FastAPI's bare 404 is no route verdict: it keeps the fenced path and writes nothing.
   writes.length = 0
-  vi.mocked(hermesApi).mockReset().mockImplementation(async request => {
-    if (!request.method || request.method === 'GET') { throw new Error('404: {"detail":"Not Found"}') }
-    writes.push(request as never)
+  vi.mocked(hermesApi)
+    .mockReset()
+    .mockImplementation(async request => {
+      if (!request.method || request.method === 'GET') {
+        throw new Error('404: {"detail":"Not Found"}')
+      }
+      writes.push(request as never)
 
-    return { ok: true } as never
-  })
+      return { ok: true } as never
+    })
   await expect(renameSession('ssh', 'name', 'work')).rejects.toThrow('Not Found')
   expect(writes).toEqual([])
 })

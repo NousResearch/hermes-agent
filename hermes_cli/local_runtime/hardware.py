@@ -456,6 +456,13 @@ def prompt_cache_bytes(live: HardwareBudget | None, model_bytes: int, residents:
     return cache if cache >= _PROMPT_CACHE_MIN else 0
 
 
+def usable_beside_prompt_cache(live: HardwareBudget, residents: int = 1) -> int:
+    """Device memory a model may plan with on Windows unified memory and still leave each of the
+    ``residents`` models the smallest useful prompt cache: the inverse of ``prompt_cache_bytes``."""
+    share = live.commit_room_bytes // max(1, residents) - _PROMPT_CACHE_MIN
+    return min(live.usable_vram_bytes, max(0, int(share * (1 - _UMA_HEADROOM_FRACTION))))
+
+
 def _gpu_engine_runs_the_model() -> bool:
     """Whether a Vulkan/HIP engine runs the model: the serving or installed engine, else the one
     setup would install for ``local_runtime.backend``. False when the engine can't be resolved."""

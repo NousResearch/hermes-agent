@@ -62,7 +62,7 @@ from tools.code_execution_tool import (
 from tools.registry import registry
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+def _mock_handle_function_call(function_name, function_args, task_id=None, tool_call_id=None, user_task=None):
     """Mock dispatcher that returns canned responses for each tool."""
     if function_name == "terminal":
         cmd = function_args.get("command", "")
@@ -384,7 +384,7 @@ else:
     print(f"OK {N}/{N}")
 '''
 
-        def slow_mock(function_name, function_args, task_id=None, user_task=None):
+        def slow_mock(function_name, function_args, task_id=None, tool_call_id=None, user_task=None):
             import time as _t
             if function_name == "terminal":
                 _t.sleep(0.05)  # ensure requests overlap on the socket
@@ -960,6 +960,44 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         )
         self.assertEqual(len(resp), 1)
         self.assertIn("Unauthorized", resp[0].get("error", ""))
+
+
+def test_default_rpc_dispatch_assigns_a_distinct_tool_call_id(monkeypatch):
+    """Nested execute_code calls must remain distinct in hook and middleware state."""
+    from tools.code_execution_rpc import _default_dispatch
+
+    seen = []
+    token_hexes = iter(("first", "second"))
+    monkeypatch.setattr("tools.code_execution_rpc.secrets.token_hex", lambda _size: next(token_hexes))
+    monkeypatch.setattr(
+        "model_tools.handle_function_call",
+        lambda _name, _args, **kwargs: seen.append(kwargs["tool_call_id"]) or "{}",
+    )
+
+    dispatch = _default_dispatch("task-1")
+    dispatch("terminal", {"command": "one"})
+    dispatch("terminal", {"command": "two"})
+
+    assert seen == ["execute_code_first", "execute_code_second"]
+
+
+def test_kernel_rpc_authority_assigns_a_distinct_tool_call_id(monkeypatch):
+    """Persistent execute_code kernels must not reuse an empty nested-call ID."""
+    from tools.code_kernel import CellAuthority
+
+    seen = []
+    token_hexes = iter(("first", "second"))
+    monkeypatch.setattr("tools.code_kernel.secrets.token_hex", lambda _size: next(token_hexes))
+    monkeypatch.setattr(
+        "model_tools.handle_function_call",
+        lambda _name, _args, **kwargs: seen.append(kwargs["tool_call_id"]) or "{}",
+    )
+
+    authority = CellAuthority("task-1")
+    authority.dispatch("terminal", {"command": "one"})
+    authority.dispatch("terminal", {"command": "two"})
+
+    assert seen == ["execute_code_first", "execute_code_second"]
 
 
 

@@ -274,7 +274,10 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            return handle_function_call(
+                tool_name, tool_args, task_id=self.task_id,
+                tool_call_id=f"execute_code_{secrets.token_hex(12)}",
+            )
         finally:
             if previous is not None:
                 try:

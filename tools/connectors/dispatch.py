@@ -1,6 +1,7 @@
 """Route connector calls through the normal dispatch policy pipeline."""
 
 import json
+import secrets
 from dataclasses import asdict
 
 from tools.registry import tool_error
@@ -34,6 +35,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
         from tools.tool_search_validation import local_batch_error
         return tool_error(local_batch_error(calls))
     entries = list(partition.errors)
+    batch_id = ids.tool_call_id or f"connector_batch_{secrets.token_hex(12)}"
     for offset, plan in enumerate(partition.remote):
         if is_interrupted():
             # Check before every entry so /stop prevents unstarted remote side effects.
@@ -43,7 +45,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
             break
         # Each entry is its own call: its own policy, middleware, hooks and call id (``<id>#<position>``),
         # so observers never fold an entry into the wrapper or into a sibling entry.
-        entry_ids = replace(ids, tool_call_id=f"{ids.tool_call_id}#{plan.position}") if ids.tool_call_id else ids
+        entry_ids = replace(ids, tool_call_id=f"{batch_id}#{plan.position}")
         with suppress_post_tool_call_hook(False):
             payload = handle_function_call(
                 plan.name, plan.arguments, **asdict(entry_ids), user_task=user_task,

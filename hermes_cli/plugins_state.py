@@ -7,6 +7,7 @@ import os
 import re
 import threading
 from contextlib import contextmanager
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
@@ -193,3 +194,18 @@ class PluginState:
                 )
             from utils import atomic_json_write
             atomic_json_write(self.path, data, mode=0o600)
+
+
+class PluginStateContextMixin:
+    """Profile-scoped state facades for PluginContext, constructed on first use."""
+
+    @cached_property
+    def state(self) -> PluginState:
+        """This plugin's profile-scoped durable JSON state facade."""
+        return PluginState(self.plugin_id, self.manifest.skill_namespace)
+
+    @cached_property
+    def goals(self):
+        """Ownership-aware persistent session-goal facade for this plugin."""
+        from hermes_cli.plugin_goals import PluginGoals
+        return PluginGoals(self.plugin_id)

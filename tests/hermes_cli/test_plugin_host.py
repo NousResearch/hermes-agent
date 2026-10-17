@@ -341,3 +341,34 @@ def register(ctx):
         manager.unload()
         manager._plugin_host().shutdown()
     assert service.result(result["handle"]).summary == "host child done"
+
+
+@pytest.mark.platforms("posix")
+def test_host_plugin_goal_facade_preserves_owner_and_snapshot(tmp_path, monkeypatch):
+    from tools.registry import registry
+    from hermes_cli.goals import GoalManager
+
+    source = '''
+import json
+
+def register(ctx):
+    def manage(args, **kwargs):
+        assert ctx.goals.set("host-session", "finish", contract={"objective": "finish"})
+        goal = ctx.goals.get("host-session")
+        before = [goal.objective, goal.owner, goal.status]
+        cleared = ctx.goals.clear("host-session")
+        return json.dumps({"before": before, "cleared": cleared, "after": ctx.goals.get("host-session")})
+    ctx.register_tool(name="goals_probe", toolset="goals_probe", schema={"name": "goals_probe",
+        "description": "test goals", "parameters": {"type": "object", "properties": {}}}, handler=manage)
+'''
+    _home_with_plugins(tmp_path, monkeypatch, {"goalsprobe": source})
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert manager._plugins["goalsprobe"].error is None
+        result = json.loads(registry.dispatch("goals_probe", {}, scope=manager.scope_key))
+        assert result == {"before": ["finish", "goalsprobe", "active"], "cleared": True, "after": None}
+        assert GoalManager("host-session").state.status == "cleared"
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()

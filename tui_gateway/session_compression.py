@@ -317,18 +317,24 @@ def _sync_session_key_after_compress(
     otherwise approval routing, slash worker, DB lookups and yolo state keep targeting the ended parent.
     ``clear_pending_title``: True for manual /compress (title belongs to the old session), False for
     post-turn auto-compression. ``restart_slash_worker``: False only when the caller manages the worker."""
-    agent = session.get("agent")
-    new_session_id = getattr(agent, "session_id", None) or ""
-    old_key = session.get("session_key", "") or ""
-    if not new_session_id or new_session_id == old_key:
-        return
-    if not _transfer_active_session_slot(sid, session, new_session_id=new_session_id):
-        logger.warning(
-            "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
-            sid, old_key, new_session_id,
-        )
-    # Even if the approval module fails to import, anchor session_key on the continuation id.
-    session["session_key"] = new_session_id
+    # Conditional activation uses this same identity boundary. Legacy fixture records
+    # without a history lock cannot carry authenticated creation provenance.
+    with session.get("history_lock") or contextlib.nullcontext():
+        agent = session.get("agent")
+        new_session_id = getattr(agent, "session_id", None) or ""
+        old_key = session.get("session_key", "") or ""
+        if not new_session_id or new_session_id == old_key:
+            return
+        if not _transfer_active_session_slot(sid, session, new_session_id=new_session_id):
+            logger.warning(
+                "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
+                sid, old_key, new_session_id,
+            )
+        # Even if the approval module fails to import, anchor session_key on the continuation id.
+        session["session_key"] = new_session_id
+        session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+        if clear_pending_title:
+            session["pending_title"] = None
     with contextlib.suppress(Exception):
         from tools import approval
         with contextlib.suppress(Exception):
@@ -337,11 +343,6 @@ def _sync_session_key_after_compress(
         transfer_session_yolo(old_key, new_session_id)
         with contextlib.suppress(Exception):
             approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))
-    # Invalidate any in-flight ``_drain_queued_prompt`` claim taken under the pre-rotation key: a raced
-    # drain must not dispatch on the continuation (its envelope is restored to the queue).
-    session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    if clear_pending_title:
-        session["pending_title"] = None
     if restart_slash_worker:
         with contextlib.suppress(Exception):
             _restart_slash_worker(sid, session)

@@ -1,5 +1,5 @@
 """Turn preparation must carry logical Stop identity into registered plugin tools."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,7 +21,7 @@ async def test_prepared_turn_injects_its_logical_generation_into_plugin_tool(gen
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm",
                            user_id="u1", profile="default")
     key = runner._session_key_for_source(source)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     entry = SessionEntry(key, "prepared-session", now, now, origin=source)
     event = MessageEvent(text="work", message_type=MessageType.TEXT, source=source)
     runner._hmwa_open_session = AsyncMock(return_value=(False, False))

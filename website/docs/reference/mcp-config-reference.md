@@ -310,7 +310,7 @@ The double-underscore delimiter (`mcp__…__…`) matches the convention used by
 
 ### Name sanitization
 
-Any character that is not a letter, digit, or underscore (hyphens, dots, spaces, etc.) in both server names and tool names is replaced with an underscore before registration. This ensures tool names are valid identifiers for LLM function-calling APIs.
+Any character outside ASCII letters, digits, or underscores (hyphens, dots, spaces, etc.) in both server names and tool names is replaced with an underscore before registration. This ensures tool names are valid identifiers for LLM function-calling APIs.
 
 For example, a server named `my-api` exposing a tool called `list-items.v2` becomes:
 
@@ -318,7 +318,9 @@ For example, a server named `my-api` exposing a tool called `list-items.v2` beco
 mcp__my_api__list_items_v2
 ```
 
-Keep this in mind when writing `include` / `exclude` filters — use the **original** MCP tool name (with hyphens/dots), not the sanitized version.
+When either component contains non-ASCII characters, Hermes also appends a stable hash of the original server and tool names. This keeps names such as `天气实况` and `生活指数` distinct after their characters become underscores. Generated names remain within the 64-character provider limit, and calls still use the original tool name on the MCP server. Existing ASCII naming behavior is unchanged.
+
+Keep this in mind when writing `include` / `exclude` filters — use the **original** MCP tool name (including Unicode characters or hyphens/dots), not the sanitized version.
 
 ## OAuth 2.1 authentication
 

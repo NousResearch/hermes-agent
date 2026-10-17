@@ -29,13 +29,69 @@ This skill should be triggered when:
 
 ### Common Patterns
 
-*Quick reference patterns will be added as you use the skill.*
+**Pattern 1:** Load a 4-bit model with `FastLanguageModel.from_pretrained`:
+
+```python
+from unsloth import FastLanguageModel
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name = "unsloth/Llama-3.3-70B-Instruct",
+    max_seq_length = 2048,
+    load_in_4bit = True,
+)
+```
+
+**Pattern 2:** Attach LoRA adapters with `get_peft_model` (Unsloth gradient checkpointing):
+
+```python
+model = FastLanguageModel.get_peft_model(
+    model,
+    r = 16,
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                      "gate_proj", "up_proj", "down_proj"],
+    lora_alpha = 16,
+    use_gradient_checkpointing = "unsloth",
+)
+```
+
+**Pattern 3:** Fine-tune with TRL `SFTTrainer`:
+
+```python
+from trl import SFTTrainer, SFTConfig
+trainer = SFTTrainer(
+    model = model,
+    tokenizer = tokenizer,
+    train_dataset = dataset,
+    args = SFTConfig(output_dir = "outputs"),
+)
+trainer.train()
+```
+
+**Pattern 4:** Enable native 2x faster Unsloth inference before `generate`:
+
+```python
+FastLanguageModel.for_inference(model)
+_ = model.generate(**inputs, max_new_tokens = 64)
+```
+
+**Pattern 5:** Merge and save 16-bit weights for vLLM:
+
+```python
+model.save_pretrained_merged("model", tokenizer, save_method = "merged_16bit")
+```
+
+**Pattern 6:** Export GGUF for Ollama / llama.cpp:
+
+```python
+model.save_pretrained_gguf("directory", tokenizer, quantization_method = "q4_k_m")
+```
 
 ## Reference Files
 
 This skill includes full documentation in `references/`:
 
 - **llms-txt.md** - Llms-Txt documentation
+- **llms-full.md** - Full Unsloth documentation
+- **llms.md** - Documentation link index
 
 Use `view` to read specific reference files when detailed information is needed.
 

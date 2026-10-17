@@ -790,7 +790,8 @@ class GatewayTurnProgressMixin:
         if ctx._voice_ack_fired[0] or ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
             return
         ctx._voice_ack_fired[0] = True
-        adapter = self._runner.adapters.get(Platform.DISCORD)
+        # The bot whose call the guild was resolved on (#139345), not the default profile's.
+        adapter = self._runner._delivery_adapter_for(ctx.source)
         if adapter is None or not hasattr(adapter, "play_ack_in_voice"):
             return
         try:

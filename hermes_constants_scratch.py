@@ -4,10 +4,15 @@ Deleting an idle ``cache/scratch/<entry>`` is not enough on its own: a lane's e2
 headless browsers whose cwd was inside the tree (they survived for days with a ``(deleted)``
 cwd), and a repo whose linked worktree lived in the tree keeps a dangling registration until
 someone runs ``git worktree prune``. Both are reaped here, right before ``rmtree``.
+
+A process Hermes itself started is never an orphan, though: an idle entry a registered live
+process still works inside is kept, not reaped (#132401). Ownership comes from the two
+registries Hermes writes, not from a marker file a lane must remember to drop.
 """
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import shutil
@@ -158,6 +163,57 @@ def _own_lineage() -> set[int]:
     return pids
 
 
+def _registered_live_pids(home: Path) -> set[int]:
+    """Live pids Hermes registered for *home*: the machine spawn ledger (every long-lived entry
+    point and MCP helper, ``hermes_cli.process_identity``) and the background-process checkpoint
+    (``tools.process_registry``, ``processes.json``). A recorded start time that no longer
+    matches is a reused pid, not ownership."""
+    import psutil
+
+    from hermes_constants import get_default_hermes_root
+
+    root = get_default_hermes_root(home=home)
+    sources = [(root / "spawn-ledger.json", "create_time")]
+    sources += [(base / "processes.json", "host_start_time") for base in {home, root}]
+    pids: set[int] = set()
+    for path, stamp_key in sources:
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        for entry in entries if isinstance(entries, list) else []:
+            pid, stamp = (entry.get("pid"), entry.get(stamp_key)) if isinstance(entry, dict) else (None, None)
+            if not isinstance(pid, int) or pid <= 0 or entry.get("pid_scope", "host") != "host":
+                continue
+            try:
+                if stamp is None:
+                    alive = psutil.pid_exists(pid)
+                elif stamp_key == "create_time":
+                    alive = abs(psutil.Process(pid).create_time() - float(stamp)) < 2.0
+                else:
+                    from gateway.status import get_process_start_time
+
+                    alive = get_process_start_time(pid) == stamp
+            except (psutil.Error, OSError, TypeError, ValueError):
+                continue
+            if alive:
+                pids.add(pid)
+    return pids
+
+
+def _owned_by_hermes(proc, registered: set[int]) -> bool:
+    """Registered itself, or a descendant of a live registered process (a background shell's
+    child). An orphan whose spawning shell is gone was reparented away from that lineage, so
+    it is not owned and is still reaped."""
+    import psutil
+
+    try:
+        # pid 1 is excluded as an ancestor: a Hermes running as a container init adopts every orphan.
+        return proc.pid in registered or any(p.pid in registered and p.pid != 1 for p in proc.parents())
+    except (psutil.Error, OSError):
+        return False
+
+
 def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logging.Logger = logger) -> int:
     """TERM (then KILL) same-user processes whose cwd is inside an entry about to be
     pruned, or is a path under *scratch_root* that no longer exists. Returns the count.
@@ -165,6 +221,9 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
     Only the cwd is consulted: a process merely holding a file open inside scratch (an
     editor, a log tail) is not ours to kill, but one *living* in a directory we are
     about to delete, or in one already gone, has nothing left to run for.
+
+    A process Hermes owns (:func:`_owned_by_hermes`) is never signalled; each doomed entry it
+    works inside is dropped from *doomed* in place and recorded as kept.
     """
     import psutil
 
@@ -190,6 +249,21 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
             continue
         if deleted or not os.path.exists(cwd_path) or any(_under(cwd_path, t) for t in targets):
             victims.append((proc, cwd_path))
+    registered = _registered_live_pids(Path(root).parent.parent) if victims else set()
+    owned = [(proc, cwd_path) for proc, cwd_path in victims if _owned_by_hermes(proc, registered)]
+    for proc, cwd_path in owned:
+        for entry in [e for e in doomed if _under(cwd_path, os.path.realpath(str(e)))]:
+            doomed.remove(entry)
+            try:
+                name = proc.name()
+            except (psutil.Error, OSError):
+                name = "?"
+            audit.info("scratch prune: kept %r — live Hermes process pid=%d (%r) works inside",
+                       os.fspath(entry), proc.pid, name)
+    # Re-filter against the shrunk *doomed*: an orphan in a kept entry is spared with it (the
+    # reap only exists to clear the way for rmtree); one whose cwd is already gone still goes.
+    victims = [(proc, cwd_path) for proc, cwd_path in victims if (proc, cwd_path) not in owned
+               and (not os.path.exists(cwd_path) or any(_under(cwd_path, os.path.realpath(str(e))) for e in doomed))]
     if not victims:
         return 0
     for proc, cwd_path in victims:

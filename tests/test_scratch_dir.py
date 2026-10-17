@@ -1,6 +1,8 @@
 """Scratch dir contract: TMPDIR/TMP/TEMP follow HERMES_HOME/cache/scratch unless the user set them."""
 
+import contextlib
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -9,6 +11,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import psutil
 import pytest
 
 from hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
@@ -556,3 +559,48 @@ def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) 
     assert f"removed {str(entry)!r} (" not in log, log
     assert "could not confirm removal" in log, log
     assert "could not fully remove" not in log, log
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell orphaning")
+@pytest.mark.live_system_guard_bypass  # a red run must kill the orphan this test made (reparented to init)
+def test_prune_keeps_entry_a_registered_hermes_process_works_in_but_reaps_orphans(tmp_path, monkeypatch):
+    """#132401 live-worker guard: a background process Hermes itself started (tracked in the
+    process registry's ``processes.json``) is never reaped, and the idle entry it works in is
+    kept with an audit line. The orphaned grandchild of a registered shell that already exited
+    is no longer Hermes' — it is still reaped and its entry removed. Red on the cwd-only reap."""
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    owned_dir, orphan_dir = scratch / "live-worker", scratch / "dead-lane"
+    owned_dir.mkdir()
+    orphan_dir.mkdir()
+    sleeper = f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(60)'"
+    pidfile = tmp_path / "orphan.pid"
+    registry = ProcessRegistry()
+    worker = registry.spawn_local(sleeper, cwd=str(owned_dir))
+    lane = registry.spawn_local(f"{sleeper} >/dev/null 2>&1 </dev/null & echo $! > {shlex.quote(str(pidfile))}",
+                                cwd=str(orphan_dir))
+    deadline = time.time() + 15
+    while not (lane.exited and pidfile.exists() and pidfile.read_text().strip()) and time.time() < deadline:
+        registry.poll(lane.id)
+        time.sleep(0.1)
+    orphan = int(pidfile.read_text())
+    ancient = time.time() - 30 * 3600
+    for path in (owned_dir, orphan_dir):
+        os.utime(path, (ancient, ancient))
+    try:
+        assert prune_scratch_dir(scratch) == 1
+        assert owned_dir.exists() and not orphan_dir.exists()
+        assert worker.process.poll() is None, "registered Hermes worker was reaped"
+        deadline = time.time() + 10
+        while psutil.pid_exists(orphan) and psutil.Process(orphan).status() != psutil.STATUS_ZOMBIE \
+                and time.time() < deadline:
+            time.sleep(0.1)
+        assert not psutil.pid_exists(orphan) or psutil.Process(orphan).status() == psutil.STATUS_ZOMBIE
+        log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+        assert f"kept {str(owned_dir)!r} — live Hermes process pid=" in log, log
+    finally:
+        registry.kill_process(worker.id)
+        with contextlib.suppress(psutil.Error):
+            psutil.Process(orphan).kill()

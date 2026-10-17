@@ -63,6 +63,7 @@ behavior-affecting hooks:
 | `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution, or `{"action": "modify", "args": {...}}` to transform the tool's input arguments. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
 | `transform_llm_output` | May return a replacement final assistant text string. |
+| `transform_session_title` | May return a replacement for an automatic session title before it is stored. |
 
 Telemetry plugins should treat these behavior-affecting returns as optional
 compatibility features, not as observability requirements.

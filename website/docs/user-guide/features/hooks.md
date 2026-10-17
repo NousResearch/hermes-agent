@@ -456,6 +456,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
+| `transform_session_title` | Transform | Before each automatic session title is stored (instant, model upgrade, subagent); first non-empty string replaces the title. Names typed by the user (`/title`, sidebar rename) never fire it. | `title`, `session_id`, `source`, `cwd` | The generated title and the session's working directory. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
@@ -1736,6 +1737,33 @@ def register(ctx):
 ```
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+
+### `transform_session_title`
+
+Fires **once per automatic title write** — the instant title derived from the first message, the model-generated upgrade, and the `Subagent: …` title of a delegate run — **before** the title is stored. Lets a plugin apply a naming convention (a project prefix, a length cap, a house style) without wrapping Hermes internals. A name the user typed with `/title` or in the sidebar is theirs and never passes through it.
+
+**Callback signature:**
+
+```python
+def my_callback(title: str, session_id: str, source: str, cwd: str, **kwargs) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `title` | `str` | The title Hermes is about to store. |
+| `session_id` | `str` | Session the title belongs to. |
+| `source` | `str` | Authority of the write: `derived` (instant or subagent title) or `llm` (model title). |
+| `cwd` | `str` | Working directory recorded on the session (empty when unknown), so a plugin can map the session to a project or repository. |
+
+**Return value:** non-empty `str` to store instead (surrounding whitespace is trimmed); `None`, `""` or any other type leaves the title unchanged. **First non-empty string wins.** A replacement the session store rejects (for example one that is too long) is dropped and the original title is stored, so a plugin can never leave a session untitled. Exceptions are logged at debug level and keep the original title. The hook runs on the titling path, so keep callbacks fast; it is bounded by `plugins.hook_callback_timeout` like the other transform hooks.
+
+```python
+def register(ctx):
+    ctx.register_hook(
+        "transform_session_title",
+        lambda title, **_: title if title.startswith("[ops] ") else f"[ops] {title}",
+    )
+```
 
 ### API-request observer hooks
 

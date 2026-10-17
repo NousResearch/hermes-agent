@@ -571,6 +571,32 @@ def _has_upgraded_title(session_db, session_id: str) -> bool:
         return True
 
 
+def _apply_title_transform(session_db, session_id, title, source):
+    """Fire ``transform_session_title`` for an automatic title; the first plugin to return a non-empty
+    string supplies the title actually stored. Never raises: a failing or absent hook keeps *title*.
+    Names the user typed (``/title``, sidebar rename) never pass through here."""
+    if not title:
+        return title
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+
+        if not has_hook("transform_session_title"):
+            return title
+        try:
+            row = session_db.get_session(session_id) if session_db is not None and session_id else None
+            cwd = (row or {}).get("cwd") or ""
+        except Exception:  # health: allow BLE001 -- cwd is optional context; any store error just means "unknown"
+            cwd = ""
+        for result in invoke_hook(
+            "transform_session_title", title=title, session_id=session_id or "", source=source, cwd=cwd,
+        ):
+            if isinstance(result, str) and result.strip():
+                return result.strip()
+    except Exception:
+        logger.debug("transform_session_title hook failed; keeping %r", title, exc_info=True)
+    return title
+
+
 def _persist_session_title(session_db, session_id, title, *, source, dedupe=True):
     """Persist at *source* authority via ``set_auto_title`` (precedence check + write in one
     transaction, so a manual ``/title`` is never overwritten); None when a higher authority held the row.
@@ -596,14 +622,23 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
             raise RuntimeError(f"session {session_id} not found when storing title")
         return candidate
 
-    try:
-        return _set(title)
-    except ValueError:
-        next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
-        deduped = next_title_fn(title) if dedupe and next_title_fn is not None else None
-        if not deduped or deduped == title:
-            raise
-        return _set(deduped)
+    def _store(candidate):
+        try:
+            return _set(candidate)
+        except ValueError:
+            next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
+            deduped = next_title_fn(candidate) if dedupe and next_title_fn is not None else None
+            if not deduped or deduped == candidate:
+                raise
+            return _set(deduped)
+
+    transformed = _apply_title_transform(session_db, session_id, title, source)
+    if transformed != title:
+        try:
+            return _store(transformed)
+        except Exception:  # a plugin's title the store rejects (too long, ...) must not cost the session its title
+            logger.debug("transform_session_title result %r rejected; storing %r", transformed, title, exc_info=True)
+    return _store(title)
 
 
 def apply_subagent_title(session_db, session_id: str, goal: str) -> Optional[str]:

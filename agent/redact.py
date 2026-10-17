@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
+_VAULT_REDACTION_SHORT_MAX = 6      # values shorter than this are matched with boundary anchors only
+_DATE_TOKEN_RE = re.compile(r"\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b")
 _VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
 _VAULT_REDACTION_LOCK = threading.Lock()
 
@@ -70,10 +72,31 @@ def redact_registered_vault_values(text: str) -> str:
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
         values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
+    if not values:
+        return text
+
+    # A registered value can be SHORT (a CVC-length string, an expiry fragment) and then match
+    # innocent data: `12/10/2024` lost its leading month and `-21008` became `-2«…»8`, because plain
+    # `str.replace` has neither boundaries nor a date guard. Two rules, so real echoes still mask:
+    #   1. never redact inside a date or time token;
+    #   2. for a value SHORTER than _VAULT_REDACTION_SHORT_MAX, require a delimiter on both sides —
+    #      not another digit/letter, and not the separators that live inside numbers and dates — so a
+    #      standalone `100` is still masked while the `100` in `21008` or `1,100.50` is left alone.
+    spans = [m.span() for m in _DATE_TOKEN_RE.finditer(text)]
+    pats = []
     for value in values:
-        if value in text:
-            text = text.replace(value, "«redacted-vault-secret»")
-    return text
+        esc = re.escape(value)
+        if len(value) >= _VAULT_REDACTION_SHORT_MAX:
+            pats.append(esc)
+        else:
+            pats.append(r"(?<![\w,./-])" + esc + r"(?![\w,./-])")
+    if not pats:
+        return text
+    combined = re.compile("|".join(pats))          # values are sorted longest-first, so no shadowing
+    return combined.sub(
+        lambda m: m.group(0) if any(s <= m.start() < e for s, e in spans) else "«redacted-vault-secret»",
+        text,
+    )
 
 # Sensitive query-string param names (case-insensitive): opaque tokens / OAuth
 # codes / pre-signed signatures with no vendor prefix.

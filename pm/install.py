@@ -322,10 +322,24 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
 @contextmanager
 def _publish_entry(package, store, staged, entry, previous_entry, target):
     """Keep rollback live through the caller's native facts commit, if any."""
+    kept_live = False
     if entry.exists() or entry.is_symlink():
-        retry_held(lambda: entry.rename(previous_entry))
+        try:
+            retry_held(lambda: entry.rename(previous_entry))
+        except OSError as rename_error:
+            try:
+                matches_staged = (not package.verify(entry, target)
+                                  and tree_digest(entry) == tree_digest(staged))
+            except OSError:
+                raise rename_error
+            if not matches_staged:
+                raise
+            LOG.warning("%s entry is in use but already matches the staged bytes; keeping it live",
+                        package.name)
+            kept_live = True
     try:
-        store.publish(staged, entry.name)
+        if not kept_live:
+            store.publish(staged, entry.name)
         reason = package.verify(entry, target)
         if reason:
             raise InstallError(package.name, f"published entry failed verification: {reason}")

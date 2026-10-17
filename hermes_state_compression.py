@@ -105,6 +105,11 @@ def _walk_compression_chain(session_id: str, step) -> list[str]:
     return chain
 
 
+# created_source values the creator upsert treats as unset (NULLIF(..., 'unknown')).
+_UNSET_CREATED_SOURCES = (None, "unknown")
+_CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE id = ?"
+
+
 def stamp_compression_ancestors(conn, session_id: str) -> None:
     """Copy *session_id*'s ``created_source`` onto compression ancestors that have none.
 
@@ -116,16 +121,14 @@ def stamp_compression_ancestors(conn, session_id: str) -> None:
     unset, as in the creator upsert. An ancestor already on the same surface is walked through
     (a NULL root behind a stamped mid segment still gets stamped); another surface stops it.
     """
-    row = conn.execute("SELECT parent_session_id, created_source FROM sessions WHERE id = ?",
-                       (session_id,)).fetchone()
+    row = conn.execute(_CREATED_ROW_SQL, (session_id,)).fetchone()
     surface = row["created_source"] if row else None
-    if surface in (None, "unknown"):
+    if surface in _UNSET_CREATED_SOURCES:
         return
     current, parent_id = session_id, row["parent_session_id"]
     for _ in range(_CHAIN_CAP):
-        parent = parent_id and conn.execute(
-            "SELECT parent_session_id, created_source FROM sessions WHERE id = ?", (parent_id,)).fetchone()
-        if not parent or parent["created_source"] not in (None, "unknown", surface):
+        parent = parent_id and conn.execute(_CREATED_ROW_SQL, (parent_id,)).fetchone()
+        if not parent or parent["created_source"] not in (*_UNSET_CREATED_SOURCES, surface):
             return
         step = conn.execute(_CHAIN_STEP_SQL, (parent_id,)).fetchone()
         if step is None or step["id"] != current:

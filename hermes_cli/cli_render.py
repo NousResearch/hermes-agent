@@ -949,6 +949,24 @@ def _build_compact_banner() -> str:
     )
 
 
+def _panel_cwidth(text: str) -> int:
+    """Display (terminal-cell) width of panel text.
+
+    ``len()`` counts Python codepoints, which undercounts wide glyphs (emoji, CJK) — a panel
+    sized/padded with it draws its right border one or more cells short of the top/bottom rules.
+    """
+    try:
+        from prompt_toolkit.utils import get_cwidth
+    except Exception:  # pragma: no cover — partial installs
+        return len(text)
+    return get_cwidth(text)
+
+
+def _panel_ljust(text: str, inner_width: int) -> str:
+    """``str.ljust`` equivalent that pads by display cells, not Python codepoints."""
+    return text + (" " * max(0, inner_width - _panel_cwidth(text)))
+
+
 def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
     """Stable TUI panel width wide enough for the title and content (incl. borders)."""
     term_cols = shutil.get_terminal_size((100, 20)).columns

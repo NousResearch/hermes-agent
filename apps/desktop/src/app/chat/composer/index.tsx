@@ -28,6 +28,7 @@ import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
+import type { ComposerAttachment } from '@/store/composer'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
@@ -86,7 +87,7 @@ import { useMiddlewareSubmit } from './hooks/use-middleware-submit'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
-import { shouldConvertPasteToAttachment } from './large-paste'
+import { isInlinePasteRequested, isInlinePasteShortcut, shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
@@ -561,8 +562,35 @@ export function ChatBar({
     recordUndoPoint()
   }
 
+  // ⌘⇧V / Ctrl+Shift+V arms this; the paste event that follows consumes it
+  // (see `isInlinePasteShortcut` — the paste event itself carries no modifiers).
+  const inlinePasteRequestedAtRef = useRef(0)
+
+  // "Paste into prompt" on a pasted-content chip: the file's text lands in the
+  // composer exactly as an inline paste would have, and the chip goes away —
+  // so a `/goal` or skill prompt, which can't take attachments, can still
+  // carry the material.
+  const handlePasteAttachmentIntoPrompt = (attachment: ComposerAttachment, text: string) => {
+    const editor = editorRef.current
+
+    if (editor) {
+      recordUndoPoint()
+      insertComposerContentsAtCaret(editor, pathifyRefs(linkifyUrls(text)), openDirectiveScope(editor))
+      flushEditorToDraft(editor)
+      focusInput()
+    } else {
+      insertText(text)
+    }
+
+    onRemoveAttachment?.(attachment.id)
+    triggerHaptic('selection')
+  }
+
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
+    const inlineRequested = isInlinePasteRequested(inlinePasteRequestedAtRef.current)
+
+    inlinePasteRequestedAtRef.current = 0
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {
       triggerHaptic('selection')
@@ -629,8 +657,9 @@ export function ChatBar({
     // The instruction the user types stays in the input; the pasted source
     // material rides along as a file. Falls back to inline insertion if the
     // attachment can't be created (missing bridge, write failure) so the
-    // paste is never lost.
-    if (onAttachPastedText && shouldConvertPasteToAttachment(pastedText)) {
+    // paste is never lost. ⌘⇧V / Ctrl+Shift+V opts out: the text stays inline
+    // no matter its size.
+    if (!inlineRequested && onAttachPastedText && shouldConvertPasteToAttachment(pastedText)) {
       const editor = event.currentTarget
 
       void Promise.resolve(onAttachPastedText(pastedText)).then(attached => {
@@ -718,6 +747,16 @@ export function ChatBar({
     if (isRedoShortcut(event.nativeEvent)) {
       event.preventDefault()
       redo()
+
+      return
+    }
+
+    // ⌘⇧V / Ctrl+Shift+V: paste inline regardless of size. Not prevented —
+    // the chord still has to reach Chromium (or the Edit menu's
+    // pasteAndMatchStyle role) so the native paste event fires; handlePaste
+    // reads the armed timestamp to skip the attachment conversion.
+    if (isInlinePasteShortcut(event.nativeEvent)) {
+      inlinePasteRequestedAtRef.current = Date.now()
 
       return
     }
@@ -1495,7 +1534,13 @@ export function ChatBar({
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
-                  {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  {attachments.length > 0 && (
+                    <AttachmentList
+                      attachments={attachments}
+                      onPasteIntoPrompt={handlePasteAttachmentIntoPrompt}
+                      onRemove={onRemoveAttachment}
+                    />
+                  )}
                   <div
                     className={cn(
                       'grid w-full',

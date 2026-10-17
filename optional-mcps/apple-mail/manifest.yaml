@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.20.11`:
+# On macOS, `npx -y apple-mail-mcp@2.20.16`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.20.11 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.16 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -233,12 +233,30 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # `search-messages`/`list-messages` output and the `flagColor` filter itself
 # rides along — not independently re-pin-worthy, but inseparable from the fix.
 # No new tools: still 52 tools, all 18 default_enabled entries resolve.
+#
+# 2.20.16 (via 2.20.14) is re-pinned on the same footing — a defect in the
+# default_enabled `list-attachments` (sweetrb/apple-mail-mcp#295, @JaumeAP):
+# for a message Apple Mail composed itself it returned "No attachments found"
+# although the file was there and `fetch-attachment` by name worked. Two
+# defects stacked: `MIME type of att` throws for those attachments and the one
+# unguarded throw discarded the whole AppleScript list, and the MIME fallback
+# skipped every `Content-Disposition: inline` part — which is how Apple Mail
+# writes the files it attaches. Each property is now read in its own `try`,
+# and an inline part is skipped only when the HTML body embeds it via `cid:`.
+# Reproduced and verified on a real Mac (a sent photo: 2.20.13 "No
+# attachments found", 2.20.14 lists it). Riding along: 2.20.12 is a
+# Dependabot bump; 2.20.13 adds an `addresses` field to `list-accounts`'
+# structured output (additive) alongside a wrong-sender fix on the disabled
+# send tools; 2.20.15 (reply/forward sender) and 2.20.16 (wait for
+# attachments before save/send) land only on send/mutation tools that are
+# disabled below. No new tools: still 52 tools, all 18 default_enabled
+# entries resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.11"
+    - "apple-mail-mcp@2.20.16"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

@@ -562,29 +562,44 @@
   }
 
   function AchievementsPage() {
-    const { t } = useI18n();
+    const { t, locale } = useI18n();
     const [data, setData] = hooks.useState(null);
     const [loading, setLoading] = hooks.useState(true);
     const [error, setError] = hooks.useState(null);
     const [category, setCategory] = hooks.useState("All");
     const [visibility, setVisibility] = hooks.useState("all");
 
-    function load() {
-      setLoading(true);
-      api("/achievements")
-        .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
-        .catch(function (err) { setError(String(err)); })
-        .finally(function () { setLoading(false); });
+    function localizedPath(path) {
+      const sep = path.indexOf("?") === -1 ? "?" : "&";
+      return path + sep + "locale=" + encodeURIComponent(locale || "en");
     }
-    // refresh() re-fetches without flipping the loading state — used by the
-    // auto-poller during an in-progress background scan so the page updates
-    // with growing unlock counts instead of flashing the loading skeleton.
-    function refresh() {
-      api("/achievements")
-        .then(function (payload) { setData(payload); setError((payload && payload.error) || null); })
-        .catch(function (err) { setError(String(err)); });
+
+    const requestGeneration = React.useRef(0);
+    function fetchAchievements(showLoading) {
+      const generation = requestGeneration.current;
+      if (showLoading) setLoading(true);
+      api(localizedPath("/achievements"))
+        .then(function (payload) {
+          if (generation !== requestGeneration.current) return;
+          setData(payload);
+          setError((payload && payload.error) || null);
+        })
+        .catch(function (err) {
+          if (generation === requestGeneration.current) setError(String(err));
+        })
+        .finally(function () {
+          if (showLoading && generation === requestGeneration.current) setLoading(false);
+        });
     }
-    hooks.useEffect(load, []);
+    function load() { fetchAchievements(true); }
+    // Poll without flashing the loading skeleton during a background scan.
+    function refresh() { fetchAchievements(false); }
+    hooks.useEffect(function () {
+      setCategory("All");
+      load();
+      // Clearing the interval cannot invalidate requests already in flight.
+      return function () { requestGeneration.current += 1; };
+    }, [locale]);
 
     // Auto-poll while the backend is still scanning. scan_meta.mode is
     // "pending" on the very first request (no cache yet) and "in_progress"
@@ -596,7 +611,7 @@
       if (!scanInFlight) return undefined;
       const id = setInterval(refresh, 4000);
       return function () { clearInterval(id); };
-    }, [scanInFlight]);
+    }, [scanInFlight, locale]);
 
     const achievements = (data && data.achievements) || [];
     const categories = ["All"].concat(Array.from(new Set(achievements.map(function (a) { return a.category; }))));

@@ -232,6 +232,38 @@ export function decideProfileDeleteAction(
   return { action: 'teardown-pool', profile }
 }
 
+export interface LocalProfileDeleteDeps extends ProfileDeleteDecisionDeps {
+  teardownPoolBackendAndWait: (profile: string) => Promise<void>
+  teardownPrimaryBackendAndWait: () => Promise<void>
+  writeActiveDesktopProfile: (profile: string) => void
+}
+
+/**
+ * Stop every local backend of the profile a DELETE targets and return that
+ * profile, or null when the request is not a profile delete. The caller must
+ * then route the DELETE away from it: a respawned backend's
+ * ensure_hermes_home() would recreate the directory the delete removes.
+ */
+export async function prepareLocalProfileDelete(
+  request: unknown,
+  deps: LocalProfileDeleteDeps
+): Promise<null | string> {
+  const { action, profile } = decideProfileDeleteAction(profileNameFromDeleteRequest(request), deps)
+
+  if (action === 'noop' || !profile) {
+    return null
+  }
+
+  if (action === 'teardown-primary') {
+    deps.writeActiveDesktopProfile('default')
+    await Promise.all([deps.teardownPrimaryBackendAndWait(), deps.teardownPoolBackendAndWait(profile)])
+  } else {
+    await deps.teardownPoolBackendAndWait(profile)
+  }
+
+  return profile
+}
+
 /**
  * Route the next `hermes:api` request away from the primary/window backend
  * whenever a profile was just torn down -- otherwise ensureBackend would

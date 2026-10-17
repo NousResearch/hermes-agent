@@ -130,6 +130,40 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
+    def test_edit_merges_onto_healed_skills_for_string_typed_field(self, tmp_cron_dir, capsys):
+        """`cron edit` reads through `resolve_job_ref`, which heals the record, so `--add-skill`
+        on a string-typed field merges onto real names instead of splitting the string into
+        characters. Pinned end-to-end: the reviewer flagged this path as a corruption risk
+        (#132674 review), and the CLI derivation must never regress to a raw `list()`."""
+        job = create_job(prompt="Watch the news", schedule="every 1h", skills=["newsy"])
+        jobs = load_jobs()
+        jobs[0]["skills"] = "['newsy', 'gif-search']"
+        jobs[0]["skill"] = "['newsy', 'gif-search']"
+        save_jobs(jobs)
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                add_skills=["cody"],
+                remove_skills=None,
+                script=None,
+                workdir=None,
+                no_agent=None,
+            )
+        )
+
+        assert "Updated job" in capsys.readouterr().out
+        assert get_job(job["id"])["skills"] == ["newsy", "gif-search", "cody"]
+
 
 class TestUnverifiedDeliveryVisibility:
     """An evidence-free live-adapter ack (Slack/Matrix/Mattermost bare

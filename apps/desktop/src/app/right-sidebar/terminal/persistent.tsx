@@ -6,11 +6,14 @@ import { isElementInHiddenPane, PANE_HIDDEN_ATTR } from '@/components/pane-shell
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
+import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $paneStates } from '@/store/panes'
+import { $activeSessionId } from '@/store/session'
 
 import { $terminalTakeover } from '../store'
 
-import { ensureTerminal } from './terminals'
+import { seedAgentTerminalCommand, syncAgentTerminalSnapshot } from './agent-terminal-stream'
+import { ensureTerminal, maybeAutoRevealAgentTerminal } from './terminals'
 import { TerminalWorkspace } from './workspace'
 
 /**
@@ -62,6 +65,8 @@ const sameRect = (a: Rect | null, b: Rect) =>
   !!a && a.hidden === b.hidden && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
 
 export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalProps) {
+  const background = useStore($backgroundStatusBySession)
+  const activeSessionId = useStore($activeSessionId)
   const slot = useStore($slot)
   const terminalTakeover = useStore($terminalTakeover)
   const [rect, setRect] = useState<Rect | null>(null)
@@ -80,6 +85,25 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
       ensureTerminal()
     }
   }, [terminalTakeover, ready])
+
+  // Observe before the first workspace mount; auto-reveal opens the pane that
+  // supplies its slot. Mirroring tasks does not start any terminal instances.
+  // Surface the agent's background processes as read-only tabs (once each).
+  // Live chunks stream via agent.terminal.output; the process-list snapshot also
+  // seeds/falls back so the tab never stays blank if the stream races startup.
+  // Auto-reveal (select + pane takeover) is gated to the active session and
+  // the `hermes.desktop.revealBackgroundTerminals === 'auto'` preference.
+  useEffect(() => {
+    for (const [sessionId, list] of Object.entries(background)) {
+      const allowAutoReveal = sessionId === activeSessionId
+
+      for (const item of list) {
+        maybeAutoRevealAgentTerminal(item.id, item.title, allowAutoReveal)
+        seedAgentTerminalCommand(item.id, item.title)
+        syncAgentTerminalSnapshot(item.id, item.output ?? '')
+      }
+    }
+  }, [activeSessionId, background])
 
   useLayoutEffect(() => {
     if (!slot) {

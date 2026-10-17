@@ -276,3 +276,51 @@ def test_status_flags_a_gateway_this_hermes_cannot_attach(homes, monkeypatch, ca
     assert ('✓ Gateway is running (PID: 4242)' in output) is healthy
     assert ('incompatible: runtime_protocol' in output) is not healthy
     assert ('hermes gateway restart' in output) is not healthy
+
+
+def _lifecycle_host(monkeypatch, gw, root, secondary):
+    """Point the named-profile lifecycle at a multiplexer owner serving ``worker``."""
+    owner = SimpleNamespace(home=root, profile_label='default', profiles=('default', 'worker'),
+                            describe=lambda: 'test host')
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [])
+    monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *a: owner)
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda *a: True)
+    monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', lambda: owner)
+
+
+def test_pending_lifecycle_reply_is_confirmed_by_polling(homes, monkeypatch, capsys):
+    """A serve/unserve that outlasts the control verb's 5s reply budget answers ``pending`` while it
+    still runs on the host loop; the CLI must poll the live served set, not read that as a failure."""
+    from hermes_cli import gateway as gw
+    from gateway import control_socket
+    root, secondary = homes
+    _lifecycle_host(monkeypatch, gw, root, secondary)
+    # Both verbs answer `pending` (the operation is still in flight).
+    monkeypatch.setattr(control_socket, 'request_unserve_profile', lambda home, name: {'pending': True})
+    monkeypatch.setattr(control_socket, 'request_serve_profile_hot', lambda home, name: {'pending': True})
+    states = iter([{'served_profiles': ['default']}, {'served_profiles': ['default', 'worker']}])
+    monkeypatch.setattr(control_socket, 'identify_gateway', lambda home, **kw: next(states))
+    gw._cmd_restart(SimpleNamespace())
+    output = capsys.readouterr().out
+    assert "Profile 'worker' restarted by the host gateway." in output
+    assert 'not confirmed' not in output
+
+
+def test_pending_lifecycle_reply_still_reports_unconfirmed(homes, monkeypatch, capsys):
+    """The poll is bounded and honest: a host that never serves the profile still prints the
+    unconfirmed message rather than hanging or claiming success."""
+    from hermes_cli import gateway as gw, gateway_profile_lifecycle as lifecycle
+    from gateway import control_socket
+    root, secondary = homes
+    _lifecycle_host(monkeypatch, gw, root, secondary)
+    (secondary / 'gateway.parked').touch()
+    monkeypatch.setattr(control_socket, 'request_serve_profile_hot', lambda home, name: {'pending': True})
+    monkeypatch.setattr(control_socket, 'identify_gateway',
+                        lambda home, **kw: {'served_profiles': ['default']})
+    monkeypatch.setattr(lifecycle, '_CONFIRM_TIMEOUT_SECS', 0.0)
+    gw._cmd_start(SimpleNamespace())
+    output = capsys.readouterr().out
+    assert "Profile 'worker' unparked, but serving was not confirmed" in output

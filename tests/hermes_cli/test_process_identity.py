@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import stat
 import subprocess
 import sys
@@ -405,3 +406,81 @@ def test_reclaim_ignores_unknown_pid_and_never_raises():
         assert pi.reap_orphaned_backend_owner(999, 9.0, kill_fn=lambda pid: None) is None
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
         assert pi.reap_orphaned_backend_owner(555, 55.0, kill_fn=lambda pid: None) is None
+
+
+# ---------------------------------------------------------------------------
+# Windows job-object self-attach (Layer 3)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(platform.system() != "Windows", reason="win32 job objects only")
+def test_attach_self_to_kill_on_close_job_joins_a_real_job(monkeypatch):
+    """The self-attach must actually assign this process to the job, the job
+    must carry KILL_ON_JOB_CLOSE without SILENT_BREAKAWAY_OK, and a spawned
+    child must land inside it.
+
+    Two kernel-verified regressions this pins down (#132069): without explicit
+    argtypes, ctypes marshals the 64-bit current-process pseudo-handle as a
+    truncated 32-bit int, AssignProcessToJobObject fails with
+    ERROR_INVALID_HANDLE and the attach silently no-ops; and with
+    SILENT_BREAKAWAY_OK set, every child of an attached process starts
+    OUTSIDE the job, so the net could never catch the stdio MCP trees it
+    was built for (#61059). Assert the kernel truth, not just return values.
+    """
+    import ctypes
+    import subprocess
+    import time
+    from ctypes import wintypes
+
+    monkeypatch.setattr(pi, "_JOB_HANDLE", None)  # force a fresh attach attempt
+    assert pi.attach_self_to_kill_on_close_job() is True
+
+    k = ctypes.WinDLL("kernel32")
+    k.GetCurrentProcess.restype = ctypes.c_void_p
+    k.IsProcessInJob.restype = wintypes.BOOL
+    k.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL)]
+    k.OpenProcess.restype = ctypes.c_void_p
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    injob = wintypes.BOOL()
+    assert k.IsProcessInJob(k.GetCurrentProcess(), pi._JOB_HANDLE, ctypes.byref(injob))
+    assert bool(injob.value), "attach() returned True but this process is not in the job"
+
+    class _BASIC(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                    ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.POINTER(wintypes.ULONG)),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _IO(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_ulonglong) for n in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _EXT(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    k.QueryInformationJobObject.restype = wintypes.BOOL
+    k.QueryInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    info = _EXT()
+    assert k.QueryInformationJobObject(pi._JOB_HANDLE, 9, ctypes.byref(info), ctypes.sizeof(info))
+    flags = info.BasicLimitInformation.LimitFlags
+    assert flags & 0x2000, "KILL_ON_JOB_CLOSE not set on the created job"
+    assert not flags & 0x1000, "SILENT_BREAKAWAY_OK set: children would silently escape the job"
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    try:
+        time.sleep(0.5)
+        h = k.OpenProcess(0x1000, False, child.pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        assert h, f"OpenProcess({child.pid}) failed"
+        child_in = wintypes.BOOL()
+        assert k.IsProcessInJob(h, pi._JOB_HANDLE, ctypes.byref(child_in))
+        assert bool(child_in.value), "spawned child did not join the kill-on-close job"
+    finally:
+        child.kill()
+        child.wait(timeout=10)

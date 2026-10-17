@@ -974,12 +974,14 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--live] [--ack <ADVISORY_ID>]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--live` | Opt-in: run one bounded, read-only real-call health probe per configured tool backend (Firecrawl/FAL/browser/MCP/TTS/STT) after the static checks. Makes real network calls. |
+| `--ack <ADVISORY_ID>` | Acknowledge a security advisory by ID and exit. Once acknowledged, the advisory stops triggering startup banners. Run `hermes doctor` first to see the active advisories and their IDs. |
 
 Exit status: `0` when the report lists no unresolved problems, `1` when at least one remains (including problems `--fix` could not repair), so a health gate or CI step can trust `hermes doctor` as a check.
 
@@ -1238,13 +1240,13 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 
 | Option | Description |
 |--------|-------------|
-| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, `gui`, `desktop`, `update`, `handoff`, or `list` to show available files with sizes. |
+| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, `gui`, `desktop`, `update`, `handoff`, `mcp`, or `list` to show available files with sizes. |
 | `-n`, `--lines <N>` | Number of lines to show (default: 50). |
 | `-f`, `--follow` | Follow the log in real time, like `tail -f`. Press Ctrl+C to stop. |
 | `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `--session <ID>` | Filter lines containing a session ID substring. |
 | `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
-| `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`. |
+| `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`, `gui`. |
 
 A line without its own timestamp, such as a traceback frame or the rest of a multi-line message, is shown or hidden together with the timestamped line above it.
 

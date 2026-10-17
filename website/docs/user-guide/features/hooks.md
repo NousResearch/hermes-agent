@@ -898,6 +898,16 @@ return {"reason": "model_not_found",   # required: a FailoverReason name
 
 Dispatch is run-all-then-pick-first: every callback runs, failures are isolated, and the first valid result in registration order wins (valid-but-losing results log a runtime warning). Invalid dicts and unknown reasons are skipped, so a broken plugin can never break classification.
 
+An optional `error_context` dict reaches credential-pool recovery for two keys:
+
+```python
+return {"reason": "rate_limit",
+        "error_context": {"reset_at": 1767225600.0,   # epoch s/ms or ISO-8601: when the refused credential may be used again
+                          "quota_scope": "model"}}    # the quota is per model: bench (credential, model), not the credential
+```
+
+`reset_at` sizes the bench (it wins over a reset scraped from the exception) and, on a pool with another entry, rotates on the first 429 instead of retrying a credential that cannot succeed before then. `quota_scope: "model"` narrows a `rate_limit` bench to the requested model, the way Anthropic per-model 429s already are; billing and auth failures always bench the whole credential.
+
 **Privacy:** `error_message` and `error_body` may carry unredacted provider data. **Python plugins only** — shell registrations are refused at config parse with a warning.
 
 ---

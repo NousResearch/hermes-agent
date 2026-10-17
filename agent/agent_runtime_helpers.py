@@ -998,9 +998,24 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
-    if not has_retried_429 and not usage_limit_reached:
+    if not has_retried_429 and not usage_limit_reached and not _reset_rules_out_retry(pool, error_context):
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
+
+
+def _reset_rules_out_retry(pool, error_context) -> bool:
+    """Whether retrying the same credential before rotating is futile.
+
+    The retry-once rule exists for an unexplained 429 that may be a momentary burst. When the
+    provider (or a classification hook) stated when the window reopens and that moment is still
+    ahead, the same credential cannot succeed before it, so a pool with another entry rotates
+    now instead of spending a backoff on a known refusal. Rotation does not consume the retry
+    budget; a sole credential keeps the retry-once path.
+    """
+    if not isinstance(error_context, dict) or len(pool.entries()) < 2:
+        return False
+    reset_at = _parse_absolute_timestamp(error_context.get("reset_at"))
+    return reset_at is not None and reset_at > time.time()
 
 
 def recover_with_credential_pool(

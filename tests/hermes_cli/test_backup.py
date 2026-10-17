@@ -308,6 +308,28 @@ class TestIterBackupFiles:
         assert "models" in skipped
         assert "hermes-agent" in skipped
 
+    def test_prunes_retired_wal_generation_directories(self, tmp_path):
+        """A retired WAL generation is an operator-recovery artifact, not a live SQLite DB.
+
+        Pruning its directory avoids trying to snapshot the captured ``state.db`` and keeps the
+        manifest, image, and WAL together for recovery outside a portable backup.
+        """
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        retired = root / "state.db.retired-wal-20261011-205050-4478"
+        (retired / "state.db").parent.mkdir(parents=True)
+        (retired / "state.db").write_bytes(b"not a live SQLite database")
+        (retired / "manifest.json").write_text("{}")
+        (root / "notes.txt").write_text("keep")
+
+        skipped: set = set()
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip", skipped)}
+
+        assert selected == {"notes.txt"}
+        assert "state.db.retired-wal-20261011-205050-4478" in skipped
+
     @pytest.mark.platforms("linux")
     def test_skips_unix_sockets(self, tmp_path, monkeypatch):
         from hermes_cli.backup import _iter_backup_files
@@ -1931,6 +1953,21 @@ class TestPreUpdateBackup:
             names = zf.namelist()
         assert "state.db" in names
         assert not any(n.startswith(_QUICK_SNAPSHOTS_DIR + "/") for n in names), names
+
+    def test_pre_update_backup_skips_retired_wal_generation(self, hermes_home):
+        """An unreadable captured DB must not abort the live pre-update backup."""
+        from hermes_cli.backup import create_pre_update_backup
+
+        retired = hermes_home / "state.db.retired-wal-20261011-205050-4478"
+        retired.mkdir()
+        (retired / "state.db").write_bytes(b"not a live SQLite database")
+        (retired / "manifest.json").write_text("{}")
+
+        out = create_pre_update_backup(hermes_home=hermes_home)
+
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            assert not any(name.startswith(f"{retired.name}/") for name in zf.namelist())
 
 
     def test_rotation_keeps_only_n(self, hermes_home):

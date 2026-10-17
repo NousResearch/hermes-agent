@@ -248,6 +248,76 @@ def test_mapping_request_errors_are_explicit(lifecycle, launch_request, message)
         lifecycle.launch(launch_request)
 
 
+def test_lifecycle_request_adds_native_contract_fields_without_shifting_existing_positions():
+    request = SubagentLaunchRequest("review", "context", "orchestrator")
+
+    assert request.role == "orchestrator"
+    assert request.images is None
+    assert request.output_schema is None
+
+
+@pytest.mark.parametrize("wire", [False, True])
+def test_lifecycle_forwards_native_images_and_schema_receipt(monkeypatch, wire):
+    """Regression for #138828: public lifecycle retains native delegation contracts."""
+    from hermes_cli.plugin_host_wire import decode, encode
+
+    parent = SimpleNamespace(session_id="parent-contract", enabled_toolsets=["file"])
+    child = FakeChild("sa-contract")
+    built = {}
+    schema = {"type": "object", "required": ["verdict"]}
+
+    def build(**kwargs):
+        built.update(kwargs)
+        return child
+
+    def run(_index, _goal, running_child, _parent):
+        assert running_child._delegate_images == ["https://example.invalid/mock.png"]
+        assert running_child._delegate_output_schema == schema
+        return {
+            "status": "completed",
+            "summary": "raw answer that missed the contract",
+            "schema_valid": False,
+            "schema_errors": ["$.verdict: is a required property"],
+            "schema_note": "raw summary is unvalidated",
+        }
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    service = SubagentLifecycleService(lambda: parent)
+    request = SubagentLaunchRequest(
+        goal="Review the supplied mock",
+        images=("https://example.invalid/mock.png",),
+        output_schema=schema,
+    )
+    handle = service.launch(decode(encode(request)) if wire else request)
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert "OUTPUT CONTRACT" in built["context"]
+    result = service.result(handle)
+    assert result.summary == "raw answer that missed the contract"
+    assert result.structured_payload == {
+        "schema_valid": False,
+        "schema_errors": ["$.verdict: is a required property"],
+        "schema_note": "raw summary is unvalidated",
+    }
+    if wire:
+        assert decode(encode(result))["structured_payload"] == result.structured_payload
+
+
+@pytest.mark.parametrize(("images", "output_schema", "message"), [
+    (1, None, "Task 0 'images' must be an array"),
+    (None, "not json", "Task 0 output_schema invalid"),
+])
+def test_lifecycle_rejects_native_contract_inputs_before_build(monkeypatch, images, output_schema, message):
+    build = Mock()
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    service = SubagentLifecycleService(lambda: SimpleNamespace(session_id="parent-contract"))
+
+    with pytest.raises(SubagentLifecycleError, match=message):
+        service.launch(SubagentLaunchRequest(goal="Review", images=images, output_schema=output_schema))
+
+    build.assert_not_called()
+
+
 @pytest.fixture
 def routing_lifecycle(lifecycle, monkeypatch):
     from tools.delegate_tool import _build_child_agent

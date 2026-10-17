@@ -4,8 +4,8 @@ import http.server
 import json
 import os
 import subprocess
+import sys
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -237,8 +237,23 @@ class TestReadiness:
         assert result.readiness is None
         assert not result.ok
 
+    @pytest.mark.platforms("linux")
     def test_port_override(self, tmp_path):
         port = _free_port()
+        recipe = Recipe(
+            name="x",
+            start=f"python3 -m http.server {port} --bind 127.0.0.1",
+            port=1,
+        )
+        result = run_verify(
+            tmp_path, recipe, phases=("start",), ready_timeout=15, port_override=port
+        )
+        assert result.readiness.ready
+        assert result.readiness.url == f"http://127.0.0.1:{port}/"
+
+    def test_port_already_in_use_is_not_readiness(self, tmp_path, monkeypatch):
+        """A server that was already on the port is not the app: its answer must not
+        count as ready, and the start command must not run against the taken port."""
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -248,17 +263,26 @@ class TestReadiness:
             def log_message(self, *a):
                 pass
 
-        server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        time.sleep(0.05)
+        spawned: list[str] = []
+        real_popen = subprocess.Popen
+
+        def tracking_popen(cmd, *args, **kwargs):
+            spawned.append(cmd)
+            return real_popen(cmd, *args, **kwargs)
+
+        monkeypatch.setattr("subprocess.Popen", tracking_popen)
         try:
-            recipe = Recipe(name="x", start="sleep 30", port=1)
-            result = run_verify(
-                tmp_path, recipe, phases=("start",), ready_timeout=10, port_override=port
-            )
-            assert result.readiness.ready
-            assert result.readiness.status_code == 204
+            start = subprocess.list2cmdline([sys.executable, "-c", "pass"])
+            recipe = Recipe(name="x", start=start, port=port)
+            result = run_verify(tmp_path, recipe, phases=("start",), ready_timeout=10)
+            assert spawned == [], "the start command must not run"
+            assert not result.readiness.ready
+            assert not result.ok
+            assert "already accepts connections" in (result.readiness.error or "")
         finally:
             server.shutdown()
             thread.join(timeout=5)

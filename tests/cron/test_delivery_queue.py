@@ -234,3 +234,41 @@ def test_same_gateway_recovers_terminalization_failure_without_resending(
     status = queue.get_status("exec-4")
     assert status["status"] == "unknown"
     assert "not retried" in status["error"]
+
+
+def test_pending_delivery_older_than_max_age_is_failed_not_sent(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import cron.delivery_queue as queue
+
+    monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
+    monkeypatch.setattr(queue, "_max_age_seconds", lambda: 3600.0)
+    start = datetime(2026, 10, 9, 7, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(queue, "_hermes_now", lambda: start)
+    queue.enqueue("exec-stale", {"id": "job-1"}, "morning brief")
+    monkeypatch.setattr(queue, "_hermes_now", lambda: start + timedelta(minutes=30))
+    queue.enqueue("exec-fresh", {"id": "job-2"}, "still useful")
+    monkeypatch.setattr(queue, "_hermes_now", lambda: start + timedelta(hours=1, minutes=1))
+    send = Mock(return_value=None)
+
+    assert queue.drain(send) == 1
+    send.assert_called_once_with({"id": "job-2"}, "still useful", False)
+    stale = queue.get_status("exec-stale")
+    assert stale["status"] == "failed"
+    assert stale["error"] == queue.EXPIRED_ERROR
+
+
+def test_pending_delivery_waits_forever_by_default(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import cron.delivery_queue as queue
+
+    monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
+    start = datetime(2026, 10, 9, 7, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(queue, "_hermes_now", lambda: start)
+    queue.enqueue("exec-old", {"id": "job-1"}, "brief")
+    monkeypatch.setattr(queue, "_hermes_now", lambda: start + timedelta(days=3))
+    send = Mock(return_value=None)
+
+    assert queue.drain(send) == 1
+    send.assert_called_once()

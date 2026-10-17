@@ -163,7 +163,15 @@ async def _prepared(authority, event):
     authorization as admission, so a refused sender raises here."""
     import json
     from gateway.session_envelope import prepare_native, restore_native
-    payload = await prepare_native(authority.runner, event)
+    from gateway.session_ingress_media import capture_lease, release_abandoned_capture
+    with capture_lease(authority) as scope:
+        try:
+            payload = await prepare_native(authority.runner, event)
+        except BaseException:
+            if not scope.abandoned:
+                scope.abandoned = True
+                await release_abandoned_capture(scope)
+            raise
     source = restore_native(payload).source
     identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                            source.thread_id, source.user_id], separators=(',', ':'))

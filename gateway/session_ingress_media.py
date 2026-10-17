@@ -37,23 +37,37 @@ _lease_lock = threading.Lock()
 _lease_scope = ContextVar('native_media_lease_scope', default=None)
 
 
+class _CaptureScope(list):
+    def __init__(self, authority):
+        super().__init__()
+        self.authority = authority
+        self.all_paths = []
+        self.abandoned = False
+        self.write_started = False
+
+    def append(self, path):
+        super().append(path)
+        self.all_paths.append(path)
+
+
 @contextmanager
-def capture_lease():
+def capture_lease(authority=None):
     """Hold every path captured inside this block (capture through admission commit or refusal)
     against a concurrent release: an older turn's settlement or cancellation that names the same
     content-addressed bytes would otherwise unlink them before the new admission holds them."""
-    token = _lease_scope.set([])
+    scope = _CaptureScope(authority)
+    token = _lease_scope.set(scope)
     try:
-        yield
+        yield scope
     finally:
         drop_capture_lease()
         _lease_scope.reset(token)
 
 
-def drop_capture_lease(paths=None):
+def drop_capture_lease(paths=None, *, scope=None):
     """End this scope's lease on *paths* (default: all) early, e.g. before a refused admission
     releases its own fresh capture, which its lease would otherwise keep from collection."""
-    held = _lease_scope.get()
+    held = scope if scope is not None else _lease_scope.get()
     if not held:
         return
     with _lease_lock:
@@ -62,6 +76,17 @@ def drop_capture_lease(paths=None):
             _leases[path] -= 1
             if _leases[path] <= 0:
                 del _leases[path]
+
+
+async def release_abandoned_capture(scope):
+    """Collect every path published by an abandoned worker, including after its caller left."""
+    if scope.authority is None:
+        return
+    drop_capture_lease(scope=scope)
+    references = [{'path': path, 'sha256': Path(path).parent.name} for path in set(scope.all_paths)]
+    if references:
+        import asyncio
+        await asyncio.to_thread(release_unheld_media, scope.authority.db, references)
 
 
 def native_inputs_store():

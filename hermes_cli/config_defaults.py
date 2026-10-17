@@ -293,7 +293,7 @@ DEFAULT_CONFIG = {
         # non-positive poll) warn and fall back to defaults. See agent/turn_liveness.py.
         "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
     },
-
+    "acp": {"workspace": {}},
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

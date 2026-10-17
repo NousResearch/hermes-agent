@@ -27,7 +27,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "mistral": "mistralai",
     "edge-tts": "edge_tts",
     "neutts": "neutts",
-    "kittentts": ("kittentts", "soundfile"),
+    "kittentts": ("kittenml", "soundfile"),
     "piper": "piper",
     "tts-premium": "elevenlabs",
     "voice": "faster_whisper",

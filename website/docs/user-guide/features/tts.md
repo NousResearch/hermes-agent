@@ -113,7 +113,7 @@ tts:
     # normalize_audio: true
 ```
 
-KittenTTS is not available on Intel macOS or Windows ARM64: its dependencies publish no `onnxruntime` or PyTorch wheels for those platforms. Selecting it there reports the provider unavailable.
+Hermes installs KittenTTS from KittenML's `kittenml` package on PyPI. KittenTTS is not available on Intel macOS or Windows ARM64: its dependencies publish no `onnxruntime` or PyTorch wheels for those platforms. Selecting it there reports the provider unavailable.
 
 MiniMax TTS selects its region, endpoint, and credential together:
 

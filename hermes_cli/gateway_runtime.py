@@ -217,6 +217,55 @@ def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | 
     return result
 
 
+_NATIVE_WINDOWS = os.name == "nt"
+
+
+def _owner_pid(home: Path) -> int | None:
+    """The PID a refusal may name: one of *home*'s gateway records whose process is provably that
+    gateway, else None (the caller keeps the generic ``authorization``).
+
+    Proof is the shared identity chain: alive, its recorded start time known and equal to the live
+    one (a recycled PID differs), its recorded home not another profile's, and its live command line
+    (or, when that is unreadable across the elevation boundary, its record) a gateway's. A stale
+    ``gateway.pid`` falls through to ``gateway.lock`` instead of masking it."""
+    from gateway.status import (
+        _get_process_start_time,
+        _live_pid_from_record,
+        _read_json_file,
+        _record_matches_live_gateway_pid,
+        recorded_gateway_home_conflicts,
+    )
+    for name in ("gateway.pid", "gateway.lock"):
+        record = _read_json_file(home / name, bare_pid_ok=True)
+        pid = _live_pid_from_record(record)
+        if pid is None or pid == os.getpid():
+            continue
+        recorded = record.get("start_time")
+        if recorded is None or recorded != _get_process_start_time(pid):
+            continue  # unverifiable or recycled: never name it
+        if recorded_gateway_home_conflicts(record, expected_home=home):
+            continue
+        if not _record_matches_live_gateway_pid(record, pid):
+            continue
+        return pid
+    return None
+
+
+def _refused(home: Path, *, windows: bool = _NATIVE_WINDOWS) -> GatewayDiscovery:
+    """The owner's control channel refused this same-user client. On Windows (*windows*, the host
+    fact) name the boundary (an elevated owner, or one in another logon session) with its remedy
+    instead of the generic ``authorization`` that reads as a credential failure (#139845, #140252)."""
+    if windows and (pid := _owner_pid(home)) is not None:
+        from gateway.runtime_bootstrap_windows import probe_refused_owner
+        try:
+            named = probe_refused_owner(pid)
+        except OSError:
+            named = None
+        if named is not None:
+            return GatewayDiscovery("inaccessible", reason_code=named[0], detail=named[1])
+    return GatewayDiscovery("inaccessible", reason_code="authorization")
+
+
 def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0) -> GatewayDiscovery:
     """Read live control identity, preserving uncertainty instead of spawning.
 
@@ -245,7 +294,7 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
     except DiscoveryError as exc:
         return GatewayDiscovery("inaccessible", reason_code=exc.reason)
     except PermissionError:
-        return GatewayDiscovery("inaccessible", reason_code="authorization")
+        return _refused(home)
     except (OSError, ValueError, TypeError):
         # Raw peer data, paths and URLs may contain secrets; report bounded codes.
         return GatewayDiscovery("inaccessible", reason_code="invalid_control_peer")
@@ -419,6 +468,6 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     except RuntimeStartError as exc:
         return GatewayDiscovery(exc.state, reason_code=exc.reason)
     except PermissionError:
-        return GatewayDiscovery("inaccessible", reason_code="authorization")
+        return _refused(home)
     except OSError:
         return GatewayDiscovery("inaccessible", reason_code="runtime_start_failed")

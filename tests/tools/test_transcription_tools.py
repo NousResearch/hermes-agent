@@ -87,6 +87,8 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+    # Stub host binary discovery; individual codec tests supply their own fake.
+    monkeypatch.setattr("tools.transcription_audio._find_ffmpeg_binary", lambda: None)
 
 
 # ============================================================================
@@ -511,7 +513,11 @@ class TestTranscribeLocalExtended:
             }
         }
 
+        from tools.transcription_local import _load_local_whisper_model
+
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_local_whisper_model", wraps=_load_local_whisper_model) as mock_load, \
+             patch("tools.transcription_local._should_force_faster_whisper_cpu", return_value=False), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None), \
@@ -520,6 +526,7 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
+        mock_load.assert_called_once_with("base", device="cpu", compute_type="float32")
         mock_whisper_cls.assert_called_once_with(
             "base", local_files_only=True, device="cpu", compute_type="float32"
         )

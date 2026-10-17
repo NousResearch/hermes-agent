@@ -182,7 +182,7 @@ def test_skill_view_denies_by_name_for_delegated_child(skills_home):
     with delegated_child_context("sess"):
         denied = json.loads(skills_tool.skill_view("child-only-skill"))
     assert denied["success"] is False
-    assert "disabled" in denied["error"].lower()
+    assert denied["error"] == "Skill 'child-only-skill' is disabled for this platform (subagent)."
 
     with delegated_child_context("sess"):
         allowed = json.loads(skills_tool.skill_view("parent-skill"))
@@ -230,7 +230,7 @@ def test_plugin_skill_view_denies_for_delegated_child(tmp_path, monkeypatch):
     with delegated_child_context("sess"):
         denied = json.loads(skills_tool.skill_view("plugin-x:child-only-skill"))
     assert denied["success"] is False
-    assert "disabled" in denied["error"].lower()
+    assert denied["error"] == "Skill 'plugin-x:child-only-skill' is disabled for this platform (subagent)."
 
 
 def test_disabled_resolution_prefers_child_platform_over_parent_env(
@@ -251,3 +251,32 @@ def test_disabled_resolution_prefers_child_platform_over_parent_env(
     # Outside the child context the parent's channel (and nothing) applies as before.
     assert get_disabled_skill_names() == set()
     assert _is_skill_disabled("child-only-skill") is False
+
+
+def test_disabled_skill_notice_global_keeps_enable_hint_without_bypass(skills_home, monkeypatch):
+    """The shared denial: the globally-disabled list keeps the ``hermes skills`` remedy, and
+    neither flavour tells the refused caller to read the files on disk — that shortcut was
+    demonstrated end-to-end in the #140537 review, so the text must not re-teach it."""
+    from tools.skills_tool import _disabled_skill_notice
+
+    (skills_home / "config.yaml").write_text(
+        "skills:\n"
+        "  disabled:\n"
+        "    - parent-skill\n"
+        "  platform_disabled:\n"
+        "    subagent:\n"
+        "      - child-only-skill\n",
+        encoding="utf-8",
+    )
+    from agent import skill_utils
+
+    skill_utils._raw_config_cache_clear()
+
+    assert _disabled_skill_notice("parent-skill") == "Skill 'parent-skill' is disabled. Enable it with `hermes skills`."
+    assert "inspect the files" not in _disabled_skill_notice("parent-skill")
+
+    from agent.delegation_context import delegated_child_context
+
+    with delegated_child_context("sess"):  # same builder as the serving paths
+        assert _disabled_skill_notice("child-only-skill") == (
+            "Skill 'child-only-skill' is disabled for this platform (subagent).")

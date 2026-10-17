@@ -173,34 +173,62 @@ def _parse_tags(tags_value) -> list[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
-def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
-    """Any of *names* disabled in config (one config load)? Platform precedence: explicit arg,
-    the delegated child's own ``subagent`` platform, ``HERMES_PLATFORM``, session
-    ``HERMES_SESSION_PLATFORM`` — env/session only ever carry the parent's channel, so without
-    the child check skill_view would serve by name what ``platform_disabled.subagent`` hid from
-    the child's index (#140537). A globally-disabled skill stays disabled on every platform
-    (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
+def _resolved_skills_platform(platform: str | None = None) -> str:
+    """The platform skills gating answers for: the explicit arg, the delegated child's own
+    ``subagent`` platform, ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM`` — env/session
+    only ever carry the parent's channel, so on a child's execution chain the delegated-child
+    check must win (#140537). Empty string when nothing resolves."""
+    if platform:
+        return platform
+    from agent.delegation_context import delegated_child_platform
+
+    resolved = delegated_child_platform() or os.getenv("HERMES_PLATFORM")
+    if not resolved:
+        with suppress(Exception):
+            from gateway.session_context import get_session_env
+            resolved = get_session_env("HERMES_SESSION_PLATFORM") or ""
+    return resolved or ""
+
+
+def _disabled_skill_scope(*names: str, platform: str | None = None) -> str | None:
+    """Why *names* would be denied (one config load): ``"global"`` for the ``skills.disabled``
+    list, the platform name when ``platform_disabled[platform]`` matches, else ``None``."""
     try:
         from hermes_cli.config import load_config
         skills_cfg = load_config().get("skills", {})
-        resolved_platform = platform
-        if not resolved_platform:
-            from agent.delegation_context import delegated_child_platform
-
-            resolved_platform = delegated_child_platform()
-        if not resolved_platform:
-            resolved_platform = os.getenv("HERMES_PLATFORM")
-        if not resolved_platform:
-            with suppress(Exception):
-                from gateway.session_context import get_session_env
-                resolved_platform = get_session_env("HERMES_SESSION_PLATFORM") or ""
+        resolved_platform = _resolved_skills_platform(platform)
         platform_disabled = None
         if resolved_platform:
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
         disabled = skills_cfg.get("disabled", [])
-        return any((platform_disabled is not None and n in platform_disabled) or n in disabled for n in names)
+        for n in names:
+            if n in disabled:
+                return "global"
+            if platform_disabled is not None and n in platform_disabled:
+                return resolved_platform
+        return None
     except Exception:
-        return False
+        return None
+
+
+def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
+    """Any of *names* disabled in config (one config load)? Platform precedence lives in
+    :func:`_resolved_skills_platform` — env/session only ever carry the parent's channel, so
+    without the child check skill_view would serve by name what ``platform_disabled.subagent``
+    hid from the child's index (#140537). A globally-disabled skill stays disabled on every
+    platform (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
+    return _disabled_skill_scope(*names, platform=platform) is not None
+
+
+def _disabled_skill_notice(*names: str) -> str:
+    """The one denial shared by both serving paths (on-disk and plugin-qualified): names the
+    platform the list answered for, stays terminal (no retry advice), and never documents a
+    way around the gate. ``platform_disabled`` governs the skills tools only — generic file
+    tools can still read a skill's files on disk."""
+    scope = _disabled_skill_scope(*names)
+    if scope and scope != "global":
+        return f"Skill '{names[0]}' is disabled for this platform ({scope})."
+    return f"Skill '{names[0]}' is disabled. Enable it with `hermes skills`."
 
 
 def _skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
@@ -615,7 +643,7 @@ def skill_view(
         rel = _owned_relative(skill_dir, skill_md, all_dirs)
         if _is_skill_disabled(resolved_name, rel) and (_is_skill_disabled(resolved_name) or any(
                 e["path"] == skill_md and e["load_name"] == rel for e in _skill_catalog(skip_disabled=True, include_hidden=True))):
-            return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
+            return _fail(_disabled_skill_notice(resolved_name, rel))
         if file_path and skill_dir:
             return _serve_skill_file(
                 skill_dir, file_path, name, list_available=True, mark_read=True,

@@ -83,9 +83,23 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     not model execution, authorization of a later turn, or successful outbound delivery.
     """
     event._gateway_accepted = False
+    # A draining gateway answers new work with a drain notice and discards queued follow-ups,
+    # so a wake admitted now would never run. Refuse it so the caller keeps it for a retry.
+    if _runner_draining(adapter):
+        raise WakeNotAccepted("gateway is draining; retry after restart")
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
         raise WakeNotAccepted("internal wake not accepted by adapter")
+    # handle_message can await (Telegram topic recovery, the busy handler's profile scope)
+    # before it claims or queues the event. The in-tree adapters do not await after the claim,
+    # so this read sees the drain state the claim was made under: a drain that began
+    # mid-admission dooms the claimed turn the same way.
+    if _runner_draining(adapter):
+        raise WakeNotAccepted("gateway began draining during admission; retry after restart")
+
+
+def _runner_draining(adapter: Any) -> bool:
+    return getattr(getattr(adapter, "gateway_runner", None), "_draining", False) is True
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,

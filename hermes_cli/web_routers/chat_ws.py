@@ -209,6 +209,22 @@ async def _unwind_console_worker(worker: Any, scope: InterruptScope, reason: str
         _log.warning("console worker still running %ss after %s", _CONSOLE_UNWIND_TIMEOUT_SECONDS, reason)
 
 
+def _submit_console_worker(*args: Any, **kwargs: Any) -> Any:
+    """Queue a console command under retirement admission. Reserve BEFORE submit: a queued job is
+    accepted work. The reservation lasts until the worker exits, not until its waiter gives up."""
+    from hermes_cli.backend_retirement import retirement
+
+    if not retirement.acquire():
+        raise RuntimeError("Hermes backend is retiring and accepts no new commands; reconnect to continue")
+    try:
+        worker = _get_console_executor().submit(*args, **kwargs)
+    except BaseException:
+        retirement.release()
+        raise
+    worker.add_done_callback(lambda _: retirement.release())
+    return worker
+
+
 async def _wait_for_console_worker(worker: Any) -> Any:
     return await asyncio.wait_for(
         asyncio.wrap_future(worker), timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
@@ -333,10 +349,10 @@ async def console_ws(ws: WebSocket) -> None:
     async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
         nonlocal active_task, pending_confirmation, command_generation
         scope = InterruptScope()
-        worker = _get_console_executor().submit(
-            _execute_console_line, engine, line, confirmed=confirmed, profile=profile, scope=scope,
-        )
         try:
+            worker = _submit_console_worker(
+                _execute_console_line, engine, line, confirmed=confirmed, profile=profile, scope=scope,
+            )
             result = await _wait_for_console_worker(worker)
         except asyncio.CancelledError:
             await _unwind_console_worker(worker, scope, "cancelled")

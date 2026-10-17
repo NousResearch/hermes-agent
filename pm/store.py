@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -343,6 +344,15 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def fetch_entry_name(digest: str) -> str:
+    """Fetch-cache entries are keyed `fetch-<sha256>` and the digest becomes
+    a path component under the store root, so anything off the 64-hex shape
+    fails closed here instead of traversing out of the store (#138359)."""
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError(f"malformed artifact sha256: {digest!r}")
+    return f"fetch-{digest}"
+
+
 class Store:
     """One directory of immutable published entries plus a scratch area.
     Hash-keyed archives survive failed installs. Publication releases them."""
@@ -376,7 +386,7 @@ class Store:
             if pause_event is not None and pause_event.is_set():
                 raise DownloadPaused("download paused")
             url, digest = artifact["url"], artifact["sha256"]
-            entry_name = f"fetch-{digest}"
+            entry_name = fetch_entry_name(digest)
             entry = self.entry(entry_name)
             files = list(entry.iterdir()) if entry.is_dir() else []
             if len(files) == 1 and files[0].is_file():
@@ -400,8 +410,8 @@ class Store:
             # Only finalized, hash-verified files can exist at these paths.
             for source in sources:
                 if source.dest.is_relative_to(scratch) and source.dest.is_file():
-                    self.publish(source.dest.parent, f"fetch-{source.sha256}")
-        return [self.entry(f"fetch-{source.sha256}") / source.dest.name for source in sources]
+                    self.publish(source.dest.parent, fetch_entry_name(source.sha256))
+        return [self.entry(fetch_entry_name(source.sha256)) / source.dest.name for source in sources]
 
     @contextmanager
     def scratch(self):

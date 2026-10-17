@@ -33,6 +33,27 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
 )
 
 
+def _reasoning_visible(agent: Any) -> bool:
+    """Return the effective reasoning-display setting, preserving promotion on read failure."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        from utils import is_truthy_value
+
+        config = load_config_readonly()
+        platform = str(getattr(agent, "platform", "") or "").strip().lower()
+        platform_value = cfg_get(
+            config, "display", "platforms", platform, "show_reasoning", default=None
+        )
+        value = (
+            platform_value
+            if platform_value is not None
+            else cfg_get(config, "display", "show_reasoning", default=True)
+        )
+        return is_truthy_value(value, default=True)
+    except (ImportError, OSError, TypeError, ValueError):
+        return True
+
+
 @dataclass
 class FinalResponseVerdict:
     """``action``: ``"break"`` (turn ends with ``final_response``), ``"continue"`` (a
@@ -122,7 +143,9 @@ def finish_text_response(
                 len(_promoted), agent.model, agent.provider, api_call_count,
                 sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
             )
-    final_response = _promoted or assistant_message.content or ""
+    final_response = (
+        _promoted if _promoted and _reasoning_visible(agent) else assistant_message.content or ""
+    )
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
     agent._mute_post_response = False

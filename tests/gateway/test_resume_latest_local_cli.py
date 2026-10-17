@@ -60,6 +60,7 @@ async def test_resume_latest_matches_the_owners_local_rows_by_creating_surface(t
             authority.db.create_session(sid, source=SURFACES[surface])
             live = authority.sessions[sid]
             store._record_gateway_session_peer(sid, live.route, live.source)
+            authority.db.append_message(sid, 'user', 'hi')
         rows = {sid: authority.db.get_session(sid) for sid in created.values()}
         assert {(row['source'], row['created_source']) for row in rows.values()} == {
             ('local', 'cli'), ('local', 'tui'), ('local', 'desktop')}
@@ -89,6 +90,7 @@ async def test_auxiliary_usage_cannot_replace_the_insert_stamp(tmp_path, monkeyp
         authority.db.record_auxiliary_usage(sid, 'compression', model='m', input_tokens=4, output_tokens=1)
         live = authority.sessions[sid]
         store._record_gateway_session_peer(sid, live.route, live.source)
+        authority.db.append_message(sid, 'user', 'hi')
         authority.sessions.clear()
         resumed = await _call(owner, 'session.resume', latest='cli')
         assert isinstance(resumed, dict) and resumed['session_id'] == sid, resumed
@@ -217,6 +219,7 @@ async def test_worker_create_after_peer_refresh_still_resumes(tmp_path, monkeypa
         store._record_gateway_session_peer(sid, live.route, live.source)
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
             authority.db._execute_write(lambda conn: worker_create(authority.db, conn, sid, {'source': 'cli'}))
+        authority.db.append_message(sid, 'user', 'hi')
         authority.sessions.clear()
         resumed = await _call(owner, 'session.resume', latest='cli')
         assert isinstance(resumed, dict) and resumed['session_id'] == sid, resumed
@@ -249,6 +252,39 @@ async def test_gui_and_acp_list_under_the_policy_label_and_the_agent_surface(
         store._record_gateway_session_peer(sid, live.route, live.source)
         for label in labels:
             assert sid in _listed(authority.db, label, capsys), (surface, label, 'after peer')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_latest_skips_a_newer_empty_launch_stub(tmp_path, monkeypatch):
+    """CLI-31: the insert stamps the surface, so a 0-message launch stub left by a crash or a
+    failed resume is the newest CLI row. Neither ``session.resume latest`` nor ``-c`` picks it."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        ids = []
+        for name in ('real', 'stub'):
+            created = await _call(owner, 'session.create', request_id=name, source='cli',
+                                  cwd=str(tmp_path), toolsets=[], model='m')
+            ids.append(sid := created['session_id'])
+            authority.db.create_session(sid, source='cli')
+            live = authority.sessions[sid]
+            store._record_gateway_session_peer(sid, live.route, live.source)
+        real, stub = ids
+        authority.db.append_message(real, 'user', 'hello')
+        with authority.db._lock:
+            authority.db._conn.execute("UPDATE sessions SET started_at = started_at + 60 WHERE id = ?", (stub,))
+            authority.db._conn.commit()
+        authority.sessions.clear()
+
+        resumed = await _call(owner, 'session.resume', latest='cli')
+        assert isinstance(resumed, dict) and resumed['session_id'] == real, resumed
+
+        from hermes_cli.main import _resolve_last_session
+        monkeypatch.setattr('hermes_cli.main._resolve_workspace_key', lambda: None)
+        monkeypatch.setattr('hermes_cli.main.get_hermes_home', lambda: authority.db.db_path.parent)
+        assert _resolve_last_session('cli') == real
     finally:
         await owner.close()
         store.close_all_db_handles()

@@ -1551,12 +1551,14 @@ class SessionSessionsMixin:
     def search_sessions(
         self, source: str | Sequence[str] | None = None, limit: int = 20, offset: int = 0,
         workspace_key: str | None = None, local_created_sources: Sequence[str] | None = None,
+        min_message_count: int = 0,
     ) -> list[dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
         so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several.
-        ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET."""
-        where_clauses = []
-        params: list = []
+        ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET, and
+        ``min_message_count`` drops shorter rows (empty launch stubs) before it too."""
+        where_clauses = ["s.message_count >= ?"] if min_message_count > 0 else []
+        params: list = [min_message_count] if min_message_count > 0 else []
         if source:
             sources = [source] if isinstance(source, str) else list(source)
             clause, bound = _source_match_clause(sources, local_created_sources)

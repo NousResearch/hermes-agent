@@ -137,7 +137,11 @@ CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
         "Ask the user one or more questions when you need a decision, "
-        "clarification, or feedback before proceeding. Pass every question "
+        "clarification, or feedback before proceeding. The user sees only "
+        "your normal reply text and the question, never your reasoning: any "
+        "context they need to answer (a plan, findings, a diff summary) must "
+        "be in a visible reply before this call or in the question text "
+        "itself. Pass every question "
         f"in `questions` (1-{MAX_QUESTIONS} entries) — a single question is a "
         "one-entry array, and several INDEPENDENT questions belong in ONE "
         "call (one form beats a chain of clarify calls; if one answer would "

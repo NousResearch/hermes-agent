@@ -84,6 +84,9 @@ def provider_has_credentials(provider: str) -> bool:
     if pid == "custom" or pid.startswith("custom:"):
         return True
     try:
+        if pid in {"vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"}:
+            from agent.vertex_adapter import has_vertex_credentials
+            return bool(has_vertex_credentials())
         if pid == "openrouter" and has_usable_secret(get_env_value_prefer_dotenv("OPENROUTER_API_KEY")):
             return True
         status = get_auth_status(pid) or {}

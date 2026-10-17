@@ -1,0 +1,45 @@
+name: hermes-whatsapp-voice
+repo: https://github.com/ashwanthbalakrishnan5/hermes-whatsapp-voice
+sha: ed8f6b1082c980e09e7c3389f3f357558010d4d4
+title: WhatsApp Voice Calls
+description: >-
+  Live voice calls with Hermes over WhatsApp, on the linked-device (personal number) setup most
+  Hermes users already have, with no WhatsApp Business account. Call your bot's number and talk to
+  your Hermes: the voice uses Hermes's own persona (a short briefing fetched from Hermes) and hands
+  real work to Hermes mid-call. Or let Hermes call you for things that matter: whatsapp_call_owner
+  rings only the configured owner number (it has no destination parameter) and reports answered,
+  no answer or declined, so the agent can fall back to another channel, including from cron. A short
+  summary of each call arrives in WhatsApp. Speech runs on Gemini Live (gemini-3.8-live by default),
+  reusing the Gemini key Hermes already has; any Live setup field is configurable, plus a language
+  lock. Setup is a dashboard tab (pairing QR, settings, test call) or an agent runbook skill.
+  Disclosure — runs a separate sidecar process (Rust, built on whatsapp-rust) that the user starts or
+  installs as a systemd/launchd user service; the binary is downloaded from this repo's GitHub
+  release, built and attested by its release workflow, and checked against checksums pinned in the
+  repo (plus the build attestation when the gh CLI is present). The sidecar becomes an extra linked
+  device of the bot's WhatsApp number through an unofficial protocol, stores that session in the
+  plugin's data directory, and answers only the owner's number. During calls it streams audio to
+  generativelanguage.googleapis.com with GOOGLE_API_KEY or GEMINI_API_KEY (read via get_secret), along
+  with the persona briefing, the outgoing call's reason and ask_hermes results as text. It calls the
+  local api_server with API_SERVER_KEY for ask_hermes (a full Hermes turn with the owner's tools), the
+  persona briefing (at startup and after each call) and the post-call summary, a run that may write
+  to Hermes memory and whose result is sent to the owner on WhatsApp. The
+  dashboard tab's backend saves only this plugin's settings (through hermes config set), starts and
+  stops pairing, places test calls to the owner, and restarts the sidecar service (systemctl --user
+  or launchctl). No telemetry.
+maintainer: ashwanthbalakrishnan5
+tier: community
+version: "0.1.12"
+category: voice
+docs_url: https://github.com/ashwanthbalakrishnan5/hermes-whatsapp-voice#readme
+requires_hermes: ">=0.21.5"
+platforms: [linux, macos]
+known_issues:
+  - "Uses an unofficial, reverse-engineered WhatsApp protocol (whatsapp-rust): WhatsApp updates can break calls, and automated use may get the bot number restricted. Use a number you can afford to lose."
+  - "Prebuilt sidecar binaries cover Linux amd64/arm64 and macOS arm64; elsewhere it builds from source (Rust 1.94+, cmake, a C compiler)."
+capabilities:
+  provides_tools:
+  - whatsapp_call_owner
+  - whatsapp_call_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

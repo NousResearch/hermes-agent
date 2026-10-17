@@ -274,6 +274,24 @@ def resolve_identity(
     return identity
 
 
+AUTH_SUBJECT_PREFIX = 'auth:v1:'
+
+
+def parse_authenticated_subject(subject):
+    """``(provider, issuer, user)`` of an :func:`authenticated_subject` login form
+    ``auth:v1:[provider, issuer, user]``, else None. The one parser for that format: callers
+    apply their own policy (which logins may be forwarded, which map to a label) to the result."""
+    if not isinstance(subject, str) or not subject.startswith(AUTH_SUBJECT_PREFIX):
+        return None
+    try:
+        parts = json.loads(subject[len(AUTH_SUBJECT_PREFIX):])
+    except ValueError:
+        return None
+    if not (isinstance(parts, list) and len(parts) == 3 and all(isinstance(p, str) for p in parts)):
+        return None
+    return tuple(parts)
+
+
 def authenticated_subject(identity):
     """Keep private native receipts stable; namespace every dashboard identity.
 
@@ -285,6 +303,6 @@ def authenticated_subject(identity):
     if (identity.get('provider') == 'local' and identity.get('profile_id')
             and identity.get('instance_id') and 'capabilities' in identity):
         return subject
-    return 'auth:v1:' + json.dumps(
+    return AUTH_SUBJECT_PREFIX + json.dumps(
         [identity.get('provider') or '', identity.get('issuer') or '', subject],
         separators=(',', ':'), ensure_ascii=True)

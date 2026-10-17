@@ -1249,6 +1249,13 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return is_anthropic_fast_mode_model(model_id)
 
 
+#: Local routers/gateways that own the service-tier decision themselves. They are explicit
+#: entries because the route check below can only recognise first-party endpoint hosts, and a
+#: gateway legitimately runs on loopback (e.g. OmniRoute on 127.0.0.1:20128) while applying or
+#: forwarding the same params upstream.
+GATEWAY_FAST_MODE_PROVIDERS = frozenset({"hp-omniroute", "omniroute"})
+
+
 def _fast_mode_route_supported(
     model_id: Optional[str], provider: Optional[str], base_url: Optional[str]) -> bool:
     """Only the first-party endpoint that bills for fast mode may receive its params."""
@@ -1261,6 +1268,11 @@ def _fast_mode_route_supported(
     elif is_grok_46_family(str(model_id or "")):
         allowed = {"xai": "api.x.ai"}
     else:
+        if provider and normalize_provider(provider) in GATEWAY_FAST_MODE_PROVIDERS:
+            # Our own router/gateway: it receives the params and owns forwarding/removing them
+            # (OmniRoute applies Codex service tiers server-side), so the first-party host
+            # allowlist below — which only knows api.openai.com / chatgpt.com — must not gate it.
+            return True
         allowed = {
             "openai": "api.openai.com",
             "openai-api": "api.openai.com",

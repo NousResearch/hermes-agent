@@ -294,6 +294,39 @@ class TestHelpers:
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         assert mcp_serve._load_sessions_index() == {}
 
+    @pytest.mark.parametrize("timestamp", [float("inf"), -float("inf"), 1e250, "1e999"])
+    def test_corrupt_durable_timestamp_keeps_all_index_entries(self, tmp_path, timestamp):
+        from datetime import datetime
+
+        import mcp_serve
+        from hermes_state import SessionDB
+
+        keys = [f"agent:main:telegram:dm:{i}" for i in range(3)]
+        valid_timestamp = 1700000000.0
+        with SessionDB() as db:
+            for i, key in enumerate(keys):
+                db.create_session(f"session-{i}", "telegram", session_key=key, chat_id=str(i), chat_type="dm")
+                db.append_message(f"session-{i}", "user", f"message-{i}")
+                db._write_sql(
+                    "UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = ?",
+                    (valid_timestamp, valid_timestamp, f"session-{i}"),
+                )
+            healthy = mcp_serve._load_sessions_index()
+            assert set(healthy) == set(keys)
+            db._write_sql(
+                "UPDATE sessions SET started_at = ?, last_activity_at = ? WHERE id = ?",
+                (timestamp, timestamp, "session-1"),
+            )
+            recovered = mcp_serve._load_sessions_index()
+            assert set(recovered) == set(keys)
+            for key in (keys[0], keys[2]):
+                assert recovered[key] == healthy[key]
+                assert recovered[key]["created_at"] == datetime.fromtimestamp(valid_timestamp).isoformat()
+            assert recovered[keys[1]]["session_id"] == "session-1"
+            assert recovered[keys[1]]["created_at"] == ""
+            assert recovered[keys[1]]["updated_at"] == healthy[keys[1]]["updated_at"]
+            assert db.get_messages("session-1")[0]["content"] == "message-1"
+
     def test_load_sessions_index_with_data(self, populated_sessions_dir, monkeypatch):
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)

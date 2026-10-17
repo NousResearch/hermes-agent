@@ -169,6 +169,75 @@ describe('session-control store', () => {
     expect(entry.loading).toBe(false)
   })
 
+  it('keeps a background read quiet while the route catches up after a mid-turn compression', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+
+    const staleGeneration = () =>
+      new JsonRpcGatewayError('stale_generation', { code: 4001, data: { reason: 'stale_generation' } })
+
+    useGateway(
+      vi.fn(async () => {
+        throw staleGeneration()
+      })
+    )
+
+    await refreshSessionControl('s1', { background: true })
+
+    expect($sessionControlBySession.get().s1).toMatchObject({
+      capability: 'supported',
+      error: null,
+      loading: false,
+      snapshot: { revision: FULL_SNAPSHOT.revision }
+    })
+
+    // Opening or switching to the chat inside the same window is a hydration read too, not an action.
+    await refreshSessionControl('s1')
+
+    expect($sessionControlBySession.get().s1).toMatchObject({
+      error: null,
+      loading: false,
+      snapshot: { revision: FULL_SNAPSHOT.revision }
+    })
+  })
+
+  it('a first open inside the compression window stays quiet and the after-turn refresh hydrates', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new JsonRpcGatewayError('stale_generation', { code: 4001, data: { reason: 'stale_generation' } }))
+      .mockResolvedValueOnce({ control: FULL_SNAPSHOT })
+
+    useGateway(request)
+
+    await refreshSessionControl('s1')
+
+    expect($sessionControlBySession.get().s1).toMatchObject({
+      capability: 'supported',
+      error: null,
+      loading: false,
+      snapshot: null
+    })
+
+    await refreshSupportedSessionControlAfterTurn('s1')
+
+    expect(request).toHaveBeenCalledTimes(2)
+    expect($sessionControlBySession.get().s1).toMatchObject({
+      error: null,
+      snapshot: { revision: FULL_SNAPSHOT.revision }
+    })
+  })
+
+  it('still reports a stale_generation action failure', async () => {
+    applySessionControlSnapshot('s1', FULL_SNAPSHOT)
+    useGateway(
+      vi.fn(async () => {
+        throw new JsonRpcGatewayError('stale_generation', { code: 4001, data: { reason: 'stale_generation' } })
+      })
+    )
+
+    await expect(runSessionControlAction('s1', 'goal.pause')).rejects.toThrow('stale_generation')
+    expect($sessionControlBySession.get().s1!.error).toBe('stale_generation')
+  })
+
   it('downgrades a current action method-not-found once, preserves its snapshot, and still rejects', async () => {
     applySessionControlSnapshot('s1', FULL_SNAPSHOT)
     useGateway(

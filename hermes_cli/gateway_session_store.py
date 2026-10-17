@@ -404,10 +404,6 @@ class SurfaceLabelReader:
             self._has_column = any(row[1] == "created_source" for row in rows)
         return self._has_column
 
-    def _groups(self):
-        from gateway.session_policy import surface_groups
-        return surface_groups()
-
     def _expand(self, requested):
         """``(live source labels, created_source labels)`` or None for a raw source filter.
 
@@ -417,10 +413,11 @@ class SurfaceLabelReader:
         name of a gui/desktop pair, so a row that has not been peer-refreshed (``source='gui'``)
         still matches ``--source desktop``.
         """
+        from gateway.session_policy import SURFACE_GROUPS
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
         created = set()
         live = set(wanted)
-        for name, group in self._groups().items():
+        for name, group in SURFACE_GROUPS.items():
             if name in wanted:
                 live |= group
                 created |= group

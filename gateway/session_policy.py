@@ -96,18 +96,11 @@ def created_surface(label):
     return SURFACES[label] if label in STORED_AS_LOCAL else label
 
 
-def surface_groups():
-    """Policy label and agent surface for one conversation, keyed by either name.
-
-    ``--source gui`` and ``--source desktop`` are the same rows. ``tool`` and
-    ``oneshot`` are not aliases of ``cli`` here: they keep their own stored label.
-    """
-    groups = {}
-    for label in STORED_AS_LOCAL:
-        group = frozenset({label, SURFACES[label]})
-        for name in group:
-            groups[name] = group
-    return groups
+# Policy label and agent surface for one conversation, keyed by either name: ``--source gui``
+# and ``--source desktop`` are the same rows. ``tool`` and ``oneshot`` are not aliases of
+# ``cli`` here: they keep their own stored label.
+SURFACE_GROUPS = {name: group for group in (frozenset({label, SURFACES[label]}) for label in STORED_AS_LOCAL)
+                  for name in group}
 
 
 def _refuse(field, detail=None):

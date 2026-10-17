@@ -260,6 +260,11 @@ def clear_session_context() -> None:
     _session_context.session_id = None
 
 
+def get_session_context() -> str | None:
+    """The session ID set for the current thread, if any (to carry it onto a worker thread)."""
+    return getattr(_session_context, "session_id", None)
+
+
 def _install_session_record_factory() -> None:
     """Replace the global LogRecord factory with one that adds ``session_tag``.
 

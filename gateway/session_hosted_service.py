@@ -4,7 +4,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from gateway.session_contract import Principal
-from gateway.session_authorities import active_authority, all_authorities, owner_scope
+from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
 from gateway.session_hosted_controls import HostedControls
 from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
@@ -237,7 +237,7 @@ async def ensure_hosted_service(runner):
     active = active_authority(runner)
     if active is None:
         raise RuntimeStoreError('profile_mismatch')
-    for authority in all_authorities(runner):
+    for authority in serving_authorities(runner):
         await _ensure_hosted_service(runner, authority)
     start_ready_hosted_services(runner)
     return active.hosted_room_service
@@ -262,7 +262,7 @@ def start_ready_hosted_services(runner):
     if (getattr(runner, 'session_runtime_descriptor', {}).get('state') != 'ready'
             or getattr(runner, '_draining', False)):
         return
-    services = [getattr(authority, 'hosted_room_service', None) for authority in all_authorities(runner)]
+    services = [getattr(authority, 'hosted_room_service', None) for authority in serving_authorities(runner)]
     if any(service is None or not getattr(service, '_transport_installed', False) for service in services):
         return
     for service in services:

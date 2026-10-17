@@ -28,9 +28,9 @@ _REASON_KEYS: dict[str, str] = {
 _UNKNOWN_KEY = "unknown"
 
 
-def _short(text: str, limit: int = _SUMMARY_LIMIT) -> str:
+def _short(text: str, limit: int | None = _SUMMARY_LIMIT) -> str:
     first = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
-    return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
+    return first if limit is None or len(first) <= limit else first[: limit - 1].rstrip() + "…"
 
 
 def refusal_text(error: BaseException | str) -> str:
@@ -80,5 +80,12 @@ def chat_error_response(
 
 
 def agent_init_failure_message(error: BaseException) -> str:
-    """Copy for a failed AIAgent build on first message: the user's turn was dropped."""
-    return t("cli.error.agent_init_failed", error=_short(refusal_text(error)) or type(error).__name__)
+    """Copy for a failed AIAgent build on first message: the user's turn was dropped.
+
+    A gateway that cannot be reached keeps its whole first line: its discovery detail is already
+    bounded (``DiscoveryError.bounded_detail``) and ends in the repair command, which the summary
+    limit would cut mid-path."""
+    from hermes_cli.gateway_client import GatewayUnavailableError
+
+    limit = None if isinstance(error, GatewayUnavailableError) else _SUMMARY_LIMIT
+    return t("cli.error.agent_init_failed", error=_short(refusal_text(error), limit) or type(error).__name__)

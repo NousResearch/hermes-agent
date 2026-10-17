@@ -389,6 +389,9 @@ class RollbackRestoreParams(Params):
     hash: str
     file_path: str | None = None
     profile: str | None = None
+    # A whole-tree restore keeps the user's hand-edits (``CheckpointManager.restore(safe=True)``, as the
+    # gateway text command and the in-process CLI do); ``all`` reverts them too (main's ``--all``).
+    all: bool | None = None
 
 
 class RollbackRestoreResult(_Open):

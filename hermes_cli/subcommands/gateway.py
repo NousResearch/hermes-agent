@@ -143,6 +143,18 @@ def build_gateway_parser(
     _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _add_compat_platform_flag(gateway_restart)
 
+    gateway_subparsers.add_parser("defer-restart",
+        help="Request a deferred drain-first restart (agent-safe self-restart)",
+        description="Request that the running gateway restart itself AFTER the current "
+            "conversation turn's final reply has been delivered (drain-first; the "
+            "supervisor relaunches the service). This is the one restart path agents "
+            "may use from inside the gateway process tree: it never kills the host "
+            "inline and never waits for the restart to happen. Guarded by a "
+            "cross-process cooldown, a supervisor capability pre-check, and full "
+            "audit logging. Exit codes: 0 accepted/duplicate, 2 usage, 3 no target, "
+            "4 no supervisor-managed restart path, 5 cooldown, 6 outcome unknown "
+            "(do not immediately retry).")
+
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
     _flag(gateway_status, "--deep", help="Deep status check")
     _flag(gateway_status, "-l", "--full",

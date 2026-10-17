@@ -5676,9 +5676,16 @@ def _cmd_migrate(args):
     cmd_migrate(args)
 
 
+def _cmd_defer_restart(args):
+    from hermes_cli.defer_restart import cmd_defer_restart
+
+    cmd_defer_restart(args)
+
+
 _GATEWAY_SUBCOMMANDS = {
     None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "install": _cmd_install,
     "uninstall": _cmd_uninstall, "start": _cmd_start, "stop": _cmd_stop, "restart": _cmd_restart,
+    "defer-restart": _cmd_defer_restart,
     "status": _cmd_status, "list": _cmd_list, "migrate-legacy": _cmd_migrate_legacy, "migrate": _cmd_migrate,
 }
 

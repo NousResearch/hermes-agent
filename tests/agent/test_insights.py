@@ -441,6 +441,151 @@ class TestInsightsPopulated:
         assert focused["top_skills"] == []
 
 # =========================================================================
+# InsightsEngine — counts the visible transcript only (#136585)
+# =========================================================================
+
+class TestInsightsVisibleTranscript:
+    """Regression for #136585: ``hermes insights`` counted every generation of a rewritten
+    transcript. A message superseded by compaction (``active=0, compacted=1``) is still a
+    display row and must count once; one superseded by a rewind (``active=0, compacted=0``) is
+    a stale copy the transcript no longer shows and must not — the scope
+    ``hermes_state_messages._DISPLAY_ACTIVE_CLAUSE`` gives every other transcript reader.
+    """
+
+    @staticmethod
+    def _mark(db, ids, *, compacted):
+        """Flip *ids* to the archived (1) or rewound (0) generation."""
+        placeholders = ",".join("?" * len(ids))
+        db._conn.execute(
+            f"UPDATE messages SET active = 0, compacted = ? WHERE id IN ({placeholders})",
+            (int(compacted), *ids),
+        )
+
+    @pytest.fixture()
+    def generations_db(self, db):
+        """One conversation carried through three generations: live rows, rows archived by a
+        compaction, and rows superseded by a rewind."""
+        db.create_session(session_id="conv", source="cli", model="m")
+        # Live generation: appended rows are active=1, compacted=0 by default.
+        db.append_message("conv", role="user", content="live question")
+        db.append_message("conv", role="assistant", content="live answer",
+                          tool_calls=[{"function": {"name": "read_file", "arguments": "{}"}}])
+        db.append_message("conv", role="tool", content="r", tool_name="read_file")
+        db.append_message("conv", role="assistant", content="live skill",
+                          tool_calls=[{"function": {"name": "skill_view", "arguments": '{"name":"live-skill"}'}}])
+        archived = [
+            db.append_message("conv", role="user", content="archived question"),
+            db.append_message("conv", role="assistant", content="archived answer",
+                              tool_calls=[{"function": {"name": "patch", "arguments": "{}"}}]),
+            db.append_message("conv", role="tool", content="r", tool_name="patch"),
+            db.append_message("conv", role="assistant", content="archived skill",
+                              tool_calls=[{"function": {"name": "skill_manage", "arguments": '{"name":"archived-skill"}'}}]),
+        ]
+        rewound = [
+            db.append_message("conv", role="user", content="rewound question"),
+            db.append_message("conv", role="assistant", content="rewound answer",
+                              tool_calls=[{"function": {"name": "terminal", "arguments": "{}"}}]),
+            db.append_message("conv", role="tool", content="r", tool_name="terminal"),
+            db.append_message("conv", role="assistant", content="rewound skill",
+                              tool_calls=[{"function": {"name": "skill_view", "arguments": '{"name":"rewound-skill"}'}}]),
+        ]
+        self._mark(db, archived, compacted=1)
+        self._mark(db, rewound, compacted=0)
+        db._conn.commit()
+        return db
+
+    @pytest.mark.parametrize("source", [None, "cli"])
+    def test_message_stats_and_tool_usage_ignore_rewound_generations(self, generations_db, source):
+        """The overview tallies and the Top Tools/Skills rankings count the display set:
+        live + compaction-archived rows once each, rewound rows never."""
+        report = InsightsEngine(generations_db).generate(days=30, source=source)
+        overview = report["overview"]
+
+        assert overview["user_messages"] == 2        # live + archived, not the rewound copy
+        assert overview["assistant_messages"] == 4
+        assert overview["tool_messages"] == 2
+
+        tools = {t["tool"]: t["count"] for t in report["tools"]}
+        assert tools == {"read_file": 1, "patch": 1, "skill_view": 1, "skill_manage": 1}
+        assert "terminal" not in tools              # only ever called in the rewound generation
+
+        skills = report["skills"]["summary"]
+        assert skills["total_skill_loads"] == 1      # the rewound skill_view does not count
+        assert skills["total_skill_edits"] == 1
+        assert skills["distinct_skills_used"] == 2
+        assert "rewound-skill" not in [s["skill"] for s in report["skills"]["top_skills"]]
+
+    def test_rewound_rows_do_not_reach_the_focused_usage_breakdown(self, generations_db):
+        """``get_usage_breakdown`` (analytics dashboard path) shares the scope."""
+        focused = InsightsEngine(generations_db).get_usage_breakdown(days=30, source="cli")
+        assert "terminal" not in [t["tool"] for t in focused["tools"]]
+        assert focused["skills"]["summary"]["total_skill_loads"] == 1
+
+    @pytest.mark.parametrize("source", [None, "cli"])
+    def test_shared_identity_pair_counts_each_logical_message_once(self, db, source):
+        """Compaction re-inserts a live copy of the archived original and both keep the same
+        ``message_uid``: the display scope counts the pair twice, and the aggregates must
+        collapse them into one logical message. One user message, two assistant messages and
+        one tool result tally 1 / 2 / 1 — not 2 / 4 / 2 — with each tool and skill call once.
+        """
+        db.create_session(session_id="conv", source="cli", model="m")
+
+        def add_generation(index, **kwargs):
+            """One logical message written twice: the archived original and its live copy,
+            identical but for the state columns — exactly what a compaction re-inserts."""
+            uid = f"shared-uid-{index}"
+            archived = db.append_message("conv", message_uid=uid, **kwargs)
+            live = db.append_message("conv", message_uid=uid, **kwargs)
+            uids = [row["message_uid"] for row in db._conn.execute(
+                "SELECT message_uid FROM messages WHERE id IN (?, ?) ORDER BY id", (archived, live))]
+            assert uids == [uid, uid], "the pair must share one stable identity"
+            return archived, live
+
+        pairs = (
+            add_generation(0, role="user", content="question"),
+            add_generation(1, role="assistant", content="answer",
+                           tool_calls=[{"function": {"name": "read_file", "arguments": "{}"}}]),
+            add_generation(2, role="assistant", content="load a skill",
+                           tool_calls=[{"function": {"name": "skill_view", "arguments": '{"name":"shared-skill"}'}}]),
+            add_generation(3, role="tool", content="file contents", tool_name="read_file"),
+        )
+        self._mark(db, [archived for archived, _ in pairs], compacted=1)  # the archived generation
+        db._conn.commit()
+
+        report = InsightsEngine(db).generate(days=30, source=source)
+        overview = report["overview"]
+        assert (overview["user_messages"], overview["assistant_messages"], overview["tool_messages"]) == (1, 2, 1)
+        assert overview["total_messages"] == 4          # the visible transcript, not 8 rows
+        assert overview["total_tool_calls"] == 2        # read_file + skill_view, once each
+
+        assert {t["tool"]: t["count"] for t in report["tools"]} == {"read_file": 1, "skill_view": 1}
+        assert report["skills"]["summary"]["total_skill_loads"] == 1
+        assert report["skills"]["summary"]["distinct_skills_used"] == 1
+
+        focused = InsightsEngine(db).get_usage_breakdown(days=30, source=source)
+        assert {t["tool"]: t["count"] for t in focused["tools"]} == {"read_file": 1, "skill_view": 1}
+        assert focused["skills"]["summary"]["total_skill_loads"] == 1
+
+    def test_rows_without_a_message_uid_keep_per_row_identity(self, db):
+        """Legacy rows written before ``message_uid`` existed must still count: the identity
+        falls back to the row id, so a NULL uid neither collapses two rows into one nor drops
+        them from the aggregate."""
+        db.create_session(session_id="legacy", source="cli", model="m")
+
+        def insert(role, active, compacted):
+            db._conn.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp, message_uid, active, compacted)"
+                " VALUES ('legacy', ?, 'old', ?, NULL, ?, ?)", (role, time.time(), active, compacted))
+        insert("user", 1, 0)
+        insert("assistant", 0, 1)
+        db._conn.commit()
+
+        overview = InsightsEngine(db).generate(days=30)["overview"]
+        assert overview["user_messages"] == 1
+        assert overview["assistant_messages"] == 1
+        assert overview["total_messages"] == 2
+
+# =========================================================================
 # Formatting
 # =========================================================================
 

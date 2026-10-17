@@ -455,13 +455,7 @@ export function diffLineTransformer(kinds: DiffKind[]): ShikiTransformer {
     line(node, line) {
       const kind = kinds[line - 1] ?? 'context'
 
-      const existing = Array.isArray(node.properties.className)
-        ? (node.properties.className as string[])
-        : node.properties.className
-          ? [String(node.properties.className)]
-          : []
-
-      node.properties.className = [...existing, DIFF_LINE_BASE, DIFF_KIND_TINT[kind]]
+      node.properties.class = [DIFF_LINE_BASE, DIFF_KIND_TINT[kind]]
     }
   }
 }

@@ -1035,8 +1035,12 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore")
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
     # error-then-retry fallback); bundles go the same way under their resolved key.
+    # Resolve registry aliases first (/s → steer): a raw alias missed this set and fell
+    # through to the slash worker, whose _pending_input has no reader — the text was lost.
+    canonical = _resolve_name(base) if base else base
     with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
-        target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
+        target = (canonical if canonical in _PENDING_INPUT_COMMANDS
+                  else base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base))
     if target is not None:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     # Recognized skills keep the 4018 gate so clients command.dispatch. A scan

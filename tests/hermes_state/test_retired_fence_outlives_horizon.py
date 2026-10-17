@@ -1,5 +1,6 @@
 """The retired-session marker is the deletion fence: the prune pass reclaims a deleted session's
-tombstones after the retry horizon, but never the marker, so the id stays deleted."""
+tombstones after the retry horizon, but never a user delete's marker, so the id stays deleted.
+A housekeeping sweep's marker ages out at the horizon (it retires thousands of ids a pass)."""
 import time
 from types import SimpleNamespace
 
@@ -50,3 +51,22 @@ def test_a_deleted_bot_chat_generation_is_never_reissued(tmp_path):
         _delete_8_days_ago(db, epoch, sid)
         db.prune_sessions(older_than_days=90)
         assert _bot_chat_creation_id(authority, actor) == "bot-chat:owned:1"
+
+
+def test_a_swept_session_fence_ages_out_at_the_horizon(tmp_path):
+    from hermes_state_mutation_retirement import RETIRED_PREFIX, prune_retired_tombstones
+    with SessionDB(tmp_path / "state.db") as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        db.create_session("swept", source="cron")
+        db.end_session("swept", "test")
+        db.create_session("empty", source="cli")
+        db.create_session("deleted", source="cli")
+        _delete_8_days_ago(db, epoch, "deleted")
+        assert db.prune_sessions(older_than_days=None) == 1
+        assert db.delete_session_if_empty("empty")  # the /clear and exit cleanup of an unused session
+        for sid in ("swept", "empty"):
+            assert db.get_meta(RETIRED_PREFIX + sid) is not None  # fenced within the horizon
+        db._execute_write(lambda conn: prune_retired_tombstones(conn, older_than=0))
+        for sid in ("swept", "empty"):
+            assert db.get_meta(RETIRED_PREFIX + sid) is None, f"{sid}: a sweep's marker never ages out"
+        assert db.get_meta(RETIRED_PREFIX + "deleted") is not None

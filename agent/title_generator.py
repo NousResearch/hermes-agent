@@ -177,6 +177,113 @@ def _model_title_upgrade_enabled() -> bool:
         return True
 
 
+def _canonical_endpoint_url(url: str, *, provider: str = "") -> str:
+    """Normalize OpenAI-compat base URLs for same-slot comparison.
+
+    Local-server clients append ``/v1`` when the configured path is empty, and default
+    HTTP/HTTPS ports (``:80`` / ``:443``) are the same socket as an omitted port. Compare
+    host/port/path after those rewrites so pre-resolution spellings still match.
+    """
+    from urllib.parse import urlparse
+
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        from agent.auxiliary_client import _to_openai_base_url
+
+        raw = _to_openai_base_url(raw)
+    except Exception:
+        raw = raw.rstrip("/")
+    parsed = urlparse(raw)
+    path = (parsed.path or "").rstrip("/")
+    prov = str(provider or "").strip().lower()
+    local_aliases = {
+        "ollama", "vllm", "llamacpp", "llama.cpp", "llama-cpp", "lmstudio", "custom", "local",
+    }
+    is_localish = (
+        prov in local_aliases
+        or prov.startswith("custom:")
+        or not prov
+        or prov == "auto"
+    )
+    if is_localish and not path.strip("/"):
+        path = "/v1"
+    scheme = (parsed.scheme or "http").lower()
+    hostname = (parsed.hostname or "").lower()
+    if hostname:
+        port = parsed.port
+        default_port = 443 if scheme == "https" else 80 if scheme == "http" else None
+        if port is not None and default_port is not None and port == default_port:
+            port = None
+        if ":" in hostname and not hostname.startswith("["):
+            host_part = f"[{hostname}]"
+        else:
+            host_part = hostname
+        netloc = host_part if port is None else f"{host_part}:{port}"
+    else:
+        netloc = (parsed.netloc or "").lower()
+        if scheme == "http" and netloc.endswith(":80"):
+            netloc = netloc[:-3]
+        elif scheme == "https" and netloc.endswith(":443"):
+            netloc = netloc[:-4]
+    return f"{scheme}://{netloc}{path}".rstrip("/").lower()
+
+
+def _endpoints_share_slot(main_url: str, pin_url: str, *, main_provider: str = "", pin_provider: str = "") -> bool:
+    """True when main and title base URLs resolve to the same OpenAI-compat endpoint.
+
+    ``strip_v1`` is deliberately provider-agnostic: bare root vs ``/v1`` is the same wire
+    endpoint for any provider name.
+    """
+    a = _canonical_endpoint_url(main_url, provider=main_provider)
+    b = _canonical_endpoint_url(pin_url, provider=pin_provider)
+    if a and b and a == b:
+        return True
+    if not a or not b:
+        return False
+
+    def strip_v1(u: str) -> str:
+        return u[:-3] if u.endswith("/v1") else u
+
+    return strip_v1(a) == strip_v1(b) and bool(strip_v1(a))
+
+
+def _resolved_title_pin(cfg: dict) -> tuple[str, str]:
+    """Effective title provider/base_url, including env-inherited openai routes."""
+    pinned_provider = str(cfg.get("provider") or "").strip().lower()
+    pinned_base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
+    try:
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        resolved_provider, _model, resolved_base, _key, _mode = _resolve_task_provider_model(
+            task="title_generation",
+            provider=pinned_provider or None,
+            model=str(cfg.get("model") or "").strip() or None,
+            base_url=pinned_base_url or None,
+            api_key=str(cfg.get("api_key") or "").strip() or None,
+        )
+        if resolved_provider:
+            pinned_provider = str(resolved_provider).strip().lower() or pinned_provider
+        if resolved_base:
+            pinned_base_url = str(resolved_base).strip().rstrip("/")
+    except Exception:
+        try:
+            from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+
+            if pinned_provider:
+                alt_provider, alt_base = expand_direct_api_alias(
+                    pinned_provider, pinned_base_url or None
+                )
+                if alt_provider:
+                    pinned_provider = str(alt_provider).strip().lower() or pinned_provider
+                if alt_base:
+                    pinned_base_url = str(alt_base).strip().rstrip("/")
+        except Exception:
+            pass
+    return pinned_provider, pinned_base_url
+
+
 def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
 
@@ -189,21 +296,44 @@ def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     persisted as a genuine assistant row and replayed, and the model adopts the format (#117296).
     Running the title call after the turn settles keeps the two requests off the wire at once.
     Hosted providers multiplex requests independently and keep the turn-start timing.
+
+    ``provider`` on the main runtime wins: a hosted main label does not defer solely because
+    ``requested_provider`` still carries a custom* identity.
     """
     provider = str((main_runtime or {}).get("provider") or "").strip().lower()
     if not _is_self_hosted_provider(provider):
         return False
     try:
         cfg = _title_config()
-        pinned_provider = str(cfg.get("provider") or "").strip().lower()
-        main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
-        if pinned_provider not in ("", "auto") and not _title_pin_may_share_endpoint(
-                pinned_provider, provider, main_base_url):
-            return False
     except Exception:
         return True
-    pinned_base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
-    return not pinned_base_url or pinned_base_url == main_base_url
+    raw_pin = str(cfg.get("provider") or "").strip().lower()
+    pinned_provider, pinned_base_url = _resolved_title_pin(cfg if isinstance(cfg, dict) else {})
+    if not pinned_provider:
+        pinned_provider = raw_pin
+    main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
+    try:
+        if pinned_provider not in ("", "auto") and not _title_pin_may_share_endpoint(
+                pinned_provider, provider, main_base_url):
+            # Hosted pin name, but resolved base_url may still collide with the main local slot
+            # (e.g. provider openai + OPENAI_BASE_URL → same llama.cpp endpoint).
+            if not (pinned_base_url and _endpoints_share_slot(
+                main_base_url,
+                pinned_base_url,
+                main_provider=provider,
+                pin_provider=pinned_provider or raw_pin,
+            )):
+                return False
+    except Exception:
+        return True
+    if not pinned_base_url:
+        return True
+    return _endpoints_share_slot(
+        main_base_url,
+        pinned_base_url,
+        main_provider=provider,
+        pin_provider=pinned_provider or raw_pin,
+    )
 
 
 def _is_self_hosted_provider(provider: str) -> bool:

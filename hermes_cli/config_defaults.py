@@ -277,9 +277,9 @@ DEFAULT_CONFIG = {
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
-        # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
-        # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
-        "reasoning_overrides": {},
+        # Global thinking level ("" = the provider's own default); per-model `reasoning_overrides`
+        # entries win over it. Overrides are edited in config.yaml (no CLI support: dots in keys).
+        "reasoning_effort": "", "reasoning_overrides": {},
         # Stored reasoning is replayed to every provider that can read it by default. This flag
         # only adds the must-echo " " pad on reasoning-less tool-call turns, which DeepSeek,
         # Kimi/Moonshot and Xiaomi MiMo require (auto-detected by provider name/host). Set

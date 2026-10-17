@@ -3866,6 +3866,9 @@ export const ruOverrides = {
     audioReadFailed: 'Не удалось прочитать записанное аудио',
     sessionUnavailable: 'Сеанс недоступен',
     createSessionFailed: 'Не удалось создать новый сеанс',
+    sendFailedTitle: 'Сообщение не отправлено',
+    sendFailedBody:
+      'Ваше сообщение вернулось в поле ввода. Отправьте его снова после восстановления соединения.',
     promptFailed: 'Промпт не удался',
     providerCredentialRequired: 'Добавьте учётные данные провайдера перед отправкой первого сообщения.',
     emptySlashCommand: 'пустая слэш-команда',

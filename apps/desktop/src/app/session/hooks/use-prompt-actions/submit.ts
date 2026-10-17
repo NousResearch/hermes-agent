@@ -676,6 +676,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         dropOptimistic(optimisticSessionId)
         releaseBusy()
 
+        // The draft is already back in the composer, so without this the send
+        // looks like it worked: no turn runs, no session row appears, and the
+        // user walks away assuming the prompt was delivered (#138047). A
+        // background/queued drain is off-screen — its failure surfaces on the
+        // queue entry instead, so stay silent there.
+        if (!options?.fromQueue && targetIsCurrentView()) {
+          notify({ kind: 'error', title: copy.sendFailedTitle, message: copy.sendFailedBody })
+        }
+
         return false
       }
 

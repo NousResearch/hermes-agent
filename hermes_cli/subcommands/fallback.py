@@ -19,6 +19,10 @@ def build_fallback_parser(subparsers) -> None:
     fallback_subparsers.add_parser(
         "add",
         help="Pick a provider + model (same picker as `hermes model`) and append to the chain")
+    swap_parser = fallback_subparsers.add_parser(
+        "swap", help="Promote a fallback to primary (default: fallback #1)")
+    swap_parser.add_argument(
+        "fallback_index", nargs="?", type=int, help="1-based fallback entry index (default: 1)")
     fallback_subparsers.add_parser(
         "remove", aliases=["rm"], help="Pick an entry to delete from the chain")
     fallback_subparsers.add_parser("clear", help="Remove all fallback entries")

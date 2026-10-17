@@ -9,6 +9,8 @@ unblocks it.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -19,6 +21,18 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli.active_sessions import MAX_CONCURRENT_SESSIONS, SESSION_COORDINATION_UNAVAILABLE
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER, exit_single_query
+
+
+def test_dispatch_import_does_not_cycle_through_its_worker_log_helper():
+    """The dispatcher can be the first Kanban module a worker-process test imports."""
+    result = subprocess.run(
+        [sys.executable, "-c", "import hermes_cli.kanban_db_dispatch"],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.fixture

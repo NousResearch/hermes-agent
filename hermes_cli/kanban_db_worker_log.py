@@ -10,7 +10,6 @@ import re
 from typing import Mapping
 from typing import Optional
 
-from hermes_cli import kanban_db as _kb
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 _EXIT_TRAILER_RE = re.compile(
@@ -24,13 +23,19 @@ _REFUSAL_REASON_RE = re.compile(r"^hermes-refusal-reason:\s*([A-Z_]+)\s*$", re.M
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
 
 
+def _kb():
+    """Late-bind the Kanban facade to avoid its dispatcher re-export cycle."""
+    from hermes_cli import kanban_db
+    return kanban_db
+
+
 def _exit_code_kind(code: int) -> tuple[str, int]:
     """``(kind, code)`` for a worker's exit code, however it was observed."""
     if code == 0:
         return ("clean_exit", 0)
-    if code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE:
+    if code == _kb().KANBAN_RATE_LIMIT_EXIT_CODE:
         return ("rate_limited", code)
-    if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
+    if code == _kb().KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
     return ("nonzero_exit", code)
 
@@ -133,7 +138,7 @@ def _worker_log_refusal_reason(
 ) -> Optional[str]:
     """Machine-readable active-session refusal reason from the worker log."""
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = _kb().read_worker_log(task_id, tail_bytes=4000, board=board)
     except OSError:
         return None
     return _refusal_reason_for_latest_log_run(raw, current_run_id=current_run_id)
@@ -144,7 +149,7 @@ def _worker_log_exit_code(
 ) -> Optional[int]:
     """Exit code from the trailer the worker CLI wrote to its own log, if present."""
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = _kb().read_worker_log(task_id, tail_bytes=4000, board=board)
     except OSError:
         return None
     return _latest_log_exit_code(raw, current_run_id=current_run_id)
@@ -166,7 +171,7 @@ def _worker_final_output(
 ) -> str:
     """Best-effort, current-run diagnostic text from a dead worker's log."""
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = _kb().read_worker_log(task_id, tail_bytes=4000, board=board)
     except OSError:
         return ""
     if not raw:

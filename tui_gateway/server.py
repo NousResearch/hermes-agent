@@ -392,7 +392,19 @@ def _load_interim_assistant_messages() -> bool:
 
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
-    for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):
+    # These helpers live in split modules and are underscore-prefixed, so bind_module's skip=("_",) never
+    # publishes them here: a bare reference raised NameError at the tuple below — BEFORE the loop, so the
+    # suppress never ran and the whole shutdown (turn stop + session close) silently never happened.
+    # Resolve through THIS module's globals first — that is where register()-published names and every
+    # monkeypatch land — then fall back to the split modules (they never import server, no cycle).
+    from tui_gateway import methods_voice, session_reaper
+
+    steps = (
+        globals().get("_flush_sessions_before_exit") or session_reaper._flush_sessions_before_exit,
+        globals().get("_release_gateway_wake_owner") or methods_voice._release_gateway_wake_owner,
+        globals().get("_stop_turns_before_exit") or session_reaper._stop_turns_before_exit,
+    )
+    for step in steps:
         with contextlib.suppress(Exception):
             step()
     with _sessions_lock:
@@ -413,11 +425,18 @@ _INCREMENTAL_FLUSH_INTERVAL_S = max(0.0, env_float("HERMES_TUI_SESSION_FLUSH_INT
 
 
 def _start_idle_reaper() -> None:
+    # _reap_idle_sessions is underscore-prefixed, so bind_module's skip=("_",) never publishes it
+    # here: the bare reference raised NameError inside the thread every scan, silently swallowed by
+    # the suppress — the server-level idle reaper (TTL reap, orphan-lease reclaim, WS re-arm) has
+    # been a no-op thread since the split. Resolve through this module's globals first (patches land
+    # there), then the source module (no import cycle).
+    from tui_gateway import session_reaper
+
     def _loop():
         while True:
             time.sleep(_REAPER_SCAN_S)
             with contextlib.suppress(Exception):
-                _reap_idle_sessions()
+                (globals().get("_reap_idle_sessions") or session_reaper._reap_idle_sessions)()
     threading.Thread(target=_loop, daemon=True).start()
 
 

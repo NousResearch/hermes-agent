@@ -25,6 +25,31 @@ def _unlink_pty_markers(app: FastAPI) -> None:
             pass
 
 
+async def _model_catalog_refresh_loop(
+    initial_delay_s: float = 30.0, interval_s: float | None = None
+) -> None:
+    """Keep the model picker's remote catalogs warm on a backend that runs no full gateway.
+
+    ``_model_catalog_refresh_watcher`` belongs to the gateway process; the standalone serve
+    backend (Desktop's ``hermes serve``) never starts it, so its disk caches only ever
+    refreshed through the picker's own fire-and-forget SWR thread — which dies with the
+    process before its fetch lands, letting a stale catalog survive app restarts (#140702)."""
+    from hermes_cli.model_catalog import refresh_catalogs, refresh_interval_seconds
+
+    await asyncio.sleep(initial_delay_s)  # let startup settle
+    while True:
+        try:
+            await asyncio.to_thread(refresh_catalogs)
+        except Exception as exc:
+            logger.debug("model catalog refresh failed: %s", exc)
+        if interval_s is None:
+            try:
+                interval_s = refresh_interval_seconds()
+            except Exception:
+                interval_s = 1200.0
+        await asyncio.sleep(interval_s)
+
+
 @asynccontextmanager
 async def standalone_lifespan(app: "FastAPI"):
     from hermes_cli.web_server import (
@@ -140,6 +165,9 @@ async def standalone_lifespan(app: "FastAPI"):
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
     # Live auto-archive timer, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
+    # Remote picker catalogs the gateway's own refresh watcher would keep warm (#140702).
+    model_catalog_task = asyncio.create_task(
+        _model_catalog_refresh_loop(), name="serve-model-catalog-refresh")
 
     # Managed local runtime (local_runtime.enabled): bring llama-server back so a
     # restart doesn't strand a llamacpp main model. Off-thread and best-effort;
@@ -181,6 +209,7 @@ async def standalone_lifespan(app: "FastAPI"):
         pty_reaper_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
+        model_catalog_task.cancel()
         eager_reconcile_thread.join()
         await PTY_REGISTRY.close_all()
 

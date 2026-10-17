@@ -360,15 +360,29 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setError('')
       setSkewRestart(false)
 
+      // Load auxiliary config independently — fast config-file read that must
+      // not block on provider connectivity checks (e.g. minimax-cn timeout).
+      const auxiliaryLoaded = getAuxiliaryModels(scopeProfile)
+
+      auxiliaryLoaded
+        .then(auxModels => {
+          // Only paint aux for the profile this refresh belongs to.
+          if (profileEpoch.current === epoch) {
+            setAuxiliary(auxModels)
+          }
+        })
+        .catch(() => {})
+
       try {
         // Degrade per call: a hung /api/model/info (its context-length probe
         // hits the configured provider, which can be unreachable) must not
-        // block the config-backed sections — auxiliary and MOA are fast
-        // config-file reads — behind a single all-or-nothing Promise.all.
-        const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
+        // block the config-backed sections — MOA is a fast config-file read —
+        // behind a single all-or-nothing Promise.all. Auxiliary config is not
+        // in the group at all: it loads independently above so a slow provider
+        // probe can never delay it (and its own failure stays isolated).
+        const [modelInfoResult, modelOptionsResult, moaModelsResult] = await Promise.allSettled([
           getGlobalModelInfo(scopeProfile),
           getGlobalModelOptions(undefined, scopeProfile),
-          getAuxiliaryModels(scopeProfile),
           getMoaModels(scopeProfile)
         ])
 
@@ -390,9 +404,18 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
         const modelInfo = settledValue(modelInfoResult)
         const modelOptions = settledValue(modelOptionsResult)
-        const auxiliaryModels = settledValue(auxiliaryModelsResult)
         // MOA has always been optional-on-failure; keep it out of the banner.
         const moaModels = moaModelsResult.status === 'fulfilled' ? moaModelsResult.value : null
+        // Auxiliary already painted itself above when it arrived; await it
+        // here (without letting its failure fail this block — the catch above
+        // already isolated it) so the aux-derived main fallback below keeps
+        // the same timing it had when the read rode inside the group.
+        const auxiliaryModels = await auxiliaryLoaded.catch(() => null)
+
+        if (profileEpoch.current !== epoch) {
+          return
+        }
+
         // The main assignment also lives in the auxiliary config read, so the
         // page still knows the current model when only the live probe failed.
         const resolvedMain = modelInfo ?? auxiliaryModels?.main ?? null
@@ -413,7 +436,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
           setCatalogProviders(modelOptions.providers || [])
         }
 
-        setAuxiliary(auxiliaryModels)
         setMoa(moaModels)
 
         if (moaModels) {
@@ -975,7 +997,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     return null
   }
 
-  if (loading && !mainModel) {
+  // Auxiliary config is a fast config-file read that loads independently of
+  // the provider probes; once it has arrived, render the page (it paints its
+  // section) instead of skeletons behind a hung probe.
+  if (loading && !mainModel && !auxiliary) {
     return <ModelSettingsSkeleton subpage={subpage} />
   }
 

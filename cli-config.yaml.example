@@ -401,6 +401,10 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Optional guard against endless same-card review rework. Disabled by default.
+  # Only explicitly listed boards are affected; 0 means unlimited rejections.
+  # max_review_rejections: 2
+  # review_rework_boards: ["example-project"]
 
 # =============================================================================
 # Terminal Tool Configuration

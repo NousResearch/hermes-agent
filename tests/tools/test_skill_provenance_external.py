@@ -51,13 +51,13 @@ class TestProvenanceTier:
     def test_local_skill_stays_agent(self, external_home):
         _write_local_skill(external_home, "my-local")
         from tools.skill_usage import provenance
-        assert provenance("my-local") == "agent"
+        assert provenance("my-local", {"created_by": "agent"}) == "agent"
 
     def test_local_copy_wins_over_external_mount(self, external_home):
         """A name present both locally and externally is NOT external (local store wins)."""
         _write_local_skill(external_home, "ext-skill")
         from tools.skill_usage import provenance
-        assert provenance("ext-skill") == "agent"
+        assert provenance("ext-skill", {"created_by": "agent"}) == "agent"
 
     def test_agent_created_still_excludes_external_only(self, external_home):
         from tools.skill_usage import is_agent_created

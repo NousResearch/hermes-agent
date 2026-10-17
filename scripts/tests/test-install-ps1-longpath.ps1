@@ -40,6 +40,15 @@ if (-not (Test-Path $installScript)) {
     throw "Could not locate install.ps1 at $installScript"
 }
 
+$lockProof = Join-Path $repoRoot "scripts/tests/test-windows-venv-native-lock.ps1"
+if (Test-Path -LiteralPath $lockProof -PathType Leaf) {
+    # Keep the native .pyd lock proof outside install.ps1 itself. The installer
+    # long-path harness below parses install.ps1 -ShowResolvedPaths stdout as a
+    # single JSON object; proof diagnostics emitted from inside that child would
+    # contaminate the JSON stream and fail the unrelated long-path contract.
+    & $lockProof
+}
+
 $failures = 0
 $script:lastRaw = ''
 

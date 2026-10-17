@@ -583,6 +583,28 @@ foreign transcript in parallel with its live owner. To work on a chat from
 another surface, attach through the gateway WebSocket (a `prompt.submit` on the
 shared session) instead of the OpenAI-compatible routes.
 
+### POST /v1/runs/cancel
+
+Cancel an uncertain admission using its original `Idempotency-Key`, with the same
+credential and profile as `POST /v1/runs`. This endpoint does not submit input,
+allocate a run, or consume a concurrency slot. Room grants require `stop` permission.
+Check `/v1/capabilities` capability `runs_idempotency.cancel_by_key` before using it.
+
+If no run was admitted, the response is `{"object":"hermes.run.cancellation",
+"status":"prevented","expires_at":<unix-seconds>}`. A durable cancellation record
+blocks delayed submissions with that key, regardless of payload, until `expires_at`.
+Submission then returns HTTP 409, code `idempotency_key_cancelled`. Cancellation
+records survive restarts and are retained for at least 24 hours; repeating cancellation
+extends protection. Never retry the original submission after the protection deadline.
+
+If already admitted, cancellation returns the original terminal status or requests
+interruption and returns `{"run_id":"...","status":"stopping"}`. Poll that run until
+terminal; `stopping` does not mean execution has stopped. During admission or when
+another gateway owns execution, HTTP 409 `run_not_active` means retry cancellation.
+A live Bot Chat handoff cannot be recalled: HTTP 409 `run_not_interruptible` reports
+that limitation without claiming the external work stopped. Cancellation still prevents
+reuse of its admission key during the cancellation retention period.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.

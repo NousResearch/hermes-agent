@@ -233,6 +233,43 @@ class TestSessionOps:
         assert update.size == 100_000
         assert update.used == 25_000
 
+    def test_build_usage_update_attaches_cumulative_session_cost(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = [{"type": "function", "function": {"name": "demo"}}]
+        state.agent.session_estimated_cost_usd = 0.041234567
+
+        with patch(
+            "agent.model_metadata.estimate_request_tokens_rough",
+            return_value=25_000,
+        ):
+            update = agent._build_usage_update(state)
+
+        assert isinstance(update, UsageUpdate)
+        assert update.cost is not None
+        assert update.cost.amount == 0.041235
+        assert update.cost.currency == "USD"
+
+    def test_build_usage_update_omits_cost_when_unknown(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.history = [{"role": "user", "content": "hello"}]
+        state.agent.context_compressor = MagicMock(context_length=100_000)
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = [{"type": "function", "function": {"name": "demo"}}]
+        state.agent.session_estimated_cost_usd = None
+
+        with patch(
+            "agent.model_metadata.estimate_request_tokens_rough",
+            return_value=25_000,
+        ):
+            update = agent._build_usage_update(state)
+
+        assert isinstance(update, UsageUpdate)
+        # Unpriced model: the field stays absent, not zero.
+        assert update.cost is None
+
 
 
 

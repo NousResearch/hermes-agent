@@ -19,13 +19,18 @@ import platform
 import queue
 import tempfile
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Callable, Iterable, Iterator, List, Optional
 
 from tools.tts_text_normalize import _strip_markdown_for_tts
 from tools.tts_tool_delivery import _origin, _remove_quietly as _unlink_quietly
 
 logger = logging.getLogger("tools.tts_tool")
+
+#: How often the playback worker re-checks ``stop_event`` while one sentence synthesizes. Small
+#: enough that a barge-in ends the playback phase right away instead of waiting for the provider
+#: (``tts_done_event`` is set only after ``_SyncSentencePipeline.close()`` returns).
+_SYNTH_POLL_INTERVAL_S = 0.05
 
 def _align_int16_chunks(chunks: Iterable[bytes], stop_evt: threading.Event, *, pad_tail: bool = True) -> Iterator[bytes]:
     """Yield int16-aligned byte chunks; a dangling odd byte is padded at the end (or dropped)."""
@@ -97,6 +102,13 @@ def _first_written_artifact(raw: object, requested: str) -> str:
     return requested
 
 
+def _discard_late_audio(future: Future) -> None:
+    """Unlink the audio of a sentence whose playback was abandoned on barge-in."""
+    if not future.cancelled():
+        with contextlib.suppress(Exception):
+            _unlink_quietly(future.result())
+
+
 class _SyncSentencePipeline:
     """Overlap per-sentence synthesis with playback for non-streaming providers.
 
@@ -118,10 +130,16 @@ class _SyncSentencePipeline:
             self._queue.put((cleaned, self._executor.submit(self._synthesize_to_tmp, cleaned)))
 
     def close(self) -> None:
-        """Flush queued sentences in order (skipped if stopped), then join."""
+        """Flush queued sentences in order (skipped if stopped), then join.
+
+        This runs inside ``stream_tts_to_speaker``'s ``finally``, before ``tts_done_event`` is set,
+        so an interrupted turn must not wait for the provider: after a barge-in the in-flight call
+        is left in its worker (its audio is unlinked when it lands) rather than holding the
+        playback phase open for as long as the provider takes to answer."""
         self._queue.put(None)
         self._player.join()
-        self._executor.shutdown(wait=True)
+        stopped = self._stop.is_set()
+        self._executor.shutdown(wait=not stopped, cancel_futures=stopped)
 
     def _synthesize_to_tmp(self, cleaned: str) -> Optional[str]:
         if self._stop.is_set():
@@ -144,7 +162,7 @@ class _SyncSentencePipeline:
         for _sentence, future in iter(self._queue.get, None):
             tmp_path = None
             try:
-                tmp_path = future.result()
+                tmp_path = self._synthesized(future)
                 if tmp_path and not self._stop.is_set() and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
                     from tools.voice_mode import play_audio_file
                     play_audio_file(tmp_path)
@@ -152,6 +170,22 @@ class _SyncSentencePipeline:
                 logger.warning("Sync per-sentence TTS failed: %s", exc)
             finally:
                 _unlink_quietly(tmp_path)
+
+    def _synthesized(self, future: Future) -> Optional[str]:
+        """The sentence's audio path, abandoning the wait once the turn was interrupted.
+
+        A bare ``future.result()`` waits for the provider however long it takes, which keeps the
+        playback phase (and the mic) closed after a barge-in. Polling instead lets the worker
+        notice the stop, drop the sentence — nothing may play after an interruption — and let
+        ``close()`` return."""
+        while not self._stop.is_set():
+            try:
+                return future.result(timeout=_SYNTH_POLL_INTERVAL_S)
+            except FutureTimeout:
+                continue
+        future.cancel()
+        future.add_done_callback(_discard_late_audio)
+        return None
 
 
 class _StreamerPlayback:

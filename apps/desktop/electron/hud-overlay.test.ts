@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { applyHudElectronOverlay } from './hud-overlay'
+import { applyHudElectronOverlay, hudVibrancySupported } from './hud-overlay'
 
 test('macOS uses the floating window level and all-spaces visibility', () => {
   const calls: string[] = []
@@ -38,4 +38,11 @@ test('Linux and Windows only set the screen-saver always-on-top level', () => {
 
     assert.deepEqual(calls, ['alwaysOnTop:true:screen-saver'])
   }
+})
+
+test('macOS 27 keeps the HUD alive by declining transparent-window vibrancy', () => {
+  assert.equal(hudVibrancySupported(25), true)
+  assert.equal(hudVibrancySupported(26), false)
+  assert.equal(hudVibrancySupported(27), true)
+  assert.equal(hudVibrancySupported(0), true)
 })

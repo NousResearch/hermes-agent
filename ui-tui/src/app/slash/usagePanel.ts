@@ -1,5 +1,12 @@
+import type { SessionUsageResponse } from '../../gatewayTypes.js'
 import { t } from '../../i18n/runtime.js'
 import type { PanelSection } from '../../types.js'
+
+export function usageProviderBlocks(r: null | SessionUsageResponse | undefined): string[] {
+  return [r?.account_lines, r?.rate_limit_lines]
+    .filter((lines): lines is string[] => Boolean(lines?.length))
+    .map(lines => lines.join('\n'))
+}
 
 /** Main's `/usage` session-totals panel (model, input / output / total tokens, API calls, the
  * context line, compressions), from main's `Usage` shape: the sidecar's `session.usage` RPC, or a

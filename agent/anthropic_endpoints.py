@@ -3,9 +3,10 @@
 A dozen services speak the Anthropic Messages API but differ in auth style, accepted beta
 headers, and request quirks (MiniMax, Kimi/Moonshot, DeepSeek, OpenCode, Azure AI Foundry, Nous
 Portal, Bedrock). Every such difference is decided from the configured base URL, so the
-predicates live together here as pure functions (no I/O, SDK or credentials) that both
-``agent/anthropic_adapter.py`` and ``agent/anthropic_message_convert.py`` can import without a
-cycle.
+predicates live together here (no SDK or credentials) and both ``agent/anthropic_adapter.py`` and
+``agent/anthropic_message_convert.py`` can import them without a cycle. They are pure functions of
+the URL, except that ``_requires_bearer_auth`` also asks any provider plugin claiming the URL's host
+(``ProviderProfile.endpoint_hosts``), which loads provider plugins on first use.
 """
 
 from urllib.parse import urlparse
@@ -122,8 +123,9 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, Azure AI
-    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal. Palantir/CommandCode use
-    hostname matching (not substring) so ``evil.com/palantirfoundry`` paths don't trigger it."""
+    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal, and any host a provider plugin
+    claims with ``bearer_auth``. Palantir/CommandCode use hostname matching (not substring) so
+    ``evil.com/palantirfoundry`` paths don't trigger it."""
     normalized = _normalized_lower(base_url)
     return (
         _is_nous_portal_endpoint(base_url)
@@ -131,7 +133,16 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")
         or base_url_host_matches(normalized, "api.commandcode.ai")
+        or _claimed_by_bearer_profile(base_url)
     )
+
+
+def _claimed_by_bearer_profile(base_url: str | None) -> bool:
+    """A provider plugin claims this host (``ProviderProfile.endpoint_hosts``) and declares Bearer."""
+    from providers import profile_for_endpoint_host  # lazy: keeps this module import-cycle free
+
+    profile = profile_for_endpoint_host(_normalize_base_url_text(base_url))
+    return bool(getattr(profile, "bearer_auth", False))
 
 
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:

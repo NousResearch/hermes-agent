@@ -282,6 +282,27 @@ def list_providers() -> list[ProviderProfile]:
     return result
 
 
+def profile_for_endpoint_host(base_url: str | None) -> ProviderProfile | None:
+    """The profile whose ``endpoint_hosts`` claims *base_url*'s hostname, else None.
+
+    Only explicit claims count: a profile's own ``base_url`` never makes it the authority for a
+    custom endpoint. The bound home's ``$HERMES_HOME`` plugins are checked first. Read defensively:
+    ``register_provider`` takes duck-typed and legacy profiles, and this runs on every Anthropic
+    client build.
+    """
+    if not base_url:
+        return None
+    from utils import base_url_host_matches
+
+    for profile in reversed(list_providers()):
+        hosts = getattr(profile, "endpoint_hosts", None) or ()
+        if isinstance(hosts, str):
+            hosts = (hosts,)
+        if any(base_url_host_matches(base_url, host) for host in hosts):
+            return profile
+    return None
+
+
 def unlisted_provider_names() -> set[str]:
     """Registered profiles that discovery surfaces (provider pickers, setup lists, the accounts tab)
     must not offer: pre-release ones the user has not opted into.

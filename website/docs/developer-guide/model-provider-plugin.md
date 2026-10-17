@@ -103,6 +103,8 @@ Full definition in `providers/base.py`. The most useful ones:
 | `env_vars` | `tuple[str, ...]` | API-key env vars in priority order; a final `*_BASE_URL` entry is used as the user base-URL override |
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
+| `endpoint_hosts` | `tuple[str, ...]` | Hostnames this profile is the authority for when a named custom provider points at them (exact host or subdomain) — see [Tenant-scoped endpoint hosts](#tenant-scoped-endpoint-hosts) |
+| `bearer_auth` | bool | On a claimed host's Anthropic Messages route, send the key as `Authorization: Bearer` instead of `x-api-key` |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
 | `auth_handler` | `Callable \| None` | Provider-owned `hermes auth add/status/logout/refresh <name>` — see [Provider-owned auth](#provider-owned-auth-auth_handler-refresh_credential) |
 | `refresh_credential` | `Callable \| None` | Provider-owned rotation of a pooled OAuth row — same section |
@@ -215,6 +217,40 @@ class AcmeProfile(ProviderProfile):
         standard client."""
         return None
 ```
+
+## Tenant-scoped endpoint hosts
+
+Some gateways give every tenant its own host (`<tenant>.gateway.example`), so a profile
+cannot name one `base_url`, and users reach them through a named custom provider
+(`providers:` / `custom_providers:` in `config.yaml`). A profile claims such hosts with
+`endpoint_hosts`; the claim is matched on the configured URL's hostname (exact host or
+subdomain, so `gateway.example.evil.test` does not match). Only explicit claims count: a
+profile's own `base_url` never makes it the authority for a custom endpoint, and the bound
+home's `$HERMES_HOME` plugins are checked before bundled and pip-installed ones.
+
+```python
+register_provider(TenantGatewayProfile(
+    name="tenant-gateway",
+    hidden=True,                     # serves custom providers; not a picker row of its own
+    endpoint_hosts=("gateway.example",),
+    bearer_auth=True,
+))
+```
+
+For a URL on a claimed host:
+
+- **Anthropic auth.** With `bearer_auth=True`, every Anthropic Messages client built for the
+  URL (main turns, auxiliary clients, `hermes doctor`, the `/models` discovery probe) sends
+  `Authorization: Bearer` instead of `x-api-key`.
+- **Model discovery.** The `/model` picker, `/model` validation and setup call the profile's
+  `fetch_models(api_key=..., base_url=<configured URL>, timeout=...)` before the generic
+  `/models` probe. A non-empty list is the catalog. `None`, an empty list, or a raise (logged
+  with its traceback) falls back to the generic probe, which still uses `bearer_auth`. A
+  `key_cmd` credential arrives already minted, as a string. The hook does not receive the
+  provider's `extra_headers` or custom CA bundle, and the probe's negative cache does not apply.
+
+Pick a profile name and aliases that no configured custom provider uses: a registered
+profile wins resolution by name over a custom provider of the same name.
 
 ## Account usage
 

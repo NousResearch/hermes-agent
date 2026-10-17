@@ -2657,15 +2657,19 @@ def probe_api_models(
     api_key: Optional[str], base_url: Optional[str], timeout: float = 5.0,
     api_mode: Optional[str] = None, request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
-    """Probe a ``/models`` endpoint with light URL heuristics (``base`` then ``base±/v1``).
-    ``anthropic_messages`` mode sends ``x-api-key`` + ``anthropic-version`` instead of a bearer; the
-    ``data[].id`` response shape is identical. ``models`` is None when no candidate answered."""
+    """Probe ``/models`` (``base`` then ``base±/v1``) with the route client's auth, after any catalog from a
+    provider plugin claiming the host (``endpoint_profile_models``). ``models`` is None when none answered."""
+    from agent.command_token_source import materialize_probe_api_key
+    api_key = materialize_probe_api_key(api_key)  # a key_cmd source is minted once, never sent as its repr
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")
     if _is_github_models_base_url(normalized):
         models = _fetch_github_models(api_key=api_key, timeout=timeout)
         return _probe_result(models, COPILOT_MODELS_URL, COPILOT_BASE_URL)
+    from hermes_cli.models_probe import endpoint_profile_models, probe_auth_headers
+    if (claimed := endpoint_profile_models(api_key, normalized, timeout=timeout)) is not None:
+        return _probe_result(claimed, normalized, normalized)
 
     alternate_base = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates: list[tuple[str, bool]] = [(normalized, False)]
@@ -2683,11 +2687,7 @@ def probe_api_models(
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if urllib.parse.urlparse(normalized).hostname == "generativelanguage.googleapis.com":
         headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
-    if api_key and api_mode == "anthropic_messages":
-        headers["x-api-key"] = api_key
-        headers["anthropic-version"] = "2023-06-01"
-    elif api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    headers.update(probe_auth_headers(api_key, api_mode, normalized))
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
     if isinstance(request_headers, dict):

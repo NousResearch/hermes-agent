@@ -66,6 +66,13 @@ class ProviderProfile:
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
+    # Hosts this profile is the endpoint authority for besides ``base_url``: gateways whose host is per
+    # tenant (``<tenant>.example.com``), reached through a named custom provider. Matched on the parsed
+    # hostname (exact or subdomain). A claimed host's Anthropic Messages auth follows ``bearer_auth``,
+    # and its model discovery asks ``fetch_models`` first.
+    endpoint_hosts: tuple = ()
+    # Anthropic Messages route only: send the key as ``Authorization: Bearer`` instead of ``x-api-key``.
+    bearer_auth: bool = False
 
     # ── Provider-owned auth (optional; non-api-key plugins) ──────────
     # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it

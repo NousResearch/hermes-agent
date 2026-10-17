@@ -893,6 +893,21 @@ class GatewayBusySessionMixin:
                 return True
             return False  # base adapter queues silently behind the active turn
 
+        # A follow-up that arrives while the session is busy reaches this handler instead of
+        # ``_handle_message`` (``platforms/base.py`` routes it here), so the ingress gate — and with
+        # it ``pre_gateway_dispatch`` — never ran for it: a plugin silencing a chat (``skip``) could
+        # not stop the busy ack, a steer or an interrupt (#140442). Offered here, once per message.
+        if not getattr(event, "internal", False):
+            _offered_event = event
+            event = await self._hm_pre_gateway_dispatch_hook(event, event.source)
+            if event is None:
+                # The hook logged the skip (reason/platform/chat); nothing else may react to it.
+                return True  # handled (dropped): no ack, no steer, nothing queued
+            if event is not _offered_event:
+                # A rewrite returns a new event, but the adapter keeps the object it passed in and
+                # queues THAT one when this falls through below (busy_text_mode=queue).
+                _offered_event.text = event.text
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL

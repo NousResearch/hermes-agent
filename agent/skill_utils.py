@@ -584,6 +584,28 @@ def get_project_skills_dirs() -> list[Path]:
     return _candidate_project_skills_dirs(root) if root is not None else []
 
 
+# A trusted project may narrow the skills index to the skills it actually needs by
+# shipping <root>/.hermes/skill-allowlist (one skill name per line, '#' comments).
+# Only the prompt index is narrowed: skill_view still loads any skill by name.
+PROJECT_SKILL_ALLOWLIST_FILE = os.path.join(".hermes", "skill-allowlist")
+
+
+def get_project_skill_allowlist() -> Optional[frozenset]:
+    """Skill names allowed in the index for the trusted project at cwd, or None (no narrowing)."""
+    root = _current_project_root(trusted=True)
+    if root is None:
+        return None
+    allowlist_file = root / PROJECT_SKILL_ALLOWLIST_FILE
+    try:
+        lines = allowlist_file.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    names = {line.split("#", 1)[0].strip() for line in lines}
+    names.discard("")
+    # An empty file is treated as "no allowlist" so a stray file can never hide every skill.
+    return frozenset(names | ESSENTIAL_SKILLS) if names else None
+
+
 def get_untrusted_project_skills_root() -> Optional[tuple[Path, int]]:
     """(root, skill_count) when cwd's project has skills but is NOT trusted, else None."""
     root = _current_project_root(trusted=False)

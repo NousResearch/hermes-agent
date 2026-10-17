@@ -1388,6 +1388,16 @@ def _oneshot_prompt_variant() -> bool:
     return is_single_query_session()
 
 
+def _allowed_by_project(entry: dict, allowlist: frozenset | None) -> bool:
+    """Project allowlist filter: no allowlist keeps everything; the project's own skills always stay."""
+    if allowlist is None:
+        return True
+    from agent.skill_utils import TIER_PROJECT
+    if entry.get("tier") == TIER_PROJECT:
+        return True
+    return not allowlist.isdisjoint({str(entry["name"]), entry.get("load_name")} - {None})
+
+
 def _build_skills_system_prompt_inner(
     skills_dir: Path, extra_roots: list[tuple[int, Path]], available_tools: set[str] | None,
     available_toolsets: set[str] | None, compact_categories: frozenset[str] | None,
@@ -1395,6 +1405,9 @@ def _build_skills_system_prompt_inner(
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    from agent.skill_utils import get_project_skill_allowlist
+    # Trusted project's .hermes/skill-allowlist narrows the index (None = list everything).
+    allowlist = get_project_skill_allowlist()
     # Plugin-registered skills (ctx.register_skill) are registry state, not files under any scanned
     # root — the snapshot manifest can't see them change, so they participate in the cache key.
     plugin_rows = _plugin_skill_prompt_rows(disabled, available_tools, available_toolsets, _platform_hint or None)
@@ -1409,7 +1422,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(), tuple(plugin_rows),
+        _oneshot_prompt_variant(), tuple(plugin_rows), tuple(sorted(allowlist)) if allowlist is not None else None,
     )
     snapshot = _load_skills_snapshot(skills_dir, manifest)
     app_gated = snapshot is not None and any(
@@ -1458,7 +1471,8 @@ def _build_skills_system_prompt_inner(
          "visible": ok and not hides(entry.get("skill_name") or "", entry.get("conditions") or {})}
         for entry, ok in rows])
     visible_entries = [e for e in resolved
-                       if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]
+                       if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)
+                       and _allowed_by_project(e, allowlist)]
     _label_visible_entries(visible_entries, skills_by_category)
     if plugin_rows:
         # Same category label skills_list gives registry skills; qualified names are already

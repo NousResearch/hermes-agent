@@ -6,7 +6,7 @@ import logging
 from typing import List, Optional
 
 from toolsets import TOOLSETS, resolve_toolset
-from tools.delegate_tool_config import _get_inherit_mcp_toolsets
+from tools.delegate_tool_config import _cfg, _get_inherit_mcp_toolsets
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -21,6 +21,28 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     ]
 )
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+def _get_child_extra_toolsets() -> list[str]:
+    """``delegation.child_extra_toolsets``: toolsets every subagent gets on top of the inherited set. Config-owned
+    (never model-facing), so a lean parent can keep heavy always-loaded schemas (e.g. ``browser``) out of its own
+    prompt while its children still use them. A list or a comma-separated string; unknown names are ignored with a
+    warning; blocked toolsets are stripped like inherited ones. Empty/absent (default) = no change."""
+    raw = _cfg().get("child_extra_toolsets")
+    if isinstance(raw, str):
+        names = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        names = list(raw)
+    else:
+        names = []
+    out: list[str] = []
+    for name in (str(n).strip() for n in names):
+        if not name or name in out:
+            continue
+        if name not in TOOLSETS and not _is_mcp_toolset_name(name):
+            logger.warning("delegation.child_extra_toolsets: unknown toolset %r ignored", name)
+            continue
+        out.append(name)
+    return out
 
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
@@ -82,7 +104,8 @@ def _resolve_child_toolsets(
     inherited. Blocked tools are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
     ``disabled_toolsets`` so blocked names inside mixed bundles (hermes-cli) are subtracted AFTER composite
     expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added unconditionally
-    (role-granted, not inherited)."""
+    (role-granted, not inherited). ``delegation.child_extra_toolsets`` (config, never the model) adds toolsets the
+    parent itself does not load."""
     # enabled_toolsets=None means "all tools", so derive from loaded tool names.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
@@ -108,6 +131,8 @@ def _resolve_child_toolsets(
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
     child_toolsets = _strip_blocked_tools(child_toolsets)
+    # Config-granted extras (delegation.child_extra_toolsets) on top of the inherited/narrowed set.
+    child_toolsets += [t for t in _strip_blocked_tools(_get_child_extra_toolsets()) if t not in child_toolsets]
 
     raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
     inherited_disabled = (

@@ -362,6 +362,8 @@ DEFAULT_CONFIG = {
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
+        "local_memory_max_mb": "",     # Opt-in foreground MiB cap; empty preserves direct spawning
+        "local_memory_swap_max_mb": "",  # Inherit swap; explicit 0 disables swap for guarded foreground
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
         # Docker volume mounts, "host_path:container_path" (docker -v syntax), e.g.

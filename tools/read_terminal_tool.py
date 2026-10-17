@@ -44,7 +44,9 @@ def read_terminal_tool(
         "Failed to read terminal: ",
         "No in-app terminal answered: nothing is open, or the bridge timed out. "
         "If the terminal pane IS open, the desktop app may be older than this "
-        "backend — update it and retry.",
+        "backend — update it and retry. Do not retry read_terminal expecting a "
+        "different result; if you need to run or check commands yourself, use "
+        "the terminal or execute_code tools instead.",
     ))
 
 

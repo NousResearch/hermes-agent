@@ -1,5 +1,6 @@
 """Gateway turn prepare phases; inherited by GatewayTurnMixin."""
 from __future__ import annotations
+from gateway.response_filters import delegated_continuation_notes
 
 import logging
 from typing import TYPE_CHECKING
@@ -646,7 +647,7 @@ class GatewayTurnPrepareMixin:
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
-        turn_sidecar_notes: list[str] = []
+        turn_sidecar_notes: list[str] = delegated_continuation_notes(event)
         if _was_auto_reset:
             await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
 

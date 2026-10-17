@@ -140,7 +140,33 @@ def display_metadata_for_event(event: Any) -> dict:
     ``title_preview`` (titler-only) a canonical admission committed for this exact event."""
     from gateway.session_display import admission_display
     preview = admission_display(event).get("title_preview")
-    return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
+    return {**_producer_card(event), **({"title_preview": preview} if preview else {}),
+            **delegated_continuation_metadata(event)}
+
+
+def delegated_continuation_metadata(event: Any) -> dict:
+    """Durable provenance for model-authored text admitted as an external continuation."""
+    return {"input_origin": "agent_delegated_continuation"} if getattr(
+        event, "delegated_continuation", False
+    ) else {}
+
+
+_DELEGATED_CONTINUATION_NOTE = (
+    "[Delegated continuation: this task text was authored by the assistant during the prior "
+    "user-authorized Telegram turn; it was not typed directly by the user.]"
+)
+
+
+def delegated_continuation_notes(event: Any) -> list[str]:
+    """Per-turn sidecar notes for an externally admitted delegated continuation."""
+    return [_DELEGATED_CONTINUATION_NOTE] if getattr(event, "delegated_continuation", False) else []
+
+
+def delegated_continuation_text(event: Any, text: Any) -> Any:
+    """Attach provenance to a queued model input without changing its persisted user text."""
+    return f"{_DELEGATED_CONTINUATION_NOTE}\n\n{text}" if isinstance(text, str) and getattr(
+        event, "delegated_continuation", False
+    ) else text
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:

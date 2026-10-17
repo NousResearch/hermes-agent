@@ -17,7 +17,11 @@ from typing import Any, Dict, Optional, Tuple
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
-from hermes_cli.commands import COMMANDS, SUBCOMMANDS
+# COMMANDS is resolved through the module attribute on purpose: hermes_cli.commands builds it per
+# access (PEP 562 __getattr__) so descriptions follow the active language, and a module-level
+# from-import would freeze the snapshot taken before language-pack discovery finishes (#136743).
+from hermes_cli import commands as _command_tables
+from hermes_cli.commands import SUBCOMMANDS
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -448,7 +452,7 @@ class SlashCommandCompleter(Completer):
         def _cmd_completion(cmd_name: str, meta: str):
             return _completion(self._completion_text(cmd_name, word), word, f"/{cmd_name}", meta)
 
-        for cmd, desc in COMMANDS.items():
+        for cmd, desc in _command_tables.COMMANDS.items():
             if self._command_allowed(cmd) and cmd[1:].startswith(word):
                 yield _cmd_completion(cmd[1:], desc)
         for cmd, info in self._call_provider(self._skill_bundles_provider).items():
@@ -501,7 +505,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
         if len(parts) == 1 and not text.endswith(" "):
             # Still typing the name: prefer the SHORTEST match so /he ghosts "lp", not "artbeat".
             word = text[1:].lower()
-            for cmd in sorted(COMMANDS, key=len):
+            for cmd in sorted(_command_tables.COMMANDS, key=len):
                 cmd_name = cmd[1:]
                 if self._allowed(cmd) and cmd_name.startswith(word) and cmd_name != word:
                     return Suggestion(cmd_name[len(word):])

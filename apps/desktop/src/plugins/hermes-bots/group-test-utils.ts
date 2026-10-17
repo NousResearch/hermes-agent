@@ -455,8 +455,10 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
  *  the `vi.mock` factory rather than hoisted alongside it. */
 export async function pluginSdkMock(host: Record<string, unknown>) {
   const nanostores = await import('nanostores')
+  const { Textarea } = await import('@/components/ui/textarea')
 
   return {
+    Textarea,
     // Real value: approval.respond forwards it as its client deadline (#60654).
     APPROVAL_RESPOND_TIMEOUT_MS: 300_000,
     atom: nanostores.atom,

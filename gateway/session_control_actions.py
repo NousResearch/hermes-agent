@@ -4,6 +4,9 @@
 answered -32601. Each action is the typed slash command the button stands for, run through
 ``execute_command`` (the gateway's own /goal /loop /heartbeat /subgoal handlers, with their
 capability, local-source, admission and busy rules), answered with the owner's control snapshot.
+The subgoal criteria buttons run the same manager directly: their "nothing changed" answers
+(no active goal, no such criterion) are named refusals, not the typed command's error text
+inside a success envelope, which Desktop would paint as "action succeeded".
 """
 import logging
 
@@ -22,8 +25,9 @@ _ENVELOPE = ('type', 'output', 'notice', 'message', 'display')
 
 
 def _command(action, args):
-    """``(name, arg)`` of the slash command for *action*, or ``('subgoal', None)`` for an add, whose
-    free text must not be parsed as a /subgoal verb ("clear the cache" is a criterion, not a clear)."""
+    """``(name, arg)`` of the slash command for *action*; the two subgoal actions return their
+    ``subgoal.add`` / ``subgoal.remove`` name and run the manager directly, whose free text must
+    not be parsed as a /subgoal verb ("clear the cache" is a criterion, not a clear)."""
     if not isinstance(args, dict) or set(args) - {'text', 'index'}:
         raise RuntimeStoreError('invalid_params')
     if action in _ACTION_COMMANDS:
@@ -32,16 +36,18 @@ def _command(action, args):
         index = args.get('index')
         if type(index) is not int or index < 1:
             raise RuntimeStoreError('invalid_params')
-        return 'subgoal', f'remove {index}'
+        return 'subgoal.remove', index
     if action == 'subgoal.add':
         if not isinstance(args.get('text'), str) or not args['text'].strip():
             raise RuntimeStoreError('invalid_params')
-        return 'subgoal', None
+        return 'subgoal.add', args['text'].strip()
     raise RuntimeStoreError('invalid_params')
 
 
-async def _add_subgoal(connection, ref, params, text):
-    """``/subgoal <text>``'s add branch (``slash_commands_goals``) on the session's goal manager."""
+async def _run_subgoal(connection, ref, params, op, arg):
+    """A subgoal card action: the typed /subgoal command's branch on the session's goal manager.
+    A card action whose change didn't land is a named refusal, never the command's error text
+    inside a success envelope: Desktop reads ``type: 'exec'`` as "action succeeded"."""
     from pathlib import Path
     from agent.i18n import t
     from gateway.platforms.base import MessageEvent
@@ -59,12 +65,19 @@ async def _add_subgoal(connection, ref, params, text):
         mgr, _entry = await authority.runner._get_goal_manager_for_event(
             MessageEvent(text='/subgoal', source=live.source))
         if mgr is None:
-            return {'type': 'exec', 'output': t('gateway.goal.unavailable')}
+            raise RuntimeStoreError('goal_unavailable', detail=t('gateway.goal.unavailable'))
         if not mgr.has_goal():
-            return {'type': 'exec', 'output': t('gateway.subgoal.no_goal')}
-        added, err = _mgr_call('/subgoal', mgr.add_subgoal, text)
-        index = len(mgr.state.subgoals) if mgr.state else 0
-    return {'type': 'exec', 'output': err or t('gateway.subgoal.added', index=index, text=added)}
+            raise RuntimeStoreError('no_active_goal', detail=t('gateway.subgoal.no_goal'))
+        if op == 'add':
+            added, err = _mgr_call('/subgoal', mgr.add_subgoal, arg)
+            if err:
+                raise RuntimeStoreError('no_active_goal', detail=err)
+            index = len(mgr.state.subgoals) if mgr.state else 0
+            return {'type': 'exec', 'output': t('gateway.subgoal.added', index=index, text=added)}
+        removed, err = _mgr_call('/subgoal remove', mgr.remove_subgoal, arg, errors=(IndexError, RuntimeError))
+        if err:
+            raise RuntimeStoreError('subgoal_not_found', detail=err)
+        return {'type': 'exec', 'output': t('gateway.subgoal.removed', index=arg, text=removed)}
 
 
 def publish(authority, session_id, *, only_if_present=False):
@@ -101,9 +114,9 @@ async def control(connection, ref, params):
         raise RuntimeStoreError('not_found')
     scope = {key: params[key] for key in ('session_id', 'profile') if key in params}
     # Other viewers (another Desktop window, Ink) repaint their cards from session.control.update, not the
-    # reply: execute_command publishes it for the automation commands, the subgoal add here.
-    if arg is None:
-        result = await _add_subgoal(connection, ref, scope, args['text'].strip())
+    # reply: execute_command publishes it for the automation commands, the subgoal actions here.
+    if name.startswith('subgoal.'):
+        result = await _run_subgoal(connection, ref, scope, name[len('subgoal.'):], arg)
         publish(connection.authority, ref.session_id)
     else:
         from gateway.session_commands import execute_command

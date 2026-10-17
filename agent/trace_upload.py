@@ -31,7 +31,7 @@ _NO_TOKEN_MESSAGE = (
     "   (New token -> type \"Write\" -> copy it).\n"
     "2. Add it to your environment as HF_TOKEN (e.g. in ~/.hermes/.env):\n"
     "     HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx\n"
-    "3. Run /upload-trace again (or `hermes trace upload`)."
+    "3. Run `hermes sessions export --format trace --upload` again."
 )
 _TOKEN_ENV_VARS = ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN")
 

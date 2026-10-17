@@ -21,7 +21,7 @@ description: "使用 Imbue 的进化循环来优化 prompt/正则/SQL/代码"
 | 许可证 | MIT |
 | 平台 | linux, macos |
 | 标签 | `evolution`, `optimization`, `prompt-engineering`, `research` |
-| 相关 skill | [`arxiv`](/user-guide/skills/bundled/research/research-arxiv), [`jupyter-live-kernel`](/user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel) |
+| 相关 skill | [`arxiv`](/user-guide/skills/bundled/research/research-arxiv), [`jupyter-notebook`](/user-guide/skills/optional/data-science/data-science-jupyter-notebook) |
 
 ## 参考：完整 SKILL.md
 

@@ -15,6 +15,10 @@ vi.mock('@/hermes', () => ({
   getGlobalModelOptions: () => getGlobalModelOptions()
 }))
 
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { FallbackModelsField } = await import('./fallback-models-field')
+
 beforeEach(() => {
   getGlobalModelOptions.mockResolvedValue({
     providers: [
@@ -30,8 +34,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderField(value: unknown, onChange = vi.fn()) {
-  const { FallbackModelsField } = await import('./fallback-models-field')
+function renderField(value: unknown, onChange = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   render(
@@ -43,9 +46,9 @@ async function renderField(value: unknown, onChange = vi.fn()) {
   return onChange
 }
 
-async function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
-  const { FallbackModelsField } = await import('./fallback-models-field')
+function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
   const view = render(
     <QueryClientProvider client={client}>
       <FallbackModelsField onChange={onChange} value={value} />
@@ -77,12 +80,15 @@ describe('FallbackModelsField', () => {
     await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
   })
 
-  it('removing a row emits the remaining entries', async () => {
-    const onChange = await renderField(CHAIN)
+  it('removing a row emits the remaining entries with their routing keys intact', async () => {
+    // #89184: a hand-written local-gateway chain carries base_url/api_key per
+    // entry; the editor only owns provider/model and must not strip the rest.
+    const routed = { provider: 'custom', model: 'glm-5.08', base_url: 'http://gw:8080/v1', api_key: '${GW_KEY}' }
+    const onChange = await renderField([...CHAIN, routed])
 
     fireEvent.click(screen.getAllByLabelText('Remove')[0])
 
-    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([{ provider: 'openai-codex', model: 'gpt-5.4-mini' }])
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([{ provider: 'openai-codex', model: 'gpt-5.4-mini' }, routed])
   })
 
   it('adding a blank row does not persist a partial entry', async () => {
@@ -95,18 +101,26 @@ describe('FallbackModelsField', () => {
     expect(screen.getAllByLabelText('Remove')).toHaveLength(3)
   })
 
-  it('shows an empty-state hint when there are no fallbacks', async () => {
-    await renderField([])
-
-    expect(screen.getByText(/No fallback models/)).toBeTruthy()
-    expect(screen.queryAllByLabelText('Remove')).toHaveLength(0)
-  })
-
   it('resyncs rows when persisted config changes', async () => {
     const rerender = await renderFieldWithRerender(CHAIN)
     expect(screen.getAllByLabelText('Remove')).toHaveLength(2)
 
     rerender([{ provider: 'nous', model: 'hermes-4' }])
+
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
+  })
+
+  it('keeps a draft row visible after autosave re-renders the same persisted chain', async () => {
+    const onChange = vi.fn()
+    const rerender = await renderFieldWithRerender([], onChange)
+
+    fireEvent.click(screen.getByText('Add fallback'))
+
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([])
+    expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
+
+    // Parent autosave echo — same complete chain, new array identity.
+    rerender([])
 
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
   })

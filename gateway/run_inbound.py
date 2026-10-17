@@ -1529,6 +1529,26 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
     @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
+        # Discord is exempt from the neutral reply-target note below: its triggering-message
+        # note (added at the bottom of this method) already hands the model an actionable
+        # message id for reply/react/pin via the discord tools, and the relay mirrors
+        # reply_to_message_id into send metadata so the connector threads on it
+        # (gateway/relay/adapter.py). A second id note there would duplicate it.
+        discord_note = False
+        if (
+            source is not None
+            and getattr(source, "platform", None) == Platform.DISCORD
+            and getattr(event, "message_id", None)
+        ):
+            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
+            discord_note = _disc_tools_loaded()
+        if (
+            getattr(event, "reply_to_message_id", None)
+            and not getattr(event, "reply_to_text", None)
+            and not discord_note
+        ):
+            # Keep the volatile target on this turn, never in the cached system prompt.
+            message_text = f"[Reply target message_id: {event.reply_to_message_id}]\n\n{message_text}"
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
@@ -1542,14 +1562,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         # system prompt — it changes every turn and would bust the agent-cache signature. It is
         # the OUTERMOST prefix so strip_discord_triggering_note can peel exactly it off the
         # persisted transcript row without touching the reply pointer.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
-                message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
+        if discord_note:
+            message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:

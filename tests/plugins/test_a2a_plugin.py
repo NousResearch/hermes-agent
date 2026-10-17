@@ -864,6 +864,58 @@ class TestTaskRpcHandlers:
 # End-to-end inbound round-trip (real http.server + mocked agent)
 # --------------------------------------------------------------------------
 
+class TestFailClosedDiscoverability:
+    """#139179: a non-loopback bind with no allow-list fails closed — that
+    must stay — but the startup log and the 403 have to make the shut door
+    discoverable and fixable (no external services; local http.server only)."""
+
+    def test_startup_log_and_403_name_knob_and_entry_format(self, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "secret-token-123")
+        monkeypatch.setenv("A2A_HOST", "0.0.0.0")
+        monkeypatch.delenv("A2A_TRUSTED_PEERS", raising=False)
+        monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
+        with caplog.at_level(logging.ERROR, logger="plugins.platforms.a2a.adapter"):
+            adapter, base = _make_live_adapter(monkeypatch)
+
+            async def start():
+                assert await adapter.connect() is True
+                await adapter.disconnect()
+
+            asyncio.run(start())
+        assert any("A2A_TRUSTED_PEERS" in r.getMessage() and "ip:" in r.getMessage()
+                   for r in caplog.records), caplog.text
+
+        adapter, base = _make_live_adapter(monkeypatch)
+        auth = {"Authorization": "Bearer secret-token-123"}
+
+        async def refused():
+            assert await adapter.connect() is True
+            # Valid bearer token, empty trust list: 403 whose message names the knob.
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                await asyncio.to_thread(_post_json, base + "/", _send_body("hi"), auth)
+            assert exc.value.code == 403
+            body = json.loads(exc.value.read().decode())
+            assert body["error"]["code"] == protocol.ERR_UNTRUSTED_PEER
+            assert "A2A_TRUSTED_PEERS" in body["error"]["message"]
+            await adapter.disconnect()
+
+        asyncio.run(refused())
+
+        # The documented fix — an ip:-prefixed entry for the loopback caller — re-opens dispatch.
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "ip:127.0.0.1")
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def allowed():
+            assert await adapter.connect() is True
+            resp = await asyncio.to_thread(_post_json, base + "/", _send_body("hello"), auth)
+            assert resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            await adapter.disconnect()
+
+        asyncio.run(allowed())
+
+
 def _make_live_adapter(monkeypatch, reply_fn=None):
     """Create an adapter on a free port with a mocked agent handler.
 

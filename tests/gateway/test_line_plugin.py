@@ -536,3 +536,119 @@ class TestMediaPublicUrlGuard:
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
 
+    def test_send_voice_blocked_without_public_url(self, monkeypatch, tmp_path):
+        ad = self._adapter(monkeypatch)
+        ad._client = MagicMock()
+        snd = tmp_path / "x.wav"
+        snd.write_bytes(b"RIFF....WAVE")
+        result = asyncio.run(ad.send_voice("Uchat", str(snd)))
+        assert not result.success
+        assert "LINE_PUBLIC_URL" in (result.error or "")
+
+    def test_send_video_blocked_without_public_url(self, monkeypatch, tmp_path):
+        ad = self._adapter(monkeypatch)
+        ad._client = MagicMock()
+        vid = tmp_path / "x.mp4"
+        vid.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        result = asyncio.run(ad.send_video("Uchat", str(vid)))
+        assert not result.success
+        assert "LINE_PUBLIC_URL" in (result.error or "")
+
+    def test_loopback_host_blocks_outbound_media_without_public_url(self, monkeypatch, tmp_path):
+        for loopback in ("127.0.0.1", "localhost", "::1"):
+            ad = self._adapter(monkeypatch, host=loopback)
+            ad._client = MagicMock()
+            snd = tmp_path / "x.wav"
+            snd.write_bytes(b"RIFF....WAVE")
+            result = asyncio.run(ad.send_voice("Uchat", str(snd)))
+            assert not result.success
+            assert "LINE_PUBLIC_URL" in (result.error or "")
+
+
+class TestVoiceDurationAndMediaUrlValidation:
+    """Outbound voice and video messages validate public HTTPS URLs and automatically
+    detect actual audio duration when defaulted."""
+
+    def _adapter(self, **extra):
+        from gateway.config import PlatformConfig
+        base = {
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+            "public_url": "https://public.example.com",
+        }
+        base.update(extra)
+        return LineAdapter(PlatformConfig(enabled=True, extra=base))
+
+    def test_send_voice_rejects_non_https_url(self, tmp_path):
+        ad = self._adapter(public_url="http://insecure.example.com")
+        ad._client = MagicMock()
+        snd = tmp_path / "voice.wav"
+        snd.write_bytes(b"RIFF....WAVE")
+        result = asyncio.run(ad.send_voice("Uchat", str(snd)))
+        assert not result.success
+        assert "LINE audio URL must be HTTPS" in (result.error or "")
+
+    def test_send_video_rejects_non_https_url(self, tmp_path):
+        ad = self._adapter(public_url="http://insecure.example.com")
+        ad._client = MagicMock()
+        vid = tmp_path / "video.mp4"
+        vid.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        result = asyncio.run(ad.send_video("Uchat", str(vid)))
+        assert not result.success
+        assert "LINE video URL must be HTTPS" in (result.error or "")
+
+    def test_send_voice_auto_detects_wav_duration(self, tmp_path):
+        import wave
+        ad = self._adapter()
+        ad._client = MagicMock()
+        ad._send_messages = AsyncMock(return_value=_line.SendResult(success=True))
+
+        wav_path = tmp_path / "voice.wav"
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(8000)
+            wf.writeframes(b"\x00\x00" * 16000)  # exactly 2.0 seconds
+
+        result = asyncio.run(ad.send_voice("Uchat", str(wav_path)))
+        assert result.success
+        ad._send_messages.assert_called_once()
+        sent_messages = ad._send_messages.call_args[0][1]
+        assert len(sent_messages) == 1
+        assert sent_messages[0]["type"] == "audio"
+        assert sent_messages[0]["originalContentUrl"].startswith("https://public.example.com/line/media/")
+        assert sent_messages[0]["duration"] == 2000
+
+    def test_send_voice_auto_detects_via_ffprobe(self, monkeypatch, tmp_path):
+        ad = self._adapter()
+        ad._client = MagicMock()
+        ad._send_messages = AsyncMock(return_value=_line.SendResult(success=True))
+
+        audio_path = tmp_path / "voice.mp3"
+        audio_path.write_bytes(b"fake mp3 audio content")
+
+        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/ffprobe" if cmd == "ffprobe" else None)
+        monkeypatch.setattr(
+            "subprocess.check_output",
+            lambda *args, **kwargs: "3.75\n",
+        )
+
+        result = asyncio.run(ad.send_voice("Uchat", str(audio_path)))
+        assert result.success
+        sent_messages = ad._send_messages.call_args[0][1]
+        assert sent_messages[0]["duration"] == 3750
+
+    def test_send_voice_preserves_explicit_duration(self, tmp_path):
+        ad = self._adapter()
+        ad._client = MagicMock()
+        ad._send_messages = AsyncMock(return_value=_line.SendResult(success=True))
+
+        audio_path = tmp_path / "voice.wav"
+        audio_path.write_bytes(b"RIFF....WAVE")
+
+        result = asyncio.run(ad.send_voice("Uchat", str(audio_path), duration_ms=8500))
+        assert result.success
+        sent_messages = ad._send_messages.call_args[0][1]
+        assert sent_messages[0]["duration"] == 8500
+
+

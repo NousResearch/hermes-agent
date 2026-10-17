@@ -328,7 +328,7 @@ def resolve_proxy_url(
     platform_env_var: str | None = None, *,
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
     configured: str | None = None) -> str | None:
-    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then the adapter's own YAML
+    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``, either case) first, then the YAML
     value *configured* (``telegram.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
     case), then the macOS system proxy — the latter two only when ``gateway.trust_env`` is true.
     None when nothing is found or NO_PROXY matches a target.
@@ -340,8 +340,8 @@ def resolve_proxy_url(
     value is the same profile's, so a secondary keeps its configured route without any env
     bridge (#108440). The generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw
     process-env read — those are OS/system-level network settings, not a per-profile Hermes concept."""
-    from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
-    value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
+    from gateway.platforms.base_proxy import resolve_platform_proxy_env
+    value = resolve_platform_proxy_env(platform_env_var)
     if not value:
         value = str(configured or "").strip()
     if not value:

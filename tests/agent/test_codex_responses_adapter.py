@@ -1047,3 +1047,30 @@ def test_role_message_phase_is_kept_only_for_assistant_values_the_api_accepts():
     ])
 
     assert [item.get("phase") for item in wire] == ["final_answer", None, None, None]
+
+
+@pytest.mark.parametrize(
+    ("call_kwargs", "expected"),
+    [
+        # The ``custom`` profile projects keyed providers' effort to top-level ``reasoning_effort``;
+        # the Responses wire must still carry it (it used to silently fall back to the server default).
+        ({"reasoning_effort": "low"}, {"effort": "low", "summary": "auto"}),
+        ({"reasoning_effort": "none"}, {"effort": "none"}),
+        # Nested ``extra_body.reasoning`` stays authoritative over the top-level shape.
+        ({"reasoning_effort": "low", "extra_body": {"reasoning": {"enabled": True, "effort": "high"}}},
+         {"effort": "high", "summary": "auto"}),
+        # Non-ladder values (Groq's "default") are not a Codex level — leave the server default.
+        ({"reasoning_effort": "default"}, None),
+        ({}, None),
+    ],
+    ids=["top_level_low", "top_level_none", "nested_wins", "unknown_ignored", "absent"],
+)
+def test_auxiliary_adapter_maps_top_level_reasoning_effort(call_kwargs, expected):
+    from agent.auxiliary_client import _CodexCompletionsAdapter
+
+    adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url="https://proxy.example/v1"), "gpt-5.5")
+    resp_kwargs, _, _ = adapter._build_responses_kwargs(
+        {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}], **call_kwargs}
+    )
+    assert resp_kwargs.get("reasoning") == expected
+    assert "reasoning_effort" not in resp_kwargs

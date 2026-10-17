@@ -242,6 +242,41 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_failure_deliver_override_is_visible_in_responses(self):
+        # The override is honored at fire time; every job-bearing response must echo it
+        # so the configured target can be audited without opening jobs.json (#134228).
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Watchdog",
+                schedule="every 1h",
+                name="Watchdog",
+                failure_deliver="telegram:-100123456",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["failure_deliver"] == "telegram:-100123456"
+
+        updated = json.loads(
+            cronjob(action="update", job_id=created["job_id"], failure_deliver="local")
+        )
+        assert updated["success"] is True
+        # `local` is the structural opt-out (no failure alert leaves the machine) and
+        # must stay visible, not be collapsed away.
+        assert updated["job"]["failure_deliver"] == "local"
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["failure_deliver"] == "local"
+
+    def test_failure_deliver_omitted_when_unset(self):
+        # Absent override: the echoed job object stays key-identical to pre-feature output.
+        created = json.loads(cronjob(action="create", prompt="Plain", schedule="every 1h"))
+        assert created["success"] is True
+        assert "failure_deliver" not in created["job"]
+
+        listing = json.loads(cronjob(action="list"))
+        assert "failure_deliver" not in listing["jobs"][0]
+
     def test_create_with_natural_weekday_schedule(self):
         # The documented "every monday 9am" form must create a real cron job
         # through the tool path, not error out (issue: parser rejected it).

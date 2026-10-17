@@ -1,0 +1,52 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: pulumi
+description: >-
+  Pulumi Cloud stacks, resource search, policy violations and the Pulumi
+  Registry schema via Pulumi's hosted MCP.
+source: https://www.pulumi.com/docs/ai/mcp-server/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live Oct 2026: RFC 9728 protected-resource metadata ->
+# AS metadata with registration_endpoint, PKCE S256; DCR returns a
+# client_secret with client_secret_post, which mcp_oauth handles the same
+# way it does for Figma). Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh. The authorize page asks for a
+# Pulumi Access Token and an organization; the token's org scope is what the
+# MCP tools see.
+transport:
+  type: http
+  url: https://mcp.ai.pulumi.com/mcp
+
+auth:
+  type: oauth
+
+# Excluded: the Neo delegation tools hand the request to Pulumi Neo, a
+# server-side agent that plans and EXECUTES infrastructure changes on its own
+# — an opaque meta-layer acting outside Hermes's per-tool approval loop (same
+# call as railway-agent). neo-get-tasks stays: it only lists task status. The
+# remaining tools are direct reads (stacks, resource search, policy
+# violations, org users, Registry schema) plus deploy-to-aws, which generates
+# code locally rather than applying it.
+tools:
+  default_excluded:
+    - neo-task-launcher
+    - neo-continue-task
+    - neo-reset-conversation
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - pulumi
+    - pulumi stack
+  hosts:
+    - pulumi.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Pulumi (or run `hermes mcp login pulumi`): paste a Pulumi Access
+  Token and pick the organization, then restart the session so
+  tools load.

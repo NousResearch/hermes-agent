@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    （僅下一輪有效 — 回應一次後即還原）"
     switch_cancelled: "🟡 已取消切換模型。目前模型不變（{model}）。"
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_文字備援：回覆 `{prefix}approve` 以切換，或 `{prefix}cancel` 以保留目前模型。_"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **作用中的代理與任務**"
     active_agents: "**作用中代理：** {count}"
@@ -1966,6 +1968,7 @@ cli:
     desc_switch_anyway: "在目前的 Hermes 工作階段使用此模型。"
     choice_cancel: "取消"
     desc_keep_current_model: "保留目前的模型。"
+    confirm_choice_prompt: "選擇 [1/2]："
     switch_cancelled: "已取消切換模型。"
     selection_failed: "✗ 選擇模型失敗：{error}"
     switch_failed: "⚠ 切換至模型 {model} 失敗（{error}）；維持使用 {old_model}。"

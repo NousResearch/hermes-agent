@@ -34,12 +34,33 @@ SMOKE_TARGETS = {"smoke-darwin-arm64": "macos/arm64", "smoke-darwin-x64": "macos
                  "smoke-win32-arm64": "windows/arm64", "smoke-win32-x64": "windows/x64"}
 
 
+# Stable releases are cut from ``main`` or from a ``release/*`` maintenance branch.
+RELEASE_LINE_BRANCHES = ("main", "release/*")
+
+
+def release_line_refspecs(remote_prefix: str) -> list[str]:
+    """Fetch refspecs that mirror every release-line branch under ``refs/remotes/<remote_prefix>/``."""
+    return [f"+refs/heads/{branch}:refs/remotes/{remote_prefix}/{branch}"
+            for branch in RELEASE_LINE_BRANCHES]
+
+
+def release_line_contains(commit: str, remote_prefix: str) -> list[str]:
+    """The git command that lists the fetched release-line branches holding ``commit``.
+
+    Empty output means the commit is on no release line. Git matches the
+    ``release/*`` pattern across the slash, so ``release/0.22.1`` qualifies.
+    """
+    return ["git", "for-each-ref", "--contains", commit, "--format=%(refname)",
+            *(f"refs/remotes/{remote_prefix}/{branch}" for branch in RELEASE_LINE_BRANCHES)]
+
+
 def admit_claim(tag: str, commit: str, *, on_main) -> dict:
     """Admit a release from its attempt ref. The checkout version is not read.
 
     ``main`` carries ``0.0.0`` on purpose, so the version and the attempt come
     from ``rc.<N>-vX.Y.Z`` and the only question about the commit is whether
-    it is on ``main``.
+    it is on a release line: ``main`` or a ``release/*`` branch. ``on_main`` is
+    that predicate; the name predates release branches.
     """
     from scripts.releases.versioning import parse_attempt_ref
 
@@ -48,7 +69,7 @@ def admit_claim(tag: str, commit: str, *, on_main) -> dict:
         raise ValueError(f"{tag} is not a claim tag")
     version, attempt = parsed
     if not on_main(commit):
-        raise ValueError(f"{commit} is not on main")
+        raise ValueError(f"{commit} is not on main or a release/* branch")
     return {"claim_tag": tag, "tag": f"v{version}", "version": version, "attempt": attempt,
             "commit": commit}
 
@@ -542,14 +563,10 @@ def check_claim(env: dict, run=output) -> dict:
     if (remote_commit != commit or remote_object != local_object
             or (expected_object and remote_object != expected_object)):
         raise ValueError("Stable claim tag moved")
-    run(["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"])
+    run(["git", "fetch", "origin", *release_line_refspecs("origin")])
 
     def on_main(sha: str) -> bool:
-        try:
-            run(["git", "merge-base", "--is-ancestor", sha, "origin/main"])
-        except subprocess.CalledProcessError:
-            return False
-        return True
+        return bool(run(release_line_contains(sha, "origin")))
 
     admitted = admit_claim(claim_tag, commit, on_main=on_main)
     raw_metadata = run(["git", "tag", "-l", claim_tag, "--format=%(contents)"])
@@ -595,7 +612,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
             or not refs.get(f"refs/tags/{tag}")):
         raise ValueError("Final release tag custody changed")
 
-    run(["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main",
+    run(["git", "fetch", "origin", *release_line_refspecs("origin"),
          f"+refs/tags/{claim_tag}:refs/tags/{claim_tag}",
          f"+refs/tags/{tag}:refs/tags/{tag}"])
     for receipt, expected_object in ((claim_tag, claim_object),
@@ -603,7 +620,8 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
         local_object = run(["git", "rev-parse", f"refs/tags/{receipt}"])
         if local_object != expected_object or run(["git", "cat-file", "-t", local_object]) != "tag":
             raise ValueError("Final release local tag differs from the remote")
-    run(["git", "merge-base", "--is-ancestor", commit, "origin/main"])
+    if not run(release_line_contains(commit, "origin")):
+        raise ValueError(f"{commit} is not on main or a release/* branch")
     claim = _claim_metadata(
         run(["git", "tag", "-l", claim_tag, "--format=%(contents)"]),
         version=admitted["version"], attempt=admitted["attempt"], commit=commit,
@@ -769,12 +787,13 @@ def transitions(env: dict) -> None:
 # The candidate manifest is written after the smokes (decision 23): the smoke
 # results it records are the candidate calls' own workflow results — each
 # call's stable-phase-result only succeeds when its selected groups' smokes
-# did, so a failed smoke leaves no accepted manifest behind.
-CALL_SMOKE_JOBS = {
-    "candidates-darwin-arm64": "smoke-darwin-arm64",
-    "candidates-darwin-x64": "smoke-darwin-x64",
-    "candidates-win32-arm64": "smoke-win32-arm64",
-    "candidates-win32-x64": "smoke-win32-x64",
+# did, so a failed smoke leaves no accepted manifest behind. The Windows MSIX
+# smokes run in the bundle call, beside assembly, not after each per-arch build.
+SMOKE_CALLS = {
+    "smoke-darwin-arm64": "candidates-darwin-arm64",
+    "smoke-darwin-x64": "candidates-darwin-x64",
+    "smoke-win32-arm64": "candidates-win32-bundle",
+    "smoke-win32-x64": "candidates-win32-bundle",
 }
 CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
                       "termux", "windows-universal")
@@ -798,10 +817,10 @@ def candidate_manifest(env: dict) -> None:
     runs = lane_set.jobs_to_run(lanes)
     # A call whose package is not a target (the Store variant is not install-smoked) has no smoke.
     built = lane_set.targets(lanes)
-    calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if runs[call] and SMOKE_TARGETS[job] in built}
-    smoke = {job: {"result": "skipped"} for job in CALL_SMOKE_JOBS.values()}
+    calls = {job: call for job, call in SMOKE_CALLS.items() if runs[call] and SMOKE_TARGETS[job] in built}
+    smoke = {job: {"result": "skipped"} for job in SMOKE_CALLS}
     if lane_set.runs_smokes(lanes):
-        ran = {job: {"result": (needs.get(call) or {}).get("result")} for call, job in calls.items()}
+        ran = {job: {"result": (needs.get(call) or {}).get("result")} for job, call in calls.items()}
         require_success(ran, list(ran))
         smoke.update(ran)
     # Every call the claim built, smoked or not (Termux has no smoke): a green call never stands in

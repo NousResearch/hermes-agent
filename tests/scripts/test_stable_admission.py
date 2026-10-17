@@ -34,7 +34,7 @@ def test_admission_reads_the_version_and_attempt_from_the_attempt_ref():
 def test_admission_refuses_a_claim_for_a_commit_off_main():
     from scripts.releases.stable import admit_claim
 
-    with pytest.raises(ValueError, match="not on main"):
+    with pytest.raises(ValueError, match="not on main or a release/"):
         admit_claim("rc.1-v0.21.5", "b" * 40, on_main=lambda _sha: False)
 
 

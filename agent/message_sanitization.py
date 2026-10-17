@@ -748,6 +748,21 @@ def reasoning_replay_route(
     # A strict route never gets a reasoning key, not even the must-echo pad.
     return ReasoningReplayRoute(pad and RC in carriers, carriers)
 
+# Providers that re-export a reasoning-echo family (matched by the family's bare model
+# substring) but do not count the replayed reasoning bytes in their reported
+# ``prompt_tokens``. An OLLAMA_CLOUD request carrying
+# ``reasoning_content`` replayed it verbatim, yet the reported ``prompt_tokens`` did not
+# move at all — the echoed field is accepted (the send policy must keep it) but is
+# ignored by the provider's own accounting. The compaction trigger estimates requests
+# against ``prompt_tokens``, so charging these bytes there overcounts the request by
+# multiples of the real figure and fires compaction far too early on reasoning-heavy
+# sessions. Keyed on resolved provider ids (never a host substring), mirroring the
+# provider-keyed sets elsewhere in the agent package (e.g. ``prompt_caching``'s
+# ``MEASURED_1H_PROVIDERS``).
+_ESTIMATOR_IGNORES_REPLAYED_THINKING_PROVIDERS = frozenset({
+    "ollama-cloud", "ollama", "ollama-cloud-provider",
+})
+
 
 def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:
     """True when stale assistant reasoning text is actually replayed on the wire for the route.
@@ -757,11 +772,20 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
     A runtime rejection is not visible here; both sides then over-charge identically.
+
+    This is the ESTIMATOR-facing accounting predicate, distinct from the send-side
+    protocol predicate ``needs_reasoning_echo``: a route can echo the field (the send
+    policy must keep attaching it) while the provider's token accounting ignores it.
+    Re-export providers where the two diverge are excluded here — see
+    ``_ESTIMATOR_IGNORES_REPLAYED_THINKING_PROVIDERS``.
     """
     if (api_mode or "") == "anthropic_messages":
         from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
         if native_anthropic_preserves_prior_thinking(base_url, model):
             return True
+    if (provider or "").strip().lower() in _ESTIMATOR_IGNORES_REPLAYED_THINKING_PROVIDERS:
+        # Re-export providers echo the field but ignore it in their own accounting (see above).
+        return False
     if not api_mode:
         # No route facts (a bare compressor): only the must-echo tier is known to replay.
         return needs_reasoning_echo(provider, model, base_url)

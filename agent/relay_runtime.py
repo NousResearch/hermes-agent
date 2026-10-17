@@ -238,6 +238,7 @@ class RelaySession:
     rotate_pending: bool = False  # consumed at next begin_turn
     close_pending: bool = False  # rotating compaction hit a live turn; end_turn consumes it
     cwd: str = ""  # latest logical working directory; reused when a session segment rotates
+    _environment_observations: dict[int, Any] = field(default_factory=dict, repr=False)
 
 
 def _load_segments_config() -> dict[str, Any]:
@@ -416,6 +417,7 @@ class RelayRuntime:
         self._shutdown_complete, self._operations_idle = threading.Event(), threading.Event()
         self._operations_idle.set()
         self._active_operations = 0
+        self._environment_lifecycles: set[Any] = set()
         self._plugin_configuration_state = _PLUGIN_CONFIGURATION.acquire(self, self.relay)
         # Cleared (with the atexit hook) by the first successful _finish_shutdown.
         self._plugin_configuration_registered = True
@@ -528,6 +530,8 @@ class RelayRuntime:
             if session.closing or session.handle is None:
                 return
             old_handle = session.handle
+            from agent.relay_sandbox import close_session_observations
+            close_session_observations(self, session, f"segment_{reason}")
             # Bookkeeping FIRST: a failed native call must not leave rotate_pending set.
             session.segment += 1
             session.segment_turns = 0
@@ -781,6 +785,8 @@ class RelayRuntime:
             if session.closing:
                 return
             session.closing = True
+            from agent.relay_sandbox import close_session_observations
+            close_session_observations(self, session, "session_close")
             if session.handle is not None:
                 failure = self._close_scope_handle(
                     session, session.handle, output={}, allow_closing=True,
@@ -822,6 +828,8 @@ class RelayRuntime:
                 session_ids = list(self._sessions)
             for session_id in session_ids:
                 _warn_on_error("runtime operation", self._close_session, {"session_id": session_id})
+            from agent.relay_sandbox import close_runtime_observations
+            close_runtime_observations(self)
             if self._plugin_configuration_registered:
                 if self._plugins_active():
                     self.release_managed_execution(RELAY_PLUGINS_EXECUTION_CONSUMER)

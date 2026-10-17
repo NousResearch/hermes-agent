@@ -36,6 +36,16 @@ from tools.environments.docker_egress import (
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
+from tools.execution_observability import (
+    capture_docker_attempt,
+    docker_exec_started,
+    record_docker_result,
+    suppress_docker_attempt_capture,
+)
+from tools.environment_observability import (
+    capture_observer, environment_acquired, environment_provisioning, finish_observation,
+    prepare_cleanup, record_transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -658,101 +668,121 @@ class DockerEnvironment(BaseEnvironment):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
-        self._persistent = persistent_filesystem
-        self._persist_across_processes = persist_across_processes
-        # Set by terminal_tool._create_environment for session-scoped containers
-        # (docker + container_persistent: false): removed at session close/idle timeout.
-        self._session_scoped = False
-        self._task_id = task_id
-        self._forward_env = _normalize_forward_env_names(forward_env)
-        self._env = _normalize_env_dict(env)
-        self._init_unset_passthrough_names: tuple[str, ...] = ()
-        self._container_id: Optional[str] = None
-        self._init_env_values: dict[str, str] = {}
-        self._workspace_dir: Optional[str] = None
-        self._home_dir: Optional[str] = None
-        logger.info("DockerEnvironment volumes: %s", volumes)
-        if volumes is not None and not isinstance(volumes, list):
-            logger.warning("docker_volumes config is not a list: %r", volumes)
-            volumes = []
+        owner = environment_provisioning(self)
+        try:
+            self._persistent = persistent_filesystem
+            self._persist_across_processes = persist_across_processes
+            # Set by terminal_tool._create_environment for session-scoped containers
+            # (docker + container_persistent: false): removed at session close/idle timeout.
+            self._session_scoped = False
+            self._task_id = task_id
+            self._forward_env = _normalize_forward_env_names(forward_env)
+            self._env = _normalize_env_dict(env)
+            self._init_unset_passthrough_names: tuple[str, ...] = ()
+            self._container_id: Optional[str] = None
+            self._init_env_values: dict[str, str] = {}
+            self._workspace_dir: Optional[str] = None
+            self._home_dir: Optional[str] = None
+            logger.info("DockerEnvironment volumes: %s", volumes)
+            if volumes is not None and not isinstance(volumes, list):
+                logger.warning("docker_volumes config is not a list: %r", volumes)
+                volumes = []
 
-        _ensure_docker_available()
+            try:
+                _ensure_docker_available()
+            except Exception as error:
+                record_transition(
+                    self, "provision", "failed", None, evidence="preflight",
+                    error_class=type(error).__name__,
+                )
+                raise
 
-        resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
-        volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
-        mount = getattr(self, "host_cwd_mount", None)
-        if mount and cwd_follows_host_mount(cwd, mount):
-            logger.info(
-                "Container cwd follows configured host workspace at %s (requested %s)",
-                mount, cwd)
-            cwd = mount
-            self.cwd = mount
-        volume_args.extend(_readonly_skill_mount_args())
-        egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
-            self._egress_and_env_args(extra_args))
-        volume_args.extend(egress_volume_args)
-        user_args = _host_user_args(run_as_host_user)
+            resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
+            volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
+            mount = getattr(self, "host_cwd_mount", None)
+            if mount and cwd_follows_host_mount(cwd, mount):
+                logger.info(
+                    "Container cwd follows configured host workspace at %s (requested %s)",
+                    mount, cwd)
+                cwd = mount
+                self.cwd = mount
+            volume_args.extend(_readonly_skill_mount_args())
+            egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
+                self._egress_and_env_args(extra_args))
+            volume_args.extend(egress_volume_args)
+            user_args = _host_user_args(run_as_host_user)
 
-        # Resolved once so it works when /usr/local/bin is not in PATH (macOS services).
-        self._docker_exe = find_docker() or "docker"
+            # Resolved once so it works when /usr/local/bin is not in PATH (macOS services).
+            self._docker_exe = find_docker() or "docker"
 
-        # s6-overlay images (e.g. hermes-agent:latest) already use /init as PID 1 and exec
-        # /run/s6/basedir/bin/init during startup. For those images we must (a) skip Docker's --init (two
-        # competing PID-1 inits) and (b) mount /run with exec instead of noexec, or s6 stage0 dies with exit
-        # 126 "Permission denied". Detected once here; defaults are kept on any inspection failure. See
-        # issue #34628.
-        image_uses_s6_init = _image_uses_init_entrypoint(self._docker_exe, image)
-        if image_uses_s6_init:
-            logger.info(
-                "Docker: image %s uses /init (s6-overlay) as entrypoint — "
-                "skipping --init and mounting /run with exec.",
-                image)
-        security_args = _build_security_args(
-            run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
-        self._snap_compat = snap_compat
-        if snap_compat:
-            logger.warning(
-                "docker_snap_compat: running without --init and no-new-privileges (snap Docker under AppArmor)")
+            # s6-overlay images (e.g. hermes-agent:latest) already use /init as PID 1 and exec
+            # /run/s6/basedir/bin/init during startup. For those images we must (a) skip Docker's --init (two
+            # competing PID-1 inits) and (b) mount /run with exec instead of noexec, or s6 stage0 dies with exit
+            # 126 "Permission denied". Detected once here; defaults are kept on any inspection failure. See
+            # issue #34628.
+            image_uses_s6_init = _image_uses_init_entrypoint(self._docker_exe, image)
+            if image_uses_s6_init:
+                logger.info(
+                    "Docker: image %s uses /init (s6-overlay) as entrypoint — "
+                    "skipping --init and mounting /run with exec.",
+                    image)
+            security_args = _build_security_args(
+                run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
+            self._snap_compat = snap_compat
+            if snap_compat:
+                logger.warning(
+                    "docker_snap_compat: running without --init and no-new-privileges (snap Docker under AppArmor)")
 
-        logger.info("Docker volume_args: %s", volume_args)
-        # docker_extra_args go last so they can override defaults.
-        all_run_args = (
-            security_args + user_args + writable_args + resource_args
-            + egress_host_args + volume_args + env_args + validated_extra)
-        logger.info("Docker run_args: %s", all_run_args)
+            logger.info("Docker volume_args: %s", volume_args)
+            # docker_extra_args go last so they can override defaults.
+            all_run_args = (
+                security_args + user_args + writable_args + resource_args
+                + egress_host_args + volume_args + env_args + validated_extra)
+            logger.info("Docker run_args: %s", all_run_args)
 
-        # Labels identify hermes containers to the orphan reaper (hermes-agent=1),
-        # cross-process reuse (task-id/profile) and operators. The reuse identity
-        # is captured at start and never changes for the container's lifetime.
-        # Egress posture gets its own label: env/CA mounts are immutable after
-        # creation, so reusing a pre-egress container would bypass the firewall.
-        profile_name = _container_identity(shared_container_key)
-        task_label = _sanitize_label_value(task_id)
-        self._labels = {
-            "hermes-agent": "1",
-            "hermes-task-id": task_label,
-            "hermes-profile": profile_name,
-            _EGRESS_LABEL_KEY: egress_label}
-        # Explicit sharing opts into the first creator's settings. Otherwise,
-        # changed image/mount/home configuration must start a fresh container.
-        if not shared_container_key:
-            self._labels[_ENVIRONMENT_LABEL_KEY] = _reuse_environment_fingerprint(
-                image=image, mount_args=[*writable_args, *volume_args],
-                hermes_home=str(get_hermes_home()))
-        # Saved for container recreation on "No such container" recovery.
-        self._image = image
-        self._image_pinned = image_pinned
-        self._image_uses_s6_init = image_uses_s6_init
-        self._all_run_args = all_run_args
+            # Labels identify hermes containers to the orphan reaper (hermes-agent=1),
+            # cross-process reuse (task-id/profile) and operators. The reuse identity
+            # is captured at start and never changes for the container's lifetime.
+            # Egress posture gets its own label: env/CA mounts are immutable after
+            # creation, so reusing a pre-egress container would bypass the firewall.
+            profile_name = _container_identity(shared_container_key)
+            task_label = _sanitize_label_value(task_id)
+            self._labels = {
+                "hermes-agent": "1",
+                "hermes-task-id": task_label,
+                "hermes-profile": profile_name,
+                _EGRESS_LABEL_KEY: egress_label}
+            # Explicit sharing opts into the first creator's settings. Otherwise,
+            # changed image/mount/home configuration must start a fresh container.
+            if not shared_container_key:
+                self._labels[_ENVIRONMENT_LABEL_KEY] = _reuse_environment_fingerprint(
+                    image=image, mount_args=[*writable_args, *volume_args],
+                    hermes_home=str(get_hermes_home()))
+            # Saved for container recreation on "No such container" recovery.
+            self._image = image
+            self._image_pinned = image_pinned
+            self._image_uses_s6_init = image_uses_s6_init
+            self._all_run_args = all_run_args
 
-        reused = persist_across_processes and self._attach_existing_container(
-            task_label, profile_name, egress_label, network)
-        if not reused:
-            self._container_id = self._docker_run(cwd)
+            reused = persist_across_processes and self._attach_existing_container(
+                task_label, profile_name, egress_label, network)
+            if not reused:
+                self._container_id = self._docker_run(cwd)
 
-        # Init-time env forwarding args seed the snapshot.
-        self._init_env_args = self._build_init_env_args()
-        self.init_session()
+            # Init-time env forwarding args seed the snapshot.
+            self._init_env_args = self._build_init_env_args()
+            try:
+                self.init_session()
+            except Exception as error:
+                record_transition(
+                    self, "provision", "failed", self._container_id,
+                    error_class=type(error).__name__,
+                )
+                raise
+
+        except BaseException:
+            finish_observation(owner, reason="provision_failed")
+            raise
 
     # --- __init__ helpers ---
     def _egress_and_env_args(self, extra_args) -> tuple[str, list[str], list[str], list[str], list[str]]:
@@ -936,8 +966,14 @@ class DockerEnvironment(BaseEnvironment):
                     "starting fresh (task=%s, profile=%s).",
                     container_id[:12], actual_image, self._image, task_label, profile_name)
                 try:
-                    run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+                    record_transition(self, "remove", "requested", container_id)
+                    result = run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+                    record_transition(
+                        self, "remove", "succeeded" if result.returncode == 0 else "failed",
+                        container_id, state_after="deleted" if result.returncode == 0 else None,
+                    )
                 except (subprocess.TimeoutExpired, OSError) as e:
+                    record_transition(self, "remove", "failed", container_id, error_class=type(e).__name__)
                     logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                 return False
         if not network:
@@ -949,8 +985,14 @@ class DockerEnvironment(BaseEnvironment):
                     "container — removing it and starting fresh (task=%s, profile=%s).",
                     container_id[:12], actual_mode or "unknown", task_label, profile_name)
                 try:
-                    run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+                    record_transition(self, "remove", "requested", container_id)
+                    result = run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+                    record_transition(
+                        self, "remove", "succeeded" if result.returncode == 0 else "failed",
+                        container_id, state_after="deleted" if result.returncode == 0 else None,
+                    )
                 except (subprocess.TimeoutExpired, OSError) as e:
+                    record_transition(self, "remove", "failed", container_id, error_class=type(e).__name__)
                     logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                 return False
 
@@ -963,6 +1005,10 @@ class DockerEnvironment(BaseEnvironment):
                     container_id[:12], state, err)
                 return False
         self._container_id = container_id
+        record_transition(
+            self, "reuse", "succeeded", container_id, state_after="running",
+            evidence="docker_ps" if state == "running" else "operation_result",
+        )
         logger.info(
             "Reusing container %s (task=%s, profile=%s, prior state=%s)",
             container_id[:12], task_label, profile_name, state)
@@ -985,10 +1031,16 @@ class DockerEnvironment(BaseEnvironment):
     def _start_container(self, container_id: str) -> Exception | None:
         """``docker start`` a stopped container; returns the failure instead of raising."""
         try:
+            record_transition(self, "start", "requested", container_id)
             run_capture([self._docker_exe, "start", container_id], timeout=30, check=True)
+            record_transition(self, "start", "succeeded", container_id, state_after="running")
             return None
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            record_transition(self, "start", "failed", container_id, error_class=type(e).__name__)
             return e
+        except OSError as e:
+            record_transition(self, "start", "failed", container_id, error_class=type(e).__name__)
+            raise
 
     def _run_command(self, name: str, workdir: str) -> list[str]:
         """``docker run -d`` argv for a fresh ``sleep infinity`` container (idle reaper handles
@@ -1015,16 +1067,22 @@ class DockerEnvironment(BaseEnvironment):
         run_cmd = self._run_command(container_name, cwd)
         logger.debug("Starting container: %s", ' '.join(run_cmd))
         try:
+            record_transition(self, "create_and_start", "requested", None)
             result = run_capture(
                 run_cmd, timeout=120, check=True,  # image pull may take a while
                 env=self._docker_client_env(self._run_env_values))
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            record_transition(self, "create_and_start", "failed", None, error_class=type(e).__name__)
             logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, e)
             subprocess.run(
                 [self._docker_exe, "rm", "-f", container_name],
                 capture_output=True, timeout=10, stdin=subprocess.DEVNULL, check=False)
             raise
+        except OSError as e:
+            record_transition(self, "create_and_start", "failed", None, error_class=type(e).__name__)
+            raise
         container_id = result.stdout.strip()
+        record_transition(self, "create_and_start", "succeeded", container_id, state_after="running")
         logger.info("Started container %s (%s)", container_name, container_id[:12])
         return container_id
 
@@ -1074,7 +1132,8 @@ class DockerEnvironment(BaseEnvironment):
         """Spawn bash inside the container. Init seeds the snapshot; profile-scoped passthrough
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
-        assert self._container_id, "Container not started"
+        container_id = self._container_id
+        assert container_id, "Container not started"
         cmd = [self._docker_exe, "exec"]
         if stdin_data is not None:
             cmd.append("-i")
@@ -1092,10 +1151,18 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
-        cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
+        cmd += [container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
         client_env = self._docker_client_env(env_values)
-        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        process = _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        docker_exec_started(container_id)
+        return process
+
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        # BaseEnvironment may probe sudo through _run_bash here. That probe
+        # must not stand in for the tool command if the latter never spawns.
+        with suppress_docker_attempt_capture():
+            return super()._prepare_command(command)
 
     # --- "No such container" recovery ---
     _NO_CONTAINER_PATTERNS = ("No such container", "is not running", "no such container")
@@ -1108,6 +1175,8 @@ class DockerEnvironment(BaseEnvironment):
         may have recreated it), else a fresh one from the saved image/run-args. False when
         recovery fails so the caller surfaces the original error."""
         logger.warning("Container %s appears to be gone — attempting recovery", (self._container_id or "")[:12])
+        previous_container_id = self._container_id
+        record_transition(self, "recover", "requested", previous_container_id)
         self._container_id = None
 
         existing = self._find_reusable_container(
@@ -1118,6 +1187,7 @@ class DockerEnvironment(BaseEnvironment):
             cid, state = existing
             if state == "running":
                 self._container_id = cid
+                record_transition(self, "reuse", "succeeded", cid, state_after="running", evidence="docker_ps")
                 logger.info("Recovery: reusing running container %s", cid[:12])
             elif (err := self._start_container(cid)) is None:
                 self._container_id = cid
@@ -1128,15 +1198,25 @@ class DockerEnvironment(BaseEnvironment):
         if not self._container_id:
             if not self._image:
                 logger.error("Recovery: no saved image name, cannot recreate container")
+                record_transition(self, "recover", "failed", None, previous_container_id=previous_container_id)
                 return False
             try:
                 new_name = f"hermes-{uuid.uuid4().hex[:8]}"
+                record_transition(self, "create_and_start", "requested", None)
                 result = run_capture(
                     self._run_command(new_name, self.cwd), timeout=120, check=True,
                     env=self._docker_client_env(self._run_env_values))
                 self._container_id = result.stdout.strip()
+                record_transition(
+                    self, "create_and_start", "succeeded", self._container_id, state_after="running",
+                )
                 logger.info("Recovery: created fresh container %s (%s)", new_name, self._container_id[:12])
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+                record_transition(self, "create_and_start", "failed", None, error_class=type(e).__name__)
+                record_transition(
+                    self, "recover", "failed", None,
+                    previous_container_id=previous_container_id, error_class=type(e).__name__,
+                )
                 logger.error("Recovery: failed to create new container: %s", e)
                 return False
 
@@ -1144,24 +1224,58 @@ class DockerEnvironment(BaseEnvironment):
             self._snapshot_ready = False
             self.init_session()
         except Exception as e:
+            record_transition(
+                self, "recover", "failed", self._container_id,
+                previous_container_id=previous_container_id, error_class=type(e).__name__,
+            )
             logger.error("Recovery: init_session failed in new container: %s", e)
             return False
 
         logger.info("Recovery successful — new container %s", (self._container_id or "")[:12])
         self._mark_recreated()
+        record_transition(
+            self, "recover", "succeeded", self._container_id,
+            previous_container_id=previous_container_id,
+        )
         return True
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
         """Execute a command; if the container was removed out-of-band (idle reaper,
         docker prune, OOM, daemon restart) recreate it and retry once."""
-        result = super().execute(command, cwd, **kwargs)
-        if (
-            result.get("returncode", 0) != 0
-            and self._is_container_gone(result.get("output", ""))
-            and self._persist_across_processes
-            and self._recreate_container()):
-            result = super().execute(command, cwd, **kwargs)
-        return result
+        environment_acquired(self)
+        attempted_targets: list[str | None] = []
+
+        def attempt() -> dict:
+            with capture_docker_attempt() as targets:
+                result: dict | None = None
+                try:
+                    result = super(DockerEnvironment, self).execute(command, cwd, **kwargs)
+                    return result
+                finally:
+                    # A failed command may have run before printing a recovery
+                    # keyword. Retain both targets rather than claiming the
+                    # replacement alone performed the whole tool call.
+                    observed_targets = targets[-1:]
+                    attempted_targets.extend(observed_targets)
+                    # The deadline backstop can return before its worker has
+                    # finished spawning docker exec. In that case, the target
+                    # is unknown at tool-end even if an earlier retry target
+                    # was observed; do not export that earlier ID as complete.
+                    if result is not None and result.get("hermes_timed_out") and not observed_targets:
+                        attempted_targets.append(None)
+
+        try:
+            result = attempt()
+            if (
+                result.get("returncode", 0) != 0
+                and self._is_container_gone(result.get("output", ""))
+                and self._persist_across_processes
+                and self._recreate_container()):
+                result = attempt()
+            return result
+        finally:
+            for target in attempted_targets:
+                record_docker_result(target)
 
     @staticmethod
     def _storage_opt_supported() -> bool:
@@ -1228,7 +1342,7 @@ class DockerEnvironment(BaseEnvironment):
         if environment_label := self._labels.get(_ENVIRONMENT_LABEL_KEY):
             filters.extend(["--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}"])
         result = _docker_query(
-            [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
+            [self._docker_exe, "ps", "-a", "--no-trunc", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",
             nonzero="docker ps probe returned %d: %s — will start a fresh container")
         if result is None:
@@ -1276,26 +1390,51 @@ class DockerEnvironment(BaseEnvironment):
             # Drop the in-process handle so a fresh __init__ re-probes via
             # labels instead of reusing a stale Python reference.
             self._container_id = None
+            finish_observation(capture_observer(self), reason="retained")
             return
 
         # Capture what the worker needs — the thread can outlive ``self``.
         docker_exe = self._docker_exe
         log_id = container_id[:12]
+        observer = prepare_cleanup(self)
 
         def _do_cleanup() -> None:
-            for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
-                                   (["rm", "-f"], "docker rm -f %s failed: %s")):
-                try:
-                    subprocess.run(
-                        [docker_exe, *argv, container_id],
-                        capture_output=True, timeout=30, stdin=subprocess.DEVNULL, check=False)
-                except (subprocess.TimeoutExpired, OSError) as e:
-                    logger.warning(fail_msg, log_id, e)
+            removed = False
+            try:
+                for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
+                                       (["rm", "-f"], "docker rm -f %s failed: %s")):
+                    try:
+                        action = "stop" if argv[0] == "stop" else "remove"
+                        record_transition(None, action, "requested", container_id, observer=observer)
+                        result = subprocess.run(
+                            [docker_exe, *argv, container_id],
+                            capture_output=True, timeout=30, stdin=subprocess.DEVNULL, check=False)
+                        if action == "remove":
+                            removed = result.returncode == 0
+                        record_transition(
+                            None, action, "succeeded" if result.returncode == 0 else "failed",
+                            container_id,
+                            state_after=("exited" if action == "stop" else "deleted") if result.returncode == 0 else None,
+                            observer=observer,
+                        )
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        record_transition(
+                            None, action, "failed", container_id, error_class=type(e).__name__, observer=observer,
+                        )
+                        logger.warning(fail_msg, log_id, e)
+            finally:
+                finish_observation(observer, reason="removed" if removed else "cleanup_failed")
 
         t = threading.Thread(target=_do_cleanup, daemon=True, name=f"hermes-cleanup-{log_id}")
         with _TEARDOWN_LOCK:
             _TEARDOWN_THREADS.add(t)
-        t.start()
+        try:
+            t.start()
+        except BaseException:
+            with _TEARDOWN_LOCK:
+                _TEARDOWN_THREADS.discard(t)
+            finish_observation(observer, reason="cleanup_failed")
+            raise
         self._cleanup_thread = t
         self._container_id = None
 

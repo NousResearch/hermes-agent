@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 from tools.environments.singularity import _get_scratch_dir
+from tools.environment_observability import environment_acquired, environment_released
 from tools.terminal_tool_backends import (
     _container_config_from_config,
     _local_config_from_config,
@@ -139,6 +140,7 @@ def _unregister_env(task_id: str):
         _last_activity.pop(task_id, None)
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
+    environment_released(env, reason="cache_release")
     return env
 
 
@@ -171,6 +173,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
                 _creation_locks.pop(t, None)
     for task_id, env in envs_to_stop:
         if env is not None:
+            environment_released(env, reason="idle_reap")
             _clear_file_ops_cache(task_id)
             _teardown_env(env, task_id)
 
@@ -213,7 +216,7 @@ def ensure_task_env(task_id: Optional[str] = None):
     if existing is not None:
         with _env_lock:
             _last_activity[effective_task_id] = time.time()
-        return existing
+        return environment_acquired(existing)
 
     image = _select_image(env_type, resolve_task_overrides(task_id), config)
 
@@ -225,7 +228,7 @@ def ensure_task_env(task_id: Optional[str] = None):
     with task_lock:
         existing = get_active_env(effective_task_id)
         if existing is not None:
-            return existing
+            return environment_acquired(existing)
         try:
             new_env = _create_configured_env(
                 config, env_type, image=image, cwd=config["cwd"],
@@ -246,7 +249,7 @@ def ensure_task_env(task_id: Optional[str] = None):
             "%s environment lazily initialized for task %s",
             env_type, effective_task_id[:8],
         )
-        return new_env
+        return environment_acquired(new_env)
 
 
 def is_persistent_env(task_id: str) -> bool:
@@ -329,5 +332,6 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
             if env is not None:
                 evicted.append(env)
     for env in evicted:
+        environment_released(env, reason="eviction")
         with _quiet("cleanup of degraded environment failed"):
             env.cleanup()

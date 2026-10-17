@@ -908,6 +908,7 @@ DEFAULT_CONFIG = {
         "cli_refresh_interval": 1.0,
         "vim_mode": False,  # vi keybindings in the CLI composer (config-only); off = emacs bindings
         "cli_mouse": False,  # classic CLI footer clicks; off: mouse tracking takes wheel + text select
+        "cli_footer_tips": True,  # classic CLI: rotating dim "✦ Tip:" line while the footer is empty
         "user_message_preview": {  # CLI: submitted user-message lines echoed to scrollback
             "first_lines": 2,
             "last_lines": 2,

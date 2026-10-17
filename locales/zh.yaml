@@ -3899,6 +3899,12 @@ tips:
   t375: "API_SERVER_MODEL_NAME 自定义 /v1/models 返回的模型名——多配置档的 Open WebUI 部署必不可少。"
   t376: "控制台插件从 /dashboard-plugins/<name>/ 提供服务——把文件放进 ~/.hermes/dashboard-plugins/ 即可。"
   t377: "--source tool 的聊天默认不出现在 hermes sessions list 中——显式指定 --source 才能看到。"
+  t378: "Press ↓ on an empty prompt to select footer rows; Enter opens one."
+  t379: "In the live-work footer, Tab jumps between agents, shells, monitors."
+  t380: "Select a subagent in the footer and press s to steer it."
+  t381: "/mouse on makes the live-work footer clickable."
+  t382: "/statusbar legend explains every status-bar icon."
+  t383: "With /mouse on, click a footer badge to jump to those rows."
   placeholder:
     p01: "随便问点什么，或输入 / 查看命令…"
     p02: "总结这个文件夹里的内容"

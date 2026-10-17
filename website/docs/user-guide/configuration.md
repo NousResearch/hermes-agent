@@ -2206,6 +2206,7 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   vim_mode: false         # CLI only: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live NORMAL/INSERT/REPLACE mode shows at the right of the status bar. Config-only, read at startup.
   cli_mouse: false        # CLI only: click the live-work footer (summary selects rows, a row opens its live log). Off by default: terminal mouse reporting takes over wheel scrolling and plain text selection (Shift+drag still selects in most terminals). `/mouse on|off` flips it live and saves it here.
+  cli_footer_tips: true   # CLI only: while the live-work footer has nothing to list, show one dim, rotating "✦ Tip:" line under the composer (a new tip every 30 s). false turns it off.
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript
   timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)

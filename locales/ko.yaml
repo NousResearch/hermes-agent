@@ -3899,6 +3899,12 @@ tips:
   t375: "API_SERVER_MODEL_NAME은 /v1/models에 표시되는 모델 이름을 바꿔요 — 다중 프로필 Open WebUI 구성에 꼭 필요해요."
   t376: "대시보드 플러그인은 /dashboard-plugins/<name>/에서 제공돼요 — 파일을 ~/.hermes/dashboard-plugins/에 넣으세요."
   t377: "--source tool 채팅은 기본적으로 hermes sessions list에서 제외돼요 — 보려면 --source를 명시적으로 지정하세요."
+  t378: "Press ↓ on an empty prompt to select footer rows; Enter opens one."
+  t379: "In the live-work footer, Tab jumps between agents, shells, monitors."
+  t380: "Select a subagent in the footer and press s to steer it."
+  t381: "/mouse on makes the live-work footer clickable."
+  t382: "/statusbar legend explains every status-bar icon."
+  t383: "With /mouse on, click a footer badge to jump to those rows."
   placeholder:
     p01: "무엇이든 물어보세요. 명령은 / 를 입력하세요…"
     p02: "이 폴더에 무엇이 있는지 요약해 줘"

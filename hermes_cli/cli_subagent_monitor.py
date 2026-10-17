@@ -49,6 +49,8 @@ class SubagentMonitor:
         # The footer's one-line steer input (``s``): target row key and the typed draft.
         self.steer_target = None
         self.steer_draft = ''
+        # ``cli_footer_tips.FooterTips`` while display.cli_footer_tips is on (install_dock).
+        self.tips = None
 
     @property
     def has_rows(self):
@@ -132,7 +134,10 @@ class SubagentMonitor:
         if now - self._last_poll < 1:
             return
         self._last_poll = now
-        if self.refresh():
+        changed = self.refresh()
+        if self.tips is not None and not self.has_rows and self.tips.due():
+            changed = self.tips.rotate() or changed  # repaint only when the tip text changed
+        if changed:
             if self.app is not None:
                 self.invalidate()
             else:
@@ -435,14 +440,18 @@ def toggle_dock(cli):
 
 def install_dock(cli):
     """The live-work footer under the composer (``cli_dock_footer``): a summary pill and one row
-    per subagent / background process, selectable with Down and clickable with ``display.cli_mouse``."""
+    per subagent / background process, selectable with Down and clickable with ``display.cli_mouse``.
+    With nothing to list it shows a rotating tip instead (``display.cli_footer_tips``)."""
     from prompt_toolkit.application import get_app
     from prompt_toolkit.layout import ConditionalContainer, Window
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.filters import Condition
     from hermes_cli import cli_dock_footer as footer
+    from hermes_cli import cli_footer_tips
     monitor = SubagentMonitor(cli)
     cli._subagent_monitor = monitor
+    if getattr(cli, '_footer_tips_enabled', False):
+        monitor.tips = cli_footer_tips.FooterTips()
     monitor.refresh()
     actions = footer.click_actions(cli)
 
@@ -459,5 +468,6 @@ def install_dock(cli):
 
     cli._subagent_dock_widget = ConditionalContainer(
         Window(FormattedTextControl(text), wrap_lines=False, dont_extend_height=True),
-        filter=Condition(lambda: monitor.has_rows and not modal_prompt_active(cli)),
+        filter=Condition(lambda: (monitor.has_rows and not modal_prompt_active(cli))
+                         or cli_footer_tips.showing(cli, get_app().output.get_size().rows)),
     )

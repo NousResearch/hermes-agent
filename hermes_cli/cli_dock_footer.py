@@ -210,8 +210,12 @@ def _row_budget(rows):
 
 def dock_lines(monitor, *, columns, rows, selecting=False, actions=None):
     """Footer lines as fragment lists (the widget joins them with newlines). ``actions`` maps
-    ``'pill'`` / ``'row'`` to mouse-click callbacks."""
+    ``'pill'`` / ``'row'`` to mouse-click callbacks. With nothing to list, the footer is the
+    rotating tip line (``cli_footer_tips``) or empty."""
     if not monitor.has_rows:
+        from hermes_cli import cli_footer_tips
+        if cli_footer_tips.showing(monitor.cli, rows):
+            return [line] if (line := monitor.tips.line(columns)) else []
         return []
     columns = max(0, columns - 1)
     roster = monitor.roster

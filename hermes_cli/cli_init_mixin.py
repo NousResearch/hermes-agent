@@ -562,6 +562,8 @@ class CLIInitMixin:
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
         self._mouse_enabled = bool(CLI_CONFIG["display"].get("cli_mouse", False))  # /mouse flips it live
+        # Rotating tip line under the composer while the live-work footer is empty (cli_footer_tips).
+        self._footer_tips_enabled = bool(CLI_CONFIG["display"].get("cli_footer_tips", True))
         # Vi/vim editing mode for the input composer (display.vim_mode, config-only).
         # Off by default: prompt_toolkit's standard emacs bindings.
         self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))

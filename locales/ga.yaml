@@ -3899,6 +3899,12 @@ tips:
   t375: "Saincheapann API_SERVER_MODEL_NAME ainm na samhla ar /v1/models — riachtanach do shocruithe Open WebUI il-phróifíle."
   t376: "Freastalaítear breiseáin deaise ó /dashboard-plugins/<name>/ — cuir comhaid isteach in ~/.hermes/dashboard-plugins/."
   t377: "Eisiatar comhráite --source tool ó hermes sessions list de réir réamhshocraithe — socraigh --source go follasach chun iad a fheiceáil."
+  t378: "Press ↓ on an empty prompt to select footer rows; Enter opens one."
+  t379: "In the live-work footer, Tab jumps between agents, shells, monitors."
+  t380: "Select a subagent in the footer and press s to steer it."
+  t381: "/mouse on makes the live-work footer clickable."
+  t382: "/statusbar legend explains every status-bar icon."
+  t383: "With /mouse on, click a footer badge to jump to those rows."
   placeholder:
     p01: "Fiafraigh rud ar bith, nó clóscríobh / le haghaidh orduithe…"
     p02: "Déan achoimre ar a bhfuil sa bhfillteán seo"

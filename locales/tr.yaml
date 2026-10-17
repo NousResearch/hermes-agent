@@ -3899,6 +3899,12 @@ tips:
   t375: "API_SERVER_MODEL_NAME, /v1/models üzerindeki model adını özelleştirir — çok profilli Open WebUI kurulumları için şarttır."
   t376: "Panel eklentileri /dashboard-plugins/<name>/ yolundan sunulur — dosyaları ~/.hermes/dashboard-plugins/ içine koyun."
   t377: "--source tool sohbetleri varsayılan olarak hermes sessions list çıktısında yer almaz — görmek için --source değerini açıkça belirtin."
+  t378: "Press ↓ on an empty prompt to select footer rows; Enter opens one."
+  t379: "In the live-work footer, Tab jumps between agents, shells, monitors."
+  t380: "Select a subagent in the footer and press s to steer it."
+  t381: "/mouse on makes the live-work footer clickable."
+  t382: "/statusbar legend explains every status-bar icon."
+  t383: "With /mouse on, click a footer badge to jump to those rows."
   placeholder:
     p01: "Bir şey sorun veya komutlar için / yazın…"
     p02: "Bu klasördekileri özetle"

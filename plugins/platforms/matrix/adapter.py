@@ -715,17 +715,24 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
 
 
 def matrix_deps_present() -> bool:
-    """PASSIVE registry ``check_fn`` — must never install; ``ensure_matrix_deps`` is the installer.
-
-    Registry ``check_fn`` — called from status displays and config loading, so it must never install
-    anything. The ACTIVE lazy-installer (``check_matrix_requirements``) is registered as ``ensure_deps_fn``
-    and runs from ``create_adapter()`` when this returns False (#79812).
-    """
+    """PASSIVE registry ``check_fn`` (status displays, config loading) — must never install. On False,
+    ``create_adapter()`` runs the ACTIVE installer ``ensure_matrix_deps`` (``ensure_deps_fn``, #79812).
+    With E2EE off a plain ``mautrix`` install is enough (#139398)."""
     try:
         from pm import available as is_available
-        return is_available("matrix")
+        return is_available("matrix") or (_resolve_e2ee_mode() == "off" and not _missing_matrix_deps("off"))
     except Exception:  # pragma: no cover — defensive
         return False
+
+
+# E2EE off needs only plain mautrix: asyncpg/aiosqlite back the crypto store, aiohttp_socks only SOCKS proxies.
+_MATRIX_E2EE_ONLY_ANCHORS = frozenset({"asyncpg", "aiosqlite", "aiohttp_socks"})
+
+
+def _missing_matrix_deps(e2ee_mode: str) -> tuple[str, ...]:
+    from pm import extras
+    missing = extras.missing("matrix")
+    return tuple(a for a in missing if a not in _MATRIX_E2EE_ONLY_ANCHORS) if e2ee_mode == "off" else missing
 
 
 def check_matrix_requirements() -> bool:
@@ -743,18 +750,11 @@ def check_matrix_requirements() -> bool:
 
 
 def ensure_matrix_deps() -> bool:
-    """ACTIVE deps-only installer (registry ``ensure_deps_fn``); rebinds the type globals. Installs the
-    whole ``platform.matrix`` group when ANY declared package is missing — short-circuiting on
-    ``import mautrix`` left asyncpg/aiosqlite uninstalled forever.
-
-    Lazy-installs the full ``platform.matrix`` feature group via
-    ``pm.extras.ensure_and_bind`` whenever any of the declared
-    packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is
-    missing — not just mautrix itself.  Previously this short-circuited on
-    ``import mautrix``, which left the other four packages uninstalled
-    forever and broke E2EE connect with ``No module named 'asyncpg'``
-    (#31116).  Rebinds module-level type globals on success.
-    """
+    """ACTIVE deps-only installer (registry ``ensure_deps_fn``); rebinds the type globals on install.
+    Syncs the whole ``matrix`` extra when any anchor this E2EE mode needs is missing, not just mautrix
+    (short-circuiting on it broke E2EE connect with ``No module named 'asyncpg'``, #31116). With E2EE
+    off only plain mautrix counts: the extra pins ``mautrix[encryption]``, whose python-olm/libolm build
+    needs cmake + a C++ toolchain a plaintext gateway never uses (#139398)."""
     from pm import extras
 
     def _import():
@@ -773,13 +773,13 @@ def ensure_matrix_deps() -> bool:
 
     # A complete install (module-level imports already bound the types) needs no sync; only a
     # partial one goes through ensure_and_bind, which rebinds after the install.
-    if extras.missing("matrix") and not extras.ensure_and_bind("matrix", _import, globals()):
+    e2ee_mode = _resolve_e2ee_mode()
+    if _missing_matrix_deps(e2ee_mode) and not extras.ensure_and_bind("matrix", _import, globals()):
         logger.warning(
             "Matrix: required packages not installed or need a restart. "
             "Run `hermes pm install`, then restart Hermes."
         )
         return False
-    e2ee_mode = _resolve_e2ee_mode()
     if e2ee_mode == "required" and not _check_e2ee_deps():
         logger.error(
             "Matrix: E2EE is required but dependencies are missing. %s. Without this, encrypted "

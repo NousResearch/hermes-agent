@@ -27,6 +27,7 @@ import ntpath
 import os
 import shutil
 import subprocess
+import threading
 from collections.abc import Mapping
 
 from pm import paths
@@ -103,8 +104,52 @@ def _bash_starts(candidate: str) -> bool:
         return False
 
 
+_RESOLUTION_ENV = ("PATH", "PATHEXT", "HERMES_GIT_BASH_PATH", "HERMES_RUNTIME_DIR",
+                   "HERMES_HOME", "HERMES_INSTALL_ROOT",
+                   "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA", "SHELL")
+_resolved: tuple[tuple, str] | None = None
+_resolved_lock = threading.Lock()
+
+
+def _cached(key: tuple) -> str | None:
+    hit = _resolved
+    if hit is not None and hit[0] == key and os.path.isfile(hit[1]):
+        return hit[1]
+    return None
+
+
 def bash() -> str | None:
-    """Resolve the bash binary to use, or None if none is available."""
+    """Resolve the bash binary to use, or None if none is available.
+
+    Memoised per process: every terminal command asks, and on Windows each
+    resolution re-reads the store's facts and spawns bash.exe to prove it
+    starts. The key is the env vars the ladder and store lookup read; file
+    contents (facts.json, manifest, install stamp) are not, so a moved store
+    is noticed once the old bash is gone. A cached bash that still exists but
+    no longer starts is kept until a spawn site calls forget(). A miss (no
+    bash) is never cached, so an install mid-process is seen.
+    """
+    global _resolved
+    key = tuple(os.environ.get(name) for name in _RESOLUTION_ENV)
+    if (hit := _cached(key)) is not None:
+        return hit
+    with _resolved_lock:
+        if (hit := _cached(key)) is not None:
+            return hit
+        found = _resolve_bash()
+        _resolved = (key, found) if found else None
+        return found
+
+
+def forget() -> None:
+    """Drop the memoised bash so the next bash() resolves and probes again;
+    for spawn sites whose launch of it failed."""
+    global _resolved
+    with _resolved_lock:
+        _resolved = None
+
+
+def _resolve_bash() -> str | None:
     staged = _staged_bash()
     if staged and _bash_starts(staged):
         return staged

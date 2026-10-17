@@ -85,9 +85,9 @@ vi.mock('@/lib/project-idea-templates', () => ({
 }))
 
 // Fill the create form and click Create once the form is actually submittable
-// (creation requires a name + at least one folder, so the button stays
-// disabled until both are in). Awaiting the enable also keeps an async submit
-// from one test leaking into the next.
+// (creation requires a name; a folder is optional, matching the backend
+// contract). Awaiting the enable also keeps an async submit from one test
+// leaking into the next.
 async function fillCreateForm() {
   fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'Skunkworks' } })
   fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
@@ -100,6 +100,25 @@ async function fillCreateForm() {
 }
 
 describe('ProjectDialog', () => {
+
+  it('creates a pathless project when no folder is picked (#134283)', async () => {
+    render(<ProjectDialog />)
+
+    fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'Legal Writing' } })
+
+    const create = screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement
+
+    await waitFor(() => expect(create.disabled).toBe(false))
+    fireEvent.click(create)
+
+    await waitFor(() => {
+      expect(createProject).toHaveBeenCalledWith(
+        expect.objectContaining({ folders: [], name: 'Legal Writing' })
+      )
+      expect(enterProject).toHaveBeenCalledWith('p_created')
+    })
+  })
+
   it('creates from the folder basename and enters the created project when the name is empty', async () => {
     render(<ProjectDialog />)
 

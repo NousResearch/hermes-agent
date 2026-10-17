@@ -506,7 +506,8 @@ class PluginContext:
 
     def call_mcp(
         self, server: str, tool: str, arguments: Optional[dict[str, Any]] = None,
-        timeout: float = 30,
+        timeout: float = 30, *, task_id: Optional[str] = None, session_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Call ``tool`` on MCP ``server`` synchronously through :mod:`tools.mcp_tool`'s native client
         (same trust gates, breaker, reconnect — never a parallel connection). Servers not in
@@ -529,8 +530,13 @@ class PluginContext:
         except (TypeError, ValueError):
             timeout = 30.0
         timeout = max(1.0, min(timeout, 600.0))
+        from model_tools import handle_plugin_tool_call
         from tools.mcp_tool_handlers import _make_tool_handler
-        raw = _make_tool_handler(server, tool, timeout)(dict(arguments or {}))
+        from tools.mcp_tool_schema import mcp_prefixed_tool_name
+        raw = handle_plugin_tool_call(
+            mcp_prefixed_tool_name(server, tool), dict(arguments or {}), _make_tool_handler(server, tool, timeout),
+            task_id=task_id, session_id=session_id, tool_call_id=tool_call_id,
+        )
         logger.debug("Plugin %s called MCP %s/%s (timeout=%ss, %d chars returned)",
                      self.manifest.name, server, tool, timeout, len(raw or ""))
         return self._mcp_envelope(raw)
@@ -678,7 +684,13 @@ class PluginContext:
             agent = getattr(self._manager._cli_ref, "agent", None)
             if agent is not None:
                 kwargs["parent_agent"] = agent
-        return registry.dispatch(tool_name, args, scope=self._manager.scope_key, **kwargs)
+        from model_tools import handle_plugin_tool_call
+        return handle_plugin_tool_call(
+            tool_name, args,
+            lambda next_args: registry.dispatch(tool_name, next_args, scope=self._manager.scope_key, **kwargs),
+            task_id=kwargs.get("task_id"), session_id=kwargs.get("session_id"),
+            tool_call_id=kwargs.get("tool_call_id"),
+        )
 
     @_serialized_replacement
     def register_context_engine(self, engine) -> Optional[PluginRegistration]:

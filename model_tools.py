@@ -16,6 +16,7 @@ from contextvars import ContextVar
 import logging
 import threading
 import time
+import uuid
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
@@ -864,6 +865,54 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: dict[st
     except Exception as _hook_err:
         logger.debug("transform_tool_result hook error: %s", _hook_err)
     return result
+
+
+def handle_plugin_tool_call(
+    function_name: str, function_args: dict[str, Any], dispatch: Any, *, task_id: Optional[str] = None,
+    session_id: Optional[str] = None, tool_call_id: Optional[str] = None,
+) -> Any:
+    """Run a plugin-originated tool call through the model tool policy pipeline.
+
+    ``dispatch`` keeps plugin-specific registry scope and direct MCP handler setup at
+    the edge, while policy hooks and execution middleware see the same call shape
+    as model-originated tools.
+    """
+    function_args = coerce_tool_args(function_name, function_args)
+    if not isinstance(function_args, dict):
+        function_args = {}
+    ids = _CallIds(task_id, session_id, tool_call_id or uuid.uuid4().hex)
+    trace: list[dict[str, Any]] = []
+    original_args = dict(function_args)
+    function_args, original_args, trace = _apply_request_middleware(function_name, function_args, ids, trace)
+    start = time.monotonic()
+    try:
+        function_args, blocked = _pre_dispatch_guards(function_name, function_args, False, ids, trace)
+        if blocked is not None:
+            result, error_type, error_message = blocked
+            _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
+                                      **asdict(ids), status="blocked", error_type=error_type,
+                                      error_message=error_message, middleware_trace=trace)
+            return result
+
+        def _dispatch(next_args: dict[str, Any]) -> Any:
+            return dispatch(next_args)
+
+        with _approval_observability(ids):
+            from hermes_cli.middleware import run_tool_execution_middleware
+            result = run_tool_execution_middleware(function_name, function_args, _dispatch,
+                                                    original_args=original_args, **ids.hook_kwargs())
+        duration_ms = _elapsed_ms(start)
+        _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
+                                  **asdict(ids), duration_ms=duration_ms, middleware_trace=trace)
+        return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
+    except Exception as exc:
+        error_msg = f"Error executing {function_name}: {exc!s}"
+        logger.exception(error_msg)
+        result = tool_error(_sanitize_tool_error(error_msg))
+        _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
+                                  **asdict(ids), duration_ms=_elapsed_ms(start), status="error",
+                                  error_type=type(exc).__name__, error_message=str(exc), middleware_trace=trace)
+        return result
 
 
 def _elapsed_ms(start: float) -> int:

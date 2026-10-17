@@ -1,6 +1,5 @@
 """Streamed tool-call delta assembly for the chat-completions stream (and Relay's accumulator)."""
 
-import json
 from typing import Optional
 
 from agent.reasoning_carriers import field
@@ -20,6 +19,8 @@ class _ToolCallAccumulator:
         # Argument deltas are collected per slot and joined once in ``materialize`` —
         # ``+=`` per chunk rebuilds the whole string every delta (quadratic on big args).
         self._argument_parts: dict[int, list[str]] = {}
+        # slot -> (parts scanned, depth, in_string, escaped, started); see ``_arguments_closed``.
+        self._arg_scan: dict[int, tuple] = {}
 
     def materialize(self) -> dict:
         """Join buffered argument deltas into each entry's ``arguments``; idempotent. Returns ``acc``."""
@@ -32,17 +33,36 @@ class _ToolCallAccumulator:
         continues the current one. LM Studio and Kimi send a fresh id on every argument fragment
         with no name, and some MiniMax routes resend the same name on each fragment too: only a
         named delta can start a call, and a same-name one only once the current call's arguments
-        are complete JSON (two parallel calls of one tool must still split)."""
+        have closed (two parallel calls of one tool must still split)."""
         name = getattr(getattr(tc_delta, "function", None), "name", None)
         if not name:
             return False
         if name != self.acc.get(slot, {}).get("function", {}).get("name"):
             return True
-        try:
-            json.loads("".join(self._argument_parts.get(slot, ())))
-        except ValueError:
-            return False
-        return True
+        return self._arguments_closed(slot)
+
+    def _arguments_closed(self, slot: int) -> bool:
+        """Structural completion (brackets balanced outside strings), not strict JSON validity, so a
+        repairable call with a trailing comma still ends its slot. Scans only fragments added since
+        the last check: linear over the call, and free for providers that never reach here."""
+        parts = self._argument_parts.get(slot, [])
+        done, depth, in_string, escaped, started = self._arg_scan.get(slot, (0, 0, False, False, False))
+        for ch in "".join(parts[done:]):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            elif ch == '"':
+                in_string = True
+            elif ch in "{[":
+                depth, started = depth + 1, True
+            elif ch in "}]":
+                depth -= 1
+        self._arg_scan[slot] = (len(parts), depth, in_string, escaped, started)
+        return started and depth == 0 and not in_string
 
     def feed(self, tc_delta) -> Optional[str]:
         """Merge one delta; return the tool name the first time it is complete."""

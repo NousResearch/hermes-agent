@@ -24,10 +24,17 @@ def test_nameless_fragments_with_fresh_ids_stay_one_call():
 
 def test_same_name_fresh_id_splits_only_after_complete_arguments():
     # A name resent on each fragment continues the call (MiniMax); a same-name delta after
-    # complete arguments is a second parallel call (Ollama); a different name always splits.
+    # closed arguments is a second parallel call (Ollama), even when the first is only repairable
+    # JSON (trailing comma) or has brackets inside a string; a different name always splits.
     assert _calls(
         ("mm-1", "terminal", '{"command": '),
-        ("mm-2", "terminal", '"ls"}'),
-        ("mm-3", "terminal", '{"command": "pwd"}'),
-        ("mm-4", "read_file", "{}"),
-    ) == [("terminal", '{"command": "ls"}'), ("terminal", '{"command": "pwd"}'), ("read_file", "{}")]
+        ("mm-2", "terminal", '"echo \\"}{\\""}'),
+        ("mm-3", "terminal", '{"command": "pwd",}'),
+        ("mm-4", "terminal", '{"command": "ls"}'),
+        ("mm-5", "read_file", "{}"),
+    ) == [
+        ("terminal", '{"command": "echo \\"}{\\""}'),
+        ("terminal", '{"command": "pwd",}'),
+        ("terminal", '{"command": "ls"}'),
+        ("read_file", "{}"),
+    ]

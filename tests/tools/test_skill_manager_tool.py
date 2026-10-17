@@ -24,6 +24,9 @@ from tools.skill_manager_tool import (
     _remove_file,
     _find_skill,
     _skill_lock_path,
+    _STAGED_TOKENS,
+    _STAGED_TOKENS_MAX,
+    _trusted_replay,
     skill_manage,
 )
 from agent.skill_utils import (
@@ -1344,3 +1347,32 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+class TestStagedTokenEviction:
+    """_STAGED_TOKENS evicts oldest-first and never bulk-clears.
+
+    A bulk clear() at the cap would drop every minted provenance marker at once; oldest-first
+    keeps recent markers live and bounds memory. The record's trust decision is made
+    process-agnostically in _trusted_replay — this store is a leak guard, not the decision.
+    """
+
+    def test_cap_evicts_oldest_not_all(self):
+        import tools.skill_manager_tool as tools
+        tools._STAGED_TOKENS.clear()
+        oldest = tools._mint_staging_token()
+        assert oldest in tools._STAGED_TOKENS
+        last = oldest
+        for _ in range(tools._STAGED_TOKENS_MAX):
+            last = tools._mint_staging_token()
+        # The token minted before the cap was reached is the oldest and got evicted; the most
+        # recent one survives. The store holds exactly the cap, never bulk-cleared.
+        assert oldest not in tools._STAGED_TOKENS
+        assert last in tools._STAGED_TOKENS
+        assert len(tools._STAGED_TOKENS) == tools._STAGED_TOKENS_MAX
+
+    def test_under_cap_nothing_evicted(self):
+        import tools.skill_manager_tool as tools
+        tools._STAGED_TOKENS.clear()
+        kept = [tools._mint_staging_token() for _ in range(3)]
+        for t in kept:
+            assert t in tools._STAGED_TOKENS
+        tools._STAGED_TOKENS.clear()

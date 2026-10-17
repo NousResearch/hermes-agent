@@ -4,6 +4,12 @@ Pins the deduped surface: patch args defer to the `patch` tool's matching
 semantics instead of re-teaching them; file_path states its skill-dir-
 relative shape; no authoring curriculum or confirm-with-user coaching in
 the description (maintainer-directed cuts).
+
+Documented exception: evidence_merge (#135677) is the one structured op
+field — the additive evidence counters (steps/evolution are lists of
+records) cannot be flattened to scalars without a lossy JSON-string
+encoding. It is provably safe against the failure the flat rule guards
+(see test_structured_op_field_never_shares_a_branch_with_text_slots).
 """
 import os
 import sys
@@ -12,6 +18,9 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
+
+STRUCTURED_OP_FIELDS = {"evidence_merge"}
+TEXT_SLOTS = {"content", "old_string", "new_string", "file_content", "file_path"}
 
 
 class TestSkillManageSchemaDiet(unittest.TestCase):
@@ -27,14 +36,26 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
         """Maintainer-directed: operations[] IS the interface — each op
         names its skill; a single edit is a list of one. Flat fields are
         handler-only compat. Every per-action branch is a flat op object
-        (memory-tool pattern), not a nested sub-object."""
+        (memory-tool pattern), not a nested sub-object — except the one
+        structured field documented at module level."""
         props = SKILL_MANAGE_SCHEMA["parameters"]["properties"]
         self.assertEqual(sorted(props), ["operations"])
         self.assertEqual(SKILL_MANAGE_SCHEMA["parameters"]["required"], ["operations"])
         for branch in self._branches():
             self.assertEqual(branch["required"][:2], ["name", "action"])
-            self.assertTrue(all(p["type"] != "object" for p in branch["properties"].values()))
+            object_props = {k for k, p in branch["properties"].items() if p.get("type") == "object"}
+            self.assertTrue(object_props <= STRUCTURED_OP_FIELDS, object_props)
         self.assertTrue(self._op_props("delete"))
+
+    def test_structured_op_field_never_shares_a_branch_with_text_slots(self):
+        """Proves the evidence_merge exception is safe instead of assuming it: #112677's
+        flat rule exists to keep the text slots apart so grammar-constrained models
+        cannot emit two of them on one flat op; the structured field sits on its own
+        dedicated branch and that branch must never carry a text slot."""
+        for branch in self._branches():
+            keys = set(branch["properties"])
+            if keys & STRUCTURED_OP_FIELDS:
+                self.assertEqual(keys & TEXT_SLOTS, set(), sorted(keys & TEXT_SLOTS))
 
 
 def _fits(op, branch):

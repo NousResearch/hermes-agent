@@ -147,7 +147,7 @@ The `video_gen` toolset is disabled by default. Enable it in `hermes tools` → 
 :::
 
 :::note X search auto-enables when xAI credentials are present
-The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Premium+ OAuth token or `XAI_API_KEY`) are configured. Disable explicitly via `hermes tools` → `🐦 X (Twitter) Search` (press space) if you don't want this. The tool routes through xAI's built-in `x_search` Responses API — it works with **either** your SuperGrok / X Premium+ OAuth login or a paid `XAI_API_KEY`, and prefers OAuth when both are configured (uses your subscription quota instead of API spend). The tool schema is hidden from the model when no xAI credentials are configured, regardless of whether the toolset is enabled.
+The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Premium+ OAuth token or `XAI_API_KEY`) are configured. Disable explicitly via `hermes tools` → `🐦 X (Twitter) Search` (press space) if you don't want this. The tool routes through xAI's built-in `x_search` Responses API — it works with **either** your SuperGrok / X Premium+ OAuth login or a paid `XAI_API_KEY`. When both are configured the explicit `XAI_API_KEY` wins: the OAuth bearer answers x_search in a degraded mode without citations, so the key is used (metered API billing) and OAuth is the fallback when no key is set. See [X Search](../user-guide/features/x-search.md). The tool schema is hidden from the model when no xAI credentials are configured, regardless of whether the toolset is enabled.
 :::
 
 ### Models
@@ -164,7 +164,7 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 | Image | `grok-imagine-image-2.0` | Typography/layout-aware; strongest quality; ~10–20 s |
 | Image | `grok-imagine-image-quality` | Higher fidelity; ~10–20 s |
 | Video | `grok-imagine-video` | Text-to-video |
-| Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |
+| Video | `grok-imagine-video-1.5` | Image-to-video; the earlier `grok-imagine-video-1.5-preview` / `grok-imagine-video-1.5-2026-05-30` ids are still accepted |
 | TTS | (default voice) | xAI `/v1/tts` endpoint |
 
 The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-4.6` is always pinned to the top of the list.

@@ -261,11 +261,18 @@ class TestAbsoluteExpiry:
         _, ttl = _mint(f"printf '%s' '{{\"access_token\":\"t\",\"expiresOn\":\"{deadline}\"}}'", "p")
         assert ttl is not None and 1700 < ttl <= 1800
 
-    def test_expires_in_still_wins_when_both_present(self):
-        """The RFC 6749 field is authoritative where a helper sends both."""
-        deadline = self._iso(3600)
+    def test_the_shortest_advertised_lifetime_wins(self):
+        """Never cache past the soonest deadline the helper itself stated (#88535)."""
+        # A cached helper reprints its original expires_in; the absolute deadline is sooner.
         _, ttl = _mint(
-            f"printf '%s' '{{\"access_token\":\"t\",\"expires_in\":120,\"expiry\":\"{deadline}\"}}'",
+            f"printf '%s' '{{\"access_token\":\"t\",\"expires_in\":3600,\"expiry\":\"{self._iso(600)}\"}}'",
+            "p",
+        )
+        assert ttl is not None and 500 < ttl <= 600
+
+        # Symmetric: the relative lifetime is the shorter one.
+        _, ttl = _mint(
+            f"printf '%s' '{{\"access_token\":\"t\",\"expires_in\":120,\"expiry\":\"{self._iso(3600)}\"}}'",
             "p",
         )
         assert ttl == 120.0

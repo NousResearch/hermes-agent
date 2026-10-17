@@ -919,6 +919,17 @@ def _by_message(c: _Ctx) -> Optional[Verdict]:
     return _classify_402(c.msg, dict) if usage_limit else _first_match(c.msg, _MESSAGE_TAIL_RULES)
 
 
+def _by_key_cmd_failure(c: _Ctx) -> Optional[Verdict]:
+    """A ``key_cmd`` helper that cannot mint fails identically on every retry (#91108).
+
+    It raises ``CommandTokenError`` inside the SDK's send stack, which re-raises it as a generic
+    ``APIConnectionError("Connection error.")``; only the cause chain still names the failure, and
+    without this stage the transport heuristics below would retry it as a timeout."""
+    from agent.command_token_source import CommandTokenError
+    found = _from_cause_chain(c.error, lambda exc: True if isinstance(exc, CommandTokenError) else None, False)
+    return _v(_R.auth_permanent, **_ABORT_FALLBACK) if found else None
+
+
 def _by_transport(c: _Ctx) -> Optional[Verdict]:
     """SSL, disconnect, circuit-breaker and transport-type heuristics, in that order."""
     msg = c.msg
@@ -963,11 +974,11 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 
 
 # Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →
-# HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
-# large session → transport types → unknown (retryable with backoff).
+# HTTP status → MoA shapes → structured error code → message patterns → key_cmd mint failure →
+# SSL → disconnect + large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
     _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
-    _by_error_code, _by_message, _by_transport,
+    _by_error_code, _by_message, _by_key_cmd_failure, _by_transport,
 )
 
 

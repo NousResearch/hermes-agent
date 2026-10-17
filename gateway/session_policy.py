@@ -85,12 +85,13 @@ STORED_AS_LOCAL = frozenset(SURFACES) - _KEEP_STORED_LABEL
 def created_surface(label):
     """``created_source`` for a policy or live label.
 
-    ``local`` and ``unknown`` are not surfaces. A policy label maps through
-    ``SURFACES`` (``gui`` is ``desktop``). Any other label is kept as itself.
+    ``local`` and ``unknown`` are not surfaces. A label stored as ``local`` maps
+    through ``SURFACES`` (``gui`` is ``desktop``). Any other label, including
+    ``tool`` and ``oneshot``, is kept as itself: created_source is provenance.
     """
     if label in (None, '', 'local', 'unknown'):
         return None
-    mapped = SURFACES.get(label, label)
+    mapped = SURFACES[label] if label in STORED_AS_LOCAL else label
     if mapped in ('', 'local', 'unknown'):
         return None
     return mapped

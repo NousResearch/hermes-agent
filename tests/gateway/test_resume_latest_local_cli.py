@@ -236,6 +236,22 @@ def _listed(db, source, capsys):
 
 
 @pytest.mark.asyncio
+async def test_oneshot_keeps_its_own_created_source_and_stays_out_of_cli(tmp_path, monkeypatch, capsys):
+    """created_source is provenance: a oneshot run is stamped oneshot, not the cli it runs as."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='z', source='oneshot',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        assert authority.db.get_session(sid)['created_source'] == 'oneshot'
+        assert sid not in _listed(authority.db, 'cli', capsys)
+        assert sid in _listed(authority.db, 'oneshot', capsys)
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(('surface', 'labels'), [('gui', ('gui', 'desktop')), ('acp', ('acp',))])
 async def test_gui_and_acp_list_under_the_policy_label_and_the_agent_surface(
         tmp_path, monkeypatch, capsys, surface, labels):

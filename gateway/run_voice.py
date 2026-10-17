@@ -208,6 +208,19 @@ class GatewayVoiceMixin:
             adapter._voice_input_callback = None
         return t("gateway.voice.channel_left")
 
+    def _voice_ack_guild_for(self, source: SessionSource) -> Optional[int]:
+        """Guild whose voice call is bound to *source*'s text channel on the bot that ANSWERS it.
+        Under multiplexing a secondary profile's call lives on its own adapter, never the default's
+        (#139345): reading ``self.adapters`` would miss its call or borrow the primary bot's."""
+        if source.platform != Platform.DISCORD:
+            return None
+        adapter = self._delivery_adapter_for(source)
+        bound = getattr(adapter, "_voice_text_channels", None)
+        if not (isinstance(bound, dict) and hasattr(adapter, "voice_mixer_active")):
+            return None
+        return next((gid for gid, channel in bound.items()
+                     if str(channel) == str(source.chat_id) and adapter.voice_mixer_active(gid)), None)
+
     def _handle_voice_timeout_cleanup(self, chat_id: str, *, adapter=None) -> None:
         """Adapter callback on voice-channel timeout: clear runner-side voice_mode state.
         ``adapter`` (bound at join) is that profile's bot, not always ``self.adapters[DISCORD]``."""

@@ -140,6 +140,11 @@ class HostedRoomService:
                 and named_profile_has_identity(path) and not named_profile_is_deleted(path))
         return tuple(sorted(profiles))
 
+    def room_profiles(self, room: Mapping[str, Any]) -> tuple[str, ...]:
+        """Profiles a SAVED room's roster is checked against. New groups use ``local_profiles``;
+        a subclass may keep a seated member valid after it stops being eligible for new groups."""
+        return self.local_profiles()
+
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
         return tuple(
@@ -374,7 +379,7 @@ class HostedRoomService:
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
-        changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
+        changed, room_id, local_profiles = False, str(room["room_id"]), self.room_profiles(room)
         cursor = int(room["latest_seq"])
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
             status, execution_generation = task["status"], int(task["execution_generation"])
@@ -436,7 +441,7 @@ class HostedRoomService:
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
             decision = discussion.plan_next_task(
-                room, list(snapshot.events), local_profiles=self.local_profiles(),
+                room, list(snapshot.events), local_profiles=self.room_profiles(room),
                 initial_watermarks=snapshot.watermarks, freeze_input_context=True)
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
@@ -448,11 +453,11 @@ class HostedRoomService:
                     prior_events = self.policy_checkpoint.events_for_task(
                         room_id=binding.room_id, source_event_seq=existing["payload"]["source_event_seq"],
                         input_context=existing["payload"]["input_context"], task_id=existing["identity"].task_id)
-                    discussion.reconstruct_task_plan(room, prior_events, existing, local_profiles=self.local_profiles())
+                    discussion.reconstruct_task_plan(room, prior_events, existing, local_profiles=self.room_profiles(room))
                     admitted = existing
                 elif existing is not None and existing["payload"] == legacy_payload:
                     discussion.reconstruct_task_plan(room, list(snapshot.events), existing,
-                                                     local_profiles=self.local_profiles())
+                                                     local_profiles=self.room_profiles(room))
                     admitted = existing
                 else:
                     admitted = driver.admit_task(

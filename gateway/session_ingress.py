@@ -23,6 +23,10 @@ _CONTENT_CLAUSES = frozenset({
     'media_urls', 'media_types', 'media_text_inlined', 'media_types_length', 'media_text_inlined_length',
 })
 
+# Nothing was committed (main's busy-queue cap); /retry answers it before rewriting (#139257).
+QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversation; '
+                    'send this again after the current reply.')
+
 
 async def admit_message(authority, event):
     accepted = busy_acceptance.get()
@@ -40,7 +44,7 @@ async def admit_message(authority, event):
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
-        return '⏳ Too many messages are already waiting in this conversation; send this again after the current reply.'
+        return QUEUE_FULL_REPLY
     if receipt.status == 'terminal':
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.

@@ -588,6 +588,8 @@ def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
     ctx.register_platform(
         name="irc",
+        dashboard_description="Relay messages between an IRC channel (or DMs) and Hermes.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
         label="IRC",
         adapter_factory=IRCAdapter,
         check_fn=check_requirements,

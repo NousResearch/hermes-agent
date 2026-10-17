@@ -187,14 +187,13 @@ def _notify_context_engine_session_end(agent: Any, messages: Optional[list]) -> 
         _quietly(lambda: engine.on_session_end(agent.session_id or "", messages or []))
 
 
-def _pool_may_recover_from_rate_limit(pool) -> bool:
-    """Wait for credential-pool rotation (True) or fall back to ``fallback_model`` (False) after a 429.
+def _pool_may_recover_from_rate_limit(pool, *, model: Optional[str] = None) -> bool:
+    """Wait for credential-pool rotation (True) or fall back after a 429.
 
-    Rotation only helps when the pool has somewhere to go; a single-credential pool would retry the same quota.
-
-    See issues #11314 and #13636.
+    Credential availability is model-scoped when the active request model is
+    known, so an unrelated model cooldown must not trigger a provider fallback.
     """
-    return pool is not None and pool.has_available() and len(pool.entries()) > 1
+    return pool is not None and pool.has_available(model=model) and len(pool.entries()) > 1
 
 
 class _StreamErrorEvent(Exception):

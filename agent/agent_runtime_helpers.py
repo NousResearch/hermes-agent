@@ -27,7 +27,7 @@ from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
-    credential_pool_matches_provider, resolve_runtime_pool_key,
+    credential_pool_matches_provider, load_pool, resolve_runtime_pool_key,
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
@@ -1013,6 +1013,35 @@ def recover_with_credential_pool(
     rotating. ``classified_reason`` beats raw HTTP codes (e.g. Anthropic 400 "out of extra
     usage"); ``billing_unverified`` gives the entry a short cooldown, not the one-hour bench."""
     pool = agent._credential_pool
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    if pool is None:
+        # Cached gateway agents can predate pool attachment after a routing/config
+        # change. Rehydrate only when the active key is itself in the live pool;
+        # never replace an explicit unpooled credential with a different account.
+        try:
+            live_pool = load_pool(current_provider) if current_provider else None
+        except Exception:
+            live_pool = None
+        active_key = getattr(agent, "api_key", None)
+        if (
+            live_pool is not None
+            and active_key
+            and credential_pool_matches_provider(
+                live_pool, current_provider, base_url=getattr(agent, "base_url", None)
+            )
+        ):
+            matching_entry = next(
+                (entry for entry in live_pool.entries() if getattr(entry, "runtime_api_key", None) == active_key),
+                None,
+            )
+            if matching_entry is not None:
+                agent._credential_pool = pool = live_pool
+                if not getattr(agent, "_credential_pool_entry_id", None):
+                    agent._credential_pool_entry_id = getattr(matching_entry, "id", None)
+                _ra().logger.info(
+                    "Rehydrated credential pool for cached %s agent using active entry %s",
+                    current_provider, getattr(matching_entry, "id", "?"),
+                )
     if pool is None:
         return False, has_retried_429
     # The pool belongs to the PRIMARY provider: acting on fallback errors would corrupt its state
@@ -1023,7 +1052,6 @@ def recover_with_credential_pool(
     # the primary's credential state (see #33088) and, via _swap_credential, overwrite the agent's base_url
     # back to the primary's endpoint — every subsequent request then goes to the wrong host and 404s (see
     # #33163). The pool should only act when the agent is still on the same provider that seeded the pool.
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if pool_provider and not credential_pool_matches_provider(
         pool, current_provider, base_url=getattr(agent, "base_url", None)

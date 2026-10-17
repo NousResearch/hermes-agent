@@ -54,7 +54,7 @@ def test_two_servers_spawning_together_each_track_only_their_own_child(monkeypat
         # is still waiting for the window, so the wait runs out.
         other = "beta" if name == "alpha" else "alpha"
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(spawned[other].wait(), timeout=1)
+            await asyncio.wait_for(spawned[other].wait(), timeout=2)
         yield (None, None)
 
     async def _connect_both():
@@ -66,8 +66,9 @@ def test_two_servers_spawning_together_each_track_only_their_own_child(monkeypat
              patch("tools.osv_check.check_package_for_malware", return_value=None), \
              patch("tools.mcp_tool.stdio_client", _spawning_stdio_client), \
              patch("tools.mcp_tool.ClientSession", lambda *a, **k: _StopAfterSpawn()):
-            await asyncio.gather(*(_server(name)._run_stdio({"command": "fixture", "args": [name]})
-                                   for name in ("alpha", "beta")), return_exceptions=True)
+            failures = await asyncio.gather(*(_server(name)._run_stdio({"command": "fixture", "args": [name]})
+                                              for name in ("alpha", "beta")), return_exceptions=True)
+            assert all(isinstance(exc, RuntimeError) and str(exc) == "stop after the spawn" for exc in failures)
 
     try:
         asyncio.run(_connect_both())
@@ -76,4 +77,5 @@ def test_two_servers_spawning_together_each_track_only_their_own_child(monkeypat
             child.kill()
             child.wait()
 
+    assert set(children) == {"alpha", "beta"}
     assert tracked == {name: {child.pid} for name, child in children.items()}

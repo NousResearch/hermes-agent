@@ -40,6 +40,9 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   process and stdin alive.
 - ``"malformed_frame"`` — writes an invalid frame after ``didOpen``,
   then keeps the process and stdin alive.
+- ``"late_pull"`` — pyright-like: no pull capability at initialize, registers
+  ``textDocument/diagnostic`` dynamically 0.3 s after ``initialized`` (so the
+  registration lands mid-wait), never pushes, serves the pull.
 
 The script writes JSON-RPC framed messages to stdout and reads from
 stdin.  No third-party dependencies — uses only stdlib so it runs
@@ -52,6 +55,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -77,6 +81,43 @@ def write_message(obj):
     sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
     sys.stdout.buffer.write(body)
     sys.stdout.buffer.flush()
+
+
+def read_client_message():
+    """Next request/notification; skips the client's replies to our own requests (registerCapability)."""
+    while (msg := read_message()) is not None and "method" not in msg:
+        pass
+    return msg
+
+
+# MOCK_LSP_PULL: "static" (default) advertises pull at initialize, "dynamic" registers it after
+# `initialized`, "none" models a push-only server that never offers it.
+def _pull_mode():
+    return os.environ.get("MOCK_LSP_PULL", "static")
+
+
+def _server_capabilities(script):
+    caps = {"textDocumentSync": 2 if script == "incremental" else 1}
+    if _pull_mode() == "static" and script != "late_pull":
+        caps["diagnosticProvider"] = {"interFileDependencies": False, "workspaceDiagnostics": False}
+    return caps
+
+
+def _register_dynamic_pull(script):
+    message = {"jsonrpc": "2.0", "id": "reg-1", "method": "client/registerCapability", "params": {
+        "registrations": [{"id": "pull", "method": "textDocument/diagnostic", "registerOptions": {}}]}}
+    if _pull_mode() == "dynamic":
+        write_message(message)
+    elif script == "late_pull":
+        # Off-thread: the main loop only writes when answering requests, and the client sends none
+        # until pull is registered, so the frames cannot interleave.
+        threading.Timer(0.3, write_message, (message,)).start()
+
+
+def _rejects_pull(script):
+    # These scripts model push-only servers that still advertise pull, so the ghost can't be papered
+    # over by the pull channel; "none" never advertised it.
+    return script in {"stale", "slow_push", "versionless", "silent"} or _pull_mode() == "none"
 
 
 def main():
@@ -124,7 +165,7 @@ def main():
         script = "clean"
 
     while True:
-        msg = read_message()
+        msg = read_client_message()
         if msg is None:
             return 0
 
@@ -142,10 +183,7 @@ def main():
                     "jsonrpc": "2.0",
                     "id": msg["id"],
                     "result": {
-                        "capabilities": {
-                            "textDocumentSync": 2 if script == "incremental" else 1,
-                            "diagnosticProvider": {"interFileDependencies": False, "workspaceDiagnostics": False},
-                        },
+                        "capabilities": _server_capabilities(script),
                         "serverInfo": {"name": "mock-lsp", "version": "0.1"},
                     },
                 }
@@ -155,6 +193,7 @@ def main():
             continue
 
         if msg.get("method") == "initialized":
+            _register_dynamic_pull(script)
             continue
 
         if msg.get("method") == "workspace/didChangeConfiguration":
@@ -213,9 +252,9 @@ def main():
                     "message": "synthetic error from mock-lsp",
                 }
             ]
-            if script == "silent":
-                # Never publishes diagnostics and the pull endpoint is
-                # rejected (below).  Models a slow server that only
+            if script in {"silent", "late_pull"}:
+                # Never publishes diagnostics; silent also rejects the pull
+                # endpoint (below).  Models a slow server that only
                 # re-reports after a didChange it never receives — the
                 # baseline snapshot has to wait out its full budget.
                 continue
@@ -265,9 +304,7 @@ def main():
             continue
 
         if msg.get("method") == "textDocument/diagnostic":
-            if script in {"stale", "slow_push", "versionless", "silent"}:
-                # These scripts model push-only servers so the ghost
-                # can't be papered over by the pull channel.
+            if _rejects_pull(script):
                 write_message(
                     {
                         "jsonrpc": "2.0",

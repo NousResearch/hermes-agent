@@ -33,6 +33,36 @@ CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Anchor a relative HERMES_RUNTIME_DIR at the invocation cwd (the ps1 twin's
+# rule): the script cds into the checkout below, and a native Windows child
+# cannot resolve an msys POSIX path — bind one absolute native path once.
+if [ -n "${HERMES_RUNTIME_DIR-}" ]; then
+    if command -v cygpath >/dev/null 2>&1; then
+        # A drive-relative override ('C:rel') is not resolvable here: cygpath
+        # absorbs the colon into the name ('<cwd>/Crel') and bash has no
+        # per-drive cwd for pm's Path.resolve() to agree with. Refuse instead
+        # of silently staging the store into a directory pm never reads.
+        case "$HERMES_RUNTIME_DIR" in
+            [A-Za-z]:|[A-Za-z]:[!\\/]*)
+                # printf %b colors the prefix only and %s keeps the input
+                # literal: echo -e would turn a rejected 'C:foo\bar' into a
+                # backspace. The bare 'C:' branch too — cygpath -am 'C:'
+                # yields '<cwd>/C', the same swallowed-colon shape.
+                printf '%b%s%b\n' "$RED" "✗ drive-relative HERMES_RUNTIME_DIR '$HERMES_RUNTIME_DIR' is ambiguous under msys bash - use 'C:/rel', '/c/rel', or an absolute path" "$NC" >&2
+                exit 1 ;;
+        esac
+        # -am: relative anchors at the cwd, msys absolute translates to the
+        # Windows form, already-native stays (idempotent).
+        HERMES_RUNTIME_DIR="$(cygpath -am "$HERMES_RUNTIME_DIR")"
+    else
+        case "$HERMES_RUNTIME_DIR" in
+            /*) ;;
+            *) HERMES_RUNTIME_DIR="$PWD/$HERMES_RUNTIME_DIR" ;;
+        esac
+    fi
+    export HERMES_RUNTIME_DIR
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -106,7 +136,45 @@ uv_version="$(pin version)"
 py_version="$(pin version python | cut -d+ -f1 | cut -d. -f1,2)"
 [ -n "$uv_version" ] || { echo -e "${RED}✗${NC} no uv pin in pm/lock.json" >&2; exit 1; }
 
-store="${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}"
+# The bootstrap store follows the machine root folded from HERMES_HOME, never a
+# hardcoded ~/.hermes. setup always runs from a checkout, so it SOURCES the
+# canonical resolver (scripts/bootstrap/store_root.sh) instead of carrying a
+# copy: one implementation, no mirror to drift. HERMES_RUNTIME_DIR remains the
+# explicit override; a stamped ``runtimeDir`` is not readable here (no Python).
+. "$(dirname "${BASH_SOURCE[0]}")/scripts/bootstrap/store_root.sh"
+
+
+hermes_root="$(hermes_root_of)"
+# Trim like the resolver and Python's str.strip(): outer whitespace is not part
+# of the home, and a whitespace-only value is "unset". Without this, bin_dir and
+# HERMES_SKILLS_DIR keep the raw whitespace while the resolver and child use the
+# trimmed default (bin_dir would publish launchers into a "   /bin" junk dir).
+_hermes_home_trimmed="${HERMES_HOME-}"
+_hermes_home_trimmed="${_hermes_home_trimmed#"${_hermes_home_trimmed%%[![:space:]]*}"}"
+_hermes_home_trimmed="${_hermes_home_trimmed%"${_hermes_home_trimmed##*[![:space:]]}"}"
+if [ -z "$_hermes_home_trimmed" ]; then
+    # Shell-LOCAL, deliberately NOT exported: exporting would hand child Python
+    # a literal-suffix path it runs expandvars over, while its own default appends
+    # the suffix verbatim — the two homes would disagree. Python derives the same
+    # default itself.
+    # unset FIRST: an inherited `export HERMES_HOME=` keeps the export attribute
+    # through a plain assignment, which would leak that literal-suffix default.
+    unset HERMES_HOME
+    HERMES_HOME="$(hermes_default_home)"
+    _hermes_home_shell="$HERMES_HOME"
+else
+    # Trim only: keep the value's lexical form (relative stays relative, drive
+    # paths stay drive paths). setup does not chdir after this point, so the
+    # resolver, the shell consumers below, and every child re-resolve from one
+    # cwd; a $PWD anchor would spell a POSIX path Windows children cannot read.
+    HERMES_HOME="$_hermes_home_trimmed"
+    export HERMES_HOME
+    # The exported lexical form is for children (they expanduser/expandvars it);
+    # THIS script's string consumers (cygpath, mkdir, cp) never expand ``~``/``$``,
+    # so they read this expanded copy instead of building a literal-``~/`` junk dir.
+    _hermes_home_shell="$(_hermes_expand "$HERMES_HOME")"
+fi
+store="${HERMES_RUNTIME_DIR:-$hermes_root/tools}"
 entry="$store/uv-$uv_version-$target"
 uv="$entry/uv"; [ "$os" = win32 ] && uv="$entry/uv.exe"
 
@@ -170,6 +238,15 @@ if [ "$os" = win32 ]; then
   case "$arch" in arm64) py_request="cpython-$py_version-windows-aarch64-none" ;;
                   *) py_request="cpython-$py_version-windows-x86_64-none" ;; esac
 fi
+# uv's default state (~/.cache/uv, ~/.local/share/uv) belongs to the USER's
+# uv (#101269); pin both to the Hermes root. An explicitly configured value
+# stays authoritative — the fresh-source acceptance test hands this script a
+# pre-seeded python via UV_PYTHON_INSTALL_DIR and UV_PYTHON_DOWNLOADS=never,
+# so overwriting it makes `python install` refuse to run. The cache keeps its
+# OWN slot: pm seeds <root>/cache/uv once, skipping entries that already exist,
+# so bootstrap bytes there first would mark a partial seed done.
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$hermes_root/cache/uv-bootstrap}"
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$hermes_root/cache/uv-python}"
 "$uv" python install --no-bin --no-registry "$py_request"
 boot_py="$("$uv" python find --managed-python "$py_request")"
 boot_py="${boot_py%$'\r'}"
@@ -215,7 +292,7 @@ echo -e "${CYAN}→${NC} Setting up hermes command..."
 # Reuse the bootstrap interpreter only to run the shared launcher writer.
 bin_dir="$HOME/.local/bin"
 if [ "$os" = win32 ]; then
-    bin_dir="$(cygpath -am "${HERMES_HOME:-${LOCALAPPDATA:-$HOME/AppData/Local}/hermes}/bin")"
+    bin_dir="$(cygpath -am "$_hermes_home_shell/bin")"
 fi
 if ! "$boot_py" -I -X utf8 hermes_cli/_launchers.py "$bin_dir"; then
     echo -e "${RED}✗${NC} launcher publication failed" >&2
@@ -265,7 +342,7 @@ fi
 # Seed bundled skills into ~/.hermes/skills/
 # ============================================================================
 
-HERMES_SKILLS_DIR="${HERMES_HOME:-$HOME/.hermes}/skills"
+HERMES_SKILLS_DIR="$_hermes_home_shell/skills"
 mkdir -p "$HERMES_SKILLS_DIR"
 
 echo ""

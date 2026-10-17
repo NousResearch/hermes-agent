@@ -15,6 +15,41 @@
 param([switch]$RuntimeOnly, [string]$TestExtras = '')
 $ErrorActionPreference = 'Stop'
 
+# The MACHINE-scoped bootstrap root: HERMES_HOME is the PROFILE home, but the
+# store is shared by every profile, so this fold mirrors
+# get_default_hermes_root() (<root>\profiles\<name> and anything under the
+# platform default fold back to the root); setup runs from a checkout and
+# sources the canonical resolver, so it carries no copy to drift. A
+# stamped ``runtimeDir`` is not yet readable here (no Python yet); a sealed
+# payload's writable store folds to this same root, so one branch covers both.
+# HERMES_RUNTIME_DIR remains the explicit override.
+# The store-root resolver folds HERMES_HOME to its machine root exactly the way
+# pm resolves it. setup always runs from a checkout, so it dot-sources the
+# canonical file (scripts/bootstrap/store_root.ps1) instead of carrying a copy:
+# one implementation, no mirror to drift. HERMES_RUNTIME_DIR remains the
+# explicit override; a stamped runtimeDir is not readable here (no Python).
+. (Join-Path $PSScriptRoot "scripts\bootstrap\store_root.ps1")
+
+# A relative HERMES_HOME names different roots before and after Push-Location:
+# Get-HermesRoot deliberately returns its lexical form, but the child re-resolves
+# it from the checkout. Bind one absolute home first, so the uv-state pins, the
+# store slot, and PM's child all name the same root.
+# Whitespace-only trims to '' — "unset" for pm (get_hermes_home strips the raw
+# value before deciding); fold it to the empty home instead of dying on
+# GetFullPath('').
+if ($env:HERMES_HOME) {
+    $e = Expand-HermesHomeValue $env:HERMES_HOME.Trim()
+    if ($e -and -not (Test-HermesFullyQualifiedPath $e)) {
+        $e = [System.IO.Path]::GetFullPath($e)
+    }
+    $env:HERMES_HOME = $e
+}
+
+# Where uv writes its cache and managed python -- the other half of "a uv PM". Dot-sourced
+# from the canonical file like the resolver above.
+. (Join-Path $PSScriptRoot "scripts\bootstrap\uv_state_pins.ps1")
+Set-UvStatePins
+
 Write-Host ''
 Write-Host 'Hermes Agent Setup' -ForegroundColor Cyan
 Write-Host ''
@@ -24,7 +59,9 @@ $lockPath = Join-Path $repo 'pm/lock.json'
 if (-not (Test-Path $lockPath)) { throw 'pm/lock.json not found' }
 $lock = Get-Content -Raw $lockPath | ConvertFrom-Json
 
-$machineArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
+# -ErrorAction SilentlyContinue: a restricted host must fall back to x64 like
+# install.ps1's Get-WindowsArch, not die on the registry probe.
+$machineArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue).PROCESSOR_ARCHITECTURE
 $arch = if ($machineArch -eq 'ARM64') { 'arm64' } else { 'x64' }
 $target = "win32-$arch"
 
@@ -38,9 +75,15 @@ if (-not $artifact) { $artifact = $uvPin.artifacts.any }
 if (-not $artifact) { throw "no uv artifact for $target" }
 
 $pyPin = $lock.packages.python
-$pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.11' }
+$pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.14' }
 
-$store = if ($env:HERMES_RUNTIME_DIR) { $env:HERMES_RUNTIME_DIR } else { Join-Path $HOME '.hermes/tools' }
+# A relative HERMES_RUNTIME_DIR names two stores across the Push-Location
+# (this script reads it here, PM's child resolves it from the repo dir).
+# Anchor it once so both sides bind one store.
+if ($env:HERMES_RUNTIME_DIR -and -not (Test-HermesFullyQualifiedPath $env:HERMES_RUNTIME_DIR)) {
+    $env:HERMES_RUNTIME_DIR = [System.IO.Path]::GetFullPath($env:HERMES_RUNTIME_DIR)
+}
+$store = if ($env:HERMES_RUNTIME_DIR) { $env:HERMES_RUNTIME_DIR } else { Join-Path (Get-HermesRoot) 'tools' }
 $entry = Join-Path $store "uv-$($uvPin.version)-$target"
 $uv = Join-Path $entry 'uv.exe'
 
@@ -122,7 +165,15 @@ if (-not (Test-Path $envFile)) {
 # ---------------------------------------------------------------------------
 # Seed bundled skills into ~/.hermes/skills/
 # ---------------------------------------------------------------------------
-$skillsDir = if ($env:HERMES_HOME) { Join-Path $env:HERMES_HOME 'skills' } else { Join-Path $HOME '.hermes/skills' }
+$skillsDir = if ($env:HERMES_HOME -and $env:HERMES_HOME.Trim()) {
+    $e = Expand-HermesHomeValue $env:HERMES_HOME.Trim()
+    if (-not (Test-HermesFullyQualifiedPath $e)) { $e = [System.IO.Path]::GetFullPath($e) }
+    Join-Path $e 'skills'
+} else {
+    # Unset home: the platform default (LOCALAPPDATA, suffix), exactly what the
+    # child's get_hermes_home() seeds — $HOME\.hermes is only the POSIX answer.
+    Join-Path (Get-HermesRoot) 'skills'
+}
 New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
 $sync = Join-Path $repo 'tools/skills_sync.py'
 $venvPy = Join-Path $repo 'venv/Scripts/python.exe'

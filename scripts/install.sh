@@ -27,7 +27,11 @@ INSTALL_COMMIT=""
 # official repository's main line) or main (every commit). An explicit choice is persisted.
 CHANNEL="${HERMES_INSTALL_CHANNEL:-}"
 INSTALL_DIR="${HERMES_INSTALL_DIR:-}"
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+# Keep ONLY the raw user-supplied home here: defaulting it before the resolver
+# runs would feed hermes_root_of a fabricated value (re-expanded like user
+# input, and blind to a literal HERMES_DATA_DIR_SUFFIX). The default is built
+# by hermes_default_home() after the machine root is resolved.
+HERMES_HOME="${HERMES_HOME:-}"
 STAGE=""
 WANT_MANIFEST=false
 JSON=false
@@ -94,13 +98,348 @@ case "$CHANNEL" in
     *) printf -- '--channel must be stable or main, not %s\n' "$CHANNEL" >&2; exit 2 ;;
 esac
 
-INSTALL_DIR="${INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
-export HERMES_HOME
+# HERMES_HOME/INSTALL_DIR defaults are finalized AFTER the resolver block below
+# (it needs the raw home and defines hermes_default_home).
 
-INSTALL_LOG="$HERMES_HOME/logs/install.log"
+# The MACHINE-scoped bootstrap root: HERMES_HOME is the PROFILE home, but the
+# store is shared by every profile. The resolver body below is GENERATED from
+# scripts/bootstrap/store_root.sh: edit the source, never this block. It is the
+# SAME body setup-hermes.sh sources, so it carries the win32 branches that body
+# needs under msys; install.sh runs POSIX-only (check_platform rejects Windows,
+# where install.ps1 is the entry), so those branches are unreachable here — a
+# documented dead edge, kept so the canonical file stays one implementation
+# rather than two generated variants. A stamped ``runtimeDir`` is not yet
+# readable here (no Python yet); a sealed payload's writable store folds to
+# this same root, so one branch covers both. HERMES_RUNTIME_DIR remains the
+# explicit override.
+# --- BEGIN GENERATED: store-root resolver (scripts/gen-bootstrap-resolver.py) ---
+# Derived from scripts/bootstrap/store_root.sh. DO NOT EDIT BY HAND:
+# run scripts/gen-bootstrap-resolver.py after editing the canonical file.
+# _hermes_os -> win32 | posix. Same precedence setup-hermes.sh used: uname,
+# so a Cygwin/Git Bash shell reads pm's win32 default like native Windows does.
+_hermes_os() {
+    case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*) printf 'win32' ;;
+        *) printf 'posix' ;;
+    esac
+}
+
+# _hermes_user_home NAME -> the account's home, or failure when unknown.
+
+_hermes_user_home() {
+    local _name="$1" _home=""
+    case "$_name" in ""|*[!A-Za-z0-9_.-]*) return 1 ;; esac
+    if command -v getent >/dev/null 2>&1; then
+        _home="$(getent passwd "$_name" 2>/dev/null | cut -d: -f6)"
+    fi
+    if [ -z "$_home" ] && command -v dscacheutil >/dev/null 2>&1; then
+        _home="$(dscacheutil -q user -a name "$_name" 2>/dev/null | awk '/^dir:/{print $2}')"
+    fi
+    [ -n "$_home" ] || return 1
+    printf '%s' "$_home"
+}
+
+# _hermes_env_ci NAME -> the value of *name* read case-insensitively, as
+# ntpath.expandvars reads os.environ. An exact printenv hit is one fork and
+# keeps multi-line values verbatim; the awk fallback scans the exported names
+# because printenv cannot fold case.
+_hermes_env_ci() {
+    local _name="$1" _v
+    if _v="$(printenv "$_name")"; then
+        printf '%s' "$_v"
+        return 0
+    fi
+    env | awk -F= -v w="$_name" '
+        tolower($1) == tolower(w) { sub(/^[^=]*=/, ""); printf "%s", $0; found=1; exit }
+        END { exit !found }
+    '
+}
+
+# _hermes_env_name NAME -> an exported name's value; present-and-empty counts
+# as set (os.environ maps it to ''), absent fails.
+_hermes_env_name() { printenv "$1" 2>/dev/null; }
+
+# _hermes_vars VALUE -> os.path.expandvars(VALUE), ported from the platform's
+# own _varpattern. posixpath has one form ($VAR / ${VAR}) with no escapes or
+# quoting; ntpath (Windows) also folds '%%' and '$$' and copies '...' spans
+# verbatim, and reads names case-insensitively because os.environ folds case
+# there. An UNSET name keeps its source text, braces included.
+_hermes_vars() {
+    local _s="$1" _out="" _win _pat _i _n _m _name _val _lookup
+    _win="$(_hermes_os)"
+    if [ "$_win" = win32 ]; then
+        # Same alternation as ntpath._varpattern: quoted span, %VAR%/escape,
+        # $VAR/$$/braces.
+        _pat="'[^']*'?|%(%|[^%]*%?)|[$]([$]|[-a-zA-Z0-9_]+|[{][^}]*[}]?)"
+        _lookup=_hermes_env_ci
+    else
+        _pat="[$]([a-zA-Z0-9_]+|[{][^}]*[}]?)"
+        _lookup=_hermes_env_name
+    fi
+    _ere="(${_pat})"
+    while [ -n "$_s" ]; do
+        _i=0; _n=${#_s}; _m=""
+        while [ "$_i" -lt "$_n" ]; do
+            if [[ "${_s:$_i}" =~ ^$_ere ]] && [ -n "${BASH_REMATCH[1]}" ]; then
+                _m="${BASH_REMATCH[1]}"
+                break
+            fi
+            _i=$((_i + 1))
+        done
+        if [ -z "$_m" ]; then _out="$_out$_s"; break; fi
+        _out="$_out${_s:0:$_i}"
+        _s="${_s:$((_i + ${#_m}))}"
+        case "$_m" in
+            "'"*) _out="$_out$_m" ;;                       # quoted span, verbatim
+            '%'*)
+                # ntpath: '%' + ('%' | [^%]* '%'?). Only a body that ENDS with
+                # '%' expands; a bare '%' folds, an unclosed one stays source.
+                _body="${_m:1}"
+                if [ "$_body" = "%" ]; then _out="$_out%"
+                elif [ "${_body%\%}" = "$_body" ]; then _out="$_out$_m"
+                else
+                    _name="${_body%\%}"
+                    if [ -z "$_name" ]; then _out="$_out$_m"
+                    elif _val="$(_hermes_env_ci "$_name")"; then _out="$_out$_val"
+                    else _out="$_out%$_name%"
+                    fi
+                fi ;;
+            '$$') _out="$_out\$" ;;                        # ntpath's '$' escape
+            '${'*'}')
+                _name="${_m:2:${#_m}-3}"
+                if [ -z "$_name" ]; then _out="$_out$_m"
+                elif _val="$("$_lookup" "$_name")"; then _out="$_out$_val"
+                else _out="$_out$_m"
+                fi ;;
+            '$'*)
+                _name="${_m:1}"
+                if _val="$("$_lookup" "$_name")"; then _out="$_out$_val"
+                else _out="$_out$_m"
+                fi ;;
+        esac
+    done
+    printf '%s' "$_out"
+}
+
+# _hermes_tilde VALUE -> the host os.path.expanduser(VALUE). win32 follows
+# ntpath's ladder (USERPROFILE, else the HOMEDRIVE+HOMEPATH pair, else literal)
+# and its ~user guess; POSIX follows posixpath's (HOME when SET — even empty —
+# else the account database), with trailing separators stripped.
+_hermes_tilde() {
+    local _v="$1" _win _i _n _c _user _tail _home _drive _h _leaf _parent _cur _seps
+    case "$_v" in '~'*) ;; *) printf '%s' "$_v"; return ;; esac
+    _win="$(_hermes_os)"
+    _n="${#_v}"; _i=1
+    while [ "$_i" -lt "$_n" ]; do
+        _c="${_v:$_i:1}"
+        if [ "$_win" = win32 ]; then
+            case "$_c" in /|\\) break ;; esac
+        else
+            [ "$_c" = / ] && break
+        fi
+        _i=$((_i + 1))
+    done
+    _user="${_v:1:$((_i - 1))}"
+    _tail="${_v:$_i}"
+    if [ "$_win" = win32 ]; then
+        if [ "${USERPROFILE+x}" = x ]; then _home="$USERPROFILE"
+        elif [ "${HOMEPATH+x}" = x ]; then
+            _drive="${HOMEDRIVE-}"; _h="$HOMEPATH"
+            case "$_h" in
+                /|\\*) _drive="${_drive%"${_drive##*[!/\\]}"}"; _home="$_drive$_h" ;;
+                *) _home="$_drive$_h" ;;
+            esac
+        else
+            printf '%s' "$_v"; return
+        fi
+        if [ -n "$_user" ]; then
+            _leaf="${_home##*[\\/]}"
+            _parent="${_home%"${_home##*[\\/]}"}"
+            _cur="${USERNAME-}"
+            if [ "$_user" != "$_cur" ]; then
+                [ "$_cur" = "$_leaf" ] || { printf '%s' "$_v"; return; }
+                case "$_parent" in
+                    '') _home="$_user" ;;
+                    *:|*[\\/]) _home="${_parent}${_user}" ;;
+                    *) _home="${_parent}\\${_user}" ;;
+                esac
+            fi
+        fi
+        printf '%s' "$_home$_tail"
+        return
+    fi
+    if [ -n "$_user" ]; then
+        if _home="$(_hermes_user_home "$_user")"; then printf '%s' "${_home%/}$_tail"
+        else printf '%s' "$_v"
+        fi
+        return
+    fi
+    if [ "${HOME+x}" = x ]; then _home="${HOME%/}"
+    elif ! _home="$(_hermes_user_home "$(id -un 2>/dev/null)")"; then printf '%s' "$_v"; return
+    fi
+    _home="${_home%/}"
+    if [ -n "$_home" ]; then printf '%s' "$_home$_tail"
+    else printf '%s' "${_tail:-/}"
+    fi
+}
+# _hermes_expand VALUE -> os.path.expanduser(os.path.expandvars(VALUE)).
+_hermes_expand() { _hermes_tilde "$(_hermes_vars "$1")"; }
+
+# _hermes_norm VALUE -> str(Path(VALUE)): collapse separator runs, drop ".";
+# ".." is KEPT, because pm returns the lexical path a custom home spelled.
+# On win32 a backslash is a separator, exactly as Path treats it.
+_hermes_norm() {
+    local _rest="$1" _out="" _comp
+    if [ "$(_hermes_os)" = win32 ]; then
+        _rest="${_rest//\\//}"
+    fi
+    case "$_rest" in "//"[!/]*) _out="//" ;; /*) _out="/" ;; esac
+    _rest="${_rest#/}"
+    case "$_rest" in "//"*) _rest="${_rest#//}" ;; esac
+    while [ -n "$_rest" ]; do
+        _comp="${_rest%%/*}"
+        case "$_rest" in */*) _rest="${_rest#*/}" ;; *) _rest="" ;; esac
+        [ -z "$_comp" ] && continue
+        [ "$_comp" = "." ] && continue
+        case "$_out" in
+            "") _out="$_comp" ;;
+            "/") _out="/$_comp" ;;
+            "//") _out="//$_comp" ;;
+            *) _out="$_out/$_comp" ;;
+        esac
+    done
+    printf '%s' "$_out"
+}
+
+# _hermes_resolve VALUE -> Path(VALUE).resolve(strict=False): follow every
+# symlink along the chain (not only the longest existing prefix), keep missing
+# components, pop ".." off the resolved prefix (never the anchor). One portable
+# walk on purpose: `realpath -m` does not exist on BSD/macOS, so a host-tool
+# fast path plus a shell fallback would put a second, never-executed resolver
+# behind every macOS run — this is the only implementation every POSIX host runs.
+_hermes_resolve() {
+    local _p="$1"
+    case "$_p" in
+        /*) ;;
+        *) _p="$PWD/$_p" ;;
+    esac
+    local _body="${_p#/}" _rest _c _cand _link _res="" _depth=0
+    _rest="${_body#/}"
+    while [ -n "$_rest" ]; do
+        _c="${_rest%%/*}"
+        case "$_rest" in
+            */*) _rest="${_rest#*/}" ;;
+            *)   _rest="" ;;
+        esac
+        [ -z "$_c" ] && continue
+        [ "$_c" = "." ] && continue
+        if [ "$_c" = ".." ]; then
+            # A one-component pop empties the chain ("%/*" alone keeps the component).
+            case "$_res" in
+                */*) _res="${_res%/*}" ;;
+                *)   _res="" ;;
+            esac
+            continue
+        fi
+        if [ -z "$_res" ]; then _cand="/$_c"; else _cand="/$_res/$_c"; fi
+        if [ -L "$_cand" ]; then
+            _depth=$((_depth + 1))
+            if [ "$_depth" -gt 40 ]; then
+                # Symlink loop (realpath's cap): answer the lexical input.
+                _hermes_norm "$1"
+                return
+            fi
+            _link="$(readlink "$_cand")"
+            case "$_link" in
+                /*)
+                    _res=""
+                    _rest="${_link#/}/$_rest"
+                    _rest="${_rest#/}"
+                    ;;
+                *)
+                    _rest="$_link/$_rest"
+                    ;;
+            esac
+            continue
+        fi
+        if [ -z "$_res" ]; then _res="$_c"; else _res="$_res/$_c"; fi
+    done
+    printf '/%s' "$_res"
+}
+
+# hermes_default_home -> _get_platform_default_hermes_home(): win32 answers
+# %LOCALAPPDATA%\hermes<suffix> first, else HOME under AppData/Local, else the
+# literal "~/AppData/Local/..." form; POSIX answers the account home. The
+# suffix is appended LITERALLY, never expanded.
+hermes_default_home() {
+    local _suffix="${HERMES_DATA_DIR_SUFFIX:-}" _acct _lad
+    if [ "$(_hermes_os)" = win32 ]; then
+        _lad="${LOCALAPPDATA-}"
+        _lad="${_lad#"${_lad%%[![:space:]]*}"}"
+        _lad="${_lad%"${_lad##*[![:space:]]}"}"
+        if [ -n "$_lad" ]; then printf '%s' "$_lad/hermes$_suffix"
+        elif [ -n "${HOME:-}" ]; then printf '%s' "$HOME/AppData/Local/hermes$_suffix"
+        else printf '%s' "~/AppData/Local/hermes$_suffix"
+        fi
+        return
+    fi
+    if [ "${HOME+x}" = x ]; then
+        # Path.home() collapses every root form (/, //, ///) to '/' before the
+        # join, so the answer is '/.hermes'. A raw "$HOME/.hermes" keeps the
+        # '//' anchor, which Path treats as a different path.
+        _home="${HOME%/}"
+        while [ "${_home#/}" != "$_home" ]; do _home="${_home#/}"; done
+        [ -n "$_home" ] && { printf '%s' "/$_home/.hermes$_suffix"; return; }
+        printf '%s' "/.hermes$_suffix"; return
+    fi
+    if _acct="$(_hermes_user_home "$(id -un 2>/dev/null)" 2>/dev/null)"; then
+        printf '%s' "$_acct/.hermes$_suffix"; return
+    fi
+    printf '%s' "~/.hermes$_suffix"
+}
+
+# hermes_root_of -> get_default_hermes_root(). Containment is decided on
+# RESOLVED paths, folded case-insensitively on win32 (WindowsPath.relative_to
+# normcases); the returned form is lexical (it keeps ".."), as pm returns.
+hermes_root_of() {
+    local _def_lex _def_res _cmp_res _cmp_def _raw _lex _res _parent
+    _def_lex="$(_hermes_norm "$(hermes_default_home)")"
+    _def_res="$(_hermes_resolve "$_def_lex")"
+    _raw="${HERMES_HOME-}"
+    _raw="${_raw#"${_raw%%[![:space:]]*}"}"
+    _raw="${_raw%"${_raw##*[![:space:]]}"}"
+    if [ -n "$_raw" ]; then
+        _lex="$(_hermes_norm "$(_hermes_expand "$_raw")")"
+        _res="$(_hermes_resolve "$_lex")"
+        _cmp_res="$_res"
+        _cmp_def="$_def_res"
+        if [ "$(_hermes_os)" = win32 ]; then
+            _cmp_res="$(printf '%s' "$_res" | tr '[:upper:]' '[:lower:]')"
+            _cmp_def="$(printf '%s' "$_def_res" | tr '[:upper:]' '[:lower:]')"
+        fi
+        case "$_cmp_res/" in
+            "$_cmp_def"/*) _lex="$_def_lex" ;;
+            *)
+                _parent="${_lex%/*}"
+                if [ "${_parent##*/}" = profiles ] && [ "$_parent" != "$_lex" ]; then
+                    case "$_parent" in
+                        profiles) _lex="." ;;
+                        /profiles) _lex="/" ;;
+                        *) _lex="${_parent%/profiles}" ;;
+                    esac
+                fi ;;
+        esac
+    else
+        _lex="$_def_lex"
+    fi
+    [ -n "$_lex" ] || _lex="."
+    printf '%s' "$_lex"
+}
+# --- END GENERATED: store-root resolver ---
 
 # Same glyphs as the pre-pm installer. Colour only on a terminal, so CI
-# transcripts and the Hermes-Setup driver read plain text.
+# transcripts and the Hermes-Setup driver read plain text. Defined before the
+# runtime-store refusal below, which is the first error this script can emit.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_YELLOW=$'\033[0;33m'
     C_CYAN=$'\033[0;36m' C_MAGENTA=$'\033[0;35m' C_BOLD=$'\033[1m'
@@ -109,6 +448,67 @@ else
     C_RED="" C_GREEN="" C_YELLOW="" C_CYAN="" C_MAGENTA="" C_BOLD="" C_DIM="" C_NC=""
 fi
 
+
+# Machine root first, from the RAW env: this is the slot a child Python sees
+# (HERMES_HOME unset children derive the same default), so it is computed
+# before the shell-local default below can look like a user export.
+HERMES_ROOT="$(hermes_root_of)"
+# Trim like the resolver and Python's str.strip(): outer whitespace is not part
+# of the home, and a whitespace-only value is "unset". Without this, INSTALL_DIR
+# keeps the raw whitespace while the resolver and child use the trimmed default.
+_hermes_home_trimmed="${HERMES_HOME-}"
+_hermes_home_trimmed="${_hermes_home_trimmed#"${_hermes_home_trimmed%%[![:space:]]*}"}"
+_hermes_home_trimmed="${_hermes_home_trimmed%"${_hermes_home_trimmed##*[![:space:]]}"}"
+_HERMES_HOME_DEFAULTED=0
+if [ -z "$_hermes_home_trimmed" ]; then
+    # Shell-LOCAL, deliberately NOT exported: exporting would hand child Python
+    # a literal-suffix path it runs expandvars over, while its own default appends
+    # the suffix verbatim — the two homes would disagree. Python derives the same
+    # default itself. The flag lets tests recompute the root under the raw env.
+    # unset FIRST: an inherited `export HERMES_HOME=` keeps the export attribute
+    # through a plain assignment, which would leak that literal-suffix default.
+    unset HERMES_HOME
+    HERMES_HOME="$(hermes_default_home)"
+    _HERMES_HOME_DEFAULTED=1
+else
+    HERMES_HOME="$_hermes_home_trimmed"
+    # Expand and anchor the explicit home at the invocation cwd, before any chdir:
+    # otherwise a raw ~/$VAR or relative path splits the home the shell stages into
+    # from the one the exported child resolves.
+    HERMES_HOME="$(_hermes_norm "$(_hermes_expand "$HERMES_HOME")")"
+    case "$HERMES_HOME" in
+        /*) ;;
+        *) HERMES_HOME="$PWD/$HERMES_HOME" ;;
+    esac
+    export HERMES_HOME
+fi
+# A relative HERMES_RUNTIME_DIR names two stores across the checkout chdir
+# (ensure_uv reads it here, PM's child resolves it from INSTALL_DIR). Anchor it
+# once and export the absolute value so both sides bind one store.
+if [ -n "${HERMES_RUNTIME_DIR-}" ]; then
+    # Under msys a drive-relative value splits the two sides: the shell
+    # escapes the colon into a U+F03A directory name while native resolve()
+    # strips it — each binds a different directory. Refuse before anchoring
+    # (the anchored form no longer matches); on hosts without cygpath ':' is
+    # an ordinary file-name character with no split to refuse.
+    if command -v cygpath >/dev/null 2>&1; then
+        case "$HERMES_RUNTIME_DIR" in
+            [A-Za-z]:|[A-Za-z]:[!\\/]*)
+                printf "%s✗%s drive-relative HERMES_RUNTIME_DIR '%s' is ambiguous under msys bash - use 'C:/rel', '/c/rel', or an absolute path\n" "$C_RED" "$C_NC" "$HERMES_RUNTIME_DIR" >&2
+                exit 1 ;;
+        esac
+    fi
+    case "$HERMES_RUNTIME_DIR" in
+        /*) ;;
+        *) HERMES_RUNTIME_DIR="$PWD/$HERMES_RUNTIME_DIR" ;;
+    esac
+    export HERMES_RUNTIME_DIR
+fi
+[ -n "$INSTALL_DIR" ] || INSTALL_DIR="$HERMES_HOME/hermes-agent"
+
+INSTALL_LOG="$HERMES_HOME/logs/install.log"
+
+# Interactive runs collapse
 log() { printf '%s→%s %s\n' "$C_CYAN" "$C_NC" "$1"; }
 log_success() { printf '%s✓%s %s\n' "$C_GREEN" "$C_NC" "$1"; }
 log_warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_NC" "$1"; }
@@ -355,10 +755,10 @@ uv_bootstrap_target() {
 }
 
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
-# the EXACT artifact pm itself uses into the same store slot
-# (<store>/uv-<version>-<target>/, the store pm's store_root() resolves),
-# sha256-verified, so the byte authority is pm/lock.json - no astral-latest,
-# no curl|sh.
+# the EXACT artifact PM expects (same version, target, and sha256) into the
+# bootstrap store selected above. The bootstrap resolver intentionally does not
+# implement stamped ``runtimeDir`` selection; a sealed payload folds to the same
+# root via pm.paths.writable_store_root(). No astral-latest, no curl|sh.
 UV_CMD=""
 ensure_uv() {
     [ -n "$UV_CMD" ] && return 0
@@ -371,7 +771,7 @@ ensure_uv() {
     if ! uv_bootstrap_pin "$_target"; then
         fail "no pinned uv artifact for $_target; Hermes does not support this host" unsupported_platform
     fi
-    local _store="${HERMES_RUNTIME_DIR:-$HERMES_HOME/tools}"
+    local _store="${HERMES_RUNTIME_DIR:-$HERMES_ROOT/tools}"
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
     UV_CMD="$_entry/uv"
     if [ ! -x "$UV_CMD" ]; then
@@ -992,6 +1392,15 @@ stage_venv() {
 # The application dependency graph is never installed in this interpreter.
 bootstrap_python() {
     ensure_uv
+    # uv's default state (~/.cache/uv, ~/.local/share/uv) belongs to the USER's
+    # uv (#101269); pin both to the Hermes root unless the caller already set
+    # them, so an explicitly configured value stays authoritative. The cache
+    # keeps its OWN slot: pm seeds <root>/cache/uv once, skipping entries that
+    # already exist, so bootstrap bytes there first would mark a partial seed
+    # done. --system still finds a host interpreter, so a machine with one
+    # downloads nothing either way.
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-$HERMES_ROOT/cache/uv-bootstrap}"
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$HERMES_ROOT/cache/uv-python}"
     local _py
     # Read packages.python.version by following object names and braces, not
     # indentation — same pre-Python reader contract as setup-hermes.sh's pin().

@@ -33,6 +33,10 @@ def test_setup_reads_pins_independent_of_indentation(tmp_path, served, indent, b
     core = tmp_path / "checkout with spaces"
     (core / "pm").mkdir(parents=True)
     shutil.copy2(REPO / "setup-hermes.sh", core / "setup-hermes.sh")
+    # setup-hermes.sh sources the canonical resolver instead of carrying a copy.
+    (core / "scripts" / "bootstrap").mkdir(parents=True)
+    shutil.copy2(REPO / "scripts" / "bootstrap" / "store_root.sh",
+                 core / "scripts" / "bootstrap" / "store_root.sh")
     home = tmp_path / "home"
     home.mkdir()
     runtime = tmp_path / "runtime"

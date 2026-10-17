@@ -190,16 +190,24 @@ def test_rerun_follows_an_explicit_repo_url(tmp_path):
     assert _git(install, "remote", "get-url", "origin") == moved.as_posix()
 
 
-def test_path_uv_is_never_used_even_when_newer_than_the_pin(tmp_path):
+def test_path_uv_never_satisfies_the_bootstrap(tmp_path):
+    """A uv on PATH is not a substitute for the pin (#101269).
+
+    With no pinned target available, staging must fail rather than adopt a
+    PATH uv — whatever version it reports, and with no version comparison
+    at all.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "uv"
-    fake.write_text("#!/bin/sh\necho 'uv 99.0.0'\n")
+    fake.write_text("#!/bin/sh\necho 'uv 99.0.0 (newer than the pin)'\n")
     fake.chmod(0o755)
-    # No pinned target: with the PATH uv ignored, the install must fail rather than adopt it.
+    # No pinned target: without a PATH borrow that surfaces as a failure to stage one.
     body = 'uv_bootstrap_target() { return 1; }\nensure_uv\necho "UV_CMD=$UV_CMD"'
     result = _run(tmp_path, body, env={"PATH": f"{bindir}:{os.environ['PATH']}"})
     assert result.returncode != 0
+    assert "no pinned uv build" in result.stdout + result.stderr
+    assert "older than the pinned" not in result.stdout + result.stderr
     assert f"UV_CMD={fake}" not in result.stdout
 
 

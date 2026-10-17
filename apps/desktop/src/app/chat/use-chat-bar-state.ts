@@ -67,6 +67,8 @@ export function useChatBarState({
     () => ({
       model: {
         model: currentModel,
+        ownerConnectionId: modelOptionsOwnerConnectionId,
+        ownerProfile: modelOptionsProfile || activeGatewayProfile,
         provider: currentProvider,
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
@@ -86,11 +88,14 @@ export function useChatBarState({
       }
     }),
     [
+      activeGatewayProfile,
       contextSuggestions,
       currentModel,
       currentProvider,
       gatewayOpen,
       modelMenuContent,
+      modelOptionsOwnerConnectionId,
+      modelOptionsProfile,
       quickModels,
       reasoningMenuContent,
       supportsReasoning

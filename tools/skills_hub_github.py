@@ -192,10 +192,12 @@ def _skip_bundle_file(rel_path: str) -> bool:
 
 
 def _tree_members(entries: list[dict], prefix: str):
-    """``(rel_path, item_path, is_regular_blob)`` for every git-tree entry under ``prefix``. Symlinks
-    (mode 120000) and non-blobs report ``is_regular_blob=False`` so callers can reject a SKILL.md-linked
-    symlink instead of silently following it."""
+    """``(rel_path, item_path, is_regular_blob)`` for non-directory entries under ``prefix``.
+    Ordinary trees have no bytes of their own; the recursive listing supplies their descendants.
+    Symlinks (mode 120000) and other non-blobs stay non-regular so linked unsafe entries reject."""
     for item in entries:
+        if item.get("type") == "tree" and item.get("mode") == "040000":
+            continue
         item_path = item.get("path", "")
         if item_path.startswith(prefix):
             yield item_path[len(prefix):], item_path, item.get("type") == "blob" and item.get("mode") != "120000"
@@ -371,7 +373,7 @@ class GitHubSource(SkillSource):
             if rel_path in symlinked:
                 logger.warning("Rejected non-regular referenced file in skill bundle: %s%s", prefix, rel_path)
                 return None
-            if rel_path not in files:
+            if rel_path not in files and not any(path.startswith(rel_path + "/") for path in files):
                 logger.warning(
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)
         return complete

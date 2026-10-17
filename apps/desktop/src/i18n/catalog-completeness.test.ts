@@ -10,6 +10,9 @@ import type { BundledLocale } from './types'
 // ja/ru, so an English key added later falls back to English instead of
 // failing typecheck; these checks keep the translated copy structurally sound.
 const COMPLETE_LOCALES = ['fr', 'de', 'es'] as const satisfies readonly BundledLocale[]
+// Partial overlays still get the structural checks; only the Updates
+// completeness check is reserved for COMPLETE_LOCALES.
+const STRUCTURAL_LOCALES = [...COMPLETE_LOCALES, 'he'] as const satisfies readonly BundledLocale[]
 const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides }
 
 type Leaf = { path: string; value: unknown }
@@ -41,7 +44,7 @@ const catalogLeaves = (locale: BundledLocale) =>
 
 const english = catalogLeaves('en')
 
-it.each(['de', 'es', 'fr', 'ja', 'ru', 'zh', 'zh-hant', 'ar'] as const)(
+it.each(['de', 'es', 'fr', 'ja', 'ru', 'zh', 'zh-hant', 'ar', 'he'] as const)(
   '%s renders localized retirement copy instead of English fallback',
   locale => {
     expect(TRANSLATIONS[locale].updates.discontinuedTitle).not.toBe(TRANSLATIONS.en.updates.discontinuedTitle)
@@ -49,12 +52,14 @@ it.each(['de', 'es', 'fr', 'ja', 'ru', 'zh', 'zh-hant', 'ar'] as const)(
   }
 )
 
-describe.each(COMPLETE_LOCALES)('%s desktop catalog', locale => {
-  const catalog = catalogLeaves(locale)
-
+describe.each(COMPLETE_LOCALES)('%s desktop catalog completeness', locale => {
   it('keeps Updates copy in the locale overlay rather than falling back to English', () => {
     expect(Object.keys(completeOverrides[locale].updates).sort()).toEqual(Object.keys(TRANSLATIONS.en.updates).sort())
   })
+})
+
+describe.each(STRUCTURAL_LOCALES)('%s desktop catalog', locale => {
+  const catalog = catalogLeaves(locale)
 
   it('covers exactly the English key set with matching value kinds', () => {
     expect([...catalog.keys()].sort()).toEqual([...english.keys()].sort())

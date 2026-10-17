@@ -226,6 +226,14 @@ def mint_launcher(
     if not _is_windows():
         return _mint_shell_launcher(name, out_dir, python_exe, script)
 
+    # Git Bash does not resolve .cmd via PATHEXT: without an extensionless
+    # companion it skips this directory and can select a stale venv entry point.
+    # Publish the same bootstrap for both shells, while sparing foreign commands.
+    shell_target = out_dir / name
+    if not (shell_target.exists() or shell_target.is_symlink()) or _owns_launcher(shell_target, Path(repo_root)):
+        if _write_shell(shell_target, [python_exe.as_posix(), "-I", "-c", script]) is None:
+            return None
+
     script_maker_cls = _load_script_maker()
     if script_maker_cls is not None:
         class _PathedScriptMaker(script_maker_cls):  # type: ignore[misc,valid-type]

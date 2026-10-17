@@ -28,9 +28,64 @@ def _disp_width(s: str) -> int:
     return max(wcswidth(s), 0)
 
 
+def _matching_code_span_end(row: str, start: int, delimiter_width: int) -> int | None:
+    """Return the end of the next exact-width backtick run, if one closes this span."""
+    i = start
+    while i < len(row):
+        if row[i] != "`":
+            i += 1
+            continue
+        end = i + 1
+        while end < len(row) and row[end] == "`":
+            end += 1
+        if end - i == delimiter_width:
+            return end
+        i = end
+    return None
+
+
 def split_table_row(row: str) -> list[str]:
-    """Split ``| a | b | c |`` into ``["a", "b", "c"]`` with trims."""
-    return [c.strip() for c in row.strip().removeprefix("|").removesuffix("|").split("|")]
+    """Split a GFM row on unescaped pipes outside matched inline-code spans."""
+    separators: list[int] = []
+    i = 0
+    while i < len(row):
+        if row[i] == "\\":
+            slash_start = i
+            while i < len(row) and row[i] == "\\":
+                i += 1
+            if (i - slash_start) % 2 and i < len(row):
+                i += 1  # the next character is escaped, including a pipe or backtick
+            continue
+        if row[i] == "`":
+            end = i + 1
+            while end < len(row) and row[end] == "`":
+                end += 1
+            closing_end = _matching_code_span_end(row, end, end - i)
+            if closing_end is not None:
+                i = closing_end
+                continue
+            i = end  # unmatched backticks are literal, so later cell pipes still count
+            continue
+        if row[i] == "|":
+            separators.append(i)
+        i += 1
+
+    start, end = 0, len(row)
+    if separators and not row[: separators[0]].strip():
+        start = separators[0] + 1
+    if separators and not row[separators[-1] + 1 :].strip():
+        end = separators[-1]
+    if start > end:
+        return [""]
+
+    cells: list[str] = []
+    cell_start = start
+    for separator in separators:
+        if start <= separator < end:
+            cells.append(row[cell_start:separator].strip())
+            cell_start = separator + 1
+    cells.append(row[cell_start:end].strip())
+    return cells
 
 
 def is_table_divider(row: str) -> bool:

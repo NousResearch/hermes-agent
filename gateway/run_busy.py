@@ -450,8 +450,46 @@ class GatewayBusySessionMixin:
     _SECURITY_METADATA_KEYS = (
         "hermes_plugin_id", "hermes_plugin_injection", "gateway_session_key",
         "gateway_session_id", "gateway_session_strict", "gateway_proven_session_id",
-        "notification_category",
+        "notification_category", "notification_event_type",
     )
+
+    def _coalesce_busy_process_completion(self, session_key: str, event: MessageEvent, adapter: Any) -> bool:
+        """Append to the queued completion tail, never across a human or another wake."""
+        if not (event.internal and event.message_type == MessageType.TEXT
+                and (event.metadata or {}).get("notification_origin") == "process_registry_synthetic"
+                and (event.metadata or {}).get("notification_event_type") == "completion"):
+            return False
+        slot = getattr(adapter, "_pending_messages", None)
+        if not isinstance(slot, dict) or session_key not in slot:
+            return False
+        overflow = self._overflow_queue(session_key)
+        tail = overflow[-1] if overflow else slot[session_key]
+        if tail is None or not tail.internal or tail.message_type != MessageType.TEXT:
+            return False
+        metadata = tail.metadata or {}
+        if (metadata.get("notification_origin") != "process_registry_synthetic"
+                or metadata.get("notification_event_type") != "completion"
+                or tail.source != event.source
+                or tail.allow_gateway_control != event.allow_gateway_control
+                or any(metadata.get(key) != event.metadata.get(key) for key in self._SECURITY_METADATA_KEYS)):
+            return False
+        # Keep the resulting model turn bounded. At the cap, the ordinary FIFO path handles the
+        # next wake instead; it retains the existing queue admission and retry semantics.
+        if len(tail.text) + len(event.text) > 24_000:
+            return False
+        from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER
+        previous = tail.text.removesuffix(INTERNAL_NOTIFICATION_FOOTER).rstrip()
+        addition = event.text.removesuffix(INTERNAL_NOTIFICATION_FOOTER).rstrip()
+        if not metadata.get("coalesced_process_wakes"):
+            previous += (
+                "\n\n[IMPORTANT: Several background processes completed while this session was busy. "
+                "Treat the notices in this turn as one batch and send at most one consolidated "
+                "user-facing response.]"
+            )
+        tail.text = previous + "\n\n" + addition + "\n\n" + INTERNAL_NOTIFICATION_FOOTER
+        metadata["coalesced_process_wakes"] = int(metadata.get("coalesced_process_wakes") or 1) + 1
+        event._gateway_accepted = True
+        return True
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         from gateway.platforms.base import merge_pending_message_event
@@ -476,6 +514,8 @@ class GatewayBusySessionMixin:
                 for key in self._SECURITY_METADATA_KEYS
             )
         )
+        if self._coalesce_busy_process_completion(session_key, event, adapter):
+            return
         # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
         # head slot. Every other media follow-up — voice, audio, video, document — is an
         # independent message and takes its own FIFO turn like text does; merging on *any*

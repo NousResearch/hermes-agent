@@ -2812,17 +2812,20 @@ def _cron_config_number(key: str, default: Any, cast: Callable[[Any], Any]) -> A
 
 
 def _completed_oneshot_retention_days() -> float:
-    """``cron.completed_retention_days``; non-positive disables the sweep (records kept forever)."""
+    """``cron.completed_retention_days`` for completed jobs (one-shots and recurring jobs whose
+    ``repeat`` limit is reached); non-positive disables the sweep (records kept forever)."""
     return _cron_config_number("completed_retention_days", COMPLETED_ONESHOT_RETENTION_DAYS, float)
 
 
 def _sweep_completed_oneshots(
     raw_jobs: list[dict[str, Any]], now: datetime, *, removed_ids: Optional[set[str]] = None,
 ) -> bool:
-    """Prune completed one-shot records past retention (in place; True when anything was removed).
-    Removed ids go into *removed_ids* so save_jobs's shrink-merge guard allows the delete. Age is
-    measured from ``last_run_at``; a record without a parseable one is kept (never guess into
-    deletion)."""
+    """Prune completed job records past retention (in place; True when anything was removed).
+    ``state == "completed"`` is terminal (only ``_complete_job_record`` sets it): a finished one-shot
+    or a recurring job whose ``repeat`` limit is reached. Neither runs again, so both are pruned;
+    active, paused and error-state recurring jobs are never candidates. Removed ids go into
+    *removed_ids* so save_jobs's shrink-merge guard allows the delete. Age is measured from
+    ``last_run_at``; a record without a parseable one is kept (never guess into deletion)."""
     retention_days = _completed_oneshot_retention_days()
     if retention_days <= 0:
         return False
@@ -2831,9 +2834,6 @@ def _sweep_completed_oneshots(
     for rj in list(raw_jobs):
         try:
             if rj.get("state") != "completed":
-                continue
-            schedule = rj.get("schedule")
-            if (schedule.get("kind") if isinstance(schedule, dict) else None) != "once":
                 continue
             last_run = rj.get("last_run_at")
             last_run_dt = _parse_aware(last_run) if isinstance(last_run, str) else None
@@ -2845,7 +2845,7 @@ def _sweep_completed_oneshots(
             if removed_ids is not None and rid:
                 removed_ids.add(str(rid))
             logger.info(
-                "Job '%s': pruning completed one-shot record (finished %s, retention %.1f days)",
+                "Job '%s': pruning completed job record (finished %s, retention %.1f days)",
                 rj.get("name", rj.get("id", "?")), last_run, retention_days)
         except Exception:
             logger.debug(

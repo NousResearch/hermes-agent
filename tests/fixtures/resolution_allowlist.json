@@ -529,6 +529,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/file_tools_document_search.py",
+    "symbol": "_host_rg",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/mcp_tool_config.py",
     "symbol": "_resolve_stdio_command",
     "kind": "bare_which"

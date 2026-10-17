@@ -33,6 +33,12 @@ Notebook cell outputs longer than 20,000 characters are truncated; the truncatio
 
 Extraction works with remote terminal backends (Docker, Modal, SSH): the file's bytes are transferred across the backend boundary and converted host-side, so a document inside a sandbox reads the same as a local one.
 
+## Searching inside documents
+
+`search_files` with `target: "content"` also searches the text of the PDF, Office, OpenDocument, RTF and EPUB files in scope. ripgrep cannot read those files, so after the normal search Hermes lists the documents under the search path (with the search's own ignore, hidden-directory and `file_glob` rules), extracts them with the converter above, and runs ripgrep over the extracted text with the same pattern. The pattern therefore means exactly what it means for plain files. Hits come back under `document_matches`; each line number is the line `read_file` shows for that path, so `read_file(path, offset=<line>)` opens the passage.
+
+A document that cannot be searched (malformed, scanned pages with no text layer, over 20 MB, beyond the first 50 documents in scope, past the 20-second budget, or no ripgrep on the machine running Hermes) is named in `_documents_not_searched` instead of being skipped silently. Extracted text is cached in memory by the document's content hash and path for the life of the process and never written to disk beyond the private temporary copy ripgrep reads during a search. Hosted OCR is never used during a search. A `file_glob` that pins a non-document extension (for example `*.py`) skips the document pass entirely.
+
 ## Scanned PDFs: the coverage warning
 
 PDF conversion reads the **text layer only**. Pages that are scanned images — common in legal documents, resale packages, signed contracts, faxes — contain no text layer and silently convert to nothing. The telltale signature is section headers with empty bodies.

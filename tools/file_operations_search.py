@@ -513,6 +513,38 @@ class SearchMixin:
             out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
         return out
 
+    def list_documents(self, path: str, extensions: frozenset[str], limit: int,
+                       file_glob: Optional[str] = None) -> tuple[list[str], bool]:
+        """Files under ``path`` with one of ``extensions`` (case-insensitive), walked with
+        the content search's own ignore/hidden/protected-dir rules and its own
+        ``file_glob`` semantics, so document search covers exactly the tree ``rg``
+        covered. Returns ``(paths, more_exist)``."""
+        names = sorted(ext.lstrip(".") for ext in extensions)
+        # rg ORs positive globs and lets them override --type, so a caller glob cannot
+        # be combined with the extension filter: list by the glob, filter here.
+        fetch = 20_000 if file_glob else limit + 1
+        if self._has_command("rg"):
+            rg = self._quote_executable(self._resolve_command("rg") or "rg")
+            selector = file_glob or f"*.{{{','.join(names)}}}"
+            words = [rg, "--files", "--glob" if file_glob else "--iglob", self._escape_shell_arg(selector),
+                     *self._rg_exclusion_globs(path), "--", self._escape_native_tool_arg(path)]
+            result = self._run_rg_bounded(words, fetch, timeout=30)
+        elif self._has_command("find"):
+            root = self._escape_shell_arg(f"./{path}" if path.startswith("-") else path)
+            protected = self._protected_prune_paths(path)
+            prune = f" {self._prune_expr(protected)} -o" if protected else ""
+            terms = (f"-name {self._escape_shell_arg(file_glob)}" if file_glob else
+                     " -o ".join(f"-iname {self._escape_shell_arg('*.' + name)}" for name in names))
+            result = self._exec(
+                f"find -H {root}{prune} {self._hidden_prune_expr([root])} -o -type f \\( {terms} \\) "
+                f"-print 2>/dev/null | head -n {fetch}", timeout=30)
+        else:
+            return [], False
+        lines = [line for line in result.stdout.splitlines()
+                 if line and not line.startswith("[Command ")]
+        files = [line for line in lines if os.path.splitext(line)[1].lower() in extensions]
+        return files[:limit], len(files) > limit or len(lines) >= fetch
+
     def _path_exists_probe(self, path: str) -> ExecuteResult:
         """Existence probe; stdout contains "exists" or "not_found" (or the probe's
         ``cwd_error`` when the exec wrapper itself failed)."""

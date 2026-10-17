@@ -103,8 +103,12 @@ class PluginEviction:
             for name in names:
                 if name not in disabled:
                     disabled.append(name)
-                # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
-                if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
+                # Do not clear a provider when the runtime has an in-tree implementation
+                # with the same name; a home plugin being evicted is not that provider.
+                bundled_provider = Path(__file__).parent.parent / "plugins" / "memory" / name
+                if (isinstance(memory, dict)
+                        and str(memory.get("provider") or "").strip() == name
+                        and not bundled_provider.is_dir()):
                     memory["provider"] = ""
             output = io.StringIO()
             yaml.dump(config, output)

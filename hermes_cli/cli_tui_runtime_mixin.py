@@ -200,7 +200,7 @@ class CLITuiRuntimeMixin:
                     if self._voice_barge_capture.is_set():
                         return
                     self._voice_start_recording()
-                    self._app.invalidate()
+                    self._invalidate(min_interval=0.0)
                 except Exception as e:
                     _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
             threading.Thread(target=_restart_recording, daemon=True).start()

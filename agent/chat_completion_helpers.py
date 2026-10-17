@@ -1935,6 +1935,21 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
             pool = load_pool(fb_provider)
         except Exception:
             return False
+    if fb_provider == "openai-codex" and pool is not None and pool.has_credentials() and not pool.has_available(model=fb_model):
+        # Codex's persisted pool cooldown can outlive an upstream quota reset. Reuse
+        # the auth resolver's live quota probe; it only clears cooldowns on a
+        # positive usage-endpoint verdict and raises/retains exhaustion otherwise.
+        try:
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+            resolve_codex_runtime_credentials()
+        except Exception:
+            # Probe/auth failures must leave the pool gated by its existing cooldown.
+            pass
+        try:
+            from agent.credential_pool import load_pool
+            pool = load_pool(fb_provider)
+        except Exception:
+            return True  # Fail closed: do not route Codex without checking its current pool.
     if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
         return False
     until = pool.next_available_at(model=fb_model)

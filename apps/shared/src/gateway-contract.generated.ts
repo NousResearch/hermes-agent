@@ -3765,6 +3765,8 @@ export interface CommandsCatalogResult {
   skills?: Record<string, SkillCatalogEntry>
   skill_count?: number
   warning?: string
+  plugin_discovery_error?: string
+  plugin_commands?: Record<string, string>
 }
 export interface CommandCatalogMeta {
   argument_mode?: ArgumentMode | null
@@ -4039,6 +4041,7 @@ export interface ReloadMcpParams {
   always?: boolean
   rev?: string | null
 }
+/** ``session``: what the calling local session's MCP servers did (a new policy generation, nothing to change, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect beside what did apply; ``session_servers``: the MCP servers that session's committed policy runs. */
 export interface ReloadMcpResult {
   status: ReloadMcpStatus
   message?: string | null
@@ -4046,8 +4049,12 @@ export interface ReloadMcpResult {
   coalesced?: boolean | null
   turn_isolation?: boolean | null
   host_ack?: unknown | null
+  session?: ReloadMcpSession | null
+  unavailable?: string[] | null
+  session_servers?: string[] | null
 }
 export type ReloadMcpStatus = 'confirm_required' | 'reloaded'
+export type ReloadMcpSession = 'applied' | 'unchanged' | 'busy'
 /** ``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size`` apply to ``browse``. */
 export interface SkillsManageParams {
   profile?: string | null
@@ -4331,11 +4338,23 @@ export interface McpOauthCallbackResult {
 export type PluginsListParams = Record<string, never>
 export interface PluginsListResult {
   plugins: LegacyPluginRow[]
+  toolsets?: PluginToolsetRow[] | null
+  portable_mcp_servers?: string[] | null
 }
 export interface LegacyPluginRow {
   name: string
   version: string
   enabled: boolean
+  key?: string | null
+  tools?: number | null
+  hooks?: number | null
+  commands?: number | null
+  error?: string | null
+}
+export interface PluginToolsetRow {
+  key: string
+  label: string
+  description: string
 }
 /** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
 export interface PluginsManageParams {
@@ -4554,6 +4573,15 @@ export interface SessionPruneResult {
   routing_deleted?: number | null
   skipped?: number | null
 }
+export interface CommandObserveParams {
+  session_id: string
+  name: string
+  arg?: string | null
+  profile?: string | null
+}
+export interface CommandObserveResult {
+  queued: boolean
+}
 export interface CanonicalSessionInfoParams {
   session_id: string
 }
@@ -4575,6 +4603,7 @@ export interface CanonicalSessionInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   browser_backend_notice?: string | null
+  unknown_toolsets?: string[] | null
   source: string
   model?: string | null
   lazy: boolean
@@ -4941,6 +4970,7 @@ export interface CanonicalSnapshotInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   browser_backend_notice?: string | null
+  unknown_toolsets?: string[] | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
   model?: string | null
@@ -6660,6 +6690,8 @@ export interface CanonicalRpcMethods {
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
   'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
+  /** Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired). */
+  'command.observe': { params: CommandObserveParams; result: CommandObserveResult }
   'config.get': { params: ConfigGetParams; result: CanonicalConfigGetResult }
   'config.set': { params: CanonicalConfigSetParams; result: ConfigSetResult }
   /** Cancel a queued cron admission or latch cancellation on a started one. */
@@ -6728,6 +6760,7 @@ export const CANONICAL_RPC_METHODS = [
   'approval.respond',
   'bot_relay.deliver',
   'clarify.respond',
+  'command.observe',
   'config.get',
   'config.set',
   'cron.cancel',

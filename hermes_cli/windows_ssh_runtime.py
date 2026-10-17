@@ -321,20 +321,20 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
                 "actualCreationTimeNs": str(actual_creation), "expectedCreationTimeNs": str(creation_time_ns)}
     if not argv:
         return {"alive": True, "owned": False, "indeterminate": True, "reason": "argv-unavailable"}
+    # argv[0] is the hermes exe or (normally) the base Python, whose path varies by venv/uv layout.
+    # The launcher runs its runtime as `python -I -c <bootstrap> serve …`, so normalize a HERMES
+    # inline bootstrap to its `-m` equivalent (None for any other `-c` program) and accept only a
+    # `-m hermes_cli.main` entry point — a plain `-c` merely carrying the name is not identity.
+    from gateway.status_inline_source import inline_bootstrap_argv
+    normalized = inline_bootstrap_argv(argv) or argv
     expected = os.path.normcase(os.path.abspath(hermes_path))
     arg0 = os.path.normcase(os.path.abspath(argv[0]))
-    # argv[0] is the hermes exe or (normally) the base Python, whose path varies by venv/uv
-    # layout — so match "a python running our module" (`-c` bootstrap or plain `-m`). Identity
-    # is anchored by the unforgeable creation-time + secret owner-nonce below.
     is_python = os.path.basename(arg0).startswith("python")
-    launches_module = (
-        argv[1:3] == ["-m", "hermes_cli.main"]
-        or (len(argv) > 2 and argv[1] == "-c" and "hermes_cli.main" in argv[2]))
-    executable_match = arg0 == expected or (is_python and launches_module)
+    executable_match = arg0 == expected or (is_python and normalized[1:3] == ["-m", "hermes_cli.main"])
     try:
-        serve = argv.index("serve")
-        owner = argv.index("--ssh-owner-nonce", serve + 1)
-        owned = executable_match and "--isolated" in argv[serve + 1:] and argv[owner + 1] == spawn_nonce
+        serve = normalized.index("serve")
+        owner = normalized.index("--ssh-owner-nonce", serve + 1)
+        owned = executable_match and "--isolated" in normalized[serve + 1:] and normalized[owner + 1] == spawn_nonce
     except (ValueError, IndexError):
         owned = False
     return {"alive": process.is_running(), "owned": owned, "indeterminate": False,
@@ -426,12 +426,30 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     return {
         "path": path,
         "version": (version.stdout + version.stderr).splitlines()[0] if version.returncode == 0 else "",
-        "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text}
+        "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text,
+        "capabilities": ["launcher-ownership", "profile-inventory"]}
 
 
 def _probe(*_: str) -> dict[str, Any]:
     import platform
     return {"os": "Windows", "arch": platform.machine(), "hermesHome": str(get_default_hermes_root()), "python": sys.executable}
+
+
+def list_profiles_op(*_: str) -> dict[str, Any]:
+    """Names of the profiles in this install (``default`` first, deleted ones skipped)."""
+    from hermes_cli.profiles import list_profile_names
+    return {"profiles": list_profile_names()}
+
+
+def install_id_op(*_: str) -> dict[str, Any]:
+    """The install's opaque identity, read-only: no directory, file or id is ever created here.
+
+    ``get_default_hermes_root()`` is the install root — a HERMES_HOME of ``<root>/profiles/<name>``
+    resolves to ``<root>`` — so the id matches what ``install_identity`` mints beside the code tree.
+    """
+    from hermes_cli.install_identity import _INSTALL_ID_FILENAME, _read_existing
+    existing, _ = _read_existing(get_default_hermes_root() / _INSTALL_ID_FILENAME)
+    return {"installId": existing}
 
 
 def _read_log(ownership_id: str, spawn_nonce: str) -> dict[str, Any]:
@@ -458,6 +476,8 @@ _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "remove-log": (2, lambda o, n: {"removed": remove_artifact(_log_path(o, n))}),
     "spawn": (None, lambda *_: spawn_backend(_read_json_stdin())),
     "inspect": (1, inspect_hermes),
+    "list-profiles": (0, list_profiles_op),
+    "install-id": (0, install_id_op),
     "process-state": (4, lambda p, c, h, n: process_state(int(p), int(c), h, n)),
     "terminate": (4, lambda p, c, h, n: {"terminated": terminate_owned(int(p), int(c), h, n)})}
 

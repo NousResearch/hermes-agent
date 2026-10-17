@@ -146,9 +146,16 @@ class ShellHookSpec(_ToolMatcherMixin):
 
 # --- Public API ---
 
-def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = False) -> list[ShellHookSpec]:
+def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = False,
+                         interactive: bool = False) -> list[ShellHookSpec]:
     """Register every configured shell hook (idempotent); returns the newly wired specs. Skipped
-    entries (unknown, malformed, not allowlisted, already registered) are logged only."""
+    entries (unknown, malformed, not allowlisted, already registered) are logged only.
+
+    ``interactive=True`` lets a hook that is not yet allowlisted ask at the terminal; only a
+    foreground CLI command passes it. Every other caller (gateway startup and profile loads, cron
+    and managed workers, tui_gateway, force-reload re-registration) never prompts: ``isatty()``
+    cannot tell a hidden console or ``NUL`` from a person, and a prompt there blocks the event loop
+    until the liveness watchdog kills the gateway (#120356, #127822)."""
     specs, _complete = _hook_specs(cfg)
     if not specs:
         return []
@@ -160,12 +167,12 @@ def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = 
     # TTY prompt outside the lock; _wire takes the lock and re-checks.
     consented = []
     for spec in specs:
-        if _consented(spec, accept, allowed):
+        if _consented(spec, accept, allowed, prompt=interactive):
             consented.append(spec)
         else:
-            logger.warning("shell hook for %s (%s) not allowlisted — skipped. Use --accept-hooks / "
-                           "HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true, or approve at the TTY prompt next run.",
-                           spec.event, spec.command)
+            logger.warning("shell hook for %s (%s) not allowlisted in %s — skipped. Use --accept-hooks / "
+                           "HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true, or approve it at a CLI prompt "
+                           "for this profile.", spec.event, spec.command, allowlist_path())
     with _registered_lock:
         return _wire(manager, home_key, consented)
 
@@ -235,7 +242,7 @@ def record_consent_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: b
     if not specs:
         return []
     accept, allowed = _resolve_effective_accept(cfg, accept_hooks), allowlisted_pairs()
-    return [spec for spec in specs if _consented(spec, accept, allowed)]
+    return [spec for spec in specs if _consented(spec, accept, allowed, prompt=True)]
 
 
 def accept_for_launch(cfg: Optional[dict[str, Any]]) -> None:
@@ -304,11 +311,14 @@ def allowlisted_pairs() -> set[tuple[str, str]]:
     return _approved_pairs(load_allowlist()["approvals"])
 
 
-def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[str, str]]) -> bool:
-    """Allowlisted, or approved now (opt-in or TTY prompt, recorded); ``allowed`` caches one read."""
+def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[str, str]], *, prompt: bool) -> bool:
+    """Allowlisted, or approved now (opt-in, or a TTY prompt when ``prompt``; recorded); ``allowed``
+    caches one read."""
     pair = (spec.event, spec.command)
     if pair in allowed:
         return True
+    if not (accept or prompt):
+        return False
     if not _prompt_and_record(spec.event, spec.command, accept_hooks=accept):
         return False
     allowed.add(pair)

@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -51,10 +53,44 @@ def _iter_sshd_config_lines() -> list[str]:
     return lines
 
 
+def _macos_sshd_service_active() -> Optional[bool]:
+    """Return whether macOS Remote Login's launchd service is active.
+
+    ``sshd_config`` exists on every macOS installation, including hosts where
+    Remote Login is disabled.  Treat an absent launchd service as explicitly
+    inactive so that the config's permissive default does not produce a false
+    exposure warning.  ``None`` preserves the conservative warning when the
+    service state cannot be inspected or on non-macOS platforms.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["/bin/launchctl", "print", "system/com.openssh.sshd"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 113:
+        # launchctl's stable status for an unknown service target. Other
+        # failures are inspection errors, not evidence that SSH is disabled.
+        return False
+    return None
+
+
 def _ssh_password_auth_enabled() -> Optional[str]:
     """Warn when sshd has password auth enabled — the classic brute-force surface, which pairs
-    badly with a root-capable agent box. None when there is no sshd config to read.
+    badly with a root-capable agent box. None when there is no sshd config to read or when macOS
+    Remote Login is disabled.
     """
+    if _macos_sshd_service_active() is False:
+        return None
+
     lines = _iter_sshd_config_lines()
     if not lines:
         return None

@@ -36,7 +36,7 @@ from hermes_cli.plugins_cmd_git import (
 )
 from hermes_cli.plugins_cmd_install import (
     _check_manifest_version, _consent_python_deps, _display_after_install, _install_plugin_core,
-    _install_plugin_python_deps, _prompt_plugin_env_vars, _python_dependency_summary,
+    _install_plugin_python_deps, _node_sidecar_requires_install, _prompt_plugin_env_vars, _python_dependency_summary,
     _read_manifest_for_install, cmd_install, dashboard_install_plugin,
 )
 from hermes_cli.plugins_cmd_listing import (

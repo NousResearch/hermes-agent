@@ -89,7 +89,8 @@ reverse proxy's access log may record an already-spent ticket.
   `hermes computer-use screen start` refuses; a screen already running is never
   taken down by this check. A screen nobody uses is stopped after
   `bot_desktop.idle_stop_minutes` (default 30) and comes back on the next use, so
-  an instance pays for a desktop only while something is on it. Practical guidance
+  an instance uses desktop memory only while something is on it. This does not
+  stop the terminal container or the VM hosting it. Practical guidance
   for small instances: 4 GB runs the desktop, 8 GB is where a takeover with a
   browser is comfortable.
 
@@ -328,6 +329,58 @@ Screenshots the browser tools take are copied back to the host so `MEDIA:`
 paths keep working, the pane's thumbnail is grabbed inside the sandbox, and
 `browser_exec` / the vault autofill reach the sandbox's Chromium through a port
 forwarded over the same `docker exec` / `ssh` channel.
+
+### Private Docker pilot
+
+For a first visible bot computer, use a dedicated Linux host or VM with Docker
+and a configured Hermes installation. Start with one trusted user and one bot;
+profiles and screens on a shared host are not tenant isolation. Allow at least
+4 GB for the trial and keep the default memory headroom check enabled. Enable
+Computer Use and Browser Automation through `hermes tools`, following their
+setup prompts. Connect Hermes Desktop through its existing
+[remote gateway connection](../multi-connection-desktop.md).
+
+Use a disposable profile if you already have a sandbox: selecting a different
+image can recreate its container, as described [above](#the-sandbox-image).
+Run these commands on the gateway host, in the profile you will open in Desktop:
+
+```bash
+hermes config set terminal.backend docker
+hermes config set terminal.docker_image nousresearch/hermes-sandbox:desktop
+hermes config set terminal.container_cpu 2
+hermes config set terminal.container_memory 4096
+hermes config set bot_desktop.placement terminal
+hermes config set bot_desktop.idle_stop_minutes 10
+hermes config set browser.headed true
+hermes computer-use screen start
+hermes computer-use screen status
+```
+
+For a repeatable deployment, record the tested Hermes version and sandbox image
+digest; the `:desktop` tag can change.
+
+Open that profile's Screen pane and confirm the desktop appears. Ask the bot to
+create a small file under `/workspace` and open a public page with its browser
+tool; confirm the browser is visible in the pane. Take over, type into a test
+page, hand back, and ask the bot to continue. Use a test account if you exercise
+a login: its cookies become part of the bot's browser profile.
+
+When finished, hand control back, then run:
+
+```bash
+hermes computer-use screen stop
+hermes computer-use screen status
+```
+
+Check that the screen has stopped. **Stopping the screen is not stopping the
+worker:** neither this command nor `idle_stop_minutes` deletes the Docker
+container, erases browser cookies, or stops a billable VM. The default persistent
+Docker backend also leaves its container running when a session ends. Export
+needed files, then use your host/provider's lifecycle controls to stop or remove
+the intended worker. Removing a container alone is not a full data reset: the
+Docker backend's bind-mounted home and workspace can remain on the host. Plan
+retention and cleanup separately before turning this private trial into a
+hosted service.
 
 ## Configuration
 

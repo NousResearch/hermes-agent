@@ -94,6 +94,59 @@ def test_observe_maps_child_callback_events_to_lines():
     assert "did the thing" in text
 
 
+def test_one_turn_writes_one_assistant_line():
+    """A subagent turn reports its reply twice: ``_thinking`` previews the first line
+    while ``subagent.text`` streams the same text in full. The log carries it once."""
+    w = LiveTranscriptWriter("deleg_dup", 0, "g")
+    reply = "Baseline understood. Setting up the private copy."
+    # Real order: deltas buffer during the API call, then _relay_thinking fires once
+    # the response completes, then the next tool_start flushes the buffer.
+    w.observe("subagent.text", preview=reply)
+    w.observe("_thinking", reply)
+    w.tool_start("read_file", "foo.py")
+    assert w.path is not None
+    text = w.path.read_text(encoding="utf-8")
+    assert text.count(reply) == 1
+    # Still present, as the assistant line rather than a truncated preview
+    assert "assistant| Baseline understood." in text
+
+
+def test_tool_result_renders_readable_text():
+    """A JSON-string result must not be logged as one run-on of ``\\n`` escapes."""
+    w = LiveTranscriptWriter("deleg_res", 0, "g")
+    w.tool_result("execute_code",
+                  result=json.dumps({"output": "line one\nline two\n", "exit_code": 0}))
+    assert w.path is not None
+    line = next(l for l in w.path.read_text(encoding="utf-8").splitlines() if " result " in l)
+    assert "\\n" not in line
+    assert "line one line two" in line
+
+
+def test_tool_result_surfaces_an_error_payload():
+    w = LiveTranscriptWriter("deleg_res_err", 0, "g")
+    w.tool_result("read_file", result=json.dumps({"error": "No such file: /tmp/nope"}))
+    assert w.path is not None
+    text = w.path.read_text(encoding="utf-8")
+    assert "No such file: /tmp/nope" in text
+
+
+def test_tool_result_keeps_non_json_results_verbatim():
+    w = LiveTranscriptWriter("deleg_res_plain", 0, "g")
+    w.tool_result("terminal", result="ok output")
+    assert w.path is not None
+    assert "terminal ok: ok output" in w.path.read_text(encoding="utf-8")
+
+
+def test_think_text_still_recorded_when_no_stream():
+    """Suppressing the preview must not swallow text no stream ever delivered."""
+    w = LiveTranscriptWriter("deleg_nostream", 0, "g")
+    w.observe("_thinking", "a preview nobody streams")
+    w.tool_start("read_file", "foo.py")
+    assert w.path is not None
+    text = w.path.read_text(encoding="utf-8")
+    assert "think    | a preview nobody streams" in text
+
+
 def test_finalize_records_budget_exhaustion_and_errors():
     w = LiveTranscriptWriter("deleg_final", 0, "g")
     w.finalize({"status": "failed", "exit_reason": "max_iterations",
@@ -457,6 +510,17 @@ def test_redaction_covers_every_helper_via_the_event_chokepoint():
     w.finalize({"status": "error", "error": f"f {_ENV_KEY}"})
     body = w.path.read_text(encoding="utf-8")
     assert _ENV_KEY not in body, "a write path escaped the redactor"
+
+
+def test_decoded_tool_result_is_still_redacted():
+    """Projecting a JSON result onto its text must not bypass the redactor: the
+    decoded payload carries strictly more text than the escaped run-on it replaces."""
+    w = LiveTranscriptWriter("deleg_redact_decoded", 0, "g")
+    w.tool_result("terminal", result=json.dumps({"output": f"token {_ENV_KEY} here"}))
+    assert w.path is not None
+    body = w.path.read_text(encoding="utf-8")
+    assert _ENV_KEY not in body, "decoding a result exposed a credential"
+    assert "here" in body, "redaction dropped the surrounding text"
 
 
 def test_benign_transcript_content_is_untouched():

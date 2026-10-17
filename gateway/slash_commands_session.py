@@ -957,15 +957,26 @@ class GatewaySessionCommandsMixin:
 
     # -------------------------------------------------------------- /resume, /sessions
 
+    def _session_listing_limit(self) -> int:
+        """Page size for the /sessions + /resume listings — ``gateway.session_list_limit``,
+        clamped to 1..50 so a typo'd config can't dump a whole chat history in one reply."""
+        from hermes_cli.config import load_config_readonly
+        try:
+            raw = ((load_config_readonly() or {}).get("gateway") or {}).get("session_list_limit", 10)
+            return max(1, min(int(raw), 50))
+        except (TypeError, ValueError):
+            return 10
+
     async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
         widen = allow_all and self._resume_caller_is_admin(source)
+        limit = self._session_listing_limit()
         # Rank by lineage activity, not root started_at: a lineage compressed for days is projected
         # onto its live tip and must sit where the user last touched it (#114271).
         sessions = await self._session_db.list_sessions_rich(
             source=source.platform.value if source.platform else None,
-            session_key=None if widen else session_key, limit=10, order_by_last_active=True)
-        titled = [s for s in sessions if s.get("title")][:10]
+            session_key=None if widen else session_key, limit=limit, order_by_last_active=True)
+        titled = [s for s in sessions if s.get("title")][:limit]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
 
     async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
@@ -1089,7 +1100,7 @@ class GatewaySessionCommandsMixin:
             base = t("gateway.resume.no_named_sessions")
             return f"{base}\n{scope_note}" if scope_note else base
         lines = [t("gateway.resume.list_header")]
-        for idx, s in enumerate(titled[:10], start=1):
+        for idx, s in enumerate(titled[:self._session_listing_limit()], start=1):
             title = s["title"]
             if source.platform == Platform.MATRIX and allow_all:
                 origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
@@ -1127,6 +1138,7 @@ class GatewaySessionCommandsMixin:
         if include_all and not cross_origin:
             scope_notice = t("gateway.sessions.all_requires_admin")
         current_entry = await self.async_session_store.get_or_create_session(source)
+        listing_limit = self._session_listing_limit()
         rows = await asyncio.to_thread(
             query_session_listing, getattr(self._session_db, "_db", self._session_db),
             source=source.platform.value if source.platform else None,
@@ -1135,10 +1147,11 @@ class GatewaySessionCommandsMixin:
             include_all_sources=cross_origin, include_unnamed=include_unnamed,
             search_query=search_query,
             # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
-            limit=50 if search_query else 10, exclude_sources=["tool"])
+            limit=max(50, listing_limit * 5) if search_query else listing_limit,
+            exclude_sources=["tool"])
         if not cross_origin:
             rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
-        rows = rows[:10]
+        rows = rows[:listing_limit]
         if search_query:
             title = t("gateway.sessions.title_matching", query=search_query)
         else:

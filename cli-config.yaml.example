@@ -1377,6 +1377,11 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # Page size of the /sessions and /resume listings on messaging platforms.
+  # The default of 10 hides older titled sessions from chat-only browsing;
+  # raise it to see more history per reply (clamped to 1..50).
+  # session_list_limit: 10
+
 # =============================================================================
 # Toolsets
 # =============================================================================

@@ -193,12 +193,16 @@ def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool =
         return None
     try:
         proc = psutil.Process(int(pid))
+        # Windows has no zombies, and status() costs tens of ms per call there — the strict branch
+        # runs for every ledger entry on each /api/status poll via shared_profile_warning →
+        # ledger_entries(verified_only=True) (#137045) — so both branches skip it on Windows.
         if strict:
             return (create_time is not None and proc.create_time() == create_time
-                    and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
+                    and proc.is_running()
+                    and (os.name == "nt" or proc.status() != psutil.STATUS_ZOMBIE))
         # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
         # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must
-        # not report it as a live pre-update survivor. Windows has no zombies (and status() is slow there).
+        # not report it as a live pre-update survivor.
         return _same_incarnation(proc, create_time) and (
             os.name == "nt" or proc.status() != getattr(psutil, "STATUS_ZOMBIE", "zombie"))
     except psutil.NoSuchProcess:

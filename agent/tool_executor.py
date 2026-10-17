@@ -35,6 +35,7 @@ from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wordi
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
+from agent.skill_resolution import prepare_lookup, execute_resolved_lookup
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
     InlineToolContext,
@@ -731,6 +732,7 @@ def _dispatch_authorized_once(
 
     guardrail_decision = None
     if block_body is None:
+        prepare_lookup(agent, ref.name, ref.args)
         guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
         if guardrail_decision.allows_execution:
             guardrail_decision = None
@@ -751,7 +753,9 @@ def _dispatch_authorized_once(
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    return _run_with_activity_heartbeat(
+        agent, ref.name, lambda: execute_resolved_lookup(agent, ref.name, ref.args, execute),
+    )
 
 
 def _run_agent_tool_execution_middleware(

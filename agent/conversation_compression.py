@@ -4200,7 +4200,6 @@ def compress_context(
     effect_messages_before = _snapshot_compression_effect_input(messages_before_compression, verbatim_tail)
     _commit_fence_entered = False
     try:
-        # Capture the verdict before rotation callbacks reset compressor fields on rebind.
         _compression_made_progress, _compression_used_fallback, _compression_feasibility_skip = (
             bool(getattr(agent.context_compressor, name, False))
             for name in ("_last_compression_made_progress", "_last_summary_fallback_used", "_last_feasibility_skip")
@@ -4208,9 +4207,10 @@ def compress_context(
         if _candidate_rejected(
             agent, compressed, messages, messages_before_compression, attempt=attempt,
         ):
-            # Engines may mutate their input in place; a refused candidate must not leak that mutation.
             _restore_messages_snapshot(messages, messages_before_compression)
             return messages, _existing_system_prompt(agent, system_message)
+        from agent.skill_resolution import preserve_resolution_summary
+        compressed = preserve_resolution_summary(agent, compressed)
         if commit_fence is not None:
             _commit_fence_entered = commit_fence.begin_commit(_hard_cancel_event)
             if not _commit_fence_entered:

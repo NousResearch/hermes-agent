@@ -1362,15 +1362,18 @@ def _render_skills_index(
         )
     return (
         "## Skills\n"
-        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
-        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
-        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
-        "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
-        "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
-        f"even if you think you could handle the task with basic tools like {_basic_tools}. "
-        "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
-        "code review, planning, and testing — load them even for tasks you already know how to do, because "
-        "the skill defines how it should be done here.\n"
+        "Use the index below to select a skill when the task needs its specialized workflow or the user "
+        "requests it. Follow relevant skill instructions once loaded. Ordinary work can proceed directly "
+        f"with {_basic_tools}; discovery is not a mandatory ritual. "
+        "Do not call skills_list when this index or a previous catalog already answers the question. "
+        "If discovery is needed, list once and reuse the catalog until it changes. "
+        "Load a selected skill once, retain its instructions, then execute the parent task. Reconsidering "
+        "the plan or completing many tool steps does not require another list or read. Distinct linked "
+        "resources may be loaded separately. Reread only for changed instructions, a failed/incomplete "
+        "read, or required content lost in compaction without retained instructions. "
+        "A blocked redundant lookup disables that exact action for this attempt, not the user task: "
+        "use retained results and ordinary tools. Stop only for a specific indispensable dependency "
+        "with no alternative, and explain that dependency.\n"
         "If a skill has issues, fix it with skill_manage(action='patch').\n"
         "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
         "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
@@ -1378,7 +1381,7 @@ def _render_skills_index(
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"
         "</available_skills>\n\n"
-        "Only proceed without loading a skill if genuinely none are relevant to the task."
+        "Once skill preparation is complete, continue the parent task without rediscovering skills."
         + hidden_note
     )
 

@@ -674,14 +674,18 @@ def skill_view(
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "Discover available skills (name + description) only when the existing index is insufficient. List once per task and reuse the catalog until it changes; then load a selected skill and execute the parent task.",
     "parameters": {
         "type": "object",
         "properties": {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
-            }
+            },
+            "reload_reason": {
+                "type": "string", "enum": ["previous_read_failed", "previous_read_incomplete", "instructions_changed"],
+                "description": "Concrete reason to retry a previous lookup. Never use merely to reconsider a plan; an unchanged reason is still deduplicated.",
+            },
         },
         "required": [],
     },
@@ -689,17 +693,21 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Load selected skill instructions once, then execute the parent task using the retained instructions. Repeated planning does not require rereading. First call returns SKILL.md plus linked_files; load a distinct reference with file_path. A blocked redundant lookup is not a reason to stop the parent task.",
     "parameters": {
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name from the available index or previous catalog. For plugin skills use 'plugin:skill' (e.g. 'superpowers:writing-plans').",
             },
             "file_path": {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+            },
+            "reload_reason": {
+                "type": "string", "enum": ["previous_read_failed", "previous_read_incomplete", "instructions_changed", "dependency_setup_changed"],
+                "description": "Concrete reason to retry a failed/incomplete read or refresh changed instructions/setup. Context loss alone uses the retained result. Do not repeat an unchanged reason.",
             },
         },
         "required": ["name"],
@@ -723,6 +731,8 @@ def _skill_view_with_bump(args, **kw):
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
+    if args.get("reload_reason") and dedup_task_id:
+        reset_skill_view_dedup(dedup_task_id)
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
         parsed = json.loads(result)

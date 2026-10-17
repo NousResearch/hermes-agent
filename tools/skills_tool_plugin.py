@@ -90,6 +90,7 @@ def _serve_skill_file(
     except UnicodeDecodeError:
         return _json({
             "success": True, "name": label, "file": file_path, "is_binary": True,
+            "skill_dir": str(skill_root),
             "content": f"[Binary file: {target.name}, size: {target.stat().st_size} bytes]"})
     except Exception as exc:
         if not read_error_prefix:
@@ -99,6 +100,7 @@ def _serve_skill_file(
         _mark_background_review_read(target)
     return _json({
         "success": True, "name": label, "file": file_path, "content": content,
+        "skill_dir": str(skill_root),
         "file_type": target.suffix})
 
 

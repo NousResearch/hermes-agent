@@ -576,6 +576,22 @@ summarized, and the summary quotes that turn as typed (`/skill-name do X`) rathe
 body. A reload after the boundary returns the full skill again. Skills preloaded with `-s` or
 `skills.auto_load` live in the system prompt and are never compacted.
 
+During a task, `agent/skill_resolution.py` retains successful catalog and skill results in
+agent memory, along with the catalog generation, selected skills, content digests and exact
+blocked calls. The transition is: inspect the existing index, list only if necessary, load the
+selected skill once, then execute the parent task. Unchanged requests reuse the retained result
+before dispatch; changed source bytes, a distinct reference, or a concrete `reload_reason` permit
+a new read. Failed requests are also retained so unchanged retries do not redispatch.
+
+Compression preserves compact resolution metadata, while instruction bodies remain in agent
+memory for recovery without rerunning skill templates or setup. These bodies are not persisted
+as a second state store. The record belongs to the current conversation attempt and is reset
+on the next user turn. If that process ends, ordinary transcript recovery and skill loading apply.
+The no-progress detector remains active: a redundant skill lookup block disables that exact
+lookup for the attempt and returns retained information plus guidance to continue the parent
+task. It does not automatically halt the task. An indispensable missing instruction is still
+a real dependency and must be reported as such.
+
 ### Phase 2: Determine Boundaries
 
 ```

@@ -342,6 +342,21 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    def forget_changed_call(self, tool_name: str, args: Mapping[str, Any]) -> None:
+        """New source state makes a read a new experiment, even with identical arguments."""
+        signature = ToolCallSignature.from_call(tool_name, args)
+        self._no_progress.pop(signature, None)
+        self._exact_failure_counts.pop(signature, None)
+        self._progress_since_failure.pop(signature, None)
+        self._same_tool_failure_counts.pop(tool_name, None)
+        self._call_history = deque((row for row in self._call_history if row[0] != signature),
+                                   maxlen=_STALL_GUARD_CYCLE_HISTORY)
+        if self._identical_streak_sig == signature:
+            self._identical_streak_sig = None
+            self._identical_streak_count = 0
+        if self._halt_decision and self._halt_decision.signature == signature:
+            self._halt_decision = None
+
     def _decide(
         self, action: str, code: str, tool_name: str, count: int, signature: ToolCallSignature,
         *, message: str | None = None, **fmt: Any,

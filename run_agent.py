@@ -134,7 +134,7 @@ from agent.codex_responses_adapter import (
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
 )
-from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
+from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance
 from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
 
@@ -1238,12 +1238,7 @@ class AIAgent(
     _try_recover_primary_transport = _forward("agent.agent_runtime_helpers", "try_recover_primary_transport")
     _build_api_kwargs = _forward("agent.chat_completion_helpers", "build_api_kwargs")
 
-    def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
-        """Record the first guardrail decision that should stop this turn."""
-        if decision.should_halt and self._tool_guardrail_halt_decision is None:
-            self._tool_guardrail_halt_decision = decision
-        if decision.should_halt:
-            record_guardrail_decision(self, decision.action, decision.code)
+    _set_tool_guardrail_halt = _forward("agent.skill_guardrail_recovery", "set_tool_guardrail_halt")
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
@@ -1254,47 +1249,13 @@ class AIAgent(
             "different approach."
         )
 
-    def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,
-                                      failed: bool, tool_call_id: str = "") -> str:
-        decision = self._tool_guardrails.after_call(tool_name, function_args, function_result, failed=failed)
-        # Identical-call stall guards observe the RAW result (before the per-call loop suffix) and are applied
-        # at result construction so tool results stay append-only / cache-safe.
-        stall_notice = result_stub = stall_kind = None
-        if self._stall_guards_enabled():
-            try:
-                observation = self._tool_guardrails.observe_call(
-                    tool_name, function_args, function_result if isinstance(function_result, str) else None,
-                    tool_call_id=tool_call_id, failed=failed,
-                )
-                stall_notice, result_stub, stall_kind = observation.notice, observation.stub, observation.kind
-            except Exception as exc:
-                logger.debug("stall-guard identical-call observation failed: %s", exc)
-        # Result-reference stubbing: a 2nd+ identical call with a byte-identical FRESH result enters
-        # context as a short stub. Not a cache — the tool ran; only plain-string results are stubbed.
-        if result_stub and isinstance(function_result, str):
-            function_result = result_stub
-        if decision.action in {"warn", "halt"}:
-            function_result = append_toolguard_guidance(function_result, decision)
-        record_guardrail_warnings(self, decision, stall_kind if stall_notice else None)
-        if decision.should_halt:
-            self._set_tool_guardrail_halt(decision)
-        else:
-            # observe_call may have raised the identical-call streak or batch-cycle halt (hard_stop_enabled, tool-agnostic).
-            streak_halt = self._tool_guardrails.halt_decision
-            if streak_halt is not None and streak_halt.code in ("identical_call_streak_halt", "identical_cycle_halt"):
-                function_result = append_toolguard_guidance(function_result, streak_halt)
-                self._set_tool_guardrail_halt(streak_halt)
-        if stall_notice:
-            function_result = (function_result or "") + "\n\n" + stall_notice
-        return function_result
+    _append_guardrail_observation = _forward("agent.skill_guardrail_recovery", "append_guardrail_observation")
 
     def _stall_guards_enabled(self) -> bool:
         """Config gate for the runtime anti-stall guards (agent.stall_guards)."""
         return bool(getattr(self, "_stall_guards", True))
 
-    def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
-        self._set_tool_guardrail_halt(decision)
-        return toolguard_synthetic_result(decision)
+    _guardrail_block_result = _forward("agent.skill_guardrail_recovery", "guardrail_block_result")
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute the assistant's tool calls and append results to ``messages``.

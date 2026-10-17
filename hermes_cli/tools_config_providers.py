@@ -329,7 +329,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
         provider_choices.append("Skip — keep defaults / configure later")
 
     default_idx = _detect_active_provider_index(providers, config, force_fresh=force_fresh)
-    question = "  Select provider:" if reconfigure else f"  {title}:"
+    question = f"  {name} — {'Select provider' if reconfigure else title}:"
     provider_idx = _prompt_choice(question, provider_choices, default_idx)
     if provider_idx >= len(providers):
         _print_info(f"  Skipped {name}")

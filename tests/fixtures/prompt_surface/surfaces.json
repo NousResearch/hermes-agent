@@ -2,8 +2,8 @@
   "cli-code.claude": {
     "prompt_tokens": {
       "context": 134,
-      "stable": 1829,
-      "volatile": 1268
+      "stable": 1796,
+      "volatile": 324
     },
     "tool_tokens": 11242,
     "tools": [
@@ -35,8 +35,8 @@
   "cli.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1225,
-      "volatile": 1268
+      "stable": 1191,
+      "volatile": 324
     },
     "tool_tokens": 11242,
     "tools": [
@@ -68,8 +68,8 @@
   "cli.gemini": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1646,
-      "volatile": 1266
+      "stable": 1613,
+      "volatile": 322
     },
     "tool_tokens": 11242,
     "tools": [
@@ -101,8 +101,8 @@
   "cli.gpt": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 2420,
-      "volatile": 1264
+      "stable": 2386,
+      "volatile": 320
     },
     "tool_tokens": 11398,
     "tools": [
@@ -134,8 +134,8 @@
   "cli.hermes": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1225,
-      "volatile": 1268
+      "stable": 1191,
+      "volatile": 324
     },
     "tool_tokens": 11242,
     "tools": [
@@ -167,8 +167,8 @@
   "cron.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1211,
-      "volatile": 1268
+      "stable": 1178,
+      "volatile": 324
     },
     "tool_tokens": 11242,
     "tools": [
@@ -200,8 +200,8 @@
   "desktop.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1473,
-      "volatile": 1269
+      "stable": 1440,
+      "volatile": 325
     },
     "tool_tokens": 11898,
     "tools": [
@@ -234,8 +234,8 @@
   "discord.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1244,
-      "volatile": 1269
+      "stable": 1210,
+      "volatile": 325
     },
     "tool_tokens": 11242,
     "tools": [
@@ -267,8 +267,8 @@
   "telegram.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1276,
-      "volatile": 1269
+      "stable": 1243,
+      "volatile": 325
     },
     "tool_tokens": 11242,
     "tools": [

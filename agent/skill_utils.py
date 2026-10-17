@@ -613,7 +613,7 @@ def get_untrusted_project_skills_root() -> Optional[tuple[Path, int]]:
 # high-confidence findings only. The scan cache lives under HERMES_HOME, never inside the repo (we don't
 # write artifacts into the user's checkout).
 _PROJECT_SCAN_SOURCE = "project-local"
-_PROJECT_QUARANTINE_CACHE: dict[str, bool] = {}  # skill_dir -> quarantined
+_PROJECT_QUARANTINE_CACHE: dict[str, tuple[str, bool]] = {}  # skill_dir -> (content digest, quarantined)
 
 
 def is_quarantined_project_skill(skill_md) -> bool:
@@ -622,13 +622,25 @@ def is_quarantined_project_skill(skill_md) -> bool:
     unconditionally — non-project callers should not call this."""
     skill_dir = Path(skill_md).parent
     try:
+        from tools.skills_guard import scan_skill_cached, _content_digest
+        digest = _content_digest(skill_dir)
+    except Exception:
+        # Unreadable content would fail the scan too; fail closed WITHOUT caching
+        # so a verdict for earlier content cannot mask this one (#48974 semantics).
+        logger.warning("Project skill digest failed — quarantining (fail closed): %s", skill_dir, exc_info=True)
+        return True
+    try:
         key = str(skill_dir.resolve())
     except OSError:
         key = str(skill_dir)
-    if key in _PROJECT_QUARANTINE_CACHE:
-        return _PROJECT_QUARANTINE_CACHE[key]
+    # Memory entry is keyed by content digest: once the skill is edited, the
+    # stale verdict is dropped and the next call rescans (matches the disk
+    # cache's content-hash invalidation; a dir-only key pinned "dangerous"
+    # forever in long-lived gateway/session processes after an author fix).
+    cached = _PROJECT_QUARANTINE_CACHE.get(key)
+    if cached is not None and cached[0] == digest:
+        return cached[1]
     try:
-        from tools.skills_guard import scan_skill_cached
         from hermes_constants import get_hermes_home
         cache_dir = get_hermes_home() / "cache" / "project_skill_scans"
         result, _prov = scan_skill_cached(skill_dir, source=_PROJECT_SCAN_SOURCE, cache_dir=cache_dir)
@@ -638,7 +650,7 @@ def is_quarantined_project_skill(skill_md) -> bool:
     except Exception:
         logger.warning("Project skill scan failed — quarantining (fail closed): %s", skill_dir, exc_info=True)
         quarantined = True
-    _PROJECT_QUARANTINE_CACHE[key] = quarantined
+    _PROJECT_QUARANTINE_CACHE[key] = (digest, quarantined)
     return quarantined
 
 

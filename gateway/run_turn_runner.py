@@ -410,6 +410,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if overrides.get(key) == value:
                 overrides.pop(key, None)
         turn_overrides = dict(turn_route.get("request_overrides") or {})
+        if getattr(agent, "_fallback_activated", False):
+            # The cached agent is still on its fallback route (primary restore gated this
+            # turn), but the freshly resolved turn route describes the PRIMARY provider.
+            # Re-applying its extra_body would undo the fallback rescope and clobber the
+            # fallback provider's own body (#136554); the primary's body re-applies through
+            # this same merge on the turn restore actually succeeds.
+            turn_overrides.pop("extra_body", None)
         overrides.update(turn_overrides)
         agent.request_overrides = overrides
         agent._gateway_turn_request_overrides = turn_overrides
@@ -449,6 +456,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # A platform send can't be retracted; a local viewer withdraws the keyed notice.
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
+        if getattr(agent, "_fallback_activated", False):
+            # The cached agent is still on its fallback route (primary restore gated this
+            # turn), but `reasoning_config` was resolved for the session's configured model -
+            # the primary. Re-resolve for the live fallback model so a per-model override of
+            # the primary does not ride the fallback request (#136564 follow-up); a session
+            # /reasoning override is model-independent and still wins inside the resolver.
+            reasoning_config = runner._resolve_session_reasoning_config(
+                source=ctx.source, session_key=ctx.session_key, model=agent.model)
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
         self._merge_turn_request_overrides(agent, turn_route)
         from gateway.session_surface import arm_surface_turn

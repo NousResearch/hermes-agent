@@ -1,5 +1,6 @@
 """Regression tests for browser session cleanup and screenshot recovery."""
 
+from contextlib import nullcontext
 from unittest.mock import patch
 from tools import browser_tool_lifecycle as bt_lifecycle
 
@@ -98,7 +99,7 @@ class TestInactivityJanitorMultiplex:
             name: getattr(browser_tool, name).copy()
             for name in (
                 "_active_sessions", "_session_last_activity",
-                "_session_owner_homes", "_cleanup_failures", "_recording_sessions",
+                "_session_owner_homes", "_cleanup_failures", "_cleanup_reservations", "_recording_sessions",
             )
         }
         self.orig_timeout = browser_tool.BROWSER_SESSION_INACTIVITY_TIMEOUT
@@ -143,7 +144,7 @@ class TestInactivityJanitorMultiplex:
 
         seen = {}
 
-        def fake_close(task_id, cmd, args, timeout=None):
+        def fake_close(task_id, cmd, args, timeout=None, **_kwargs):
             seen["home"] = str(get_hermes_home())
             seen["url"] = secret_scope.get_secret("CAMOFOX_URL")
             return {"success": True}
@@ -159,6 +160,37 @@ class TestInactivityJanitorMultiplex:
         assert "t1" not in self.bt._session_last_activity
         assert "t1" not in self.bt._active_sessions
         assert "t1" not in self.bt._session_owner_homes
+
+    def test_janitor_reservation_replaces_session_reactivated_during_teardown(self, monkeypatch):
+        from tools import browser_tool_session
+
+        old_session = {"session_name": "old", "bb_session_id": None}
+        replacement = {"session_name": "replacement", "bb_session_id": None}
+        self.bt._active_sessions["t1"] = old_session
+        self.bt._session_last_activity["t1"] = 1.0
+        monkeypatch.setattr(bt_lifecycle, "_session_owner_scope", lambda _task_id: nullcontext())
+        monkeypatch.setattr(self.bt, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(bt_lifecycle, "_start_browser_cleanup_thread", lambda: None)
+        monkeypatch.setattr(browser_tool_session, "_create_session_for_key", lambda *_args: replacement)
+        monkeypatch.setattr(browser_tool_session._cdp, "_ensure_cdp_supervisor", lambda _task_id: None)
+        created = {}
+
+        def close_old(task_id, command, args, timeout=None, **kwargs):
+            assert kwargs["_session_info"] is old_session
+            created["session"] = browser_tool_session._get_session_info(task_id)
+            assert created["session"]["session_name"] == "replacement"
+            with self.bt._cleanup_lock:
+                assert self.bt._cleanup_reservations[task_id] is old_session
+            return {"success": True}
+
+        monkeypatch.setattr("tools.browser_tool_session._run_browser_command", close_old)
+        monkeypatch.setattr("tools.browser_tool.os.path.exists", lambda _path: False)
+
+        bt_lifecycle._cleanup_inactive_browser_sessions()
+
+        assert self.bt._active_sessions["t1"] is created["session"]
+        assert "t1" in self.bt._session_last_activity
+        assert "t1" not in self.bt._cleanup_reservations
 
     def test_repeated_failures_force_reap_and_close_cloud_session(self):
         from unittest.mock import MagicMock

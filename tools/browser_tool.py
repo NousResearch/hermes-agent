@@ -421,6 +421,9 @@ _session_owner_homes: dict[str, str] = {}
 # Consecutive janitor failures per session; force-reaped after MAX_INACTIVITY_CLEANUP_FAILURES.
 # See #100738.
 _cleanup_failures: dict[str, int] = {}
+# Sessions selected by the inactivity janitor.  A new command must not reuse one
+# of these while the janitor is closing its captured session record.
+_cleanup_reservations: dict[str, dict[str, Any]] = {}
 MAX_INACTIVITY_CLEANUP_FAILURES = 3
 
 # Session keys flagged suspect after a command timeout (written lock-free by

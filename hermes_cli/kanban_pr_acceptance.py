@@ -157,7 +157,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
             # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
             legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
-            selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
+            selected = _newest_per_app(matching) + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
             if not selected:
                 outcomes.append("missing")
                 receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
@@ -188,6 +188,24 @@ def collect_acceptance(contract: str, published_pr: str | None,
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
         receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
         return receipt
+
+
+def _newest_per_app(runs: list) -> list:
+    """Keep each app's newest same-name run (#122688).
+
+    ``filter=latest`` dedupes only within a check suite, so a re-triggered workflow
+    leaves the superseded suite's cancelled run on the same head. Order by
+    ``started_at`` (else ``completed_at``), then id; a run not yet started is newest.
+    """
+    newest: dict = {}
+    for run in sorted(runs, key=_run_order):
+        newest[(run.get("app") or {}).get("id")] = run
+    return list(newest.values())
+
+
+def _run_order(run: dict) -> tuple:
+    stamp = run.get("started_at") or run.get("completed_at")
+    return stamp is None, stamp or "", run["id"]
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

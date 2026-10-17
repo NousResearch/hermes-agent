@@ -107,8 +107,10 @@ A narrower opt-in than the full bypass is `--permission-mode acceptEdits`: file 
 # Default launch — keep permission prompts enabled
 terminal(command="tmux send-keys -t claude-work 'claude \"your task\"' Enter")
 
-# Handle trust dialog (Enter for default "Yes")
-terminal(command="sleep 4 && tmux send-keys -t claude-work Enter")
+# Handle trust dialog — read the pane first, then answer what the capture shows
+terminal(command="sleep 4 && tmux capture-pane -t claude-work -p -S -30")
+# Only once that capture shows the trust dialog with "Yes" selected:
+terminal(command="tmux send-keys -t claude-work Enter")
 
 # Now wait for Claude to work
 terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
@@ -486,7 +488,8 @@ terminal(command="cd /path/to/repo && git diff main...feature-branch | claude -p
 ```
 terminal(command="tmux new-session -d -s review -x 140 -y 40")
 terminal(command="tmux send-keys -t review 'cd /path/to/repo && claude -w pr-review' Enter")
-terminal(command="sleep 5 && tmux send-keys -t review Enter")  # Trust dialog
+terminal(command="sleep 5 && tmux capture-pane -t review -p -S -30")  # Trust dialog: read it
+terminal(command="tmux send-keys -t review Enter")  # only when the capture above shows the dialog
 terminal(command="sleep 2 && tmux send-keys -t review 'Review all changes vs main. Check for bugs, security issues, race conditions, and missing tests.' Enter")
 terminal(command="sleep 30 && tmux capture-pane -t review -p -S -60")
 ```

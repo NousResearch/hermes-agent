@@ -22,6 +22,7 @@ PRICE = "skills/productivity/product-price-monitor"
 WEEKLY = "skills/productivity/weekly-review-planning"
 SOCIAL = "optional-skills/creative/social-media-content-calendar"
 MCP = "optional-skills/mcp/mcp-oauth-remote-gateway"
+CLAUDE_CODE = "skills/autonomous-ai-agents/claude-code"
 
 
 def _document(skill):
@@ -68,6 +69,10 @@ def test_required_references_are_present_and_routed(skill, references):
              "sent replies", "fall back to matching the incoming thread's register",
              "generic-professional"), ()),
     (SOCIAL, (), ("image-generation-workflow",)),
+    # The skill forbids a timed blind approval and must not ship one in its own recipes:
+    # a fixed `sleep` + bare `Enter` answers whatever the pane happens to show by then.
+    (CLAUDE_CODE, ("Never send a blind `Enter` on a timer",),
+     (r'terminal\(command="sleep\s+[\d.]+\s*&&\s*tmux send-keys -t \S+ Enter',)),
 ])
 def test_document_obligations(skill, required, forbidden):
     _, body = _document(skill)

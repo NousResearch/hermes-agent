@@ -153,9 +153,15 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     return display_kind in MACHINERY_DISPLAY_KINDS
 
 
-def silence_allowed(display_kind: Any, reply_expected: Optional[bool] = None) -> bool:
-    """Whether a successful bare silence marker may remain silent for this turn."""
-    return is_machinery_display_kind(display_kind) or reply_expected is False
+def silence_allowed(display_kind: Any, reply_expected: Optional[bool] = None, agent_result: Optional[dict] = None) -> bool:
+    """A human turn needs a reply, including one already delivered by a tool this turn.
+
+    The delivery flag comes from the host's confirmed transport result, not model text or
+    a prior transcript. Failed turns must still surface their failure.
+    """
+    delivered = (isinstance(agent_result, dict) and not agent_result.get('failed')
+                 and agent_result.get('reply_already_delivered') is True)
+    return is_machinery_display_kind(display_kind) or reply_expected is False or delivered
 
 
 def reply_expected_metadata(reply_expected: Optional[bool]) -> dict:

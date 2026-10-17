@@ -4144,7 +4144,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Send a control-style message (prompt/picker) with topic routing + thread fallback."""
         reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=reply_to_mode)
         kwargs: dict[str, Any] = {
-            "chat_id": normalize_telegram_chat_id(chat_id), "text": text, "parse_mode": parse_mode, **self._link_preview_kwargs()}
+            "chat_id": normalize_telegram_chat_id(chat_id), "text": text, "parse_mode": parse_mode,
+            "disable_notification": False, **self._link_preview_kwargs()}
         if reply_markup is not None:
             kwargs["reply_markup"] = reply_markup
         kwargs["reply_to_message_id"] = reply_to_id
@@ -4699,12 +4700,22 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     await handler(query, data, chat_id)
                 return
         for prefix, handler in (
+            ("mem:", self._handle_memory_review_callback),
+            ("skl:", self._handle_skill_review_callback),
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return
+
+    async def _handle_skill_review_callback(self, query, data: str, cb: dict[str, Any]) -> None:
+        from plugins.platforms.telegram.skill_review import handle_callback
+        await handle_callback(self, query, data, cb)
+
+    async def _handle_memory_review_callback(self, query, data: str, cb: dict[str, Any]) -> None:
+        from plugins.platforms.telegram.memory_review import handle_callback
+        await handle_callback(self, query, data, cb)
 
     async def _claim_callback_state(self, query, cb: dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""
@@ -6466,11 +6477,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text; buffers client-split chunks into one MessageEvent."""
         msg = self._effective_update_message(update)
-        if not msg or not msg.text:
+        if not msg:
             return
         # Auth check first: blocked users must not reach batching, the observed transcript, or the agent.
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
+            return
+        from plugins.platforms.telegram.skill_review_edit import handle_edit_message as handle_skill_edit
+        if await handle_skill_edit(self, msg):
+            return
+        from plugins.platforms.telegram.memory_review_edit import handle_edit_message
+        if await handle_edit_message(self, msg):
+            return
+        if not msg.text:
             return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
@@ -6486,6 +6505,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg)
+            return
+        from plugins.platforms.telegram.skill_review_edit import handle_edit_message as handle_skill_edit
+        if await handle_skill_edit(self, msg):
+            return
+        from plugins.platforms.telegram.memory_review_edit import handle_edit_message
+        if await handle_edit_message(self, msg):
             return
         await self._ensure_forum_commands(msg)
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
@@ -6783,6 +6808,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
+            return
+        from plugins.platforms.telegram.skill_review_edit import handle_edit_message as handle_skill_edit
+        if await handle_skill_edit(self, msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):

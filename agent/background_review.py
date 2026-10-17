@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from agent.i18n import t
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
+from tools.memory_review_policy import MEMORY_SELECTION_GUIDANCE
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +379,7 @@ _MEMORY_ROUTING_BLOCK = (
     "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
     "session won't look. If the tool schema lists only one "
     "target, that store is the only one enabled — use it and skip the other.\n\n"
+    + MEMORY_SELECTION_GUIDANCE + "\n\n"
 )
 
 _MEMORY_REVIEW_PROMPT = (

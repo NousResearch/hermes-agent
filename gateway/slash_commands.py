@@ -902,29 +902,39 @@ class GatewaySlashCommandsMixin(
         return t("gateway.btw.started", preview=preview)
 
     async def _handle_memory_command(self, event: MessageEvent) -> str:
-        """Handle /memory — review pending memory writes + toggle the approval gate. Entries are small
-        enough to review inline, so the full flow works on every platform."""
+        """Open native Telegram memory reviews; retain explicit approval/config commands."""
+        args = event.get_command_args().strip().split()
+        if (getattr(event.source, "platform", None) == Platform.TELEGRAM
+                and (not args or args[0].lower() == "pending")):
+            from gateway.slash_commands_memory import open_memory_reviews
+            return await open_memory_reviews(self, event)
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         from tools.memory_tool import load_on_disk_store
         # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
         # the store persists to the same MEMORY/USER.md and honors the configured char limits).
         out = handle_pending_subcommand(
-            wa.MEMORY, event.get_command_args().strip().split(), memory_store=load_on_disk_store(),
+            wa.MEMORY, args, memory_store=load_on_disk_store(),
             set_mode_fn=self._write_approval_setter("memory", event))
         return out if out is not None else t("gateway.memory.unknown_subcommand")
 
     async def _handle_skills_command(self, event: MessageEvent) -> str:
         """Handle /skills on the gateway — pending skill-write review only (hub stays CLI-only). Gated
         by ``skills.write_approval`` but still answers when staged writes exist after the gate is off
-        (never stranded). ``diff`` is truncated for chat."""
+        (never stranded). Telegram uses complete native file reviews."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         args = event.get_command_args().strip().split()
         sub = args[0].lower() if args else ""
+        if event.source.platform == Platform.TELEGRAM and sub in {"", "pending"}:
+            from gateway.slash_commands_skills import open_skill_reviews
+            return await open_skill_reviews(self, event)
         gate_off = not wa.write_approval_enabled(wa.SKILLS) and sub not in {"approval", "mode"}
         if gate_off and wa.pending_count(wa.SKILLS) == 0:
             return t("gateway.skills.gate_off")
+        if event.source.platform == Platform.TELEGRAM and sub == "diff" and len(args) == 2:
+            from gateway.slash_commands_skills import open_skill_reviews
+            return await open_skill_reviews(self, event, args[1])
         out = handle_pending_subcommand(
             wa.SKILLS, args, set_mode_fn=self._write_approval_setter("skills", event))
         if out is None:

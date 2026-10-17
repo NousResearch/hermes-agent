@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -44,6 +45,9 @@ def handle_pending_subcommand(
     if not args:
         return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
     sub, rest = args[0].lower(), args[1:]
+    if sub == "forget-rejections" and subsystem == wa.MEMORY:
+        from tools.memory_rejections import forget_rejections
+        return f"Forgot {forget_rejections()} disapproved memory proposal(s)."
     if sub == "pending":
         return _fmt_pending_list(subsystem)
     if sub in {"approve", "apply"}:
@@ -59,6 +63,16 @@ def handle_pending_subcommand(
 
 def _usage(subsystem: str) -> str:
     return f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
+
+
+def _decision_lock(subsystem: str, pending_id: str):
+    if subsystem == wa.MEMORY:
+        from tools.memory_prompt_send import record_lock
+        return record_lock(pending_id)
+    if subsystem == wa.SKILLS:
+        from tools.skill_review import review_lock
+        return review_lock(pending_id)
+    return nullcontext()
 
 
 def _approve(subsystem: str, rest: list[str], memory_store) -> str:
@@ -78,15 +92,20 @@ def _approve(subsystem: str, rest: list[str], memory_store) -> str:
 
     applied, failed, overwritten, patched, removed = 0, [], [], [], []
     for rec in targets:
-        ok, msg, result = _apply_one(subsystem, rec, memory_store)
-        if ok:
-            wa.discard_pending(subsystem, rec["id"])
-            applied += 1
-            overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
-            patched.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "patched"))
-            removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
-        else:
-            failed.append(f"{rec['id']}: {msg}")
+        with _decision_lock(subsystem, rec["id"]):
+            if subsystem in {wa.MEMORY, wa.SKILLS}:
+                rec = wa.get_pending(subsystem, rec["id"])
+                if rec is None:
+                    continue
+            ok, msg, result = _apply_one(subsystem, rec, memory_store)
+            if ok:
+                wa.discard_pending(subsystem, rec["id"])
+                applied += 1
+                overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
+                patched.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "patched"))
+                removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
+            else:
+                failed.append(f"{rec['id']}: {msg}")
 
     out = [f"Approved {applied} {subsystem} write(s)."]
     if overwritten:
@@ -132,11 +151,14 @@ def _apply_one(subsystem: str, rec, memory_store):
         if subsystem == wa.MEMORY:
             if memory_store is None:
                 return False, "memory store unavailable", {}
+            from tools.memory_review_records import review_issue
+            if issue := review_issue(rec, memory_store):
+                return False, issue, {}
             from tools.memory_tool import apply_memory_pending
             result = apply_memory_pending(payload, memory_store)
         else:
-            from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
+            from tools.skill_review import apply_reviewed
+            result = json.loads(apply_reviewed(rec))
         return bool(result.get("success")), result.get("error", ""), result
     except Exception as e:
         return False, str(e), {}
@@ -146,11 +168,24 @@ def _reject(subsystem: str, rest: list[str]) -> str:
     if not rest:
         return _usage(subsystem)
     target = rest[0]
+    def discard(pending_id):
+        with _decision_lock(subsystem, pending_id):
+            if subsystem == wa.MEMORY:
+                from tools.memory_rejections import remember_rejection
+                record = wa.get_pending(subsystem, pending_id)
+                if record and (record.get("conversion_pending") or record.get("payload", {}).get("action") == "batch"):
+                    return False
+                if record:
+                    remember_rejection(record)
+            return wa.discard_pending(subsystem, pending_id)
+
     if target.lower() == "all":
-        n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
+        n = sum(1 for rec in wa.list_pending(subsystem) if discard(rec["id"]))
         return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
+    if discard(target):
         return f"Rejected pending {subsystem} write '{target}'."
+    if subsystem == wa.MEMORY and wa.get_pending(subsystem, target):
+        return "This proposal is being recovered for individual review. Use its independent memory cards."
     return f"No pending {subsystem} write with id '{target}'."
 
 

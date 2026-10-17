@@ -36,8 +36,8 @@ def _runner(routed_home):
     return runner
 
 
-def _event(text):
-    source = SessionSource(platform=Platform.TELEGRAM, user_id="u", user_name="u",
+def _event(text, platform=Platform.TELEGRAM):
+    source = SessionSource(platform=platform, user_id="u", user_name="u",
                            chat_id="c", chat_type="dm", profile="beta")
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, message_id="m")
 
@@ -49,7 +49,7 @@ async def test_idle_dispatch_runs_table_handlers_under_the_routed_runtime(homes)
         staged = wa.stage_write(wa.MEMORY, {"action": "add", "target": "memory", "content": "beta"},
                                 summary="beta-only", origin="foreground")
     runner = _runner(routed)
-    event = _event("/memory pending")
+    event = _event("/memory pending", platform=Platform.DISCORD)
 
     # Ambient scope is the LAUNCH home (what the receiving bot's handler binds); the dispatcher
     # must still resolve the routed runtime for the handler.

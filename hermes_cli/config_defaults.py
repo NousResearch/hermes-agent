@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- The canonical defaults registry gains the runtime-backed review cadence; behavior lives in tools.memory_prompt_cadence.
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -1987,6 +1988,10 @@ DEFAULT_CONFIG = {
     # Working-set core tools stay eager, while the explicit ``defer`` list below
     # may include cold, event-triggered built-ins as well as plugin/MCP tools.
     "tools": {
+        "write_approval": {
+            # Hours between unanswered memory prompts; 0 disables reminder/retry delivery.
+            "nag_hours": 2,
+        },
         "tool_search": {
             # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a
             # name+description manifest when it fits the budget (degrades to names-only); tier 2

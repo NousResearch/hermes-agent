@@ -588,13 +588,16 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
 
 
 def _rederive_per_model_route(model: str, runtime: dict) -> None:
-    """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
-    that pick the wire per model (OpenCode Zen/Go, Copilot, Nous) must re-derive both from the target model,
-    or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
-    other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
+    """Reapply provider routing after saved session fields overwrite the resolved runtime.
+    Azure Foundry preserves explicit Anthropic routing while inferring Responses-only models.
+    OpenCode, Copilot, and Nous rederive the mode; OpenCode also repairs the endpoint so a previous
+    model's route cannot pin the wrong wire format or provider-family URL (#96066)."""
     from hermes_cli.model_switch import model_derived_api_mode
     from hermes_cli.models import normalize_opencode_base_url
     provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
+    if provider.strip().lower() == "azure-foundry":
+        from hermes_cli.runtime_provider import _azure_inferred_api_mode
+        runtime["api_mode"] = _azure_inferred_api_mode(model, runtime.get("api_mode") or "chat_completions")
     api_mode = model_derived_api_mode(provider, model)
     if api_mode is None:
         return

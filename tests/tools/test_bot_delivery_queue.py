@@ -21,7 +21,7 @@ def _pin_config(monkeypatch):
 
 
 def _did(n: int) -> str:
-    return "%032x" % n
+    return format(n, "032x")
 
 
 def _admit(home, n=1, *, sender="alpha", target="bravo", profile_hint=None, now_ns=None):

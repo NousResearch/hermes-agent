@@ -1,104 +1,118 @@
-"""Durable mailbox invariants, using real disk and exec boundaries."""
+"""Canonical delivery invariants: stable envelope IDs, authority-only admission,
+immutable receipts. The mailbox is receipt storage, never an execution queue."""
 import json
-import logging
 import os
-import subprocess
-import sys
-import time
+from pathlib import Path
 
 import pytest
 
-@pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
-def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
-    from tools import bot_live_delivery as mailbox
+from tools import bot_live_delivery as mailbox
 
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
+
+class _FakeAuthority:
+    """Stands in for the profile authority's ``bot_relay.deliver`` RPC."""
+
+    def __init__(self):
+        self.calls = []
+        self.records = {}
+
+    def __call__(self, home, params):
+        self.calls.append((Path(home).resolve(), dict(params)))
+        record = self.records.get(params["id"])
+        if record is None:
+            record = self.records[params["id"]] = dict(
+                status="queued", delivery_id=params["id"], profile_home=str(Path(home).resolve()),
+                session_id="local-bot", message=params["message"], admission_id="adm-" + params["id"][:6],
+                reply="", **({"author": params["author"]} if "author" in params else {}))
+            with mailbox._locked(home) as root:
+                mailbox._write(root / f"{params['id']}.json", record)
+        elif (record["message"] != params["message"]
+              or record.get("author") != params.get("author")):
+            raise ValueError("admission_conflict")
+        return {k: record[k] for k in ("status", "delivery_id", "profile_home", "session_id", "reply")}
+
+
+def _owner(home):
+    return dict(profile_home=str(Path(home).resolve()), session_id="local-bot",
+                lease_id="authority-1", live_session_id="local-bot")
+
+
+def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path, monkeypatch):
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
     delivery_id = "a" * 32
-    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id=delivery_id)
-    assert queued["status"] == "queued"
+    queued = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "héllo 世界", delivery_id=delivery_id)
+    assert queued["status"] == "queued" and queued["delivery_id"] == delivery_id
+    # Receipts are written as plain UTF-8 and read back BOM-tolerantly (main 61dc26cd7d9).
     path = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{delivery_id}.json"
     raw = path.read_bytes()
     assert not raw.startswith(b"\xef\xbb\xbf")
     path.write_bytes(b"\xef\xbb\xbf" + raw)
-    assert mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id=delivery_id) == queued
+    # Exact retry inspects the same admission; it never mints a second envelope.
+    assert mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "héllo 世界", delivery_id=delivery_id) == queued
+    assert [params["id"] for _home, params in authority.calls] == [delivery_id, delivery_id]
+    assert len(authority.records) == 1
     with pytest.raises(ValueError):
-        mailbox.deliver_to_live_owner(tmp_path, owner, "different", delivery_id=delivery_id)
-    assert mailbox.claim_pending_delivery(tmp_path, dict(owner, lease_id="other")) is None
-    assert mailbox.claim_pending_delivery(tmp_path, dict(owner, live_session_id="other")) is None
-    script = (
-        "import json,sys; from tools.bot_live_delivery import claim_pending_delivery; "
-        "print(json.dumps(claim_pending_delivery(sys.argv[1],json.loads(sys.argv[2]))))"
-    )
-    children = [subprocess.Popen([sys.executable, "-c", script, str(tmp_path), json.dumps(owner)],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True) for _ in range(2)]
-    results = []
-    for child in children:
-        out, err = child.communicate(timeout=30)
-        assert child.returncode == 0, err
-        results.append(json.loads(out))
-    claims = [r for r in results if r is not None]
-    assert len(claims) == 1 and claims[0]["message"] == "héllo 世界"
-    assert mailbox.read_delivery_result(tmp_path, delivery_id)["status"] == "claimed"
-    assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
-    receipt = mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="réponse 世界")
-    assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
-    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
-    assert mailbox.read_delivery_result(tmp_path, delivery_id) == receipt
-    assert mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="réponse 世界") == receipt
-    with pytest.raises(ValueError):
-        mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="rewrite")
-    assert mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id=delivery_id) == receipt
-    assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+        mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "different", delivery_id=delivery_id)
+    # Reading the receipt resolves through the same admission, not a local guess.
+    assert mailbox.read_delivery_result(tmp_path, delivery_id)["status"] == "queued"
+    # The retired UI claim consumer never hands out work.
+    assert mailbox.claim_pending_delivery(tmp_path, _owner(tmp_path)) is None
     if os.name != "nt":
         for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
             assert path.stat().st_mode & 0o077 == 0
 
 
-def test_cancel_queued_delivery_fences_claim_and_preserves_terminal_result(tmp_path):
-    from tools import bot_live_delivery as mailbox
+def test_mailbox_lock_continues_when_directory_hardening_is_denied(tmp_path, monkeypatch, caplog):
+    """An inherited Windows ACL may deny chmod without making the mailbox unusable."""
+    real_chmod = Path.chmod
 
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "first", delivery_id="3" * 32)
-    cancelled = mailbox.cancel_queued_delivery(
-        tmp_path, queued["delivery_id"], error="owner closed", reason="runtime_offline")
-    assert cancelled is not None
-    assert cancelled["status"] == "cancelled"
-    assert cancelled["error"] == "owner closed"
-    assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    assert mailbox.deliver_to_live_owner(tmp_path, owner, "first", delivery_id="3" * 32) == cancelled
-    assert mailbox.cancel_queued_delivery(
-        tmp_path, queued["delivery_id"], error="owner closed", reason="runtime_offline") == cancelled
+    def deny_mailbox_chmod(path, mode, *, follow_symlinks=True):
+        if path == tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME:
+            raise PermissionError("[WinError 5] Access is denied")
+        return real_chmod(path, mode, follow_symlinks=follow_symlinks)
 
-    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="4" * 32)
-    claimed = mailbox.claim_pending_delivery(tmp_path, owner)
-    assert claimed is not None
-    assert claimed["delivery_id"] == queued["delivery_id"]
-    assert mailbox.cancel_queued_delivery(
-        tmp_path, queued["delivery_id"], error="owner closed", reason="runtime_offline") == claimed
-    settled = mailbox.complete_delivery(tmp_path, queued["delivery_id"], status="settled", reply="PONG")
-    assert mailbox.cancel_queued_delivery(
-        tmp_path, queued["delivery_id"], error="owner closed", reason="runtime_offline") == settled
+    monkeypatch.setattr(Path, "chmod", deny_mailbox_chmod)
+    with mailbox._locked(tmp_path) as root:
+        assert root == tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    assert "could not harden mailbox directory" in caplog.text
+
+
+def test_cancel_queued_delivery_cancels_only_an_unadmitted_receipt(tmp_path, monkeypatch):
+    """main's cancel fence on the owner seam: a legacy unadmitted queued receipt is cancelled
+    once (idempotent); an authority admission is never cancelled from the mailbox."""
+    key = "3" * 32
+    with mailbox._locked(tmp_path) as root:
+        mailbox._write(root / f"{key}.json", dict(
+            delivery_id=key, id=key, status="queued", message="first", created_at=1, sequence=1,
+            owner=_owner(tmp_path), **_owner(tmp_path)))
+    cancelled = mailbox.cancel_queued_delivery(tmp_path, key, error="owner closed", reason="runtime_offline")
+    assert cancelled["status"] == "cancelled" and cancelled["error"] == "owner closed"
+    assert mailbox.cancel_queued_delivery(tmp_path, key, error="again", reason="runtime_offline") == cancelled
+
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
+    admitted = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "second", delivery_id="4" * 32)
+    kept = mailbox.cancel_queued_delivery(tmp_path, admitted["delivery_id"], error="x", reason="runtime_offline")
+    assert kept["status"] != "cancelled"
+    assert mailbox.read_delivery_result(tmp_path, admitted["delivery_id"])["status"] == "queued"
 
 
 @pytest.mark.parametrize("intent_state", ["new", "existing", "raced"])
 def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, intent_state):
-    from pathlib import Path
-
-    from hermes_cli.active_sessions import try_acquire_active_session
+    """Main 61dc26cd7d9 on the canonical door: a BOM-prefixed DM payload and a BOM-prefixed pinned
+    intent read back intact, a pinned intent is never replaced by a rewritten payload, and a
+    damaged intent retains its evidence instead of retrying a transport."""
+    import hermes_cli.gateway_runtime as runtime
     from hermes_state import SessionDB
-    from tools import bot_live_delivery as mailbox, bot_mode_dm
+    from tools import bot_mode_dm
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session(session_id="chat", source="cli")
     db.set_session_title("chat", "Bot Chat")
-    lease, refusal = try_acquire_active_session(
-        session_id="chat", surface="desktop", config={}, registry_home=tmp_path,
-        metadata=dict(live_session_id="live", bot_live_delivery_consumer=True))
-    assert refusal is None and lease is not None
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
     try:
         owner = mailbox.find_canonical_live_owner(tmp_path)
         assert owner is not None
@@ -120,451 +134,175 @@ def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, inten
 
             monkeypatch.setattr(os, "open", competing_intent)
         record = bot_mode_dm._admit_live_dm(tmp_path, str(payload), author)
-        assert record is not None
-        assert record["message"] == ("héllo 世界" if intent_state == "new" else "pinned 世界")
-        assert record["owner"] == owner and record["author"] == author
+        assert record is not None and record["status"] == "queued"
+        admitted = authority.records[record["delivery_id"]]
+        assert admitted["message"] == ("héllo 世界" if intent_state == "new" else "pinned 世界")
+        assert admitted["author"] == author
         if intent_state == "new":
             assert not intent_path.read_bytes().startswith(b"\xef\xbb\xbf")
             intent_path.write_bytes(b"\xef\xbb\xbf" + intent_path.read_bytes())
         payload.write_text("must not replace pinned payload", encoding="utf-8")
         assert bot_mode_dm._admit_live_dm(None, str(payload)) == record
-        claim = mailbox.claim_pending_delivery(tmp_path, owner)
-        assert claim is not None and claim["delivery_id"] == record["delivery_id"]
-        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+        assert len(authority.records) == 1
         intent_path.write_bytes(b"\xef\xbb\xbf{broken")
         assert bot_mode_dm._run_delivery([], str(payload), stdin_file=False, profile_home=tmp_path) == 1
         assert payload.exists()  # Ambiguous admission must retain its evidence, not retry a transport.
     finally:
-        lease.release()
         db.close()
 
-def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
-    from tools import bot_live_delivery as mailbox
 
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    for timestamp, message in ((100, "first"), (90, "second")):
-        monkeypatch.setattr(mailbox.time, "time_ns", lambda: timestamp)
-        mailbox.deliver_to_live_owner(tmp_path, owner, message)
-    assert mailbox.claim_pending_delivery(tmp_path, owner)["message"] == "first"
-    assert mailbox.claim_pending_delivery(tmp_path, owner)["message"] == "second"
+def test_owner_from_another_home_or_malformed_id_is_refused_before_admission(tmp_path, monkeypatch):
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
+    foreign = dict(_owner(tmp_path), profile_home=str(tmp_path / "elsewhere"))
+    with pytest.raises(ValueError, match="different profile home"):
+        mailbox.deliver_to_live_owner(tmp_path, foreign, "hello", delivery_id="b" * 32)
+    with pytest.raises(ValueError, match="delivery id"):
+        mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id="../evil")
+    assert authority.calls == []
 
-@pytest.mark.parametrize("capable", [True, False])
-def test_only_canonical_capable_owner_receives_across_compression(tmp_path, capable):
+
+def test_receipt_read_retains_the_immutable_author_without_replaying_admission(tmp_path, monkeypatch):
+    """The owner-published local projection keeps the author; polling never replays admission."""
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
+    delivery_id = "d" * 32
+    author = {"kind": "user", "id": "u-1", "display": "Ann"}
+    queued = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id=delivery_id, author=author)
+    polled = mailbox.read_delivery_result(tmp_path, delivery_id)
+    assert all(polled[key] == value for key, value in queued.items())
+    assert polled['author'] == author
+    assert [params.get("author") for _home, params in authority.calls] == [author]
+
+
+@pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
+def test_terminal_receipt_is_immutable(tmp_path, terminal_status):
+    delivery_id = "c" * 32
+    with mailbox._locked(tmp_path) as root:
+        mailbox._write(root / f"{delivery_id}.json", dict(delivery_id=delivery_id, status="claimed",
+                                                          message="hello", created_at=1))
+    receipt = mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer")
+    assert mailbox.read_delivery_result(tmp_path, delivery_id) == receipt
+    assert mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer") == receipt
+    with pytest.raises(ValueError):
+        mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="rewrite")
+    with pytest.raises(ValueError):
+        mailbox.complete_delivery(tmp_path, "d" * 32, status="not-terminal")
+
+
+def _ready(instance_id):
+    from types import SimpleNamespace
+
+    return lambda home, timeout: SimpleNamespace(state="ready", endpoint=SimpleNamespace(instance_id=instance_id))
+
+
+def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monkeypatch):
     from hermes_state import SessionDB
-    from hermes_cli.active_sessions import try_acquire_active_session, transfer_active_session
-    from tools import bot_live_delivery as mailbox
+    import hermes_cli.gateway_runtime as runtime
 
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint",
+                        lambda home, timeout: SimpleNamespace(state="absent", endpoint=None))
+    with pytest.raises(ValueError, match="authority"):
+        mailbox.find_canonical_live_owner(tmp_path)
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
+    assert mailbox.find_canonical_live_owner(tmp_path) is None  # no state.db yet
     db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="chat", source="cli")
-    db.set_session_title("chat", "Bot Chat")
-    meta = dict(live_session_id="live", bot_live_delivery_consumer=capable)
-    lease, refusal = try_acquire_active_session(session_id="chat", surface="desktop", config={},
-                                               registry_home=tmp_path, metadata=meta)
-    assert refusal is None
     try:
+        db.create_session(session_id="scratch", source="cli")
+        db.set_session_title("scratch", "Scratch")
+        # No Bot Chat yet is still a deliverable owner: the authority creates the chat on
+        # first delivery (create-if-missing), so discovery reports an empty tip, not None.
+        assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == ""
+        db.create_session(session_id="chat", source="cli")
+        db.set_session_title("chat", "Bot Chat")
         owner = mailbox.find_canonical_live_owner(tmp_path)
-        if not capable:
-            assert owner is None
-            return
-        assert owner is not None
-        assert owner["lease_id"] == lease.lease_id
-        queued = mailbox.deliver_to_live_owner(tmp_path, owner, "before compression")
+        assert owner["canonical"] is True and owner["lease_id"] == "authority-1"
+        assert owner["session_id"] == owner["live_session_id"] == "chat"
         db.end_session("chat", "compression")
         db.create_session(session_id="tip", source="cli", parent_session_id="chat")
-        assert transfer_active_session(lease, session_id="tip", metadata=meta)
-        current = mailbox.find_canonical_live_owner(tmp_path)
-        assert current is not None
-        assert current["session_id"] == "tip"
-        claim = mailbox.claim_pending_delivery(tmp_path, current)
-        assert claim["delivery_id"] == queued["delivery_id"]
-        assert claim["session_id"] == "chat"
-        assert mailbox.claim_pending_delivery(tmp_path, current) is None
+        assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == "tip"
     finally:
-        lease.release()
         db.close()
 
-def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path):
+
+def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat", lease_id="lease", live_session_id="live")
     author = {"id": "bot:coder", "name": "coder", "is_bot": True}
-    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id="b" * 32, author=author)
-    assert queued["author"] == author
-    assert mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id="b" * 32, author=author) == queued
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author)
+    assert authority.calls[-1][1]["author"] == author
+    assert authority.records["b" * 32]["author"] == author
+    assert mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author) == queued
     with pytest.raises(ValueError):
-        mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id="b" * 32, author={**author, "id": "bot:other"})
-    assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
+        mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author={**author, "id": "bot:other"})
+    mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
+    assert "author" not in authority.calls[-1][1]
 
-@pytest.mark.platforms("posix")
-@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason='needs POSIX file permissions for an unreadable ticket')
-def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
-    import logging
 
+def test_non_dict_ticket_fails_exact_id_reads_closed(tmp_path):
+    """Malformed is not absent: an exact-id receipt read raises instead of reporting "no record"."""
     from tools import bot_live_delivery as mailbox
 
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
-    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-    # A real admission that later turns unreadable: its sequence must survive the skip.
-    hidden = mailbox.deliver_to_live_owner(tmp_path, owner, "hidden", delivery_id="e" * 32)
-    (root / f"{'e' * 32}.json").chmod(0)
-    corrupt = root / f"{'1' * 32}.json"
-    corrupt.write_text("{not json", encoding="utf-8")
-    (root / f"{'2' * 32}.json").write_bytes(b"\xff\xfe\x00garbage")  # invalid UTF-8, not just bad JSON
-    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
-        # Sender side: admission of a fresh id must survive the sequence sweep.
-        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
-        # Receiver side: every readable queued ticket must still be claimed, in order.
-        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
-        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
-        for _ in range(10):  # the idle poller rescans twice a second
-            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    assert admitted["status"] == "queued"
-    assert admitted["sequence"] > hidden["sequence"] > queued["sequence"]
-    denied = [record for record in caplog.records
-              if record.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
-              and "Permission denied" in record.message]
-    assert len(denied) == 1, "one persistent bad ticket must warn once per process, not per scan"
-
-@pytest.mark.platforms("posix")
-@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason='needs POSIX file permissions for an unreadable ticket')
-def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
-    from tools import bot_live_delivery as mailbox
-
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    unreadable = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
-    unreadable.parent.mkdir(parents=True, exist_ok=True)
-    unreadable.write_text('{"status": "queued"}', encoding="utf-8")
-    unreadable.chmod(0)
-    # Uninspectable is not absent: an exact-id retry must fail closed instead of
-    # minting a fresh receipt that overwrites the possibly-live one (#109820).
-    with pytest.raises(PermissionError):
-        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
-    with pytest.raises(PermissionError):
-        mailbox.read_delivery_result(tmp_path, "e" * 32)
-
-def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog):
-    import logging
-
-    from tools import bot_live_delivery as mailbox
-
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
     bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    bad.parent.mkdir(parents=True)
     bad.write_text('"oops"', encoding="utf-8")  # parses, but is not a record
-    # Malformed is not absent: while the ticket is still in place an exact-id read fails
-    # closed rather than minting a fresh receipt over a possibly-live one.
-    with pytest.raises(ValueError):
-        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
-    with pytest.raises(ValueError):
-        mailbox.read_delivery_result(tmp_path, "e" * 32)
-    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
-        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
-        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
-        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
-        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    assert sum(r.message.startswith(f"Quarantined unreadable delivery record {'e' * 32}.json")
-               for r in caplog.records) == 1
-    # Provably-dead content is preserved, never deleted, and never re-read on the next pass.
-    quarantine = bad.parent / mailbox.QUARANTINE_DIR_NAME
-    assert (quarantine / bad.name).read_text(encoding="utf-8") == '"oops"'
-    assert not bad.exists()
-
-
-def _live_owner(profile_home):
-    """A real registered Bot Chat consumer — the only thing that counts as a live owner."""
-    from hermes_cli.active_sessions import try_acquire_active_session
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=profile_home / "state.db")
-    db.create_session(session_id="chat", source="cli")
-    db.set_session_title("chat", "Bot Chat")
-    lease, refusal = try_acquire_active_session(
-        session_id="chat", surface="desktop", config={}, registry_home=profile_home,
-        metadata=dict(live_session_id="live", bot_live_delivery_consumer=True))
-    assert refusal is None
-    assert lease is not None
-    return db, lease
-
-
-def test_stopped_poll_loop_is_not_a_live_owner(tmp_path):
-    from tools import bot_live_delivery as mailbox
-
-    db, lease = _live_owner(tmp_path)
-    try:
-        owner = mailbox.find_canonical_live_owner(tmp_path)
-        assert owner is not None
-        assert owner["lease_id"] == lease.lease_id
-        # The process is still alive; its poll loop is not. Past the TTL an entry that
-        # only proves "the process exists" must stop being a destination at all.
-        stale_at = time.time() + mailbox.LIVE_CONSUMER_TTL_SECONDS + 1
-        assert mailbox.find_canonical_live_owner(tmp_path, now=stale_at) is None
-        assert mailbox.find_canonical_live_owner(tmp_path, ttl_seconds=0.0) is None
-        assert mailbox._owner_is_live_consumer(tmp_path, owner, now=stale_at) is False
-    finally:
-        lease.release()
-        db.close()
-
-
-def test_corrupt_ticket_is_quarantined_once_and_preserved(tmp_path, caplog):
-    import logging
-
-    from tools import bot_live_delivery as mailbox
-
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    readable = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="a" * 32)
-    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-    (root / f"{'b' * 32}.json").write_text("{not json", encoding="utf-8")
-    (root / f"{'c' * 32}.json").write_bytes(b"\xff\xfe\x00garbage")  # invalid UTF-8, not just bad JSON
-    (root / f"{'d' * 32}.json").write_text("[1, 2, 3]", encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
-        claim = mailbox.claim_pending_delivery(tmp_path, owner)
-        quarantined = [record for record in caplog.records
-                       if record.message.startswith("Quarantined unreadable delivery record")]
-        for _ in range(10):  # the idle poller rescans twice a second
-            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    assert claim["delivery_id"] == readable["delivery_id"]
-    quarantine = root / mailbox.QUARANTINE_DIR_NAME
-    assert sorted(path.name for path in quarantine.iterdir()) == [
-        f"{'b' * 32}.json", f"{'c' * 32}.json", f"{'d' * 32}.json"]
-    assert (quarantine / f"{'b' * 32}.json").read_text(encoding="utf-8") == "{not json"
-    assert len(quarantined) == 3, "dead content is quarantined once, not re-read on every pass"
-    # The sequence high-water mark outlives the tickets it was built from.
-    later = mailbox.deliver_to_live_owner(tmp_path, owner, "later", delivery_id="f" * 32)
-    assert later["sequence"] > readable["sequence"]
-
-
-@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
-                    reason="needs POSIX file permissions for an unreadable ticket")
-def test_unreadable_ticket_does_not_wedge_a_live_claimant(tmp_path):
-    from tools import bot_live_delivery as mailbox
-
-    db, lease = _live_owner(tmp_path)
-    try:
-        owner = mailbox.find_canonical_live_owner(tmp_path)
-        assert owner is not None
-        queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="a" * 32)
-        root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-        denied = root / f"{'b' * 32}.json"
-        denied.write_text('{"status": "queued"}', encoding="utf-8")
-        denied.chmod(0)
-        # A live consumer is the one caller whose sweep reaches the reclaim lanes: an
-        # uninspectable ticket must be skipped there too, not subscripted.
-        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
-        for _ in range(3):
-            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    finally:
-        lease.release()
-        db.close()
-
-
-def test_foreign_json_in_the_spool_does_not_wedge_a_live_sweep(tmp_path):
-    from tools import bot_live_delivery as mailbox
-
-    db, lease = _live_owner(tmp_path)
-    try:
-        owner = mailbox.find_canonical_live_owner(tmp_path)
-        assert owner is not None
-        queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="a" * 32)
-        root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-        foreign = root / "hand-written.json"
-        foreign.write_text('{"note": "not a delivery record"}', encoding="utf-8")
-        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
-        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-        assert foreign.read_text(encoding="utf-8") == '{"note": "not a delivery record"}'
-        assert not (root / mailbox.QUARANTINE_DIR_NAME).exists()
-        later = mailbox.deliver_to_live_owner(tmp_path, owner, "later", delivery_id="b" * 32)
-        assert later["sequence"] > queued["sequence"]
-    finally:
-        lease.release()
-        db.close()
-
-
-def test_reclaim_settles_a_body_the_store_already_has(tmp_path):
-    from tools import bot_live_delivery as mailbox
-
-    db, lease = _live_owner(tmp_path)
-    try:
-        current = mailbox.find_canonical_live_owner(tmp_path)
-        assert current is not None
-        ghost = dict(current, lease_id="ghost-lease", live_session_id="ghost-live")
-        already_ran = "an ask already answered by the lease this chat replaced, verbatim"
-        db.append_message("chat", "user", already_ran)
-        settled = mailbox.deliver_to_live_owner(tmp_path, ghost, already_ran, delivery_id="a" * 32)
-        fresh = mailbox.deliver_to_live_owner(tmp_path, ghost, "an ask the store does not have",
-                                              delivery_id="b" * 32)
-        claim = mailbox.claim_pending_delivery(tmp_path, current)
-        assert claim["delivery_id"] == fresh["delivery_id"], "a body the store has must not run twice"
-        receipt = mailbox.read_delivery_result(tmp_path, settled["delivery_id"])
-        assert (receipt["status"], receipt["reason"]) == ("settled", "already_present")
-        assert receipt["message"] == already_ran
-    finally:
-        lease.release()
-        db.close()
-
-
-def test_unreachable_queued_delivery_expires_with_a_reason(tmp_path, monkeypatch):
-    from tools import bot_live_delivery as mailbox
-
-    db, lease = _live_owner(tmp_path)
-    try:
-        current = mailbox.find_canonical_live_owner(tmp_path)
-        assert current is not None
-        other = dict(current, session_id="other-chat", lease_id="ghost-lease",
-                     live_session_id="ghost-live")
-        monkeypatch.setattr(mailbox.time, "time_ns",
-                            lambda: int((time.time() - 2 * mailbox.UNREACHABLE_AFTER_SECONDS) * 1e9))
-        expired = mailbox.deliver_to_live_owner(tmp_path, other, "an ask this chat cannot reach",
-                                                delivery_id="a" * 32)
-        monkeypatch.undo()
-        young = mailbox.deliver_to_live_owner(tmp_path, other, "an ask its owner may still claim",
-                                              delivery_id="b" * 32)
-        assert mailbox.claim_pending_delivery(tmp_path, current) is None
-        receipt = mailbox.read_delivery_result(tmp_path, expired["delivery_id"])
-        assert (receipt["status"], receipt["reason"]) == ("failed", "no_live_consumer")
-        assert receipt["message"] == expired["message"]
-        assert mailbox.read_delivery_result(tmp_path, young["delivery_id"])["status"] == "queued"
-    finally:
-        lease.release()
-        db.close()
-
-
-_AGE_UNREADABLE = object()
-
-
-@pytest.mark.parametrize("stamp", [_AGE_UNREADABLE, 0, "yesterday"],
-                         ids=["no-created-at", "zero", "not-a-number"])
-def test_unreachable_delivery_without_a_measurable_age_is_kept(tmp_path, monkeypatch, stamp):
-    """A ticket whose age cannot be read stays queued, never failed as infinitely old.
-
-    ``created_at`` is not a required field of a delivery record, so a foreign or half-written ticket
-    reaches the expiry arm with no usable stamp. Expiry is terminal — the record never reaches a turn
-    afterwards — so an unreadable age must not be read as infinitely old (nor raise out of the sweep).
-    """
-    from tools import bot_live_delivery as mailbox
-
-    db, lease = _live_owner(tmp_path)
-    try:
-        current = mailbox.find_canonical_live_owner(tmp_path)
-        assert current is not None
-        other = dict(current, session_id="other-chat", lease_id="ghost-lease",
-                     live_session_id="ghost-live")
-        monkeypatch.setattr(mailbox.time, "time_ns",
-                            lambda: int((time.time() - 2 * mailbox.UNREACHABLE_AFTER_SECONDS) * 1e9))
-        aged = mailbox.deliver_to_live_owner(tmp_path, other, "an ask this chat cannot reach",
-                                             delivery_id="a" * 32)
-        monkeypatch.undo()
-        root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-        unreadable_id = "b" * 32
-        record = dict(aged, delivery_id=unreadable_id, id=unreadable_id, message="ask b")
-        if stamp is _AGE_UNREADABLE:
-            record.pop("created_at", None)
-        else:
-            record["created_at"] = stamp
-        (root / f"{unreadable_id}.json").write_text(json.dumps(record), encoding="utf-8")
-        assert mailbox.claim_pending_delivery(tmp_path, current) is None
-        # Control: the same aged ticket with its stamp intact is still expired by this same sweep,
-        # so the assertion below cannot pass on a sweep that never reached the expiry arm.
-        receipt = mailbox.read_delivery_result(tmp_path, aged["delivery_id"])
-        assert (receipt["status"], receipt["reason"]) == ("failed", "no_live_consumer")
-        kept = mailbox.read_delivery_result(tmp_path, unreadable_id)
-        assert kept["status"] == "queued", "an unreadable age must not expire a record"
-        assert kept["message"] == "ask b"
-    finally:
-        lease.release()
-        db.close()
-
-
-def test_reclaim_logs_the_matching_arm_and_the_lengths(tmp_path, caplog):
-    """The audit trail names the arm that matched, so a hash match never hides behind a substring one."""
-    from tools import bot_live_delivery as mailbox
-
-    db, lease = _live_owner(tmp_path)
-    try:
-        current = mailbox.find_canonical_live_owner(tmp_path)
-        assert current is not None
-        ghost = dict(current, lease_id="ghost-lease", live_session_id="ghost-live")
-        exact = "an ask already answered by the lease this chat replaced, verbatim"
-        inner = ("an ask this chat already ran inside a longer stored body that the substring arm "
-                 "still finds, which is the arm that can match a body it never saw")
-        assert len(inner) >= mailbox._SHORTEST_SUBSTRING_BODY, "the substring arm needs a long body"
-        stored = f"{inner} and then more of the stored body around it"
-        db.append_message("chat", "user", exact)
-        db.append_message("chat", "user", stored)
-        mailbox.deliver_to_live_owner(tmp_path, ghost, exact, delivery_id="a" * 32)
-        mailbox.deliver_to_live_owner(tmp_path, ghost, inner, delivery_id="b" * 32)
-        with caplog.at_level(logging.INFO, logger="tools.bot_live_delivery"):
-            assert mailbox.claim_pending_delivery(tmp_path, current) is None
-        logged = "\n".join(record.getMessage() for record in caplog.records
-                           if record.name == "tools.bot_live_delivery")
-        assert "sha256" in logged and str(len(exact)) in logged
-        assert "substring" in logged and str(len(inner)) in logged and str(len(stored)) in logged
-        assert exact not in logged and inner not in logged and stored not in logged, \
-            "log the lengths, not the bodies"
-        for delivery_id in ("a" * 32, "b" * 32):
-            receipt = mailbox.read_delivery_result(tmp_path, delivery_id)
-            assert (receipt["status"], receipt["reason"]) == ("settled", "already_present")
-    finally:
-        lease.release()
-        db.close()
-
-
-def test_exact_id_reads_fail_closed_on_a_corrupt_ticket(tmp_path):
-    from tools import bot_live_delivery as mailbox
-
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-    root.mkdir(parents=True, exist_ok=True)
-    corrupt = root / f"{'e' * 32}.json"
-    corrupt.write_text("{not json", encoding="utf-8")
-    # Uninspectable is not absent: an exact-id read must fail closed instead of
-    # minting a fresh receipt over a ticket whose bytes it could not read.
-    with pytest.raises(ValueError):
-        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
     with pytest.raises(ValueError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
     assert bad.read_text(encoding="utf-8") == '"oops"'
 
-def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
-    """Valid JSON that lost a field must degrade like corrupt JSON: skipped, warned once, never raised."""
-    import logging
 
-    from tools import bot_live_delivery as mailbox
+def test_receipt_wait_polls_the_local_receipt_and_outlives_an_unreachable_owner(tmp_path, monkeypatch):
+    """A sender's wait reads the receipt file the owner republishes; it never dials the authority
+    (one fresh websocket per 0.5 s tick for up to 30 min) and an owner restart mid-wait is just a
+    longer pending stretch, not an exception that abandons the reply."""
+    import threading
 
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "healthy", delivery_id="d" * 32)
+    dials = []
+
+    def unreachable(home, params):
+        dials.append(params["id"])
+        raise ValueError("profile authority is not ready")
+
+    monkeypatch.setattr(mailbox, "authority_delivery", unreachable)
+    monkeypatch.setattr(mailbox, "_POLL_SECONDS", 0.01)
+    key = "f" * 32
+    admitted = dict(delivery_id=key, profile_home=str(tmp_path.resolve()), session_id="bot", principal_id="owner",
+                    message="hello", admission_id="adm-1", status="canonical")
+    with mailbox._locked(tmp_path) as root:
+        mailbox._write(root / f"{key}.json", admitted)
+    pending = mailbox.await_delivery(tmp_path, key, 0.05)
+    assert pending["status"] == "queued", pending  # admitted, outcome not yet published
+
+    def publish():
+        with mailbox._locked(tmp_path) as root:
+            mailbox._write(root / f"{key}.json", dict(admitted, status="settled", reply="PONG"))
+    threading.Timer(0.1, publish).start()
+    settled = mailbox.await_delivery(tmp_path, key, 5)
+    assert (settled["status"], settled["reply"]) == ("settled", "PONG")
+    assert dials == []
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_mailbox_lock_refuses_a_dir_another_uid_owns_when_chmod_is_denied(tmp_path, monkeypatch):
+    """On POSIX chmod fails only for a dir this uid doesn't own: that mailbox is refused, not used."""
     root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-    damaged = {
-        root / f"{'a' * 32}.json": "{}",
-        root / f"{'b' * 32}.json": json.dumps(dict(
-            delivery_id="b" * 32, id="b" * 32, status="queued", created_at=1,
-            sequence=1, owner=None, message="owner lost")),
-        root / f"{'c' * 32}.json": json.dumps(dict(
-            delivery_id="c" * 32, id="c" * 32, status="queued", created_at=2,
-            sequence="old", owner=owner, message="sequence lost", **owner)),
-        root / f"{'e' * 32}.json": json.dumps(dict(
-            delivery_id="../wrong", id="../wrong", status="queued", created_at=3,
-            sequence=3, owner=owner, message="id lost", **owner)),
-        root / f"{'1' * 32}.json": json.dumps(dict(
-            delivery_id="1" * 32, id="1" * 32, status=[], created_at=4,
-            sequence=4, owner=owner, message="status lost", **owner)),
-    }
-    for path, contents in damaged.items():
-        path.write_text(contents, encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
-        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "also healthy", delivery_id="f" * 32)
-        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
-        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
-        for _ in range(3):
-            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    assert admitted["sequence"] == queued["sequence"] + 1
-    assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
-    skipped = [r.message for r in caplog.records if r.message.startswith("bot_live_delivery: skipping unreadable ticket")]
-    assert len(skipped) == len(damaged), "each damaged ticket warns once per process, not per scan"
+    root.mkdir(parents=True)
+    real_chmod = Path.chmod
+
+    def deny(target, mode, *, follow_symlinks=True):
+        if Path(target) == root:
+            raise PermissionError(1, "Operation not permitted", str(target))
+        return real_chmod(target, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", deny)
+    monkeypatch.setattr(os, "getuid", lambda: root.stat().st_uid + 1)
+    with pytest.raises(PermissionError):
+        with mailbox._locked(tmp_path):
+            pass
+

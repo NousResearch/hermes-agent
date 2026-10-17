@@ -1,8 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
 import type { SessionInfo } from '@/types/hermes'
 
-import { $archivedSessions, listEveryArchivedSession, loadArchivedSessions } from './sidebar-archive'
+import { $sidebarShowArchived } from './layout'
+import {
+  $archivedSessions,
+  $archivedSessionsLoading,
+  listEveryArchivedSession,
+  loadArchivedSessions
+} from './sidebar-archive'
 
 const listAllProfileSessions = vi.hoisted(() => vi.fn())
 
@@ -35,6 +42,8 @@ const page = (from: number, count: number): SessionInfo[] =>
   Array.from({ length: count }, (_, i) => row(`a-${from + i}`))
 
 beforeEach(() => {
+  $sidebarShowArchived.set(false)
+  $apiRequestScope.set({ connectionId: null, profile: null })
   $archivedSessions.set([])
   listAllProfileSessions.mockReset()
 })
@@ -48,6 +57,100 @@ describe('loadArchivedSessions', () => {
     await loadArchivedSessions()
 
     expect($archivedSessions.get()).toEqual([existing])
+  })
+
+  it('does not publish the previous connection rows after a switch mid-load', async () => {
+    let resolvePrevious!: (page: unknown) => void
+    let resolveCurrent!: (page: unknown) => void
+
+    listAllProfileSessions
+      .mockImplementationOnce(() => new Promise(resolve => (resolvePrevious = resolve)))
+      .mockImplementationOnce(() => new Promise(resolve => (resolveCurrent = resolve)))
+
+    $apiRequestScope.setKey('connectionId', 'conn-a')
+    const previous = loadArchivedSessions()
+    $apiRequestScope.setKey('connectionId', 'conn-b')
+    const current = loadArchivedSessions()
+
+    // The new connection's reload must fetch, not be swallowed by A's flag.
+    expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
+
+    resolveCurrent({ sessions: [row('b-archived')], total: 1 })
+    await current
+    resolvePrevious({ sessions: [row('a-archived')], total: 1 })
+    await previous
+
+    expect($archivedSessions.get().map(session => session.id)).toEqual(['b-archived'])
+    expect($archivedSessionsLoading.get()).toBe(false)
+  })
+
+  it('clears the previous connection rows when a load starts on a new one', async () => {
+    let resolveCurrent!: (page: unknown) => void
+
+    listAllProfileSessions
+      .mockResolvedValueOnce({ sessions: [row('a-archived')], total: 1 })
+      .mockImplementationOnce(() => new Promise(resolve => (resolveCurrent = resolve)))
+
+    $apiRequestScope.setKey('connectionId', 'conn-a')
+    await loadArchivedSessions()
+    $apiRequestScope.setKey('connectionId', 'conn-b')
+    const current = loadArchivedSessions()
+
+    expect($archivedSessions.get()).toEqual([])
+
+    resolveCurrent({ sessions: [row('b-archived')], total: 1 })
+    await current
+
+    expect($archivedSessions.get().map(session => session.id)).toEqual(['b-archived'])
+  })
+
+  // Nothing else reloads on a scope switch: the sidebar effect watches only the Archived toggle
+  // and background sync waits for a backend sessions.changed event.
+  it('clears and reloads an open Archived view on a scope switch with no other trigger', async () => {
+    $sidebarShowArchived.set(true)
+    let resolveCurrent!: (page: unknown) => void
+
+    listAllProfileSessions
+      .mockResolvedValueOnce({ sessions: [row('a-archived')], total: 1 })
+      .mockImplementationOnce(() => new Promise(resolve => (resolveCurrent = resolve)))
+
+    await loadArchivedSessions()
+    $apiRequestScope.setKey('profile', 'work')
+
+    expect($archivedSessions.get()).toEqual([])
+    expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
+
+    resolveCurrent({ sessions: [row('work-archived')], total: 1 })
+    await vi.waitFor(() => expect($archivedSessions.get().map(session => session.id)).toEqual(['work-archived']))
+    expect($archivedSessionsLoading.get()).toBe(false)
+  })
+
+  it('replaces a first load stranded by a scope switch while Archived is open', async () => {
+    $sidebarShowArchived.set(true)
+    let resolvePrevious!: (page: unknown) => void
+
+    listAllProfileSessions
+      .mockImplementationOnce(() => new Promise(resolve => (resolvePrevious = resolve)))
+      .mockResolvedValueOnce({ sessions: [row('b-archived')], total: 1 })
+
+    const previous = loadArchivedSessions()
+    $apiRequestScope.setKey('connectionId', 'conn-b')
+
+    await vi.waitFor(() => expect($archivedSessions.get().map(session => session.id)).toEqual(['b-archived']))
+    resolvePrevious({ sessions: [row('a-archived')], total: 1 })
+    await previous
+
+    expect($archivedSessions.get().map(session => session.id)).toEqual(['b-archived'])
+    expect($archivedSessionsLoading.get()).toBe(false)
+  })
+
+  it('clears a closed Archived view on a scope switch without fetching', async () => {
+    $archivedSessions.set([row('a-archived')])
+
+    $apiRequestScope.setKey('profile', 'work')
+
+    expect($archivedSessions.get()).toEqual([])
+    expect(listAllProfileSessions).not.toHaveBeenCalled()
   })
 })
 

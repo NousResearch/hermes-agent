@@ -374,6 +374,7 @@ def admit_durable_turn_lease(
     ):
         admission.early_result = _lease_admission_result(
             agent, db, session_id, conversation_history, inbound_delivery,
+            waited=announced,
         )
         return admission
 
@@ -486,7 +487,7 @@ def _lease_queue_dir(home) -> str:
     return os.path.join(str(home), "runtime", DELIVERY_DIR_NAME)
 
 
-def _lease_waiter_observation(db, session_id: str) -> Dict[str, Any]:
+def _lease_waiter_observation(db, session_id: str) -> dict[str, Any]:
     """Holder / queue depth for the admission receipt.
 
     Each accessor is probed with its own default, so a store that predates the waiter queue reports
@@ -510,8 +511,8 @@ def _lease_waiter_observation(db, session_id: str) -> Dict[str, Any]:
 
 
 def _lease_admission_result(
-    agent, db, session_id: str, conversation_history, inbound_delivery,
-) -> Dict[str, Any]:
+    agent, db, session_id: str, conversation_history, inbound_delivery, *, waited: bool,
+) -> dict[str, Any]:
     """Early result for a turn that could not take the conversation's lease.
 
     A human turn keeps the fail-closed timeout: nothing is spooled on its behalf, so the caller must
@@ -522,7 +523,7 @@ def _lease_admission_result(
     if inbound_delivery and not getattr(agent, "_interrupt_requested", False):
         message = str(inbound_delivery.get("message") or "").strip()
     if not message:
-        return _lease_not_acquired_result(agent, session_id, conversation_history)
+        return _lease_not_acquired_result(agent, session_id, conversation_history, waited=waited)
     observation = _lease_waiter_observation(db, session_id)
     try:
         from tools.bot_live_delivery import enqueue_lease_delivery
@@ -539,7 +540,7 @@ def _lease_admission_result(
             "Could not queue the inbound delivery for %s; reporting the lease timeout instead",
             session_id, exc_info=True,
         )
-        return _lease_not_acquired_result(agent, session_id, conversation_history)
+        return _lease_not_acquired_result(agent, session_id, conversation_history, waited=waited)
     notice = (
         "Another Hermes process is using this session. Your message was queued and will be the "
         "first thing the next turn on this session reads."
@@ -573,15 +574,15 @@ def _drain_lease_queue(session_id: str, conversation_history):
     """
     history = list(conversation_history or [])
     if not session_id:
-        return history, []
+        return conversation_history, []
     try:
         home = _lease_queue_home()
         if not os.path.isdir(_lease_queue_dir(home)):
-            return history, []
+            return conversation_history, []
         from tools.bot_live_delivery import claim_lease_delivery, complete_lease_delivery
 
-        bodies: List[str] = []
-        drained: List[str] = []
+        bodies: list[str] = []
+        drained: list[str] = []
         claims = 0
         spent = 0
         while claims < _LEASE_DRAIN_MAX_RECORDS:
@@ -612,7 +613,9 @@ def _drain_lease_queue(session_id: str, conversation_history):
                     "Queued delivery %s drained but not settled", delivery_id, exc_info=True,
                 )
         if not bodies:
-            return history, drained
+            # Nothing joined the transcript: hand back the caller's own list, never a copy — a
+            # caller that seeded a fresh session in memory keeps that exact object (#123583).
+            return conversation_history, drained
         text = "\n\n".join(bodies)
         if history and history[-1].get("role") == "user":
             merged = dict(history[-1])
@@ -626,10 +629,12 @@ def _drain_lease_queue(session_id: str, conversation_history):
         return history, drained
     except Exception:
         logger.warning("Could not drain queued deliveries for %s", session_id, exc_info=True)
-        return list(conversation_history or []), []
+        return conversation_history, []
 
 
-def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> dict[str, Any]:
+def _lease_not_acquired_result(agent, session_id: str, conversation_history, *, waited: bool) -> dict[str, Any]:
+    """``waited``: another holder was seen (the user was told so), not merely an interrupt that
+    landed before the first acquisition attempt, which no other process was involved in."""
     base = {"messages": list(conversation_history or []), "api_calls": 0, "completed": False}
     if getattr(agent, "_interrupt_requested", False):
         logger.info("session turn lease wait aborted by interrupt: %s", session_id)
@@ -641,6 +646,8 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
             "final_response": (
                 "Stopped waiting for another Hermes process on this session. "
                 "Your message was not processed."
+                if waited else
+                "Stopped before this turn started. Your message was not processed."
             ),
             **base,
             "interrupted": True,

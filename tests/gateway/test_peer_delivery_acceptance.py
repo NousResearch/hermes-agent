@@ -66,6 +66,7 @@ class _FakeWeb:
 def adapter(home, monkeypatch):
     monkeypatch.setattr(api, "web", _FakeWeb)
     a = api.APIServerAdapter.__new__(api.APIServerAdapter)
+    a._session_db = None           # set by __init__ in production; __new__ skips it
     a._run_idempotency_store = RunIdempotencyStore(":memory:")
     a._run_statuses = {}
     a._run_idempotency_ids = set()

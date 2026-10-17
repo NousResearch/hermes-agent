@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (лише на наступний хід — відновиться після однієї відповіді)"
     switch_cancelled: "🟡 Перемикання моделі скасовано. Поточна модель без змін ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Текстова альтернатива: відповідайте `{prefix}approve`, щоб перемкнути, або `{prefix}cancel`, щоб залишити поточну модель._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Активні агенти та завдання**"
     active_agents: "**Активні агенти:** {count}"
@@ -1966,6 +1968,7 @@ cli:
     desc_switch_anyway: "Використати цю модель для поточного сеансу Hermes."
     choice_cancel: "Скасувати"
     desc_keep_current_model: "Залишити поточну модель."
+    confirm_choice_prompt: "Вибір [1/2]: "
     switch_cancelled: "Зміну моделі скасовано."
     selection_failed: "✗ Не вдалося вибрати модель: {error}"
     switch_failed: "⚠ Не вдалося змінити модель на {model} ({error}); залишаємося на {old_model}."

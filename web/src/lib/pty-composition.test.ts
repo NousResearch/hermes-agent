@@ -134,6 +134,74 @@ describe("createPtyCompositionForwarder", () => {
   });
 });
 
+describe("dangling-IME insertText fallback (#136179)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("forwards a letter xterm never emits onData for", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onInsertTextFallback("l");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledExactlyOnceWith("l");
+  });
+
+  it("keeps a repeated letter typed inside the echo window", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onInsertTextFallback("l");
+    vi.advanceTimersByTime(16);
+    // Typing "ll" quickly must not be mistaken for an IME re-send.
+    forwarder.onInsertTextFallback("l");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenNthCalledWith(1, "l");
+    expect(send).toHaveBeenNthCalledWith(2, "l");
+  });
+
+  it("drops the letter when xterm's onData already delivered it", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.noteTerminalData("hel");
+    forwarder.onInsertTextFallback("l");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("cancels the fallback when xterm emits onData before the timer fires", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onInsertTextFallback("l");
+    forwarder.noteTerminalData("l");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("filters xterm's late echo of a letter the fallback already sent", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onInsertTextFallback("l");
+    vi.advanceTimersByTime(16);
+    expect(send).toHaveBeenCalledExactlyOnceWith("l");
+
+    // xterm finally delivers the same letter; the onData path must not send it twice.
+    expect(forwarder.filterTerminalData("l")).toBe("");
+  });
+});
+
 describe("mobile IME double-send dedup (#115505)", () => {
   afterEach(() => vi.useRealTimers());
 

@@ -54,6 +54,19 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   const withinEchoWindow = (entry: DeliveredText | null): entry is DeliveredText =>
     entry !== null && Date.now() - entry.at <= ECHO_WINDOW_MS;
 
+  // Preserve rapid consecutive commits instead of discarding the first.
+  const queue = (data: string) => {
+    const previous = pending;
+    clearPending();
+    if (previous) sendCommitted(previous);
+    pending = data;
+    timer = setTimeout(() => {
+      const committed = pending;
+      clearPending();
+      if (committed) sendCommitted(committed);
+    }, 16);
+  };
+
   return {
     onCompositionEnd(data: string | null) {
       if (!data) return;
@@ -68,16 +81,20 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
       if (withinEchoWindow(lastSent) && lastSent.text === data) {
         return;
       }
-      // Preserve rapid consecutive commits instead of discarding the first.
-      const previous = pending;
-      clearPending();
-      if (previous) sendCommitted(previous);
-      pending = data;
-      timer = setTimeout(() => {
-        const committed = pending;
-        clearPending();
-        if (committed) sendCommitted(committed);
-      }, 16);
+      queue(data);
+    },
+    // xterm 6.0's `_keyDownSeen` guard swallows plain `insertText` input that
+    // followed a dangling IME keydown (keyCode 229 with no keyup, Gboard's
+    // English layout, #136179). Feed those letters through the same queue —
+    // with the identical-commit drop removed: a repeated single letter
+    // ("ll") typed inside the echo window is legitimate input, not an IME
+    // re-send.
+    onInsertTextFallback(data: string) {
+      if (!data) return;
+      if (withinEchoWindow(lastTerminalData) && lastTerminalData.text.endsWith(data)) {
+        return;
+      }
+      queue(data);
     },
     noteTerminalData(data: string) {
       if (!data.startsWith("\x1b")) {

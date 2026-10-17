@@ -999,6 +999,20 @@ class TestSkillsEndpoint:
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
 
+    @pytest.mark.asyncio
+    async def test_skills_handler_no_unexpected_kwargs(self, adapter):
+        # Regression: the Collective Wisdom V1 revert (0dcadf6f41) dropped
+        # include_editorial from _find_all_skills but left the call site in
+        # _handle_skills, so GET /v1/skills 500'd on the real skill catalog.
+        # Unpatched: exercises the actual _find_all_skills() the handler runs.
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/skills")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "list"
+            assert isinstance(data["data"], list)
+
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio

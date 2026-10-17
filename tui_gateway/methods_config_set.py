@@ -123,6 +123,12 @@ def _set_model(rid, params, key, value, session):
         # turn) on the old model: checkmark shows the pick, requests keep the old
         # model. The stash crosses the boundary in the turn frame and the child's
         # turn thread applies it (_apply_pending_model_switch).
+        if not session.get("running"):
+            # A dead, idle host is not a compute-host session any more. Release its ownership
+            # flag HERE — under history_lock, revalidating that no dispatch owns it — so this
+            # pick and every later read take the in-process path. A busy session keeps the
+            # flag: its turn settlement (or crash) owns that decision.
+            _release_stale_compute_host_ownership(session)
         if session.get("running") or session.get("_compute_host_active"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
         explicit_provider = parsed_flags.explicit_provider

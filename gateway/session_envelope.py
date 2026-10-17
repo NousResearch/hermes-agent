@@ -24,8 +24,8 @@ _EVENT_FIELDS = (
     'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control',
 )
 _CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected')
-# Closed metadata contract: only the keys the Baileys adapter stamps on ordinary inbound
-# (``WhatsAppAdapter._build_message_event``) cross native admission; any other key refuses.
+# Gateway spool bookkeeping is carried separately from the closed adapter contract.
+# Only the keys stamped by WhatsAppAdapter._build_message_event cross as adapter metadata.
 _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'whatsapp_from_owner'})
 # Top-level ``nativeMetadata`` keys the bridge emits (scripts/whatsapp-bridge/bridge_helpers.js).
 _WHATSAPP_NATIVE_KEYS = frozenset({'video', 'audio', 'sticker', 'location', 'contact', 'contacts',
@@ -40,8 +40,13 @@ def _native_metadata(event):
     metadata = event.metadata
     if not metadata:
         return {}
-    if (not isinstance(metadata, dict) or event.source.platform.value != 'whatsapp'
-            or not set(metadata) <= _WHATSAPP_METADATA):
+    if not isinstance(metadata, dict):
+        return None
+    metadata = {key: value for key, value in metadata.items()
+                if key not in ('_hermes_durable_inbound_path', '_hermes_durable_inbound_id')}
+    if not metadata:
+        return {}
+    if (event.source.platform.value != 'whatsapp' or not set(metadata) <= _WHATSAPP_METADATA):
         return None
     kind, native = metadata.get('whatsapp_native_type'), metadata.get('whatsapp_native')
     if (kind is not None and not (isinstance(kind, str) and 0 < len(kind) <= 64)
@@ -189,6 +194,10 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
                 'route': runner.session_store._generate_session_key(event.source),
                 'event': deepcopy({name: getattr(event, name) for name in _EVENT_FIELDS}),
                 'timestamp': event.timestamp.isoformat()}
+    from gateway.shutdown_flush import durable_inbound_obligation_id
+    if inbound_id := durable_inbound_obligation_id(event):
+        # Keep the stable transfer identity, not the spool's local arrival-order filename.
+        envelope['durable_inbound_id'] = inbound_id
     if event.source.platform.value == 'webhook':
         from gateway.platforms.webhook_delivery import route_digest, snapshot_destination
         adapter = runner._adapter_for_source(event.source)
@@ -262,6 +271,8 @@ def restore_native(payload, runner=None):
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
+    if inbound_id := envelope.get('durable_inbound_id'):
+        event.metadata['_hermes_durable_inbound_id'] = inbound_id
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):

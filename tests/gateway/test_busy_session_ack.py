@@ -525,3 +525,46 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
 
 
+    @pytest.mark.asyncio
+    async def test_rejected_busy_queue_asks_user_to_resend(self, monkeypatch):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="follow-up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._resolve_busy_steer_or_redirect = AsyncMock(
+            return_value=MagicMock(steered=False, redirected=False, effective_mode="interrupt")
+        )
+        runner._queue_or_replace_pending_event = MagicMock(return_value=False)
+        acknowledgements = []
+
+        async def capture_ack(_event, _adapter, message):
+            acknowledgements.append(message)
+
+        runner._send_busy_ack_reply = capture_ack
+        await runner._handle_active_session_busy_message(event, sk)
+
+        assert acknowledgements == [
+            "⚠️ I could not safely queue that follow-up while the current request is running. "
+            "Please send it again after the current turn finishes."
+        ]
+
+    @pytest.mark.asyncio
+    async def test_drain_rejection_includes_action_translation(self):
+        runner, _sentinel = _make_runner()
+        event = _make_event(text="follow-up")
+        adapter = _make_adapter()
+        runner._delivery_adapter_for = MagicMock(return_value=adapter)
+        runner._queue_during_drain_enabled = MagicMock(return_value=True)
+        runner._queue_or_replace_pending_event = MagicMock(return_value=False)
+        runner._status_action_gerund = MagicMock(return_value="restarting")
+        replies = []
+
+        async def capture_reply(_event, _adapter, message):
+            replies.append(message)
+
+        runner._send_busy_reply = capture_reply
+        await runner._send_busy_drain_notice(event, "session", "restart")
+
+        assert replies == ["⏳ Gateway is restarting and is not accepting another turn right now."]

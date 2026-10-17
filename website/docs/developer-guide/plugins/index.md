@@ -786,6 +786,10 @@ def register(ctx):
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
+`ctx.register_tool()` also accepts `max_result_size_chars` to set that tool's result cap and
+`dynamic_schema_overrides`, a zero-argument callback returning schema fields to merge when tool
+definitions are requested. Both use the same behavior as the built-in tool registry.
+
 **`dispatch_tool` example — a slash command that runs a tool:**
 
 ```python

@@ -87,11 +87,21 @@ What a key guarantees depends on the execution mode:
 `/v1/runs` keys have their own ledger and 24-hour retention (see the Runs API below).
 
 **Exact retries and conflicts.** A retry is exact when it repeats the key with the same
-request fields that define the turn (messages or input, instructions, model, tools and
-similar) and the same declared target. Changing one of those fields, or sending the key
-to another session, answers HTTP 409 `admission_conflict`. Delivery mode is not part of
-the identity: a Responses retry may switch between JSON and `stream: true` and gets the
-same answer in the requested form.
+identity fields and the same declared target. Changing an identity field, or sending the
+key to another session, answers HTTP 409 `admission_conflict`. The identity fields
+differ by endpoint:
+
+- **Responses:** `input`, `instructions`, `previous_response_id`, `conversation`,
+  `conversation_history`, `model`, `provider`, `model_options` and `tools`, plus
+  `truncation` when sent.
+- **Chat Completions:** the last user message, the earlier messages (unless
+  `X-Hermes-Session-Id` is sent, in which case history comes from the session), the
+  system prompt, and the turn settings such as the requested model, provider and
+  `model_options`. `tools` and `tool_choice` are not part of it: a retry that changes
+  only those replays the original answer instead of answering 409.
+
+Delivery mode is not part of the identity on either endpoint: a retry may switch
+between JSON and `stream: true` and gets the same answer in the requested form.
 
 **Replay and duplicate prevention are separate.** An exact retry replays the original
 answer only while the server still holds the key's request identity together with its

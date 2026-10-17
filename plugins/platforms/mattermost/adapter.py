@@ -121,6 +121,8 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
+        # Channels seen as type "D" at ingress; thread mode leaves DMs flat, like the inbound side.
+        self._dm_channel_ids: set[str] = set()
         self._dedup = MessageDeduplicator()
 
     # --- HTTP helpers ---
@@ -198,8 +200,9 @@ class MattermostAdapter(BasePlatformAdapter):
         if file_ids is not None:
             base["file_ids"] = file_ids
         payload = _with_mentions_disabled(base)
-        if self._reply_mode == "thread":
+        if self._reply_mode == "thread" and chat_id not in self._dm_channel_ids:
             # root_id from reply_to, else metadata["thread_id"]/["root_id"], resolved to the true thread root.
+            # DMs stay flat: threading a DM reply splits the conversation across two session keys.
             candidate = reply_to or (
                 isinstance(metadata, dict) and (metadata.get("thread_id") or metadata.get("root_id")))
             if candidate:
@@ -560,13 +563,17 @@ class MattermostAdapter(BasePlatformAdapter):
         if sender_id == self._bot_user_id or post.get("type") or self._dedup.is_duplicate(post_id):
             return
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
+        if is_dm:
+            self._dm_channel_ids.add(channel_id)  # outbound thread mode leaves DMs flat too
         message_text = post.get("message", "")
         if not is_dm:  # DMs need no gating; channels are mention-gated.
             message_text = self._apply_channel_gating(channel_id, message_text)
             if message_text is None:
                 return
         # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.
-        thread_id = post.get("root_id") or None
+        # A DM is one session: its replies never carry a thread_id, so a thread reply (root_id set
+        # because an earlier reply threaded the DM) keeps the DM session instead of starting a new one.
+        thread_id = (post.get("root_id") or None) if not is_dm else None
         if not thread_id and self._reply_mode == "thread" and not is_dm and post_id:
             thread_id = post_id
         if message_text[:1].isspace() and message_text.lstrip().startswith("/"):

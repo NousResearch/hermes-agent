@@ -594,6 +594,48 @@ async def test_mattermost_top_level_channel_post_is_thread_root():
     assert msg_event.message_id == "top_post_123"
 
 
+@pytest.mark.asyncio
+async def test_mattermost_dm_stays_one_session_in_thread_mode():
+    """A DM is one session even in thread mode (#138303): inbound replies never carry a
+    thread_id, and outbound replies stay flat, so a thread reply cannot strand the
+    conversation in a fresh session without context."""
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+
+    def _dm_event(post_id, root_id=""):
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps({
+                    "id": post_id, "user_id": "user_123", "channel_id": "dm_chan",
+                    "message": "hello", "root_id": root_id,
+                }),
+                "channel_type": "D", "sender_name": "@alice",
+            },
+        }
+
+    await adapter._handle_ws_event(_dm_event("dm_post_1"))
+    top = adapter.handle_message.call_args[0][0]
+    assert top.source.thread_id is None
+    assert adapter._dm_channel_ids == {"dm_chan"}
+
+    # A follow-up inside the thread (root_id set) keeps the DM session instead of forking a new one.
+    await adapter._handle_ws_event(_dm_event("dm_post_2", root_id="dm_post_1"))
+    threaded = adapter.handle_message.call_args[0][0]
+    assert threaded.source.thread_id is None
+
+    # Outbound: thread mode leaves DM replies flat (no root_id), matching the inbound keying.
+    adapter._api_get = AsyncMock(return_value={"id": "dm_post_1", "root_id": ""})
+    adapter._api_post = AsyncMock(return_value={"id": "reply"})
+    result = await adapter.send("dm_chan", "answer", reply_to="dm_post_1")
+    assert result.success is True
+    payload = adapter._api_post.call_args[0][1]
+    assert "root_id" not in payload
+
+
 # ---------------------------------------------------------------------------
 # Multiplex secondary-profile scope
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ import {
   requestComposerSetDraft,
   requestModelMenuToggle
 } from './focus'
-import { RICH_INPUT_SLOT } from './rich-editor'
+import { caretOffsetInEditor, placeCaretEnd, RICH_INPUT_SLOT } from './rich-editor'
 
 /**
  * Inactive tabs keep their composer mounted, so an unscoped lookup can blur a
@@ -92,6 +92,27 @@ describe('focusComposerInput', () => {
     focusComposerInput(visible)
 
     expect(document.activeElement).toBe(visible)
+  })
+
+  it('puts the caret after a draft painted while the editor was detached (#140142)', () => {
+    // A remounted composer paints its draft before the portal host is attached,
+    // so the paint's caret placement is dropped.
+    const input = document.createElement('div')
+    input.dataset.slot = RICH_INPUT_SLOT
+    input.contentEditable = 'true'
+    input.tabIndex = 0
+    input.textContent = 'half-typed draft'
+    placeCaretEnd(input)
+    document.body.append(input)
+
+    focusComposerInput(input)
+
+    const selection = window.getSelection()!
+
+    expect(document.activeElement).toBe(input)
+    expect(selection.isCollapsed).toBe(true)
+    expect(input.contains(selection.anchorNode)).toBe(true)
+    expect(caretOffsetInEditor(input)).toBe(input.textContent.length)
   })
 })
 

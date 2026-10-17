@@ -17,7 +17,7 @@ import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
 
 import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
-import { RICH_INPUT_SLOT } from './rich-editor'
+import { placeCaretEnd, RICH_INPUT_SLOT } from './rich-editor'
 
 /** Composer routing key. The main chat is `'main'`, the edit composer
  *  `'edit'`; scoped composers (session tiles) use `'tile:<id>'`. */
@@ -761,7 +761,19 @@ export const focusComposerInput = (el: HTMLElement | null) => {
       return
     }
 
+    // A remounted editor gets its draft painted before its portal host is
+    // attached, so that paint's placeCaretEnd bails on `!isConnected`, and
+    // focus() on a contenteditable with no selection inside it collapses the
+    // caret to offset 0 — the next keystrokes land before the draft (#140142).
+    // Read the selection BEFORE focusing: afterwards it is always inside.
+    const selection = window.getSelection()
+    const hadCaret = Boolean(selection?.rangeCount && el.contains(selection.anchorNode))
+
     el.focus({ preventScroll: true })
+
+    if (!hadCaret) {
+      placeCaretEnd(el)
+    }
   }
 
   focus()

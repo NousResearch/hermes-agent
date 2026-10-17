@@ -90,6 +90,7 @@ def _make_update(msg):
     """Wrap a message in a mock Update."""
     update = MagicMock()
     update.message = msg
+    update.effective_message = msg  # a real Update exposes the payload here too
     return update
 
 
@@ -505,3 +506,28 @@ class TestSendVideo:
 
         call_kwargs = connected_adapter._bot.send_video.call_args[1]
         assert call_kwargs["message_thread_id"] == 789
+
+
+# ---------------------------------------------------------------------------
+# TestEditedMediaUpdate — media delivered via edited_message
+# ---------------------------------------------------------------------------
+
+class TestEditedMediaUpdate:
+    """A file sent into a fresh DM topic can arrive as an edited_message: the client posts a
+    placeholder and attaches the file ~0.4s later (#133348). The media filter matches the update
+    through effective_message, so the handler must read it there like the text/command/location
+    handlers do — reading update.message drops the document silently while the admission layer
+    still receipts the update as completed, so it is never redelivered."""
+
+    @pytest.mark.asyncio
+    async def test_document_on_edited_message_is_processed(self, adapter):
+        doc = _make_document()
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+        update.message = None  # edited_message: payload sits on effective_message
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        assert adapter.handle_message.called
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT

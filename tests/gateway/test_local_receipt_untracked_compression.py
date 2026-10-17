@@ -201,6 +201,26 @@ async def test_a_compacted_secondary_receipt_missing_its_origin_profile_restores
 
 
 @pytest.mark.asyncio
+async def test_a_restore_with_nothing_to_adopt_checks_the_stored_entry_once(tmp_path, monkeypatch):
+    """The catch-up re-checks the receipt only when it moved it. Every LOCAL turn claim restores, so a
+    receipt with no untracked step costs one read of its stored session row, not two."""
+    from gateway.session_local import create_local_session
+    from gateway.session_local_recovery import restore_local_session
+
+    authority, connection = await _owner(tmp_path, monkeypatch, 'first')
+    try:
+        ref = create_local_session(authority, connection.actor, {'request_id': 'r', 'source': 'tui',
+                                                                 'cwd': str(tmp_path), 'model': 'm', 'toolsets': []})
+        reads, get_session = [], authority.db.get_session
+        monkeypatch.setattr(authority.db, 'get_session', lambda sid, *a, **k: reads.append(sid) or get_session(sid, *a, **k))
+        assert restore_local_session(authority, ref.session_id) == ref
+        assert reads == [ref.session_id]
+    finally:
+        await connection.close()
+        authority.db.close()
+
+
+@pytest.mark.asyncio
 async def test_the_resume_hint_the_tui_prints_opens_the_session(tmp_path, monkeypatch):
     """The TUI's exit epilogue prints ``_short_resume_id`` (``local-`` + 16 hex); in-TUI ``/resume``
     sends that hint as ``session_id``."""

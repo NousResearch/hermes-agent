@@ -94,10 +94,11 @@ def restore_local_session(authority, sid):
         store = authority.runner.session_store
         route = store._generate_session_key(source)
         # The catch-up writes, so the receipt as stored must already be this owner's (#140060).
-        _checked_entry(authority, receipt, source, route)
-        receipt = _with_untracked_compression(authority, sid, receipt)
-        policy = restore_policy(receipt['policy'])
         entry = _checked_entry(authority, receipt, source, route)
+        adopted = _with_untracked_compression(authority, sid, receipt)
+        policy = restore_policy(adopted['policy'])
+        if adopted is not receipt:  # re-read after a catch-up: check the copy that will be served
+            receipt, entry = adopted, _checked_entry(authority, adopted, source, route)
         target = entry.session_id
         from hermes_state_local_lineage import validate_local_lineage
         with authority.db._read_ctx() as conn:

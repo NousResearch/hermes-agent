@@ -992,6 +992,27 @@ class TestLineBufferPipedStdout:
         hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
         stream.reconfigure.assert_called_once_with(line_buffering=True)
 
+    def test_redaction_and_thread_routing_do_not_stack_stdout_proxies(self, monkeypatch):
+        """Repeated setup paths keep a piped stdout shallow (#139687)."""
+        import agent.thread_scoped_output as thread_output
+        from agent.thread_scoped_output import thread_scoped_silence
+
+        stream = self._fake_stdout(isatty=False)
+        monkeypatch.setattr(sys, "stdout", stream)
+        monkeypatch.setattr(hermes_logging, "_line_buffered_stdout", None)
+        monkeypatch.setattr(thread_output, "_installed", {})
+        monkeypatch.setattr(thread_output, "_sinks", {})
+        monkeypatch.setattr(thread_output, "_routing_states", {})
+        monkeypatch.setattr(thread_output, "open", lambda *_args, **_kwargs: io.StringIO(), raising=False)
+
+        for _ in range(600):
+            hermes_logging.redact_detached_stdio()
+            with thread_scoped_silence():
+                pass
+
+        hermes_logging._line_buffer_piped_stdout()
+        stream.reconfigure.assert_called_once_with(line_buffering=True)
+
 
 class TestRolloverPreservesLogOwnership:
     """#120151: the stdlib rollover opens a fresh ``agent.log`` owned by the rotating process; a root

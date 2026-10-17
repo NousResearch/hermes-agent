@@ -15,7 +15,58 @@ import sys
 import threading
 from typing import Iterator, TextIO
 
-__all__ = ["thread_scoped_silence"]
+__all__ = ["stdio_chain", "stdio_chain_find", "thread_scoped_silence"]
+
+# Only these Hermes proxy types have known passthrough semantics. An unrelated
+# wrapper may expose the same attribute names without forwarding writes through it.
+_PROXY_LINKS = (
+    ("agent.process_bootstrap", "_SafeWriter", "_inner"),
+    ("hermes_logging", "_RedactingStdio", "_stream"),
+)
+_MAX_CHAIN = 64
+
+
+def _proxy_link_attr(stream) -> str | None:  # type: ignore[no-untyped-def]
+    if isinstance(stream, _ThreadRoutingStream):
+        return "_passthrough"
+    # Read loaded modules only: importing process_bootstrap here would activate
+    # bootstrap dependencies on the thread-silencing hot path.
+    for module_name, class_name, attr in _PROXY_LINKS:
+        module = sys.modules.get(module_name)
+        cls = vars(module).get(class_name) if module is not None else None
+        if isinstance(cls, type) and isinstance(stream, cls):
+            return attr
+    return None
+
+
+def stdio_chain(stream):  # type: ignore[no-untyped-def]
+    """Walk known Hermes stdio proxies, rejecting cycles and excessive depth."""
+    seen: set[int] = set()
+    for _ in range(_MAX_CHAIN):
+        if stream is None:
+            return
+        identity = id(stream)
+        if identity in seen:
+            raise ValueError("stdio proxy cycle detected")
+        seen.add(identity)
+        yield stream
+        attr = _proxy_link_attr(stream)
+        if attr is None:
+            return
+        try:
+            stream = object.__getattribute__(stream, attr)
+        except AttributeError as exc:
+            raise ValueError(f"stdio proxy is missing {attr}") from exc
+    raise ValueError(f"stdio proxy depth exceeds {_MAX_CHAIN}")
+
+
+def stdio_chain_find(stream, cls):  # type: ignore[no-untyped-def]
+    """Find a proxy while validating the full known chain before reuse."""
+    found = None
+    for link in stdio_chain(stream):
+        if found is None and isinstance(link, cls):
+            found = link
+    return found
 
 _install_lock = threading.Lock()
 # Proxy installed per attribute ("stdout"/"stderr"): never double-wrap.
@@ -62,7 +113,7 @@ class _ThreadRoutingStream:
         """Call ``name`` on the current target; a dead target yields ``fallback(*args)`` instead of raising."""
         try:
             return getattr(self._target(), name)(*args)
-        except Exception:
+        except (OSError, ValueError):
             return fallback(*args)
 
     def write(self, data):  # type: ignore[no-untyped-def]
@@ -92,12 +143,14 @@ def _ensure_installed(attr: str, passthrough: TextIO) -> _ThreadRoutingStream:
     with _install_lock:
         proxy = _installed.get(attr)
         current = getattr(sys, attr, None)
-        if isinstance(current, _ThreadRoutingStream):
-            # A redirect context may restore an older proxy; adopt it rather
-            # than wrapping it into an unbounded chain.
-            _installed[attr] = current
-            _routing_states[attr] = current._state
-            return current
+        existing = stdio_chain_find(current, _ThreadRoutingStream)
+        if existing is not None:
+            # A redirect context may restore an older proxy, or another installer
+            # may have wrapped ours; adopt it (writes still pass through it)
+            # rather than wrapping the chain again.
+            _installed[attr] = existing
+            _routing_states[attr] = existing._state
+            return existing
         if proxy is not None and current is proxy:
             return proxy
         # Route non-silenced threads to whatever is currently bound (an active

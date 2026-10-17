@@ -175,16 +175,23 @@ class _RedactingStdio:
         from agent.redact import redact_sensitive_text
         return self._stream.write(redact_sensitive_text(text) if isinstance(text, str) else text)
 
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
     def __getattr__(self, name):
         return getattr(self._stream, name)
 
 
 def redact_detached_stdio() -> None:
     """Route a detached process's stdout/stderr through secret redaction (idempotent)."""
-    for name in ("stdout", "stderr"):
-        stream = getattr(sys, name)
-        if stream is not None and not isinstance(stream, _RedactingStdio):
-            setattr(sys, name, _RedactingStdio(stream))
+    from agent.thread_scoped_output import _install_lock, stdio_chain_find
+
+    with _install_lock:
+        for name in ("stdout", "stderr"):
+            stream = getattr(sys, name)
+            if stream is not None and stdio_chain_find(stream, _RedactingStdio) is None:
+                setattr(sys, name, _RedactingStdio(stream))
 
 
 def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:

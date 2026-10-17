@@ -431,7 +431,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
 class TestInScriptToolErrors(unittest.TestCase):
     def test_ignored_helper_error_is_reported_for_that_cell_only(self):
         """A script that drops a helper's {"error": ...} return must not read as a clean success."""
-        def _handle(tool_name, tool_args, task_id=None):
+        def _handle(tool_name, tool_args, task_id=None, session_id=""):
             if tool_name == "write_file":
                 return json.dumps({"error": "Refusing to overwrite a.py: never read"})
             return json.dumps({"ok": True})
@@ -448,7 +448,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
     """Interpreter state persists across cells; RPC authority must not."""
 
     def _recorder(self, seen):
-        def _handle(tool_name, tool_args, task_id=None):
+        def _handle(tool_name, tool_args, task_id=None, **kwargs):
             from tools.thread_context import _callback_api
 
             (get_approval, _set_a), *_rest = _callback_api()
@@ -528,6 +528,50 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         authority.retire()
         result = authority.dispatch("web_search", {"query": "q"})
         self.assertIn("No active execute_code cell", result)
+
+    def test_cell_authority_forwards_session_id(self):
+        """Nested kernel-cell tool calls must keep the parent session_id (#51931)."""
+        from tools.code_kernel import CellAuthority
+
+        captured = {}
+
+        def fake_handle(tool_name, tool_args, task_id=None, session_id=None, **kwargs):
+            captured["tool_name"] = tool_name
+            captured["task_id"] = task_id
+            captured["session_id"] = session_id
+            return json.dumps({"status": "ok"})
+
+        authority = CellAuthority("turn-1", session_id="kernel-session")
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+            result = authority.dispatch("read_file", {"path": "/tmp/x"})
+
+        self.assertEqual(json.loads(result), {"status": "ok"})
+        self.assertEqual(captured, {
+            "tool_name": "read_file",
+            "task_id": "turn-1",
+            "session_id": "kernel-session",
+        })
+
+    def test_nested_calls_use_the_current_cell_session_id(self):
+        """A reused kernel must not keep the prior cell's session identity."""
+        seen = []
+        cell = "import hermes_tools\nhermes_tools.web_search(query='q')\n"
+
+        def record_call(tool_name, tool_args, task_id=None, session_id=None, **kwargs):
+            seen.append((tool_name, task_id, session_id))
+            return json.dumps({"ok": True})
+
+        with _kernel_config(), patch("model_tools.handle_function_call", new=record_call):
+            first = _run(cell, session_id="session-one")
+            second = _run(cell, session_id="session-two")
+
+        self.assertEqual(first["status"], "success", first)
+        self.assertEqual(second["status"], "success", second)
+        self.assertTrue(second["kernel"]["reused"])
+        self.assertEqual(seen, [
+            ("web_search", "kernel-test", "session-one"),
+            ("web_search", "kernel-test", "session-two"),
+        ])
 
     def test_each_cell_installs_a_fresh_authority(self):
         with _kernel_config():

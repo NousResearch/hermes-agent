@@ -579,24 +579,6 @@ def _board_path(
     return board_dir(slug) / leaf
 
 
-def kanban_db_path(board: Optional[str] = None) -> Path:
-    """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins it (injected into workers);
-    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir."""
-    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
-
-
-def workspaces_root(board: Optional[str] = None) -> Path:
-    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
-    ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
-    return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
-
-
-def attachments_root(board: Optional[str] = None) -> Path:
-    """Per-board attachments root (``HERMES_KANBAN_ATTACHMENTS_ROOT`` wins). Workers
-    read attachments by absolute path, so remote terminal backends must mount it."""
-    return _board_path("HERMES_KANBAN_ATTACHMENTS_ROOT", board, ("kanban", "attachments"), "attachments")
-
-
 def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
     """Return the per-task attachment directory ``<root>/<task_id>/``."""
     return attachments_root(board=board) / task_id
@@ -1214,6 +1196,13 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    # The row lands in the store THIS connection opened, and ``HERMES_KANBAN_DB``
+    # (injected into every dispatcher-spawned worker) pins that store ahead of the
+    # board slug, so the store can belong to a different board than the one the
+    # session sits on. Board-derived columns must follow the store: reading the
+    # session's board here anchors the task to another board's project/workdir.
+    # An explicit ``board=`` stays the fallback for stores with no board identity.
+    board = _board_for_connection(conn, board)
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -4222,13 +4211,18 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
 from hermes_cli.kanban_db_boards import (
+    _board_for_connection,
     _default_board_display_name,
     _dir_holds_board,
+    attachments_root,
+    board_for_db_path,
     board_metadata_path,
     create_board,
+    kanban_db_path,
     list_boards,
     read_board_metadata,
     remove_board,
+    workspaces_root,
     write_board_metadata,
 )
 from hermes_cli.kanban_db_connect import (

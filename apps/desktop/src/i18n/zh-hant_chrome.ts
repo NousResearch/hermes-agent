@@ -264,6 +264,13 @@ export const zhHantChrome = {
       cacheRead: '快取讀取',
       priceTitle: (input: string, output: string, cache: string) =>
         `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : ''),
+      pricing: {
+        title: '價格',
+        titlePerMillion: '價格 · 每百萬 token',
+        input: '輸入',
+        output: '輸出',
+        free: '免費'
+      },
       localSetup: {
         title: '本機執行 · 免費、私密',
         text: (model: string, size: string) => `${model} 適合這台電腦 · 下載 ${size}`,

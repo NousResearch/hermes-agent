@@ -663,8 +663,9 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         base_url, "custom", custom_provider.get("api_mode"),
         provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
     )
-    # Pool ownership uses the configured URL; normalize the selected wire's SDK path afterward.
-    if explicit_api_mode:
+    # Anthropic's adapter strips /v1; downstream auth lookups still need its configured URL.
+    # OpenAI SDK paths need /v1 here, after credential-pool ownership has been established.
+    if explicit_api_mode in ("chat_completions", "codex_responses"):
         from hermes_cli.models import normalize_opencode_base_url
         base_url = normalize_opencode_base_url(
             _opencode_family_for_custom(requested_provider, base_url), explicit_api_mode, base_url,

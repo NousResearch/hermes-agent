@@ -170,3 +170,91 @@ def test_named_opencode_entry_keeps_normalized_request_path(
         else:
             client.chat.completions.create(model=model, messages=[{"role": "user", "content": "offline fixture"}])
     assert requests == [f"https://opencode.ai/zen/go/v1/{path}"]
+
+
+@pytest.mark.parametrize("surface", ["shared", "cli", "cron", "tui"])
+@pytest.mark.parametrize("explicit_mode", [False, True])
+@pytest.mark.parametrize("base_url", [
+    "https://relay.example.test/v1", "https://opencode.ai/zen/go/v1",
+])
+def test_named_anthropic_fallback_keeps_auth_headers(
+    tmp_path, monkeypatch, surface, explicit_mode, base_url,
+):
+    import anthropic
+    import httpx
+    from agent.anthropic_adapter import build_anthropic_client
+    from agent.credential_pool import CredentialPool
+
+    provider, model = "opencode-go-bridge", "minimax-m2.7"
+    entry = {"provider": provider, "model": model}
+    if explicit_mode:
+        entry["api_mode"] = "anthropic_messages"
+    config = {
+        "model": {"provider": "openai-codex", "default": "primary-model"},
+        "providers": {provider: {
+            "base_url": base_url, "api_mode": "anthropic_messages", "api_key": "fixture-relay-key",
+            "extra_headers": {"X-Relay-Access": "fixture-relay-access"},
+        }},
+        "fallback_providers": [entry],
+    }
+    monkeypatch.setattr(runtime_provider, "load_pool", lambda name: CredentialPool(name, []))
+    runtime = _resolve_startup(config, surface, tmp_path, monkeypatch)
+    assert runtime["api_mode"] == "anthropic_messages"
+    requests = []
+
+    def reply(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "id": "fixture", "type": "message", "role": "assistant", "model": model,
+            "content": [{"type": "text", "text": "offline"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+
+    sdk = anthropic.Anthropic
+
+    def offline_sdk(**kwargs):
+        return sdk(http_client=httpx.Client(transport=httpx.MockTransport(reply)), **kwargs)
+
+    monkeypatch.setattr(anthropic, "Anthropic", offline_sdk)
+    with build_anthropic_client(runtime["api_key"], runtime["base_url"]) as client:
+        client.messages.create(model=model, max_tokens=1, messages=[{"role": "user", "content": "offline"}])
+    assert len(requests) == 1
+    assert str(requests[0].url) == f"{base_url}/messages"
+    assert requests[0].headers.get("X-Relay-Access") == "fixture-relay-access"
+
+
+@pytest.mark.parametrize("surface", ["shared", "cli", "cron", "tui"])
+@pytest.mark.parametrize("explicit_mode", [False, True])
+@pytest.mark.parametrize("pool_style", ["durable", "legacy"])
+def test_named_anthropic_fallback_pool_survives_agent_init(
+    tmp_path, monkeypatch, surface, explicit_mode, pool_style,
+):
+    from types import SimpleNamespace
+    from agent.agent_init import _finalize_routing
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    provider, model = "opencode-go-bridge", "minimax-m2.7"
+    pool_key = provider if pool_style == "durable" else f"custom:{provider}"
+    pool = CredentialPool(pool_key, [PooledCredential(
+        provider=pool_key, id="fixture", label="fixture", auth_type="api_key", priority=0,
+        source="fixture", access_token="fixture-pool-key")])
+    empty = CredentialPool("empty", [])
+    monkeypatch.setattr(runtime_provider, "load_pool", lambda name: pool if name == pool_key else empty)
+    entry = {"provider": provider, "model": model}
+    if explicit_mode:
+        entry["api_mode"] = "anthropic_messages"
+    config = {
+        "model": {"provider": "openai-codex", "default": "primary-model"},
+        "providers": {provider: {
+            "base_url": "https://opencode.ai/zen/go/v1", "api_mode": "anthropic_messages",
+        }},
+        "fallback_providers": [entry],
+    }
+    runtime = _resolve_startup(config, surface, tmp_path, monkeypatch)
+    assert runtime["api_mode"] == "anthropic_messages"
+    assert runtime["credential_pool"] is pool
+    agent = SimpleNamespace(
+        provider=runtime["provider"], base_url=runtime["base_url"], model=model, api_mode=runtime["api_mode"],
+        _credential_pool=pool, _get_transport=lambda: None, _is_openrouter_url=lambda: False)
+    _finalize_routing(agent, runtime["api_mode"], pool)
+    assert agent._credential_pool is pool

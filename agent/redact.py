@@ -1170,14 +1170,21 @@ def redact_for_egress(text: str) -> str:
     return text
 
 
+def _looks_like_env_dump(output: str) -> bool:
+    """Recognize plain multi-line environment dumps without treating source as a dump."""
+    lines = [line for line in output.splitlines() if line]
+    return len(lines) >= 3 and all(re.fullmatch(r"[A-Z_][A-Z0-9_]*=[^\s\"']*", line) for line in lines)
+
+
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
     """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
-    pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
+    pass runs when output is an env dump, or ``command`` reads a secret-bearing file (``.env``,
     shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
     source/config dumps."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
+    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command)
+                     or _looks_like_env_dump(output))
     redacted = redact_sensitive_text(output, force=force, code_file=code_file)
     # Source-preserving output still gets the Python-repr pass on high-confidence
     # diagnostic lines (pytest ``E   `` introspection, final exception lines): that is

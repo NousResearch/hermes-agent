@@ -45,8 +45,16 @@ def build_kanban_policy(connection, params, config):
             if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
                 # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
                 skills = list(dict.fromkeys([*skills, 'sdlc-review']))
+    except RuntimeStoreError:
+        # A refusal raised above names its own reason ('stale_kanban_claim', 'profile_mismatch').
+        # RuntimeStoreError subclasses ValueError, so without this arm the clause below rewrites
+        # every one of them into a generic 'invalid_kanban_claim' and the cause is lost — that
+        # masked a real refusal for hours of a live dispatch investigation.
+        raise
     except (ValueError, OSError, sqlite3.Error) as exc:
-        raise RuntimeStoreError('invalid_kanban_claim') from exc
+        # Keep the code callers branch on ('invalid_kanban_claim') and carry the cause into the
+        # message: this arm catches I/O and schema failures whose text is the only diagnosis.
+        raise RuntimeStoreError(f'invalid_kanban_claim: {exc}') from exc
     cwd = task.workspace_path
     params_policy = {'source': 'cli', 'cwd': cwd}
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):

@@ -6924,8 +6924,8 @@ def _define_discord_view_classes() -> None:
             # Round-trip the canonical choice text from the entry, not the button label.
             resolved_text: Optional[str] = None
             try:
-                from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
-                entry = _clarify_entries.get(self.clarify_id)
+                from tools.clarify_gateway import get_pending
+                entry = get_pending(self.clarify_id)
                 if entry and entry.choices and 0 <= index < len(entry.choices):
                     resolved_text = entry.choices[index]
             except Exception:

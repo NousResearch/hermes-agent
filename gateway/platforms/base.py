@@ -2901,9 +2901,8 @@ class BasePlatformAdapter(ABC):
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:
-                from tools import clarify_gateway as _cg
-                with _cg._lock:
-                    _is_multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
+                from tools.clarify_gateway import get_pending
+                _is_multi = bool(getattr(get_pending(clarify_id), "multi_select", False))
             except Exception:
                 _is_multi = False
             hint = t("gateway.clarify.hint_multi") if _is_multi else t("gateway.clarify.hint_single")

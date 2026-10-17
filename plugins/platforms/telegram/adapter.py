@@ -4847,8 +4847,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return
         resolved_text: Optional[str] = None
         try:
-            from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
-            entry = _clarify_entries.get(clarify_id)
+            from tools.clarify_gateway import get_pending
+            entry = get_pending(clarify_id)
             if entry and entry.choices and 0 <= idx < len(entry.choices):
                 resolved_text = entry.choices[idx]
         except Exception:

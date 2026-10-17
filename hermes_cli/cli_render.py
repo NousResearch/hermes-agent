@@ -923,10 +923,9 @@ def _build_compact_banner() -> str:
     line1 = t("cli.render.banner_tagline", name=tiny_line)
 
     if os.environ.get("HERMES_FAST_STARTUP_BANNER") == "1":
-        from hermes_cli import __release_date__ as _release_date
         from hermes_cli.version_info import get_version_info
 
-        version_line = t("cli.render.banner_version", version=get_version_info().derived_version, date=_release_date)
+        version_line = t("cli.render.banner_version_only", version=get_version_info().derived_version)
     else:
         version_line = format_banner_version_label()
 

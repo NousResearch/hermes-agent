@@ -32854,6 +32854,18 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "all": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "All"
           }
         },
         "required": [

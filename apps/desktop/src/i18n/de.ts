@@ -67,6 +67,7 @@ export const deOverrides = {
         serverNeedsAuth: 'Authentifizierung erforderlich',
         serverOff: 'Aus',
         serverOn: 'An',
+        serverOnDemand: 'Bei Bedarf',
         serverOnUnused: 'An, ungenutzt'
       },
       fact: {

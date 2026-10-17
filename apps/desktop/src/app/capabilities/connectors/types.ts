@@ -33,6 +33,9 @@ export interface LocalServerInput {
   enabled: boolean
   inCatalog?: boolean
   name: string
+  /** Enabled stdio server nothing has probed yet: it only runs while a session
+   *  needs it, so it is idle rather than mid-connection. */
+  onDemand?: boolean
   plugin?: string
   status: LocalServerStatus
   target: string
@@ -80,6 +83,7 @@ export type ConnectorStateWord =
   | 'serverNeedsAuth'
   | 'serverOff'
   | 'serverOn'
+  | 'serverOnDemand'
   | 'serverOnUnused'
 
 export type ConnectorFactKey = 'tools' | 'toolsOff' | 'toolsOn' | 'toolsSomeOn'
@@ -119,6 +123,7 @@ export interface ConnectorWayLocal {
   inCatalog?: boolean
   installed?: boolean
   needsEnv?: boolean
+  onDemand?: boolean
   plugin?: string
   reason?: ConnectorReason
   serverEnabled?: boolean

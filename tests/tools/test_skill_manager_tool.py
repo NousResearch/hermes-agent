@@ -446,7 +446,6 @@ word word
 
 
 
-
     def test_patch_supporting_file_symlink_escape_blocked(self, tmp_path):
         outside_file = tmp_path / "outside.txt"
         outside_file.write_text("old text here")
@@ -1344,3 +1343,83 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# _discover_skill_subdirs — custom subdirectory auto-discovery
+# ---------------------------------------------------------------------------
+
+
+def test_discover_skill_subdirs_finds_custom_subdirs(tmp_path):
+    from tools.skill_manager_tool import _discover_skill_subdirs
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "steps").mkdir()
+    (skill_dir / "steps" / "phase1.md").write_text("# Phase 1")
+    (skill_dir / "steps" / "phase2.md").write_text("# Phase 2")
+    (skill_dir / "checks").mkdir()
+    (skill_dir / "checks" / "preflight.py").write_text("print('ok')")
+
+    result = _discover_skill_subdirs(skill_dir)
+
+    assert "steps" in result
+    assert "checks" in result
+
+
+def test_discover_skill_subdirs_skips_empty(tmp_path):
+    from tools.skill_manager_tool import _discover_skill_subdirs
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "empty").mkdir()
+
+    result = _discover_skill_subdirs(skill_dir)
+
+    assert "empty" not in result
+
+
+def test_discover_skill_subdirs_skips_dot_dirs(tmp_path):
+    from tools.skill_manager_tool import _discover_skill_subdirs
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / ".hidden").mkdir()
+    (skill_dir / ".hidden" / "secret.md").write_text("shh")
+
+    result = _discover_skill_subdirs(skill_dir)
+
+    assert ".hidden" not in result
+
+
+def test_discover_skill_subdirs_nested_dot_dir_does_not_hide_subdir(tmp_path):
+    """Files inside a nested dot-directory (e.g. steps/.hidden/x.md)
+    must not cause the parent subdir to appear in discovered subdirs."""
+    from tools.skill_manager_tool import _discover_skill_subdirs
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    steps = skill_dir / "steps"
+    steps.mkdir()
+    (steps / ".secrets").mkdir()
+    (steps / ".secrets" / "key.md").write_text("secret key")
+    (steps / "visible.md").write_text("# Visible step")
+
+    result = _discover_skill_subdirs(skill_dir)
+
+    assert "steps" in result
+
+
+def test_discover_skill_subdirs_nonexistent_dir_returns_empty(tmp_path):
+    from tools.skill_manager_tool import _discover_skill_subdirs
+    result = _discover_skill_subdirs(tmp_path / "nope")
+    assert result == set()
+
+
+def test_discover_skill_subdirs_includes_standard_subdirs(tmp_path):
+    """Standard dirs like references/ should also be discoverable."""
+    from tools.skill_manager_tool import _discover_skill_subdirs
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "references").mkdir()
+    (skill_dir / "references" / "guide.md").write_text("guide")
+
+    result = _discover_skill_subdirs(skill_dir)
+
+    assert "references" in result

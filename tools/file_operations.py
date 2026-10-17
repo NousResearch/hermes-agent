@@ -1,4 +1,3 @@
-/Users/junkawasaki/.zshenv:.:1: no such file or directory: /Users/junkawasaki/.cargo/env
 #!/usr/bin/env python3
 """File operations (read, write, patch, search) over any terminal backend.
 

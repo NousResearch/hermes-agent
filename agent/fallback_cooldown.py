@@ -1,5 +1,6 @@
-"""Primary rate-limit cooldown arming and per-session model rejection markers, shared by the
-fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
+"""Primary rate-limit cooldown arming, per-session model rejection markers and the
+fallback credential-pool gate, shared by the fallback walk (chat_completion_helpers) and
+restore_primary_runtime (agent_runtime_helpers)."""
 import logging
 import math
 import time
@@ -127,3 +128,32 @@ def _is_entitlement_rejected(agent, provider: str, model: str) -> bool:
         return True
     from hermes_cli.model_normalize import normalize_model_for_provider
     return (provider, normalize_model_for_provider(model, provider)) in rejected
+
+
+def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
+    """True when every credential the candidate would use sits in an exhaustion cooldown longer
+    than the retry loop's longest wait (the 600s Retry-After cap) or is DEAD: switching to it only
+    fails the turn the same way the primary just did (#89401). A short throttle still gets its
+    chance.
+
+    ``next_available_at()`` answers ``None`` for "available now" AND for "no wait information", and
+    one credential shape is neither: an ``api_key`` row the availability scan skips because its
+    runtime key is minted later (a provider authenticated from a key file rather than a stored
+    runtime key) has ``has_available()`` False with no cooldown behind it. Reading that ``None`` as
+    "exhausted" skipped every same-provider fallback of such a profile (#140568); only a pool with
+    nothing but DEAD rows is skipped on it.
+    """
+    from agent.credential_pool import STATUS_DEAD, load_pool
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or (getattr(pool, "provider", "") or "").strip().lower() != fb_provider:
+        try:
+            pool = load_pool(fb_provider)
+        except Exception:
+            logger.debug("Fallback gate could not load the %s pool; not skipping the candidate", fb_provider, exc_info=True)
+            return False
+    if pool is None or not pool.has_credentials() or pool.has_available(model=fb_model):
+        return False
+    until = pool.next_available_at(model=fb_model)
+    if until is None:
+        return all(entry.last_status == STATUS_DEAD for entry in pool.entries())
+    return until - time.time() > 600

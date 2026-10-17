@@ -714,6 +714,50 @@ def _pre_sanitize_matrix_markdown(text: str) -> str:
         "", result)
 
 
+_MD_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_MD_LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|1[.)])[ \t]+\S")
+# Python-Markdown's stock ATX pattern takes "#310 are tests" as an <h1> (no space after the
+# hashes). CommonMark and Matrix clients require the space, and agent replies routinely start a
+# line with an issue/task id, so require it.
+_MD_ATX_HEADING = re.compile(r"(?:^|\n)(?P<level>#{1,6})(?=[ \t]|\n|$)(?P<header>(?:\\.|[^\\])*?)#*(?:\n|$)")
+
+
+def _list_interrupts_paragraph(text: str) -> str:
+    """Insert the blank line Python-Markdown needs before a list that directly follows a text
+    line. CommonMark lets a list interrupt a paragraph, so ``**Today**\\n- item`` renders as a
+    label plus a list everywhere else; without this it became one paragraph of literal dashes."""
+    out: list[str] = []
+    fence = None
+    prev_text = in_list = False
+    for line in text.split("\n"):
+        opener = _MD_FENCE.match(line)
+        if fence:
+            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence):
+                fence = None
+            out.append(line)
+            continue
+        if opener:
+            fence, prev_text, in_list = opener.group(1), False, False
+        elif not line.strip():
+            prev_text = in_list = False
+        elif _MD_LIST_ITEM.match(line):
+            if prev_text and not in_list:
+                out.append("")
+            prev_text = in_list = True
+        else:
+            prev_text = True
+        out.append(line)
+    return "\n".join(out)
+
+
+def _matrix_markdown(md_module: Any, extensions: list[str]) -> Any:
+    """A ``markdown.Markdown`` whose ATX headings need a space after the hashes."""
+    md = md_module.Markdown(extensions=extensions)
+    if "hashheader" in md.parser.blockprocessors:
+        md.parser.blockprocessors["hashheader"].RE = _MD_ATX_HEADING
+    return md
+
+
 def matrix_deps_present() -> bool:
     """PASSIVE registry ``check_fn`` — must never install; ``ensure_matrix_deps`` is the installer.
 
@@ -3013,13 +3057,16 @@ class MatrixAdapter(BasePlatformAdapter):
         text, tex_store = _latex_to_tokens(text)
         with suppress(ImportError):
             import markdown as _md
-            md = _md.Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])
+            md = _matrix_markdown(_md, ["fenced_code", "tables", "nl2br", "sane_lists"])
             if "html_block" in md.preprocessors:
                 md.preprocessors.deregister("html_block")
-            html = md.convert(text)
+            html = md.convert(_list_interrupts_paragraph(text))
             md.reset()
-            if html.count("<p>") == 1:
-                html = html.replace("<p>", "").replace("</p>", "")
+            # Unwrap only a message that is one bare paragraph; a heading or list beside it
+            # needs the paragraph's break, or the two run together.
+            stripped = html.strip()
+            if stripped.count("<p>") == 1 and stripped.startswith("<p>") and stripped.endswith("</p>"):
+                html = stripped[3:-4]
             return _tokens_to_mx_maths(_sanitize_matrix_html(html), tex_store)
         return _tokens_to_mx_maths(_sanitize_matrix_html(self._markdown_to_html_fallback(text)), tex_store)
 
@@ -3158,7 +3205,7 @@ def _standalone_payloads(message: str) -> list[dict[str, Any]]:
         payload = {"msgtype": "m.text", "body": chunk}
         if _md is not None:
             tokenized, tex_store = _latex_to_tokens(chunk)
-            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
+            html = _matrix_markdown(_md, ["fenced_code", "tables"]).convert(_list_interrupts_paragraph(tokenized))
             formatted = {"format": "org.matrix.custom.html", "formatted_body": _tokens_to_mx_maths(
                 re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)}
             if _content_bytes({**payload, **formatted}) <= _MAX_CONTENT_BYTES:

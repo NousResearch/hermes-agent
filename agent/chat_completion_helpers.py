@@ -1388,6 +1388,16 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         base_url=getattr(agent, "_anthropic_base_url", None),
         fast_mode=request_overrides.get("speed") == "fast",
         drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
+    # Native Messages does not consume general request_overrides. Preserve only
+    # the opted-in history header here; unrelated provider behavior stays unchanged.
+    pinned_headers = request_overrides.get("extra_headers")
+    if isinstance(pinned_headers, dict):
+        from agent.opencode_affinity import custom_provider_session_affinity_headers
+        affinity_headers = custom_provider_session_affinity_headers(agent.base_url, agent.session_id)
+        names = {name.lower() for name in affinity_headers}
+        for name, value in pinned_headers.items():
+            if name.lower() in names:
+                anthropic_kwargs.setdefault("extra_headers", {})[name] = value
     # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook
     # is only consulted by the OpenAI-wire transport — merge here to keep sticky routing.
     return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
@@ -1510,7 +1520,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     every request regardless of transport (chat_completions / codex_responses /
     anthropic_messages). No-op for every other provider.
     """
-    from agent.opencode_affinity import merge_session_affinity_headers
+    from agent.opencode_affinity import merge_session_affinity_headers, resolve_custom_provider_history_scope
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
     return merge_session_affinity_headers(
@@ -1518,6 +1528,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
+        history_scope=resolve_custom_provider_history_scope(agent),
     )
 
 

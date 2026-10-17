@@ -866,6 +866,13 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
         seen[key] = (name, version, description, src_label, d, key)
 
 
+def _plugin_dedup_key(key: str) -> str:
+    """Normalized plugin identity for listing dedup: a ``hermes-`` prefixed manifest name
+    (``hermes-mnemosyne`` from the user plugins dir) is the same plugin as the bare entry-point
+    name (``mnemosyne``). Without this, one installed plugin lists twice (#139252)."""
+    return key[7:] if key.startswith("hermes-") else key
+
+
 def _discover_all_plugins() -> list:
     """``(name, version, description, source, dir_path, key)`` for every plugin the loader sees,
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
@@ -880,7 +887,14 @@ def _discover_all_plugins() -> list:
     ):
         _scan_level(base, source, skip, "", 0, seen)
     # Entry-point plugins are installed as Python packages, so they have no plugin directory.
+    # Dedupe against directory plugins by normalized key so a `hermes-` prefixed directory
+    # plugin and its bare-named entry point list once; the directory entry keeps precedence.
+    claimed = {_plugin_dedup_key(k) for k in seen}
     for m in discover_entrypoint_manifests():
+        dedup_key = _plugin_dedup_key(m.name)
+        if dedup_key in claimed:
+            continue
+        claimed.add(dedup_key)
         seen.setdefault(m.name, (m.name, m.version, m.description, "entrypoint", m.path, m.name))
     return list(seen.values())
 

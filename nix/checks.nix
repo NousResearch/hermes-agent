@@ -155,12 +155,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           ''
         );
 
-        # pm/lock.json pins provenance sidecars (checksums.txt, .sig/.pem/.asc)
+        # pm/lock.json pins provenance sidecars (checksums.txt, .sig/.asc)
         # next to these archives. `nix flake check` otherwise only evaluates
         # the pm derivations, so a sidecar leaking into srcs ("do not know
-        # how to unpack") stayed green; build the two sidecar-bearing pins.
+        # how to unpack") stayed green; build the sidecar-bearing pin.
         pm-packages-unpack = pkgs.runCommand "hermes-pm-packages-unpack" { } ''
-          test -x ${self'.packages.pm-tirith}/tirith
           test -x ${self'.packages.pm-iron-proxy}/iron-proxy
           mkdir -p $out
           echo "ok" > $out/result
@@ -1201,6 +1200,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
           test -f ${hermes-agent}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
           echo "PASS: compiled entry.js present"
+
+          # The compiled TUI runs these on HERMES_PYTHON; the Python package lives in another
+          # store path, so they must ship beside entry.js (#139208).
+          for helper in gateway_bootstrap.py clipboard_image.py; do
+            test -f ${hermes-agent}/ui-tui/dist/scripts/$helper || \
+              (echo "FAIL: TUI helper $helper missing"; exit 1)
+          done
+          echo "PASS: TUI Python helpers present"
 
           # self-contained bundle; no runtime node_modules expected
 

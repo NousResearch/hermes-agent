@@ -111,13 +111,35 @@ Select the tool, pick **Nous Subscription** as the provider (or any direct provi
 
 ## Using individual image models
 
-The model is chosen once, in `hermes tools` → Image Generation, and stored in `config.yaml` as `image_gen.model`. Every `image_generate` call uses that stored model — the tool has no model parameter, so there is no per-call override. Leave it unset and Hermes uses FLUX 2 Klein 9B.
+The model is chosen once, in `hermes tools` → Image Generation, and stored in `config.yaml` as `image_gen.model`. Every `image_generate` call uses that stored model — the tool has no model parameter, so there is no per-call override. Leave it unset and a paid subscription gets Krea 2 Medium Turbo; the free tool pool gets FLUX 2 Klein 9B.
 
 The **Nous Subscription** row has one model picker that lists every model once. The stored id decides which gateway serves the request: a native Krea id (`krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) goes to the Krea gateway, a FAL catalog id goes to FAL, and any other id goes to Nous Portal. The selection is still just `image_gen.provider: nous` plus the model id.
 
-**Krea 2** (Medium, Large, Medium Turbo — up to 10 style-reference images, optional Enhance upscale) and the Nous Portal image models sit in that same picker rather than behind rows of their own. They need a paid subscription — the free tool pool funds the FAL models only. The Krea-via-FAL ids (`fal-ai/krea/v2/...`) stay on the direct FAL.ai row.
+**Krea 2** (Medium, Large, Medium Turbo — up to 10 style-reference images, optional Enhance upscale) and the Nous Portal image models sit in that same picker rather than behind rows of their own. They need a paid subscription — the free tool pool funds the FAL models only. The Krea-via-FAL ids (`fal-ai/krea/v2/...`) stay on the direct FAL.ai row. If the Krea gateway refuses a request before starting a job (unreachable, or 429 after the gateway's own retries), Hermes reruns it on the FAL default model and the result says so in `fallback_from`; set `image_gen.krea.fallback_to_fal: false` to turn that off. Requests with source images never fall back.
 
 Model ids, speeds, and prices live on the [Image Generation](./image-generation.md#supported-models) page. The set evolves — `hermes tools` → Image Generation shows the current live list.
+
+## Multiple connector accounts
+
+Connectors are hosted apps such as Gmail that the agent reaches through the Nous tool gateway (see [Tool Search → Connectors](./tool-search.md#connectors-remote-tools)). You can connect two or more accounts of one app, for example a Gmail `home` and a Gmail `work`.
+
+- **Names.** Each account has a name of 1 to 32 characters: lowercase letters, digits or `-`, starting with a letter or digit. An unnamed account shows the app's own account label.
+- **No default.** No account is the default. When you ask the agent to use an app with several named accounts, it must say which one.
+- **The agent names new accounts.** It picks the name from what you said and asks if it is unsure. It then tells you the name it chose, for example "Hermes named this Gmail account work. Rename it anytime." The desktop app, the TUI and the classic CLI show that line.
+- **Rename.** Rename an account anytime, or ask the agent to. Renaming needs a Nous Portal version that supports it; until then you see "This Nous Portal cannot rename connector accounts yet."
+- **Reconnect deletes nothing.** Reconnecting a broken account replaces it with a new one under the same name. The old one is kept as retired (disabled). Retired accounts stay listed but folded away.
+- **Remove is yours.** You remove an account yourself, one at a time. The agent never removes one.
+
+Once a connector has two or more active accounts, every tool of that connector takes a `connector_alias` field whose allowed values are your account names. The field is required when every active account is named and optional when some are unnamed.
+
+If the agent leaves it out when several accounts are named, or names one that does not exist, the call fails and the error lists the valid names. A result reports the `account` it ran under when that account is named; for an unnamed account the field is absent.
+
+Manage accounts in any of these places:
+
+- The desktop app's **Connectors** page.
+- The TUI: `/connectors` (see [Slash Commands](../../reference/slash-commands.md#tools--skills)).
+- The CLI: `hermes connectors` (see [CLI Commands](../../reference/cli-commands.md#hermes-connectors)).
+- [Nous Portal](https://portal.nousresearch.com).
 
 ---
 
@@ -166,6 +188,18 @@ Or set the selection key directly:
 web:
   backend: firecrawl   # Hermes now uses FIRECRAWL_API_KEY from .env
 ```
+
+### Mixing your own key and the gateway (web only)
+
+Web search and web extract can each choose their own route. In the desktop app, open **Capabilities → Tools → Web Search & Scraping**: **Use for Search** / **Use for Extract** on the **Nous Subscription** row sends that capability through the gateway, and the same buttons on a direct row (e.g. **Firecrawl**) send it through your own key. The **Search:** / **Extract:** pills at the top show which route each one takes right now. In `config.yaml` the managed choice is the value `nous` on the per-capability key:
+
+```yaml
+web:
+  search_backend: firecrawl   # your FIRECRAWL_API_KEY
+  extract_backend: nous       # the Nous Tool Gateway (managed Firecrawl)
+```
+
+Picking **Nous Subscription** for the whole tool (or running `hermes tools`) clears both per-capability keys, so search and extract both go back through the gateway.
 
 ### Legacy `use_gateway` flag (deprecated)
 

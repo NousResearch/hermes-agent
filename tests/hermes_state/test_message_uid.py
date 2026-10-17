@@ -233,7 +233,7 @@ class TestPersistedMergeWitness:
         rows = _rows(db, "s")
         assert [r["content"] for r in rows] == ["first, never answered\n\nsecond", "second"]
         assert rows[0]["message_uid"] == dangling["message_uid"]
-        assert _absorbed(db, "s") == ['["%s"]' % prompt["message_uid"], None]
+        assert _absorbed(db, "s") == ['["{}"]'.format(prompt["message_uid"]), None]
         restored = db.get_messages_as_conversation("s")
         assert restored[0]["_absorbed_message_uids"] == [prompt["message_uid"]]
         assert "_absorbed_message_uids" not in restored[1]

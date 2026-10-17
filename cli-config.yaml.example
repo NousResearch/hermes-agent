@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 49
+_config_version: 51
 
 # =============================================================================
 # Database Configuration
@@ -431,6 +431,17 @@ terminal:
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
+  # A `hermes` / `hermes --tui` session's local tools (terminal, background processes, execute_code)
+  # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
+  # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
+  # the client runs on the gateway's host (a remote client's session keeps the gateway's toolchain).
+  # As in the classic CLI, the venv reaches `terminal` through PATH (`which python`): VIRTUAL_ENV and
+  # CONDA_PREFIX themselves are unset there; execute_code sees them.
+  # A toolchain name the client did not export is unset for its session's tools (PATH excepted).
+  # List more non-secret names here (default: none); names execute_code treats as credentials (…TOKEN,
+  # …KEY, …SECRET, …PASSWORD, …AUTH, …DSN, …WEBHOOK, …CREDS, …BEARER, …COOKIE) and HERMES_* names
+  # are never sent: pass secrets with `env_passthrough` instead.
+  client_env_passthrough: []  # e.g. ["GEM_HOME", "POETRY_HOME"]
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 
@@ -555,18 +566,9 @@ terminal:
 #   sudo_password: "your-password-here"
 
 # =============================================================================
-# Security Scanning (tirith)
+# Security
 # =============================================================================
-# Optional pre-exec command security scanning via tirith.
-# Detects homograph URLs, pipe-to-shell, terminal injection, env manipulation.
-# Install: brew install sheeki03/tap/tirith
-# Docs: https://github.com/sheeki03/tirith
-#
 # security:
-#   tirith_enabled: true        # Enable/disable tirith scanning
-#   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
-#   tirith_timeout: 5           # Scan timeout in seconds
-#   tirith_fail_open: true      # Allow commands if tirith unavailable
 #   approval:
 #     transport: builtin        # Or an explicitly enabled plugin transport name
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
@@ -904,6 +906,10 @@ prompt_caching:
 #   # per session. Unset = 3 inside delegated subagents, unlimited for the main
 #   # agent; a number applies everywhere; 0 = unlimited.
 #   max_calls_per_image: 3
+#   # Newest user images re-sent on turns rebuilt from the session DB (API server,
+#   # --resume) when the model takes images natively; 0 = off. Older images drop
+#   # in whole batches of this size, so the cached prefix changes once per batch.
+#   replay_recent_images: 3
 #
 # auxiliary:
 #   # Image analysis: vision_analyze tool + browser screenshots
@@ -1006,6 +1012,10 @@ memory:
   
   # User profile: preferences, communication style, expectations
   user_profile_enabled: true
+
+  # External prefetch only: opt in to head/tail previews using hooks.output_spill.
+  # Defaults to keeping the full provider-ranked recall. Restart to apply changes.
+  prefetch_spill_enabled: false
   
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens
@@ -1040,10 +1050,11 @@ group_sessions_per_user: true
 # Session Storage Retention (state.db)
 # =============================================================================
 # ~/.hermes/state.db keeps every session, message, and tool call, plus the
-# FTS5 search indexes. Since #54189, auto-pruning is ON by default so the file
-# stays bounded: at CLI/gateway/cron startup (at most once per
-# min_interval_hours) Hermes deletes ENDED sessions whose last activity is
-# older than retention_days. Open, pinned, and in-progress sessions are never
+# FTS5 search indexes. Auto-pruning is OFF by default; when enabled, at
+# CLI/gateway/cron startup (at most once per min_interval_hours) Hermes deletes
+# ENDED sessions whose last activity is older than retention_days. While
+# auto_prune is unset, Hermes asks once when the disk holding state.db runs
+# low (/autoprune on|off|later answers it). Open, pinned, and in-progress sessions are never
 # deleted. Stale automation sessions (cron/kanban/subagent/one-shot CLI) whose
 # process died without closing them are first *closed*, then aged through a
 # further full retention window before removal.
@@ -1053,10 +1064,10 @@ group_sessions_per_user: true
 # of the file's pages are reclaimable — a dense database never pays for a full
 # rewrite to reclaim a few MB.
 #
-# Uncomment to change the defaults shown; set auto_prune: false to keep every
-# ended session forever (the pre-#54189 behavior).
+# Uncomment to change the defaults shown; auto_prune: true bounds the file,
+# auto_prune: false keeps every ended session and silences the low-disk prompt.
 # sessions:
-#   auto_prune: true
+#   auto_prune: false
 #   retention_days: 90
 #   vacuum_after_prune: true
 #   min_vacuum_interval_days: 30
@@ -1220,17 +1231,19 @@ agent:
   # window on /restart, and keep it well under systemd's TimeoutStopSec.
   # restart_drain_timeout: 0
 
-  # Cron-only floor under the same drain (seconds). Default 30.
+  # Floor under the same drain for cron jobs and api_server (/v1) runs
+  # (seconds). Default 30.
   # restart_drain_timeout above is written for chat turns, which are cheap to
   # interrupt: the user is told the gateway is restarting and the session
   # resumes on their next message. A cron run has no such safety net — it is
   # recorded in jobs.json as a permanent failure, nobody is waiting on it, and
   # a recurring job simply skips to its next schedule. So in-flight cron work
-  # gets its own grace window instead of inheriting the 0 above.
+  # gets its own grace window instead of inheriting the 0 above, and so do
+  # api_server (/v1) runs: an interrupted /v1 run fails its waiting caller.
   # Clamped at runtime to the shutdown-watchdog leash (restart_drain_timeout
   # + 60s) minus teardown headroom, so values past ~50s need a matching
-  # TimeoutStopSec bump to take effect. Set 0 to opt out and drain cron on
-  # restart_drain_timeout like before.
+  # TimeoutStopSec bump to take effect. Set 0 to opt out and drain cron and
+  # /v1 runs on restart_drain_timeout like before.
   # cron_drain_timeout: 30
 
   # In-band restart wait (seconds) for active turns to finish BEFORE stop()
@@ -1405,7 +1418,6 @@ gateway:
 #   whatsapp:      hermes-whatsapp       (same as telegram)
 #   slack:         hermes-slack          (same as telegram)
 #   signal:        hermes-signal         (same as telegram)
-#   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
 #   teams:            hermes-teams            (same as telegram)
 #   google_chat:      hermes-google_chat      (same as telegram)
@@ -1417,7 +1429,6 @@ platform_toolsets:
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
   signal: [hermes-signal]
-  homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]
@@ -1607,6 +1618,7 @@ platform_toolsets:
 #       max_rpm: 10             # max requests per minute
 #       allowed_models: []      # model whitelist (empty = all)
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
+#       expose_client_tools: false # advertise extended sampling.tools capability
 #       log_level: "info"       # audit verbosity
 
 # =============================================================================
@@ -1704,11 +1716,25 @@ stt:
     max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
+  # xai:
+  #   # Sent as the multipart ``model`` field. Hermes uses 2.0 by default;
+  #   # pin 1.0 only if a rollback is needed.
+  #   model: "grok-voice-transcribe-2.0"  # or grok-voice-transcribe-1.0
+  #   # language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
   # deepinfra:
   #   # Model id is discovered live from the DeepInfra catalog filtered
   #   # by the `stt` surface tag — leave `model` blank to take the first
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
+  # Custom command providers (stt.providers.<name>: type: command) can
+  # normalize browser WebM/Opus and other input formats to 16 kHz mono m4a
+  # before substituting {input_path}. This is opt-in so CLIs that already
+  # accept arbitrary containers (e.g. whisper.cpp) remain unchanged.
+  # providers:
+  #   custom-asr:
+  #     type: "command"
+  #     command: "custom-asr --input {input_path} --output {output_path}"
+  #     normalize: true  # requires ffmpeg; default false
 
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,

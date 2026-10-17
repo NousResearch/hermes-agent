@@ -64,6 +64,7 @@ def build_cli(data, out, tmp_path):
         cwd=tmp_path, env={"PATH": os.environ["PATH"], "HOME": str(home),
                           "HERMES_HOME": str(home / ".hermes"), "PYTHONPATH": str(ROOT)},
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
 
 
@@ -90,7 +91,7 @@ def test_contained_cli_assembly_runs_after_move_and_preserves_prepared_state(tmp
     run = subprocess.run([str(moved / manifest["runtime"]["commands"]["probe"]), "two words", "$(no)", ""],
                          cwd=tmp_path, env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home"),
                                             "PYTHONPATH": "/foreign", "PYTHONHOME": "/foreign"},
-                         text=True, capture_output=True, timeout=30)
+                         text=True, capture_output=True, timeout=30, check=False)
     assert run.returncode == 7, run.stderr
     assert json.loads(run.stdout) == [["two words", "$(no)", ""], "prepared", "1.2.3", "resource"]
     assert before == {p.relative_to(data["code"]): p.read_bytes() for p in Path(data["code"]).rglob("*") if p.is_file()}
@@ -157,7 +158,7 @@ def test_fixed_root_keeps_privilege_shim_and_resolves_venv_command_symlink(tmp_p
     link.symlink_to("../../libexec/probe")
     run = subprocess.run([str(link), "ok"], cwd=tmp_path,
                          env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home")},
-                         text=True, capture_output=True)
+                         text=True, capture_output=True, check=False)
     assert run.returncode == 7, run.stderr
     assert json.loads(run.stdout)[0] == ["ok"]
 
@@ -255,23 +256,23 @@ def test_payload_smoke_uses_relocated_manifest_commands(tmp_path):
     shutil.rmtree(source)
     env = dict(os.environ, PYTHONPATH="/foreign", PYTHONHOME="/foreign", HERMES_PYTHON="/foreign")
     command = ["bash", str(ROOT / "scripts/smoke-payload.sh"), str(out)]
-    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert '"prepared"' in result.stdout
     assert out.is_dir(), "smoke must restore the artifact for packaging"
     assert "harness ok" in result.stdout
     shutil.rmtree(harness)
-    no_harness = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    no_harness = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert no_harness.returncode != 0
     assert "browser-harness failed" in no_harness.stdout + no_harness.stderr
     dependency = Path(data['site_packages']) / 'dependency.py'
     dependency.unlink()
-    missing_dep = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    missing_dep = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert missing_dep.returncode != 0
     assert 'SMOKE OK' not in missing_dep.stdout
     # A broken published command cannot be rescued by importing raw Python.
     (out / "libexec/hermes").unlink()
-    failed = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    failed = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
     assert failed.returncode != 0
     assert "SMOKE OK" not in failed.stdout
     assert out.is_dir(), "failed smoke must also restore the artifact"
@@ -283,7 +284,7 @@ def test_payload_smoke_uses_relocated_manifest_commands(tmp_path):
     for path in (external, 'libexec/hermes'):
         manifest['runtime']['commands']['hermes'] = path
         (out / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
-        escaped = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+        escaped = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False)
         assert escaped.returncode != 0, escaped.stdout
         assert 'SMOKE OK' not in escaped.stdout
 
@@ -322,7 +323,7 @@ def test_prepared_environment_python_imports_app_from_unrelated_script(tmp_path)
     script.write_text("import entry\nfrom importlib.metadata import version\nprint(version('assembly-fixture'))\n", encoding="utf-8")
     run = subprocess.run([str(python), "-I", str(script)], cwd=tmp_path,
                          env={"PATH": os.environ["PATH"], "HOME": str(tmp_path / "home"), "PYTHONDONTWRITEBYTECODE": "1"},
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, check=False)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "1.2.3"
 

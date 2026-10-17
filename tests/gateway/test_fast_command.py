@@ -134,11 +134,11 @@ async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_
     runner = _make_runner()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     # /fast now resolves eligibility through the session runtime resolver; with
     # no session override that path calls the real provider resolver, so stub it.
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", dict)
 
     response = await runner._handle_fast_command(_make_event("/fast fast --global"))
 
@@ -165,7 +165,7 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     # Eligibility routes through the session runtime resolver; stub the real
     # provider resolution the no-override path would otherwise trigger.
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", dict)
 
     event = _make_event("/fast normal")
     session_key = runner._session_key_for_source(event.source)
@@ -200,7 +200,7 @@ async def test_fast_gate_follows_the_session_route(monkeypatch, tmp_path, defaul
     session_key = runner._session_key_for_source(event.source)
     runner._session_model_overrides[session_key] = dict(override)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: default_model)
 
     response = await runner._handle_fast_command(event)
@@ -230,7 +230,7 @@ async def test_fast_override_lands_under_the_recovered_telegram_topic_key(monkey
     assert turn_key != raw_key
     runner._session_model_overrides[turn_key] = dict(_ASTRA_ON_CODEX)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "claude-sonnet-4-6")
 
     response = await runner._handle_fast_command(MessageEvent(text="/fast fast", source=source, message_id="m1"))

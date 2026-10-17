@@ -43,6 +43,17 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
+def _classify_go_error(error, *, status_code, message, **_):
+    """Go answers 429 for two different walls. ``GoUsageLimitError`` is the key's plan window
+    (5-hour/weekly/monthly) and must bench the key; the built-in pipeline already does that.
+    "Upstream request failed" is one model's upstream throttle: the key still serves every other
+    model, so benching it for the 429 hour starves the rest of the pool (aux tasks on another
+    model then see "no available entries")."""
+    if status_code == 429 and "upstream request failed" in message:
+        return {"reason": "upstream_rate_limit", "should_fallback": True}
+    return None
+
+
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
@@ -125,7 +136,7 @@ opencode_zen = OpenCodeZenProfile(
 opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
-    default_aux_model="glm-5",
+    default_aux_model="glm-5", classify_api_error=_classify_go_error,
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
     # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),

@@ -1486,6 +1486,15 @@ def restore_primary_runtime(agent) -> bool:
                     f"✅ Primary model restored: {agent.model} via {agent.provider}; "
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )
+        # model-walker: after the core has restored (or declined to restore) the primary, let a
+        # plugin walk up to an intermediate fallback whose rate limit has reset. Observer; a
+        # raising callback is swallowed so it can never break the turn-start path.
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if has_hook("pre_turn"):
+                invoke_hook("pre_turn")
+        except Exception:
+            logger.debug("pre_turn hook failed", exc_info=True)
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

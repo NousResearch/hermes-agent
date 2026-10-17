@@ -1,11 +1,40 @@
-const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+import { fmtClock, fmtDayTime } from '@/lib/time'
 
-const SHORT_FMT = new Intl.DateTimeFormat(undefined, {
-  day: 'numeric',
+const fmtTimelineClock = new Intl.DateTimeFormat(undefined, {
+  fractionalSecondDigits: 3,
   hour: 'numeric',
   minute: '2-digit',
-  month: 'short'
+  second: '2-digit'
 })
+
+const timelineDate = (seconds: number | undefined): Date | null => {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return null
+  }
+
+  const date = new Date(seconds * 1000)
+
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+/** Millisecond-precise local clock for transcript activity boundaries. */
+export function formatTimelineTimestamp(seconds: number | undefined): string {
+  const date = timelineDate(seconds)
+
+  return date ? fmtTimelineClock.format(date) : ''
+}
+
+export function formatTimelineRange(start: number | undefined, end: number | undefined): string {
+  const from = formatTimelineTimestamp(start)
+
+  if (!from) {
+    return ''
+  }
+
+  const to = formatTimelineTimestamp(end)
+
+  return to ? `${from} → ${to}` : from
+}
 
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
@@ -28,12 +57,12 @@ export function formatMessageTimestamp(
   const dayDelta = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86_400_000)
 
   if (dayDelta === 0) {
-    return labels.today(TIME_FMT.format(date))
+    return labels.today(fmtClock.format(date))
   }
 
   if (dayDelta === 1) {
-    return labels.yesterday(TIME_FMT.format(date))
+    return labels.yesterday(fmtClock.format(date))
   }
 
-  return SHORT_FMT.format(date)
+  return fmtDayTime.format(date)
 }

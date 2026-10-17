@@ -1,0 +1,53 @@
+{
+  "id": "peoplefinders",
+  "name": "PeopleFinders",
+  "category": "people_search",
+  "priority": "high",
+  "jurisdictions": [
+    "US"
+  ],
+  "parent": "peoplefinders",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://www.peoplefinders.com/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "antibot": "cloudflare",
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "web_form",
+    "url": "https://www.peoplefinders.com/opt-out",
+    "requires": {
+      "profile_url": true,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": [
+      "full_name",
+      "contact_email",
+      "profile_url"
+    ],
+    "notes": "Standalone people-search (Confi-Chek family). Opt-out: find the listing, submit with a contact email, confirm via the emailed link.",
+    "quirks": [
+      "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
+      "Needs the confirmed profile_url from evidence.",
+      "Email verification: poll-verification picks up the link; open it in the agent browser."
+    ],
+    "est_processing_days": 7,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": null,
+  "source": "curated",
+  "confidence": "documented"
+}

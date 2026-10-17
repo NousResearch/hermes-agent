@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { useI18n } from '@/i18n'
-import { $starmapError, $starmapGraph, $starmapLoading, loadStarmapGraph } from '@/store/starmap'
+import { $starmapError, $starmapGraph, $starmapLoading, watchStarmapGraph } from '@/store/starmap'
 import type { StarmapGraph } from '@/types/hermes'
 
 import { Panel, PanelEmpty } from '../overlays/panel'
@@ -26,9 +26,8 @@ export function StarmapView({ onClose }: { onClose: () => void }) {
   // whenever a fresh profile graph loads in.
   const [imported, setImported] = useState<StarmapGraph | null>(null)
 
-  useEffect(() => {
-    void loadStarmapGraph()
-  }, [])
+  // Loads on open and reloads after a profile/gateway switch while the view stays open.
+  useEffect(() => watchStarmapGraph(), [])
 
   // Drop a stale import when the underlying profile graph changes out from under it.
   useEffect(() => {
@@ -46,7 +45,12 @@ export function StarmapView({ onClose }: { onClose: () => void }) {
       ) : shown && shown.nodes.length === 0 && !imported ? (
         <PanelEmpty description={t.starmap.emptyDesc} icon="lightbulb" title={t.starmap.emptyTitle} />
       ) : shown ? (
-        <StarMap graph={shown} imported={imported !== null} onImport={setImported} onResetMap={() => setImported(null)} />
+        <StarMap
+          graph={shown}
+          imported={imported !== null}
+          onImport={setImported}
+          onResetMap={() => setImported(null)}
+        />
       ) : null}
     </Panel>
   )

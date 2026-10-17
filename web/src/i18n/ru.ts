@@ -95,6 +95,7 @@ export const ru: Translations = {
   status: {
     actionFailed: "Ошибка действия",
     actionFinished: "Завершено",
+    actionFinishedOwed: "Обновлено, но работа ещё не завершена (запустите `hermes update` снова, чтобы закончить)",
     actions: "Действия",
     agent: "Агент",
     activeSessions: "Активные сессии",
@@ -129,8 +130,14 @@ export const ru: Translations = {
     title: "Сессии",
     history: "История",
     overview: "Обзор",
+    filterChats: "Чаты",
+    filterAutomation: "Автоматизация",
+    filterAll: "Все",
+    sourceFilter: "Источник сессии",
+    anySource: "Любой источник",
     searchPlaceholder: "Поиск по содержимому сообщений...",
     noSessions: "Сессий пока нет",
+    noSessionsInFilter: "В этом фильтре нет сессий",
     noMatch: "Нет сессий, соответствующих запросу",
     startConversation: "Начните разговор, чтобы увидеть его здесь",
     noMessages: "Нет сообщений",
@@ -156,9 +163,14 @@ export const ru: Translations = {
     deleteSelectedConfirmMessage:
       "Это безвозвратно удалит {count} выбранных сессий и все их сообщения. Это действие нельзя отменить.",
     selectedSessionsDeleted: "Удалено сессий: {count}",
+    selectedSessionsSkippedActive: "Удалено: {deleted}; сохранено: {count}, так как ход ещё выполняется",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
     newChat: "Новый чат",
+    workspace: "рабочая папка",
+    workspaceDefault: "По умолчанию",
+    workspaceRescan: "Пересканировать репозитории",
+    workspaceCustom: "Другой путь…",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {
@@ -318,6 +330,8 @@ export const ru: Translations = {
     disableRuntime: "Отключить",
     enableAfterInstall: "Включить после установки",
     enableRuntime: "Включить",
+    toggleTakesEffectAfterRestart:
+      "Сохранено — перезапустите шлюз, чтобы применить изменение.",
     forceReinstall: "Принудительная переустановка (сначала удалить существующую папку)",
     headline:
       "Поиск, установка, включение и обновление плагинов Hermes (аналог `hermes plugins`).",
@@ -446,20 +460,25 @@ export const ru: Translations = {
   oauth: {
     title: "Входы провайдеров (OAuth)",
     providerLogins: "Входы провайдеров (OAuth)",
-    description: "Подключено {connected} из {total} OAuth-провайдеров. Процесс входа в настоящее время выполняется через CLI; нажмите «Скопировать команду» и вставьте в терминал для настройки.",
+    description:
+      "Подключено {connected} из {total} OAuth-провайдеров. Используйте «Войти» для процессов, поддерживаемых панелью; команды CLI остаются доступными для внешней или резервной настройки.",
     connected: "Подключено",
     expired: "Срок истёк",
-    notConnected: "Не подключено. Выполните {command} в терминале.",
+    notConnected: "Не подключено. Используйте «Войти», если доступно, или выполните {command} в терминале.",
     runInTerminal: "в терминале.",
     noProviders: "OAuth-совместимые провайдеры не обнаружены.",
     login: "Войти",
     disconnect: "Отключить",
     managedExternally: "Управляется извне",
     copied: "Скопировано ✓",
+    copyCode: "Скопировать код",
+    copyFailed: "Не удалось скопировать автоматически. Выделите код и скопируйте его вручную.",
     cli: "Копировать",
     copyCliCommand: "Скопировать CLI-команду (для внешнего / резервного варианта)",
     connect: "Подключить",
     sessionExpires: "Сессия истечёт через {time}",
+    sessionExpiredNoError:
+      "Время входа истекло, не достигнув провайдера. Обычно это означает, что страница входа зависла в открытой вкладке (проблема на стороне сервера) — завершите вход там, затем нажмите «Повторить». Если ошибка повторяется, используйте API-ключ или CLI.",
     initiatingLogin: "Запуск процесса входа…",
     exchangingCode: "Обмен кода на токены…",
     connectedClosing: "Подключено! Закрытие…",
@@ -609,6 +628,12 @@ export const ru: Translations = {
       "Доски позволяют разделять не связанные между собой потоки работы — по одной на проект, репозиторий или область. Воркеры одной доски никогда не видят задачи другой.",
     slug: "Slug",
     slugHint: "— строчные буквы, дефисы, например atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Отображаемое имя",
     displayNameHint: "(необязательно)",
     description: "Описание",

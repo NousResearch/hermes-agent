@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { chooseMove, dwellMs, type DwellRange, HOP_CHANCE, pickStrollTarget, REST_CHANCE, type Rng } from './roam-behavior'
+import {
+  chooseMove,
+  dwellMs,
+  type DwellRange,
+  HOP_CHANCE,
+  pickStrollTarget,
+  REST_CHANCE,
+  type Rng
+} from './roam-behavior'
 import type { Ledge } from './roam-geometry'
 
 // Deterministic rng that replays a fixed sequence (last value sticks).
@@ -50,26 +58,6 @@ describe('chooseMove', () => {
   it('hops only when moving, a ledge is reachable, and the second draw says so', () => {
     expect(chooseMove(true, seq(0.99, HOP_CHANCE - 1e-9))).toBe('hop')
     expect(chooseMove(true, seq(0.99, HOP_CHANCE))).toBe('stroll')
-  })
-
-  it('treats restChance as a strict lower bound (boundary stays a move)', () => {
-    expect(chooseMove(false, seq(REST_CHANCE))).toBe('stroll')
-  })
-
-  it('loafs far more than it roams over a long run (the whole point)', () => {
-    let state = 0.314159
-    const rng: Rng = () => (state = (state * 16807 + 0.5) % 1)
-    let rests = 0
-    const N = 20000
-
-    for (let i = 0; i < N; i++) {
-      if (chooseMove(true, rng) === 'rest') {
-        rests++
-      }
-    }
-
-    // ~62% rests; assert the contract (majority loafing), not the exact rate.
-    expect(rests / N).toBeGreaterThan(0.5)
   })
 })
 

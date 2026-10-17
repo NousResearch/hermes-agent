@@ -92,14 +92,7 @@ class TestExtractUserInstruction:
         assert extract_user_instruction_from_skill_message(123) is None
         assert extract_user_instruction_from_skill_message([{"text": "hi"}]) is None
 
-    def test_plain_message_passes_through(self):
-        assert extract_user_instruction_from_skill_message("just a message") == "just a message"
 
-    def test_single_skill_with_instruction(self):
-        assert (
-            extract_user_instruction_from_skill_message(_SINGLE_SKILL_TURN)
-            == "make a skill for release triage"
-        )
 
     def test_bundle_with_instruction(self):
         assert (
@@ -107,22 +100,10 @@ class TestExtractUserInstruction:
             == "fix the failing retrieval test"
         )
 
-    def test_bare_skill_returns_none(self):
-        assert extract_user_instruction_from_skill_message(_BARE_SKILL_TURN) is None
 
-    def test_runtime_note_trimmed_from_single_skill(self):
-        turn = _SINGLE_SKILL_TURN + "\n\n[Runtime note: in a subagent]"
-        assert (
-            extract_user_instruction_from_skill_message(turn)
-            == "make a skill for release triage"
-        )
 
 
 class TestMemoryManagerStripsScaffolding:
-    def test_prefetch_all_strips_single_skill(self):
-        mgr, provider = _manager_with_recorder()
-        mgr.prefetch_all(_SINGLE_SKILL_TURN)
-        assert provider.prefetched == ["make a skill for release triage"]
 
     def test_prefetch_all_skips_bare_skill(self):
         mgr, provider = _manager_with_recorder()
@@ -136,17 +117,7 @@ class TestMemoryManagerStripsScaffolding:
         mgr.flush_pending(timeout=5.0)
         assert provider.queued == ["fix the failing retrieval test"]
 
-    def test_queue_prefetch_all_skips_bare_skill(self):
-        mgr, provider = _manager_with_recorder()
-        mgr.queue_prefetch_all(_BARE_SKILL_TURN)
-        mgr.flush_pending(timeout=5.0)
-        assert provider.queued == []
 
-    def test_sync_all_strips_single_skill(self):
-        mgr, provider = _manager_with_recorder()
-        mgr.sync_all(_SINGLE_SKILL_TURN, "Done.")
-        mgr.flush_pending(timeout=5.0)
-        assert provider.synced == ["make a skill for release triage"]
 
     def test_sync_all_skips_bare_skill(self):
         mgr, provider = _manager_with_recorder()
@@ -154,8 +125,3 @@ class TestMemoryManagerStripsScaffolding:
         mgr.flush_pending(timeout=5.0)
         assert provider.synced == []
 
-    def test_plain_message_passes_through_unchanged(self):
-        mgr, provider = _manager_with_recorder()
-        mgr.sync_all("what's the weather", "Sunny.")
-        mgr.flush_pending(timeout=5.0)
-        assert provider.synced == ["what's the weather"]

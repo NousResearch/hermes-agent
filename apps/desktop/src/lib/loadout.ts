@@ -1,5 +1,7 @@
 import { deflateSync, inflateSync } from 'fflate'
 
+import { capitalize } from '@/lib/text'
+
 // ── Loadout codec ─────────────────────────────────────────────────────────────
 //
 // A generic, WoW-talent-loadout-style binary share codec: pack *bits and
@@ -211,7 +213,7 @@ const HEAD_BYTES = 3 // 8-bit version + 16-bit checksum
 export function createLoadout<T>(spec: LoadoutSpec<T>): Loadout<T> {
   const Err = spec.error ?? LoadoutError
   const noun = spec.noun ?? 'code'
-  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1)
+  const Noun = capitalize(noun)
 
   const encode = (value: T): string => {
     const body = new BitWriter()

@@ -20,7 +20,7 @@ const trim = (s: string): string => (s.length > MAX_LABEL ? s.slice(0, MAX_LABEL
 const KINDS = ['skill', 'memory'] as const
 const STATES = ['active', 'archived', 'disabled', 'draft'] as const
 const MEM_SOURCES = ['none', 'memory', 'profile'] as const
-const CREATED_BY = ['none', 'agent', 'user'] as const
+const CREATED_BY = ['none', 'agent', 'user', 'learn'] as const
 
 const REC_BITS = 12 // time position resolution: 1/4096 of the span — sub-pixel here.
 const REC_MAX = (1 << REC_BITS) - 1
@@ -157,7 +157,9 @@ function readGraph(r: BitReader): StarmapGraph {
     counts.set(n.category, (counts.get(n.category) ?? 0) + 1)
   }
 
-  const clusters = [...counts.entries()].map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count)
+  const clusters = [...counts.entries()]
+    .map(([category, count]) => ({ category, count }))
+    .sort((a, b) => b.count - a.count)
 
   // Memory cards are dropped (viz-only); a marker lets the UI tell a decoded map
   // apart from a freshly-scanned one.

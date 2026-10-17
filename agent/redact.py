@@ -995,6 +995,60 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     return text
 
+_JSON_FIELD_KEY_RE = re.compile(rf'^{_JSON_KEY_NAMES}$', re.IGNORECASE)
+
+def redact_sensitive_json(value, *, force: bool = False, redact_url_credentials: bool = False):
+    """Redact a JSON-like structure by walking it, not its serialization.
+
+    ``redact_sensitive_text`` operates on raw text and its patterns are not JSON-aware:
+    ``_ENV_ASSIGN_RE``'s unquoted value group ``(\\S+)`` swallows the closing quote of the
+    string it sits in, so ``json.loads(redact_sensitive_text(json.dumps(obj)))`` turned
+    ``{"x": "DB_PASSWORD=abcdef12"}`` into the unterminated ``{"x": "DB_PASSWORD=***`` —
+    a broken parse *and* a partial mask, with the rest of the document consumed (#123688).
+
+    Each string leaf (and each key) is redacted on its own, so JSON syntax is never part of
+    the text a pattern sees. The serialized path's key rule is preserved: a value under a
+    secret-named key is masked whole at any depth, because the key is in scope here.
+
+    Non-string scalars, and objects this cannot decompose, pass through unchanged — this
+    never invents structure it cannot verify.
+    """
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=force,
+                                     redact_url_credentials=redact_url_credentials)
+    if isinstance(value, dict):
+        # Same gate redact_sensitive_text applies at its entry (line ~927): a disabled
+        # profile must leave the structure untouched, keys included.
+        key_rule_on = force or _redact_enabled()
+        out = {}
+        for key, item in value.items():
+            new_key = redact_sensitive_json(key, force=force,
+                                            redact_url_credentials=redact_url_credentials)
+            redacted = redact_sensitive_json(item, force=force,
+                                             redact_url_credentials=redact_url_credentials)
+            # Secret-named key: mask the value whole, matching the serialized path's
+            # ``"password": "..."`` rule. Keys are redacted first so the rule sees the real one.
+            # ``_should_redact_assignment`` is the SAME gate that pass uses — it is what keeps
+            # ``"token": "os.getenv('X')`` and ``"password": "$HOME/..."`` readable, so calling
+            # it here is what makes this a repair rather than a widening of what gets masked.
+            if (key_rule_on and isinstance(new_key, str) and isinstance(item, str)
+                    and _JSON_FIELD_KEY_RE.match(new_key)
+                    and _should_redact_assignment(new_key, item, check_keyword=False)):
+                redacted = _mask_token(item)
+            out[new_key] = redacted
+        return out
+    if isinstance(value, list):
+        return [redact_sensitive_json(item, force=force,
+                                      redact_url_credentials=redact_url_credentials)
+                for item in value]
+    # A JSON-shaped structure only ever holds None/bool/int/float/str inside containers.
+    # Anything else cannot be verified as safe, and the callers' fallback is the UNREDACTED
+    # original — so redacting its repr is the only choice that cannot leak (#123688).
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return redact_sensitive_text(str(value), force=force,
+                                 redact_url_credentials=redact_url_credentials)
+
 
 # Commands whose stdout is an env-var dump: terminal redaction runs the
 # ENV-assignment pass (code_file=False) for these so opaque tokens with no vendor

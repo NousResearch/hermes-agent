@@ -25,6 +25,7 @@ _TERMINAL_KANBAN_TOOLS = frozenset({
     "kanban_schedule",
     "kanban_request_review",
     "kanban_request_changes",
+    "kanban_handoff",
 })
 
 _DEFAULT_MAX_ATTEMPTS = 2

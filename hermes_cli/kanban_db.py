@@ -2500,6 +2500,10 @@ def reclaim_task(
     if row["status"] != "running" and row["claim_lock"] is None:
         # Nothing to reclaim — already ready / blocked / done.
         return False
+    if row["worker_pid"] == os.getpid():
+        # A worker cannot reclaim its own live run: the reclaim path terminates
+        # the recorded worker before releasing its claim.
+        return False
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn, started_at=row["worker_started_at"])
@@ -2539,6 +2543,58 @@ def reassign_task(
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
         return False
+
+
+def handoff_task(
+    conn: sqlite3.Connection, task_id: str, profile: str, *, reason: str,
+    expected_run_id: Optional[int] = None,
+) -> tuple[bool, Optional[str]]:
+    """End an owned running run and route the card to ``profile``.
+
+    Unlike operator reclaim, this never signals a worker. The caller proves it
+    owns the active run with ``expected_run_id`` before the claim is released.
+    """
+    profile = _canonical_assignee(profile)
+    reason = str(reason or "").strip()
+    if profile is None:
+        return False, "profile is required"
+    if not reason:
+        return False, "reason is required"
+    if expected_run_id is None:
+        return False, "run_id is required to hand off a running task"
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False, "task not found"
+        run_id = row["current_run_id"]
+        if row["status"] != "running" or run_id is None:
+            return False, "task is not running"
+        if int(run_id) != int(expected_run_id):
+            return False, "run_id mismatch"
+        status = _landing_status_after_parents(conn, task_id)
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = ?, assignee = ?, claim_lock = NULL,
+                   claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL
+             WHERE id = ? AND status = 'running' AND current_run_id = ?
+            """,
+            (status, profile, task_id, int(run_id)),
+        )
+        if cur.rowcount != 1:
+            return False, "task changed during handoff"
+        ended_run_id = _end_run(
+            conn, task_id, outcome="handed_off", status=status, summary=reason,
+        )
+        _append_event(
+            conn, task_id, "handed_off",
+            {"from": row["assignee"], "profile": profile, "reason": reason, "status": status},
+            run_id=ended_run_id,
+        )
+    notify_task_updated(conn, task_id, ("assignee", "status"))
+    return True, status
 
 
 def _verify_created_cards(

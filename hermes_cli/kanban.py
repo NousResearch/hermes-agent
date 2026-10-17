@@ -572,8 +572,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
-    with kbc.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+    try:
+        with kbc.connect_closing() as conn:
+            ok = kb.assign_task(conn, args.task_id, profile)
+    except RuntimeError as exc:
+        return _err(f"kanban: {exc}", 2)
     return _ok_or_err(ok, f"no such task: {args.task_id}",
                       f"Assigned {args.task_id} to {profile or '(unassigned)'}")
 
@@ -612,7 +615,7 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
         ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))
     return _ok_or_err(
         ok,
-        f"cannot reassign {args.task_id} (unknown id, or still running — pass --reclaim to release first)",
+        f"cannot reassign {args.task_id} (unknown id, or still running — a worker cannot reclaim itself; use kanban_handoff)",
         f"Reassigned {args.task_id} to {profile or '(unassigned)'}" + (" (claim reclaimed)" if reclaim else ""),
     )
 

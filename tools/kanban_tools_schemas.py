@@ -294,6 +294,22 @@ KANBAN_REQUEST_CHANGES_SCHEMA = _schema(
     ["reason"],
 )
 
+KANBAN_HANDOFF_SCHEMA = _schema(
+    "kanban_handoff",
+    (
+        "Hand your current running task to a different profile when that profile "
+        "has the needed role, environment, or authority. This safely closes only "
+        "your owned run, releases its claim without killing this worker, and queues "
+        "the task for the target profile."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "profile": _prop("string", "Profile that should receive the task."),
+        "reason": _prop("string", "Concise explanation for the next worker and event log."),
+    },
+    ["profile", "reason"],
+)
+
 KANBAN_HEARTBEAT_SCHEMA = _schema(
     "kanban_heartbeat",
     (

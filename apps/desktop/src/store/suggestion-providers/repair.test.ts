@@ -93,7 +93,11 @@ describe('reconnect reads what reload.mcp did for the chat', () => {
 
     await invoke(pill)
 
-    expect(mocks.request).toHaveBeenCalledWith('reload.mcp', { confirm: true, session_id: pill.sessionId })
+    expect(mocks.request).toHaveBeenCalledWith(
+      'reload.mcp',
+      { confirm: true, session_id: pill.sessionId },
+      expect.any(Number)
+    )
     expect(mocks.offers.at(-1)).toEqual([])
   })
 

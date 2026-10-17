@@ -24,7 +24,7 @@ export async function actRender(ui: React.ReactElement) {
 
 export interface HarnessHandle {
   activeSessionIdRef: MutableRefObject<string | null>
-  cancelRun: () => Promise<void>
+  cancelRun: (options?: { throwOnFailure?: boolean }) => Promise<void>
   editMessage: (edited: Parameters<ReturnType<typeof usePromptActions>['editMessage']>[0]) => Promise<void>
   reloadFromMessage: (parentId: null | string) => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>

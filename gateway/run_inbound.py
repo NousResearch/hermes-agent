@@ -166,10 +166,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         if getattr(_config, "multiplex_profiles", False):
             self._canonicalize(source)
         if getattr(source, "profile_route_rejected", False) is True:
-            logger.warning(
-                "Dropping inbound message because its explicit profile route "
-                "targets an unserved profile"
-            )
+            from gateway.parked_route_refusal import drop_rejected_route
+            _intake = None
+            with suppress(Exception):
+                _intake = self._intake_adapter_for(source)
+            drop_rejected_route(_intake, source)  # a parked target is also refused to the sender
             return None
 
         is_internal = bool(getattr(event, "internal", False))  # e.g. background-process notifications

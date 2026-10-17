@@ -225,11 +225,16 @@ It also supports:
 - approval callbacks for dangerous commands
 
 `tools/process_registry_checkpoint.py` owns running-process checkpoints and
-PID-safe adoption. Completed output is separate: `tools/process_registry_results.py`
-writes one atomic, redacted receipt per process under the profile's
-`logs/process-results/`. Producers cannot overwrite another parent's results by
-rewriting the shared PID checkpoint. The registry persists the receipt before
-releasing its completion event; one-shot linger waits on that event. The existing
+PID-safe adoption. Every process on a profile (gateway, CLI, TUI, cron, one-shots)
+writes the same `processes.json`: each entry records its writer's PID and start-time
+fingerprint, a process replaces only its own entries under `processes.json.lock`,
+and recovery adopts only entries whose writer is gone. Entries without a writer
+(written by older versions) are dropped unadopted. Completed output is separate:
+`tools/process_registry_results.py` writes one atomic, redacted receipt per process
+under the profile's `logs/process-results/`. Producers cannot overwrite another
+parent's results by rewriting the shared PID checkpoint, and a recovered (detached)
+session never replaces an existing receipt with its empty one. The registry persists
+the receipt before releasing its completion event; one-shot linger waits on that event. The existing
 process query methods load retained snapshots without adopting PIDs or enqueuing
 notifications. Reads require the commissioning durable session or its compression
 continuation; knowing a handle alone does not authorize a retained result read.

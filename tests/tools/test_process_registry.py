@@ -1246,7 +1246,7 @@ class TestCheckpoint:
             "pid": 999999999,
             "pid_scope": "host",
             "host_start_time": 123.0,
-            "systemd_unit": "hermes-worker-proc_dead_scope.scope",
+            "systemd_unit": "hermes-worker-proc_dead_scope.scope", "owner_pid": 999999999,  # dead writer
         }
         checkpoint.write_text(json.dumps([entry]))
         monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
@@ -1270,7 +1270,7 @@ class TestCheckpoint:
             "pid": 999999999,
             "pid_scope": "host",
             "host_start_time": 123.0,
-            "systemd_unit": "hermes-worker-proc_dead_scope.scope",
+            "systemd_unit": "hermes-worker-proc_dead_scope.scope", "owner_pid": 999999999,  # dead writer
         }
         checkpoint.write_text(json.dumps([entry]))
         monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)

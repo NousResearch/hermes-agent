@@ -380,6 +380,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-draw-your-font',
                     'user-guide/skills/optional/creative/creative-dream-loop',
                     'user-guide/skills/optional/creative/creative-excalidraw',
+                    'user-guide/skills/optional/creative/creative-ffmpeg-skill',
                     'user-guide/skills/optional/creative/creative-heartmula',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-impeccable',
@@ -395,6 +396,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-system-atlas',
                     'user-guide/skills/optional/creative/creative-tldraw-offline',
                     'user-guide/skills/optional/creative/creative-unreal-mcp',
+                    'user-guide/skills/optional/creative/creative-vlog-auto-edit',
                   ],
                 },
                 {

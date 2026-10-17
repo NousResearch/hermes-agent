@@ -3000,19 +3000,16 @@ def edit_config():
         seed_config_file(config_path)
         print(f"Created {config_path}")
 
-    # Windows lands on notepad even without Git Bash/nano; POSIX prefers nano/vim, which headless
-    # servers are more likely to have.
-    candidates = (['notepad', 'code', 'vim', 'vi', 'nano'] if sys.platform == "win32"
-                  else ['nano', 'vim', 'vi', 'code', 'notepad'])
-    editor = os.getenv('EDITOR') or os.getenv('VISUAL') or next(
-        (cmd for cmd in candidates if shutil.which(cmd)), None)
-    if not editor:
-        print("No editor found. Config file is at:")
-        print(f"  {config_path}")
-        return
+    from hermes_cli.editor import resolve_editor_command
+
+    editor = resolve_editor_command(config=load_config())
 
     print(f"Opening {config_path} in {editor}...")
-    subprocess.run([editor, str(config_path)], check=False)
+    try:
+        subprocess.run([*shlex.split(editor), str(config_path)], check=False)
+    except (OSError, ValueError):
+        print("No editor found. Config file is at:")
+        print(f"  {config_path}")
 
 
 def _default_value_for_key(dotted_key: str):

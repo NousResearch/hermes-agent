@@ -2753,6 +2753,13 @@ cli:
       last_activity: " · последняя активность {seconds}с назад"
       agent_running: "Агент: выполняется"
       agent_idle: "Агент: простаивает"
+      background_sessions: "Фоновые сессии (/bg): {count}"
+      state_running: "выполняется"
+      state_finishing: "завершается"
+      state_starting: "запускается"
+      api_calls: " · {count} вызовов API"
+      background_prompt: "\"{prompt}\""
+      background_hint: "результаты появятся здесь по завершении · запросы на подтверждение появляются в этом окне · стенограмма: hermes sessions list"
     journey:
       failed: "/journey не удался: {error}"
     paste:

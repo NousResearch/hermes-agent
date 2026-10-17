@@ -2753,6 +2753,13 @@ cli:
       last_activity: " · gníomhaíocht is déanaí {seconds}s ó shin"
       agent_running: "Gníomhaire: ag rith"
       agent_idle: "Gníomhaire: díomhaoin"
+      background_sessions: "Seisiúin chúlra (/bg): {count}"
+      state_running: "ag rith"
+      state_finishing: "ag críochnú"
+      state_starting: "ag tosú"
+      api_calls: " · {count} glao API"
+      background_prompt: "\"{prompt}\""
+      background_hint: "priontáiltear na torthaí anseo nuair a bheidh siad críochnaithe · taispeántar iarratais cheadaithe san fhuinneog seo · tras-scríbhinn: hermes sessions list"
     journey:
       failed: "Theip ar /journey: {error}"
     paste:

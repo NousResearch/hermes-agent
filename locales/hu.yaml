@@ -2770,6 +2770,13 @@ cli:
       last_activity: " · utolsó aktivitás {seconds} mp-cel ezelőtt"
       agent_running: "Ügynök: fut"
       agent_idle: "Ügynök: tétlen"
+      background_sessions: "Háttérmunkamenetek (/bg): {count}"
+      state_running: "fut"
+      state_finishing: "befejeződik"
+      state_starting: "indul"
+      api_calls: " · {count} API-hívás"
+      background_prompt: "\"{prompt}\""
+      background_hint: "az eredmények itt jelennek meg, ha elkészültek · a jóváhagyási kérések ebben az ablakban jelennek meg · átirat: hermes sessions list"
     journey:
       failed: "A /journey nem sikerült: {error}"
     paste:

@@ -2753,6 +2753,13 @@ cli:
       last_activity: " · остання активність {seconds}с тому"
       agent_running: "Агент: працює"
       agent_idle: "Агент: очікує"
+      background_sessions: "Фонові сесії (/bg): {count}"
+      state_running: "виконується"
+      state_finishing: "завершується"
+      state_starting: "запускається"
+      api_calls: " · {count} викликів API"
+      background_prompt: "\"{prompt}\""
+      background_hint: "результати з'являться тут після завершення · запити на підтвердження з'являються в цьому вікні · стенограма: hermes sessions list"
     journey:
       failed: "Помилка /journey: {error}"
     paste:

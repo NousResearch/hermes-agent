@@ -2753,6 +2753,13 @@ cli:
       last_activity: " · 最終アクティビティ {seconds} 秒前"
       agent_running: "エージェント: 実行中"
       agent_idle: "エージェント: 待機中"
+      background_sessions: "バックグラウンドセッション (/bg): {count}"
+      state_running: "実行中"
+      state_finishing: "終了処理中"
+      state_starting: "開始中"
+      api_calls: " · API 呼び出し {count} 回"
+      background_prompt: "\"{prompt}\""
+      background_hint: "完了すると結果はここに表示されます · 承認のプロンプトはこのウィンドウに表示されます · 記録: hermes sessions list"
     journey:
       failed: "/journey に失敗しました: {error}"
     paste:

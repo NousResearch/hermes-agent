@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 import psutil
@@ -707,6 +708,129 @@ class TestOwnTabPreamble:
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
 
 
+class TestScreenshotReliabilityPreamble:
+    """Hermes wakes the attached target before browser-harness captures and
+    retries only the helper's specific compositor-idle timeout."""
+
+    @staticmethod
+    def _install_helpers(monkeypatch, helper):
+        package = types.ModuleType("browser_harness")
+        package.helpers = helper
+        monkeypatch.setitem(sys.modules, "browser_harness", package)
+
+    def test_timeout_retries_once_and_returns_valid_image(self, tmp_path, monkeypatch):
+        from PIL import Image
+
+        path = tmp_path / "capture.png"
+
+        class Helpers:
+            def __init__(self):
+                self.activations = []
+                self.captures = 0
+
+            @staticmethod
+            def current_tab():
+                return {"targetId": "synthetic-heavy-page"}
+
+            def activate_tab(self, target):
+                self.activations.append(target["targetId"])
+
+            def capture_screenshot(self, path=None, full=False, max_dim=None):
+                self.captures += 1
+                if self.captures == 1:
+                    raise RuntimeError("Page.captureScreenshot timed out after 60s")
+                Image.new("RGB", (3, 2), "white").save(path, format="PNG")
+                return path
+
+        helpers = Helpers()
+        self._install_helpers(monkeypatch, helpers)
+        scope = {}
+        exec(bu_cli._SCREENSHOT_RELIABILITY_PREAMBLE, scope)
+
+        returned = scope["capture_screenshot"](str(path), full=False, max_dim=1800)
+
+        assert returned == str(path)
+        assert helpers.captures == 2
+        assert helpers.activations == ["synthetic-heavy-page", "synthetic-heavy-page"]
+        assert path.stat().st_size > 0
+        with Image.open(path) as image:
+            assert image.format == "PNG"
+            assert image.size == (3, 2)
+            image.verify()
+
+    def test_primary_capture_wakes_once_without_retry(self, tmp_path, monkeypatch):
+        path = tmp_path / "capture.png"
+
+        class Helpers:
+            activations = 0
+            captures = 0
+
+            @staticmethod
+            def current_tab():
+                return "synthetic-target"
+
+            @classmethod
+            def activate_tab(cls, target):
+                assert target == "synthetic-target"
+                cls.activations += 1
+
+            @classmethod
+            def capture_screenshot(cls, path=None, full=False, max_dim=None):
+                cls.captures += 1
+                path = path or str(tmp_path / "default.png")
+                Image = pytest.importorskip("PIL.Image")
+                Image.new("RGB", (1, 1), "black").save(path, format="PNG")
+                return path
+
+        self._install_helpers(monkeypatch, Helpers)
+        scope = {}
+        exec(bu_cli._SCREENSHOT_RELIABILITY_PREAMBLE, scope)
+
+        assert scope["capture_screenshot"](str(path)) == str(path)
+        assert Helpers.activations == 1
+        assert Helpers.captures == 1
+
+    def test_unrelated_capture_error_is_not_retried(self, monkeypatch):
+        class Helpers:
+            captures = 0
+
+            @staticmethod
+            def current_tab():
+                return "synthetic-target"
+
+            @staticmethod
+            def activate_tab(target):
+                assert target == "synthetic-target"
+
+            @classmethod
+            def capture_screenshot(cls, **kwargs):
+                cls.captures += 1
+                raise RuntimeError("browser connection closed")
+
+        self._install_helpers(monkeypatch, Helpers)
+        scope = {}
+        exec(bu_cli._SCREENSHOT_RELIABILITY_PREAMBLE, scope)
+
+        with pytest.raises(RuntimeError, match="browser connection closed"):
+            scope["capture_screenshot"]()
+        assert Helpers.captures == 1
+
+    def test_browser_exec_prepends_wrapper_before_model_code(self, tmp_path, monkeypatch):
+        cli = _fake_cli(tmp_path, "cat\n")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec("print('payload')"))
+
+        assert result["success"] is True
+        assert result["output"].index("_hermes_capture_screenshot") < result["output"].index("print('payload')")
+
+    def test_preamble_is_valid_python(self):
+        import ast
+
+        ast.parse(bu_cli._SCREENSHOT_RELIABILITY_PREAMBLE)
+        ast.parse(bu_cli._SCREENSHOT_RELIABILITY_PREAMBLE + "print('x')")
+
+
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker row (browser_backend
     marker) must enter/leave CLI mode cleanly and highlight correctly."""
@@ -1002,7 +1126,8 @@ class TestBrowserExec:
         result = json.loads(bu_cli.browser_exec('print("hi")'))
         assert result["success"] is True
         assert result["exit_code"] == 0
-        assert 'got:print("hi")' in result["output"]
+        assert result["output"].rstrip().endswith('print("hi")')
+        assert result["output"].index("_hermes_capture_screenshot") < result["output"].index('print("hi")')
         assert "session" not in result
 
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):

@@ -471,6 +471,7 @@ Repos can carry their own skills, active only for sessions started inside that p
 ```text
 <project-root>/.hermes/skills/    # Hermes-native location
 <project-root>/.agents/skills/    # cross-tool convention (shared with other agent CLIs)
+<project-root>/.github/skills/    # GitHub Copilot convention
 ```
 
 The project root is the nearest ancestor directory containing `.git` (worktrees and submodules count).
@@ -491,11 +492,11 @@ hermes skills trust ~/myproject # or explicitly
 hermes skills untrust           # revoke
 ```
 
-Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.yaml`. Set `skills.project_discovery: false` to turn the feature off entirely (no scanning, no notices).
+Trust covers every project skill directory listed above, including `.github/skills/` — a repo that already ships GitHub Copilot skills there loads them once trusted. Other GitHub Copilot repo artifacts are not skills: `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md` load as [project context](context-files.md#github-copilot-instructions), while `.github/prompts/*.prompt.md`, `.github/agents/*.agent.md`, `.github/hooks/` and MCP configs are not read. Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.yaml`. Set `skills.project_discovery: false` to turn the feature off entirely (no scanning, no notices).
 
 ### Precedence
 
-Project skills are the **highest-precedence tier**: `project → local (~/.hermes/skills/) → skills.create_dir → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
+Project skills are the **highest-precedence tier**: `project → local (~/.hermes/skills/) → skills.create_dir → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible. Inside the project tier, `.hermes/skills/` wins over `.agents/skills/`, which wins over `.github/skills/`.
 
 Like external dirs, project skill directories are treated as repo-owned: autonomous skill maintenance (the curator) never modifies them, and new agent-created skills always go to `~/.hermes/skills/`.
 

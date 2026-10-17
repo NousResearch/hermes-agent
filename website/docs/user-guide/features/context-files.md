@@ -1,7 +1,7 @@
 ---
 sidebar_position: 8
 title: "Context Files"
-description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
+description: "Project context files — .hermes.md, AGENTS.md, GitHub Copilot instructions, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
 ---
 
 # Context Files
@@ -15,13 +15,15 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
+| **.github/copilot-instructions.md** | GitHub Copilot repository-wide instructions, loaded together with AGENTS.md | Same directory chain as AGENTS.md (git root → CWD) |
+| **.github/instructions/\*\*/\*.instructions.md** | GitHub Copilot path-specific instructions | Git root and CWD |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.override.md` / `AGENTS.md` / GitHub Copilot instructions → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
 
 If an `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded **instead of** the committed file — keep a personal (usually gitignored) `AGENTS.override.md` when you want different instructions than the ones checked into the repo, without editing the tracked `AGENTS.md`.
 :::
@@ -113,6 +115,15 @@ Important details:
 - If the file is empty, nothing from `SOUL.md` is added to the prompt
 - If the file has content, the content is injected verbatim after scanning and truncation
 
+## GitHub Copilot instructions
+
+Repositories set up for GitHub Copilot keep their instructions in `.github/`. Hermes reads them with the same semantics Copilot gives them ([Copilot CLI custom instructions](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions)):
+
+- **`.github/copilot-instructions.md`** — repository-wide instructions. Copilot combines them with `AGENTS.md` rather than choosing one, so Hermes loads them as part of the `AGENTS.md` tier: on every directory of the git-root → CWD chain, the directory's `AGENTS.md` is followed by its `.github/copilot-instructions.md`. A repo with only Copilot instructions (no `AGENTS.md`) still loads them, ahead of `CLAUDE.md` and `.cursorrules`.
+- **`.github/instructions/**/*.instructions.md`** — path-specific instructions, read from the git root and the CWD (Copilot skips intermediate directories). The YAML frontmatter is stripped. Copilot applies a file only while it works on files matching its `applyTo` glob; Hermes has no per-file trigger in the system prompt, so it loads every file and states a scoped `applyTo` in the section heading, for example `## .github/instructions/ts.instructions.md (applies only to files matching: **/*.ts)`. `applyTo: "**"` or no `applyTo` reads as repo-wide.
+
+`.hermes.md` still wins over all of these. Copilot project skills in `.github/skills/` are covered by [project-local skills](skills.md#project-local-skills).
+
 ## .cursorrules
 
 Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.mdc` rule modules. If these files exist in your project root and no higher-priority context file (`.hermes.md`, `AGENTS.md`, or `CLAUDE.md`) is found, they're loaded as the project context.
@@ -125,7 +136,7 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
+1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` + GitHub Copilot instructions → `CLAUDE.md` → `.cursorrules` (first match wins)
 2. **Content is read** — each file is read as UTF-8 text
 3. **Security scan** — content is checked for prompt injection patterns
 4. **Truncation** — files exceeding the character cap are head/tail truncated (70% head, 20% tail, with a marker in the middle). The cap is an explicit `context_file_max_chars` from config.yaml when set; otherwise it scales dynamically with the model's context window (floor 20,000 chars, ceiling 500,000)

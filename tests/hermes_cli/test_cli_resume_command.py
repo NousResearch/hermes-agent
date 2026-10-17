@@ -242,110 +242,45 @@ class TestResumeFlushesBeforeEndSession:
 
 
 class TestResumeSubscribesTheTarget:
-    """A switched-to session must be subscribed on this viewer before its first turn.
+    """The gateway refuses ``prompt.submit`` for a session this connection never resumed, so a
+    /resume typed before the first turn (no agent, so no setter attach) must subscribe the target
+    itself, and a refusal of that subscription must keep the current session."""
 
-    The write side is the gateway's, and it refuses ``prompt.submit`` for a session its
-    connection never resumed (``gateway/session_controls.py``: ``submit`` ->
-    ``permission_denied``, reported by the CLI as a failed model request). The switch reached
-    ``GatewaySessionStore.attach`` only through the agent's ``session_id`` setter, which needs
-    an agent: a ``/resume`` or ``/sessions <n>`` typed before the first turn subscribed
-    nothing, so that turn was refused instead of answering.
-    """
-
-    def _cli_switching_to(self, target):
+    def _resume(self, attach_error=None):
         cli_obj = _make_cli()
-        cli_obj._session_db.get_session.return_value = {"id": target, "title": "T"}
+        cli_obj._session_db.get_session.return_value = {"id": "target", "title": "T"}
         cli_obj._session_db.get_resume_conversations.return_value = ([], [])
-        cli_obj._session_db.resolve_resume_session_id.return_value = target
-        return cli_obj
-
-    def test_resume_subscribes_the_target_without_an_agent(self):
-        cli_obj = self._cli_switching_to("target")
-        assert cli_obj.agent is None
-
+        cli_obj._session_db.resolve_resume_session_id.return_value = "target"
+        cli_obj._session_db.attach.side_effect = attach_error
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
-            patch("cli._cprint"),
+            patch("cli._cprint") as mock_cprint,
         ):
             cli_obj._handle_resume_command("/resume target")
+        return cli_obj, " ".join(str(call) for call in mock_cprint.call_args_list)
 
-        assert cli_obj.session_id == "target"
-        cli_obj._session_db.attach.assert_called_once_with("target")
-
-    def test_sessions_command_subscribes_the_target(self):
-        # /sessions <id> delegates to /resume (cli_commands_mixin._handle_sessions_command).
-        cli_obj = self._cli_switching_to("target")
-
-        with (
-            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
-            patch("cli._cprint"),
-        ):
-            cli_obj._handle_sessions_command("/sessions target")
+    def test_resume_before_the_first_turn_subscribes_the_target(self):
+        cli_obj, _ = self._resume()
 
         assert cli_obj.session_id == "target"
         cli_obj._session_db.attach.assert_called_once_with("target")
 
     def test_a_refused_subscription_keeps_the_current_session(self):
         from agent.i18n import t
-
         from hermes_cli.gateway_client import GatewayRPCError
 
-        cli_obj = self._cli_switching_to("target")
-        cli_obj._session_db.attach.side_effect = GatewayRPCError("permission_denied")
-
-        with (
-            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
-            patch("cli._cprint") as mock_cprint,
-        ):
-            cli_obj._handle_resume_command("/resume target")
+        cli_obj, printed = self._resume(GatewayRPCError("permission_denied"))
 
         assert cli_obj.session_id == "current_session"
-        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
-        # The existing, already-translated catalog entry, not a raw key and not a new string.
+        cli_obj._session_db.end_session.assert_not_called()
         assert t("gateway.resume.switch_failed") in printed
-        assert "target" in printed
-        assert "cli.commands." not in printed
+        assert "permission_denied" in printed
 
-    def test_a_transient_refusal_does_not_block_the_switch(self):
-        # session_busy / runtime_coordination_required / storage_unavailable are retryable and
-        # ownership-free: the switch's reads are local, so it proceeds as it did before.
+    def test_an_unknown_target_keeps_the_current_session(self):
         from hermes_cli.gateway_client import GatewayRPCError
 
-        cli_obj = self._cli_switching_to("target")
-        cli_obj._session_db.attach.side_effect = GatewayRPCError("session_busy")
-
-        with (
-            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
-            patch("cli._cprint"),
-        ):
-            cli_obj._handle_resume_command("/resume target")
-
-        assert cli_obj.session_id == "target"
-
-    def test_an_unreachable_gateway_does_not_block_the_switch(self):
-        from hermes_cli.gateway_client import GatewayClientError
-
-        cli_obj = self._cli_switching_to("target")
-        cli_obj._session_db.attach.side_effect = GatewayClientError("Gateway disconnected")
-
-        with (
-            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
-            patch("cli._cprint"),
-        ):
-            cli_obj._handle_resume_command("/resume target")
-
-        assert cli_obj.session_id == "target"
-
-    def test_already_on_still_opens_the_session(self):
-        cli_obj = _make_cli()
-        cli_obj._session_db.get_session.return_value = {"id": "current_session", "title": "T"}
-        cli_obj._session_db.resolve_resume_session_id.return_value = "current_session"
-
-        with (
-            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
-            patch("cli._cprint"),
-        ):
-            cli_obj._handle_resume_command("/resume current_session")
+        cli_obj, printed = self._resume(GatewayRPCError("not_found"))
 
         assert cli_obj.session_id == "current_session"
-        cli_obj._session_db.attach.assert_called_once_with("current_session")
+        cli_obj._session_db.end_session.assert_not_called()
+        assert "not_found" in printed

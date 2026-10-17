@@ -131,6 +131,27 @@ class TestCronCommandLifecycle:
         assert jobs[0]["name"] == "Skill combo"
 
 
+    def test_create_and_edit_per_job_script_timeout(self, tmp_cron_dir, capsys):
+        """``--script-timeout-seconds`` on create stores the per-job budget and the CLI echoes it
+        back; an empty string on edit clears it. (Bad values are refused before storing — covered in
+        tests/cron/test_cron_job_script_timeout.py.)"""
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+
+        cron_command(parser.parse_args(
+            ["cron", "create", "every 1h", "Cross-markets",
+             "--script-timeout-seconds", "11700"]))
+        out = capsys.readouterr().out
+        job = list_jobs()[0]
+        assert job["script_timeout_seconds"] == 11700
+        assert "Script timeout: 11700s (per-job override)" in out
+
+        cron_command(parser.parse_args(["cron", "edit", job["id"], "--script-timeout-seconds", ""]))
+        capsys.readouterr()
+        assert get_job(job["id"]).get("script_timeout_seconds") is None
+
+
 class TestUnverifiedDeliveryVisibility:
     """An evidence-free live-adapter ack (Slack/Matrix/Mattermost bare
     ``SendResult(success=True)``) is accepted as delivered, but the UNVERIFIED

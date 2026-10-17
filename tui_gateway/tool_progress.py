@@ -360,6 +360,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)
             or _tool_result_needs_user(result)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
+    # Live context % between tool calls (#77744): usage is application data, not tool-progress
+    # chrome — the tick fires even with display.tool_progress=off, like todo.updated.
+    if session is not None:
+        _emit_usage_tick(sid, session)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.
     if todo_state is not None:

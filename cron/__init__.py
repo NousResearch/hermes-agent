@@ -22,7 +22,26 @@ from cron.jobs import (
     rearm_oneshot,
     JOBS_FILE,
 )
-from cron.scheduler import tick
+# Lazy import to avoid the runpy RuntimeWarning when this package is loaded as
+# `python -m cron.scheduler`. Symptom: `'cron.scheduler' found in sys.modules
+# after import of package 'cron', but prior to execution of 'cron.scheduler'`.
+# Root cause: `from cron.scheduler import tick` at package init time causes the
+# scheduler module to be imported into sys.modules BEFORE runpy gets to
+# "execute" it, which is the standard trigger runpy warns about (it's a CPython
+# 3.10+ safe-import warning, not a hard error). The lazy __getattr__ resolves
+# `cron.tick` only when something actually asks for it.
+#
+# Loki Q157 (Oct 16 2026) confirmed the diagnosis. Affected jobs (paper-trader
+# intraday-midday/late, paper-trader-morning-research, forge-stack-weekly-rollup)
+# were dying with cron status "error" + the warning in stderr; silencing the
+# warning alone doesn't fix the SIGTERM-after-adopt root cause, but it stops
+# the false-positive stderr noise and makes the next diagnostic cleaner.
+def __getattr__(name):
+    if name == "tick":
+        from cron.scheduler import tick
+        return tick
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "JOBS_FILE",

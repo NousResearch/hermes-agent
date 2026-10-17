@@ -297,6 +297,12 @@ def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> 
     entry = store.entry(fact["entry"])
     try:
         return not package.verify(entry, target) and fact.get("digest") == tree_digest(entry)
+    except PermissionError as exc:
+        raise InstallError(
+            package.name,
+            f"cannot verify {entry}: permission denied reading {exc.filename or entry}",
+            "restore this user's read access before retrying; the entry was not reinstalled",
+        ) from exc
     except OSError:
         return False
 

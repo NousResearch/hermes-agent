@@ -1,0 +1,5 @@
+name: tokenrhythm-provider
+kind: model-provider
+version: 1.0.0
+description: TokenRhythm OpenAI-compatible multi-model gateway
+author: TokenRhythm

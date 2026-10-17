@@ -79,7 +79,11 @@ class SessionState:
         elif kind == "todo.updated" and isinstance(payload, dict):
             self.todos = list(payload.get("todos") or [])
         elif kind == "session.usage" and isinstance(payload, dict):
-            self.apply_usage(payload.get("usage") if isinstance(payload.get("usage"), dict) else payload)
+            # The gateway's frame carries the flat counters next to a nested TUI ``usage`` view this
+            # reader can't map (``session_usage.usage_frame``): the counters win when present.
+            nested = payload.get("usage")
+            flat = isinstance(payload.get("api_calls"), int) or not isinstance(nested, dict)
+            self.apply_usage(payload if flat else nested)
         elif kind == "request.cancel" and isinstance(payload, dict):
             for listener in list(self.request_listeners):
                 listener(payload)

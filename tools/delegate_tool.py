@@ -595,6 +595,9 @@ def _build_children(
                 with _quiet("Could not attach images to child %d", i):
                     child._delegate_images = _t_images
             _attach_live_transcript(child, i, live_deleg_id, live_writers)
+    except ValueError as exc:
+        _rollback_built_children(parent_agent, children)
+        return [], str(exc)
     except BaseException:
         _rollback_built_children(parent_agent, children)
         raise

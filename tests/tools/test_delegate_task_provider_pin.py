@@ -431,6 +431,33 @@ def test_rollback_continues_after_one_child_close_failure():
     assert parent._active_children == []
 
 
+def test_constructor_value_error_rolls_back_and_returns_a_tool_error():
+    """A child constructor's ValueError is a tool error for the model, never an exception out of delegate_task."""
+    parent = _make_mock_parent()
+    first_child = MagicMock()
+
+    def build_child(**_kwargs):
+        if parent._active_children:
+            raise ValueError("second child rejected its route")
+        return _build_child_and_attach(parent, first_child)
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value={}),
+        patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=_fake_resolve),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=build_child),
+        patch("tools.delegate_tool._run_batch") as run_batch,
+    ):
+        raw = delegate_task(
+            tasks=[{"goal": "First task with enough length"}, {"goal": "Second task with enough length"}],
+            parent_agent=parent,
+        )
+
+    assert "second child rejected its route" in json.loads(raw)["error"]
+    run_batch.assert_not_called()
+    first_child.close.assert_called_once_with()
+    assert parent._active_children == []
+
+
 def test_schema_advertises_provider_and_model():
     props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
     assert "provider" in props

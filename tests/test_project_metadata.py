@@ -119,6 +119,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "telegram", "discord",
         "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine",
         "google-chat",
+        "holographic",  # NumPy for the holographic HRR provider (baked in Docker, #136707)
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }
     all_extra_specs = optional_dependencies["all"]

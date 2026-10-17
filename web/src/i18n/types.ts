@@ -244,6 +244,11 @@ export interface Translations {
     dailyTokenUsage: string;
     dailyBreakdown: string;
     perModelBreakdown: string;
+    providerUsage: string;
+    provider: string;
+    estimatedCostLocal: string;
+    loggedCostLocal: string;
+    providerUsageScope: string;
     topSkills: string;
     skill: string;
     loads: string;

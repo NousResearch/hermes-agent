@@ -1098,8 +1098,6 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         with (
             patch("run_agent.AIAgent") as MockAgent,
             patch("agent.credential_pool.load_pool", return_value=provider_pool),
-            # Keep this mocked pool out of the per-process shared-pool cache.
-            patch.dict("tools.delegate_tool_config._DELEGATED_POOLS", clear=True),
         ):
             child = MagicMock()
             child._credential_pool = None

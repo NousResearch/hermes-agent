@@ -81,6 +81,13 @@ def unpark_profile(runner, name):
         _record_parked_profiles(parked)
 
 
+def profile_parked(runner, name):
+    """True when *name* is parked: not served now, but a rescan serves it again, so its ingress is
+    temporarily unavailable (retry it), never an invalid route (refuse it for good)."""
+    descriptor = getattr(runner, 'session_runtime_descriptor', None) or {}
+    return bool(name) and name in (descriptor.get('parked_profiles') or {})
+
+
 def parked_profile_map(runner):
     descriptor = getattr(runner, 'session_runtime_descriptor', None)
     if descriptor is None:

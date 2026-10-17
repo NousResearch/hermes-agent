@@ -835,6 +835,18 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
     # 49 → 50: security.tirith_* dropped; the bundled scanner is gone (see _migrate_to_50).
     (50, _migrate_to_50),
+    # 50 → 51: cron.bot_chat_delivery_timeout_seconds is gone with the local `hermes chat`
+    # fallback lane it bounded. Bot Chat deliveries are admitted to the running gateway and
+    # settle on its durable receipt; there is no cron-side turn left to time out.
+    (51, functools.partial(
+        _rewrite_key, section="cron", key="bot_chat_delivery_timeout_seconds", new=None,
+        match=lambda _cur: True,
+        added="removed cron.bot_chat_delivery_timeout_seconds",
+        message=(
+            "  ✓ Removed cron.bot_chat_delivery_timeout_seconds — bot-chat deliveries are now "
+            "admitted to the target profile's running gateway and tracked by receipt, so cron no "
+            "longer runs (or times out) a Bot Chat turn of its own."),
+        extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -846,19 +858,31 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50, 51})
+
+#: Legacy-key steps that run on every migration pass whatever the stamp says, because a stamp at
+#: or past their version does not prove they ran: unreleased builds of the gateway-runtime branch
+#: put their retired-cron-key step at 44, 45, 46, 47 and 50 before it landed at 51, so a home one
+#: of them stamped skipped main's step of that number. Only a step triggered by a key NO runtime
+#: reads qualifies (re-running it is a no-op once the key is gone, and it never overrides a value
+#: something consumes). The value-based steps such a home also skipped (44 curator defaults, 45
+#: connections, 47 threshold_tokens) are NOT re-run: past the stamp, their trigger value may be
+#: the user's own choice.
+STAMP_INDEPENDENT_STEPS = frozenset({46, 50})
 
 
 def run_migrations(
     current_ver: int, results: dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
-    """Apply every registered migration whose target version exceeds *current_ver*; a config
-    with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
+    """Apply every registered migration whose target version exceeds *current_ver* (plus
+    :data:`STAMP_INDEPENDENT_STEPS`); a config with no ``_config_version`` (*unversioned*) gets
+    only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
     """
     for target_ver, migration_fn in MIGRATIONS:
-        if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
+        due = current_ver < target_ver or target_ver in STAMP_INDEPENDENT_STEPS
+        if due and (target_ver in LEGACY_KEY_STEPS or not unversioned):
             try:
                 migration_fn(results, quiet)
             except Exception as exc:

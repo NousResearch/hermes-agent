@@ -83,9 +83,7 @@ class CLIChatTurnMixin:
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):
-            message, blocked = self._chat_expand_context_references(message)
-            if blocked is not None:
-                return blocked
+            # ``@`` references are expanded once, by the gateway, against this session's cwd.
             # Lone surrogates (rich-text clipboard paste) crash the OpenAI SDK's JSON serialization.
             from agent.message_sanitization import _sanitize_surrogates
             message = _sanitize_surrogates(message)
@@ -149,35 +147,6 @@ class CLIChatTurnMixin:
         if turn.tts_thread is not None and turn.tts_thread.is_alive():
             turn.tts_thread.join(timeout=5)
 
-    def _chat_expand_context_references(self, message: str):
-        """Expand ``@file:``/``@diff``/``@folder:`` references.
-
-        Returns ``(message, blocked)``; ``blocked`` is the refusal text to return instead
-        of running the turn when injection was refused, else None.
-        """
-        from cli import _DIM, _RST, _cprint
-        if "@" not in message:
-            return message, None
-        try:
-            from agent.context_references import preprocess_context_references
-            from agent.model_metadata import get_model_context_length
-            _ctx_len = get_model_context_length(
-                self.model, base_url=self.base_url or "", api_key=self.api_key or "",
-                provider=self.provider or "",
-                config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)
-            _ctx_result = preprocess_context_references(message, cwd=os.getcwd(), context_length=_ctx_len)
-            if _ctx_result.expanded or _ctx_result.blocked:
-                if _ctx_result.references:
-                    _cprint(f"  {_DIM}{t('cli.chat.context_refs', count=len(_ctx_result.references), tokens=_ctx_result.injected_tokens)}{_RST}")
-                for w in _ctx_result.warnings:
-                    _cprint(f"  {_DIM}⚠ {w}{_RST}")
-                if _ctx_result.blocked:
-                    return message, ("\n".join(_ctx_result.warnings) or t("cli.chat.context_injection_refused"))
-                message = _ctx_result.message
-        except Exception as e:
-            logging.debug("@ context reference expansion failed: %s", e)
-        return message, None
-
     def _chat_route_images(self, message, images):
         """Attach images natively (vision model) or pre-describe them as text; returns the message to send.
 
@@ -218,18 +187,6 @@ class CLIChatTurnMixin:
             except Exception as _img_exc:
                 logging.warning("native image attach failed, falling back to text: %s", _img_exc)
         return self._preprocess_images_with_vision(text, images)
-
-    def _handle_initiate_setup_command(self, cmd: str):
-        from agent.initiate_setup_prompt import build_initiate_setup_prompt
-        from cli import get_tool_definitions
-        from hermes_cli.setup_profile import primary_profile
-        from hermes_constants import get_hermes_home
-        print("\n" + t("cli.commands.initiate_setup.starting"))
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
-                                     quiet_mode=True, skip_tool_search_assembly=True)
-        names = [tool["function"]["name"] for tool in tools]
-        primary = primary_profile(get_hermes_home())
-        self._queue_prompt_turn(build_initiate_setup_prompt("cli", names, primary), "/initiate-setup")
 
     def _chat_stage_user_message(self, agent, message):
         """Append the staged user dict to the transcript under the agent's persist lock."""

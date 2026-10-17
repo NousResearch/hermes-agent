@@ -208,6 +208,10 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
+    # Introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-10-13", {
+        "gemini-4-argon": ("2.00", "10.00", "0.10"),
+    }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-09-02", {
         ("gemini-3.8-flash", "gemini-3.7-flash"): ("0.75", "3.75", "0.075"),
     }),

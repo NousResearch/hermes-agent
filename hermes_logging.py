@@ -163,6 +163,30 @@ def _safe_stderr():  # type: ignore[return]
         return stream  # best-effort: no buffer / wrapping failed -> original stream
 
 
+class _RedactingStdio:
+    """Text stream proxy that redacts each write: a detached gateway's stdout/stderr IS a
+    persisted log (``logs/gateway-stdio.log``), and agent status lines (provider error echoes)
+    reach it through ``print``, never through ``RedactingFormatter``."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        from agent.redact import redact_sensitive_text
+        return self._stream.write(redact_sensitive_text(text) if isinstance(text, str) else text)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def redact_detached_stdio() -> None:
+    """Route a detached process's stdout/stderr through secret redaction (idempotent)."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if stream is not None and not isinstance(stream, _RedactingStdio):
+            setattr(sys, name, _RedactingStdio(stream))
+
+
 def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
     """True for concurrent-log-handler's Windows lock timeout.
 

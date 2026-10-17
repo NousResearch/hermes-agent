@@ -201,6 +201,19 @@ class TestGateRedirectsCarryPrefix:
         assert r.headers["location"].startswith("/auth/login")
 
 
+    def test_backslash_prefix_header_is_ignored(self, gated_app_proxied):
+        """Browsers treat a backslash as ``/`` in URLs, so a backslash-host prefix would turn
+        the gate's relative ``Location`` into a scheme-relative ``//host/...`` redirect."""
+        r = gated_app_proxied.get(
+            "/sessions",
+            headers={"x-forwarded-prefix": "/\\evil.example"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert "\\" not in r.headers["location"]
+        assert r.headers["location"].startswith("/auth/login")
+
+
 # ---------------------------------------------------------------------------
 # /auth/login: the OAuth redirect_uri reflects the proxy prefix
 # ---------------------------------------------------------------------------

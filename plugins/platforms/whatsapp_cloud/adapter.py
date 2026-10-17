@@ -1,11 +1,11 @@
-"""WhatsApp Cloud API adapter — official Meta WhatsApp Business Platform (Graph API +
+﻿"""WhatsApp Cloud API adapter ΓÇö official Meta WhatsApp Business Platform (Graph API +
 aiohttp webhook). Complements the Baileys bridge plugin; both share gating / mention /
 formatting behavior via ``WhatsAppBehaviorMixin``.
 
 Required env: WHATSAPP_CLOUD_PHONE_NUMBER_ID, WHATSAPP_CLOUD_ACCESS_TOKEN. Optional:
 WHATSAPP_CLOUD_APP_ID, _APP_SECRET (HMAC key for X-Hub-Signature-256),
 _WABA_ID (when set, inbound webhooks must match it),
-_VERIFY_TOKEN (hub.verify_token), _WEBHOOK_HOST (unset → dual-stack all interfaces),
+_VERIFY_TOKEN (hub.verify_token), _WEBHOOK_HOST (unset ΓåÆ dual-stack all interfaces),
 _WEBHOOK_PORT (8090), _WEBHOOK_PATH (/whatsapp/webhook), _API_VERSION (v20.0)."""
 
 from __future__ import annotations
@@ -56,14 +56,14 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_VERSION = "v20.0"
-# ``None`` → aiohttp binds one socket per address family; "0.0.0.0" was unreachable on IPv6-only hosts.
+# ``None`` ΓåÆ aiohttp binds one socket per address family; "0.0.0.0" was unreachable on IPv6-only hosts.
 DEFAULT_WEBHOOK_HOST = None
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
 WEBHOOK_MAX_BODY_BYTES = 3 * 1024 * 1024
 # Meta retries failed webhooks for up to 7 days, but the practical duplicate risk is
-# within minutes — 5000 FIFO entries bounds memory and covers that.
+# within minutes ΓÇö 5000 FIFO entries bounds memory and covers that.
 WAMID_DEDUP_CACHE_SIZE = 5000
 INTERACTIVE_STATE_CACHE_SIZE = 1000  # interactive-button state dicts + per-chat last-wamid cache
 
@@ -79,10 +79,10 @@ _DEFAULT_MIME = {
     "document": "application/octet-stream", "sticker": "image/webp",
 }
 
-# None → MP3 voice falls back to an "audio file attachment" rendering in WhatsApp.
+# None ΓåÆ MP3 voice falls back to an "audio file attachment" rendering in WhatsApp.
 _FFMPEG_PATH = shutil.which("ffmpeg")
 
-# mimetypes returns RFC-correct but uncommon extensions (audio/ogg → .oga, image/jpeg → .jpe);
+# mimetypes returns RFC-correct but uncommon extensions (audio/ogg ΓåÆ .oga, image/jpeg ΓåÆ .jpe);
 # downstream STT/vision whitelists the in-the-wild forms, so pin the few Meta sends.
 _WHATSAPP_MIME_EXTENSION_OVERRIDES: dict[str, str] = {
     "audio/ogg": ".ogg", "audio/x-opus+ogg": ".ogg", "audio/opus": ".ogg",
@@ -111,7 +111,7 @@ def _interactive_inner(raw_message: dict[str, Any]) -> dict[str, Any]:
     return inter.get("button_reply") or inter.get("list_reply") or {}
 
 
-# Inbound message type → body text extractor; media kinds use the caption.
+# Inbound message type ΓåÆ body text extractor; media kinds use the caption.
 _BODY_BY_KIND = {
     "text": lambda m: (m.get("text") or {}).get("body"),
     "button": lambda m: (m.get("button") or {}).get("text"),
@@ -132,7 +132,7 @@ async def _read_limited_request_body(request: Any, max_bytes: int) -> bytes:
 
 
 def _ext_for_mime(mime: str) -> Optional[str]:
-    """Mime → on-disk extension: WhatsApp overrides → mimetypes → None (never the shared default table)."""
+    """Mime ΓåÆ on-disk extension: WhatsApp overrides ΓåÆ mimetypes ΓåÆ None (never the shared default table)."""
     return ext_for_mime(mime, overrides=_WHATSAPP_MIME_EXTENSION_OVERRIDES, use_defaults=False, use_mimetypes=True, fallback=None) if mime else None
 
 
@@ -153,12 +153,12 @@ def _optional_module(name: str, unavailable_log: str) -> Any:
         return None
 
 
-# Under the hermes dir so it survives restarts/reloads — same as the Baileys bridge.
+# Under the hermes dir so it survives restarts/reloads ΓÇö same as the Baileys bridge.
 _INBOUND_MEDIA_CACHE = Path(get_hermes_dir("platforms/whatsapp_cloud/media", "whatsapp_cloud/media"))
 
 
 def check_whatsapp_cloud_requirements() -> bool:
-    """aiohttp (webhook server) + httpx (Graph API) — both default deps."""
+    """aiohttp (webhook server) + httpx (Graph API) ΓÇö both default deps."""
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
 
 
@@ -212,7 +212,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Latest inbound wamid per chat: Meta's typing/read-receipt API needs a
         # message_id to attach to, and the base send_typing contract has none.
         self._last_inbound_wamid_by_chat: OrderedDict[str, str] = OrderedDict()
-        # Interactive-button state: short id (in the button payload) → session_key for
+        # Interactive-button state: short id (in the button payload) ΓåÆ session_key for
         # the gateway resolver. Popped on tap; FIFO-capped via bounded_put so ignored
         # prompts don't accumulate (an evicted tap degrades to text fallback).
         self._clarify_state: OrderedDict[str, str] = OrderedDict()
@@ -235,19 +235,35 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return {**headers, "Content-Type": "application/json"} if json_body else headers
 
     def _effective_reply_prefix(self) -> str:
-        """Cloud API has no self-chat concept (a Baileys-only setting) — no default prefix."""
+        """Cloud API has no self-chat concept (a Baileys-only setting) ΓÇö no default prefix."""
         return self._reply_prefix.replace("\\n", "\n") if self._reply_prefix is not None else ""
 
     @staticmethod
+    def _normalize_allow_id(value: Any) -> str:
+        """Normalize a single allowlist/target id.
+
+        Business-scoped user ids (BSUIDs, ``CC.<alphanumeric>``) are compared
+        byte-for-byte; phone wa_ids are reduced to their digits. The two kinds
+        never cross-match (#138192).
+        """
+        raw = str(value).split("@", 1)[0].strip()
+        if re.fullmatch(r"[A-Z]{2}\.[A-Za-z0-9]{1,128}", raw):
+            return raw
+        digits = re.sub(r"\D", "", raw)
+        if re.fullmatch(r"[1-9][0-9]{5,14}", digits):
+            return digits
+        return raw or str(value)
+
+    @staticmethod
     def _normalize_allow_ids(ids: set[str]) -> set[str]:
-        """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
-        return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
+        """Normalize allowlist entries: BSUIDs verbatim, phone wa_ids to digits."""
+        return {WhatsAppCloudAdapter._normalize_allow_id(entry) for entry in (ids or ())}
 
     def _entry_matches(self, entries, target: str) -> bool:
         """Bare-wa_id membership first (Cloud senders are digits), then the shared WhatsApp matcher
         so ``*`` and phone/LID aliases keep working for DM intake and groups as they always did."""
         entries = set(entries or ())
-        bare = re.sub(r"\D", "", str(target).split("@", 1)[0]) or target
+        bare = self._normalize_allow_id(target)
         return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)
 
     def _webhook_identity_matches(self, entry_id: Any, metadata: Any) -> bool:
@@ -268,7 +284,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         for ok, code, message in (
             (check_whatsapp_cloud_requirements(), "whatsapp_cloud_deps_missing",
-             "aiohttp and httpx are required for whatsapp_cloud — reinstall hermes-agent."),
+             "aiohttp and httpx are required for whatsapp_cloud ΓÇö reinstall hermes-agent."),
             (self._phone_number_id and self._access_token, "whatsapp_cloud_unconfigured",
              "WHATSAPP_CLOUD_PHONE_NUMBER_ID and WHATSAPP_CLOUD_ACCESS_TOKEN are required."),
         ):
@@ -280,7 +296,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         from gateway.platforms._http_client_limits import platform_httpx_limits
         self._http_client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         # client_max_size backstops the bounded reader in _handle_webhook.
-        # Inbound webhook server. client_max_size backstops the bounded reader in _handle_webhook — aiohttp
+        # Inbound webhook server. client_max_size backstops the bounded reader in _handle_webhook ΓÇö aiohttp
         # enforces the cap on request.read()/post() paths too (#58536/#58902/#59180 pattern).
         app = web.Application(client_max_size=WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get(self._health_path, self._handle_health)
@@ -296,10 +312,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 self._webhook_host, self._webhook_port, self._webhook_path, self._api_version, self._phone_number_id,
             )
         if not self._verify_token:
-            logger.warning("[whatsapp_cloud] WHATSAPP_CLOUD_VERIFY_TOKEN is not set — the GET subscription handshake will fail until it is.")
+            logger.warning("[whatsapp_cloud] WHATSAPP_CLOUD_VERIFY_TOKEN is not set ΓÇö the GET subscription handshake will fail until it is.")
         if not self._app_secret:
             logger.warning(
-                "[whatsapp_cloud] WHATSAPP_CLOUD_APP_SECRET is not set — incoming webhook POSTs will be refused "
+                "[whatsapp_cloud] WHATSAPP_CLOUD_APP_SECRET is not set ΓÇö incoming webhook POSTs will be refused "
                 "with 503. Set the app secret to enable inbound message delivery."
             )
         self._wire_plugin_handlers(None)
@@ -348,7 +364,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return [], None
 
     async def _post_message_result(self, payload: dict[str, Any], **log_kwargs) -> SendResult:
-        """``_post_messages`` → SendResult with the first returned message id; guards disconnected state."""
+        """``_post_messages`` ΓåÆ SendResult with the first returned message id; guards disconnected state."""
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
         ids, err = await self._post_messages(payload, **log_kwargs)
@@ -383,7 +399,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if err is not None:
                 return SendResult(success=False, error=err)
             last_message_id = ids[0].get("id") if ids else last_message_id
-        # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
+        # Index (chat_id, wamid) ΓåÆ text: Meta's inbound ``context`` carries only the
         # quoted message's id, so this is how replies to our messages resolve text.
         if last_message_id:
             await rich_sent_store.record_async(chat_id, last_message_id, formatted)
@@ -408,7 +424,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             code = ((resp.json() or {}).get("error") or {}).get("code")
         except Exception:
             code = None
-        # 131009 = "Parameter value is not valid" (typically wamid > 30 days old) — common
+        # 131009 = "Parameter value is not valid" (typically wamid > 30 days old) ΓÇö common
         # after a long-quiet conversation, so log at info.
         if code == 131009:
             logger.info("[whatsapp_cloud] typing/read indicator rejected: wamid %s likely older than 30 days", wamid)
@@ -421,8 +437,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         state: OrderedDict[str, str], state_id: str, session_key: str,
     ) -> SendResult:
         """POST an ``interactive`` message (caller supplies ``type``/``body``/``action``) and, on
-        success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
-        Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user."""
+        success, remember ``state_id ΓåÆ session_key`` for the tap. Free-form interactives need no
+        Meta approval but are only valid inside the 24h window ΓÇö fine, all senders here reply to a user."""
         result = await self._post_message_result(
             self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
             fail_log="[whatsapp_cloud] interactive send failed",
@@ -436,7 +452,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def _truncate_button_label(text: str, limit: int = 20) -> str:
         """Button titles cap at 20 chars, list-row titles at 24; the ellipsis counts."""
         text = str(text or "").strip()
-        return text if len(text) <= limit else text[: max(1, limit - 1)] + "…"
+        return text if len(text) <= limit else text[: max(1, limit - 1)] + "ΓÇª"
 
     @staticmethod
     def _truncate_body(text: str, limit: int = 1024) -> str:
@@ -450,29 +466,29 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @classmethod
     def _button_interactive(cls, body_text: str, *buttons: tuple[str, str]) -> dict[str, Any]:
-        """``interactive.type=button`` body: ≤3 quick-reply buttons (id ≤256 chars, title ≤20)."""
+        """``interactive.type=button`` body: Γëñ3 quick-reply buttons (id Γëñ256 chars, title Γëñ20)."""
         return {"type": "button", "body": {"text": body_text}, "action": {"buttons": cls._reply_buttons(*buttons)}}
 
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
         session_key: str, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        """Clarify as native buttons: 1–3 choices → buttons, 4+ → list (+ "Other" row that flips
-        the entry into text-capture mode), 0 → plain text question. Button ``id`` carries
+        """Clarify as native buttons: 1ΓÇô3 choices ΓåÆ buttons, 4+ ΓåÆ list (+ "Other" row that flips
+        the entry into text-capture mode), 0 ΓåÆ plain text question. Button ``id`` carries
         ``cl:<clarify_id>:<idx|other>``; inbound dispatches on it."""
         question = (question or "").strip()
         if not choices:
-            return await self.send(chat_id, f"❓ {question}", reply_to=_reply_to_from(metadata))
+            return await self.send(chat_id, f"Γ¥ô {question}", reply_to=_reply_to_from(metadata))
         # Full choice text goes in the body so long options aren't lost to the
         # 20-char label cap; labels are just the option number.
         choices_list = [str(c).strip() for c in choices[:10] if str(c).strip()]
-        body_text = self._truncate_body(f"❓ {question}\n\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices_list)))
+        body_text = self._truncate_body(f"Γ¥ô {question}\n\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices_list)))
         if len(choices_list) <= 3:
             interactive = self._button_interactive(
                 body_text, *((f"cl:{clarify_id}:{idx}", self._truncate_button_label(str(idx + 1))) for idx in range(len(choices_list)))
             )
         else:
-            # List rows: id + title (≤24) + description (≤72) with the choice text.
+            # List rows: id + title (Γëñ24) + description (Γëñ72) with the choice text.
             rows = [
                 {"id": f"cl:{clarify_id}:{idx}", "title": self._truncate_button_label(f"{idx + 1}", limit=24),
                  "description": self._truncate_button_label(choice_text, limit=72)}
@@ -492,7 +508,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @property
     def _EA_HEADER(self) -> str:
-        return f"⚠️ *{ea_header_text()}*\n\n"
+        return f"ΓÜá∩╕Å *{ea_header_text()}*\n\n"
 
     _EA_CODE_CLOSE = "\n```\n\n"
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
@@ -578,7 +594,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         filename: Optional[str] = None, reply_to: Optional[str] = None,
         mime_type: Optional[str] = None,
     ) -> SendResult:
-        """HTTPS URL → ``link`` send (one fewer round trip); local path → upload + ``id`` send.
+        """HTTPS URL ΓåÆ ``link`` send (one fewer round trip); local path ΓåÆ upload + ``id`` send.
         Local sends are indexed in ``rich_sent_store`` so a later quote of the attachment can be
         resolved (Meta's inbound ``context`` carries only the quoted id)."""
         ref: dict[str, Optional[str]] = {"media_link": source}
@@ -626,18 +642,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 finally:
                     with contextlib.suppress(OSError):  # the .ogg is a transient artifact next to the source MP3
                         os.unlink(opus_path)
-            # No ffmpeg (warn-once logged in _convert_to_opus) → MP3 attachment.
+            # No ffmpeg (warn-once logged in _convert_to_opus) ΓåÆ MP3 attachment.
             mime_type = "audio/mpeg"
         return await self._send_media_from_path_or_link(chat_id, audio_path, "audio", caption=caption, reply_to=reply_to, mime_type=mime_type)
 
     async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
-        """MP3 → ``audio/ogg; codecs=opus`` sibling file; None if ffmpeg is missing or fails. The
+        """MP3 ΓåÆ ``audio/ogg; codecs=opus`` sibling file; None if ffmpeg is missing or fails. The
         missing-ffmpeg warning fires once per adapter: it is an install hint, not a per-message error."""
         if not _FFMPEG_PATH:
             if not self._warned_no_ffmpeg:
                 self._warned_no_ffmpeg = True
                 logger.warning(
-                    "[whatsapp_cloud] ffmpeg not found on PATH — voice messages will be delivered as MP3 audio "
+                    "[whatsapp_cloud] ffmpeg not found on PATH ΓÇö voice messages will be delivered as MP3 audio "
                     "attachments instead of native voice notes (green waveform bubble). Install ffmpeg to enable: "
                     "Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, Linux package manager."
                 )
@@ -658,11 +674,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return resp
 
     async def _download_media_to_cache(self, media_id: str, *, ext_hint: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
-        """Two-step Graph download: ``GET /<id>`` → signed temp URL (~5 min) → bytes.
+        """Two-step Graph download: ``GET /<id>`` ΓåÆ signed temp URL (~5 min) ΓåÆ bytes.
         Returns ``(local_path, mime_type)`` or ``(None, None)`` on any failure (logged)."""
         if self._http_client is None:
             return None, None
-        # media_id is interpolated into a Graph URL and a cache filename — refuse
+        # media_id is interpolated into a Graph URL and a cache filename ΓÇö refuse
         # anything that isn't a plain Meta-style id so a hostile payload can't traverse.
         media_id = str(media_id).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]+", media_id):
@@ -719,9 +735,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return web.Response(text=q["hub.challenge"], content_type="text/plain")
 
     async def _handle_webhook(self, request: web.Request) -> web.Response:
-        """Inbound webhook POST: raw bytes → HMAC verify → JSON → dispatch. Signature is over
+        """Inbound webhook POST: raw bytes ΓåÆ HMAC verify ΓåÆ JSON ΓåÆ dispatch. Signature is over
         the raw body, so JSON parsing must come after verification. Always 200 once a valid
-        request is ack'd — Meta retries non-200 for up to 7 days and would multiply agent work."""
+        request is ack'd ΓÇö Meta retries non-200 for up to 7 days and would multiply agent work."""
         # Read one byte past Meta's 3MB max so oversized chunked bodies are rejected before buffering.
         try:
             raw = await _read_limited_request_body(request, WEBHOOK_MAX_BODY_BYTES)
@@ -729,7 +745,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return web.Response(status=413)
         except Exception:
             return web.Response(status=400)
-        # Without app_secret the sender can't be authenticated → refuse (same
+        # Without app_secret the sender can't be authenticated ΓåÆ refuse (same
         # posture as the GET handshake refusing without verify_token).
         if not self._app_secret:
             logger.error("[whatsapp_cloud] webhook POST refused: app_secret unset. Set WHATSAPP_CLOUD_APP_SECRET to enable inbound delivery.")
@@ -763,20 +779,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if wamid in self._seen_wamids:
             self._duplicate_count += 1
             return False
-        if wamid:  # can't dedup without an id — let it through
+        if wamid:  # can't dedup without an id ΓÇö let it through
             bounded_put(self._seen_wamids, wamid, True, WAMID_DEDUP_CACHE_SIZE)
         return True
 
     async def _dispatch_payload(self, payload: dict[str, Any]) -> None:
         """Walk ``entry[].changes[].value.{messages, contacts, statuses}`` and dispatch each message.
-        ``statuses`` (sent/delivered/read/failed) are only logged — the agent doesn't consume receipts."""
+        ``statuses`` (sent/delivered/read/failed) are only logged ΓÇö the agent doesn't consume receipts."""
         if payload.get("object") != "whatsapp_business_account":
             logger.debug("[whatsapp_cloud] ignoring non-WABA payload (object=%r)", payload.get("object"))
             return
         for entry in payload.get("entry") or []:
             for change in (entry.get("changes") or []) if isinstance(entry, dict) else []:
                 if not isinstance(change, dict) or change.get("field") != "messages":
-                    continue  # account_alerts, template_status_update, … — not message ingress
+                    continue  # account_alerts, template_status_update, ΓÇª ΓÇö not message ingress
                 value = change.get("value") or {}
                 if not isinstance(value, dict):
                     continue
@@ -807,7 +823,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         logger.debug("[whatsapp_cloud] status %s for %s", status.get("status"), status.get("id"))
 
     async def _ingest_message(self, raw_message: dict[str, Any], contacts_by_waid: dict[str, str], metadata: dict[str, Any]) -> None:
-        """Dedup → build event → handle_message. Neither build nor dispatch errors may
+        """Dedup ΓåÆ build event ΓåÆ handle_message. Neither build nor dispatch errors may
         bubble out: the wamid is already dedup-marked, so a 500 would make Meta retry
         the batch and every message in it would then be dropped as a duplicate."""
         wamid = str(raw_message.get("id") or "").strip()
@@ -830,7 +846,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _dispatch_interactive_reply(self, raw_message: dict[str, Any], contacts_by_waid: dict[str, str]) -> bool:
         """Route an inbound button tap to its resolver (see ``_INTERACTIVE_HANDLERS``). True = claimed.
         False (unknown prefix, no live state, or no waiter) makes the caller fall back to text
-        dispatch with the button title — covers stale taps."""
+        dispatch with the button title ΓÇö covers stale taps."""
         inner = _interactive_inner(raw_message)
         button_id = str(inner.get("id") or "").strip()
         sender_id = str(raw_message.get("from") or "").strip()
@@ -843,7 +859,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True  # claim so the tap isn't re-dispatched as plain text
         parts = button_id.split(":", 2)
         handler = next((h for prefix, h in self._INTERACTIVE_HANDLERS.items() if button_id.startswith(prefix)), None)
-        # Unknown prefix (maybe a plugin-defined adapter's) — text dispatch is the safe default.
+        # Unknown prefix (maybe a plugin-defined adapter's) ΓÇö text dispatch is the safe default.
         if handler is None or len(parts) != 3:
             return False
         return await handler(self, str(raw_message.get("from") or ""), inner, parts)
@@ -858,7 +874,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def _pop_tap_state(
         state: OrderedDict[str, str], key: str, stale_log: str, choice: str = "", valid: tuple = (),
     ) -> Optional[str]:
-        """Pop the session_key for a tapped prompt. None (info-logged) when nothing is live — likely
+        """Pop the session_key for a tapped prompt. None (info-logged) when nothing is live ΓÇö likely
         a stale tap; an unrecognised ``choice`` keeps the prompt live and also yields None."""
         session_key = state.pop(key, None)
         if not session_key:
@@ -872,7 +888,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _, clarify_id, choice = parts
         session_key = self._pop_tap_state(
             self._clarify_state, clarify_id,
-            "[whatsapp_cloud] clarify tap with no matching state (clarify_id=%s) — likely stale; falling back to text",
+            "[whatsapp_cloud] clarify tap with no matching state (clarify_id=%s) ΓÇö likely stale; falling back to text",
         )
         if not session_key:
             return False
@@ -891,7 +907,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 logger.exception("[whatsapp_cloud] mark_awaiting_text failed for %s", clarify_id)
                 flipped = False
             if not flipped:
-                # Entry vanished (timeout, /new, restart) — fall through to text.
+                # Entry vanished (timeout, /new, restart) ΓÇö fall through to text.
                 logger.info("[whatsapp_cloud] clarify 'Other' tap but entry missing (clarify_id=%s); falling back to text", clarify_id)
                 return False
             # Keep the mapping live for further taps on the same prompt.
@@ -906,7 +922,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
         # Title is the numeric label; the agent has the prompt in context to interpret it.
         if not clarify_gateway.resolve_gateway_clarify(clarify_id, str(inner.get("title") or str(idx + 1))):
-            logger.info("[whatsapp_cloud] clarify resolver reported no waiter (clarify_id=%s) — falling back to text", clarify_id)
+            logger.info("[whatsapp_cloud] clarify resolver reported no waiter (clarify_id=%s) ΓÇö falling back to text", clarify_id)
             return False
         return True
 
@@ -914,7 +930,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _, approval_id, choice = parts
         session_key = self._pop_tap_state(
             self._exec_approval_state, approval_id,
-            "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
+            "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) ΓÇö likely stale; falling back to text",
             choice, ("approve", "deny"),
         )
         if not session_key:
@@ -928,7 +944,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if count:
             confirm_text = t("platform.whatsapp.approved" if choice == "approve" else "platform.whatsapp.denied")
         else:
-            logger.info("[whatsapp_cloud] approval resolver reported no waiter (session_key=%s) — likely already resolved", session_key)
+            logger.info("[whatsapp_cloud] approval resolver reported no waiter (session_key=%s) ΓÇö likely already resolved", session_key)
             confirm_text = t("platform.whatsapp.approval_expired")
         await self._reply_best_effort(to, confirm_text, "[whatsapp_cloud] approval confirm failed")
         return True
@@ -937,7 +953,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _, choice, confirm_id = parts
         session_key = self._pop_tap_state(
             self._slash_confirm_state, confirm_id,
-            "[whatsapp_cloud] slash_confirm tap with no matching state (confirm_id=%s) — likely stale",
+            "[whatsapp_cloud] slash_confirm tap with no matching state (confirm_id=%s) ΓÇö likely stale",
             choice, ("once", "always", "cancel"),
         )
         if not session_key:
@@ -967,7 +983,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.info("[whatsapp_cloud] cached inbound %s media: %s", msg_type_str, local_path)
         else:
             logger.warning(
-                "[whatsapp_cloud] failed to download inbound %s (id=%s) — agent will see message metadata but not the binary",
+                "[whatsapp_cloud] failed to download inbound %s (id=%s) ΓÇö agent will see message metadata but not the binary",
                 msg_type_str, media_id,
             )
         fname = str(inner.get("filename") or "").strip() if msg_type_str == "document" else ""
@@ -978,7 +994,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _inject_document_text(media_urls: list[str], body: str) -> tuple[str, list[bool]]:
-        """Prepend text-readable document contents (≤100KB) to the body; returns
+        """Prepend text-readable document contents (Γëñ100KB) to the body; returns
         ``(body, media_text_inlined)`` with one flag per ``media_urls`` entry (True = injected)."""
         inlined = [False] * len(media_urls)
         for i, doc in enumerate(map(Path, media_urls)):
@@ -1006,7 +1022,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if msg_type_str in _CONTENTLESS_KINDS:
             logger.debug("[whatsapp_cloud] skipping contentless %s envelope (wamid=%s)", msg_type_str, raw_message.get("id"))
             return None
-        # Button taps route to the gateway resolver BEFORE text dispatch — the
+        # Button taps route to the gateway resolver BEFORE text dispatch ΓÇö the
         # resolver unblocks the waiting agent, so don't also start a fresh turn.
         if msg_type_str == "interactive" and await self._dispatch_interactive_reply(raw_message, contacts_by_waid):
             return None
@@ -1015,10 +1031,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         chat_id = sender_id = str(raw_message.get("from") or "").strip()
         sender_name = contacts_by_waid.get(sender_id, "")
         # DMs only: chat_id == sender wa_id. A ``chat`` field marks a group-shaped
-        # payload (capability-gated by Meta) — refuse rather than treat as a DM.
+        # payload (capability-gated by Meta) ΓÇö refuse rather than treat as a DM.
         if raw_message.get("chat"):
             logger.warning(
-                "[whatsapp_cloud] received group-shaped message (chat=%s, wamid=%s) — group support is not yet "
+                "[whatsapp_cloud] received group-shaped message (chat=%s, wamid=%s) ΓÇö group support is not yet "
                 "implemented; dropping. Use the Baileys whatsapp adapter for group chats.",
                 raw_message.get("chat"), raw_message.get("id"),
             )
@@ -1036,7 +1052,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         context = raw_message.get("context") or {}
         reply_to_id = str(context.get("id") or "").strip() or None
         reply_to_text = rich_sent_store.lookup(chat_id, reply_to_id) if reply_to_id else None
-        # context.from == our business number → user replied to the bot.
+        # context.from == our business number ΓåÆ user replied to the bot.
         quoted_from = str(context.get("from") or "").strip()
         our_number = str(metadata.get("display_phone_number") or "").strip()
         reply_to_is_own = bool(reply_to_id and quoted_from and our_number) and quoted_from == our_number
@@ -1098,7 +1114,7 @@ _PLATFORM_HINT = (
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system.
+    """Plugin entry point ΓÇö called by the Hermes plugin system.
 
     No ``validate_config``: an unconfigured adapter still reaches ``connect()``, which records the
     ``whatsapp_cloud_unconfigured`` fatal error (same outcome as the former core wiring). No
@@ -1113,8 +1129,8 @@ def register(ctx) -> None:
         check_fn=check_whatsapp_cloud_requirements, is_connected=_is_connected,
         config_connected_fn=config_connected_extra("phone_number_id", "access_token"),
         required_env=["WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"],
-        install_hint="aiohttp/httpx missing — reinstall hermes-agent", setup_fn=_interactive_setup,
-        cron_deliver_env_var="WHATSAPP_CLOUD_HOME_CHANNEL", emoji="📱", allow_update_command=False,
+        install_hint="aiohttp/httpx missing ΓÇö reinstall hermes-agent", setup_fn=_interactive_setup,
+        cron_deliver_env_var="WHATSAPP_CLOUD_HOME_CHANNEL", emoji="≡ƒô▒", allow_update_command=False,
         platform_hint=_PLATFORM_HINT,
         # Adapter lacks edit_message; promote once it lands.
         display_tier="low",

@@ -55,6 +55,8 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
+        "model": "<OPTIONAL per-child model override, omit to inherit the original task's model>",
+        "provider": "<OPTIONAL provider for the model override; only set when 'model' is set>",
         "parents": [<int>, ...]
       },
       ...
@@ -74,6 +76,10 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Model inheritance: each child runs on the ORIGINAL triage task's model
+    unless you set an explicit per-child "model". Set "model" only when a
+    child genuinely needs a different model than the parent; otherwise omit
+    it so the whole fan-out stays on the parent's model.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -261,10 +267,26 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
+        # Optional per-child model override. When absent (None/empty) the
+        # DB-layer decompose_triage_task inherits the root task's
+        # model_override/provider_override, so the fan-out runs on the
+        # parent's model by default.
+        model_override = entry.get("model")
+        provider_override = entry.get("provider")
         children.append({
             "title": title.strip()[:200],
             "body": body.strip() if isinstance(body, str) else "",
             "assignee": chosen,
+            "model_override": (
+                model_override.strip()
+                if isinstance(model_override, str) and model_override.strip()
+                else None
+            ),
+            "provider_override": (
+                provider_override.strip()
+                if isinstance(provider_override, str) and provider_override.strip()
+                else None
+            ),
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
         })

@@ -99,6 +99,26 @@ def test_live_server_without_its_lock_file_still_owns_the_display(tmp_path, monk
     assert runtime._display_in_use(20) is False, "no table (non-Linux procfs) falls back to the lock alone"
 
 
+def test_socket_table_with_undecodable_bytes_still_finds_the_x_sockets(tmp_path, monkeypatch):
+    """The kernel prints every socket path verbatim, and an abstract socket can carry arbitrary bytes in
+    its name, so /proc/net/unix is not guaranteed to be UTF-8. One such socket (seen in the wild as
+    ``@@@@\\x83\\x01@@\\xc2\\x19``) made ``read_text`` raise UnicodeDecodeError inside the allocator, which
+    took down every ``display.start`` for the profile before it touched X. Only the path column is read,
+    so undecodable bytes must be tolerated — and the X sockets sharing the table must still be found."""
+    monkeypatch.setattr(runtime, "_X_LOCK_DIR", tmp_path / "xlocks")
+    (tmp_path / "xlocks").mkdir()
+    table = tmp_path / "unix"
+    table.write_bytes(
+        b"Num       RefCount Protocol Flags    Type St Inode Path\n"
+        b"0000000000000000: 00000002 00000000 00010000 0001 01 22242 @/tmp/.X11-unix/X20\n"
+        b"0000000000000000: 00000002 00000000 00000000 0002 01 13695 @@@@\x83\x01@@\xc2\x19\t@@@@\n"
+        b"0000000000000000: 00000003 00000000 00010000 0001 01 22244 /tmp/.X11-unix/X21\n")
+    monkeypatch.setattr(runtime, "_X_UNIX_TABLE", table)
+    assert runtime._display_in_use(20) is True
+    assert runtime._display_in_use(21) is True
+    assert runtime._display_in_use(22) is False
+
+
 
 _FAKE_LAUNCHER = """#!/usr/bin/env bash
 # Stands in for launcher.sh + Xvnc: the X lock appears only after a delay (the TOCTOU window), then the

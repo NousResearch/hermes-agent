@@ -249,11 +249,19 @@ class GitHubSource(SkillSource):
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: dict[str, Optional[dict[str, str]]] = {}
         self._rate_limited: bool = False
+        # When the exhausted limit resets (epoch), when GitHub told us; None when unknown.
+        self._rate_limit_reset_at: Optional[float] = None
         self._raw_unusable = False  # raw host unreachable here: later files go straight to the API
 
     @property
     def is_rate_limited(self) -> bool:  # whether the GitHub API rate limit was hit during operations
         return self._rate_limited
+
+    @property
+    def rate_limit_reset_at(self) -> Optional[float]:
+        """Epoch the exhausted GitHub quota resets at, when the terminal 403/429 carried
+        ``X-RateLimit-Reset`` / ``Retry-After``; None when it did not (#140556)."""
+        return self._rate_limit_reset_at
 
     def trust_level_for(self, identifier: str) -> str:
         # identifier format: "owner/repo/path/to/skill"
@@ -502,6 +510,12 @@ class GitHubSource(SkillSource):
                     if not limited or last_attempt:
                         if limited:  # terminal exhaustion: flag the instance so callers fail loud
                             self._rate_limited = True
+                            reset = resp.headers.get("X-RateLimit-Reset", "")
+                            retry_after = parse_retry_after_seconds(resp.headers)
+                            if retry_after is not None:
+                                self._rate_limit_reset_at = time.time() + retry_after
+                            elif reset.isdigit() and float(reset) > time.time():
+                                self._rate_limit_reset_at = float(reset)
                             logger.warning("GitHub API rate limit exhausted (unauthenticated: 60 req/hr). "
                                            "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr.")
                         return resp

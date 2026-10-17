@@ -83,7 +83,15 @@ def _reaction(*, emoji=None, custom_emoji_id=None):
 def _reaction_update(reactions, chat_id: object = 123, message_id: object = 456):
     """A PTB Update stand-in carrying a message_reaction with ``reactions``."""
     update = MagicMock()
+    update.update_id = None
+    update.message = None
+    update.edited_message = None
     update.message_reaction = MagicMock()
+    update.message_reaction.user = None
+    update.message_reaction.from_user = None
+    update.message_reaction.actor_chat = None
+    update.message_reaction.sender_chat = None
+    update.message_reaction.date = None
     update.message_reaction.chat.id = chat_id
     update.message_reaction.message_id = message_id
     update.message_reaction.new_reaction = list(reactions)
@@ -99,7 +107,7 @@ def _auth_reaction_update(user_id, chat_type="private", chat_id=123, message_id=
     update = _reaction_update(
         [_reaction(emoji="\U0001F44D")], chat_id=chat_id, message_id=message_id,
     )
-    update.message_reaction.user.id = str(user_id)
+    update.message_reaction.user = SimpleNamespace(id=str(user_id), is_bot=False)
     update.message_reaction.chat.type = chat_type
     return update
 
@@ -180,6 +188,8 @@ class TestNormalizePlatformEvent:
             "platform": "telegram",
             "event_type": "reaction",
             "payload": {
+                "update_id": None, "actor_id": None, "actor_is_bot": None,
+                "actor_chat_id": None, "occurred_at": None,
                 "emojis": ["\U0001F44E"],
                 "custom_emoji_ids": [],
                 "chat_id": "123",
@@ -248,6 +258,7 @@ class TestNormalizePlatformEvent:
         a = _adapter()
         update = MagicMock()
         update.message_reaction = None  # e.g. a chat_member update
+        update.message = None
         update.edited_message = None
 
         assert a._normalize_platform_event(update) is None
@@ -268,6 +279,7 @@ def _edited_update(
     """A PTB Update stand-in carrying an edited_message."""
     update = MagicMock()
     update.message_reaction = None
+    update.message = None
     m = MagicMock()
     m.chat.id = chat_id
     m.chat.type = chat_type
@@ -394,9 +406,9 @@ class TestOnPlatformUpdate:
             seen.append((event, source))
         a.set_platform_event_handler(observe)
 
-        asyncio.run(a._on_platform_update(
-            _reaction_update([_reaction(emoji="\U0001F44E")], 123, 456), context=MagicMock(),
-        ))
+        update = _auth_reaction_update(user_id=777)
+        update.message_reaction.new_reaction = [_reaction(emoji="\U0001F44E")]
+        asyncio.run(a._on_platform_update(update, context=MagicMock()))
 
         assert len(seen) == 1
         event, source = seen[0]
@@ -465,6 +477,7 @@ class TestOnPlatformUpdateAuthBoundary:
 
         update = MagicMock()
         update.message_reaction = None  # a future, not-yet-wired event type
+        update.message = None
         update.edited_message = None
         # Simulate that future normalization produced an event for it.
         a._normalize_platform_event = lambda u: {  # type: ignore[assignment]
@@ -588,6 +601,8 @@ class TestFixturePluginObservationPath:
             "platform": "telegram",
             "event_type": "reaction",
             "payload": {
+                "update_id": None, "actor_id": "777", "actor_is_bot": False,
+                "actor_chat_id": None, "occurred_at": None,
                 "emojis": ["\U0001F44D"],
                 "custom_emoji_ids": [],
                 "chat_id": "123",

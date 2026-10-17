@@ -2752,13 +2752,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         handler: Optional[Callable[[dict[str, Any], Any], Awaitable[None]]] = getattr(self, "_platform_event_handler", None)
         if handler is None:
             return
+        # Core handlers own a new message's admission; observing its reply must not accept it
+        # (losing a held redispatch) or fail it (replaying it to core handlers).
+        owns_admission = getattr(update, "message", None) is None
         try:
             from hermes_cli.lifecycle import has_hook
             if not has_hook("gateway_platform_event"):
                 return
             event = self._normalize_platform_event(update)
         except Exception:
-            self._fail_update_preparation()
+            if owns_admission:
+                self._fail_update_preparation()
             logger.debug("[%s] gateway_platform_event normalize error", self.name, exc_info=True)
             return
         if event is None:
@@ -2766,10 +2770,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         # The gateway-owned boundary runs the full profile-scoped auth chain before plugin dispatch.
         try:
             source = self._source_for_platform_event_auth(update)
-            self._accept_update()
+            if owns_admission:
+                self._accept_update()
             await handler(event, source)
         except Exception:
-            self._fail_update_preparation()
+            if owns_admission:
+                self._fail_update_preparation()
             logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
 
     def _source_for_platform_event_auth(self, update):
@@ -2777,91 +2783,20 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         raises ``ValueError`` for updates without one so the boundary fails closed."""
         if getattr(update, "message_reaction", None) is not None:
             return self._source_from_reaction_for_auth(update)
-        edited = getattr(update, "edited_message", None)
-        if edited is not None:
-            source = self._source_from_message_for_auth(edited)
-            # Tolerates missing identities for pairing-flow callers; this boundary must not.
+        for attribute in ("message", "edited_message"):
+            message = getattr(update, attribute, None)
+            if message is None:
+                continue
+            source = self._source_from_message_for_auth(message)
             if not source.user_id or not source.chat_id:
-                raise ValueError("gateway_platform_event message_edited requires editor and chat identities")
+                raise ValueError("gateway_platform_event message requires actor and chat identities")
             return source
         raise ValueError("gateway_platform_event source extraction has no extractor for this update type")
 
     def _normalize_platform_event(self, update) -> Optional[dict[str, Any]]:
-        """Map a PTB update to a ``{platform, event_type, payload}`` envelope (hooks.md contracts), or
-        ``None`` for types without one."""
-        if getattr(update, "message_reaction", None) is not None:
-            return self._normalize_reaction_event(update)
-        if getattr(update, "edited_message", None) is not None:
-            return self._normalize_message_edited_event(update)
-        return None
+        from plugins.platforms.telegram.platform_events import normalize_platform_event
 
-    @staticmethod
-    def _is_id_like(value: Any) -> bool:
-        return not isinstance(value, bool) and isinstance(value, (str, int))
-
-    def _normalize_reaction_event(self, update) -> Optional[dict[str, Any]]:
-        """``message_reaction`` → ``reaction`` event: emojis (unicode), custom_emoji_ids, chat_id,
-        message_id, thread_id (always None — reactions carry none)."""
-        mr = getattr(update, "message_reaction", None)
-        if mr is None:
-            return None
-        chat = getattr(mr, "chat", None)
-        new_reaction = getattr(mr, "new_reaction", None) or []
-        if not isinstance(new_reaction, (list, tuple)):
-            return None
-        chat_id = getattr(chat, "id", None) if chat is not None else None
-        message_id = getattr(mr, "message_id", None)
-        if not self._is_id_like(chat_id) or not self._is_id_like(message_id):
-            return None
-        emojis: list[str] = []
-        custom_emoji_ids: list[str] = []
-        for r in new_reaction[:64]:
-            emoji = getattr(r, "emoji", None)
-            if isinstance(emoji, str) and emoji:
-                emojis.append(emoji[:64])
-            custom_id = getattr(r, "custom_emoji_id", None)
-            if self._is_id_like(custom_id):
-                custom_emoji_ids.append(str(custom_id)[:128])
-        return {
-            "platform": "telegram",
-            "event_type": "reaction",
-            "payload": {
-                "emojis": emojis, "custom_emoji_ids": custom_emoji_ids, "chat_id": str(chat_id)[:128],
-                "message_id": str(message_id)[:128], "thread_id": None},
-        }
-
-    def _normalize_message_edited_event(self, update) -> Optional[dict[str, Any]]:
-        """``edited_message`` → ``message_edited`` event (v1, additive): chat_id, message_id, thread_id
-        (forum topic), text (edited text or caption, bounded), edited_at (ISO 8601 UTC or None)."""
-        message = getattr(update, "edited_message", None)
-        if message is None:
-            return None
-        chat = getattr(message, "chat", None)
-        chat_id = getattr(chat, "id", None) if chat is not None else None
-        message_id = getattr(message, "message_id", None)
-        if not self._is_id_like(chat_id) or not self._is_id_like(message_id):
-            return None
-        text = getattr(message, "text", None) or getattr(message, "caption", None)
-        if not isinstance(text, str):
-            text = None
-        thread_id = None
-        thread_id_raw = getattr(message, "message_thread_id", None)
-        if self._is_id_like(thread_id_raw) and bool(getattr(message, "is_topic_message", False)):
-            thread_id = str(thread_id_raw)[:128]
-        edited_at = None
-        edit_date = getattr(message, "edit_date", None)
-        try:
-            if edit_date is not None and hasattr(edit_date, "isoformat"):
-                edited_at = str(edit_date.isoformat())[:64]
-        except Exception:
-            edited_at = None
-        return {
-            "platform": "telegram",
-            "event_type": "message_edited",
-            "payload": {
-                "chat_id": str(chat_id)[:128], "message_id": str(message_id)[:128], "thread_id": thread_id,
-                "text": text[:8192] if text is not None else None, "edited_at": edited_at},
-        }
+        return normalize_platform_event(update)
 
     def _accept_update(self) -> None:
         """Handoff is irreversible for replay purposes, even if later work raises/cancels."""

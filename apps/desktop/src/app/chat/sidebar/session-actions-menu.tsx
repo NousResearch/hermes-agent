@@ -122,8 +122,9 @@ export async function renameSessionPreferringRpc(
 
   const runtimeId = resolveRuntimeIdForStored(storedSessionId)
   const gateway = activeGateway()
+  const hasPersistedRow = $sessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))
 
-  if (title && runtimeId && gateway) {
+  if (title && runtimeId && gateway && !hasPersistedRow) {
     try {
       const result = await gateway.request<SessionTitleResponse>('session.title', {
         session_id: runtimeId,

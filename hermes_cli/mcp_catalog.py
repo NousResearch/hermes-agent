@@ -824,7 +824,12 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
     for spec in entry.auth.env:
         if not spec.secret and spec.name in env_values:
             server_cfg = _inline_non_secret_value(server_cfg, spec.name, env_values[spec.name])
-    server_cfg["enabled"] = enable
+    # OAuth installs are two-phase: persist the server disabled while this installer owns the
+    # first probe/browser flow, then flip it on after tool selection. Otherwise every already-open
+    # Hermes session that notices the config write can rediscover the new OAuth server and open its
+    # own authorization tab before the installing terminal finishes.
+    save_enabled = bool(enable and entry.auth.type != "oauth")
+    server_cfg["enabled"] = save_enabled
 
     from hermes_cli.mcp_config import _save_mcp_server
 
@@ -833,6 +838,13 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
                            failure_class="config_rejected")
 
     _apply_tool_selection(entry, prior_selection=prior_selection, prior_exclude=prior_exclude)
+
+    if enable and entry.auth.type == "oauth":
+        cfg = load_config()
+        installed = (cfg.get("mcp_servers") or {}).get(entry.name)
+        if isinstance(installed, dict):
+            installed["enabled"] = True
+            save_config(cfg)
 
     print()
     _say(

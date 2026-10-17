@@ -18,6 +18,7 @@ import pytest
 import json
 import os
 import socket
+import tempfile
 import time
 
 os.environ["TERMINAL_ENV"] = "local"
@@ -346,6 +347,38 @@ print(result.get("output", ""))
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertIn("mock output for: echo hello", result["output"])
+        self.assertEqual(result["tool_calls_made"], 1)
+
+    def test_terminal_helper_uses_workdir_with_spaces(self):
+        """A workdir passed through hermes_tools must remain one path argument."""
+        from pathlib import Path
+
+        from tools.terminal_tool import _handle_terminal
+
+        with tempfile.TemporaryDirectory(prefix="hermes workdir ") as root:
+            workdir = Path(root) / "project checkout"
+            workdir.mkdir()
+
+            def dispatch(name, args, task_id=None, user_task=None):
+                if name == "terminal":
+                    return _handle_terminal(args, task_id=task_id)
+                return _mock_handle_function_call(name, args, task_id, user_task)
+
+            code = f"""
+from hermes_tools import terminal
+result = terminal("pwd", workdir={str(workdir)!r})
+print(result.get("output", ""))
+"""
+            with patch.dict(os.environ, {"HERMES_HOME": str(Path(root) / ".hermes")}), \
+                    patch("model_tools.handle_function_call", side_effect=dispatch):
+                result = json.loads(execute_code(
+                    code=code,
+                    task_id="test-workdir-spaces",
+                    enabled_tools=["terminal"],
+                ))
+
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn(str(workdir), result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
 
 

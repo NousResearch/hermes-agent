@@ -970,6 +970,14 @@ def _local_runtime_row(ctx: ConfigContext) -> dict | None:
         staged = staged_model_ids()
         if not staged:
             return None
+        # ``model_catalog.excluded_providers`` hides this row like any other provider: the row is
+        # injected AFTER ``list_authenticated_providers`` applies the exclusion, so it must apply
+        # the same rule itself — the staged GGUFs live in a machine-scoped dir, so every profile
+        # would otherwise get a "Local" row its config cannot remove. Matched against the Hermes id
+        # and its aliases, case-insensitively, like every other picker surface (#140326).
+        excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+        if not excluded.isdisjoint({alias.lower() for alias in LLAMACPP_ALIASES}):
+            return None
         current = (ctx.current_provider or "").strip().lower() in LLAMACPP_ALIASES
         if not current:
             # A LIVE session on the managed server reports provider "custom" with the managed base_url;

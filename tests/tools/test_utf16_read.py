@@ -104,3 +104,39 @@ class TestUtf16Read:
         assert result.error is None
         assert "just utf-8" in result.content
         assert "Transcoded" not in (result.hint or "")
+
+
+class TestUtf16BomEdits:
+    """A BOM names the encoding, so edits keep the file UTF-16 instead of converting it."""
+
+    @pytest.mark.parametrize("enc", ["utf-16-le", "utf-16-be"])
+    @pytest.mark.parametrize("nl", ["\r\n", "\n"])
+    def test_patch_and_write_keep_bom_utf16_and_endings(self, fops, tmp_path, enc, nl):
+        # Leading U+FEFF after the mark is data; "č" + LF in UTF-16BE is 01 0D 00 0A (no CR).
+        p = tmp_path / "script.ps1"
+        p.write_bytes(f"\ufeff\ufeffWrite-Host 'héllo'{nl}Write-Host 'č'{nl}".encode(enc))
+        r = fops.patch_replace(str(p), "Write-Host 'héllo'", "Echo 'hi'")
+        assert r.success, r.error
+        assert p.read_bytes() == f"\ufeff\ufeffEcho 'hi'{nl}Write-Host 'č'{nl}".encode(enc)
+        w = fops.write_file(str(p), "one\ntwo č\n")
+        assert w.error is None and w.verified
+        assert p.read_bytes() == f"\ufeffone{nl}two č{nl}".encode(enc)
+
+    @pytest.mark.parametrize("raw", [
+        "plain text\n".encode("utf-16-le"),         # BOM-less: only a guess
+        "\ufeffplain text\n".encode("utf-32-le"),  # FF FE 00 00 is UTF-32, not UTF-16
+    ])
+    def test_non_bom_utf16_still_written_as_utf8(self, fops, tmp_path, raw):
+        p = tmp_path / "guess.txt"
+        p.write_bytes(raw)
+        assert fops.write_file(str(p), "new\n").error is None
+        assert p.read_bytes() == b"new\n"
+
+    def test_unreadable_utf16_target_is_refused_not_converted(self, fops, tmp_path, monkeypatch):
+        p = tmp_path / "script.ps1"
+        original = "\ufeffkeep\r\n".encode("utf-16-le")
+        p.write_bytes(original)
+        monkeypatch.setattr(fops, "_read_exact_bytes", lambda path: (None, None))
+        w = fops.write_file(str(p), "new\n")
+        assert w.error and "UTF-16" in w.error
+        assert p.read_bytes() == original

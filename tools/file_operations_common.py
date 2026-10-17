@@ -273,6 +273,34 @@ def _has_bom(text: Optional[str]) -> bool:
     return bool(text) and text.startswith(_UTF8_BOM)
 
 
+# A UTF-16 byte-order mark names the encoding unambiguously, so a file that carries one
+# (Windows PowerShell 5 `>` redirects, Notepad "Unicode", .reg exports) is edited in place
+# and written back as UTF-16 with the same mark. BOM-less UTF-16 is only a heuristic guess
+# on read and keeps the UTF-8 write path. Inspired by Claude Code v2.1.299 ("Write
+# silently converting ... UTF-16BE files to UTF-8").
+_UTF16_BOMS = ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"))
+
+
+def _utf16_bom_encoding(head: bytes) -> Optional[str]:
+    """``utf-16-le``/``utf-16-be`` when ``head`` starts with that BOM, else None.
+    ``FF FE 00 00`` is a UTF-32-LE mark and is not UTF-16."""
+    if head[:4] == b"\xff\xfe\x00\x00":
+        return None
+    return next((enc for bom, enc in _UTF16_BOMS if head.startswith(bom)), None)
+
+
+def _decode_utf16_bom(data: bytes) -> Optional[tuple[str, str]]:
+    """``(text without the BOM, encoding)`` for a BOM-marked UTF-16 file that decodes
+    cleanly, else None (callers keep their UTF-8 behaviour)."""
+    enc = _utf16_bom_encoding(data)
+    if enc is None:
+        return None
+    try:
+        return data[2:].decode(enc), enc
+    except UnicodeDecodeError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Pagination clamps
 # ---------------------------------------------------------------------------

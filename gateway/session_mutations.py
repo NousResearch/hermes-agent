@@ -325,14 +325,18 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
         store.retire_runtime_sessions(session_ids)
         # The delete transaction fenced and dropped routes in the owning store; a multiplexed
         # secondary's routes live in the launch home's shared index, so the store fences them
-        # there too (markers + drop in one transaction). Without the marker in THAT database a
-        # whole-index snapshot taken before this delete and saved after it restored the route
-        # (#138826). A failure surfaces after the rest of the cleanup: an exact retry replays the
-        # committed receipt and repeats this fence.
+        # there too (routing fences + drop in one transaction). Without the fence in THAT database
+        # a whole-index snapshot taken before this delete and saved after it restored the route
+        # (#138826). It is a routing fence scoped to this profile's routes, not the launch
+        # profile's own deletion marker, so the launch profile can still use the id. A failure
+        # surfaces after the rest of the cleanup: an exact retry replays the committed receipt and
+        # repeats this fence.
         routing = getattr(store, '_routing_db', None)
         if session_ids and routing is not None and routing.db_path != authority.db.db_path:
+            registry = getattr(authority.runner, 'session_authorities', None)
+            profile = (registry.profile_name(authority) if registry is not None else None) or 'default'
             try:
-                store.fence_retired_routes(session_ids)
+                store.fence_retired_routes(session_ids, profile=profile)
             except Exception as exc:
                 logger.warning('could not fence shared routing rows for deleted sessions', exc_info=True)
                 fence_error = exc

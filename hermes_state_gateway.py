@@ -57,6 +57,17 @@ _PEER_SELECT_HEAD = """
 # blocks recovery (the NOT EXISTS below). ``pending``/``failed``/NULL handoffs are untouched, so this
 # is strictly "ownership was transferred", never "a handoff was attempted".
 _HANDOFF_OWNED_ROW_SQL = "(s.handoff_state = 'completed')"
+# A routing save skips an entry (params: its JSON, its key's ``route_owner``) whose session this
+# store deleted, or another profile deleted and fenced here (``retire_gateway_routes``): a route that
+# profile owns, or a route under this store's own ``agent:main`` keys to an id this store holds no
+# session of. The prefixes are hermes_state_mutation_retirement's.
+_ROUTE_NOT_RETIRED = (
+    "NOT EXISTS (SELECT 1 FROM (SELECT json_extract(?, '$.session_id') AS sid, ? AS owner) e WHERE "
+    "EXISTS (SELECT 1 FROM state_meta WHERE key = 'gateway.retired_session.v1.' || e.sid) OR "
+    "EXISTS (SELECT 1 FROM state_meta f WHERE f.key = 'gateway.retired_route.v1.' || e.sid AND ("
+    "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(f.value) THEN f.value ELSE '{}' END, "
+    "'$.profiles') p WHERE p.value = e.owner) OR "
+    "(e.owner = 'default' AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = e.sid)))))")
 _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = ?
                   AND s.source = ?
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
@@ -298,28 +309,28 @@ class SessionGatewayMixin:
         namespaces the index per sessions_dir so two stores never share routing state."""
         if not session_key or not entry_json:
             return
+        from hermes_state_mutation_retirement import route_owner
         self._write_sql(
-            """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
-               SELECT ?, ?, ?, ? WHERE NOT EXISTS (
-                   SELECT 1 FROM state_meta WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))
+            f"""INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
+               SELECT ?, ?, ?, ? WHERE {_ROUTE_NOT_RETIRED}
                ON CONFLICT(scope, session_key) DO UPDATE SET
                    entry_json = excluded.entry_json,
                    updated_at = excluded.updated_at""",
-            (scope, session_key, entry_json, time.time(), entry_json),
+            (scope, session_key, entry_json, time.time(), entry_json, route_owner(session_key)),
         )
 
     def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> None:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
         are removed); other scopes untouched."""
+        from hermes_state_mutation_retirement import route_owner
         now = time.time()
         def _do(conn):
             conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
             if entries:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM state_meta "
-                    "WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))",
-                    [(scope, k, v, now, v) for k, v in entries.items() if k and v])
+                    f"SELECT ?, ?, ?, ? WHERE {_ROUTE_NOT_RETIRED}",
+                    [(scope, k, v, now, v, route_owner(k)) for k, v in entries.items() if k and v])
         self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:
@@ -403,20 +414,31 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed, many=True)
         return len(doomed)
 
-    def retire_gateway_routes(self, session_ids) -> None:
-        """Publish deletion fences for *session_ids* in THIS (routing) database and drop the
-        routes naming them, in one transaction. Routing saves skip any entry whose session id
-        carries a marker here, so a whole-index snapshot taken before a delete in another
-        profile's store cannot restore the route when it is saved after it."""
+    def retire_gateway_routes(self, session_ids, *, profile) -> None:
+        """Publish routing fences for *session_ids*, deleted in *profile*'s store, in THIS (routing)
+        database and drop the routes naming them, in one transaction. Routing saves skip a route
+        *profile* owns to a fenced id (``_ROUTE_NOT_RETIRED``), so a whole-index snapshot taken
+        before the delete cannot restore it when it is saved after it. The fence is not this
+        store's own deletion marker: this profile never had the session, so its creates, binds,
+        imports and its own routes of the id stay free. Permanent, like the owner's marker of a
+        delete: a fence that aged out would let a ``sessions.json`` mirror written before the delete
+        bring the route back."""
         ids = sorted({str(sid) for sid in session_ids if sid})
         if not ids:
             return
 
         def _do(conn):
-            from hermes_state_mutation_retirement import RETIRED_PREFIX, entry_session_id
-            retired = json.dumps({"retired_at": time.time()})
-            conn.executemany("INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)",
-                             [(RETIRED_PREFIX + sid, retired) for sid in ids])
+            from hermes_state_mutation_retirement import ROUTE_FENCE_PREFIX, entry_session_id
+            now = time.time()
+            for sid in ids:
+                row = conn.execute("SELECT value FROM state_meta WHERE key = ?", (ROUTE_FENCE_PREFIX + sid,)).fetchone()
+                try:
+                    profiles = set(json.loads(row[0]).get("profiles") or ()) if row else set()
+                except (TypeError, ValueError, AttributeError):  # malformed: rewritten whole
+                    profiles = set()
+                conn.execute("INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)", (
+                    ROUTE_FENCE_PREFIX + sid,
+                    json.dumps({"retired_at": now, "profiles": sorted(profiles | {profile})})))
             targets = set(ids)
             doomed = [(row[0], row[1]) for row in conn.execute(
                 "SELECT scope, session_key, entry_json FROM gateway_routing").fetchall()

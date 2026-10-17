@@ -4,6 +4,11 @@ import time
 from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutation_receipt_key, _json, _text
 
 RETIRED_PREFIX = 'gateway.retired_session.v1.'
+# Another profile's deleted session, fenced in the shared routing index (the launch home's
+# state.db, ``retire_gateway_routes``); its value names the profiles that deleted the id. It refuses
+# only routing saves, and only routes those profiles own: this store's own profile may still
+# create, bind, import and route its own session by that name.
+ROUTE_FENCE_PREFIX = 'gateway.retired_route.v1.'
 # A last viewer's close stored until the owner's idle point (gateway/session_viewer_close).
 VIEWER_CLOSE_PREFIX = 'gateway.viewer_close.v1:'
 
@@ -15,6 +20,20 @@ def retired_in(conn, session_id):
 def retired_session(db, session_id):
     with db._read_ctx() as conn:
         return retired_in(conn, session_id)
+
+
+def route_owner(session_key):
+    """The profile owning a routing key (``agent:<profile>:...``, ``default`` for ``agent:main``),
+    the one ``SessionStore._db_for_key`` reads its rows from; ``default`` for a key outside that shape."""
+    from hermes_state_keys import profile_from_session_key
+    return profile_from_session_key(session_key) or 'default'
+
+
+def route_retired(db, session_key, entry_json):
+    """A routing save must skip this entry (``hermes_state_gateway._ROUTE_NOT_RETIRED``)."""
+    from hermes_state_gateway import _ROUTE_NOT_RETIRED
+    with db._read_ctx() as conn:
+        return not conn.execute(f'SELECT {_ROUTE_NOT_RETIRED}', (entry_json, route_owner(session_key))).fetchone()[0]
 
 
 def create_conflict(conn, session_id):

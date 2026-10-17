@@ -482,11 +482,17 @@ def _apply_stored_session_runtime(
     contract as the interactive ``_restore_session_model``, via the shared ``stored_session_route``.
     An explicit ``--model`` keeps the ambient choice. A changed provider drops the resolved
     ``api_key``: it belongs to the ambient endpoint and is never persisted, so runtime resolution
-    re-fetches credentials for the restored provider."""
+    re-fetches credentials for the restored provider.
+
+    One-shot is a NON-INTERACTIVE source (``stored_model_is_config_cache``): no user was present
+    to pick a model, so the stored route is a cache by definition and is never restored — the
+    ambient/config choice stands, exactly as on an interactive resume."""
     if explicit_model:
         return choice
-    from hermes_cli.cli_model_switch_mixin import stored_session_route
+    from hermes_cli.cli_model_switch_mixin import stored_model_is_config_cache, stored_session_route
 
+    if stored_model_is_config_cache(session_meta):
+        return choice
     route = stored_session_route(session_meta, current_model=choice.model, current_provider=choice.provider)
     if route is None:
         return choice

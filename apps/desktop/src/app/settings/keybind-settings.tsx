@@ -281,7 +281,7 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
           <Tip label={k.clear}>
             <Button
               aria-label={k.clear}
-              className="shrink-0 text-(--ui-text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              className="shrink-0 text-(--ui-text-tertiary) opacity-30 group-hover:opacity-100 focus-visible:opacity-100"
               onClick={() => clearBinding(action.id)}
               size="icon-xs"
               variant="ghost"
@@ -296,7 +296,7 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
         <Tip label={k.reset}>
           <Button
             aria-label={k.reset}
-            className="shrink-0 text-(--ui-text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            className="shrink-0 text-(--ui-text-tertiary) opacity-30 group-hover:opacity-100 focus-visible:opacity-100"
             onClick={() => resetBinding(action.id)}
             size="icon-xs"
             variant="ghost"

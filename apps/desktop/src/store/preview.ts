@@ -60,6 +60,10 @@ export interface PreviewTarget {
   label: string
   large?: boolean
   language?: string
+  /** True only when Electron verified that this file belongs to this device.
+   * Remote gateway paths deliberately never set it: a tab can outlive a
+   * connection switch, so the current foreground connection is not proof. */
+  localFile?: boolean
   mimeType?: string
   path?: string
   /** `directory`/`missing` are typed non-previewable results from main-process

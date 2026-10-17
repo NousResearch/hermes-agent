@@ -116,7 +116,7 @@ def build_profile_terminal_scope(
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
 
     Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- *env_overlay*
-    <- profile ``config.yaml`` ``terminal:``. Total by construction, so a bound scope never
+    <- effective user + managed ``terminal:``. Total by construction, so a bound scope never
     widens back to ambient authority. Raises :class:`TerminalPolicyUnavailable` if a present
     file is unreadable.
 
@@ -155,25 +155,19 @@ def build_profile_terminal_scope(
         # value that differs from the default can prove a choice made there.
         if env_overlay.get("TERMINAL_DOCKER_IMAGE") not in (None, default_image):
             image_pinned = True
-    # Read config.yaml directly, not via read_raw_config() (which collapses "missing" and
-    # "unparseable" into {}): present-but-unparseable must fail closed.
+    # Use the shared defaults-free loader: managed policy applies even with no user file.
+    # A broken user file must still refuse execution, not recover into another authority.
+    from hermes_cli.config_effective import load_user_config_effective
+
     config_path = home / "config.yaml"
     try:
-        config_exists = config_path.exists()
+        effective = load_user_config_effective(config_path, fail_closed=True)
     except Exception as exc:
         raise TerminalPolicyUnavailable(f"cannot resolve terminal config in {home}: {exc}") from exc
-    if config_exists:
-        from utils import load_yaml_file_readonly
-
-        try:
-            # Signature-cached: a scope is rebuilt per routed turn/poll, the file rarely changes.
-            raw = load_yaml_file_readonly(config_path)
-        except Exception as exc:
-            raise TerminalPolicyUnavailable(f"cannot parse {config_path}: {exc}") from exc
-        raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None
-        if isinstance(raw_terminal, dict):
-            _apply_terminal_mapping(scope, raw_terminal)
-            image_pinned = image_pinned or "docker_image" in raw_terminal
+    terminal = effective.get("terminal")
+    if isinstance(terminal, dict):
+        _apply_terminal_mapping(scope, terminal)
+        image_pinned = image_pinned or "docker_image" in terminal
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
     _resolve_scope_cwd_placeholder(scope)
     return scope

@@ -700,6 +700,32 @@ class TestEnvironmentHints:
         _pb._BACKEND_PROBE_CACHE.clear()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
+    def test_local_host_hints_name_the_hermes_binary(self, monkeypatch):
+        """#140553: the agent's own CLI path is the path agents need most and the prompt
+        never named it — rediscovering it cost real tool calls. Resolved locally it must
+        appear verbatim in the local-backend host hints."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setattr(_pb, "_local_hermes_binary_path",
+                            lambda: "/opt/hermes/.venv/bin/hermes")
+        hints = _pb.build_environment_hints()
+        assert "Hermes binary: /opt/hermes/.venv/bin/hermes" in hints
+        assert "the `hermes` CLI" in hints
+
+    def test_local_host_hints_survive_an_unresolvable_binary(self, monkeypatch, tmp_path):
+        """#140553 fail-open: a host whose console-script dir cannot be resolved keeps
+        today's prompt (no line, no crash) — the hint is additive, never load-bearing."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(_pb, "_local_hermes_binary_path", lambda: None)
+        hints = _pb.build_environment_hints()
+        assert "Hermes binary:" not in hints
+        assert f"Current working directory: {tmp_path}" in hints
+
     def test_running_bot_screen_rides_the_environment_hints(self, monkeypatch):
         """#125830: with this profile's Bot Screen up, the local-backend hints must NAME it —
         display number and lease holder — so 'open chrome in screen 20' resolves to the bot's own

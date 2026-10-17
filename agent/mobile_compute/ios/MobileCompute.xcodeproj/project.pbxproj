@@ -1,0 +1,320 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1A2B3C4D5E6F000000000034 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F000000000030 /* main.swift */; };
+		1A2B3C4D5E6F000000000035 /* MobileComputeServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F000000000031 /* MobileComputeServer.swift */; };
+		1A2B3C4D5E6F000000000036 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2B3C4D5E6F000000000032 /* AppDelegate.swift */; };
+		1A2B3C4D5E6F000000000060 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1A2B3C4D5E6F000000000050 /* NIOCore */; };
+		1A2B3C4D5E6F000000000061 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = 1A2B3C4D5E6F000000000051 /* NIOPosix */; };
+		1A2B3C4D5E6F000000000062 /* NIOHTTP1 in Frameworks */ = {isa = PBXBuildFile; productRef = 1A2B3C4D5E6F000000000052 /* NIOHTTP1 */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		1A2B3C4D5E6F000000000011 /* MobileCompute.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MobileCompute.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A2B3C4D5E6F000000000030 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F000000000031 /* MobileComputeServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileComputeServer.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F000000000032 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		1A2B3C4D5E6F000000000033 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1A2B3C4D5E6F000000000021 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A2B3C4D5E6F000000000060 /* NIOCore in Frameworks */,
+				1A2B3C4D5E6F000000000061 /* NIOPosix in Frameworks */,
+				1A2B3C4D5E6F000000000062 /* NIOHTTP1 in Frameworks */,
+			);
+			runOnlyForDeploymentPostProcessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1A2B3C4D5E6F000000000001 = {
+			isa = PBXGroup;
+			children = (
+				1A2B3C4D5E6F000000000003 /* Sources */,
+				1A2B3C4D5E6F000000000004 /* Frameworks */,
+				1A2B3C4D5E6F000000000033 /* Info.plist */,
+				1A2B3C4D5E6F000000000002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1A2B3C4D5E6F000000000002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1A2B3C4D5E6F000000000011 /* MobileCompute.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		1A2B3C4D5E6F000000000003 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				1A2B3C4D5E6F000000000030 /* main.swift */,
+				1A2B3C4D5E6F000000000032 /* AppDelegate.swift */,
+				1A2B3C4D5E6F000000000031 /* MobileComputeServer.swift */,
+			);
+			path = Sources/MobileCompute;
+			sourceTree = "<group>";
+		};
+		1A2B3C4D5E6F000000000004 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1A2B3C4D5E6F000000000010 /* MobileCompute */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1A2B3C4D5E6F000000000073 /* Build configuration list for PBXNativeTarget "MobileCompute" */;
+			buildPhases = (
+				1A2B3C4D5E6F000000000020 /* Sources */,
+				1A2B3C4D5E6F000000000021 /* Frameworks */,
+				1A2B3C4D5E6F000000000022 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MobileCompute;
+			packageProductDependencies = (
+				1A2B3C4D5E6F000000000050 /* NIOCore */,
+				1A2B3C4D5E6F000000000051 /* NIOPosix */,
+				1A2B3C4D5E6F000000000052 /* NIOHTTP1 */,
+			);
+			productName = MobileCompute;
+			productReference = 1A2B3C4D5E6F000000000011 /* MobileCompute.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1A2B3C4D5E6F000000000012 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					1A2B3C4D5E6F000000000010 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = 1A2B3C4D5E6F000000000070 /* Build configuration list for PBXProject "MobileCompute" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 1A2B3C4D5E6F000000000001;
+			packageReferences = (
+				1A2B3C4D5E6F000000000040 /* XCRemoteSwiftPackageReference "swift-nio" */,
+			);
+			productRefGroup = 1A2B3C4D5E6F000000000002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1A2B3C4D5E6F000000000010 /* MobileCompute */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1A2B3C4D5E6F000000000022 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostProcessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1A2B3C4D5E6F000000000020 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A2B3C4D5E6F000000000034 /* main.swift in Sources */,
+				1A2B3C4D5E6F000000000036 /* AppDelegate.swift in Sources */,
+				1A2B3C4D5E6F000000000035 /* MobileComputeServer.swift in Sources */,
+			);
+			runOnlyForDeploymentPostProcessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1A2B3C4D5E6F000000000071 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		1A2B3C4D5E6F000000000072 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		1A2B3C4D5E6F000000000074 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hermes.mobilecompute;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		1A2B3C4D5E6F000000000075 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hermes.mobilecompute;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1A2B3C4D5E6F000000000070 /* Build configuration list for PBXProject "MobileCompute" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A2B3C4D5E6F000000000071 /* Debug */,
+				1A2B3C4D5E6F000000000072 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1A2B3C4D5E6F000000000073 /* Build configuration list for PBXNativeTarget "MobileCompute" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A2B3C4D5E6F000000000074 /* Debug */,
+				1A2B3C4D5E6F000000000075 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1A2B3C4D5E6F000000000040 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio.git";
+			requirement = {
+				kind = versionRange;
+				minimumVersion = 2.86.0;
+			maximumVersion = 2.87.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1A2B3C4D5E6F000000000050 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A2B3C4D5E6F000000000040 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		1A2B3C4D5E6F000000000051 /* NIOPosix */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A2B3C4D5E6F000000000040 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOPosix;
+		};
+		1A2B3C4D5E6F000000000052 /* NIOHTTP1 */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A2B3C4D5E6F000000000040 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOHTTP1;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 1A2B3C4D5E6F000000000012 /* Project object */;
+}

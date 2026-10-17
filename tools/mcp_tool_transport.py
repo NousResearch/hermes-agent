@@ -387,6 +387,12 @@ class MCPServerTransportMixin:
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;
         # off-loop because the reaper blocks up to 2s.
         await asyncio.to_thread(_lifecycle._kill_orphaned_mcp_children)
+        # A docker-run server's container outlives an ungraceful exit (``--rm`` only fires on the
+        # CLI client's graceful path): before spawning a new one, remove same-server containers
+        # whose owning Hermes process is provably dead (#138312). Off-loop; docker queries block.
+        from tools.mcp_tool_docker import is_docker_run_command, reap_orphaned_docker_mcp_containers
+        if is_docker_run_command(command, args):
+            await asyncio.to_thread(reap_orphaned_docker_mcp_containers, self.name, command)
         pids_before = _lifecycle._snapshot_child_pids()  # so the new child can be identified after spawn
         # Reap any orphaned subprocesses from prior failed connection attempts before spawning a new one.
         # Without this, each retry in the run() reconnect loop spawns a fresh process pair while the

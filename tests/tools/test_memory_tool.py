@@ -255,7 +255,7 @@ class TestMemoryStoreReplace:
         path.write_text("Deploys: Fly.io, manual approval.\n\n§\n\nHost: forge\n§\n\n§\nRepo: acme", encoding="utf-8")
         assert store.replace("memory", "Deploys:", "Deploys: Fly.io, 30m canary.")["success"] is True
         assert store.remove("memory", "Repo: acme")["success"] is True
-        assert path.read_text(encoding="utf-8") == "Deploys: Fly.io, 30m canary.\n§\nHost: forge"
+        assert path.read_text(encoding="utf-8") == "Deploys: Fly.io, 30m canary.\n§\nHost: forge\n"
         assert not list(path.parent.glob("MEMORY.md.bak.*"))
         store.add("memory", 'User runs a fleet (\u201cOmarchy\u201d \u2014 Trinity)')
         store.add("memory", "Tests: run \u2018make test\u2019 (needs\n  docker up)")
@@ -424,6 +424,46 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+
+    def test_saved_store_ends_with_trailing_newline(self, tmp_path, monkeypatch):
+        """#134569: every store save terminates the file with a single LF.
+
+        The store joins entries with "\n\u00a7\n", so the last entry had no EOF
+        newline and every consumer's git tree lit up with
+        backslash-no-newline markers on each tracked MEMORY.md/USER.md.
+        hermes_cli/agent_import.py already persisted with a trailing LF; the
+        store is aligned to the same canonical serialization.
+        """
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store = MemoryStore()
+        store.load_from_disk()
+        store.add("memory", "first fact")
+        mem_path = tmp_path / "MEMORY.md"
+        raw = mem_path.read_bytes()
+        assert raw.endswith(b"first fact\n")
+
+        store.add("memory", "second fact")
+        assert mem_path.read_bytes().endswith(b"second fact\n")
+
+    def test_save_roundtrip_stable_across_resave(self, tmp_path, monkeypatch):
+        """Trailing LF is written once; a resave does not accumulate extra LFs."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        store = MemoryStore()
+        store.load_from_disk()
+        store.add("memory", "only entry")
+        mem_path = tmp_path / "MEMORY.md"
+        first = mem_path.read_bytes()
+        assert first.endswith(b"only entry\n")
+
+        store2 = MemoryStore()
+        store2.load_from_disk()
+        store2.add("memory", "another entry")
+        second = mem_path.read_bytes()
+        assert second.endswith(b"another entry\n")
+        assert not second.endswith(b"\n\n")
 
 
 class TestMemoryStoreCharLimitOnLoad:

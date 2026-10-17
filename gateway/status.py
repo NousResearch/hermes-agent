@@ -677,10 +677,13 @@ def profile_flag_value(command: str) -> Optional[str]:
     ``-P`` is no ``-p``, #127865), or None. Token equality: ``-p ops`` must not claim ``-p ops-2``."""
     tokens = [t.lower() for t in inline_bootstrap_argv(command.split()) or command.split()]
     for i, tok in enumerate(tokens):
+        # The store launcher embeds argv as ``['--profile', 'ops']``. Space-joined
+        # command lines keep the quotes, brackets and commas on the tokens.
+        tok = tok.strip("\"'[](),;")
         if tok.startswith("--profile="):
-            return tok.partition("=")[2]
+            return tok.partition("=")[2].strip("\"'[](),;")
         if tok in ("-p", "--profile") and i + 1 < len(tokens):
-            return tokens[i + 1]
+            return tokens[i + 1].strip("\"'[](),;")
     return None
 
 

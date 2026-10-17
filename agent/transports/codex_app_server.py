@@ -102,11 +102,27 @@ class CodexAppServerClient:
         # GATEWAY_RELAY_* auth — none of which a coding subprocess has any use for. Route through the
         # centralized helper so Tier-1 + dynamic-internal secrets are always stripped while provider creds
         # still flow, matching copilot_acp_client (#29157 sibling spawn-site gap).
+        # ``hermes_subprocess_env`` normally applies Hermes' per-profile HOME
+        # contract.  Codex is an account-level executor, though: moving HOME to
+        # ``$HERMES_HOME/home`` makes it miss the user's ~/.codex/config.toml
+        # (and therefore every registered MCP server) for named profiles.
+        # Preserve the launcher's real HOME while still passing HERMES_HOME on
+        # to the Hermes MCP child so that tool calls use the selected profile.
+        effective_codex_home = (
+            codex_home
+            or os.environ.get("CODEX_HOME")
+            or os.path.join(os.path.expanduser("~"), ".codex")
+        )
+        parent_home_present = "HOME" in os.environ
+        parent_home = os.environ.get("HOME")
         spawn_env = hermes_subprocess_env(inherit_credentials=True)
+        if parent_home_present:
+            spawn_env["HOME"] = parent_home
+        else:
+            spawn_env.pop("HOME", None)
         if env:
             spawn_env.update(env)
-        if codex_home:
-            spawn_env["CODEX_HOME"] = codex_home
+        spawn_env["CODEX_HOME"] = effective_codex_home
 
         cmd = [codex_bin, "app-server", *(extra_args or [])]
         from agent.delegation_context import (
@@ -132,7 +148,7 @@ class CodexAppServerClient:
             kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
             cmd += [
                 "-c", 'sandbox_mode="workspace-write"',
-                "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                "-c", f"sandbox_workspace_write.writable_roots={json.dumps([kanban_root])}",
                 "-c", "sandbox_workspace_write.network_access=false",
             ]
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.

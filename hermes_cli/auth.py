@@ -393,6 +393,35 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
     from hermes_cli.config import get_env_value_prefer_dotenv
 
+    # Quota-aware strategies opt-in: when the provider's pool strategy is
+    # earliest_reset or fresh_first, the pool — ordered by live quota-window
+    # state from the probe cache — wins over the static env key, so construction
+    # binds the credential the strategy picks instead of whatever happens to sit
+    # in .env. Env-first remains the default for every other strategy.
+    try:
+        from agent.credential_pool import (
+            STRATEGY_EARLIEST_RESET,
+            STRATEGY_FRESH_FIRST,
+            get_pool_strategy,
+            load_pool,
+        )
+
+        strategy = get_pool_strategy(provider_id)
+        if strategy in (STRATEGY_EARLIEST_RESET, STRATEGY_FRESH_FIRST):
+            pool = load_pool(provider_id)
+            if pool and pool.has_credentials():
+                entry = pool.select()
+                if entry is not None:
+                    key = getattr(entry, "access_token", "") or getattr(
+                        entry, "runtime_api_key", ""
+                    )
+                    key = str(key or "").strip()
+                    if has_usable_secret(key):
+                        return key, f"credential_pool:{provider_id}:{strategy}"
+    except Exception:
+        pass
+
+
     # Desktop-saved credential pointer: the settings UI persists registry-provider keys as
     # model.key_env → $HERMES_HOME/.env (e.g. HERMES_CUSTOM_LMSTUDIO_API_KEY) while keeping
     # model.provider on the registry id, so the pointer must be honored here or the UI-saved

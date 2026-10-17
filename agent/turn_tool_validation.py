@@ -150,6 +150,8 @@ def validate_tool_calls(
                 else "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
             ),
         )
+        # These error rows are this turn's tool round: an empty reply to them still gets the post-tool nudge.
+        agent._tool_round_this_turn = True
         return _verdict("continue")
     # Reset retry counter on successful tool call validation
     agent._invalid_tool_retries = 0
@@ -229,6 +231,7 @@ def validate_tool_calls(
             )
 
         _append_tool_error_results(messages, tool_calls, _json_error_result)
+        agent._tool_round_this_turn = True
         return _verdict("continue")
 
     # Reset retry counter on successful JSON validation

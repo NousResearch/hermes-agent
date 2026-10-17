@@ -23,6 +23,20 @@ const views: SettingsView[] = [
 ]
 
 describe('settings subpage routing', () => {
+  it('routes the reduced-effects palette target to the General appearance control', () => {
+    const id = 'appearance.reduced-effects'
+    const target = settingSearchTargets(TRANSLATIONS.en).find(entry => entry.id === id)
+
+    expect(target).toMatchObject({
+      label: TRANSLATIONS.en.settings.appearance.effectsTitle,
+      view: 'config:appearance'
+    })
+    expect(target?.keywords).toEqual(expect.arrayContaining(['motion', 'animation', 'gpu']))
+    const query = new URLSearchParams(settingsSearchTargetQuery({ view: 'config:appearance', setting: id }))
+    expect(query.get('page')).toBe('general')
+    expect(resolveSettingsSubpage('config:appearance', query)).toBe('general')
+  })
+
   it('opens the first ordered child for parents and keeps explicit child destinations', () => {
     for (const view of views) {
       const pages = settingsSubpages(view)

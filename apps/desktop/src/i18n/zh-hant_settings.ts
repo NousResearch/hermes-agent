@@ -266,6 +266,10 @@ export const zhHantSettings = {
       system: { label: '跟隨系統', description: '跟隨作業系統外觀' }
     },
     appearance: {
+      effectsTitle: '動態與特效',
+      effectsDesc: '精簡模式會保留狀態指示，同時停止持續的閃爍、漸層與活動動畫，以節省 GPU 資源。',
+      effectsFull: '完整',
+      effectsReduced: '精簡',
       chatTextScaleTitle: '聊天文字大小',
       chatTextScaleDesc: '相對於介面縮放調整對話文字和訊息輸入框的字級。側邊欄與控制項大小保持不變。',
       title: '外觀',

@@ -1009,6 +1009,11 @@ export const frOverrides = {
       }
     },
     appearance: {
+      effectsTitle: 'Animations et effets',
+      effectsDesc:
+        'Le mode réduit conserve les indicateurs d’activité et désactive les animations continues de scintillement, de dégradé et d’activité pour alléger la charge du GPU.',
+      effectsFull: 'Complet',
+      effectsReduced: 'Réduit',
       chatTextScaleTitle: 'Taille du texte du chat',
       chatTextScaleDesc:
         'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',

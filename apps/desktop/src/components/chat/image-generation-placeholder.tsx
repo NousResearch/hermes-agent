@@ -1,8 +1,10 @@
+import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { onThemeRepaint } from '@/hooks/use-theme-epoch'
 import { createBudgetedLoop } from '@/lib/budgeted-loop'
+import { $reducedEffects } from '@/store/reduced-effects'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -257,6 +259,8 @@ const MAX_ANIMATED_INSTANCES = 2
 let activeAnimatedCount = 0
 
 export const DiffusionCanvas: FC = () => {
+  const reducedEffects = useStore($reducedEffects)
+  const cappedStaticRef = useRef(false)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef({ width: 0, height: 0 })
   const themeRef = useRef<Theme>(FALLBACKS)
@@ -270,7 +274,12 @@ export const DiffusionCanvas: FC = () => {
     }
 
     sizeRef.current = fitCanvas(canvas, ctx)
-  }, [])
+
+    if (reducedEffects || cappedStaticRef.current) {
+      const { width, height } = sizeRef.current
+      drawAsciiDiffusion(ctx, themeRef.current, width, height, 0)
+    }
+  }, [reducedEffects])
 
   useResizeObserver(fitToContainer, canvasRef)
 
@@ -282,6 +291,10 @@ export const DiffusionCanvas: FC = () => {
 
     const sync = () => {
       themeRef.current = readTheme(probe)
+
+      if (reducedEffects || cappedStaticRef.current) {
+        fitToContainer()
+      }
     }
 
     sync()
@@ -294,10 +307,16 @@ export const DiffusionCanvas: FC = () => {
       unsubscribe()
       probe.remove()
     }
-  }, [])
+  }, [fitToContainer, reducedEffects])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
+    cappedStaticRef.current = false
+
+    if (reducedEffects) {
+      return
+    }
+
     const canvas = canvasRef.current
     const ctx = canvas?.getContext('2d')
 
@@ -311,6 +330,7 @@ export const DiffusionCanvas: FC = () => {
     // extra instances are zero-cost (#79077). Each animated instance redraws
     // its full canvas per frame, so N instances multiply cost linearly.
     if (activeAnimatedCount >= MAX_ANIMATED_INSTANCES) {
+      cappedStaticRef.current = true
       const { width, height } = sizeRef.current
       drawAsciiDiffusion(ctx, themeRef.current, width, height, 0)
 
@@ -321,7 +341,7 @@ export const DiffusionCanvas: FC = () => {
 
     // 15fps is visually equivalent for this placeholder shimmer and does 4x
     // fewer full-canvas redraws than display cadence (#79077). The loop also
-    // pauses while the window is hidden/minimized/unfocused (#88396).
+    // pauses while the window is hidden/minimized (#88396).
     const loop = createBudgetedLoop(
       now => {
         const { width, height } = sizeRef.current
@@ -335,7 +355,7 @@ export const DiffusionCanvas: FC = () => {
       loop.dispose()
       activeAnimatedCount--
     }
-  }, [])
+  }, [reducedEffects])
 
   return <canvas className="absolute inset-0 h-full w-full" ref={canvasRef} />
 }

@@ -1011,6 +1011,11 @@ export const esOverrides = {
       }
     },
     appearance: {
+      effectsTitle: 'Movimiento y efectos',
+      effectsDesc:
+        'El modo reducido mantiene visibles los indicadores de estado y detiene las animaciones continuas de brillo, degradado y actividad para reducir la carga de la GPU.',
+      effectsFull: 'Completo',
+      effectsReduced: 'Reducido',
       chatTextScaleTitle: 'Tamaño del texto del chat',
       chatTextScaleDesc:
         'Ajusta el texto de la conversación y del editor respecto a la escala de la interfaz. Las barras laterales y los controles mantienen su tamaño.',

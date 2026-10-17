@@ -1008,6 +1008,11 @@ export const deOverrides = {
       }
     },
     appearance: {
+      effectsTitle: 'Bewegung und Effekte',
+      effectsDesc:
+        'Im reduzierten Modus bleiben Statusanzeigen sichtbar, während kontinuierliches Schimmern sowie Gradienten- und Aktivitätsanimationen gestoppt werden, um die GPU zu entlasten.',
+      effectsFull: 'Voll',
+      effectsReduced: 'Reduziert',
       chatTextScaleTitle: 'Chat-Textgröße',
       chatTextScaleDesc:
         'Skaliert Unterhaltungstext und Nachrichteneingabe relativ zur UI-Skalierung. Seitenleisten und Bedienelemente behalten ihre Größe.',

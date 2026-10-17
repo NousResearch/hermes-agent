@@ -882,17 +882,13 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if (kanban_refusal := kanban_resume_refusal(self._session_db, target_id)):
             return _cp(f"  {kanban_refusal}")
         read_id, target_id = target_id, _gateway_owned_id(self._session_db, target_id)  # the receipt owner
-        if target_id == self.session_id:
-            # Already on it: a launch whose attach was refused lands here without a subscription,
-            # so open it before reporting.
-            if (refusal := _open_switched_session(self, target_id)):
-                return _cp(f"  {_gt('resume.switch_failed')} {target_id} ({refusal})")
-            return _cp(f"  {_t('resume.already_on')}")
-        # A switched-to session must be subscribed on this viewer before its first turn
-        # (``_open_switched_session``): the write side is the gateway's, and /resume can land
-        # before any agent exists.
+        # Subscribe the target on this viewer before anything changes: the write side is the
+        # gateway's and /resume can land before any agent exists (also covers already-on after a
+        # refused launch attach). The agent setter's later attach is free: attach caches per id.
         if (refusal := _open_switched_session(self, target_id)):
             return _cp(f"  {_gt('resume.switch_failed')} {target_id} ({refusal})")
+        if target_id == self.session_id:
+            return _cp(f"  {_t('resume.already_on')}")
         old_session_id = self.session_id
         _end_current_session(self, "resumed_other")
         self.session_id, self._resumed, self._pending_title = target_id, True, None

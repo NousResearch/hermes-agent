@@ -9,13 +9,8 @@ from contextlib import suppress
 
 from hermes_cli.gateway_session_store import RESUME_REFUSALS
 
-# A gateway that answers one of these has refused this viewer the target session, so the switch
-# must not move the chat onto it. Every other reason it can
-# answer (session_busy, runtime_coordination_required, storage_unavailable, unknown_execution,
-# admission_conflict, stale_generation, runtime_draining) is transient or
-# ownership-free: the switch proceeds as it always did and the turn reports what is left.
-# Startup resume's set plus profile_mismatch (``restore_local_session`` raises it for a receipt
-# from another profile).
+# session.resume refusals that keep the chat on its current session (startup resume's set plus
+# profile_mismatch, which restore_local_session raises for another profile's receipt).
 _SWITCH_REFUSALS = RESUME_REFUSALS | {'profile_mismatch'}
 
 
@@ -79,19 +74,7 @@ def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reas
         cli.agent._invalidate_system_prompt()
     with suppress(Exception):
         _mm = getattr(cli.agent, "_memory_manager", None)
-        # Notify memory providers that session_id rotated to a fresh conversation. reset=True signals
-        # providers to flush accumulated per-session state (_session_turns, _turn_counter, _document_id).
-        # Fires BEFORE the plugin on_session_reset hook (shell hooks only see the new id; Python providers
-        # see the transition). See #6672. When the old session has history, end-of-session extraction
-        # (LLM-bound, seconds) and this switch are queued as ONE task on the memory manager's serialized
-        # worker — end strictly before switch, without blocking /new (#16454). With no history there is
-        # nothing to extract; switch inline as before.
-        # Notify memory providers that session_id rotated to a resumed session. reset=False — the provider's
-        # accumulated state is still valid; it just needs to target the new session_id for subsequent
-        # writes. See #6672.
-        # Notify memory providers that session_id forked to a new branch. reset=False — the branched session
-        # carries the transcript forward, so provider state tracks the lineage. parent_session_id links the
-        # branch back to the original. See #6672.
+        # reset=False: provider state follows the new id; parent_session_id keeps lineage (#6672).
         if _mm is not None:
             _mm.on_session_switch(
                 session_id, parent_session_id=parent_session_id or "", reset=False, reason=reason)

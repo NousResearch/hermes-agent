@@ -1081,8 +1081,8 @@ def _decision(status, should_continue: bool, prompt: Optional[str], verdict: str
 
 
 _JUDGE_CONFIG_HINT = (
-    "~/.hermes/config.yaml:\n  auxiliary:\n    goal_judge:\n      provider: {provider}\n      model: {model}\n"
-    "Then /goal resume to continue."
+    "Inspect auxiliary.goal_judge.provider/model and credentials in the active profile's "
+    "config.yaml, then /goal resume. This diagnostic does not identify or change the provider."
 )
 
 
@@ -1544,14 +1544,14 @@ class GoalManager:
                 f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
                 "continue", reason,
                 f"⏸ Goal paused — judge API returned errors ({n_tx} turns). Check the goal_judge provider/key in "
-                + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-flash"),
+                + _JUDGE_CONFIG_HINT,
             )
         if n_parse >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
             return self._pause_decision(
                 f"judge model returned unparseable output {n_parse} turns in a row", "continue", reason,
                 f"⏸ Goal paused — the judge model ({n_parse} turns) isn't returning the required JSON verdict. "
                 "Route the judge to a stricter model in "
-                + _JUDGE_CONFIG_HINT.format(provider="openrouter", model="google/gemini-3-flash-preview"),
+                + _JUDGE_CONFIG_HINT,
             )
 
         if state.turns_used >= state.max_turns:

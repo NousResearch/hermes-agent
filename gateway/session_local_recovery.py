@@ -1,4 +1,6 @@
 """Restore only private, profile-bound local policy into the existing authority."""
+import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -180,16 +182,83 @@ def transcript_target(authority, ref):
     return authority.physical_target(ref)
 
 
-def local_history(authority, ref):
-    """Display history from the current physical transcript; *ref* stays the logical root.
+# A resume reply's rows reach Ink twice (``messages`` and ``display_messages``). Archived rows are display-only
+# and fill only what the live rows leave of this budget, so they keep the reply well under the gateway clients'
+# 8 MiB WebSocket frame cap (``hermes_cli/gateway_client.py``) and never push a reply main could send past it.
+# Live rows are never dropped.
+RESUME_HISTORY_BYTES = 3 * 1024 * 1024
+
+
+def display_rows(db, target):
+    """``(live row ids, display rows, truncated)`` of physical *target*, the live ids read first
+    (``local_history``'s fence). The display rows are the compression lineage as main's resume and the
+    REST transcript show it: every live row, and the newest compaction-archived rows that fit what the
+    live rows leave of ``RESUME_HISTORY_BYTES`` (``truncated`` when older ones were left out). A lineage
+    over the resume cap shows only the live rows."""
+    from hermes_state import SessionResumeTooLargeError
+    live_rows = db.get_messages_as_conversation(target, include_row_ids=True)
+    live = {row['_row_id'] for row in live_rows}
+    try:
+        db.assert_resume_safe(target)
+    except SessionResumeTooLargeError:
+        return live, [], False
+    kept, used, truncated = [], sum(len(json.dumps(row, default=str)) for row in live_rows), False
+    for row in reversed(db.get_messages_as_conversation(target, include_ancestors=True, include_compacted=True,
+                                                        include_row_ids=True)):
+        if row['_row_id'] not in live:
+            used += len(json.dumps(row, default=str))
+            truncated = truncated or used > RESUME_HISTORY_BYTES
+            if truncated:
+                continue
+        kept.append(row)
+    return live, kept[::-1], truncated
+
+
+async def prepare_history(authority, ref):
+    """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
+    target = transcript_target(authority, ref)
+    return target, await asyncio.to_thread(display_rows, authority.db, target)
+
+
+def local_history(authority, ref, prepared=None):
+    """Display history of logical *ref*: every stored row the user saw, in display order.
+
+    A row outside the current physical transcript's active set (summarized away by a compression)
+    carries ``archived: true``: it is shown, never live, so no undo, retry or rewind may target it.
+    The rows without it are exactly the live transcript's, so a client choosing among live rows sees
+    what it saw before. That includes a micro-compaction merge (``display_metadata.model_only``): its
+    originals are the archived rows renderers show, so renderers skip the merge itself.
 
     Each row carries its durable ``messages.id`` as ``row_id`` (the ``TranscriptMessage`` field
     Desktop hydration and the legacy ``session.history`` already use): a ``session.mutate`` rewind
     addresses its ``target_message_id`` by it, so a snapshot without it leaves no way to undo/retry.
+    *prepared* (``prepare_history``) is kept while every row it read as live still is; a rewind or
+    compaction since then re-reads the lineage here. When the byte budget left older archived rows out
+    (``display_rows``), the first row carries ``archived_truncated: true``.
     """
-    rows = authority.db.get_messages_as_conversation(transcript_target(authority, ref), include_row_ids=True)
-    return [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']}
-            if '_row_id' in row else row for row in rows]
+    db = authority.db
+    target = transcript_target(authority, ref)
+    read_live, display, truncated = (prepared[1] if prepared is not None and prepared[0] == target
+                                     else display_rows(db, target))
+    live = db.get_messages_as_conversation(target, include_row_ids=True)
+    if not read_live <= {row['_row_id'] for row in live}:
+        read_live, display, truncated = display_rows(db, target)
+        live = db.get_messages_as_conversation(target, include_row_ids=True)
+    current = {row['_row_id']: row for row in live}
+    shown = {row['_row_id'] for row in display}
+    unshown = [row for row in live if row['_row_id'] not in shown]  # hidden by the display, or appended since
+    rows = []
+    for row in display:
+        if row['_row_id'] not in current:
+            rows.append({**row, 'archived': True})
+            continue
+        while unshown and unshown[0]['_row_id'] < row['_row_id']:
+            rows.append(unshown.pop(0))
+        rows.append(current[row['_row_id']])
+    rows = [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']} for row in rows + unshown]
+    if truncated and rows:
+        rows[0]['archived_truncated'] = True  # earlier archived history was left out (the byte budget)
+    return rows
 
 
 def reopen_local_session(authority, ref):

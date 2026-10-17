@@ -77,7 +77,8 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     finally:
         db.release_compression_lock(ref.session_id, 'fixture')
     snapshot = await authority.attach(native, ref)
-    assert [m['content'] for m in snapshot.history] == ['COMPRESSED', 'RETAINED']
+    assert [m['content'] for m in snapshot.history if not m.get('archived')] == ['COMPRESSED', 'RETAINED']
+    assert [m['content'] for m in snapshot.history if m.get('archived')] == ['OLD_QUESTION', 'OLD_ANSWER']
     assert resolve_titled_session(authority, native, 'old-cli') == ref
     assert local_receipt(db, ref.session_id)['policy'] == receipt['policy']
     with pytest.raises(RuntimeStoreError, match='permission_denied'):

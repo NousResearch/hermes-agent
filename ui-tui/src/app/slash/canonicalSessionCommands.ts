@@ -17,12 +17,14 @@ import { usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
-/** A human-authored user turn (`agent/context_compressor.py::split_user_originated_turn`): no
- * display-only kind other than a typed /steer, and not a compaction handoff carrier. */
+/** A human-authored live user turn (`agent/context_compressor.py::split_user_originated_turn`): no
+ * display-only kind other than a typed /steer, not a compaction handoff carrier, and not a row a
+ * compression archived (history the snapshot shows, never a turn to rewind to). */
 const isUserTurn = (row: Record<string, unknown>) =>
   row.role === 'user' &&
   (!row.display_kind || row.display_kind === 'steer') &&
   Number.isSafeInteger(row.row_id) &&
+  !row.archived &&
   !(typeof row.content === 'string' && COMPACTION_MARKERS.some(marker => row.content!.toString().includes(marker)))
 
 /** The rewind payload for the newest user turn in the snapshot the CAS tuple came from. */

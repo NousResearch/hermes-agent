@@ -22,6 +22,7 @@ const TEXT_PARTS = new Set(['input_text', 'output_text', 'text'])
 const PREVIEW_CHARS = 50
 
 interface SnapshotRow {
+  archived?: unknown
   content?: unknown
   display_kind?: unknown
   role?: unknown
@@ -70,6 +71,8 @@ function isUserTurn(row: SnapshotRow): boolean {
     row.role === 'user' &&
     (!row.display_kind || row.display_kind === 'steer') &&
     Number.isSafeInteger(row.row_id) &&
+    // A live row only: a row a compression archived is history the snapshot shows, never a turn to rewind to.
+    !row.archived &&
     !(typeof row.content === 'string' && COMPACTION_MARKERS.some(marker => String(row.content).includes(marker)))
   )
 }

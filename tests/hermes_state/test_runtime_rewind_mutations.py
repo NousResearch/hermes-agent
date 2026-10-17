@@ -32,3 +32,20 @@ def test_rewind_refuses_queued_work(tmp_path):
             rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='s', request_id='rewind',
                 expected_revision=0, expected_generation=0, operation='rewind', payload={'target_message_id': target})
         assert db.get_messages('s')[0]['content'] == 'keep'
+
+
+def test_rewind_refuses_a_row_a_compression_archived(tmp_path):
+    """A compacted row is still shown in history, but it is not live: a rewind to it would deactivate
+    every live row after it, the whole conversation since the compression."""
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('s', source='test')
+        db.append_messages_batch('s', [{'role': 'user', 'content': 'old'}, {'role': 'assistant', 'content': 'reply'}])
+        archived = db.get_messages('s')[0]['id']
+        db.archive_and_compact('s', [{'role': 'user', 'content': '[CONTEXT COMPACTION] earlier turns'}])
+        db.append_messages_batch('s', [{'role': 'user', 'content': 'live'}, {'role': 'assistant', 'content': 'answer'}])
+        live = [m['content'] for m in db.get_messages('s')]
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        with pytest.raises(rt.RuntimeStoreError, match='invalid_params'):
+            rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='s', request_id='rewind',
+                expected_revision=0, expected_generation=0, operation='rewind', payload={'target_message_id': archived})
+        assert [m['content'] for m in db.get_messages('s')] == live

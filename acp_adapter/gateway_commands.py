@@ -208,7 +208,7 @@ async def _refresh_context(agent, client, session_id, operation):
     stats = await client.rpc('session.stats', session_id=session_id)
     if stats.get('context_length') is None:
         from agent.model_metadata import estimate_request_tokens_rough
-        messages = agent._snapshots[session_id].get('messages') or []
+        messages = [m for m in agent._snapshots[session_id].get('messages') or [] if not m.get('archived')]
         stats = {**stats, 'context_length': (agent._usage.get(session_id) or {}).get('context_length'),
                  'context_tokens': estimate_request_tokens_rough(messages) if operation == 'compress' else 0}
     await agent._project_usage(session_id, agent._editor_id(session_id), stats)

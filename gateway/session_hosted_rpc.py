@@ -197,9 +197,10 @@ class HostedRoomAuthorityRPC:
                 self._terminal(row, task, generation)
 
     async def _history(self, params):
-        from gateway.session_local_recovery import local_history
+        from gateway.session_local_recovery import local_history, prepare_history
+        prepared = await prepare_history(self.authority, self.ref)
         rows = self._rows()
-        history = list(local_history(self.authority, self.ref))
+        history = list(local_history(self.authority, self.ref, prepared))
         for row, task, generation in rows:
             if row['status'] == 'terminal':
                 receipt = self._terminal(row, task, generation)

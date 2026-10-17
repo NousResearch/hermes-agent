@@ -265,6 +265,8 @@ class CLITuiRuntimeMixin:
             _term_lines = shutil.get_terminal_size().lines
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
+                from hermes_cli.cli_render import _pin_chrome
+                _pin_chrome()  # the chrome starts on the bottom rows (CPR-less mouse mapping)
 
         from hermes_cli.gateway_client import GatewayClientError
         try:

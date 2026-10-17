@@ -138,9 +138,9 @@ def test_steer_input_sends_typed_guidance_to_the_selected_subagent_and_leaves_th
                 assert t('cli.subagents.steer_prompt').strip() in monitor.dock_text(
                     columns=120, rows=30, selecting=True)
                 pipe.send_text('\x7fing db\r')  # Backspace, more text, Enter sends
-                await async_wait_until(lambda: sent, what='steer sent')
+                await async_wait_until(lambda: monitor.notice == 'guidance queued', what='steer outcome')
                 assert sent == [('steer', 'sa-1', 'use the staging db')]
-                assert monitor.steer_target is None and monitor.notice == 'guidance queued'
+                assert monitor.steer_target is None
                 assert editor.text == '' and monitor.footer_active
                 pipe.send_text('s')
                 await async_wait_until(lambda: monitor.steer_target == 'sa-1', what='steer reopened')
@@ -169,3 +169,128 @@ def test_idle_pill_suggests_mouse_only_while_clicks_are_off_and_room_allows():
     assert mouse_hint not in narrow and regular in narrow
     cli._mouse_enabled = True
     assert mouse_hint not in footer.plain_text(footer.dock_lines(monitor, columns=200, rows=30))
+
+
+def _racing_monitor(rows, *, on_read):
+    """A monitor whose ``on_read`` attribute runs ``finish_first_row`` on that attribute's Nth read:
+    the spinner thread's refresh landing in the middle of a footer key handler."""
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    attr, nth = on_read
+
+    class Racing(SubagentMonitor):
+        reads = 0
+        armed = False
+
+        def __getattribute__(self, name):
+            if name == attr and object.__getattribute__(self, 'armed'):
+                self.reads += 1
+                if self.reads == nth:
+                    self.finish_first_row()
+            return object.__getattribute__(self, name)
+
+        def finish_first_row(self):
+            # What refresh() does when the selected row finishes: select the next one and drop
+            # the pending confirmation / steer input.
+            self.armed = False
+            self.entries = [r for r in self.entries if r['key'] != 'sa-0']
+            self.processes = [r for r in self.processes if r['key'] != 'sh-0']
+            self.selected_id = self._key(self.roster[0])
+            self.confirm_key = None
+            self.steer_target, self.steer_draft = None, ''
+
+    cli = SimpleNamespace(agent=None)
+    monitor = cli._subagent_monitor = Racing(cli)
+    monitor.entries = [r for r in rows if r.get('kind') != 'process']
+    monitor.processes = [r for r in rows if r.get('kind') == 'process']
+    return cli, monitor
+
+
+def test_a_row_finishing_mid_stop_or_mid_steer_never_redirects_the_control_to_the_next_row(monkeypatch):
+    """The stop / steer goes to the row it was armed on, read once; a refresh that finishes that
+    row and selects the next one meanwhile never redirects it, and a control whose row is gone
+    reports that instead of falling back to whatever row is selected now."""
+    from hermes_cli import cli_dock_footer as footer
+    from hermes_cli import cli_process_dock as procs
+    from tools import delegate_tool_registry as registry
+    from tests.waiting import wait_until
+
+    killed, steered = [], []
+    monkeypatch.setattr(procs, 'kill', lambda key: killed.append(key) or {'status': 'killed'})
+    monkeypatch.setattr(registry, '_handle_control_action', lambda action, sid, message, parent:
+                        steered.append((action, sid)) or '{"status": "queued"}')
+
+    # The refresh lands as the confirmed stop is dispatched: sh-0 is gone, sh-1 is selected.
+    cli, monitor = _racing_monitor([_process('sh-0'), _process('sh-1')], on_read=('control', 1))
+    footer.enter(cli)
+    footer.stop_selected(cli)  # armed on sh-0
+    monitor.armed = True
+    footer.stop_selected(cli)
+    wait_until(lambda: monitor.notice, what='stop outcome')
+    assert killed == [] and monitor.notice == t('cli.subagents.entry_gone')
+
+    # The refresh closes the steer input (its child finished) as Enter reads the target.
+    cli, monitor = _racing_monitor([_agent(0), _agent(1)], on_read=('steer_target', 1))
+    footer.enter(cli)
+    footer.start_steer(cli)
+    footer.steer_type(cli, 'use the staging db')
+    monitor.armed = True
+    footer.steer_send(cli)
+    assert steered == []
+
+    # No target left: an error notice, never the selected row.
+    assert monitor.control('stop', target=None) == {'error': t('cli.subagents.entry_gone')}
+    assert monitor.control('steer', 'x', target='sa-0') == {'error': t('cli.subagents.entry_gone')}
+    assert steered == [] and killed == []
+
+
+def test_footer_controls_and_monitor_tails_never_wait_for_the_gateway(monkeypatch):
+    """A slow ``subagent.tail`` / stop RPC must not block painting or keys: the call returns what
+    is cached at once, and the result lands (with a repaint) when the worker finishes."""
+    import threading
+    from hermes_cli import cli_dock_footer as footer
+    from hermes_cli import gateway_tools
+    from hermes_cli.cli_subagent_monitor import subagent_tail
+    from tests.waiting import wait_until
+
+    release = threading.Event()
+    view = SimpleNamespace(subagent_tail=lambda sid: release.wait(5) and 'child output')
+    monkeypatch.setattr(gateway_tools, 'process_view', lambda: view)
+    repaints, cache = [], {}
+    row = dict(subagent_id='sa-9', live_transcript='')
+    assert subagent_tail(row, cache, on_update=lambda: repaints.append(1)) != 'child output'
+    assert subagent_tail(row, cache) != 'child output'  # still fetching: no second RPC, no wait
+    release.set()
+    wait_until(lambda: repaints, what='tail fetched')
+    assert subagent_tail(row, cache) == 'child output'
+
+    cli, monitor = _monitor_with_rows()
+    cli._invalidate = lambda *a, **k: repaints.append('footer')
+    stopping = threading.Event()
+    monkeypatch.setattr(monitor, 'control', lambda action, message=None, *, target=None:
+                        stopping.wait(5) and {'status': 'interrupt_requested', 'note': 'stopping'})
+    footer.enter(cli)
+    footer.stop_selected(cli)
+    footer.stop_selected(cli)  # sent: returns while the stop is still in flight
+    assert monitor.notice == '' and not stopping.is_set()
+    stopping.set()
+    wait_until(lambda: monitor.notice == 'stopping', what='stop outcome')
+    wait_until(lambda: 'footer' in repaints, what='footer repainted with the outcome')
+
+
+def test_a_long_steer_draft_renders_its_tail_in_one_pass():
+    """A huge paste into the steer input shows the tail that fits, without re-measuring the
+    whole draft once per dropped character (a 12k paste took seconds per paint)."""
+    import time
+    from prompt_toolkit.utils import get_cwidth
+    from hermes_cli import cli_dock_footer as footer
+    cli, monitor = _monitor_with_rows()
+    footer.enter(cli)
+    footer.start_steer(cli)
+    footer.steer_type(cli, 'ab界' * 20000 + 'END')
+    started = time.monotonic()
+    lines = footer.dock_lines(monitor, columns=80, rows=30, selecting=True)
+    assert time.monotonic() - started < 2
+    steer = lines[-1]
+    draft, room = steer[1][1], 79 - get_cwidth(steer[0][1]) - 1
+    assert draft.endswith('END') and monitor.steer_draft.endswith(draft)
+    assert room - 1 <= get_cwidth(draft) <= room  # the widest tail that fits (a wide char may not)

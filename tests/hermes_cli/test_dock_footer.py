@@ -88,7 +88,9 @@ def test_footer_stop_asks_twice_before_stopping_the_selected_row(monkeypatch):
     assert t('cli.subagents.confirm_stop', noun=t('cli.subagents.noun_subagent')) in footer.plain_text(
         footer.dock_lines(monitor, columns=120, rows=30, selecting=True))
     footer.stop_selected(cli)
-    assert calls == [('stop', 'sa-1')] and monitor.notice == 'stopping'
+    from tests.waiting import wait_until
+    wait_until(lambda: monitor.notice == 'stopping', what='stop outcome')
+    assert calls == [('stop', 'sa-1')]
 
 
 def test_gateway_backed_dock_lists_the_sessions_children_and_routes_controls_to_the_gateway(monkeypatch):
@@ -124,7 +126,9 @@ def test_gateway_backed_dock_lists_the_sessions_children_and_routes_controls_to_
     assert t('cli.subagents.pill_agents_one', count=1) in text and 'Check the build' in text
 
     from hermes_cli.cli_subagent_monitor import subagent_tail
-    assert subagent_tail(monitor.entries[0], {}) == 'child output'
+    from tests.waiting import wait_until
+    tail_cache = {}
+    wait_until(lambda: subagent_tail(monitor.entries[0], tail_cache) == 'child output', what='tail fetched')
     monitor.selected_id = 'sa-9'
     assert monitor.control('stop')['status'] == 'interrupt_requested'
     assert ('subagent.interrupt', {'session_id': 'sess-1', 'subagent_id': 'sa-9'}) in calls

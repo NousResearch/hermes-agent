@@ -699,16 +699,25 @@ def write_json(obj: dict) -> bool:
     session's transport (async events reach the owner even from threads with no contextvar binding);
     (2) the context-bound transport (:func:`dispatch`); (3) module stdio (tests monkey-patch ``_real_stdout``).
     Every event frame gets a per-session monotonic ``seq`` + replay-ring entry so ``session.events.since`` can resume."""
-    from tui_gateway.event_replay import _stamp_event
+    from tui_gateway.event_replay import _stamp_event, emit_frame_lock
     from tui_gateway.hosted_room_member_activity import project_room_member_activity
-    _stamp_event(obj)
     params = obj.get("params")
-    if obj.get("method") == "event" or (isinstance(obj.get("id"), str) and "method" in obj):
+    sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
+    if obj.get("method") == "event":
+        # Stamp and enqueue as one per-session critical section: concurrent callers
+        # (parallel tool callbacks run on worker threads) must not let an earlier
+        # seq leave after a later one — the client's watermark drops it silently.
+        with emit_frame_lock(sid):
+            _stamp_event(obj)
+            project_room_member_activity(obj, _sessions)
+            if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
+                return t.write(obj)
+            return (current_transport() or _stdio_transport).write(obj)
+    if isinstance(obj.get("id"), str) and "method" in obj:
         # Event notifications AND server→client requests carry ``params.session_id``; both route to the
         # owning session's transport. A room member's hidden session has no transport: its frames would
-        # die at stdio below.
+        # die at stdio below. Requests carry no seq, so they need no stamp lock.
         project_room_member_activity(obj, _sessions)
-        sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
             return t.write(obj)
     return (current_transport() or _stdio_transport).write(obj)

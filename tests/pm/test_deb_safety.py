@@ -77,6 +77,19 @@ def test_chained_aliases_survive_without_symlink_support(tmp_path, monkeypatch):
         assert (staged / lib / name).read_bytes() == b"library payload"
 
 
+def test_legacy_bootstrap_preserves_installer_remedy(tmp_path, monkeypatch):
+    """Older tarfile has neither data_filter nor its FilterError exception."""
+    deb, staged = tmp_path / "legacy.deb", tmp_path / "staged"
+    _build_deb(deb, [("usr/bin/tool", b"payload")])
+    monkeypatch.delattr(tarfile, "data_filter")
+    monkeypatch.delattr(tarfile, "FilterError")
+
+    with pytest.raises(InstallError, match="re-run the installer") as excinfo:
+        _P().unpack(deb, staged, "linux-arm64-bionic")
+    assert excinfo.value.package == "python"
+    assert not staged.exists()
+
+
 def test_relative_member_escape_preserves_outside(tmp_path):
     deb, staged = tmp_path / "escape.deb", tmp_path / "staged"
     sentinel = tmp_path / "sentinel"

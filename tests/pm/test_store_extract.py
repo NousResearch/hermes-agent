@@ -3,11 +3,12 @@ tarballs carry relative terminfo symlinks (``share/terminfo/1/1178 -> ../a/adm11
 
 import io
 import os
+import sys
 import tarfile
 
 import pytest
 
-from pm.store import extract
+from pm.store import extract, extract_tar
 
 
 def _tar(tmp_path, members):
@@ -41,6 +42,29 @@ def test_symlinks_escaping_the_destination_are_rejected(tmp_path, linkname):
     with pytest.raises(tarfile.FilterError):
         extract(archive, tmp_path / "out")
     assert not (tmp_path / "out" / "python/bin/evil").is_symlink()
+
+@pytest.mark.parametrize("stream", [False, True], ids=["path", "stream"])
+def test_interpreter_without_pep706_filters_is_refused_with_a_remedy(tmp_path, monkeypatch, stream):
+    """3.11.0-3.11.3 (and 3.10 < .12) lack tarfile.data_filter / extractall(filter=).
+    An update bootstrapped from such a venv must fail with the installer remedy,
+    not a bare TypeError, and must never extract unfiltered."""
+    from pm.package import InstallError
+
+    archive = _tar(tmp_path, [("python/bin/python3", None)])
+    monkeypatch.delattr(tarfile, "data_filter")
+    dest = tmp_path / "out"
+    with pytest.raises(InstallError) as excinfo:
+        if stream:
+            with archive.open("rb") as payload:
+                extract_tar(payload, dest)
+        else:
+            extract(archive, dest)
+    message = str(excinfo.value)
+    assert "tarfile.data_filter" in message and "3.11.4+" in message
+    assert "re-run the installer" in message
+    assert sys.executable in message
+    assert ".".join(str(part) for part in sys.version_info[:3]) in message
+    assert not (dest / "python/bin/python3").exists()
 
 
 def _portable_git(tmp_path):

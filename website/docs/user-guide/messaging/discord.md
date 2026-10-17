@@ -82,6 +82,21 @@ With `group_sessions_per_user: false`:
 
 This guide walks you through the full setup process — from creating your bot on Discord's Developer Portal to sending your first message.
 
+### Processing reactions
+
+Hermes adds 👀 while processing a message, then removes it before adding ✅ on
+success or ❌ on failure. To change only the in-progress reaction, set this in
+the owning profile's `config.yaml` and restart the gateway:
+
+```yaml
+discord:
+  processing_emoji: "🛠️"
+```
+
+Omitting `discord.processing_emoji` keeps 👀. The setting is isolated per profile;
+the same configured Emoji is used for addition and removal. Existing reaction
+controls (`discord.reactions` / `DISCORD_REACTIONS`) still apply.
+
 ### Gateway WebSocket health
 
 Discord REST and the Gateway WebSocket are separate transports. A successful REST response (including `fetch_user()` returning HTTP 200) does not prove that the bot can still receive Gateway events. Hermes therefore combines the ready state, client/socket closure state, socket openness, heartbeat ACK age, finite heartbeat latency, and — since the dispatch-side dimension — how long it has been since the last parsed Gateway event.

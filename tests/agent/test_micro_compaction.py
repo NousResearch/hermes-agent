@@ -1026,3 +1026,33 @@ def test_an_unstamped_trailing_row_does_not_suppress_the_stale_check(tmp_path, m
     # The pass is a no-op on the durable prefix; the trailing row this process authored still flushes once.
     live = [m["content"] for m in db.get_messages_as_conversation("s")]
     assert live == before + ["live turn not yet flushed"]
+
+
+def test_a_stale_generation_held_without_row_ids_aborts_the_micro_compact(tmp_path):
+    """The unaddressed live-replay projection (ACP restore, OpenAI session continuation:
+    ``get_messages_as_conversation`` without ``include_row_ids=True``) is the lease-less shape with
+    no ``_row_id``. It loads with the persist marker, durable identity and the stored-row CAS digest,
+    so the fence must still name its rows by ``message_uid``: after another surface pruned in place,
+    micro-compaction from that stale held history must be a no-op — the pruned stubs stay the only
+    live generation and the pre-prune bodies are not republished (#124102)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    db, cc, _held = _held_session(tmp_path, "micro")
+    held = db.get_messages_as_conversation("s", repair_alternation=True)
+    from agent.message_metadata import DB_ROW_SNAPSHOT
+    assert held and not any(m.get("_row_id") for m in held)
+    assert all(m.get(_DB_PERSISTED_MARKER) and isinstance(m.get(DB_ROW_SNAPSHOT), str) for m in held)
+    # Another surface commits a prune in place: same ids, same activity, different bodies.
+    # Rewrite an assistant row in place (micro sessions hold plain user/assistant turns, no tool rows).
+    original = next(m for m in db.get_resume_conversations("s")[0]
+                    if m.get("role") == "assistant" and m.get("content"))
+    db.rewrite_pruned_rows("s", [(dict(original), {**original, "content": "[pruned by the other surface]"})])
+    before = [m["content"] for m in db.get_messages_as_conversation("s")]
+
+    result = cc._micro_compact(held)
+    for msg in result:  # finalize_turn's persist flush appends every unpersisted dict
+        if not msg.get(_DB_PERSISTED_MARKER):
+            db.append_message("s", msg["role"], msg.get("content"))
+
+    assert result is held
+    assert [m["content"] for m in db.get_messages_as_conversation("s")] == before

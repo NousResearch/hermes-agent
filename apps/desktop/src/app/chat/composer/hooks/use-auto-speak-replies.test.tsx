@@ -3,7 +3,12 @@ import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage, chatMessageText } from '@/lib/chat-messages'
-import { clearSpokenRepliesForTests, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import {
+  assistantTurnKey,
+  clearSpokenRepliesForTests,
+  markAssistantIdSpoken,
+  resolveSpokenReply
+} from '@/lib/spoken-reply'
 import { playSpeechText } from '@/lib/voice-playback'
 import { $voicePlayback, setVoicePlaybackState } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
@@ -332,5 +337,113 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
       ])
     })
     await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(2))
+  })
+})
+
+// A tool-run turn speaks several bubbles under ONE user turn: interim
+// commentary, then the closing report. Keyed on the turn alone, the interim's
+// cross-window speech claim (held for minutes) refused the closing report, and
+// the report — already marked spoken — never reached TTS.
+describe('useAutoSpeakReplies — closing report of a tool-run turn', () => {
+  afterEach(() => {
+    cleanup()
+    clearSpokenRepliesForTests()
+    $autoSpeakReplies.set(false)
+    setVoicePlaybackState({ ...IDLE_STATE })
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    vi.clearAllMocks()
+  })
+
+  it('speaks the closing report held behind an interim of the same turn', async () => {
+    // The main-process arbiter within its speech TTL: first claim of a key wins.
+    const claimed = new Set<string>()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      claimAmbientCue: async (key: string) => !claimed.has(key) && Boolean(claimed.add(key))
+    }
+
+    $autoSpeakReplies.set(true)
+
+    const user = { id: 'u1', parts: [assistantTextPart('fix it')], role: 'user' } as ChatMessage
+    const interim = { ...assistantMessage('assistant-interim-1', 'Looking into it.'), interim: true }
+    const $messages = atom<ChatMessage[]>([user])
+
+    // The pendingResponse / consumePendingResponse pair use-composer-voice.ts wires up.
+    const pendingReply = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+      const spoken = resolveSpokenReply(SESSION_ID, messages)
+
+      if (!last || last.id === spoken?.id) {
+        return null
+      }
+
+      const text = chatMessageText(last).trim()
+
+      return {
+        id: last.id,
+        pending: Boolean(last.pending),
+        text,
+        turnKey: assistantTurnKey(SESSION_ID, messages, last.id)
+      }
+    }
+
+    const markSpoken = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+      if (last) {
+        markAssistantIdSpoken(SESSION_ID, messages, last.id)
+      }
+    }
+
+    vi.mocked(playSpeechText).mockImplementation(async (_text, options) => {
+      setVoicePlaybackState({
+        ...IDLE_STATE,
+        messageId: options.messageId ?? null,
+        source: 'read-aloud',
+        status: 'speaking'
+      })
+
+      return true
+    })
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    await act(async () => {
+      $messages.set([user, interim])
+    })
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
+
+    // The closing report lands while the interim is still playing: held.
+    await act(async () => {
+      $messages.set([user, interim, assistantMessage('assistant-stream-2', 'Here is the final report.')])
+    })
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
+
+    // The interim's clip ends.
+    await act(async () => {
+      setVoicePlaybackState({ ...IDLE_STATE })
+    })
+
+    expect(playSpeechText).toHaveBeenCalledTimes(2)
+    expect(playSpeechText).toHaveBeenLastCalledWith(
+      'Here is the final report.',
+      expect.objectContaining({ messageId: 'assistant-stream-2', source: 'read-aloud' })
+    )
   })
 })

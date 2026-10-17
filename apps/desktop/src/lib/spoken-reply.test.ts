@@ -8,7 +8,8 @@ import {
   isLiveTailReplyId,
   markAssistantIdSpoken,
   resolveSpokenReply,
-  spokenReplyOf
+  spokenReplyOf,
+  spokenSegmentKey
 } from './spoken-reply'
 
 const assistant = (id: string) => ({ id, role: 'assistant' as const })
@@ -139,5 +140,19 @@ describe('adoptSpokenReplySession', () => {
 
     expect(spokenReplyOf('session-b')).toBeNull()
     expect(spokenReplyOf('session-a')?.id).toBe('a1')
+  })
+})
+
+describe('spokenSegmentKey', () => {
+  it('survives a live-id rewrite: same turn, same text, same key', () => {
+    expect(spokenSegmentKey('s1:0', 'the folded answer')).toBe(spokenSegmentKey('s1:0', 'the folded answer'))
+  })
+
+  it('separates the segments of one tool-run turn', () => {
+    expect(spokenSegmentKey('s1:0', 'Looking into it.')).not.toBe(spokenSegmentKey('s1:0', 'Here is the final report.'))
+  })
+
+  it('separates two turns that say the same thing', () => {
+    expect(spokenSegmentKey('s1:0', 'Done.')).not.toBe(spokenSegmentKey('s1:1', 'Done.'))
   })
 })

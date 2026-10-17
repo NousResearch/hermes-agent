@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { releaseUnplayedSpokenReply, spokenReplyOf } from '@/lib/spoken-reply'
+import { releaseUnplayedSpokenReply, spokenReplyOf, spokenSegmentKey } from '@/lib/spoken-reply'
 import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
@@ -79,10 +79,22 @@ export function useAutoSpeakReplies({
       markSpoken()
       const marked = spokenReplyOf(sessionId)
       // Only one window voices a given reply when the same chat is open in
-      // several. The claim key is the turn, not the row id: hydration rewrites
-      // the row id, and a second claim would start a second clip.
-      void ownsAmbientCue(`speak:${reply.turnKey ?? reply.id}`).then(owns => {
-        if (!owns || attempt !== attemptSeq) {
+      // several. The claim key is the turn's segment, not the row id: hydration
+      // rewrites the row id, and a second claim would start a second clip. A
+      // tool-run turn speaks several bubbles under one turn, so the turn alone
+      // would let the first bubble's claim refuse the closing report.
+      const segmentKey = reply.turnKey ? spokenSegmentKey(reply.turnKey, reply.text) : null
+      const claimKey = `speak:${segmentKey ?? reply.id}`
+
+      void ownsAmbientCue(claimKey).then(owns => {
+        if (attempt !== attemptSeq) {
+          return
+        }
+
+        if (!owns) {
+          // Another window (or an earlier attempt) already voiced this segment.
+          console.debug('[auto-speak] claim already taken', claimKey)
+
           return
         }
 
@@ -91,7 +103,7 @@ export function useAutoSpeakReplies({
           messageId: reply.id,
           profile,
           source: 'read-aloud',
-          ...(reply.turnKey ? { turnKey: reply.turnKey } : {})
+          ...(segmentKey ? { turnKey: segmentKey } : {})
         }).then(
           started => {
             if (!started && attempt === attemptSeq) {

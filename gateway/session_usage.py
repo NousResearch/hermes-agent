@@ -142,18 +142,22 @@ def usage_frame(stats: dict) -> dict:
 
     ``SessionUsagePayload`` (``tui_gateway/contracts/events.py``) allows either view — the TUI
     ``usage`` object (``server._start_usage_ticker``) or the session-cumulative counters at the top
-    level — and the two readers on the far end want different halves. ``hermes_cli.gateway_agent``
-    (the classic CLI / TUI mirror) reads only the loose counters; the Desktop status bar reads only
+    level — and the readers on the far end want different halves. The classic CLI
+    (``hermes_cli.gateway_connection.SessionState.apply_event``) keeps the top-level counters
+    whenever they are present and ignores the nested view; ACP (``acp_adapter.gateway_server``)
+    reads only the top level; a Desktop bundle older than ``usageFromTick`` reads only
     ``payload.usage``, so its context / cache-hit / tokens-per-second meters render their empty
-    placeholder for as long as the frame carries the counters alone. Publishing both serves either
+    placeholder for as long as the frame carries the counters alone. Publishing both serves every
     viewer from one frame, and leaves the counters untouched for every existing consumer.
 
     ``usage`` is the embedded ticker's ``server._get_usage`` view (same keys, same rules, same
     omissions; ``avg_latency_s`` / ``avg_tps`` are rounded from the counters' two decimals), so a
     Desktop bundle that reads only ``payload.usage`` fills its meters here too. The
     top-level counters on this event are deprecated: new viewers read ``usage`` (or call
-    ``session.stats`` for the counters). They stay for ``hermes_cli.gateway_agent``, the Ink TUI and
-    Desktop's ``usageFromTick`` until those read ``usage``.
+    ``session.stats`` for the counters). Before they can be dropped, these readers must move off
+    them: the classic CLI's ``SessionState.apply_event`` → ``GatewayAgent.apply_session_usage``,
+    ACP's ``_project_usage`` (``usage_update`` / ``turn_usage``), and the flat branch of
+    ``usageFromTick`` (Desktop and Ink).
     """
     return {"usage": tui_usage(stats), **stats}
 

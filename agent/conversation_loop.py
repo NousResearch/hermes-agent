@@ -215,9 +215,13 @@ def _should_rearm_compression_budget(
 ) -> bool:
     """True once a provider proves a completed compaction worked: rough estimates cannot
     rearm the anti-thrash budget, only the completed-compaction latch plus a positive
-    normalized prompt count below the threshold."""
+    normalized prompt count with regrowth room under the threshold."""
+    from agent.context_compressor_recovery import compaction_recovery_ceiling
+
     return bool(
-        compression_attempts and completed_compaction_pending and 0 < prompt_tokens < threshold_tokens
+        compression_attempts
+        and completed_compaction_pending
+        and 0 < prompt_tokens < compaction_recovery_ceiling(threshold_tokens)
     )
 
 

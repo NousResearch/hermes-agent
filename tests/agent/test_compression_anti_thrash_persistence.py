@@ -89,9 +89,9 @@ class TestCounterRoundTripsBindSessionState:
 
 class TestResetSemanticsPreserved:
     def test_real_dip_below_threshold_clears_counter_durably(self, tmp_path):
-        """The L1466-1474 contract survives: any real provider reading below
-        the threshold clears the latch — and now clears the durable copy, so
-        a restart cannot resurrect voided strikes."""
+        """The L1466-1474 contract survives: a real provider reading with
+        regrowth room below the threshold clears the latch — and now clears
+        the durable copy, so a restart cannot resurrect voided strikes."""
         db = _db(tmp_path)
         db.create_session("s1", source="cli")
 
@@ -102,7 +102,7 @@ class TestResetSemanticsPreserved:
         assert db.get_compression_ineffective_count("s1") == 1
 
         # An ordinary fitting response (not post-compaction) clears the latch.
-        cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 1})
+        cc.update_from_response({"prompt_tokens": cc.threshold_tokens // 2})
         assert cc._ineffective_compression_count == 0
         assert db.get_compression_ineffective_count("s1") == 0
 
@@ -123,7 +123,7 @@ class TestResetSemanticsPreserved:
         assert db.get_compression_ineffective_count("s1") == 1
 
         cc._verify_compaction_cleared_threshold = True
-        cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 1})
+        cc.update_from_response({"prompt_tokens": cc.threshold_tokens // 2})
         assert cc._ineffective_compression_count == 0
         assert db.get_compression_ineffective_count("s1") == 0
 

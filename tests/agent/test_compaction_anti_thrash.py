@@ -124,6 +124,23 @@ class TestFutilityGuard:
         )
         assert fired <= 3, f"expected the loop to break early, compacted {fired}x"
 
+    def test_compaction_landing_just_under_threshold_is_not_effective(self):
+        """A pass that leaves the prompt a hair under the trigger is thrash, not recovery.
+
+        Observed on a 64K trigger: every pass re-summarised only the previous summary
+        (middle window ~100 tokens), the provider then reported 59-62K, and the next
+        tool result pushed it back over. Scored as "under threshold", each pass reset
+        the strikes, so the session compacted every 1-2 minutes for an hour.
+        """
+        cc = _compressor(threshold_tokens=64_000)
+        for _ in range(2):
+            cc._verify_compaction_cleared_threshold = True
+            cc.update_from_response({"prompt_tokens": 61_000})
+            cc.update_from_response({"prompt_tokens": 62_500})  # same turn, regrowing
+
+        assert cc._ineffective_compression_count >= 2
+        assert not cc.should_compress(65_000), "a third near-zero-yield pass must not fire"
+
     def test_effective_compaction_still_resets_the_counter(self):
         """A compaction that gets the prompt under the threshold is not thrashing."""
         cc = _compressor(threshold_tokens=750_000)

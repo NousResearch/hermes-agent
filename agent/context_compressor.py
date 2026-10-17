@@ -33,6 +33,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
+from agent.context_compressor_recovery import compaction_recovery_ceiling
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
@@ -2915,8 +2916,8 @@ class ContextCompressor(
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
             self._provider_omits_usage = False
-            if self.last_prompt_tokens < self.threshold_tokens:
-                # Any real reading below the trigger proves the prompt fits: clear the latch. The fallback streak survives.
+            if self.last_prompt_tokens < (_recovery_ceiling := compaction_recovery_ceiling(self.threshold_tokens)):
+                # A real reading with regrowth room under the trigger proves the prompt fits: clear the latch.
                 self._record_ineffective_compression_verdict(0)
             # Anti-thrash verdict lives HERE: effectiveness is "prompt under threshold" per the provider's real count,
             # not "messages shrank"; should_compress() runs twice per turn with mixed measures and would reset it.
@@ -2931,15 +2932,14 @@ class ContextCompressor(
             # and the rough one can dip below the threshold and reset the strike every turn, re-opening the
             # loop. Keying on real usage compares like with like and fires exactly once per compaction.
             if self._verify_compaction_cleared_threshold:
-                if self.last_prompt_tokens >= self.threshold_tokens:
+                if self.last_prompt_tokens >= _recovery_ceiling:
                     self._record_ineffective_compression_verdict(self._ineffective_compression_count + 1)
                     if not self.quiet_mode:
                         logger.warning(
-                            "Compaction did not clear the threshold: %d real tokens still >= %d. The "
-                            "incompressible prompt (system prompt + tool schemas) may already exceed it, "
-                            "in which case shrinking messages cannot help. ineffective_compression_count=%d",
-                            self.last_prompt_tokens, self.threshold_tokens,
-                            self._ineffective_compression_count,
+                            "Compaction left no regrowth room: %d real tokens >= %d (trigger %d). The incompressible "
+                            "prompt (system prompt + tool schemas) may already fill it, in which case shrinking "
+                            "messages cannot help. ineffective_compression_count=%d",
+                            self.last_prompt_tokens, _recovery_ceiling, self.threshold_tokens, self._ineffective_compression_count,
                         )
                 else:
                     self._record_ineffective_compression_verdict(0)

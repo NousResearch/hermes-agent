@@ -50,6 +50,7 @@ class TestRearmDecision:
             (2, True, 10_000, 10_000),
             (2, True, 10_001, 10_000),
             (2, True, 7_999, 0),
+            (2, True, 61_000, 64_000),  # landed inside the regrowth margin
         ],
     )
     def test_unverified_or_pressured_response_keeps_budget_burned(
@@ -253,7 +254,7 @@ class TestCompressionBudgetRefund:
         result, compress_calls = _run_marathon_turn(
             agent,
             n_tool_iterations=8,
-            provider_prompt_tokens=THRESHOLD - 1,
+            provider_prompt_tokens=THRESHOLD // 2,
         )
 
         assert result["completed"] is True

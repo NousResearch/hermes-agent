@@ -347,6 +347,9 @@ export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
 // Bound on the status request itself; past it the check counts as unanswered.
 export const LIVE_TURN_PROBE_TIMEOUT_MS = 15_000
+// Steering is an interactive action: a stale cache must not hold the composer
+// for the full watchdog timeout before it falls back to queueing.
+export const LIVE_TURN_STEER_PROBE_TIMEOUT_MS = 3_000
 const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
 // One token per status check in flight: an event, a settle, or a newer check
 // drops it, so a late answer cannot act on a turn that moved on.
@@ -418,7 +421,9 @@ export function liveTurnVerdict(
   return status === 'starting' || status === 'waiting' || status === 'working' ? 'running' : 'unknown'
 }
 
-async function checkLiveTurn(runtimeId: string): Promise<LiveTurnVerdict> {
+export async function probeLiveTurn(
+  runtimeId: string, timeoutMs = LIVE_TURN_PROBE_TIMEOUT_MS,
+): Promise<LiveTurnVerdict> {
   const backend = liveTurnBackend
 
   if (!backend) {
@@ -434,7 +439,7 @@ async function checkLiveTurn(runtimeId: string): Promise<LiveTurnVerdict> {
       backend.request,
       'session.active_list',
       {},
-      LIVE_TURN_PROBE_TIMEOUT_MS
+      timeoutMs
     )
 
     return liveTurnVerdict(response, runtimeId)
@@ -525,7 +530,7 @@ async function onEventSilence(runtimeId: string) {
 
   const check = {}
   silentTurnChecks.set(runtimeId, check)
-  const verdict = await checkLiveTurn(runtimeId)
+  const verdict = await probeLiveTurn(runtimeId)
 
   if (silentTurnChecks.get(runtimeId) !== check) {
     return

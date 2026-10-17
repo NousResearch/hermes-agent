@@ -198,13 +198,20 @@ def editable_payload(item: Any) -> tuple[str, list] | None:
     return None
 
 
-def pop_last_editable(items: list, payload: Callable[[Any], Any] = editable_payload) -> tuple[list, Any]:
-    """Remove the newest user-typed item: ``(remaining, (text, images))`` or ``(items, None)``."""
+def _last_editable_index(items: list, payload: Callable[[Any], Any]) -> tuple[int, Any]:
     for idx in range(len(items) - 1, -1, -1):
         found = payload(items[idx])
         if found is not None:
-            return items[:idx] + items[idx + 1:], found
-    return items, None
+            return idx, found
+    return -1, None
+
+
+def pop_last_editable(items: list, payload: Callable[[Any], Any] = editable_payload) -> tuple[list, Any]:
+    """Remove the newest user-typed item: ``(remaining, (text, images))`` or ``(items, None)``."""
+    idx, found = _last_editable_index(items, payload)
+    if found is None:
+        return items, None
+    return items[:idx] + items[idx + 1:], found
 
 
 def has_editable_queued(cli: Any) -> bool:
@@ -220,19 +227,29 @@ def recall_last_queued(cli: Any, buffer: Any) -> bool:
     """Move the newest typed queued prompt into an empty composer. Returns True when moved."""
     if buffer.text or getattr(cli, "_attached_images", None):
         return False
+    read_only = getattr(buffer, "read_only", None)
+    if callable(read_only) and read_only():  # e.g. a running /skills locks the composer
+        return False
     taken: list = []
 
     def _take(items: list) -> list:
-        remaining, found = pop_last_editable(items)
-        if found is not None:
-            taken.append(found)
-        return remaining
+        idx, found = _last_editable_index(items, editable_payload)
+        if found is None:
+            return items
+        taken.append((idx, items[idx], found))
+        return items[:idx] + items[idx + 1:]
 
     cli._mutate_pending_input(_take)
     if not taken:
         return False
-    text, images = taken[0]
-    buffer.text = text
+    idx, item, (text, images) = taken[0]
+    from prompt_toolkit.buffer import EditReadOnlyBuffer
+    try:
+        buffer.text = text
+    except EditReadOnlyBuffer:
+        # The composer turned read-only after the check: put the prompt back where it was.
+        cli._mutate_pending_input(lambda items: [*items[:idx], item, *items[idx:]])
+        return False
     buffer.cursor_position = len(text)
     if images and isinstance(getattr(cli, "_attached_images", None), list):
         cli._attached_images.extend(images)
@@ -252,7 +269,8 @@ def bind_queue_recall(cli: Any, kb: Any) -> None:
             if modal_prompt_active(cli):
                 return False
             app = cli._app
-            return not app.current_buffer.text and has_editable_queued(cli)
+            buffer = app.current_buffer
+            return not buffer.text and not buffer.read_only() and has_editable_queued(cli)
         except Exception:  # a key filter must never raise into prompt_toolkit
             logger.debug("queue recall filter failed", exc_info=True)
             return False

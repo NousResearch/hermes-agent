@@ -83,3 +83,98 @@ def test_viewer_scopes_searches_and_exits_on_escape():
             await asyncio.wait_for(task, 3)
 
     asyncio.run(run())
+
+
+def test_stored_arguments_are_bounded_including_nested_values():
+    from hermes_cli.cli_transcript_viewer import MAX_ARG_CHARS
+    log = TranscriptLog()
+    huge = {"path": "notes.md", "content": "x" * 1_000_000,
+            "meta": {"rows": [{"blob": "y" * 50_000}] * 500}}
+    entry = log.add_tool("write_file", huge, "ok", duration=0.0, failed=False)
+    assert len(json.dumps(entry.args)) < MAX_ARG_CHARS * 2
+    assert entry.args["path"] == "notes.md"
+    assert "notes.md" in document(log.select(all_turns=True))
+    small = {"command": "ls", "opts": [1, {"a": None}]}
+    assert log.add_tool("terminal", small, "ok", duration=0.0, failed=False).args == small
+
+
+def test_a_modal_prompt_arriving_while_the_viewer_is_open_closes_it():
+    """An approval raised on a worker thread mid-view must not stay hidden behind the viewer."""
+    import threading
+    from types import SimpleNamespace
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+    from cli import HermesCLI
+    from hermes_cli.cli_subagent_monitor import modal_prompt_active
+
+    cli = SimpleNamespace(_approval_state=None, _app=None, _terminal_io_broken=False)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            app = build_viewer_application(_log(), should_close=lambda: modal_prompt_active(cli),
+                                           input=pipe, output=DummyOutput())
+            cli._transcript_viewer_app = app
+            rendered = asyncio.Event()
+            app.after_render += lambda app: rendered.set()
+            task = asyncio.create_task(app.run_async())
+            await asyncio.wait_for(rendered.wait(), 3)
+            assert not task.done()
+
+            def approval_arrives():  # what the modal mixin does from the agent thread
+                cli._approval_state = {"command": "rm -rf build"}
+                HermesCLI._paint_now(cli)
+
+            threading.Thread(target=approval_arrives).start()
+            await asyncio.wait_for(task, 3)
+
+    asyncio.run(run())
+
+
+def test_ctrl_o_is_left_to_vi_in_insert_and_replace_mode(monkeypatch):
+    from types import SimpleNamespace
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.enums import EditingMode
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.key_binding.vi_state import InputMode
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.widgets import TextArea
+    from hermes_cli import cli_transcript_viewer as viewer
+    from tests.waiting import async_wait_until
+
+    opened = []
+    monkeypatch.setattr(viewer, "open_viewer", lambda cli: opened.append(cli))
+    cli = SimpleNamespace()
+    editor = TextArea(text="abc", multiline=False)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            kb = KeyBindings()
+            viewer.bind_keys(cli, kb)
+            app = Application(layout=Layout(editor), key_bindings=kb, editing_mode=EditingMode.VI,
+                              input=pipe, output=DummyOutput())
+            task = asyncio.create_task(app.run_async())
+            try:
+                await async_wait_until(lambda: app.is_running, what="app running")
+                for enter in ("i", "R"):  # from navigation mode into insert / replace
+                    pipe.send_text("\x1b" + enter)
+                    await async_wait_until(lambda: app.vi_state.input_mode != InputMode.NAVIGATION,
+                                           what=f"left navigation via {enter}")
+                    pipe.send_text("\x0f")  # Ctrl+O: vi's one-shot normal mode, not the viewer
+                    await async_wait_until(lambda: app.vi_state.temporary_navigation_mode,
+                                           what="vi took Ctrl+O")
+                    pipe.send_text("\x1b")
+                    await async_wait_until(lambda: not app.vi_state.temporary_navigation_mode,
+                                           what="one-shot normal mode consumed")
+                assert opened == []
+                pipe.send_text("\x1b")
+                await async_wait_until(lambda: app.vi_state.input_mode == InputMode.NAVIGATION,
+                                       what="navigation mode")
+                pipe.send_text("\x0f")
+                await async_wait_until(lambda: opened, what="viewer opened from navigation mode")
+            finally:
+                app.exit()
+                await task
+
+    asyncio.run(run())

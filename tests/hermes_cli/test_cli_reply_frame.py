@@ -127,3 +127,22 @@ def test_todo_tool_prints_a_checklist_not_a_progress_count():
     assert any("☒ write tests" in line for line in lines)
     assert any("◼ fix frame" in line for line in lines)
     assert any("☐ ship" in line for line in lines)
+
+
+def test_spinner_status_survives_tools_finishing_while_it_renders(monkeypatch):
+    """The agent thread drops running tools while the UI thread builds the spinner text."""
+    import hermes_cli.cli_stream_mixin as stream
+    cli = _cli()
+    _run(cli, [lambda c: c._on_tool_progress("tool.started", "terminal", None, {"command": "ls"}),
+               lambda c: c._on_tool_progress("tool.started", "read_file", None, {"path": "a.md"})])
+    real_t = stream.t
+
+    def finishing_t(key, **kwargs):  # both tools complete mid-render
+        cli._note_tool_finished("terminal")
+        cli._note_tool_finished("read_file")
+        return real_t(key, **kwargs)
+
+    monkeypatch.setattr(stream, "t", finishing_t)
+    text, started = cli._running_tool_status()
+    assert text == real_t("cli.tool_render.tools_running", count=2) and started > 0
+    assert cli._running_tool_status() is None

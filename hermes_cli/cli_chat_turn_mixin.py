@@ -631,6 +631,8 @@ class CLIChatTurnMixin:
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
+            if reasoning:  # Ctrl+O gets the full text whichever style prints it below.
+                self._transcript().add_reasoning(reasoning, None)
             if reasoning and self._reasoning_collapsed():
                 self._print_collapsed_reasoning_recap(reasoning)
             elif reasoning:

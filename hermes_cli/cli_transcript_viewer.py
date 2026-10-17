@@ -26,6 +26,47 @@ def _bounded(text: str) -> str:
     return f"{text[:half]}\n{t('cli.transcript.chars_omitted', count=len(text) - MAX_TEXT_CHARS)}\n{text[-half:]}"
 
 
+# Stored arguments only feed the header and the 400-char args line: keep a bounded copy so a
+# large write_file.content or plugin payload is not retained (or serialised) per entry.
+MAX_ARG_CHARS = 4_000
+_MAX_ARG_DEPTH = 6
+
+
+def clip_args(args: Any) -> Any:
+    """A copy of ``args`` whose strings, keys and container items together stay within
+    ``MAX_ARG_CHARS`` (nested values included); anything past the budget becomes ``…``."""
+    budget = [MAX_ARG_CHARS]
+
+    def walk(value: Any, depth: int) -> Any:
+        if budget[0] <= 0:
+            return "…"
+        if isinstance(value, str):
+            kept = value[:budget[0]]
+            budget[0] -= len(kept) + 2
+            return kept if len(kept) == len(value) else kept[:-1] + "…"
+        if value is None or isinstance(value, (bool, int, float)):
+            budget[0] -= 8
+            return value
+        if not isinstance(value, (dict, list, tuple)):
+            return walk(str(value), depth)
+        if depth >= _MAX_ARG_DEPTH:
+            budget[0] -= 1
+            return "…"
+        items = list(value.items()) if isinstance(value, dict) else list(enumerate(value))
+        out: list = []
+        for count, (key, item) in enumerate(items):
+            if budget[0] <= 0:
+                out.append(("…", len(items) - count))
+                break
+            key = walk(str(key), depth + 1) if isinstance(value, dict) else key
+            out.append((key, walk(item, depth + 1)))
+        if isinstance(value, dict):
+            return dict(out)
+        return [item if key != "…" else "…" for key, item in out]
+
+    return walk(args, 0)
+
+
 @dataclass
 class TranscriptEntry:
     kind: str  # "tool" | "reasoning"
@@ -52,7 +93,7 @@ class TranscriptLog:
 
     def add_tool(self, name: str, args: dict | None, result: Any, *, duration: float | None, failed: bool,
                  call_id: str = "") -> TranscriptEntry:
-        entry = TranscriptEntry("tool", self.turn, name=name or "", args=dict(args or {}),
+        entry = TranscriptEntry("tool", self.turn, name=name or "", args=clip_args(dict(args or {})),
                                 result=_bounded(render.result_text(result)), exit_code=render.exit_code_of(result),
                                 duration=duration, failed=failed, call_id=call_id or "")
         self.entries.append(entry)
@@ -190,8 +231,11 @@ def _search_next(area, *, backwards: bool) -> None:
     area.buffer.apply_search(state, include_current_position=False, count=1)
 
 
-def build_viewer_application(log: TranscriptLog, **kwargs):
-    """Full-screen scrollable view of the last turn (``a`` toggles every retained turn)."""
+def build_viewer_application(log: TranscriptLog, *, should_close=None, **kwargs):
+    """Full-screen scrollable view of the last turn (``a`` toggles every retained turn).
+
+    ``should_close()`` is checked before every frame: an approval/clarify/password prompt that
+    arrives while the viewer is up closes it, so the prompt is never hidden until it times out."""
     from prompt_toolkit.application import Application
     from prompt_toolkit.filters import Condition, is_searching
     from prompt_toolkit.key_binding import KeyBindings
@@ -259,8 +303,14 @@ def build_viewer_application(log: TranscriptLog, **kwargs):
         search,
         Window(FormattedTextControl(lambda: [("class:transcript.bar", f" {t('cli.transcript.footer')} ")]), height=1),
     ]), focused_element=area)
+    def before_render(app):
+        # Prompts arrive on worker threads; exit on the UI loop (incl. the first frame).
+        if should_close is not None and should_close() and not app.is_done:
+            app.exit()
+
     kwargs.setdefault("style", _styles())
-    return Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False, **kwargs)
+    return Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
+                       before_render=before_render, **kwargs)
 
 
 def open_viewer(cli) -> None:
@@ -272,11 +322,16 @@ def open_viewer(cli) -> None:
         return
     cli._transcript_viewer_open = True
 
+    from hermes_cli.cli_subagent_monitor import modal_prompt_active
+
     async def run():
         try:
             async with in_terminal():
-                await build_viewer_application(log).run_async()
+                cli._transcript_viewer_app = build_viewer_application(
+                    log, should_close=lambda: modal_prompt_active(cli))
+                await cli._transcript_viewer_app.run_async()
         finally:
+            cli._transcript_viewer_app = None
             cli._transcript_viewer_open = False
             cli._invalidate()
 
@@ -284,8 +339,9 @@ def open_viewer(cli) -> None:
 
 
 def bind_keys(cli, kb) -> None:
-    """Ctrl+O opens the viewer (not in vi insert mode, where Ctrl+O is vi's one-shot normal mode)."""
-    from prompt_toolkit.filters import Condition, vi_insert_mode
+    """Ctrl+O opens the viewer (not in vi insert/replace mode, where Ctrl+O is vi's one-shot
+    normal mode)."""
+    from prompt_toolkit.filters import Condition, vi_insert_mode, vi_replace_mode
     from hermes_cli.cli_subagent_monitor import modal_prompt_active
-    free = Condition(lambda: not modal_prompt_active(cli)) & ~vi_insert_mode
+    free = Condition(lambda: not modal_prompt_active(cli)) & ~vi_insert_mode & ~vi_replace_mode
     kb.add("c-o", filter=free)(lambda event: open_viewer(cli))

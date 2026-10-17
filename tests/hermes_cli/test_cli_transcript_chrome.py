@@ -161,9 +161,12 @@ def test_spinner_shows_turn_elapsed_and_the_interrupt_key_after_a_few_seconds():
     assert t("cli.stream.spinner_interrupt_hint") in line and ct.spinner_elapsed_label(10.0)[:3] in line
 
 
-def test_spinner_hint_waits_for_the_threshold_and_never_wraps_the_line():
+def test_spinner_hint_waits_for_the_threshold_and_never_wraps_the_line(monkeypatch):
     import time as _time
-    fresh = _spinner_stub(_prompt_start_time=_time.time() - (ct.SPINNER_HINT_AFTER_S / 4))
+    import hermes_cli.cli_status_bar_mixin as status_bar
+    now = _time.time()  # a frozen wall clock: a loaded runner must not age the turn past the threshold
+    monkeypatch.setattr(status_bar, "time", SimpleNamespace(time=lambda: now, monotonic=_time.monotonic))
+    fresh = _spinner_stub(_prompt_start_time=now - (ct.SPINNER_HINT_AFTER_S / 4))
     assert t("cli.stream.spinner_interrupt_hint") not in fresh._render_spinner_text()
     narrow = _spinner_stub(_get_tui_terminal_width=lambda: 30)
     line = narrow._render_spinner_text()
@@ -268,3 +271,26 @@ def test_alt_up_key_recalls_through_prompt_toolkit():
                 app.exit()
                 await task
     asyncio.run(run())
+
+
+def _read_only_composer(states):
+    """A real prompt_toolkit Buffer whose read-only flag follows ``states`` (last one sticks)."""
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.filters import Condition
+    seq = list(states)
+    return Buffer(read_only=Condition(lambda: seq.pop(0) if len(seq) > 1 else seq[0]))
+
+
+def test_recall_leaves_the_queue_alone_while_a_command_locks_the_composer():
+    stub = _queue_cli(["first", "second"])
+    composer = _read_only_composer([True])
+    assert not ct.recall_last_queued(stub, composer)
+    assert composer.text == "" and list(stub._pending_input.queue) == ["first", "second"]
+
+
+def test_recall_puts_the_prompt_back_in_place_if_the_composer_locks_mid_recall():
+    stub = _queue_cli(["first", "second", "third"])
+    stub._pending_input.queue[2] = 42  # a non-editable item after the newest typed prompt
+    composer = _read_only_composer([False, True])  # passes the check, then refuses the write
+    assert not ct.recall_last_queued(stub, composer)
+    assert list(stub._pending_input.queue) == ["first", "second", 42]

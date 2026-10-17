@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import textwrap
+import threading
 import time
 
 from contextlib import contextmanager
@@ -48,6 +49,10 @@ def _terminal_columns(default: int = 80) -> int:
         return shutil.get_terminal_size().columns
     except Exception:
         return default
+
+
+# Guards each CLI's ``_running_tools`` list (agent-thread writers vs UI-thread readers).
+_RUNNING_TOOLS_LOCK = threading.Lock()
 
 
 class CLIStreamMixin:
@@ -807,7 +812,8 @@ class CLIStreamMixin:
                      else (preview or function_name)[:width])
             self._spinner_text = label
             self._tool_start_time = time.monotonic()
-            self.__dict__.setdefault("_running_tools", []).append((function_name, label, self._tool_start_time))
+            with _RUNNING_TOOLS_LOCK:
+                self.__dict__.setdefault("_running_tools", []).append((function_name, label, self._tool_start_time))
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {})
@@ -815,16 +821,19 @@ class CLIStreamMixin:
 
     def _note_tool_finished(self, function_name: str | None) -> None:
         """Drop the oldest running entry for ``function_name`` (the live spinner's tool list)."""
-        running = self.__dict__.get("_running_tools") or []
-        for index, (name, _, _) in enumerate(running):
-            if name == function_name:
-                del running[index]
-                return
+        with _RUNNING_TOOLS_LOCK:
+            running = self.__dict__.get("_running_tools") or []
+            for index, (name, _, _) in enumerate(running):
+                if name == function_name:
+                    del running[index]
+                    return
 
     def _running_tool_status(self) -> tuple[str, float] | None:
         """``(text, started)`` for the live spinner while tools run: the one running tool's
         label (``$ ls -la``), or ``N tools running`` timed from the earliest start."""
-        running = self.__dict__.get("_running_tools") or []
+        # The agent thread appends/removes while the UI renders: inspect one snapshot.
+        with _RUNNING_TOOLS_LOCK:
+            running = list(self.__dict__.get("_running_tools") or ())
         if not running:
             return None
         if len(running) == 1:

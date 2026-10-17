@@ -145,7 +145,7 @@ class CLIToolActivityMixin:
             _cprint(render.render_reasoning_line(text, seconds, _columns()))
 
     def _print_collapsed_reasoning_recap(self, reasoning: str) -> None:
-        """Non-streamed fallback (reasoning only known at turn end) in collapsed style."""
+        """Non-streamed fallback (reasoning only known at turn end) in collapsed style. The
+        caller has already logged it for Ctrl+O."""
         from cli import _cprint
-        self._transcript().add_reasoning(reasoning, None)
         _cprint(render.render_reasoning_line(reasoning, None, _columns()))

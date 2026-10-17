@@ -161,3 +161,21 @@ def test_gateway_inline_diff_frame_reaches_the_cli_renderer_not_raw_print():
     finally:
         conn.close()
     assert seen == [("patch", "DIFF")] and "DIFF" not in printed
+
+
+def _non_streamed_turn(reasoning):
+    from types import SimpleNamespace
+    return SimpleNamespace(result={"last_reasoning": reasoning})
+
+
+def test_non_streamed_reasoning_reaches_the_viewer_in_either_style():
+    for style in ("full", "collapsed"):
+        cli = _make_cli(tool_progress="all")
+        cli.show_reasoning = True
+        cli.cli_reasoning_style = style
+        cli._reset_stream_state()
+        cli._reasoning_shown_this_turn = False
+        printed = _run(cli, [lambda c: c._chat_print_reasoning_box(_non_streamed_turn("**Plan**\nstep one"))])
+        assert any("step one" in line or "Plan" in line for line in printed)
+        logged = [e for e in cli._transcript().entries if e.kind == "reasoning"]
+        assert [e.result for e in logged] == ["**Plan**\nstep one"], style

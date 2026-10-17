@@ -211,3 +211,17 @@ def test_unpaired_or_rewritten_diff_lines_get_no_word_highlight():
     rewritten = render_inline_diff(_rendered_gateway_diff(
         "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-alpha beta gamma\n+completely other words here\n"), 80)
     assert not any(colors["plus_em"] in line or colors["minus_em"] in line for line in added_only + rewritten)
+
+
+def test_long_paired_lines_fall_back_to_plain_row_colours():
+    """One changed value in a huge single-line JSON array must not run the quadratic matcher."""
+    from agent.display import _diff_ansi
+    from hermes_cli.cli_diff_render import changed_spans
+    colors = _diff_ansi()
+    old = "[" + ", ".join(["1"] * 3000) + "]"
+    new = old.replace("1", "2", 1)
+    assert changed_spans(old, new) is None
+    diff = f"--- a/x.json\n+++ b/x.json\n@@ -1,1 +1,1 @@\n-{old}\n+{new}\n"
+    lines = render_inline_diff(_rendered_gateway_diff(diff), 80)
+    assert not any(colors["plus_em"] in line or colors["minus_em"] in line for line in lines)
+    assert any(colors["plus"] in line for line in lines) and any(colors["minus"] in line for line in lines)

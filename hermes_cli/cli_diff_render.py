@@ -21,6 +21,10 @@ _INDENT = "    "
 _TOKEN_RE = re.compile(r"\w+|\s+|[^\w\s]")
 # Paired lines this different are a rewrite, not an edit: highlighting most of the row says nothing.
 _MIN_PAIR_SIMILARITY = 0.4
+# SequenceMatcher is quadratic in the worst case (one value changed in a long single-line JSON
+# array): pairs longer than this get plain row colours instead of a word highlight.
+_MAX_PAIR_CHARS = 400
+_MAX_PAIR_TOKENS = 200
 
 
 @dataclass
@@ -110,8 +114,13 @@ def _pad(text: str, width: int) -> str:
 def changed_spans(old: str, new: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]] | None:
     """Character spans that differ between a removed line and the added line paired with it,
     compared token by token (words, runs of spaces, punctuation). ``None`` when the lines share
-    too little for a word-level highlight to help."""
+    too little for a word-level highlight to help, or when either line is too long to compare
+    cheaply."""
+    if len(old) > _MAX_PAIR_CHARS or len(new) > _MAX_PAIR_CHARS:
+        return None
     a, b = _TOKEN_RE.findall(old), _TOKEN_RE.findall(new)
+    if len(a) > _MAX_PAIR_TOKENS or len(b) > _MAX_PAIR_TOKENS:
+        return None
     matcher = SequenceMatcher(None, a, b, autojunk=False)
     if matcher.ratio() < _MIN_PAIR_SIMILARITY:
         return None

@@ -19,6 +19,115 @@ import {
   type WindowsBackgroundMaterial
 } from '../../shared/src/translucency'
 
+export const TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS = 400
+
+type TranslucencyReassertWindow = object & {
+  getBounds?: () => unknown
+  isDestroyed?: () => boolean
+  on?: (event: string, listener: () => void) => unknown
+}
+
+type TranslucencyReassertScreen = {
+  getDisplayMatching?: (bounds: unknown) => { scaleFactor?: unknown } | null | undefined
+  on?: (event: string, listener: (...args: unknown[]) => void) => unknown
+}
+
+export function displayMetricsRequireTranslucencyReassert(changedMetrics: unknown): boolean {
+  return Array.isArray(changedMetrics) && changedMetrics.includes('scaleFactor')
+}
+
+export function scaleFactorRequiresTranslucencyReassert(previous: number | null, next: unknown): next is number {
+  return typeof next === 'number' && Number.isFinite(next) && next > 0 && next !== previous
+}
+
+/**
+ * Mixed-DPI DWM recovery writes. Electron 40.10.2's SetBackgroundMaterial('none')
+ * paints white, so Glass-off / Clear must not enter this path. Opacity stays
+ * out: a setOpacity write would layer the window and kill acrylic.
+ */
+export function translucencyReassertForDpiChange(state: TranslucencyState): {
+  backing: true
+  material: true
+  opacity: false
+} | null {
+  return glassActive(state) ? { backing: true, material: true, opacity: false } : null
+}
+
+export function installTranslucencyReassertOnWindowEvents(
+  win: TranslucencyReassertWindow,
+  displayScreen: TranslucencyReassertScreen,
+  reassert: () => void,
+  lastScaleFactors: WeakMap<object, number>,
+  platform = process.platform
+): void {
+  if (platform !== 'win32' || typeof win?.on !== 'function') {
+    return
+  }
+
+  let showTimer: ReturnType<typeof setTimeout> | undefined
+
+  const reassertForScaleFactorChange = (): number | null => {
+    if (win.isDestroyed?.() || typeof win.getBounds !== 'function') {
+      return null
+    }
+
+    try {
+      const bounds = win.getBounds()
+      const scaleFactor = bounds && displayScreen?.getDisplayMatching?.(bounds)?.scaleFactor
+
+      if (!scaleFactorRequiresTranslucencyReassert(lastScaleFactors.get(win) ?? null, scaleFactor)) {
+        return null
+      }
+
+      lastScaleFactors.set(win, scaleFactor)
+      reassert()
+
+      return scaleFactor
+    } catch {
+      return null
+    }
+  }
+
+  win.on('show', () => {
+    if (reassertForScaleFactorChange() === null) {
+      return
+    }
+
+    clearTimeout(showTimer)
+    showTimer = setTimeout(() => {
+      if (!win.isDestroyed?.()) {
+        reassert()
+      }
+    }, TRANSLUCENCY_REASSERT_SETTLE_DELAY_MS)
+  })
+  // Electron 40.10.2 emits `moved` only after a manual drag finishes. `move`
+  // fires while the window crosses displays; the scale-factor gate limits the
+  // native write to one at each transition.
+  win.on('move', reassertForScaleFactorChange)
+  win.on('moved', reassertForScaleFactorChange)
+  win.on('resized', reassertForScaleFactorChange)
+  win.on('closed', () => {
+    clearTimeout(showTimer)
+    lastScaleFactors.delete(win)
+  })
+}
+
+export function installTranslucencyReassertOnDisplayMetrics(
+  displayScreen: TranslucencyReassertScreen,
+  reassertAll: () => void,
+  platform = process.platform
+): void {
+  if (platform !== 'win32' || typeof displayScreen?.on !== 'function') {
+    return
+  }
+
+  displayScreen.on('display-metrics-changed', (_event, _display, changedMetrics) => {
+    if (displayMetricsRequireTranslucencyReassert(changedMetrics)) {
+      reassertAll()
+    }
+  })
+}
+
 export {
   backgroundMaterialFor,
   clampIntensity,

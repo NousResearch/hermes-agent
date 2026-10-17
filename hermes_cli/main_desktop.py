@@ -675,6 +675,131 @@ def _macos_signing_downgrade_error(installed: dict, rebuilt: Optional[dict]) -> 
     return None
 
 
+SECRET_STORAGE_POLICY_FILE = "secure-token-storage.json"
+
+
+def _desktop_userdata_dir() -> Optional[Path]:
+    """Electron ``userData`` for the Hermes desktop app on this machine, or None when unknown.
+
+    Mirrors ``resolveDesktopUserData`` (``apps/desktop/electron/main.ts``): the
+    ``HERMES_DESKTOP_USER_DATA_DIR`` override first, then the platform default
+    (``~/Library/Application Support/Hermes`` on macOS). Read-only hint for the
+    keychain guidance probe; never creates anything.
+    """
+    override = os.environ.get("HERMES_DESKTOP_USER_DATA_DIR")
+    if override:
+        return Path(override)
+    home = Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "Hermes"
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA")
+        return (Path(base) if base else home / "AppData" / "Roaming") / "Hermes"
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base) if base else home / ".config") / "Hermes"
+
+
+def _desktop_secret_storage_opted_in(user_data_dir: Optional[Path] = None) -> bool:
+    """True when the user explicitly enabled OS-keychain encryption in Desktop settings.
+
+    Desktop's only source of truth is the policy file in the Electron userData dir
+    (``secret-storage-policy.ts``: ``on === true``; anything unreadable or unparseable
+    is OFF). Fail-safe: False on any error — a broken read must never produce a
+    wrong claim about the keychain. Never raises.
+    """
+    if user_data_dir is None:
+        user_data_dir = _desktop_userdata_dir()
+    if user_data_dir is None:
+        return False
+    try:
+        with open(user_data_dir / SECRET_STORAGE_POLICY_FILE, encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except Exception:
+        return False
+    return isinstance(data, dict) and data.get("on") is True
+
+
+def _macos_signed_team_id(codesign: str, app: Path) -> Optional[str]:
+    """The Team ID of the app's current signature, or None when it has none.
+
+    macOS stamps an app-created keychain item's ACL partition with the signing
+    identity's Team ID (``teamid:<ID>``); ad-hoc and self-signed signatures carry
+    no Team ID, so the partition is pinned to the build's cdhash instead and each
+    rebuild triggers one keychain prompt (#91115). Returns None — never a guess —
+    when ``codesign -dv`` fails or reports no usable Team ID.
+    """
+    try:
+        info = subprocess.run(
+            [codesign, "-dv", str(app)], check=False, capture_output=True,
+            text=True, encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    if info.returncode != 0:
+        return None
+    for line in f"{info.stdout}\n{info.stderr}".splitlines():
+        if line.startswith("TeamIdentifier="):
+            team = line[len("TeamIdentifier="):].strip()
+            if team and team != "not set":  # ad-hoc / self-signed report "not set"
+                return team
+            return None
+    return None
+
+
+def _macos_keychain_update_notice(
+    *, opted_in: bool, team_id: Optional[str], configured_identity: Optional[str],
+) -> Optional[str]:
+    """One plain-language keychain notice after a local re-sign, or None when nothing applies.
+
+    Matrix over (keychain-encryption opt-in x signature Team ID x configured identity):
+    a Team-ID signature is the only state where keychain access persists across
+    rebuilds without any prompt, so it gets a single informational line; every
+    no-Team-ID state under the opt-in gets the "Always Allow" guidance plus the
+    Team-ID remedy; opted-out users get nothing (no keychain item is involved).
+    """
+    if team_id:
+        return f"signed with Team ID {team_id} — keychain access will persist across updates"
+    if not opted_in:
+        return None
+    if configured_identity:
+        return (
+            "keychain encryption is enabled and the configured signing identity "
+            f"{configured_identity!r} is not Apple-issued (no Team ID), so macOS will "
+            "still prompt for the keychain item once per rebuild: click Always Allow "
+            "(never Deny, never delete the item). It does keep TCC grants stable. "
+            "To stop the keychain prompt for good, set desktop.macos_signing_identity "
+            "to an Apple-issued 'Apple Development' or 'Developer ID Application' "
+            "identity (a free Apple ID personal team in Xcode issues one)"
+        )
+    return (
+        "keychain encryption is enabled and this rebuild has no Team ID in its "
+        "signature, so macOS will prompt for the keychain item once on next launch: "
+        "click Always Allow (never Deny, never delete the item). To stop the prompt "
+        "for good, set desktop.macos_signing_identity to an Apple-issued "
+        "'Apple Development' or 'Developer ID Application' identity (a free Apple "
+        "ID personal team in Xcode issues one)"
+    )
+
+
+def _desktop_macos_keychain_guidance(codesign: str, app: Path, configured_identity: Optional[str]) -> None:
+    """Print the keychain notice for the just-re-signed ``app`` (opted-in users only, macOS).
+
+    A wrapper kept for testability of the notice seam: the opt-in read, the Team ID
+    lookup, and the notice selection each fail or skip independently; nothing here
+    may raise or block the update on a broken probe. Never prints when the policy
+    file is unreadable (fail-safe False — no false claim either way).
+    """
+    try:
+        notice = _macos_keychain_update_notice(
+            opted_in=_desktop_secret_storage_opted_in(),
+            team_id=_macos_signed_team_id(codesign, app),
+            configured_identity=configured_identity,
+        )
+    except Exception:
+        return
+    if notice:
+        print(f"  → {notice}")
+
+
 def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
     """True when the bundle has an intact Team-ID signature, so the fixup never clobbers a notarized
     build with ad-hoc (resets TCC). A STALE real signature fails --verify → False → repairable."""
@@ -781,6 +906,7 @@ def _macos_legacy_adhoc_resign(codesign: str, app: Path) -> bool:
             )
             return False
         print("  → macOS desktop re-signed (legacy ad-hoc); safeStorage keychain item left untouched")
+        _desktop_macos_keychain_guidance(codesign, app, None)
         return True
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
@@ -845,6 +971,7 @@ def _desktop_macos_relaunchable_fixup(
         if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir, identity=identity):
             label = "keychain identity" if configured else "stable ad-hoc identity"
             print(f"  → macOS desktop signed with {label}; TCC grants persist across rebuilds")
+            _desktop_macos_keychain_guidance(codesign, app, configured)
             return True
     except Exception as exc:
         if configured:
@@ -879,6 +1006,7 @@ def _desktop_macos_relaunchable_fixup(
                         "  → macOS desktop signed with stable ad-hoc identity; "
                         "TCC grants persist across rebuilds"
                     )
+                    _desktop_macos_keychain_guidance(codesign, app, None)  # fell back to ad-hoc
                     return True
             except Exception as adhoc_exc:
                 exc = adhoc_exc

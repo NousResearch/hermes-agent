@@ -115,8 +115,12 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             )
 
     # Fallbacks are availability-filtered so a registered-but-keyless provider
-    # never becomes "active" on a fresh install.
-    eligible = [p for p in snapshot.values() if _capable(p) and _available(p)]
+    # never becomes "active" on a fresh install. ``AUTODETECT = False`` providers are
+    # reachable only through the explicit selection above.
+    eligible = [
+        p for p in snapshot.values()
+        if getattr(p, "AUTODETECT", True) and _capable(p) and _available(p)
+    ]
     if len(eligible) == 1:
         return eligible[0]
 

@@ -32,6 +32,13 @@ _DB_LOCK = threading.Lock()
 # ``gateway.delivery_ledger`` and these only matter in the rare recovery path).
 MAX_ATTEMPTS = 3
 STALE_AFTER_SECONDS = 24 * 60 * 60
+# A crash-left reply is only useful as recovery while the turn it answers is still the
+# conversation's live edge. ``STALE_AFTER_SECONDS`` bounds RETENTION (24 h of retry eligibility),
+# which is far too generous for REDELIVERY: a machine left off overnight resurrects a half-day-old
+# answer on the next boot, where it lands on top of a brand-new inbound message and reads as its
+# reply. A flood-refused row is exempt — the platform itself asked for a long wait, and honouring
+# it is the point of that marker.
+REDELIVER_MAX_AGE_SECONDS = 15 * 60
 _RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_ROWS = 500
 
@@ -379,6 +386,11 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
     ``deliverable_targets`` further scopes multiplexed gateways by exact ``(platform, adapter_profile)``
     so one connected bot cannot spend another disconnected bot's retry budget.
 
+    A row older than ``REDELIVER_MAX_AGE_SECONDS`` is abandoned instead of claimed: the turn it
+    answered is no longer the conversation's live edge, so sending it now would read as a reply to
+    whatever arrived in the meantime (see the constant's note). Flood-refused rows are exempt —
+    the platform's own wait can exceed the cap, and honouring it is the point of that marker.
+
     A flood-refused row still inside its wait is adopted (owner re-stamped, no attempt spent) and
     returned flagged ``adopted`` with its ``not_before``: the caller clears its session's resume flag
     like any other claimed row, since the answer is in the ledger, but must not send it; the flood
@@ -408,6 +420,18 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                     or (deliverable_targets is not None and (platform, adapter_profile) not in deliverable_targets)):
                 continue  # no adapter this boot — claiming would spend an attempt on a no-op
             flood_row = state == "failed" and is_flood_error(last_error)
+            if not flood_row and (now - created_at) > REDELIVER_MAX_AGE_SECONDS:
+                # Past the recovery window (machine off overnight): the live edge moved on, so
+                # redelivering would land a stale answer under a fresh inbound message. Abandon,
+                # don't send — the reply is still retained for the retention window above.
+                conn.execute(
+                    """UPDATE delivery_obligations
+                       SET state='abandoned', updated_at=? WHERE obligation_id=?""", (now, oid))
+                logger.info(
+                    "delivery obligation %s abandoned: %.0fs old, past the %.0fs redelivery window",
+                    oid, now - created_at, REDELIVER_MAX_AGE_SECONDS,
+                )
+                continue
             if flood_row and now < flood_not_before(updated_at, last_error):
                 # Still inside the platform's wait: adopt the dead owner's row without spending an attempt
                 # (state and error kept) so this process's flood timer can claim it once the wait passes.

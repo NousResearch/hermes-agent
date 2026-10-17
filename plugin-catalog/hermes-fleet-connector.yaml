@@ -2,7 +2,7 @@ name: hermes-fleet-connector
 title: Hermes Fleet Connector
 repo: https://github.com/tony-simons-aiowa/hermes-fleet-connector
 sha: "64dfb9a364c912952214a0996f114430b5d3573d"
-description: "Owner-authorized Telegram pairing for Hermes Fleet through a separate connector service and private HTTPS origin. Phone invitations grant broad fleet:operator access."
+description: "Owner-authorized Telegram pairing for Hermes Fleet through a separate connector service and private HTTPS origin. Phone invitations grant broad fleet:operator access. Disclosure — runs a separate connector service you start yourself, which launches a local `hermes serve` backend and a reverse proxy behind your HTTPS origin; a phone paired via a 120-second QR invitation (requested from your owner Telegram DM) gets broad operator access over the internet, including creating, editing and deleting cron jobs (unattended agent runs), dispatching Kanban tasks and reading media; it opens a private browser window locally to show the QR and keeps a control socket in the system temp directory."
 maintainer: tony-simons-aiowa
 tier: community
 category: platform

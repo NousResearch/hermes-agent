@@ -192,10 +192,29 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     ['session.mutate']
   ],
   [
-    'connector-tool.tsx in-chat connect',
+    "connector-tool.tsx in-chat connect (the card's Try again)",
     'connectors.connect',
-    { connectors: ['gh'], owner: { session_id: 's', type: 'session' } },
-    /connectors\.connect is not available/
+    { connectors: ['gh'], owner: { session_id: 's', type: 'session' }, reconnect: true },
+    // RT-2: the owner serves the card's calls (gateway/session_connections.py), so they travel as themselves.
+    ['connectors.connect']
+  ],
+  [
+    'connection-request.ts card answer',
+    'connection.respond',
+    { op_id: 'op', owner: { session_id: 's', type: 'session' }, result: { targets: [] } },
+    ['connection.respond']
+  ],
+  [
+    'connector-tool.tsx connected-link wake',
+    'connectors.operation.wake',
+    { op_id: 'op', owner: { session_id: 's', type: 'session' } },
+    ['connectors.operation.wake']
+  ],
+  [
+    'session-scoped connector list (no owner handler)',
+    'connectors.list',
+    { owner: { session_id: 's', type: 'session' } },
+    /connectors\.list is not available/
   ],
   [
     'connectors rpc.ts account connect',

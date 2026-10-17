@@ -147,6 +147,14 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
 // `preview.restart` is served by the owner (gateway/session_tui_side.py).
 const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail'])
 
+// The manage_connections card's calls the owner serves for a session-owned operation (gateway/session_connections.py); any other session-owned connector call stays refused.
+const OWNER_CONNECTION_VERBS = new Set([
+  'connection.respond',
+  'connectors.operation.status',
+  'connectors.operation.wake',
+  'connectors.connect'
+])
+
 // `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams;
 // gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
 // Shift+click global yolo zap).
@@ -166,7 +174,12 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
     throw new Error(`Changing ${params.key}${'scope' in params ? ` (${params.scope})` : ''} is not available on the shared gateway yet`)
   }
 
-  if (SIDECAR_SESSION_VERBS.has(method) || (method.startsWith('connect') && (params.owner as { type?: unknown } | undefined)?.type === 'session')) {
+  const sessionConnector =
+    method.startsWith('connect') &&
+    (params.owner as { type?: unknown } | undefined)?.type === 'session' &&
+    !OWNER_CONNECTION_VERBS.has(method)
+
+  if (SIDECAR_SESSION_VERBS.has(method) || sessionConnector) {
     throw new Error(`${method} is not available on the shared gateway yet`)
   }
 

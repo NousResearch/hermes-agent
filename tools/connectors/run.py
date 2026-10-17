@@ -82,6 +82,16 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
     (catalog.apply_answer if catalog.owns(operation.op_id) else mcp.apply_answer)(operation, raw)
 
 
+def respond(operation: ConnectionOperation, raw: str) -> bool:
+    """The card's answer: apply it, settle once every target is resolved, close a settled operation. Returns whether it settled; raises ``IllegalTransition`` for an answer the operation refuses."""
+    apply_answer(operation, raw)
+    if not operation.settled and operation.all_resolved:
+        operation.settle(SettleReason.all_resolved)
+    if operation.settled:
+        live.close(operation)
+    return operation.settled
+
+
 def run_operation(
     targets: list[Target],
     kind: Kind,

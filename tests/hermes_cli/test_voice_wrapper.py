@@ -178,7 +178,7 @@ class TestSpeakTextGuards:
         monkeypatch.setattr(voice.os.path, "isfile", lambda path: path == returned_path)
         monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
         monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
-        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
+        monkeypatch.setattr(voice, "play_audio_file", lambda path, **_kw: played.append(path))
 
         assert voice.speak_text("Hello world") is None
         assert played == [returned_path]
@@ -205,12 +205,61 @@ class TestSpeakTextGuards:
         monkeypatch.setattr(voice.os.path, "isfile", lambda _path: True)
         monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
         monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
-        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
+        monkeypatch.setattr(voice, "play_audio_file", lambda path, **_kw: played.append(path))
 
         assert voice.speak_text("Hello world") is None
         # Should play the path from the result, not the requested MP3 path
         assert len(played) == 1
         assert played[0].endswith(".ogg")
+
+    def test_stop_mid_reply_skips_the_remaining_parts(self, monkeypatch, tmp_path):
+        """A long reply comes back as several files. Stopping the first one used to leave the
+        loop free to play the next part from the top."""
+        import hermes_cli.voice as voice
+        import tools.voice_mode as vm
+        from tools import tts_tool
+
+        parts = []
+        for name in ("part1.mp3", "part2.mp3"):
+            (tmp_path / name).write_bytes(b"\xff\xfb")
+            parts.append(str(tmp_path / name))
+        played = []
+
+        def _barged_in(path, **_kw):
+            played.append(path)
+            vm.stop_playback()
+            return False
+
+        monkeypatch.setattr(
+            tts_tool, "text_to_speech_tool",
+            lambda **_kw: json.dumps({"success": True, "file_paths": parts}))
+        monkeypatch.setattr(voice, "play_audio_file", _barged_in)
+
+        voice.speak_text("A reply split in two")
+
+        assert played == parts[:1]
+
+    def test_stop_during_synthesis_keeps_the_reply_silent(self, monkeypatch, tmp_path):
+        """A barge-in or /voice off while the provider is still generating used to become the
+        new baseline, so the reply started once the audio was ready."""
+        import hermes_cli.voice as voice
+        import tools.voice_mode as vm
+        from tools import tts_tool
+
+        reply = tmp_path / "reply.mp3"
+        reply.write_bytes(b"\xff\xfb")
+        played = []
+
+        def _stopped_while_generating(**_kw):
+            vm.stop_playback()
+            return json.dumps({"success": True, "file_path": str(reply)})
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", _stopped_while_generating)
+        monkeypatch.setattr(voice, "play_audio_file", lambda path, **_kw: played.append(path))
+
+        voice.speak_text("A reply nobody wants any more")
+
+        assert played == []
 
 
 class TestContinuousAPI:

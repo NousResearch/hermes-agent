@@ -237,6 +237,13 @@ _FLAT_PRESET_KEYS = (
     "reference_timeout", "degraded_reference_policy",
     "fanout", "enabled")
 
+# The authoritative schema for the dynamic ``moa.presets.<name>`` namespace: exactly the keys
+# ``_normalize_preset`` reads, and preset names are user-chosen. ``DEFAULT_CONFIG`` only seeds the
+# ``default`` preset's three structural keys, so config-key validation must NOT derive preset
+# leaves from it — that flagged five runtime-read keys (and every key on any other preset name) as
+# "not a recognized config key" (#60388).
+SUPPORTED_PRESET_KEYS = frozenset(_FLAT_PRESET_KEYS)
+
 
 # When the reference fan-out runs. "user_turn" (default) runs the advisors ONCE per user turn (the original
 # MoA shape, and the cheapest cadence — #67199): the aggregator gets their upfront plan-level advice, then

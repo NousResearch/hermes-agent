@@ -205,6 +205,12 @@ export const uk: Translations = {
     perDayAvg: "/день у сер.",
     acrossModels: "по {count} моделях",
     inOut: "{input} вх. / {output} вих.",
+    inputPerDay: "Вхідні токени / день",
+    outputPerDay: "Вихідні токени / день",
+    ioRatio: "Співвідношення вхід / вихід",
+    ratioAverage: "{ratio} у середньому за період",
+    tokensByModel: "Токени за моделями / день",
+    otherModels: "Інші моделі",
   },
 
   models: {

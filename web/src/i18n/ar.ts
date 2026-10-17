@@ -181,6 +181,12 @@ export const ar = defineLocale({
     perDayAvg: "في اليوم (متوسط)",
     acrossModels: "عبر {count} نموذج",
     inOut: "{input} إدخال / {output} إخراج",
+    inputPerDay: "رموز الإدخال / يوم",
+    outputPerDay: "رموز الإخراج / يوم",
+    ioRatio: "نسبة الإدخال / الإخراج",
+    ratioAverage: "متوسط الفترة {ratio}",
+    tokensByModel: "الرموز حسب النموذج / يوم",
+    otherModels: "نماذج أخرى",
   },
 
   models: {

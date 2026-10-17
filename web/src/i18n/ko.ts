@@ -205,6 +205,12 @@ export const ko: Translations = {
     perDayAvg: "/일 평균",
     acrossModels: "{count}개 모델 전반",
     inOut: "입력 {input} / 출력 {output}",
+    inputPerDay: "입력 토큰 / 일",
+    outputPerDay: "출력 토큰 / 일",
+    ioRatio: "입력 / 출력 비율",
+    ratioAverage: "기간 평균 {ratio}",
+    tokensByModel: "모델별 토큰 / 일",
+    otherModels: "기타 모델",
   },
 
   models: {

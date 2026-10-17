@@ -205,6 +205,12 @@ export const tr: Translations = {
     perDayAvg: "/gün ort",
     acrossModels: "{count} model üzerinden",
     inOut: "{input} giriş / {output} çıkış",
+    inputPerDay: "Giriş token'ları / gün",
+    outputPerDay: "Çıkış token'ları / gün",
+    ioRatio: "Giriş / çıkış oranı",
+    ratioAverage: "{ratio} dönem ortalaması",
+    tokensByModel: "Model başına token / gün",
+    otherModels: "Diğer modeller",
   },
 
   models: {

@@ -205,6 +205,12 @@ export const ga: Translations = {
     perDayAvg: "/lá meán",
     acrossModels: "thar {count} samhail",
     inOut: "{input} isteach / {output} amach",
+    inputPerDay: "Comharthaí ionchuir / lá",
+    outputPerDay: "Comharthaí aschuir / lá",
+    ioRatio: "Cóimheas ionchuir / aschuir",
+    ratioAverage: "{ratio} meán na tréimhse",
+    tokensByModel: "Comharthaí de réir samhla / lá",
+    otherModels: "Samhlacha eile",
   },
 
   models: {

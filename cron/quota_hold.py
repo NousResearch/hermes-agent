@@ -75,7 +75,7 @@ def hold_seconds_from_failure(exc: BaseException, agent: Any = None) -> Optional
                 m = _RETRY_AFTER_RE.search(str(cur))
                 hint = float(m.group(1)) if m else None
             return float(hint) if hint is not None and float(hint) > 0 else None
-        if int(getattr(agent, "session_api_calls", 0) or 0) == 0:
+        if getattr(agent, "session_api_calls", None) == 0:
             if (hint := _mishima_busy_wait(cur)) is not None:
                 return hint
         cur = cur.__cause__ or cur.__context__

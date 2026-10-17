@@ -4917,6 +4917,36 @@ def _session(agent=None, **extra):
     }
 
 
+def test_moa_one_shot_restore_bypasses_selection_confirmation(monkeypatch):
+    """An unattended restore cannot consume a large-context confirmation."""
+    agent = types.SimpleNamespace(model="skill-moa", provider="moa")
+    session = _session(
+        agent=agent,
+        moa_one_shot_restore={"override": None, "model": "previous-model", "provider": "openrouter"},
+    )
+    calls = []
+
+    def restore(sid, restored_session, raw, **kwargs):
+        calls.append((sid, restored_session, raw, kwargs))
+        return {"confirm_required": False}
+
+    monkeypatch.setattr(server, "_apply_model_switch", restore)
+
+    server._absorb_turn_result(
+        "sid", session, types.SimpleNamespace(result={}, agent=agent, history=[], history_version=0),
+        None, None, None,
+    )
+
+    assert calls == [
+        ("sid", session, "previous-model --provider openrouter", {
+            "confirm_expensive_model": True,
+            "pin_session_override": False,
+            "persist_override": False,
+            "count_switch": False,
+        })
+    ]
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

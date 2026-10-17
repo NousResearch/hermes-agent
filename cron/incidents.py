@@ -104,10 +104,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
+def _transaction(*, immediate: bool = False) -> Iterator[sqlite3.Connection]:
     from hermes_cli.sqlite_util import transaction
 
-    with _lock, transaction(_connect()) as conn:
+    with _lock, transaction(_connect(), immediate=immediate) as conn:
         yield conn
 
 
@@ -170,7 +170,8 @@ def upsert_incident(
     failure_type = failure_type or _classify_failure_type(error)
     output_file = str(output_file) if output_file is not None else None
 
-    with _transaction() as conn:
+    # The lookup and mutation must serialize with other workers and CLI acknowledgements.
+    with _transaction(immediate=True) as conn:
         row = conn.execute(
             "SELECT id, state FROM cron_incidents WHERE id=?", (incident_id,)
         ).fetchone()
@@ -205,7 +206,7 @@ def set_incident_state(incident_id: str, state: str) -> bool:
     if state not in INCIDENT_STATES:
         return False
     now = _hermes_now().isoformat()
-    with _transaction() as conn:
+    with _transaction(immediate=True) as conn:
         row = conn.execute(
             "SELECT state FROM cron_incidents WHERE id=?", (incident_id,)
         ).fetchone()

@@ -588,6 +588,22 @@ test('an ensure refusal names its remedy instead of only a status pointer', asyn
   }))).rejects.toThrow(`Gateway incompatible (runtime_protocol). ${detail}. Use hermes gateway status for recovery.`)
 })
 
+test('an elevated or other-session gateway is named with its remedy, not as authorization (#139845, #140252)', async () => {
+  const cases = [
+    ['gateway_elevated', 'The running gateway (PID 23460) was started as administrator, so this non-elevated app cannot reach it. Stop it from an administrator prompt (hermes gateway stop), then start Hermes without elevation'],
+    ['gateway_other_session', 'The running gateway (PID 23460) runs in another Windows logon session (session 0, e.g. a boot-time scheduled task), so this app cannot reach it. Stop it (hermes gateway stop from an administrator prompt) and let only one auto-start task launch the gateway']
+  ]
+
+  for (const [reason_code, detail] of cases) {
+    const failure = ensureLocalGateway(async () => ({
+      code: 4, stdout: JSON.stringify({ state: 'inaccessible', reason_code, detail, endpoint: null })
+    }))
+
+    await expect(failure).rejects.toThrow(`Gateway inaccessible (${reason_code}). ${detail}.`)
+    await expect(failure).rejects.not.toThrow('authorization')
+  }
+})
+
 test('an update-paused ensure refusal points to the restart that completes its tail', async () => {
   await expect(ensureLocalGateway(async () => ({
     code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'update_paused', endpoint: null })

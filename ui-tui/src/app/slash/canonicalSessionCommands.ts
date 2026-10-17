@@ -128,10 +128,15 @@ export function canonicalReasoning(payload: { scope?: string; value: string }, c
   }
 
   void mutateCanonical(ctx.gateway.gw, ctx.sid!, 'reasoning', { effort }, ctx.stale)
-    .then(
-      mutation =>
-        mutation?.result && !ctx.stale() && ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
-    )
+    .then(mutation => {
+      if (mutation?.result) {
+        ctx.ran?.() // the owner accepted it; a refusal rejects and reports nothing
+
+        if (!ctx.stale()) {
+          ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
+        }
+      }
+    })
     .catch(ctx.guardedErr)
 
   return true

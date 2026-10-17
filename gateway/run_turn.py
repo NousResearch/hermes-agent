@@ -665,10 +665,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
             def _scoped_server_names() -> set:
                 with _lock:
-                    return {
-                        _key_name(key) for key in _servers
-                        if _server_visible_in_scope(key, reload_scope)
-                    }
+                    return {_key_name(key) for key in _servers if _server_visible_in_scope(key, reload_scope)}
 
             old_servers = _scoped_server_names()
             await self._run_in_executor_with_context(lambda: shutdown_mcp_servers(scope=reload_scope))
@@ -694,10 +691,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             lines = [t("gateway.reload_mcp.header")] + [
                 t(key, names=", ".join(sorted(names))) for _label, key, names in changes if names
             ]
-            if not connected_servers:
-                lines.append(t("gateway.reload_mcp.none_connected"))
-            else:
-                lines.append(t("gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
+            from tools.mcp_tool_discovery import mcp_servers_not_connected
+            failed = await self._run_in_executor_with_context(mcp_servers_not_connected)
+            lines.append(t("gateway.reload_mcp.none_connected") if not connected_servers else t(
+                "gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
+            if failed:  # a configured server that did not connect is named, never passed over as success
+                lines.append(t("gateway.reload_mcp.failed", error=f"did not connect: {', '.join(failed)}"))
 
             self._mcp_reload_refresh_cached_agents(multiplex, event.source.profile)
 

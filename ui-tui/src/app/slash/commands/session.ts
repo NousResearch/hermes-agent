@@ -634,6 +634,8 @@ export const sessionCommands: SlashCommand[] = [
     name: 'reasoning',
     run: (arg, ctx) => {
       if (!arg) {
+        ctx.ran?.()
+
         return ctx.gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
           .then(
@@ -789,6 +791,8 @@ export const sessionCommands: SlashCommand[] = [
     name: 'usage',
     run: (_arg, ctx) => {
       if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        ctx.ran?.()
+
         return canonicalUsage(ctx)
       }
 

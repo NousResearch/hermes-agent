@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
@@ -213,11 +214,27 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
             return url, (live_key or surface_api_key)
     return (surface_base_url or None), surface_api_key
 
+# Cross-provider delegated children share one pool instance per provider per process (#140495): load_pool()
+# builds a fresh object whose lease counts are all zero, so acquire_lease()'s (active_leases, priority) pick
+# would pin every concurrent sibling to the priority-0 entry. Sharing the instance lets them balance the way
+# same-provider children sharing the parent's pool already do.
+_DELEGATED_POOLS: dict[Any, Any] = {}
+_DELEGATED_POOLS_LOCK = threading.Lock()
+
 def _loaded_pool(key: Any):
-    """``load_pool(key)`` when it holds credentials, else None."""
+    """``load_pool(key)`` when it holds credentials, else None. The loaded instance is cached per provider per
+    process so concurrent delegated children lease against one shared pool instead of one fresh pool each."""
     from agent.credential_pool import load_pool
+    with _DELEGATED_POOLS_LOCK:
+        cached = _DELEGATED_POOLS.get(key)
+    if cached is not None:
+        return cached
     pool = load_pool(key)
-    return pool if pool is not None and pool.has_credentials() else None
+    if pool is None or not pool.has_credentials():
+        return None
+    with _DELEGATED_POOLS_LOCK:
+        # Two children racing the first load must end up on ONE instance or their leases never balance.
+        return _DELEGATED_POOLS.setdefault(key, pool)
 
 def _pool_serves_endpoint(pool: Any, provider: Optional[str], base_url: Optional[str]) -> bool:
     """Provider identity AND at least one entry for the child's endpoint; pools without entry metadata pass."""

@@ -577,14 +577,32 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         arithmetic (zsh parses leading-zero constants as decimal), quoted so zsh
         doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
         """
+        from tools.environments.local import _is_unc_bash_path
+
         q_path = self._escape_shell_arg(path)
         q_parent = self._escape_shell_arg(os.path.dirname(path) or ".")
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
+        # Never mkdir a parent that is already there: on a UNC parent (``//server/share``)
+        # bash's own builtins reach the share, but GNU mkdir reads the leading ``//`` as its
+        # read-only POSIX root and dies with "Read-only file system" — and under ``set -e``
+        # that killed the entire write even though the directory existed. ``[ -d ]`` is a
+        # builtin over the path handling that does work, so the guard costs no extra spawn.
+        mkdir_step = '[ -d "$d" ] || mkdir -p "$d"; '
+        parent = os.path.dirname(path) or "."
+        if _is_unc_bash_path(parent) and getattr(self.env, "is_local", False):
+            # ...and a MISSING UNC parent cannot be made by the shell at all, so make it the
+            # way Win32 resolves it. Local backends only: a remote backend's filesystem is
+            # not this process's to touch.
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError as exc:
+                return ExecuteResult(exit_code=1, stdout=f"mkdir: {parent}: {exc}")
         script = (
             "set -e; "
-            # One shell script, fully quoted. Notes: - `mkdir -p "$d"` is folded in here so the parent
-            # directory is created in the same subprocess that writes the temp file — saves one entire
-            # subprocess spawn vs. a separate mkdir call. - `mktemp` lands the temp in the target's own dir
+            # One shell script, fully quoted. Notes: - `mkdir_step` keeps the parent-dir creation in
+            # this same subprocess (so no separate mkdir spawn) but runs it only when the parent is
+            # missing: on a UNC parent bash's `[ -d ]` works while GNU mkdir would abort the write.
+            # - `mktemp` lands the temp in the target's own dir
             # (-p) so `mv` is same-FS atomic; we fall back to a PID-stamped name if the backend lacks mktemp
             # (rare; busybox/macOS/Linux all ship it). - `chmod --reference` is GNU-only, so we read the
             # octal mode with `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly; silent
@@ -602,8 +620,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             'rt="$(readlink -f "$t" 2>/dev/null || realpath "$t" 2>/dev/null || true)"; '
             '[ -n "$rt" ] && { t="$rt"; d="$(dirname "$t")"; }; '
             "fi; "
-            'mkdir -p "$d"; '
-            'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
+            + mkdir_step
+            + 'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
             '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
             '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
             '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '

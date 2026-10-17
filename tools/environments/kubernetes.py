@@ -387,7 +387,7 @@ def resolve_namespace(kcfg: dict) -> str:
     if namespace:
         return namespace
     try:
-        with open(_SA_NAMESPACE_FILE, encoding="utf-8") as handle:
+        with open(_SA_NAMESPACE_FILE, encoding="utf-8-sig") as handle:
             namespace = handle.read().strip()
     except OSError:
         namespace = ""
@@ -1033,7 +1033,7 @@ class _ExecState:
     """Cancellation state for one exec, so kill() addresses exactly the
     command whose handle was killed while others run concurrently."""
 
-    __slots__ = ("stream", "cancelled")
+    __slots__ = ("cancelled", "stream")
 
     def __init__(self) -> None:
         self.stream = None

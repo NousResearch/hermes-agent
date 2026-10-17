@@ -27,7 +27,7 @@ from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
-    credential_pool_matches_provider, resolve_runtime_pool_key,
+    credential_pool_matches_provider,
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
@@ -1451,10 +1451,9 @@ def restore_primary_runtime(agent) -> bool:
         return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
 
     def _load_primary_pool():
-        """Load the primary provider's pool; None when absent or provider-mismatched."""
-        from agent.credential_pool import load_pool
-        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
-        loaded = load_pool(key) if key else None
+        """The primary's pool (entry-scoped for a custom entry); None when absent or provider-mismatched."""
+        from agent.custom_entry_pool import load_runtime_pool
+        loaded = load_runtime_pool(primary_provider, primary_runtime_base_url, (rt or {}).get("requested_provider"))
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
         agent._rate_limited_until = 0

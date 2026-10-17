@@ -4777,16 +4777,16 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
     if not custom_key:
         with contextlib.suppress(Exception):
             from agent.credential_pool import custom_provider_pool_key_candidates
+            from agent.custom_entry_pool import entry_scoped_pool
             pool_name = custom_entry.get("provider_key") or custom_entry.get("name") or provider
             for pool_key in custom_provider_pool_key_candidates(custom_base, pool_name):
                 try:
                     pool = load_pool(pool_key)
                 except Exception:
                     continue
-                if not pool.has_credentials():
+                if (pool := entry_scoped_pool(pool, pool_key, custom_entry)) is None or not pool.has_credentials():
                     continue
-                pool_entry = pool.select()
-                if pool_entry is None:
+                if (pool_entry := pool.select()) is None:
                     continue
                 pool_api_key = getattr(pool_entry, "runtime_api_key", None) or getattr(pool_entry, "access_token", "") or ""
                 if str(pool_api_key).strip():

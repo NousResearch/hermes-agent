@@ -271,9 +271,16 @@ class TestStripHelpers:
         stripped = strip_inert_heredoc_bodies(cmd)
         assert (" " + AMP + " ") not in stripped
 
-    def test_ambiguous_input_returned_unchanged(self):
-        # Unparseable '<<' token → fail closed, identical string back.
-        cmd = "cat <<" + NL + "text " + AMP + " more"
+    @pytest.mark.parametrize("opener", [
+        "cat <<",
+        "cat <<'EOF'\rword",
+        "cat <<'EOF'\u00a0word",
+        "cat <<'EOF'\u2003word",
+    ])
+    def test_ambiguous_input_returned_unchanged(self, opener):
+        # Only shell blanks end a delimiter word; these openers are incomplete
+        # or have no matching terminator, so no body is proven inert.
+        cmd = opener + NL + "text " + AMP + " more" + NL + "EOF"
         assert strip_inert_heredoc_bodies(cmd) == cmd
 
     def test_delimiter_requires_exact_terminator_line(self):

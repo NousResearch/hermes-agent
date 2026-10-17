@@ -1087,6 +1087,7 @@ def _track_review_fork(agent: Any, review_agent: Any, *, register: bool) -> None
 
 def _review_tool_whitelist(
     review_agent: Any, task_cfg: Optional[dict[str, Any]], review_memory: bool = False,
+    *, skills_creation_on: bool = True,
 ) -> tuple[set, set]:
     """``(whitelist, configured_extra_tools)`` for the review fork — DISPATCH-side only, so the
     advertised ``tools[]`` stays byte-identical to the parent's (prompt-cache parity)."""
@@ -1095,7 +1096,12 @@ def _review_tool_whitelist(
     # (#105921): a skill-nudge review never gets the memory tool, so an unattended fork cannot
     # act on the memory tool's "consolidate now" hint and delete entries no one reviewed.
     memory_on = review_agent._memory_enabled or review_agent._user_profile_enabled
-    review_toolsets = ["memory", "skills"] if memory_on and review_memory else ["skills"]
+    # skills.creation_nudge_interval: 0 is a kill switch for autonomous skill writes, not just the
+    # skill-review trigger (#82708): a memory-triggered fork must not carry skill_manage either.
+    # The fork clears its own nudge intervals (build_cache_parity_fork), so the caller passes the
+    # parent's configuration down as this flag.
+    review_toolsets = (["memory"] if memory_on and review_memory else []) + (
+        ["skills"] if skills_creation_on else [])
     whitelist = {t["function"]["name"] for t in get_tool_definitions(enabled_toolsets=review_toolsets, quiet_mode=True)}
     # Read-only file tools: denying read_file/search_files caused a per-review denial storm that
     # starved the loop (read_file also registers the read with the read-before-write guard).
@@ -1159,20 +1165,31 @@ def _run_review_fork(
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
-    review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
+    # An explicit /refine is the user's own request — it keeps the skill surface even under the
+    # creation kill switch; only unattended forks honor the switch (#82708).
+    review_whitelist, configured_extra_tools = _review_tool_whitelist(
+        st.review_agent, task_cfg, review_memory,
+        skills_creation_on=explicit or getattr(agent, "_skill_nudge_interval", 10) > 0)
     extra_list = ", ".join(sorted(configured_extra_tools))
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
     # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
     # tell the model that memory is available, or it will burn iterations on denied calls.
+    # Same for the skill surface under the creation kill switch (#82708).
+    skills_on = "skill_manage" in review_whitelist
+    skills_phrase_deny = (
+        "skill_view/skills_list/read_file/search_files to read, "
+        "skill_manage(action='patch'|...) to change skills" if skills_on
+        else "read_file/search_files to read")
     memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
-    memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
+    surfaces = " and ".join(
+        name for name, on in (("memory", "memory" in review_whitelist), ("skill", skills_on)) if on)
+    memory_phrase_prompt = f"{surfaces} management tools" if surfaces else "read-only file tools (read_file/search_files)"
     set_thread_tool_whitelist(
         review_whitelist,
         deny_msg_fmt=(
             "Background review denied non-whitelisted tool: "
-            "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
-            "skill_manage(action='patch'|...) to change skills"
+            "{tool_name}. Allowed here: " + skills_phrase_deny
             + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
         ),
     )
@@ -1186,7 +1203,7 @@ def _run_review_fork(
             st.review_agent.run_conversation(
                 user_message=(
                     prompt + "\n\nYou can only call " + memory_phrase_prompt +
-                    "management tools. Other tools will be denied "
+                    ". Other tools will be denied "
                     "at runtime — do not attempt them." + prompt_extra
                 ),
                 conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,

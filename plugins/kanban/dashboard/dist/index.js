@@ -625,7 +625,9 @@
   function KanbanPage() {
     const { t } = useI18n();
     const kanbanDialogs = useKanbanDialogs(t);
-    const [board, setBoard] = useState(() => readSelectedBoard() || null);
+    // Deep link support (factory notifications link straight to a card):
+    // `?board=<slug>` overrides the remembered board selection.
+    const [board, setBoard] = useState(() => new URLSearchParams(window.location.search).get("board") || readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
@@ -650,7 +652,12 @@
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
-    const [selectedTaskId, setSelectedTaskId] = useState(null);
+    // Deep link support (factory notifications link straight to a card):
+    // `?task=<id>` opens that task's drawer on load.
+    const [selectedTaskId, setSelectedTaskId] = useState(() => {
+        try { return new URLSearchParams(window.location.search).get("task"); }
+        catch (e) { return null; }
+    });
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());

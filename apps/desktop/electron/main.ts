@@ -467,8 +467,9 @@ import {
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
-  pathWithRemoteOwnerScope,
+  isRemoteSessionRequestPath,
   type RegistrySessionSource,
+  remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
@@ -15971,9 +15972,8 @@ ipcMain.handle('hermes:window:readBelow', async event => {
 // request.profile. Either way, a remote profile's session lives only on its
 // remote host, so the request must go there (where it serves its own state.db).
 //   GET    /api/profiles/sessions        → splice each remote profile's rows in
-//   GET    /api/sessions/{id}[/messages] → read from remote
-//   DELETE /api/sessions/{id}            → delete on remote
-//   PATCH  /api/sessions/{id}            → rename/archive on remote
+//   GET    /api/sessions/{id}[/messages|/mutation-snapshot|/timeline|/messages/around] → read from remote
+//   DELETE/PATCH /api/sessions/{id}      → delete/rename/archive on remote
 async function interceptSessionRequestForRemote(request, registryConnectionId = null) {
   if (typeof request?.path !== 'string') {
     return undefined
@@ -16061,7 +16061,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
   //    param (it serves its own state.db natively).
   //  - global remote mode: ONE backend serves every profile via ?profile=, so
   //    route there and KEEP the profile param so it opens the right state.db.
-  if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
+  if (isRemoteSessionRequestPath(pathname)) {
     let profile = (searchParams.get('profile') || request.profile || '').trim()
 
     if (!profile) {
@@ -16084,7 +16084,6 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     // against paginating remote backends).
     const passthroughParams = new URLSearchParams(searchParams)
     passthroughParams.delete('profile')
-    const passthroughQuery = passthroughParams.toString()
 
     if (profileHasRemoteOverride(profile)) {
       // #64999: the override's remote can be a multi-profile backend — an
@@ -16096,11 +16095,10 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         remoteProfileQueryScope(profile, profileSshOverride(readDesktopConnectionConfig(), profile)?.remoteProfile) ||
         profile
 
+      const ownerPath = remoteOwnerRoutePath(pathname, searchParams, ownerScope)
+
       if (method === 'GET') {
-        return fetchJsonForProfile(
-          profile,
-          pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
-        )
+        return fetchJsonForProfile(profile, ownerPath)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
@@ -16109,7 +16107,8 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         ;(body as Record<string, unknown>).profile = ownerScope
       }
 
-      return requestJsonForProfile(profile, pathname, method, body)
+      // A DELETE's mutation identity is query-only; a bare pathname 409s on the remote.
+      return requestJsonForProfile(profile, ownerPath, method, body)
     }
 
     if (globalRemoteActive()) {

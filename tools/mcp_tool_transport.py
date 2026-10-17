@@ -22,6 +22,14 @@ from tools import mcp_tool_registration as _registration
 
 logger = logging.getLogger("tools.mcp_tool")
 
+# ``httpx2`` 2.12 added a 1 MiB default per-SSE-event limit.  ``mcp==2.0.0``
+# constructs EventSource itself and exposes no way for its caller to raise that
+# limit, so a large but valid Streamable HTTP tools/list response was reported
+# as an unexplained closed stream.  Keep a finite ceiling while accommodating
+# API-backed servers that return multi-megabyte tool catalogues in one event.
+_MCP_MAX_SSE_EVENT_BYTES = 16 * 1024 * 1024
+_streamable_http_event_source_patched = False
+
 _PROBE_INITIALIZE_BODY = (  # JSON-RPC ``initialize`` body for the content-type preflight POST
     '{"jsonrpc":"2.0","id":"_probe","method":"initialize","params":{"protocolVersion":"2025-03-26",'
     '"capabilities":{},"clientInfo":{"name":"hermes-probe","version":"0.1"}}}')
@@ -39,6 +47,34 @@ def _is_2xx(resp) -> bool:
 def _present(**kwargs) -> dict:
     """*kwargs* minus the ``None`` values (optional httpx client arguments)."""
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _raise_streamable_http_event_limit() -> None:
+    """Raise the SDK-owned httpx2 SSE ceiling when that SDK offers no knob.
+
+    MCP 2.0 imports ``EventSource`` into ``mcp.client.streamable_http`` and
+    calls it without ``max_event_size`` for POST responses. Patch that narrow
+    import seam rather than httpx2 globally, so unrelated SSE users retain
+    their library default. Older SDKs and future SDKs without this exact
+    signature keep their existing behavior.
+    """
+    global _streamable_http_event_source_patched
+    if _streamable_http_event_source_patched:
+        return
+    try:
+        import inspect
+        from mcp.client import streamable_http
+        event_source = streamable_http.EventSource
+        if "max_event_size" not in inspect.signature(event_source).parameters:
+            return
+    except (AttributeError, ImportError, TypeError, ValueError):
+        return
+
+    def _event_source_with_hermes_limit(response):
+        return event_source(response, max_event_size=_MCP_MAX_SSE_EVENT_BYTES)
+
+    streamable_http.EventSource = _event_source_with_hermes_limit
+    _streamable_http_event_source_patched = True
 
 
 def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name: str = "") -> Optional[dict]:
@@ -560,6 +596,7 @@ class MCPServerTransportMixin:
                                   "(strict_redirect_headers). Upgrade the mcp package.")
             return _core.streamablehttp_client(url, headers=headers, timeout=float(connect_timeout), verify=ssl_verify,
                                                **_present(auth=oauth_auth))
+        _raise_streamable_http_event_limit()
         # Explicit AsyncClient matching the SDK's create_mcp_http_client defaults; MUST come from the
         # SDK's httpx (httpx2 on mcp >= 2.0) since the SDK sends its own Requests through it.
         httpx = _core.sdk_httpx()

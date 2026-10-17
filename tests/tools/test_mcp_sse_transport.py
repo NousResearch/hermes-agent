@@ -12,6 +12,10 @@ due to stale-branch divergence:
 2. OAuth auth is forwarded to ``sse_client`` when configured. Previously the
    code built ``_oauth_auth`` but never passed it to the SSE path, so SSE MCP
    servers behind OAuth 2.1 PKCE would silently fail with 401s.
+
+3. Streamable HTTP uses a bounded 16 MiB SSE event limit. ``mcp==2.0.0`` does
+   not expose httpx2's 1 MiB default, which rejects large one-event tools/list
+   responses before Hermes can discover the server's tools (#138329).
 """
 
 from __future__ import annotations
@@ -143,3 +147,23 @@ class TestSSEOAuthForwarding:
             "sse_client was NOT called with auth= — SSE OAuth forwarding regressed"
         )
         assert patch_sse_client["auth"] is fake_oauth_provider
+
+
+def test_streamable_http_accepts_a_tools_list_event_over_httpx2_default_limit():
+    """Regression for #138329: MCP's direct EventSource construction is bounded at 16 MiB."""
+    import httpx2
+    from mcp.client import streamable_http
+    from tools import mcp_tool_transport as transport
+
+    event = b"data: " + (b"x" * (1024 * 1024 + 1)) + b"\n\n"
+    request = httpx2.Request("POST", "https://example.com/mcp")
+    response = httpx2.Response(200, request=request, headers={"content-type": "text/event-stream"}, content=event)
+    with pytest.raises(httpx2.SSEError, match="1048576"):
+        list(httpx2.EventSource(response))
+
+    transport._raise_streamable_http_event_limit()
+    response = httpx2.Response(200, request=request, headers={"content-type": "text/event-stream"}, content=event)
+    messages = list(streamable_http.EventSource(response))
+
+    assert len(messages) == 1
+    assert len(messages[0].data) == 1024 * 1024 + 1

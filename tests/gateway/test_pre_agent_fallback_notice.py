@@ -5,6 +5,7 @@ Drives the production entry point — ``GatewayTurnMixin._resolve_session_agent_
 runner, then ``TurnRunner.run_sync`` — so the pop in run_turn.py and the attach in run_turn_runner.py
 are both pinned (a helper-only test stays green with either removed)."""
 import types
+import gateway.run  # Import bootstrap before the per-test home I/O guard is active.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -83,7 +84,8 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
          patch("gateway.run._load_gateway_config",
                return_value={"fallback_providers": [{"provider": "anthropic", "model": "claude-sonnet-5"}]}), \
          patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
-         patch("gateway.run._get_channel_override", return_value=None):
+         patch("gateway.run._get_channel_override", return_value=None), \
+         patch("gateway.run._current_max_iterations", return_value=100):
         result = TurnRunner(runner, ctx).run_sync()
 
     assert result["final_response"] == "ok"
@@ -107,3 +109,87 @@ def test_model_override_fast_path_clears_stale_notice():
         model, runtime = runner._resolve_session_agent_runtime(session_key="test-session-key")
     assert (model, runtime["provider"]) == ("claude-sonnet-5", "anthropic")
     assert runner._pre_agent_fallback_notice is None
+
+
+def test_gateway_resolution_time_policy_survives_turn_route_to_constructor():
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from gateway.run_turn_runner import TurnRunner
+
+    runner = _runner_with_real_runtime_resolution()
+    runner._service_tier = "priority"
+    runner._resolve_turn_agent_config = types.MethodType(GatewayTurnPrepareMixin._resolve_turn_agent_config, runner)
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.LOCAL, chat_id="c", user_id="u"),
+        message="hi", history=[], session_id="sid", session_key="test-session-key", user_config={},
+        AIAgent=_RecordingAgent, resolve_display_setting=lambda *_a: False, _run_still_current=lambda: True,
+        _hooks_ref=SimpleNamespace(loaded_hooks=False),
+    )
+
+    def resolve(**kwargs):
+        if kwargs.get("requested") is None:
+            raise AuthError("expired")
+        return {"provider": "custom", "api_key": "k", "base_url": "https://fallback.example/v1",
+                "request_overrides": {"speed": "fast", "extra_body": {"service_tier": "priority", "marker": 1}}}
+
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch("hermes_cli.runtime_provider._get_model_config", return_value={"provider": "openai", "default": "primary"}), \
+         patch("gateway.run._load_gateway_config", return_value={"fallback_providers": [
+             {"provider": "custom", "model": "fallback", "service_tier_override": "normal"}]}), \
+         patch("gateway.run._resolve_gateway_model", return_value="primary"), \
+         patch("gateway.run._get_channel_override", return_value=None), \
+         patch("gateway.run._current_max_iterations", return_value=100):
+        assert TurnRunner(runner, ctx).run_sync()["final_response"] == "ok"
+    assert _RecordingAgent.built_kwargs["fallback_service_tier_override"] == "normal"
+    from tests.agent.fallback_policy_wire import first_wire_from_runtime
+    wire, snapshot = first_wire_from_runtime(_RecordingAgent.built_kwargs)
+    assert snapshot["fallback_service_tier_override"] == "normal"
+    assert "service_tier" not in wire and "speed" not in wire
+    assert "service_tier" not in wire["extra_body"] and "speed" not in wire["extra_body"]
+    assert wire["extra_body"]["marker"] == "keep"
+
+
+def test_gateway_cache_signature_changes_with_selected_fallback_tier():
+    from gateway.run_agent_cache import GatewayAgentCacheMixin
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+
+    runner = GatewayTurnPrepareMixin()
+    setattr(runner, "_service_tier", None)
+    base = {"provider": "deepseek", "args": [], "capabilities": {}}
+    normal = GatewayTurnPrepareMixin._resolve_turn_agent_config(
+        runner, "hi", "fallback", {**base, "fallback_service_tier_override": "normal"},
+    )
+    inherited = GatewayTurnPrepareMixin._resolve_turn_agent_config(
+        runner, "hi", "fallback", {**base, "fallback_service_tier_override": None},
+    )
+    normal_sig = GatewayAgentCacheMixin._agent_config_signature(
+        "fallback", normal["runtime"], ["file"], "",
+    )
+    inherited_sig = GatewayAgentCacheMixin._agent_config_signature(
+        "fallback", inherited["runtime"], ["file"], "",
+    )
+
+    assert normal["runtime"]["fallback_service_tier_override"] == "normal"
+    assert normal_sig != inherited_sig
+
+
+def test_frozen_gateway_runtime_carries_selected_fallback_policy_to_first_request(monkeypatch):
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from tests.agent.fallback_policy_wire import first_wire_from_runtime
+
+    def resolve(*, requested, **kw):
+        if requested == "openai":
+            raise AuthError("no primary key")
+        return {"provider": "deepseek", "api_key": "test-key", "base_url": "https://api.deepseek.com/v1", "api_mode": "chat_completions"}
+
+    frozen = {"model": {"default": "primary", "provider": "openai"},
+              "fallback_providers": [{"provider": "deepseek", "model": "fallback", "service_tier_override": "normal"}]}
+    policy = SimpleNamespace(effective=lambda _authority: (frozen, "primary"),
+                             credential_ref=None, request_json="{}")
+    runner = SimpleNamespace(session_authority=SimpleNamespace())
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+    model, runtime = _resolve_policy_agent_runtime(runner, policy)
+    assert model == "fallback"
+    assert runtime["fallback_service_tier_override"] == "normal"
+    wire, snapshot = first_wire_from_runtime({**runtime, "model": model})
+    assert snapshot["fallback_service_tier_override"] == "normal"
+    assert "service_tier" not in wire and "speed" not in wire

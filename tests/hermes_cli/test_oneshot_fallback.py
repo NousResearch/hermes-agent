@@ -5,6 +5,8 @@ A quota-exhausted / expired primary raises ``AuthError`` from ``resolve_runtime_
 ``resolve_runtime_with_fallback`` helper gives oneshot the gateway's resolution-time behaviour."""
 
 import pytest
+import run_agent  # Import bootstrap before the per-test home I/O guard is active.
+from tests.agent.fallback_policy_wire import first_wire_from_runtime
 
 from hermes_cli.auth import AuthError
 from hermes_cli.runtime_provider import resolve_runtime_with_fallback
@@ -141,3 +143,60 @@ def test_run_agent_forwards_resolved_request_overrides(monkeypatch):
     oneshot_mod._run_agent("say OK")
 
     assert captured["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
+
+
+def test_oneshot_resolution_time_fallback_passes_selected_policy(monkeypatch):
+    import hermes_cli.oneshot as oneshot
+
+    captured = {}
+
+    class Agent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+        def run_conversation(self, *_args, **_kwargs):
+            return {"final_response": "ok", "session_id": "s"}
+        def close(self):
+            pass
+
+    def resolve(**kwargs):
+        if kwargs.get("requested") in (None, "openai"):
+            raise AuthError("no key")
+        return {"provider": "custom", "api_key": "k", "base_url": "https://fallback.example/v1"}
+
+    cfg = {"model": {"provider": "openai", "default": "primary"},
+           "fallback_providers": [{"provider": "custom", "model": "fallback", "service_tier_override": "normal"}]}
+    monkeypatch.setattr(oneshot, "_create_session_db_for_oneshot", lambda: None)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_a: [])
+    monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+    monkeypatch.setattr("run_agent.AIAgent", Agent)
+    assert oneshot._run_agent("hi")[0] == "ok"
+    assert captured["fallback_service_tier_override"] == "normal"
+    wire, snapshot = first_wire_from_runtime(captured)
+    assert snapshot["fallback_service_tier_override"] == "normal"
+    assert "service_tier" not in wire and "speed" not in wire
+    assert "service_tier" not in wire["extra_body"] and "speed" not in wire["extra_body"]
+
+
+@pytest.mark.parametrize("field,policy", [({"service_tier_override": " NORMAL "}, "normal"),
+                                          ({}, None), ({"service_tier_override": "unsupported-private-marker"}, None)])
+def test_resolved_fallback_policy_is_validated_without_logging_the_bad_value(monkeypatch, caplog, field, policy):
+    def resolve(**kwargs):
+        if kwargs.get("requested") == "primary":
+            raise AuthError("no key")
+        return {"provider": "custom", "api_key": "fixture-key", "base_url": "https://fallback.example/v1"}
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+    cfg = {"fallback_providers": [{"provider": "custom", "model": "fallback", **field}]}
+    runtime, entry = resolve_runtime_with_fallback(cfg, requested="primary")
+    assert entry is not None
+    assert entry["model"] == "fallback"
+    assert runtime.get("fallback_service_tier_override") == policy
+    if field and policy is None:
+        assert "Ignoring unsupported fallback service_tier_override" in caplog.text
+        assert "unsupported-private-marker" not in caplog.text
+    wire, snapshot = first_wire_from_runtime({**runtime, "model": entry["model"]})
+    assert snapshot["fallback_service_tier_override"] == policy
+    assert ("service_tier" in wire) is (policy is None)
+    assert ("speed" in wire) is (policy is None)
+    assert ("service_tier" in wire["extra_body"]) is (policy is None)

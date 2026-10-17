@@ -29,7 +29,8 @@ TASK = "voice_chat"
 _REJECTION_FIELDS = ("_reasoning_disable_rejected", "_reasoning_floor_required", "_reasoning_effort_rejected")
 _EXTRA_FIELDS = (
     "_fallback_activated", "_fallback_index", "_provider_fallback_active", "_provider_fallback_route",
-    "_rate_limit_backoff_count", "_credential_pool", "_credential_pool_entry_id", "_config_context_length",
+    "_active_fallback_service_tier_override", "_rate_limit_backoff_count", "_credential_pool",
+    "_credential_pool_entry_id", "_config_context_length",
     *_REJECTION_FIELDS,
 )
 
@@ -106,8 +107,9 @@ def _voice_reasoning(agent: Any, effort: Optional[dict[str, Any]]) -> Optional[d
 
 def _capture(agent: Any) -> dict[str, Any]:
     from agent.agent_runtime_helpers import _build_primary_runtime_snapshot
+    snapshot = _build_primary_runtime_snapshot(agent, agent.api_mode)
     return {
-        "snapshot": _build_primary_runtime_snapshot(agent, agent.api_mode),
+        "snapshot": snapshot,
         **{name: getattr(agent, name, None) for name in _EXTRA_FIELDS},
     }
 
@@ -161,6 +163,8 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
             _warn_once(agent, target, reason)
             agent._voice_route_state = {"reasoning_config": state["reasoning_config"]}
             return agent._cached_system_prompt or system_prompt
+        from agent.fallback_policy import activate_fallback_service_tier_override
+        activate_fallback_service_tier_override(agent, {}, log=logger)
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, agent.model, agent.provider)
         for name in _REJECTION_FIELDS:

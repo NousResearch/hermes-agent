@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- one declarative fallback-tier field belongs at the existing agent-runtime assembly boundary
 """Gateway runner - entry point for messaging platform integrations.
 
 Provides ``start_gateway()`` (start all configured adapters) and ``GatewayRunner`` (lifecycle).
@@ -2347,7 +2348,8 @@ def _runtime_agent_kwargs(runtime: dict) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
-        "request_overrides": runtime.get("request_overrides")}
+        "request_overrides": runtime.get("request_overrides"),
+        "fallback_service_tier_override": runtime.get("fallback_service_tier_override")}
 
 
 @dataclasses.dataclass(frozen=True)

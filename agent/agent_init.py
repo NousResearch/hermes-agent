@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- fallback service-tier override must cross the existing agent-construction boundary; extracting three routing arguments would fragment initialization ownership
 """Implementation of :meth:`AIAgent.__init__` as ``init_agent(agent, ...)``.
 
 ``init_agent`` is a thin, ordered orchestrator over ``_init_*`` / ``_build_*`` phase
@@ -25,6 +26,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
+from agent.fallback_policy import activate_fallback_service_tier_override
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -893,6 +895,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             _refused_entries.append((_fb_provider, "no usable credentials"))
             continue
         agent._fallback_activated = True
+        activate_fallback_service_tier_override(agent, _fb, log=logger)
         if _fb_provider.strip().lower() == "moa":
             # The chokepoint handed back the preset's aggregator client, which only proves the
             # preset resolves and its aggregator has credentials. A MoA entry means the preset
@@ -2218,6 +2221,7 @@ def _snapshot_primary_runtime(agent):
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "fallback_service_tier_override": agent._active_fallback_service_tier_override,
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
@@ -2311,6 +2315,7 @@ def init_agent(
     skip_background_review: bool = False, session_db=None, parent_session_id: str | None = None,
     iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
     fallback_model: dict[str, Any] | None = None, credential_pool=None, checkpoints_enabled: bool = False,
+    fallback_service_tier_override: str | None = None,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
@@ -2388,6 +2393,10 @@ def init_agent(
     _init_turn_state(agent, run_budget_seconds)
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
+    # Explicit-credential callers may have selected a fallback before this agent existed.
+    # Initialize before client setup (which may select a deeper fallback) and the primary snapshot.
+    activate_fallback_service_tier_override(
+        agent, {"service_tier_override": fallback_service_tier_override}, log=logger)
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)

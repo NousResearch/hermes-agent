@@ -220,7 +220,7 @@ class GatewayTurnPrepareMixin:
         runtime = {
             k: runtime_kwargs.get(k) for k in (
                 "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args",
-                "credential_pool", "max_tokens", "capabilities",
+                "credential_pool", "max_tokens", "capabilities", "fallback_service_tier_override",
             )
         }
         runtime["args"] = list(runtime["args"] or [])

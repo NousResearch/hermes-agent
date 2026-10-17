@@ -1,0 +1,36 @@
+# hermes-jetstream — catalog entry for NousResearch/hermes-agent.
+# The sha is the release: bump it (and `version`) in the same PR.
+
+name: hermes-jetstream
+repo: https://github.com/atbrace/hermes-jetstream
+sha: ba047ef96304e8217df1004bf03e39c32eb1b3ac
+subdir: plugin/hermes_jetstream
+description: >-
+  NATS JetStream event bus: agents publish events (nats_publish), pull one batch
+  (nats_fetch), and wake on subject matches — live-session watches or config-declared
+  wake routes with durable consumers, manual ack, an idempotent wake ledger and rate
+  rails; an opt-in lifecycle tap mirrors Hermes events onto hermes.> subjects.
+  Disclosure — connects only to the NATS servers in your own config (no third-party
+  calls, no telemetry); the platform adapter holds persistent subscriptions and
+  reconnect loops for the gateway's lifetime; token/nkey/user-pass/creds secret values
+  come from ${VAR} references in plugin settings, read via the profile-scoped secret
+  scope, never written or rotated; wake routes render event payloads into prompts, so
+  keep subscribe_allowed scoped to trusted publishers.
+maintainer: atbrace
+tier: community
+category: platform
+requires_hermes: ">=0.21.4"
+version: "1.0.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - nats_publish
+    - nats_fetch
+    - jetstream_watch
+    - jetstream_unwatch
+    - jetstream_list
+    - jetstream_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

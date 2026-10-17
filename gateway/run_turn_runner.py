@@ -216,7 +216,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # run_sync only reads it via the holder for delta-callback wiring.
         stts = ctx.streaming_tts_consumer_holder[0]
         scfg = getattr(getattr(self._runner, 'config', None), 'streaming', None)
-        if scfg is None:
+        profile_streaming = (
+            ctx.user_config.get("streaming") if isinstance(ctx.user_config, dict) else None
+        )
+        if isinstance(profile_streaming, dict) and profile_streaming:
+            from gateway.config import StreamingConfig
+            scfg = StreamingConfig.from_dict(profile_streaming)
+        elif scfg is None:
             from gateway.config import StreamingConfig
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.

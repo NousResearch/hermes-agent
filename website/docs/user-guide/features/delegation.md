@@ -291,6 +291,8 @@ Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then
 
 Each `tasks[]` entry may set optional `provider` and/or `model` to pin that child only (same resolution path as CLI/config, including custom `providers:` table names). Tasks that omit both inherit the batch/parent route or the global `delegation.*` pin. A leftover global `delegation.base_url` is not applied to a child that pins a different provider. An unknown provider fails the spawn instead of silently inheriting.
 
+A task may also set `reasoning_effort` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, …) and `service_tier` (`normal`, `fast`, `ultrafast` — the same words as `/fast`) for that child only. They override `delegation.reasoning_effort` and the inherited speed tier. Both are checked before any child is built: an unknown word, or a tier the child's model/provider does not offer, fails the spawn instead of silently running at a different level. This lets you say, in chat, "put a reviewer on this PR on openai-codex gpt-6-astra, medium thinking, fast".
+
 ## The `/review` Command
 
 `/review` spawns an independent, full-privilege background subagent whose only job is to review the work your conversation just produced — a PR, a diff, code, documentation, a design. It works on every surface: CLI, TUI, the Desktop app, and every gateway messaging platform.

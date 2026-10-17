@@ -17,6 +17,7 @@ import weakref
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_constants import VALID_REASONING_EFFORTS
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value
 
@@ -216,6 +217,9 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[list[str]] = None,
+    # Per-task thinking level / speed tier (validated in _apply_task_tuning); None keeps config/parent behavior.
+    override_reasoning_config: Optional[dict[str, Any]] = None,
+    override_service_tier: Optional[str] = None,
     # Configuration block that owns the selected provider/model route. Internal
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
@@ -267,6 +271,10 @@ def _build_child_agent(
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
     )
+    if override_reasoning_config is not None:
+        rt["reasoning_config"] = override_reasoning_config
+    if override_service_tier:
+        rt["service_tier"] = override_service_tier
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's
@@ -422,6 +430,8 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
         "override_request_overrides": creds.get("request_overrides"),
         "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
+        "override_reasoning_config": creds.get("reasoning_config"),
+        "override_service_tier": creds.get("service_tier"),
         "routing_cfg": routing_cfg,
     }
 
@@ -469,11 +479,65 @@ def _attach_live_transcript(child, i: int, live_deleg_id: Optional[str], live_wr
             identity["delegation_id"] = live_deleg_id
 
 
+def _task_service_tier(word: str, creds: dict[str, Any], parent_agent) -> dict[str, Any]:
+    """``request_overrides``/``service_tier`` for a per-task speed tier on the child's resolved route. The tier goes
+    through the same ``resolve_fast_mode_overrides`` gate as ``/fast``; a tier the route can't serve raises."""
+    import copy as _copy
+    from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
+    from hermes_cli.models import resolve_fast_mode_overrides
+    try:
+        tier = parse_exact_service_tier(word)
+    except ValueError:
+        tier = None
+    if tier is None or (tier and tier not in STATIC_TIERS):
+        raise ValueError(f"Unknown service_tier '{word}' on a delegate_task task. Use normal, fast, or ultrafast.")
+    # Same bundle rule as _resolve_child_runtime: a pinned provider/endpoint owns the route, else the parent's.
+    pinned = bool(creds.get("provider") or creds.get("base_url"))
+    provider = creds.get("provider") or getattr(parent_agent, "provider", None)
+    model = creds.get("model") or getattr(parent_agent, "model", None)
+    base_url = creds.get("base_url") if pinned else getattr(parent_agent, "base_url", None)
+    base = creds.get("request_overrides")
+    if base is None and not creds.get("provider"):
+        base = getattr(parent_agent, "request_overrides", None)
+    overrides = {k: v for k, v in _copy.deepcopy(base if isinstance(base, dict) else {}).items()
+                 if k not in ("service_tier", "speed")}
+    if tier:
+        fast = resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier)
+        if not fast:
+            raise ValueError(
+                f"service_tier '{word}' is not available for model '{model}' on provider '{provider}'. "
+                f"Omit service_tier or choose a model/provider that offers it."
+            )
+        overrides.update(fast)
+    return {"request_overrides": overrides, "service_tier": tier or None}
+
+
+def _apply_task_tuning(task: dict[str, Any], creds: dict[str, Any], parent_agent) -> dict[str, Any]:
+    """Copy of *creds* carrying the task's ``reasoning_effort`` / ``service_tier``; unknown words raise ValueError."""
+    effort, tier_word = _task_route_pin(task.get("reasoning_effort")), _task_route_pin(task.get("service_tier"))
+    if not effort and not tier_word:
+        return creds
+    creds = dict(creds)
+    if effort:
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(effort)
+        if parsed is None:
+            raise ValueError(
+                f"Unknown reasoning_effort '{effort}' on a delegate_task task. "
+                f"Use none or one of: {', '.join(VALID_REASONING_EFFORTS)}."
+            )
+        creds["reasoning_config"] = parsed
+    if tier_word:
+        creds.update(_task_service_tier(tier_word, creds, parent_agent))
+    return creds
+
+
 def _resolve_task_routes(task_list, creds, routing_cfg, parent_agent) -> tuple[list, Optional[str]]:
     resolved_routes = []
     for task in task_list:
         try:
-            resolved_routes.append(_resolve_task_credentials(task, creds, routing_cfg, parent_agent))
+            creds_i, routing_i = _resolve_task_credentials(task, creds, routing_cfg, parent_agent)
+            resolved_routes.append((_apply_task_tuning(task, creds_i, parent_agent), routing_i))
         except ValueError as exc:
             return [], str(exc)
     return resolved_routes, None
@@ -739,7 +803,9 @@ _DESCRIPTION_HEAD = (
 )
 _DESCRIPTION_TAIL = (
     "- Children inherit the parent model unless a task sets provider/model, or via "
-    "delegation.provider / delegation.model in config.yaml."
+    "delegation.provider / delegation.model in config.yaml. When the user names a model, provider, thinking level "
+    "or speed for a subagent, set that task's provider/model/reasoning_effort/service_tier — map shorthand to the "
+    "exact Hermes provider and model ids."
 )
 
 def _build_tasks_param_description() -> str:
@@ -843,6 +909,19 @@ DELEGATE_TASK_SCHEMA = {
                         "model": _p(
                             "string",
                             "Optional model pin for THIS child only. Omit or leave blank to inherit the batch/parent model.",
+                        ),
+                        "reasoning_effort": _p(
+                            "string",
+                            "Optional thinking level for THIS child only ('none' disables thinking). Omit to use "
+                            "delegation.reasoning_effort or the parent's level. Unknown values fail the spawn.",
+                            enum=["none", *VALID_REASONING_EFFORTS],
+                        ),
+                        "service_tier": _p(
+                            "string",
+                            "Optional speed tier for THIS child only, as with /fast: 'fast' (priority), 'ultrafast', "
+                            "or 'normal'. Omit to inherit. A tier the child's model/provider does not offer fails the "
+                            "spawn.",
+                            enum=["normal", "fast", "ultrafast"],
                         ),
                     },
                     "required": ["goal"],

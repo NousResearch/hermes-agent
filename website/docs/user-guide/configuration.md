@@ -231,6 +231,12 @@ terminal:
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
+  # Per-worker systemd MemoryMax (MiB) for local background executors (cron, kanban,
+  # terminal background processes). 0 = conservative default: min of the gateway's
+  # cgroup memory.max, half of physical RAM, and 4 GiB. Raise on RAM-rich hosts whose
+  # workers legitimately need more (test batteries, bundle builds); the gateway cgroup
+  # and half-RAM clamps still apply. TERMINAL_LOCAL_MEMORY_MAX_MB overrides this at runtime.
+  local_memory_max_mb: 0
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell

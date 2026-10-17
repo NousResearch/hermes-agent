@@ -52,6 +52,90 @@ def _write_session_change(db_path, title):
     conn.close()
 
 
+def test_committed_deletion_bypasses_session_floor_with_exact_ids(watcher_home):
+    home, events = watcher_home
+    db = home / 'state.db'
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+    _write(db, "UPDATE sessions SET title='updated'")
+    server._broadcast_watched_changes(now=0.5)
+    events.clear()
+    _write(db, "DELETE FROM sessions WHERE id='s1'")
+    server._broadcast_watched_changes(now=1.0)
+    assert ('sessions.deleted', {'session_ids': ['s1'], 'profile': 'default'}) in events
+    events.clear()
+    server._broadcast_watched_changes(now=1.5)
+    assert not any(event == 'sessions.deleted' for event, _ in events)
+
+
+def test_committed_deletion_in_same_mtime_tick_broadcasts_once(watcher_home, monkeypatch):
+    home, events = watcher_home
+    db = home / "state.db"
+    _seed_store(db)
+    frozen_mtime = time.time_ns()
+    monkeypatch.setattr(server, "_newest_mtime_ns", lambda _paths: frozen_mtime)
+    server._broadcast_watched_changes(now=0.0)
+
+    _write(db, "DELETE FROM sessions WHERE id='s1'")
+    server._broadcast_watched_changes(now=0.5)
+    server._broadcast_watched_changes(now=1.0)
+
+    assert [payload for event, payload in events if event == "sessions.deleted"] == [
+        {"session_ids": ["s1"], "profile": "default"},
+    ]
+
+
+@pytest.mark.parametrize("served_sibling", [False, True])
+def test_deletion_owns_named_profile_and_requires_committed_snapshot(watcher_home, monkeypatch, served_sibling):
+    home, events = watcher_home
+    named = home / "profiles" / "work"
+    named.mkdir(parents=True)
+    if served_sibling:
+        monkeypatch.setattr(server, "_served_profile_homes", {named})
+    else:
+        monkeypatch.setattr(server, "_hermes_home", str(named))
+        monkeypatch.setattr(server, "_served_profile_homes", set())
+    db = named / "state.db"
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+    assert not events
+    writer = sqlite3.connect(db)
+    writer.execute("DELETE FROM sessions WHERE id='s1'")
+    server._broadcast_watched_changes(now=0.5)
+    assert not events  # uncommitted disappearance is not authoritative
+    writer.rollback()
+    writer.close()
+    server._broadcast_watched_changes(now=1.0)
+    assert not events
+    _write(db, "DELETE FROM sessions WHERE id='s1'")
+    server._broadcast_watched_changes(now=1.5)
+    assert ("sessions.deleted", {"session_ids": ["s1"], "profile": "work"}) in events
+
+
+@pytest.mark.parametrize("unreadable", ["missing", "foreign", "locked"])
+def test_unreadable_snapshot_never_authorizes_deletion(watcher_home, unreadable):
+    home, events = watcher_home
+    db = home / "state.db"
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+    writer = None
+    if unreadable == "missing":
+        db.unlink()
+    elif unreadable == "foreign":
+        _write(db, "DROP TABLE sessions")
+    else:
+        writer = sqlite3.connect(db)
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("DELETE FROM sessions WHERE id='s1'")
+    try:
+        server._broadcast_watched_changes(now=0.5)
+        assert not any(event == "sessions.deleted" for event, _ in events)
+    finally:
+        if writer is not None:
+            writer.rollback()
+            writer.close()
+
+
 def test_first_sighting_seeds_without_broadcasting(watcher_home):
     home, events = watcher_home
     (home / "cron" / "jobs.json").write_text("[]")

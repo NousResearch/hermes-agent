@@ -61,6 +61,47 @@ def _consume(stream, *, model, on_event):
 
 
 class TestNoProgressFailFast:
+    @pytest.mark.parametrize("event_factory", [dict, SimpleNamespace], ids=["json", "sdk"])
+    def test_completed_encrypted_reasoning_rearms_auxiliary_watchdog(
+        self, monkeypatch, event_factory
+    ):
+        from agent import auxiliary_client as aux
+
+        clock = SimpleNamespace(now=100.0)
+        monkeypatch.setattr(aux, "time", SimpleNamespace(monotonic=lambda: clock.now))
+        client = SimpleNamespace(close=lambda: None)
+        guard = aux._CodexStreamGuard(client, total_timeout=300, no_progress_timeout=2)
+
+        def reasoning_event(encrypted_content):
+            return event_factory(
+                type="response.output_item.done",
+                item=event_factory(type="reasoning", summary=[], encrypted_content=encrypted_content),
+            )
+
+        try:
+            clock.now = 101.0
+            guard.on_event(reasoning_event(""))
+            assert not guard.saw_content.is_set()
+            assert guard.effective_deadline() == 102.0
+
+            guard.on_event(reasoning_event("opaque-reasoning"))
+            assert guard.saw_content.is_set()
+            assert guard.effective_deadline() == 103.0
+
+            clock.now = 102.5
+            guard.on_event(reasoning_event("another-opaque-chunk"))
+            assert guard.effective_deadline() == 104.5
+
+            clock.now = 104.0
+            guard.on_event(reasoning_event(""))
+            assert guard.effective_deadline() == 104.5
+
+            clock.now = 104.5
+            with pytest.raises(TimeoutError, match="stalled: no new output"):
+                guard.check_cancelled()
+        finally:
+            guard.finish()
+
     def test_dead_stream_fails_at_no_progress_window_not_total_timeout(self):
         """Keepalive-only stream dies at the (patched) no-progress window,
         long before the 300s-style total timeout."""

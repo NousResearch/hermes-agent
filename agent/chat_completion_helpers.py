@@ -74,6 +74,23 @@ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 # outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
 # double traffic every attempt, while later turns re-arm automatically.
 _STREAM_5XX_PROBE_WINDOW_S = 60.0
+# Keep silent reasoning streams below the turn watchdog without restoring
+# the unbounded stale-budget read that caused half-open sockets to hang.
+_STREAM_REASONING_READ_CAP = 300.0
+# Local endpoints: idle bound applied only AFTER the first chunk. A silent local
+# stream mid-answer is dead or half-read, and the kill's FIN is what lets the
+# serialized server cancel and release its queue (a Windows reader parked in recv
+# cannot be woken by shutdown() alone; the peer's cancel/close is the actual
+# wake-up). Prefill (pre-first-chunk silence) keeps the full stale budget.
+# 600s, not a tighter number: a server that speaks before byte one (role-only
+# delta or SSE keep-alive comments) flips the stream into post-chunk phase while
+# a thinking model is still silently prefilling — an OpenAI-compatible server
+# that does this was measured killing healthy xhigh-reasoning requests at 90s
+# intervals, engine-side logs reading finish=disconnect. 600 keeps the clause a
+# generation ahead of "never kill" while leaving minutes-scale thinking gaps
+# alone; per-endpoint override: agent.stream_post_chunk_idle_timeout /
+# HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT.
+_STREAM_POST_CHUNK_IDLE_DEFAULT_S = 600.0
 
 
 def _context_thread_target(callback):
@@ -648,6 +665,46 @@ def _local_stream_stale_timeout_default() -> float:
     return env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", local_default)
 
 
+def _stream_post_chunk_idle_bound(agent) -> Optional[float]:
+    """Idle bound (seconds) for a stream that has already delivered its first chunk.
+
+    Local engines stream continuously once they start; a post-chunk silence beyond this
+    bound is a dead or half-read reader — not a slow model — and it holds the provider
+    connection (plus, on a serialized local server, every queued request behind it)
+    hostage. The bound decides when the monitor's kill sends its FIN, which is what
+    the server needs to cancel: on Windows ``shutdown()`` cannot wake a parked reader,
+    so the peer's cancel-then-close is the actual wake-up and this bound is where
+    recovery starts. Returns ``None`` = no extra bound: prefill grace (the stale
+    budget) is untouched, and cloud/remote endpoints keep their existing budgets
+    unless the operator opts in explicitly.
+
+    Configurable via ``agent.stream_post_chunk_idle_timeout`` or
+    HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT (explicit values apply to every endpoint;
+    the 600s default applies to local endpoints only). ``<= 0`` disables.
+    """
+    value = _STREAM_POST_CHUNK_IDLE_DEFAULT_S
+    explicit = False
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()  # read-only consumer — no deepcopy
+        agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
+        configured = agent_cfg.get("stream_post_chunk_idle_timeout") if isinstance(agent_cfg, dict) else None
+        if isinstance(configured, (int, float)):
+            value = float(configured)
+            explicit = True
+    value = env_float("HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT", value)
+    if "HERMES_STREAM_POST_CHUNK_IDLE_TIMEOUT" in os.environ:
+        explicit = True
+    if value <= 0:
+        return None
+    if explicit:
+        return value
+    base = str(getattr(agent, "base_url", "") or "")
+    if base and is_local_endpoint(base):
+        return value
+    return None
+
+
 def _scale_stale_timeout_for_context(base: float, est_tokens: int) -> float:
     """Large contexts: slow models think for minutes before the first token;
     scale the threshold or the detector kills healthy streams."""
@@ -994,10 +1051,15 @@ def direct_api_call(agent, api_kwargs: dict):
     # (fail-closed), and a leaked heartbeat thread would mask real stalls forever.
     call_start = time.time()
     stale_timeout = _resolve_direct_stale_timeout(agent, api_kwargs)
-    # Never override an explicit per-call timeout; otherwise pin read=stale_timeout so a
-    # no-op abort can't leave the read=None socket hanging until TCP dies (#85252).
+    # Never override a finite explicit per-call timeout. For timeout=None or an
+    # httpx.Timeout with read=None, replace the whole timeout object: the missing
+    # read bound leaves the request unbounded, so the hard backstop must cover it.
     hard_timeout = _inline_nonstream_hard_timeout(stale_timeout)
-    if hard_timeout is not None and "timeout" not in api_kwargs:
+    existing_timeout = api_kwargs.get("timeout")
+    existing_read_timeout = getattr(existing_timeout, "read", object())
+    if hard_timeout is not None and (
+        "timeout" not in api_kwargs or existing_timeout is None or existing_read_timeout is None
+    ):
         api_kwargs = {**api_kwargs, "timeout": hard_timeout}
     request = _InlineRequest(agent, api_kwargs, stale_timeout, call_start)
     request.start_watchdogs()
@@ -2819,7 +2881,8 @@ class _StreamingCall(StreamingWaitMonitor):
         )
 
     def _fire_first_delta(self):
-        if not self.first_delta_fired["done"] and self.on_first_delta:
+        if (not self.first_delta_fired["done"] and self.on_first_delta
+                and self._writer_still_current("Streaming")):
             self.first_delta_fired["done"] = True
             self._quiet(self.on_first_delta)
 
@@ -2840,14 +2903,15 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _emit_tool_started(self, name: str) -> None:
         self._fire_first_delta()
-        self.agent._fire_tool_gen_started(name)
+        if self._writer_still_current("Streaming"):
+            self.agent._fire_tool_gen_started(name)
 
     def _route_suppressed_text(self, text: str) -> None:
         """Tool-call turns suppress content streaming (no chatty preamble), but
         reasoning tags inside it must still reach the display: route through
         the delta callback for tag extraction (the CLI drops non-reasoning text
         once the stream box is closed)."""
-        if self.agent.stream_delta_callback:
+        if self.agent.stream_delta_callback and self._writer_still_current("Streaming"):
             self._quiet(lambda: (self.agent.stream_delta_callback(text), self.agent._record_streamed_assistant_text(text)))
 
     def _new_diag(self) -> dict:
@@ -2899,23 +2963,32 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _stream_timeouts(self) -> tuple[float, float, float]:
         """``(write, read, connect/pool)`` socket timeouts. Per-provider
-        ``request_timeout_seconds`` wins over HERMES_API_TIMEOUT (1800s) and
-        HERMES_STREAM_READ_TIMEOUT (120s); connect/pool cover the handshake, not
-        inference: 30s, or capped at 60s when configured."""
+        ``request_timeout_seconds`` wins for the overall request budget; the
+        stream idle bound remains independent except for the local-provider
+        prefill exception. Connect/pool cover the handshake, not inference:
+        30s, or capped at 60s when configured."""
         cfg = get_provider_request_timeout(self.agent.provider, self.agent.model)
         base = cfg if cfg is not None else env_float("HERMES_API_TIMEOUT", 1800.0)
         if cfg is not None:
-            return base, cfg, min(base, 60.0)
+            # Keep local-provider prefill behavior even when a provider-specific
+            # overall request budget is configured; explicit stream overrides win.
+            read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
+            if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
+                read = base
+            else:
+                read = min(cfg, read)
+            return base, read, min(base, 60.0)
         read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
         stale = self._stream_stale_timeout
         if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
             read = base  # local providers prefill for minutes
             logger.debug("Local provider detected (%s) — stream read timeout raised to %.0fs", self.agent.base_url, read)
-        elif read == 120.0 and stale is not None and stale != float("inf") and stale > read:
-            # Reasoning models pause mid-stream for minutes; the stale detector
-            # tolerates that, so the raw read timeout must not fire first.
-            read = stale
-            logger.debug("Cloud reasoning stream — read timeout raised to %.0fs to match stale-stream detector", read)
+        # Keep the transport idle timeout independent from the liveness budget.
+        # A stale budget may intentionally be several minutes for reasoning models,
+        # but a silent socket must be bounded below the turn watchdog.
+        if read == 120.0 and stale is not None and stale != float("inf") and stale > read:
+            read = min(stale, _STREAM_REASONING_READ_CAP)
+            logger.debug("Cloud reasoning stream — read timeout capped at %.0fs", read)
         return base, read, 30.0
 
     @staticmethod
@@ -2966,6 +3039,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)
+        self._writer_superseded_logged = False
         self._reabort_if_cancelled(response)
 
     def _reabort_if_cancelled(self, response: Any) -> None:
@@ -3003,21 +3077,29 @@ class _StreamingCall(StreamingWaitMonitor):
                 return True
         if not self._stream_attempt_is_active(stream_attempt_id):
             return False
-        if not self._writer_still_current("Streaming"):
-            return False
+        # Writer supersession only revokes the live sink. Keep consuming the
+        # provider stream so the canonical response still reaches its terminal
+        # frame; the sink callbacks below fence stale writers (#122575).
         # Stamp BEFORE Relay processes the chunk so the watchdog can't cancel
         # a live stream mid-interceptor.
         self.last_chunk_time["t"] = time.time()
         return True
 
     def _writer_still_current(self, label: str) -> bool:
-        """Single-writer fence: False (with a warning) once a newer stream claimed the writer slot."""
+        """True while this attempt owns the live delta sink.
+
+        Supersession fences presentation only. Provider consumption continues so
+        the response assembler cannot turn a complete upstream answer into a
+        locally truncated one (#122575).
+        """
         token = self._writer_token
         if token is None or stream_writer_is_current(self.agent, token):
             return True
-        logger.warning(
-            "%s attempt superseded by a newer stream; stopping consumption to preserve the "
-            "single-writer invariant (model=%s).", label, self.api_kwargs.get("model", "unknown"))
+        if not getattr(self, "_writer_superseded_logged", False):
+            self._writer_superseded_logged = True
+            logger.warning(
+                "%s attempt superseded by a newer stream; suppressing its live deltas while "
+                "consuming to completion (model=%s).", label, self.api_kwargs.get("model", "unknown"))
         return False
 
     def _call_chat_completions(self, stream_attempt_id: int):
@@ -3318,10 +3400,25 @@ class _StreamingCall(StreamingWaitMonitor):
             # Partial args WITH finish_reason="length" is a real output cap; with NONE the
             # upstream dropped mid tool-call, and stamping "length" burns 3 useless retries.
             _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
+            if (not self.deltas_were_sent["yes"] and not self._visible_text_delivered()
+                    and getattr(self, "_stream_budget_left", False)):
+                # Nothing streamed and nothing visible was delivered — the dropped action has no
+                # text to protect, so a same-prefix re-stream cannot duplicate anything. Raise into
+                # the existing drop ladder (EmptyStreamError -> fresh-connection retry, capped by
+                # max_retries) instead of silently dropping the action (#126217).
+                logger.warning(
+                    "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a "
+                    "tool call's arguments were still incomplete (tools=%s) and nothing was delivered — "
+                    "retrying through the drop ladder. Not an output-length truncation.",
+                    _dropped_names)
+                raise EmptyStreamError(
+                    f"Provider closed the stream mid tool-call (tools={_dropped_names}) "
+                    "with no finish_reason and no delivered output.")
             logger.warning(
                 "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a tool "
                 "call's arguments were still incomplete (tools=%s). The server or a proxy closed the stream "
-                "cleanly; not an output-length truncation.",
+                "cleanly; not an output-length truncation. Retry budget exhausted — the caller gets the "
+                "honest partial-stream stub instead of another re-stream.",
                 _dropped_names)
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
@@ -3618,7 +3715,8 @@ class _StreamingCall(StreamingWaitMonitor):
             # text). Exception: a tool call in flight — aborting discards it, so
             # retry TRANSIENT errors (a "reconnecting" marker + duplicated
             # preamble beats a failed action; no tool has executed yet).
-            if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
+            if not (_partial_tool_in_flight and (_is_transient or _is_empty_stream)
+                    and attempt < max_retries):
                 logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
                 self.result["error"] = e
                 return False
@@ -3746,6 +3844,9 @@ class _StreamingCall(StreamingWaitMonitor):
         try:
             while _stream_attempt < _max_stream_retries + self._compat_retries:
                 _stream_attempt += 1
+                # Mid-tool-call clean-EOF re-raise (#126217): only while the transient
+                # budget has a next attempt left; the final attempt keeps the stub contract.
+                self._stream_budget_left = _stream_attempt < _max_stream_retries
                 stream_attempt_id = self._start_stream_attempt()
                 # Otherwise /stop closes the connection and the retry opens a
                 # FRESH one, blocking up to a full read timeout per attempt.
@@ -3823,16 +3924,19 @@ class _StreamingCall(StreamingWaitMonitor):
             self._stale_counted_attempts.add(attempt)
             _bump_stale_streak(self.agent)
 
-    def _kill_stale_stream(self, elapsed: float) -> None:
+    def _kill_stale_stream(self, elapsed: float, threshold: Optional[float] = None) -> None:
         """SSE pings but no chunks: cancel the attempt and abort the request-local
-        client so the retry loop opens a fresh one. The shared client is never
-        closed from this (stranger) thread — earlier stale-killed workers may
+        client so the retry loop opens a fresh one. ``threshold`` is the effective
+        idle bound that fired (phase-aware: prefill keeps the stale budget, a
+        post-chunk silence uses the tighter post-chunk bound). The shared client is
+        never closed from this (stranger) thread — earlier stale-killed workers may
         still be unwinding SSL BIOs (FD-recycle corruption); the OpenAI primary
         is replaced lazily."""
         _est_ctx = estimate_request_context_tokens(self.api_kwargs)
         logger.warning(
             "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
-            elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+            elapsed, self._stream_stale_timeout if threshold is None else threshold,
+            self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
         )
         self.agent._buffer_diagnostic_status(
             f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "

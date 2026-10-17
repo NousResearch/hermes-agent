@@ -1,14 +1,18 @@
 name: hermes-vcc-engine
 repo: https://github.com/danbiocchi/hermes-vcc-engine
-sha: ea43932a48114dd4e200aa8802027f11641be646
-description: "Context engine that replaces the LLM-written compaction summary with a deterministic projection of the conversation: requests, commands and exit codes, errors, fixes and files read or changed, each line referencing the original message for recall via session_search. No model call on the normal path. Disclosure — no network calls, shell commands or credentials; reads Hermes's config.yaml through Hermes's own loader; subclasses ContextCompressor and relies on its private methods, falling back to the stock compressor if they are missing."
+sha: 819459bfdafa1db82cc6c38057a15cb85fe3fd1a
+description: "Instant context compaction for Hermes Agent: builds the compaction summary in milliseconds with no LLM call, keeping the exact commands, exit codes, errors and files, each linked back to its original message for recall via session_search. Disclosure — no network calls, shell commands or credentials; reads Hermes's config.yaml through Hermes's own loader; subclasses ContextCompressor and relies on its private methods, falling back to the stock compressor if they are missing."
 maintainer: danbiocchi
 tier: community
 category: general
 requires_hermes: ">=0.21.7"
-version: "0.4.0"
+version: "0.4.1"
 docs_url: https://github.com/danbiocchi/hermes-vcc-engine#readme
 readme: true
+title: "Instant Context Compactor"
+screenshots:
+  - https://raw.githubusercontent.com/danbiocchi/hermes-vcc-engine/819459bfdafa1db82cc6c38057a15cb85fe3fd1a/docs/img/results.svg
+  - https://raw.githubusercontent.com/danbiocchi/hermes-vcc-engine/819459bfdafa1db82cc6c38057a15cb85fe3fd1a/docs/img/recall.svg
 platforms: []
 capabilities:
   provides_tools: []

@@ -1261,6 +1261,27 @@ def _switch_branch_at_commit_point(git_cmd, branch, target_ref, *, pre, stash):
     return result
 
 
+def _hold_channel_release_behind_runtime(git_cmd, target_ref: str, channel: str, completion_request: dict) -> str | None:
+    """HEAD's sha when the channel's release predates the gateway runtime these stores use, else None.
+
+    The channel picked the release, the user did not ask for that commit: moving there is the
+    refused downgrade, so the update stays where it is and says why (#140729). An explicit
+    ``--branch`` never reaches here and keeps the refusal in ``_refuse_before_commit_point``.
+    """
+    from hermes_cli.update_downgrade_guard import downgrade_refusal
+    if downgrade_refusal(git_cmd, _m().PROJECT_ROOT, target_ref) is None:
+        return None
+    head = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+    if not head:
+        return None  # HEAD unreadable: the refusal below still stops the move
+    print(f"→ This install is ahead of the {channel} release {target_ref[:12]}: that release predates the "
+          "gateway runtime your sessions use, so there is nothing to update to yet.")
+    print(f"  Hermes stays on {head[:12]} until a newer {channel} release ships. "
+          "To follow every commit instead: `hermes update --set-channel main`.")
+    completion_request["expected_sha"] = head
+    return head
+
+
 def _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume) -> None:
     """Preconditions that used to fail AFTER the swap: refuse with the install untouched."""
     reason = _commit.preflight_refusal(git_cmd, _m().PROJECT_ROOT, target_ref, _UPDATE_CRITICAL_FILES)
@@ -1924,6 +1945,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         current_branch = _current_branch_name(git_cmd, check=True)
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
+        if release_sha and not target_is_head:
+            target_ref = _hold_channel_release_behind_runtime(
+                git_cmd, target_ref, _update_run_channel(args), completion_request) or target_ref
         _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,

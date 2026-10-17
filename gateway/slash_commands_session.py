@@ -1005,7 +1005,10 @@ class GatewaySessionCommandsMixin:
             include_all_sources=cross_origin, include_unnamed=include_unnamed,
             search_query=search_query,
             # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
-            limit=50 if search_query else 10, exclude_sources=["tool"])
+            # Cron runs mint a session per tick, so an active scheduler buries human rows in
+            # both the browse and search pages; they have their own surface (/cron, CLI
+            # ``--source cron``), same as the desktop recents split in web_routers/sessions.py.
+            limit=50 if search_query else 10, exclude_sources=["tool", "cron"])
         if not cross_origin:
             rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
         rows = rows[:10]

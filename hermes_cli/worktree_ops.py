@@ -466,6 +466,8 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
     except Exception as e:
         logger.debug("git worktree lock failed (non-fatal): %s", e)
 
+    from hermes_cli.worktree_registry import record_worktree_repo
+    record_worktree_repo(repo_root)
     _cprint(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
     print(f"  Branch: {branch_name}")
     print(f"  Base:   {base_label}")
@@ -907,18 +909,28 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
     return "dead" if pid is not None else "live"  # a session lock without its store: unverifiable
 
 
+# Trees Hermes names itself (``hermes -w`` sessions, subagent isolation) age on the base tier.
+_AUTO_TREE_PREFIXES = ("hermes-", "subagent-")
+
+
+def prune_tier_hours(name: str, max_age_hours: float) -> float:
+    """Idle hours before a tree may be reclaimed: *max_age_hours* for Hermes-made trees
+    (``hermes-*``, ``subagent-*``), 3x for deliberately named ones."""
+    return max_age_hours if name.startswith(_AUTO_TREE_PREFIXES) else max_age_hours * 3
+
+
 def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float) -> list:
     """Phase 1, stat-only age filter -> ``[(entry, mtime, force)]`` for trees past their soft cutoff.
 
-    Kanban trees (``t_<hex>``) belong to the kanban gc. ``hermes-*`` trees age on *max_age_hours*,
-    deliberately named trees at 3x; *force* marks the hard (3x) tier.
+    Kanban trees (``t_<hex>``) belong to the kanban gc. Hermes-made trees age on *max_age_hours*,
+    deliberately named trees at 3x (``prune_tier_hours``); *force* marks the hard (3x) tier.
     """
     kanban_re = re.compile(r"^t_[0-9a-f]+$")
     candidates: list = []
     for entry in sorted(worktrees_dir.iterdir()):
         if not entry.is_dir() or kanban_re.match(entry.name):
             continue
-        tier_hours = max_age_hours if entry.name.startswith("hermes-") else max_age_hours * 3
+        tier_hours = prune_tier_hours(entry.name, max_age_hours)
         try:
             mtime = entry.stat().st_mtime
             if mtime > now - (tier_hours * 3600):
@@ -1044,12 +1056,14 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
 def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     """Remove stale worktrees and orphaned branches on startup.
 
-    Guards at every tier and age: dirty trees are never removed; unpushed commits are never
-    removed UNLESS patch-equivalent to upstream, the PR is MERGED on GitHub, or the head EXACTLY
-    matches origin (tree reaped, branch kept). Live-locked trees are skipped; dead locks are
-    unlocked first. Trees preserved >7 days are listed in one WARNING so work can't rot silently.
-    Phases: ``_prune_candidates`` -> ``_classify_prune_candidates`` -> ``_reap_prune_verdicts``
-    -> ``_prune_orphaned_branches``.
+    Default (``worktrees.archive_dirty: true``): ``worktree_sweep.run_sweep`` — an idle dirty or
+    unpushed tree past its tier is archived to ``refs/hermes/archive/<tree>`` and then removed;
+    live trees (lock owner or any process inside) and Kanban trees are never touched.
+    ``archive_dirty: false`` (no size budget) runs the classic pass below: dirty trees are never
+    removed; unpushed commits are never removed UNLESS patch-equivalent to upstream, the PR is
+    MERGED on GitHub, or the head EXACTLY matches origin (tree reaped, branch kept). Live-locked
+    trees are skipped; dead locks are unlocked first. Phases: ``_prune_candidates`` ->
+    ``_classify_prune_candidates`` -> ``_reap_prune_verdicts`` -> ``_prune_orphaned_branches``.
     """
     try:
         _prune_stale_worktree_trees(repo_root, max_age_hours)
@@ -1083,6 +1097,13 @@ def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
     if _repo_is_shallow(repo_root):
         _deepen_shallow_repo(repo_root)
 
+    from hermes_cli import worktree_sweep
+    settings = worktree_sweep.sweep_settings()
+    if not worktree_sweep.classic_mode(settings):
+        worktree_sweep.run_sweep(repo_root, max_age_hours, settings)
+        _warn_worktree_footprint(repo_root)
+        return
+
     now = time.time()
     candidates = _prune_candidates(worktrees_dir, max_age_hours, now)
     if not candidates:
@@ -1098,8 +1119,11 @@ def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
                        len(preserved_stale), ", ".join(sorted(preserved_stale)))
 
     _prune_orphaned_branches(repo_root, protect=kept_branches)
+    _warn_worktree_footprint(repo_root)
 
-    # The conservative startup pass accumulates trees it can never reclaim; say so once per launch.
+
+def _warn_worktree_footprint(repo_root: str) -> None:
+    """The startup pass can leave trees it may not reclaim; say so once per launch."""
     try:
         from hermes_cli.worktree_gc import worktrees_summary
 

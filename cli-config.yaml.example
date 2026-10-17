@@ -392,6 +392,15 @@ model:
 # worktree_sync: true   # Default — branch from the fetched remote tip
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
+# Stale worktree sweep (startup of `hermes -w` + every 6h from the cron ticker, over
+# every repo Hermes created a worktree in). Idle dirty/unpushed trees are archived to
+# refs/hermes/archive/<tree> and removed; `hermes worktree restore <name>` brings one back.
+# worktrees:
+#   archive_dirty: true          # false = never remove dirty/unpushed trees (old behaviour)
+#   archive_max_file_mb: 50      # untracked files above this are listed, not archived
+#   archive_retention_days: 30   # archive refs older than this are deleted (0 = keep)
+#   max_total_gb: 0              # optional budget for idle trees; oldest evicted first
+
 # =============================================================================
 # Kanban Review Dispatch
 # =============================================================================

@@ -9,8 +9,14 @@ is still read from there at call time.
 from __future__ import annotations
 
 import logging
+import errno
 import hashlib
+import os
 import shutil
+import tempfile
+import time
+import uuid
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -23,6 +29,13 @@ from tools.skills_hub_models import (
 
 if TYPE_CHECKING:  # origin class; runtime use is via the lazy origin import
     from tools.skills_hub import HubLockFile
+
+try:
+    import fcntl
+    HAVE_FCNTL = True
+except ImportError:  # Windows
+    fcntl = None
+    HAVE_FCNTL = False
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.skills_hub")
@@ -106,7 +119,7 @@ def _check_install_target(install_dir: Path) -> None:
     - A stray regular file at the target: rmtree would raise NotADirectoryError.
     - A category bucket (dir without SKILL.md that holds other skills) must never
       be silently wiped; a dir that directly contains SKILL.md is an existing
-      install and stays overwritable (hub installs are lock-guarded in do_install).
+      install and stays overwritable (hub installs re-validate the target via _check_install_target in do_install; no cross-process install lock is held - concurrent same-skill installs are separated by per-attempt staging/recovery dirs).
     """
     from tools.skills_hub import _skills_dir
     # Refuse to nest a skill inside an existing skill directory. Installing with ``--category
@@ -129,7 +142,7 @@ def _check_install_target(install_dir: Path) -> None:
     # directory that holds other skills). This was reported as GitHub issue #75983: installing a skill with
     # --name matching an existing category directory caused rmtree to wipe all sibling skills. A directory
     # that directly contains SKILL.md is an existing skill installation and stays overwritable
-    # (hub-installed skills are additionally guarded by the lock-file check in do_install()). But a
+    # (hub-installed skills re-validate the target via _check_install_target in do_install; no cross-process install lock is held - concurrent same-skill installs are separated by per-attempt staging/recovery dirs). But a
     # directory that contains *other* skill directories is a category bucket and must NOT be silently
     # deleted.
     if not (install_dir / "SKILL.md").exists():
@@ -140,12 +153,96 @@ def _check_install_target(install_dir: Path) -> None:
                              f"Use a different --name or install into a subcategory.")
 
 
+@contextmanager
+def _hold_staging_lock(lock_path: Path):
+    lock_fd = None
+    if HAVE_FCNTL:
+        lock_path.touch(exist_ok=True)
+        lock_fd = open(lock_path, "a+b")
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+    try:
+        yield lock_fd
+    finally:
+        if lock_fd is not None:
+            with suppress(Exception):
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+            with suppress(Exception):
+                lock_fd.close()
+            with suppress(Exception):
+                lock_path.unlink(missing_ok=True)
+
+
+def _reclaim_stale_staging(safe_skill_name: str, staging_root: Path, install_dir: Path, grace_seconds: int = 60) -> None:
+    """Remove abandoned per-attempt staging dirs from a prior crashed swap.
+
+    Only removes `{safe_skill_name}-<hex>` dirs under staging_root (the tempfile.mkdtemp
+    prefix) whose mtime is older than grace_seconds. Never touches .recovery-*/.failed-*
+    (different prefix) and never removes anything when the live skill is missing.
+    """
+    with suppress(Exception):
+        if not staging_root.is_dir():
+            return
+        if not install_dir.exists():
+            with suppress(Exception):
+                stale = [p.name for p in staging_root.iterdir() if p.is_dir() and p.name.startswith(f"{safe_skill_name}-")]
+                if stale:
+                    logger.warning("Skill '%s': live install missing; leaving %d stale staging dir(s) for manual inspection: %s", safe_skill_name, len(stale), ", ".join(sorted(stale)))
+            return
+        now = time.time()
+        prefix = f"{safe_skill_name}-"
+        with suppress(Exception):
+            entries = list(staging_root.iterdir())
+        for entry in entries:
+            with suppress(Exception):
+                if not entry.is_dir() or entry.is_symlink():
+                    continue
+                if not entry.name.startswith(prefix):
+                    continue
+                try:
+                    age = now - entry.stat().st_mtime
+                except OSError:
+                    continue
+                if age < grace_seconds:
+                    continue  # in-flight concurrent install; never touch
+                if HAVE_FCNTL:
+                    _sib = staging_root / f"{entry.name}.active.lock"
+                    try:
+                        if _sib.exists():
+                            _pfd = open(_sib, "a+b")
+                            try:
+                                fcntl.flock(_pfd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            except (BlockingIOError, OSError) as _e:
+                                if getattr(_e, "errno", None) in (errno.EAGAIN, errno.EACCES):
+                                    logger.debug("Skill '%s': staging dir %s is actively locked; skipping reclaim", safe_skill_name, entry.name)
+                                    _pfd.close()
+                                    continue  # ACTIVE: do NOT rmtree
+                                raise
+                            _pfd.close()  # lock acquired: dead/never-locked -> safe to remove
+                        # (if _sib did not exist: candidate never locked -> safe)
+                    except OSError:
+                        continue  # probe error degrades to skip (never rmtree on error)
+                else:
+                    logger.debug("Skill '%s': no fcntl; reclaiming %s on age only", safe_skill_name, entry.name)
+                shutil.rmtree(entry, ignore_errors=True)
+                with suppress(Exception):
+                    (_sib := staging_root / f"{entry.name}.active.lock").unlink(missing_ok=True) if HAVE_FCNTL else None
+
+
 def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
     scan_provenance: Optional[dict[str, Any]] = None,
 ) -> Path:
-    """Move a scanned skill from quarantine into the skills directory."""
+    """Move a scanned skill from quarantine into the skills directory.
+
+    Prepared-replacement semantics (see issue #123325): the new bundle is staged and
+    validated UNDER the destination skills root (in a ``.hub``-owned location that skill
+    discovery skips) BEFORE the only old copy is removed. A failed transfer or post-move
+    content-hash read therefore leaves the previously installed skill fully available, and
+    failed filesystem publication never updates provenance. If the destructive swap itself
+    fails, the old tree is retained and the staged replacement is kept at a reported recovery
+    location rather than being discarded."""
     from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
+
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
@@ -157,8 +254,9 @@ def install_from_quarantine(
     # symlink-redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
+    # Reclaim abandoned staging dirs from a prior crashed swap before starting a new one.
+    staging_root = _skills_dir().resolve() / ".hub" / ".replacement-staging"
+    _reclaim_stale_staging(safe_skill_name, staging_root, install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -182,24 +280,139 @@ def install_from_quarantine(
                 rel = entry
             raise ValueError(f"Installed skill contains symlinks, which is not allowed: {rel}")
 
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
-    installed_hash = content_hash(install_dir)
-    HubLockFile().record_install(
-        name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,
-        scan_verdict=scan_result.verdict, skill_hash=installed_hash,
-        install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
-        files=list(bundle.files.keys()), metadata=bundle.metadata,
-        scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
-    )
-    append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
-                     installed_hash)
-    try:
-        from tools.skill_usage import record_installed
-        record_installed(safe_skill_name)
-    except Exception:
-        logger.debug("Unable to record skill install lifecycle for %s", safe_skill_name, exc_info=True)
-    return install_dir
+    # --- Prepared replacement -------------------------------------------------
+    # Stage the validated bundle beside the target, inside the hub-owned directory so it
+    # is never picked up as a skill, then validate it (a content hash over the staged tree)
+    # BEFORE touching the live tree, so a partial copy or read failure cannot destroy the
+    # installed skill. A per-attempt unique staging dir keeps concurrent same-skill installs
+    # from clobbering each other's staging.
+    staging_root.mkdir(parents=True, exist_ok=True)
+    # mkdtemp guarantees a unique, non-colliding directory name; copytree then populates it.
+    # A per-attempt unique staging dir keeps concurrent same-skill installs from clobbering
+    # each other's staging.
+    staging_dir = Path(tempfile.mkdtemp(prefix=f"{safe_skill_name}-", dir=staging_root))
+    lock_path = staging_root / f"{staging_dir.name}.active.lock"
+    with _hold_staging_lock(lock_path) as _lfd:
+        try:
+            shutil.copytree(str(quarantine_resolved), str(staging_dir), dirs_exist_ok=True)
+            os.utime(staging_dir, None)
+            staged_hash = content_hash(staging_dir)
+        except Exception as exc:
+            # Validation/transfer of the new bundle failed — the old skill is untouched and
+            # provenance is not updated. Clean the staging dir and surface the cause.
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise RuntimeError(
+                f"skill '{safe_skill_name}' replacement failed before install; keeping "
+                f"the existing installation intact. Staging error: {exc}"
+            ) from exc
+
+        # The new bundle is validated in place. Perform the destructive swap as a rename of the
+        # OLD tree aside first, then move the staged replacement in, then remove the old tree
+        # ONLY once the new one is in place — so a failure at any point leaves either the old
+        # install or the new bundle (at a recovery path), never a vanished skill.
+        # The aside (recovery) dir is per-attempt unique (like staging) so concurrent
+        # same-skill installs cannot clobber each other's aside copy.
+        recovery_dir = staging_root / f".recovery-{safe_skill_name}-{uuid.uuid4().hex[:8]}"
+        swapped = False
+        orphan_path: Optional[Path] = None
+        try:
+            if install_dir.exists():
+                # Move the live tree aside (rename, not delete) so it survives a failed swap.
+                if recovery_dir.exists():
+                    shutil.rmtree(recovery_dir, ignore_errors=True)
+                shutil.move(str(install_dir), str(recovery_dir))
+            install_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staging_dir), str(install_dir))
+            swapped = True
+            installed_hash = content_hash(install_dir)
+            # The staged hash must equal the post-swap hash; a mismatch means the swap moved a
+            # different tree than we validated — bail to recovery rather than publish it.
+            if staged_hash != installed_hash:
+                raise RuntimeError(
+                    f"skill '{safe_skill_name}' replacement hash changed during swap "
+                    f"({staged_hash} != {installed_hash}); not publishing"
+                )
+        except Exception as exc:
+            if not swapped:
+                # Failure in the old-aside move or the staged->install move itself: the old
+                # tree is either still live at install_dir or parked at recovery_dir.
+                restored = False
+                if recovery_dir.exists() and not install_dir.exists():
+                    shutil.move(str(recovery_dir), str(install_dir))  # may raise; surfaced below
+                    restored = True
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                if install_dir.exists():
+                    if restored:
+                        raise RuntimeError(
+                            f"skill '{safe_skill_name}' replacement failed before/during swap; "
+                            f"the previous installation is restored at {install_dir}. Swap error: {exc}"
+                        ) from exc
+                    raise RuntimeError(
+                        f"skill '{safe_skill_name}' replacement failed before/during swap; "
+                        f"the previous installation was never moved and is intact at {install_dir}. "
+                        f"Swap error: {exc}"
+                    ) from exc
+                raise RuntimeError(
+                    f"skill '{safe_skill_name}' replacement FAILED before/during swap and the "
+                    f"previous installation could NOT be restored. Swap error: {exc}"
+                ) from exc
+            # Swapped: the live dir is the UNVALIDATED new bundle. Quarantine it aside to a
+            # per-attempt orphan path, then restore the old tree.
+            # 'restored' is claimed only when the recovery->install move actually completes.
+            orphan_path = staging_root / f".failed-{safe_skill_name}-{uuid.uuid4().hex[:8]}"
+            shutil.move(str(install_dir), str(orphan_path))  # may raise; surfaced below
+            restored = False
+            if recovery_dir.exists():
+                shutil.move(str(recovery_dir), str(install_dir))  # may raise; surfaced below
+                restored = True
+            if not restored and not install_dir.exists():
+                raise RuntimeError(
+                    f"skill '{safe_skill_name}' install failed after swap on a fresh install "
+                    f"(no previous installation existed to restore); "
+                    f"bad bundle quarantined at {orphan_path}. Swap error: {exc}"
+                ) from exc
+            raise RuntimeError(
+                f"skill '{safe_skill_name}' replacement failed after swap; the previous "
+                f"installation is restored at {install_dir} and the unvalidated bundle is "
+                f"quarantined at {orphan_path}. Swap error: {exc}"
+            ) from exc
+
+        # Swap succeeded: drop this attempt's own aside copy and publish provenance + audit.
+        shutil.rmtree(recovery_dir, ignore_errors=True)
+        try:
+            HubLockFile().record_install(
+                name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,
+                scan_verdict=scan_result.verdict, skill_hash=installed_hash,
+                install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
+                files=list(bundle.files.keys()), metadata=bundle.metadata,
+                scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
+            )
+        except Exception as exc:
+            # Post-swap: the skill is LIVE but unprovisioned. Never touch the live tree here —
+            # no rmtree, no move — just report so the operator can re-provision or clean up.
+            with suppress(Exception):
+                append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
+                                 installed_hash)
+            raise RuntimeError(
+                f"skill '{safe_skill_name}' installed at {install_dir} but provenance NOT recorded ({exc}); "
+                f"re-run install to re-provision or uninstall to clean - do NOT treat as rolled back"
+            ) from exc
+        # Telemetry, not a gate: an audit-log I/O failure must not report install failure when
+        # the skill is already installed and provenance recorded.
+        with suppress(Exception):
+            append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
+                             installed_hash)
+        try:
+            from tools.skill_usage import record_installed
+            record_installed(safe_skill_name)
+        except Exception:
+            logger.debug("Unable to record skill install lifecycle for %s", safe_skill_name, exc_info=True)
+        # The live copy now lives at install_dir; drop the quarantine source so a
+        # duplicate payload is not retained indefinitely.
+        with suppress(Exception):
+            shutil.rmtree(quarantine_resolved, ignore_errors=True)
+            logger.debug("Removed quarantine source %s after successful install of '%s'", quarantine_resolved, safe_skill_name)
+        return install_dir
 
 
 def uninstall_skill(skill_name: str) -> tuple[bool, str]:

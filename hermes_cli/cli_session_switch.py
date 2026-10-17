@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import RESUME_GONE
 
 
@@ -38,7 +39,6 @@ def _open_switched_session(cli, session_id: str) -> str | None:
     attach = getattr(store, "attach", None)
     if not callable(attach):
         return None
-    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
     try:
         attach(session_id)
     except GatewayRPCError as exc:
@@ -49,7 +49,6 @@ def _open_switched_session(cli, session_id: str) -> str | None:
         # No answer (unavailable, disconnected, timeout). The switch's reads are local, so it
         # proceeds as before; the turn reports the lost connection itself.
         return None
-    return None
 
 
 def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:

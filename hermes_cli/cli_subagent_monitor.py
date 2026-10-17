@@ -236,11 +236,12 @@ class SubagentMonitor:
         if self.queued:
             # Last, so the next prompt to run sits right above the input it came from.
             shown = min(len(self.queued), session_rows.QUEUE_ROWS if rows >= 24 else 1)
-            controls = '' if self.entries or self.processes else t('cli.subagents.controls_collapse')
+            controls = t('cli.subagents.queue_recall_hint') + (
+                '' if self.entries or self.processes else t('cli.subagents.controls_collapse'))
             lines.append(_clip(
                 ' ' + t('cli.subagents.queue_heading', count=len(self.queued), controls=controls), columns))
-            for index, text in enumerate(self.queued[:shown], 1):
-                lines.append(_clip(f'  {index}. {text}', columns))
+            for text in self.queued[:shown]:
+                lines.append(_clip(f'  ↳ {text}', columns))
             if len(self.queued) > shown:
                 lines.append(_clip('  ' + t('cli.subagents.more_queued', count=len(self.queued) - shown), columns))
         return '\n'.join(' ' + line for line in lines)
@@ -263,6 +264,19 @@ def modal_prompt_active(cli):
     return any(getattr(cli, name, None) for name in (
         '_clarify_state', '_approval_state', '_slash_confirm_state', '_sudo_state',
         '_secret_state', '_model_picker_state', '_command_palette_state'))
+
+
+def bind_keys(cli, kb) -> None:
+    """Ctrl+T/F6 open the live work monitor; Ctrl+R/F7 collapse or expand the dock."""
+    from prompt_toolkit.filters import Condition
+    free = Condition(lambda: not modal_prompt_active(cli))
+    for key in ('c-t', 'f6'):
+        kb.add(key, filter=free)(lambda event: open_monitor(cli))
+    # F7 is retained for terminals that forward the function-key sequence;
+    # Ctrl+R is the portable fallback because macOS often reserves F7 for
+    # a hardware control unless Fn/globe is held.
+    for key in ('c-r', 'f7'):
+        kb.add(key, filter=free)(lambda event: toggle_dock(cli))
 
 
 def build_monitor_application(monitor, **kwargs):

@@ -134,6 +134,7 @@ class CLITuiRuntimeMixin:
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
+        self._transcript_begin_turn()
         self._app.invalidate()
         try:
             self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
@@ -163,6 +164,7 @@ class CLITuiRuntimeMixin:
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
+        self._running_tools = []
         self._pet_react_turn_end()
         self._turn_summary_emit()
         self._interactive_turn = False

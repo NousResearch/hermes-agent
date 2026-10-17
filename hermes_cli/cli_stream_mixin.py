@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import textwrap
+import threading
 import time
 
 from contextlib import contextmanager
@@ -50,6 +51,10 @@ def _terminal_columns(default: int = 80) -> int:
         return default
 
 
+# Guards each CLI's ``_running_tools`` list (agent-thread writers vs UI-thread readers).
+_RUNNING_TOOLS_LOCK = threading.Lock()
+
+
 class CLIStreamMixin:
     """Streaming output, reasoning preview, tool progress callbacks, and busy-command spinner for the interactive CLI"""
 
@@ -58,10 +63,11 @@ class CLIStreamMixin:
         if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
             return
         from gateway.warning_notifications import DiagnosticText, render_notification
+        from hermes_cli.cli_transcript import stable_thinking_label
         def show():
             if not text:
                 self._flush_reasoning_preview(force=True)
-            self._spinner_text = text or ""
+            self._spinner_text = stable_thinking_label(self, text) if text else ""
             self._tool_start_time = 0.0  # clear tool timer when switching to thinking
             self._invalidate()
         render_notification(show, platform="cli", diagnostic=isinstance(text, DiagnosticText),
@@ -178,33 +184,33 @@ class CLIStreamMixin:
         if flush_text:
             self._emit_reasoning_preview(flush_text)
 
-    def _format_submitted_user_message_preview(self, user_input: str) -> str:
-        """Format the submitted user-message scrollback preview."""
-        from cli import _accent_hex, datetime
-        ts_suffix = (
-            f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
-            if getattr(self, "show_timestamps", False) else "")
-        lines = user_input.split("\n")
-        if len(lines) <= 1:
-            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
-
-        first_lines = max(1, int(getattr(self, "user_message_preview_first_lines", 2)))
-        last_lines = max(0, int(getattr(self, "user_message_preview_last_lines", 2)))
-        head = lines[:first_lines]
-        tail_count = min(last_lines, max(0, len(lines) - len(head)))
-        tail = lines[-tail_count:] if tail_count else []
-        hidden_middle_count = len(lines) - len(head) - len(tail)
-        if hidden_middle_count < 0:
-            hidden_middle_count = 0
-            tail = []
-
-        preview_lines = [f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
-        if hidden_middle_count > 0:
-            key = "cli.stream.preview_more_lines_one" if hidden_middle_count == 1 else "cli.stream.preview_more_lines_other"
-            preview_lines.append(f"[dim]{_escape(t(key, count=hidden_middle_count))}[/]")
-        preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in tail)
-        return "\n".join(preview_lines)
+    def _format_submitted_user_message_preview(self, user_input: str, colors: dict | None = None):
+        """The submitted user message as a Rich ``Text``: ``❯`` (skin prompt symbol) + the text,
+        multi-line input elided to its first/last lines; continuation lines hang under the text."""
+        from rich.text import Text
+        from cli import datetime
+        from hermes_cli.cli_transcript import active_band_colors, preview_lines
+        from hermes_cli.skin_engine import get_active_prompt_symbol
+        from prompt_toolkit.utils import get_cwidth
+        colors = colors or active_band_colors()
+        symbol = get_active_prompt_symbol()
+        hang = " " * get_cwidth(symbol)
+        head, hidden, tail = preview_lines(
+            user_input, int(getattr(self, "user_message_preview_first_lines", 2)),
+            int(getattr(self, "user_message_preview_last_lines", 2)))
+        out = Text(style=f"{colors['fg']} on {colors['bg']}")
+        out.append(symbol, style=f"bold {colors['symbol']}")
+        out.append(head[0], style="bold")
+        if getattr(self, "show_timestamps", False):
+            out.append(" " + datetime.now().strftime(getattr(self, "timestamp_format", "%H:%M")), style="dim")
+        for line in head[1:]:
+            out.append("\n" + hang + line, style="bold")
+        if hidden:
+            key = "cli.stream.preview_more_lines_one" if hidden == 1 else "cli.stream.preview_more_lines_other"
+            out.append("\n" + hang + t(key, count=hidden), style="dim")
+        for line in tail:
+            out.append("\n" + hang + line, style="bold")
+        return out
 
     def _expand_paste_references(self, text: str | None) -> str:
         """Expand [Pasted text #N -> file] placeholders into file contents."""
@@ -227,20 +233,19 @@ class CLIStreamMixin:
         return paste_ref_re.sub(_expand_ref, text)
 
     def _print_user_message_preview(self, user_input: str) -> None:
-        """Render a user message using the normal chat scrollback style."""
-        from cli import ChatConsole, _accent_hex
+        """Echo a submitted user message as a full-width, skin-tinted band (``❯ text``)."""
+        from rich.padding import Padding
+        from cli import ChatConsole
+        from hermes_cli.cli_transcript import active_band_colors
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
             from gateway.warning_notifications import render_notification
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        text = str(user_input or "")
-        if "\n" in text:
-            ChatConsole().print(self._format_submitted_user_message_preview(text))
-        else:
-            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+        colors = active_band_colors()
+        body = self._format_submitted_user_message_preview(str(user_input or ""), colors)
+        ChatConsole().print(Padding(body, (0, 1, 0, 0), style=f"on {colors['bg']}", expand=True))
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.
@@ -255,6 +260,9 @@ class CLIStreamMixin:
         self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):
             return
+        self._capture_reasoning(text)
+        if self._reasoning_collapsed():
+            return  # display.cli_reasoning_style: collapsed -> one "✻ Thought" line when the block ends
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
             w = self._scrollback_box_width()
@@ -292,8 +300,10 @@ class CLIStreamMixin:
             _cprint(line)
 
     def _close_reasoning_box(self) -> None:
-        """Close the live reasoning box if it's open (renders the buffered reasoning tail)."""
+        """Close the live reasoning box if it's open (renders the buffered reasoning tail); in
+        collapsed style print the block's one-line summary instead."""
         from cli import _DIM, _RST, _cprint
+        self._finish_reasoning_capture()
         if not getattr(self, "_reasoning_box_opened", False):
             return
         buf = getattr(self, "_reasoning_buf", "")
@@ -311,10 +321,11 @@ class CLIStreamMixin:
 
         Emits complete lines via _cprint (reliable under prompt_toolkit's patch_stdout);
         reasoning tags are suppressed, or routed to the reasoning box when show_reasoning is on.
-        ``None`` = intermediate turn boundary (tools about to run): flush boxes and reset state.
+        ``None`` = intermediate turn boundary (tools about to run): flush the text segment and
+        reset its state; the reply frame stays open so the turn keeps ONE top and bottom rule.
         """
         if text is None:
-            self._flush_stream()
+            self._flush_stream_segment()
             self._reset_stream_state()
             return
         if not text:
@@ -428,14 +439,19 @@ class CLIStreamMixin:
         # Close a still-open reasoning box on the first content token so the answer streams
         # token-by-token; _close_reasoning_box renders the reasoning tail first, so ordering holds.
         self._close_reasoning_box()
+        self._flush_explore_group()
+        # Reply text means the last tool batch is over; drop any call whose completion never came.
+        self._running_tools = []
 
-        # Open the response box header on the very first visible text
+        # A text segment opens on its first visible text. The reply frame's top rule is drawn
+        # once per turn (first segment); later segments (after tool rows) continue the frame
+        # after a blank line instead of drawing a second header.
         if not self._stream_box_opened:
             text = text.lstrip("\n")
             if not text:
                 return
             self._stream_box_opened = True
-            self._stream_box_live = True  # header drawn; cleared at the footer
+            self._stream_box_live = True  # segment streaming; cleared at the segment flush
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
@@ -449,11 +465,15 @@ class CLIStreamMixin:
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
-            if self.show_timestamps:
-                label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
-            w = self._scrollback_box_width()
-            fill = w - 2 - HermesCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            if getattr(self, "_reply_frame_open", False):
+                _cprint("")
+            else:
+                self._reply_frame_open = True
+                if self.show_timestamps:
+                    label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
+                w = self._scrollback_box_width()
+                fill = w - 2 - HermesCLI._status_bar_display_width(label)
+                _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         # Turn-level record of what actually reached the screen; survives _reset_stream_state at
         # tool-call boundaries so an interrupted reply isn't re-rendered as a Panel (#65666).
@@ -495,9 +515,35 @@ class CLIStreamMixin:
                 pass
 
     def _flush_stream(self) -> None:
-        """Emit any remaining partial line from the stream buffer and close the box."""
+        """End of the turn's stream: emit the remaining partial line, then close the reply frame;
+        status lines held while the text streamed print after its bottom rule."""
+        self._flush_stream_segment(release_held=False)
+        self._close_reply_frame()
+        self._release_held_status_lines()
+
+    def _close_reply_frame(self) -> None:
+        """Print the reply frame's bottom rule if its top rule was drawn. Called at turn end and
+        before a modal prompt (approval, clarify, sudo, secret, vault), so a frame never dangles;
+        text after a prompt opens a fresh frame."""
+        from cli import _ACCENT, _RST, _cprint
+        if self.__dict__.get("_stream_box_live"):
+            self._flush_stream_segment(release_held=False)
+        self._flush_explore_group()
+        if not self.__dict__.get("_reply_frame_open"):
+            return
+        self._reply_frame_open = False
+        w = self._scrollback_box_width()
+        _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+        self._release_held_status_lines()
+
+    def _flush_stream_segment(self, *, release_held: bool = True) -> None:
+        """Emit any remaining partial line of the current text segment (tools are about to run or
+        the stream ended). The reply frame stays open; see ``_close_reply_frame``. Held status
+        lines print here between segments (next to the tool rows), or after the frame's bottom
+        rule when the caller closes it (``release_held=False``)."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
-        from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
+        from cli import _strip_markdown_syntax
+        self._flush_explore_group()
         # Still inside a "reasoning block" at end-of-stream = false positive (the model
         # mentioned a tag in prose and never closed it): recover the buffer as regular text.
         if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
@@ -519,11 +565,9 @@ class CLIStreamMixin:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
-        if self._stream_box_opened and getattr(self, "_stream_box_live", False):
-            w = self._scrollback_box_width()
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
         self._stream_box_live = False
-        self._release_held_status_lines()
+        if release_held:
+            self._release_held_status_lines()
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -644,24 +688,32 @@ class CLIStreamMixin:
         console.print(*args, **kwargs)
 
     def _on_tool_gen_start(self, tool_name: str) -> None:
-        """Model began generating tool-call arguments: close open boxes once, then print a status
-        line so a large payload (e.g. 45 KB write_file) doesn't look like a frozen screen.
+        """Model began generating tool-call arguments: close open boxes once, then show
+        "preparing <tool>…" so a large payload (e.g. 45 KB write_file) doesn't look like a frozen
+        screen. With the TUI up it goes to the live spinner (the completion row follows in
+        scrollback; a separate "preparing" row per call was noise), else it prints a line.
 
         Fires once per tool CALL, so a batch of parallel calls to the same tool printed the same
         line N times (#10478); repeats within one generation batch are coalesced. The set is
         cleared when a tool actually starts (``tool.started``), i.e. on the next batch."""
         from cli import _cprint
         if getattr(self, '_stream_box_opened', False):
-            self._flush_stream()
+            self._flush_stream_segment()
             self._stream_box_opened = False
         self._close_reasoning_box()
+        self._tool_activity_started(tool_name)
         announced = self.__dict__.setdefault("_tool_gen_announced", set())
         if tool_name in announced:
             return
         announced.add(tool_name)
         from agent.display import bridge_generating_phrase, get_tool_emoji
         what = bridge_generating_phrase(tool_name) or tool_name
-        _cprint(f"  ┊ {t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)}")
+        line = t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)
+        if getattr(self, "_app", None) is not None:
+            self._spinner_text = line
+            self._invalidate()
+            return
+        _cprint(f"  ┊ {line}")
 
     def _on_tool_progress(self, event_type: str, function_name: str | None = None, preview: str | None = None, function_args: dict | None = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
@@ -669,7 +721,7 @@ class CLIStreamMixin:
         Drives the TUI spinner (tool.started stamps the elapsed timer); in "all"/"new"/"verbose"
         progress modes tool.completed also commits a stacked scrollback line (tool history).
         """
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home
+        from cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home, logger
         # MoA reference outputs (display-only events from the MoA facade): render each answer
         # as a labelled thinking-style block BEFORE the aggregator acts.
         if event_type == "moa.reference":
@@ -708,6 +760,7 @@ class CLIStreamMixin:
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            self._note_tool_finished(function_name)
             self._turn_summary_record(
                 function_name, kwargs.get("result"), kwargs.get("is_error", False))
             # Focus view: count the hidden scrollback line for the post-turn recovery report.
@@ -716,26 +769,19 @@ class CLIStreamMixin:
                     self._note_focus_hidden_line(function_name or "")
                 except Exception:
                     pass
-            # "verbose" must commit the same line as "all": non-streaming calls (MoA aggregator,
-            # copilot-acp) never emit the "preparing" line, so nothing else builds history.
-            if function_name and self.tool_progress_mode in {"new", "all", "verbose"}:
+            if function_name:
                 duration = kwargs.get("duration", 0.0)
                 # Pop stored args from tool.started for this function
                 stored = self._pending_tool_info.get(function_name)
                 stored_args = stored.pop(0) if stored else {}
                 if stored is not None and not stored:
                     del self._pending_tool_info[function_name]
-                # "new" mode: skip consecutive repeats of the same tool
-                if self.tool_progress_mode == "new" and function_name == self._last_scrollback_tool:
-                    self._invalidate()
-                    return
-                self._last_scrollback_tool = function_name
+                # Row + result preview in "new"/"all"/"verbose" (logged for Ctrl+O in every mode).
                 try:
-                    from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    self._tool_activity_completed(function_name, stored_args, duration or 0.0,
+                                                  kwargs.get("result"), bool(kwargs.get("is_error")))
                 except Exception:
-                    pass
+                    logger.debug("Tool row render failed for %s", function_name, exc_info=True)
                 # One-time /verbose hint on the first long tool in the noisiest mode; latched
                 # on self and persisted to config.yaml.
                 try:
@@ -757,17 +803,43 @@ class CLIStreamMixin:
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
-            from agent.display import get_tool_preview_max_len, tool_row_emoji
-            label = preview or function_name
+            from agent.display import get_tool_preview_max_len
+            from hermes_cli.cli_tool_render import running_tool_label
+            self._tool_activity_started(function_name)
             _pl = get_tool_preview_max_len()
-            if _pl > 0 and len(label) > _pl:
-                label = label[:_pl - 3] + "..."
-            self._spinner_text = f"{tool_row_emoji(function_name, function_args)} {label}"
+            width = min(_pl, 80) if _pl > 0 else max(20, _terminal_columns() - 30)
+            label = (running_tool_label(function_name, function_args, width=width) if function_args
+                     else (preview or function_name)[:width])
+            self._spinner_text = label
             self._tool_start_time = time.monotonic()
+            with _RUNNING_TOOLS_LOCK:
+                self.__dict__.setdefault("_running_tools", []).append((function_name, label, self._tool_start_time))
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {})
             self._invalidate()
+
+    def _note_tool_finished(self, function_name: str | None) -> None:
+        """Drop the oldest running entry for ``function_name`` (the live spinner's tool list)."""
+        with _RUNNING_TOOLS_LOCK:
+            running = self.__dict__.get("_running_tools") or []
+            for index, (name, _, _) in enumerate(running):
+                if name == function_name:
+                    del running[index]
+                    return
+
+    def _running_tool_status(self) -> tuple[str, float] | None:
+        """``(text, started)`` for the live spinner while tools run: the one running tool's
+        label (``$ ls -la``), or ``N tools running`` timed from the earliest start."""
+        # The agent thread appends/removes while the UI renders: inspect one snapshot.
+        with _RUNNING_TOOLS_LOCK:
+            running = list(self.__dict__.get("_running_tools") or ())
+        if not running:
+            return None
+        if len(running) == 1:
+            _, label, started = running[0]
+            return label, started
+        return t("cli.tool_render.tools_running", count=len(running)), min(r[2] for r in running)
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
         """Capture local before-state for write-capable tools."""
@@ -798,10 +870,12 @@ class CLIStreamMixin:
                 except Exception:
                     pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
+        rendered: list[str] = []
         try:
             from agent.display import render_edit_diff_with_delta
             render_edit_diff_with_delta(
                 function_name, function_result, function_args=function_args, snapshot=snapshot,
-                print_fn=_cprint)
+                print_fn=rendered.append)
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
+        self._on_inline_diff(function_name, "\n".join(rendered))

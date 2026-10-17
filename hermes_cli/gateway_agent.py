@@ -77,7 +77,8 @@ class GatewayAgent:
                  tool_start_callback=None, tool_complete_callback=None, stream_delta_callback=None,
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
                  reaction_callback=None, interim_assistant_callback=None, connection=None,
-                 push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None, **_ignored):
+                 push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None,
+                 inline_diff_callback=None, **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -98,6 +99,7 @@ class GatewayAgent:
         self._show_reasoning_sent = None
         self.thinking_callback = thinking_callback
         self.tool_progress_callback = tool_progress_callback
+        self.inline_diff_callback = inline_diff_callback  # (tool_name, rendered diff); None = print as is
         self.tool_start_callback = tool_start_callback
         self.tool_complete_callback = tool_complete_callback
         self.stream_delta_callback = stream_delta_callback
@@ -722,9 +724,12 @@ class GatewayAgent:
             self._todo_from_result(result)
         diff = payload.get("inline_diff")
         if isinstance(diff, str) and diff:
-            from cli import _cprint
-            for line in diff.rstrip("\n").splitlines():
-                _cprint(line)
+            if self.inline_diff_callback is not None:
+                self.inline_diff_callback(name, diff)
+            else:
+                from cli import _cprint
+                for line in diff.rstrip("\n").splitlines():
+                    _cprint(line)
             if name == "delegate_task" and self.tool_complete_callback is not None:
                 self.tool_complete_callback(call_id, name, args, result)
         elif self.tool_complete_callback is not None:

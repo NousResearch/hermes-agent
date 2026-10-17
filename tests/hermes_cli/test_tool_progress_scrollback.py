@@ -87,11 +87,11 @@ class TestToolProgressScrollback:
         cli = _make_cli(tool_progress="all")
         with patch.object(_cli_mod, "_cprint") as mock_print:
             # First call
-            cli._on_tool_progress("tool.started", "read_file", "cli.py", {"path": "cli.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.1, is_error=False)
+            cli._on_tool_progress("tool.started", "terminal", "ls", {"command": "ls"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
             # Second call (same tool)
-            cli._on_tool_progress("tool.started", "read_file", "run_agent.py", {"path": "run_agent.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.2, is_error=False)
+            cli._on_tool_progress("tool.started", "terminal", "pwd", {"command": "pwd"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.2, is_error=False)
 
         assert mock_print.call_count == 2
 
@@ -114,11 +114,11 @@ class TestToolProgressScrollback:
         cli = _make_cli(tool_progress="all")
         with patch.object(_cli_mod, "_cprint") as mock_print:
             # All start first (concurrent pattern)
-            cli._on_tool_progress("tool.started", "web_search", "query 1", {"query": "test 1"})
-            cli._on_tool_progress("tool.started", "web_search", "query 2", {"query": "test 2"})
+            cli._on_tool_progress("tool.started", "terminal", "ls 1", {"command": "ls 1"})
+            cli._on_tool_progress("tool.started", "terminal", "ls 2", {"command": "ls 2"})
             # All complete
-            cli._on_tool_progress("tool.completed", "web_search", None, None, duration=1.0, is_error=False)
-            cli._on_tool_progress("tool.completed", "web_search", None, None, duration=1.5, is_error=False)
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=1.0, is_error=False)
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=1.5, is_error=False)
 
         assert mock_print.call_count == 2
 

@@ -92,7 +92,9 @@ class CLIChatTurnMixin:
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        # Interactive turns already opened with the full-width user band; the rule is for -q.
+        if not getattr(self, "_interactive_turn", False):
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         _cprint("")
 
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
@@ -104,9 +106,12 @@ class CLIChatTurnMixin:
             try:
                 self._reset_stream_state()
                 # Not part of _reset_stream_state: must persist across intermediate turn
-                # boundaries (tool-calling loops), reset once per user turn.
+                # boundaries (tool-calling loops), reset once per user turn. One reply frame
+                # (top rule at the first text, bottom rule at turn end) spans the whole turn.
                 self._reasoning_shown_this_turn = False
                 self._streamed_text_this_turn = ""
+                self._reply_frame_open = False
+                self._running_tools = []
                 self._chat_setup_turn_audio(turn, message, voice_input)
                 # Per-prompt elapsed timer — frozen when the agent thread finishes.
                 self._prompt_start_time = time.time()
@@ -118,6 +123,10 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
+                try:
+                    self._close_reply_frame()
+                except Exception:  # cosmetic; the error line below matters more
+                    logging.getLogger(__name__).debug("reply frame close failed", exc_info=True)
                 _cprint(t("gateway.model.error_prefix", error=e))
                 return None
             finally:
@@ -595,7 +604,8 @@ class CLIChatTurnMixin:
         self._last_turn_interrupted = _interrupted_this_turn
         if _interrupted_this_turn:
             pending_message = turn.result.get("interrupt_message") or interrupt_msg
-            _show_interrupt_marker = bool(response and pending_message)
+            # Every interrupted turn leaves a receipt in scrollback, with or without a follow-up.
+            _show_interrupt_marker = True
         elif interrupt_msg:
             # agent.interrupt() fired but the result doesn't acknowledge it (racy): either
             # the thread had passed its last interrupt check so finalize_turn() never saw
@@ -621,7 +631,11 @@ class CLIChatTurnMixin:
         # intermediate turn boundaries (tool loops) and re-rendered the box after the answer.
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
-            if reasoning:
+            if reasoning:  # Ctrl+O gets the full text whichever style prints it below.
+                self._transcript().add_reasoning(reasoning, None)
+            if reasoning and self._reasoning_collapsed():
+                self._print_collapsed_reasoning_recap(reasoning)
+            elif reasoning:
                 w = self._scrollback_box_width()
                 r_label = f" {t('cli.chat.reasoning_label')} "
                 r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"

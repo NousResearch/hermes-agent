@@ -2202,12 +2202,14 @@ display:
   # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
+  cli_reasoning_style: full  # CLI only: full (stream reasoning in a box) | collapsed (one "✻ Thought for 8s · <heading>" line per block; full text in the Ctrl+O viewer)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   vim_mode: false         # CLI only: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live NORMAL/INSERT/REPLACE mode shows at the right of the status bar. Config-only, read at startup.
   timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript
   timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+  tool_output_preview: 3  # CLI only: dim result lines under each completed tool row, then "… +N lines (ctrl+o to expand)" (0 = off; tool_progress: verbose shows 4x). Ctrl+O opens the last turn's full tool output, exit codes, durations, diffs and reasoning (/ to find, a for all turns, q/Esc to return)
   turn_summary: true      # CLI only: print a one-line post-turn accounting footer after each interactive turn
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
@@ -2226,12 +2228,13 @@ display:
 `display.turn_summary` (default `true`) prints one dim accounting line after each **interactive CLI** turn, summarising what that turn actually did:
 
 ```
-⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands
+⋯ Worked for 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands · ↓ 1.2k tok
 ```
 
 The tally is observed from the tool-progress feed the CLI already receives, so it costs nothing extra. Details:
 
-- Wall time is the turn's real duration (`2m05s` past the one-minute mark).
+- Wall time is the turn's real duration (`2m 5s` past the one-minute mark, `1h 2m` past the hour).
+- The line ends with the turn's output tokens and, when the provider's pricing gives a real estimate, its cost (`~$0.04`). Both come from counters the CLI already keeps; `included` or unknown pricing never shows a misleading `$0.00`.
 - Tool calls are grouped by verb (`edited`, `read`, `ran`, `searched`, …) with correct pluralisation; plugin/MCP tools without a curated verb collapse into `called N tools`.
 - `+X -Y` line deltas appear only when the tool result already reports a diff (currently `patch`). Hermes never shells out to git to compute them, so a `write_file` edit is counted without a delta.
 - **Failed tool calls are not counted** — a denied write never renders as a successful edit (see the [file-mutation verifier](#file-mutation-verifier) for the complementary warning).

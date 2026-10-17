@@ -3,7 +3,7 @@
 :class:`TurnSummaryCollector` rides the ``tool_progress_callback`` feed (``tool.completed``
 events carry the tool name and raw result) and tallies what a turn did — no agent-loop state
 is threaded through. :func:`format_turn_summary` renders a tally plus wall-clock duration
-into one dim line: ``⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands``.
+into one dim line: ``⋯ Worked for 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands``.
 :func:`format_token_flow` is the spinner-side cumulative token readout (``↓ 1.2k tok``).
 """
 
@@ -145,12 +145,15 @@ class TurnSummaryCollector:
 
 
 def format_elapsed(seconds: float) -> str:
-    """``12.4s`` / ``2m05s``."""
+    """``12.4s`` / ``2m 5s`` / ``1h 2m``."""
     seconds = max(seconds, 0.0)
     if seconds < 60:
         return f"{seconds:.1f}s"
     minutes, rest = divmod(round(seconds), 60)
-    return f"{minutes}m{rest:02d}s"
+    if minutes >= 60:
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m {rest}s"
 
 
 def _pluralize(count: int, plural_noun: str) -> str:
@@ -163,8 +166,10 @@ def _pluralize(count: int, plural_noun: str) -> str:
     return f"1 {plural_noun}"
 
 
-def format_turn_summary(elapsed_seconds: float, tally: TurnTally | None, *, max_segments: int = _MAX_SEGMENTS) -> str:
+def format_turn_summary(elapsed_seconds: float, tally: TurnTally | None, *, max_segments: int = _MAX_SEGMENTS,
+                        extras: list[str] | None = None) -> str:
     """Render the per-turn accounting line, or ``""`` when there's nothing to say.
+    ``extras`` (token / cost readouts the caller already has) trail the tool segments.
     Pure; gating (``display.turn_summary``, quiet mode, CLI-only) is the caller's job."""
     if tally is None:
         tally = TurnTally()
@@ -190,7 +195,9 @@ def format_turn_summary(elapsed_seconds: float, tally: TurnTally | None, *, max_
         hidden = len(segments) - max_segments
         segments = segments[:max_segments] + [f"+{hidden} more"]
 
-    return f"{SUMMARY_PREFIX} " + " · ".join([format_elapsed(elapsed_seconds)] + segments)
+    from agent.i18n import t
+    lead = t("cli.stream.turn_worked_for", duration=format_elapsed(elapsed_seconds))
+    return f"{SUMMARY_PREFIX} " + " · ".join([lead] + segments + [e for e in extras or () if e])
 
 
 def format_token_flow(output_tokens: Any, *, arrow: str = "↓") -> str:

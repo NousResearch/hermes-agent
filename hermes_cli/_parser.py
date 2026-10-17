@@ -107,6 +107,9 @@ Examples:
     hermes auth priority <p> <t> <n>  Move a pooled credential to priority n (0 = tried first)
     hermes auth refresh <p> [t]   Refresh a pooled OAuth credential and clear its cooldown
     hermes model                  Select default model
+    hermes tools                  Configure which tools are enabled per platform
+    hermes doctor                 Check configuration and dependencies
+    hermes skills                 Search, install, configure, and manage skills
     hermes fallback [list]        Show fallback provider chain
     hermes fallback add           Add a fallback provider (same picker as `hermes model`)
     hermes fallback remove        Remove a fallback provider from the chain
@@ -129,7 +132,7 @@ Examples:
     hermes logs -f                Follow agent.log in real time
     hermes logs errors            View errors.log
     hermes logs --since 1h        Lines from the last hour
-    hermes debug share             Upload debug report for support
+    hermes debug share            Upload debug report for support
     hermes console                Open the safe Hermes command console
     hermes update                 Update to latest version
     hermes dashboard              Start web UI dashboard (port 9119)

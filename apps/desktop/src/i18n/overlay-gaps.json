@@ -2060,6 +2060,7 @@
   "skills.plugins.settingsForm.save": ["ar","ja","ru","zh","zh-hant"],
   "skills.plugins.settingsForm.saveFailed": ["ar","ja","ru","zh","zh-hant"],
   "skills.plugins.settingsForm.saved": ["ar","ja","ru","zh","zh-hant"],
+  "skills.plugins.settingsForm.secretEmpty": ["ar","ja","ru","zh","zh-hant"],
   "skills.plugins.settingsForm.secretSet": ["ar","ja","ru","zh","zh-hant"],
   "skills.plugins.settingsForm.secretStoredAs": ["ar","ja","ru","zh","zh-hant"],
   "skills.plugins.settingsToggle": ["ar","ja","ru","zh","zh-hant"],

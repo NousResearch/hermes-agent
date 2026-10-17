@@ -2308,48 +2308,6 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     sync_credential_pool_entry_id(agent)
 
 
-def _resolve_switch_context_length(agent, snapshot):
-    """Resolve the destination context length (LM Studio preload first); returns ``(custom_providers, effective_len)``."""
-    custom_providers = None
-    try:
-        from hermes_cli.config import (
-            get_compatible_custom_providers, get_custom_provider_context_length, load_config
-        )
-        from agent.agent_init import config_context_length_for_runtime
-        switch_cfg = load_config()
-        custom_providers = get_compatible_custom_providers(switch_cfg)
-        # The durable ``model.context_length`` pin is re-read from live config (never carried over
-        # blindly, never simply dropped): the destination IS the configured default route -> keep the
-        # ceiling; it is some other route -> the scoping inside returns None. Same precedence as
-        # construction, where the pin outranks custom_providers metadata (#116467).
-        intent = config_context_length_for_runtime(agent, switch_cfg)
-        if intent is None:
-            intent = get_custom_provider_context_length(
-                model=agent.model, base_url=agent.base_url, custom_providers=custom_providers
-            )
-    except Exception:
-        intent = None
-    from agent.agent_init import set_config_context_length
-    set_config_context_length(agent, intent)
-    runtime_len = None
-    if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
-        try:
-            runtime_len = agent._ensure_lmstudio_runtime_loaded(intent)
-        except Exception:
-            _restore_switch_snapshot(agent, snapshot)
-            raise
-    if hasattr(agent, "_lmstudio_load_was_unverified") and agent._lmstudio_load_was_unverified(runtime_len):
-        logger.warning(
-            "LM Studio model activation was rejected or completed without a "
-            "verifiable active context length during model switch; continuing "
-            "with configured context"
-        )
-    effective = intent
-    if hasattr(agent, "_effective_lmstudio_context_length"):
-        effective = agent._effective_lmstudio_context_length(intent, runtime_len)
-    return custom_providers, effective
-
-
 def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
     """Point the context compressor at the new model (rolls back the switch on failure)."""
     from agent.model_metadata import get_model_context_length
@@ -2489,7 +2447,8 @@ def switch_model(
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
-    custom_providers, effective_context_length = _resolve_switch_context_length(agent, snapshot)
+    from agent.agent_runtime_helpers_model_switch import resolve_switch_context_length
+    custom_providers, effective_context_length = resolve_switch_context_length(agent, snapshot)
     # Refresh the custom-provider snapshot from the config just loaded so the prompt_caching lookup
     # sees flags added to config.yaml after session start.
     if custom_providers is not None:

@@ -129,6 +129,11 @@ def handle_api_error(
         reason=classified.reason.value,
     )
 
+    from hermes_cli.models_lmstudio_instances import recover_stale_instance
+    if recover_stale_instance(agent, _retry, classified.status_code, api_kwargs):
+        _retry.restart_with_rebuilt_messages = True
+        return _verdict("break")
+
     _recovered, recovered_with_pool = recover_after_classification(
         agent, api_error, classified, _retry, status_code=status_code, error_context=error_context,
         messages=messages, api_messages=api_messages,

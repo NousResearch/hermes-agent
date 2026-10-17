@@ -1,35 +1,41 @@
-"""Deferred self-restart request channel (``hermes gateway defer-restart``).
+"""Deferred self-restart request protocol (``hermes gateway defer-restart``).
 
 An agent that needs its gateway to restart (config/API-key change) cannot run
-``hermes gateway restart`` from inside the gateway: the terminal-tool lifecycle
-guard refuses any command that would kill the host gateway from within. This
-module implements the *request* half of a deferred, drain-first restart that is
-safe to trigger from inside a turn:
+``hermes gateway restart`` from inside the gateway process — the terminal-tool
+lifecycle guard refuses every host-killing command, by design. This module is
+the gateway half of a two-phase, drain-first deferred restart:
 
-1. The CLI writes a protected request file (``restart_requests/pending-<id>.json``)
-   naming the target process generation (pid + process start time) and a stable
-   service identity, then sends SIGUSR1 as a wake-up only.
-2. On wake-up the gateway validates the request against *its own* generation and
-   service identity, atomically claims it, reserves the cross-process cooldown
-   budget, and only then schedules the existing ``request_restart()`` drain-first
-   restart. The ACCEPTED result is persisted to ``restart_requests/result-<id>.json``
-   BEFORE the generation exits (protocol invariant I1).
-3. The CLI polls for its own result file and reports ACCEPTED / unknown.
+1. The CLI writes a small validated request file naming its own request id,
+   the service identity and the target generation (pid + start-time
+   fingerprint), then sends SIGUSR1 — the existing graceful-restart signal.
+2. The gateway claims the request and schedules the existing drain-first
+   restart; the per-``request_id`` result record is the CLI's attributable
+   confirmation. The CLI exits immediately after confirmation and never waits
+   for the restart itself.
 
-Protocol invariants (see ``openspec/changes/gateway-deferred-restart``):
+Security posture (see openspec/changes/gateway-deferred-restart for the
+threat model): the request file is not a credential — same-user processes can
+already signal the gateway. It exists for *attribution and binding* (no
+cross-service hijack, no PID-reuse races, no stale requests), and for the
+cross-process cooldown (I2). The directory is 0700, request files are 0600,
+and validation refuses symlinks, wrong owners and loose modes.
 
-- I1: only a valid request bound to the *current* generation can be ACCEPTED, and
-  the acceptance record survives the accepting generation's exit.
-- I2: within a cooldown window one service identity never gains extra restart
-  budget via generation changes, sibling multiplex profiles, or duplicates.
-- I3: pre-existing SIGUSR1 callers with no deferred request keep the legacy
-  behaviour; a deferred request that FAILS validation must never fall through to
-  the legacy unconditional restart.
+Protocol invariants (reviewed):
+I1  the acceptance decision is persisted per ``request_id`` before this
+    generation may exit, and a final outcome is NEVER overwritten within its
+    retention window (first decision wins across rejections, replays and
+    expiry cleanup);
+I2  the restart budget is keyed by a stable service identity (not a pid), a
+    replay never spends a second restart, and the cooldown is recoverable
+    from persisted records if ``cooldown.json`` is lost;
+I3  no valid deferred request → the legacy SIGUSR1 restart is unchanged; a
+    deferred request that fails validation is rejected and never falls
+    through to the unconditional legacy restart; once a wake observes
+    protocol traffic, later empty-dir wakes take no action (double-wake
+    races cannot resurrect legacy restarts).
 
-Security posture: the request file is metadata only (no commands, exit codes, or
-delays), lives in a 0700 directory with 0600 files, and is validated for owner,
-regular-file type, and generation binding. ``actor_ref`` is audit-only and is
-never an authorization credential.
+All request-file I/O runs outside the raw signal callback (see
+``process_sigusr1_request``).
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -52,6 +59,12 @@ PENDING_TTL_S = 300.0
 RESULT_RETENTION_S = 7 * 24 * 3600.0
 #: Cross-process cooldown between accepted deferred restarts, per service identity (I2).
 COOLDOWN_WINDOW_S = 600.0
+#: Acceptance writes retry briefly (transient FS pressure) before a scheduled
+#: restart is cancelled — an exit must never run without a persisted decision (I1).
+RESULT_WRITE_ATTEMPTS = 3
+RESULT_WRITE_BACKOFF_S = 0.1
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 # Result outcomes. The CLI maps these onto its exit-code contract.
 OUTCOME_ACCEPTED = "accepted"
@@ -60,14 +73,22 @@ OUTCOME_SUPERSEDED = "superseded"
 OUTCOME_REJECTED_INVALID = "rejected_invalid"
 OUTCOME_REJECTED_TARGET_MISMATCH = "rejected_target_mismatch"
 OUTCOME_REJECTED_COOLDOWN = "rejected_cooldown"
+OUTCOME_REJECTED_STOPPING = "rejected_stopping"
 OUTCOME_EXPIRED = "expired"
-#: Restart scheduled by this request but the outcome could not be persisted — the CLI
-#: treats an absent result as "unknown" (exit 6) and must not blindly retry.
+#: Every outcome above is final: the CLI maps an absent result to "unknown" (exit 6)
+#: and must not blindly retry. ``duplicate`` never overwrites the original
+#: ``accepted`` record — the CLI polls the result file and reads the first decision.
 OUTCOMES_FINAL = {
     OUTCOME_ACCEPTED, OUTCOME_DUPLICATE, OUTCOME_SUPERSEDED,
     OUTCOME_REJECTED_INVALID, OUTCOME_REJECTED_TARGET_MISMATCH,
-    OUTCOME_REJECTED_COOLDOWN, OUTCOME_EXPIRED,
+    OUTCOME_REJECTED_COOLDOWN, OUTCOME_REJECTED_STOPPING, OUTCOME_EXPIRED,
 }
+#: Outcomes that mean "a restart for this gateway is already happening".
+OUTCOMES_SUCCESS = {OUTCOME_ACCEPTED, OUTCOME_DUPLICATE, OUTCOME_SUPERSEDED}
+
+#: Once any wake has seen protocol traffic this flag is set for the generation:
+#: later wakes with an empty/unknown request dir take NO action (I3, double-wake).
+_deferred_engaged = False
 
 
 def requests_dir() -> Path:
@@ -132,6 +153,10 @@ def _result_path(request_id: str) -> Path:
     return requests_dir() / f"result-{request_id}.json"
 
 
+def _claim_path(request_id: str) -> Path:
+    return requests_dir() / f"claim-{request_id}.json"
+
+
 def _cooldown_path() -> Path:
     return requests_dir() / "cooldown.json"
 
@@ -180,222 +205,20 @@ def _safe_regular_private_file(path: Path) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# Cooldown (I2) — shared store, gateway is the writer of record.
-# ---------------------------------------------------------------------------
+def _unlink_exclusive(path: Path) -> bool:
+    """Delete ``path``; True only when THIS caller removed it (claim-by-unlink).
 
-def read_cooldown() -> dict[str, Any]:
-    try:
-        raw = _cooldown_path().read_text(encoding="utf-8")
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def cooldown_active_for(identity_key: str, *, now: Optional[float] = None) -> Optional[dict[str, Any]]:
-    """The blocking cooldown record for ``identity_key``, or None."""
-    entry = read_cooldown().get(identity_key)
-    if not isinstance(entry, dict):
-        return None
-    try:
-        accepted_at = float(entry.get("accepted_at", 0.0))
-    except (TypeError, ValueError):
-        return None
-    now = time.time() if now is None else now
-    if 0.0 < (now - accepted_at) <= COOLDOWN_WINDOW_S:
-        return entry
-    return None
-
-
-def record_cooldown(identity_key: str, request_id: str) -> bool:
-    data = read_cooldown()
-    data[identity_key] = {"accepted_at": time.time(), "request_id": request_id}
-    return _atomic_write_json(_cooldown_path(), data)
-
-
-# ---------------------------------------------------------------------------
-# Result records (I1) — persist before the accepting generation exits.
-# ---------------------------------------------------------------------------
-
-def write_result(
-    request_id: str,
-    outcome: str,
-    *,
-    generation: Optional[dict[str, Any]] = None,
-    detail: str = "",
-) -> bool:
-    """Persist the decision for ``request_id``. Queryable after the writer exits."""
-    payload = {
-        "schema_version": PROTOCOL_SCHEMA_VERSION,
-        "request_id": request_id,
-        "outcome": outcome,
-        "generation": generation or process_generation(),
-        "decided_at": time.time(),
-        "detail": detail,
-    }
-    return _atomic_write_json(_result_path(request_id), payload)
-
-
-def read_result(request_id: str) -> Optional[dict[str, Any]]:
-    """The persisted decision for ``request_id`` (CLI polling), or None."""
-    path = _result_path(request_id)
-    try:
-        if not _safe_regular_private_file(path):
-            return None
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(payload, dict) or payload.get("request_id") != request_id:
-        return None
-    if payload.get("outcome") not in OUTCOMES_FINAL:
-        return None
-    return payload
-
-
-# ---------------------------------------------------------------------------
-# Request validation & consumption (gateway side).
-# ---------------------------------------------------------------------------
-
-def _validate_payload_shape(payload: Any) -> tuple[bool, str]:
-    if not isinstance(payload, dict):
-        return False, "payload is not an object"
-    if payload.get("schema_version") != PROTOCOL_SCHEMA_VERSION:
-        return False, "unsupported schema_version"
-    request_id = payload.get("request_id")
-    if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
-        return False, "bad request_id"
-    gen = payload.get("target_generation")
-    if not isinstance(gen, dict) or not isinstance(gen.get("pid"), int):
-        return False, "bad target_generation"
-    if not isinstance(payload.get("service_identity"), dict):
-        return False, "bad service_identity"
-    return True, ""
-
-
-def _generation_matches(recorded: dict[str, Any]) -> bool:
-    from gateway.status import start_time_fingerprints_match
-
-    me = process_generation()
-    if recorded.get("pid") != me.get("pid"):
-        return False
-    if me.get("start_time") is None or recorded.get("start_time") is None:
-        return False
-    try:
-        # Same comparator the liveness reconciler uses: same-host readings of the
-        # start-time fingerprint can drift by ~1 s (#117505), far beyond the 1 ms
-        # equality tolerance — a recycled PID is still never this close in time.
-        return bool(start_time_fingerprints_match(recorded.get("start_time"), me["start_time"]))
-    except (TypeError, ValueError):
-        return False
-
-
-def _identity_matches(recorded: dict[str, Any], mine: Optional[dict[str, str]]) -> bool:
-    if mine is None:
-        return False
-    return all(recorded.get(k) == v for k, v in mine.items())
-
-
-def list_pending_request_files() -> list[Path]:
-    try:
-        return sorted(requests_dir().glob("pending-*.json"))
-    except OSError:
-        return []
-
-
-def might_have_pending_request() -> bool:
-    """Cheap name-only check for the SIGUSR1 fast path (no request-file reads).
-
-    Used by the signal handler to pick between the legacy synchronous restart
-    and the deferred-request task; protocol ordering (write request file, then
-    signal) guarantees a real deferred request is visible here before its
-    wake-up arrives. Failures report ``False`` — the legacy path is the safe
-    default for an ordinary restart signal.
+    A missing file means another consumer/cleaner won the race — the caller must
+    NOT continue as the claimant (review gate 1, item 5).
     """
     try:
-        with os.scandir(requests_dir()) as entries:
-            return any(e.name.startswith("pending-") for e in entries)
-    except OSError:
+        path.unlink()
+        return True
+    except FileNotFoundError:
         return False
-
-
-def consume_pending_request(
-    *, now: Optional[float] = None
-) -> tuple[Optional[dict[str, Any]], str, str]:
-    """Validate and claim the newest pending request for THIS generation.
-
-    Returns ``(payload_or_None, outcome, detail)``. Every consumed request gets a
-    persisted result record (explicit outcomes only — never silently dropped) and
-    its pending file is removed so a re-sent SIGUSR1 cannot reprocess it. A
-    request aimed at another generation is left in place (it belongs to its own
-    target) but gets a ``rejected_target_mismatch`` result only when it targets a
-    dead/other generation — a live sibling claim is that generation's business.
-    """
-    now = time.time() if now is None else now
-    pending = list_pending_request_files()
-    if not pending:
-        return None, "", "no pending request"
-
-    newest = pending[-1]
-    request_id = newest.name[len("pending-"):-len(".json")]
-    try:
-        raw = newest.read_text(encoding="utf-8")
-        payload = json.loads(raw)
-    except (OSError, ValueError) as exc:
-        with _best_effort():
-            write_result(request_id, OUTCOME_REJECTED_INVALID, detail=f"unreadable request: {exc}")
-            _unlink_quiet(newest)
-        return None, OUTCOME_REJECTED_INVALID, f"unreadable request: {exc}"
-
-    ok, why = _validate_payload_shape(payload)
-    if not ok or payload.get("request_id") != request_id:
-        with _best_effort():
-            write_result(request_id, OUTCOME_REJECTED_INVALID, detail=why or "request_id mismatch")
-            _unlink_quiet(newest)
-        return None, OUTCOME_REJECTED_INVALID, why
-
-    if not _safe_regular_private_file(newest):
-        with _best_effort():
-            write_result(request_id, OUTCOME_REJECTED_INVALID, detail="request file permissions/owner")
-            _unlink_quiet(newest)
-        return None, OUTCOME_REJECTED_INVALID, "request file permissions/owner"
-
-    if not _generation_matches(payload["target_generation"]):
-        # Not ours: leave the file for its real target (or expiry), but tell *this*
-        # wake-up's caller nothing was claimed.
-        return None, OUTCOME_REJECTED_TARGET_MISMATCH, "target generation mismatch"
-
-    mine = compute_service_identity()
-    if mine is None or not _identity_matches(payload["service_identity"], mine):
-        with _best_effort():
-            write_result(request_id, OUTCOME_REJECTED_INVALID, detail="service identity mismatch")
-            _unlink_quiet(newest)
-        return None, OUTCOME_REJECTED_INVALID, "service identity mismatch"
-
-    # Same request id already decided: return the existing decision (idempotent
-    # replay). A replayed ACCEPTED is reported as DUPLICATE so the wake-up path
-    # never schedules a second restart for the same request (I2).
-    existing = read_result(request_id)
-    if existing is not None:
-        with _best_effort():
-            _unlink_quiet(newest)
-        prior = str(existing.get("outcome") or OUTCOME_REJECTED_INVALID)
-        if prior == OUTCOME_ACCEPTED:
-            return payload, OUTCOME_DUPLICATE, "replay of decided request"
-        return payload, prior, "replay of decided request"
-
-    identity_key = service_identity_key(mine)
-    blocking = cooldown_active_for(identity_key, now=now)
-    if blocking is not None and blocking.get("request_id") != request_id:
-        with _best_effort():
-            write_result(request_id, OUTCOME_REJECTED_COOLDOWN,
-                         detail=f'cooldown window active until +{COOLDOWN_WINDOW_S:.0f}s')
-            _unlink_quiet(newest)
-        return None, OUTCOME_REJECTED_COOLDOWN, "cooldown active"
-
-    # Claim: the pending file is consumed exactly once.
-    _unlink_quiet(newest)
-    return payload, OUTCOME_ACCEPTED, ""
+    except OSError as exc:
+        logger.warning("defer-restart: claim unlink %s failed: %s", path, exc)
+        return False
 
 
 class _best_effort:
@@ -418,72 +241,460 @@ def _unlink_quiet(path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# SIGUSR1 wake-up processing (runs as a loop task, never inside the raw signal
-# callback — no blocking file I/O in signal handlers).
+# Cooldown (I2) — shared store, gateway is the writer of record. Read failures
+# are fail-CLOSED (treated as active), and the window is recoverable from
+# persisted result/claim records if cooldown.json is lost.
 # ---------------------------------------------------------------------------
 
-def process_sigusr1_request(schedule_restart) -> None:
+def read_cooldown() -> tuple[dict[str, Any], bool]:
+    """``(data, ok)`` — ``ok=False`` when the store exists but cannot be read."""
+    try:
+        raw = _cooldown_path().read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return (data if isinstance(data, dict) else {}), True
+    except FileNotFoundError:
+        return {}, True
+    except (OSError, ValueError):
+        return {}, False
+
+
+def _recover_cooldown_from_records(identity_key: str, now: float) -> Optional[dict[str, Any]]:
+    """Derive a blocking cooldown entry from persisted accepted/claim records (I2)."""
+    try:
+        files = list(requests_dir().iterdir())
+    except OSError:
+        return None
+    newest: Optional[dict[str, Any]] = None
+    for path in files:
+        name = path.name
+        if not (name.startswith("result-") or name.startswith("claim-")):
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        outcome = data.get("outcome")
+        if name.startswith("result-") and outcome != OUTCOME_ACCEPTED:
+            continue
+        if data.get("service_key") not in (None, identity_key):
+            continue
+        try:
+            when = float(data.get("decided_at") or data.get("claimed_at") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 < (now - when) <= COOLDOWN_WINDOW_S:
+            if newest is None or when > float(newest.get("accepted_at", 0.0)):
+                newest = {"accepted_at": when,
+                          "request_id": str(data.get("request_id", "")),
+                          "recovered": True}
+    return newest
+
+
+def cooldown_active_for(identity_key: str, *, now: Optional[float] = None) -> Optional[dict[str, Any]]:
+    """The blocking cooldown record for ``identity_key``, or None.
+
+    Fail-closed: an unreadable store is treated as ACTIVE (a phantom cooldown
+    only delays a restart; a phantom miss spends the budget twice — I2).
+    """
+    now = time.time() if now is None else now
+    data, ok = read_cooldown()
+    if not ok:
+        logger.warning("defer-restart: cooldown store unreadable — treating as active (fail-closed)")
+        return {"accepted_at": now, "request_id": "<unreadable>", "unreadable": True}
+    entry = data.get(identity_key)
+    if isinstance(entry, dict):
+        try:
+            accepted_at = float(entry.get("accepted_at", 0.0))
+        except (TypeError, ValueError):
+            accepted_at = 0.0
+        if 0.0 < (now - accepted_at) <= COOLDOWN_WINDOW_S:
+            return entry
+    recovered = _recover_cooldown_from_records(identity_key, now)
+    return recovered
+
+
+def record_cooldown(identity_key: str, request_id: str) -> bool:
+    data, ok = read_cooldown()
+    if not ok:
+        logger.warning("defer-restart: cooldown store unreadable at record time")
+    data[identity_key] = {"accepted_at": time.time(), "request_id": request_id}
+    return _atomic_write_json(_cooldown_path(), data)
+
+
+# ---------------------------------------------------------------------------
+# Result records (I1) — persist before the accepting generation exits, and a
+# final outcome is NEVER overwritten (first decision wins).
+# ---------------------------------------------------------------------------
+
+def write_result(
+    request_id: str,
+    outcome: str,
+    *,
+    generation: Optional[dict[str, Any]] = None,
+    detail: str = "",
+    service_key: Optional[str] = None,
+) -> bool:
+    """Persist the decision for ``request_id``. Queryable after the writer exits.
+
+    Refuses to overwrite an existing final decision (I1): rejections, replays
+    and expiry cleanup must all respect the first decision.
+    """
+    path = _result_path(request_id)
+    if path.exists():
+        logger.info("defer-restart: result for %s already final — not overwriting", request_id)
+        return False
+    payload = {
+        "schema_version": PROTOCOL_SCHEMA_VERSION,
+        "request_id": request_id,
+        "outcome": outcome,
+        "generation": generation or process_generation(),
+        "decided_at": time.time(),
+        "detail": detail,
+    }
+    if service_key is not None:
+        payload["service_key"] = service_key
+    ok = _atomic_write_json(path, payload)
+    if ok and not path.exists():  # pragma: no cover - defensive
+        return False
+    return ok
+
+
+def write_result_with_retry(request_id: str, outcome: str, **kwargs: Any) -> bool:
+    """``write_result`` with brief retries; returns True only once persisted (I1)."""
+    for attempt in range(RESULT_WRITE_ATTEMPTS):
+        if write_result(request_id, outcome, **kwargs):
+            return True
+        if _result_path(request_id).exists():
+            # Someone's final decision already landed — also acceptable (I1).
+            return True
+        if attempt + 1 < RESULT_WRITE_ATTEMPTS:
+            time.sleep(RESULT_WRITE_BACKOFF_S)
+    return False
+
+
+def read_result(request_id: str) -> Optional[dict[str, Any]]:
+    """The persisted decision for ``request_id`` (CLI polling), or None."""
+    path = _result_path(request_id)
+    try:
+        if not _safe_regular_private_file(path):
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("request_id") != request_id:
+        return None
+    if payload.get("outcome") not in OUTCOMES_FINAL:
+        return None
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Request validation & consumption (gateway side).
+# ---------------------------------------------------------------------------
+
+def _is_number(value: Any) -> bool:
+    """Real int/float — explicitly rejects bool (bool is an int subclass)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _validate_payload_shape(payload: Any) -> tuple[bool, str]:
+    if not isinstance(payload, dict):
+        return False, "payload is not an object"
+    if type(payload.get("schema_version")) is not int or payload.get("schema_version") != PROTOCOL_SCHEMA_VERSION:
+        return False, "unsupported schema_version"
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str) or not _REQUEST_ID_RE.match(request_id):
+        return False, "bad request_id"
+    gen = payload.get("target_generation")
+    if not isinstance(gen, dict):
+        return False, "bad target_generation"
+    if type(gen.get("pid")) is not int or gen.get("pid") <= 0:
+        return False, "bad target_generation.pid"
+    if not _is_number(gen.get("start_time")) or gen.get("start_time") <= 0:
+        return False, "bad target_generation.start_time"
+    identity = payload.get("service_identity")
+    if not isinstance(identity, dict):
+        return False, "bad service_identity"
+    for key in ("kind", "service_id", "hermes_home"):
+        if not isinstance(identity.get(key), str):
+            return False, f"bad service_identity.{key}"
+    return True, ""
+
+
+def _generation_matches(recorded: dict[str, Any]) -> bool:
+    from gateway.status import start_time_fingerprints_match
+
+    me = process_generation()
+    if type(recorded.get("pid")) is not int or recorded.get("pid") != me.get("pid"):
+        return False
+    if not _is_number(recorded.get("start_time")) or not _is_number(me.get("start_time")):
+        return False
+    if me.get("start_time") is None or recorded.get("start_time") is None:
+        return False
+    try:
+        # Same comparator the liveness reconciler uses: same-host readings of the
+        # start-time fingerprint can drift by ~1 s (#117505), far beyond the 1 ms
+        # equality tolerance. This is a bounded engineering tolerance, NOT a proof
+        # of generation uniqueness — pid equality is the primary gate and a
+        # recycled pid could in principle land within the window (review gate 1).
+        return bool(start_time_fingerprints_match(recorded.get("start_time"), me["start_time"]))
+    except (TypeError, ValueError):
+        return False
+
+
+def _identity_matches(recorded: dict[str, Any], mine: Optional[dict[str, str]]) -> bool:
+    if mine is None:
+        return False
+    return all(recorded.get(k) == v for k, v in mine.items())
+
+
+def list_pending_request_files() -> Optional[list[Path]]:
+    """Pending request files, or ``None`` when the directory cannot be listed.
+
+    ``None`` means "unknown" and MUST NOT be treated as "confirmed empty" (I3).
+    """
+    try:
+        with os.scandir(requests_dir()) as entries:
+            names = sorted(e.name for e in entries if e.name.startswith("pending-") and e.name.endswith(".json"))
+        return [requests_dir() / n for n in names]
+    except OSError:
+        return None
+
+
+def might_have_pending_request() -> Optional[bool]:
+    """Cheap name-only check for wake classification: True / False / None (unknown)."""
+    try:
+        with os.scandir(requests_dir()) as entries:
+            for e in entries:
+                if e.name.startswith("pending-"):
+                    return True
+            return False
+    except OSError:
+        return None
+
+
+def consume_pending_request(
+    *, now: Optional[float] = None
+) -> tuple[Optional[dict[str, Any]], str, str]:
+    """Validate and claim the newest pending request for THIS generation.
+
+    Order matters (review gate 1, item 2): file-safety checks first, then any
+    EXISTING decision for the same request id (replay — never overwritten),
+    and only then the "new request" checks (generation, identity, cooldown).
+
+    Returns ``(payload_or_None, outcome, detail)``. Every consumed request gets a
+    persisted result record (explicit outcomes only — never silently dropped) and
+    its pending file is removed so a re-sent SIGUSR1 cannot reprocess it. A
+    request aimed at another generation is left in place (it belongs to its own
+    target). Claim-by-unlink: only the consumer whose unlink() succeeded may
+    continue to scheduling.
+    """
+    now = time.time() if now is None else now
+    pending = list_pending_request_files()
+    if not pending:
+        return None, "", "no pending request"
+
+    newest = pending[-1]
+    request_id = newest.name[len("pending-"):-len(".json")]
+    try:
+        raw = newest.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        with _best_effort():
+            if not _unlink_exclusive(newest):
+                return None, "", "claim lost to another consumer"
+            write_result(request_id, OUTCOME_REJECTED_INVALID, detail=f"unreadable request: {exc}")
+        return None, OUTCOME_REJECTED_INVALID, f"unreadable request: {exc}"
+
+    ok, why = _validate_payload_shape(payload)
+    if not ok or payload.get("request_id") != request_id:
+        with _best_effort():
+            if not _unlink_exclusive(newest):
+                return None, "", "claim lost to another consumer"
+            write_result(request_id, OUTCOME_REJECTED_INVALID, detail=why or "request_id mismatch")
+        return None, OUTCOME_REJECTED_INVALID, why
+
+    if not _safe_regular_private_file(newest):
+        with _best_effort():
+            if not _unlink_exclusive(newest):
+                return None, "", "claim lost to another consumer"
+            write_result(request_id, OUTCOME_REJECTED_INVALID, detail="request file permissions/owner")
+        return None, OUTCOME_REJECTED_INVALID, "request file permissions/owner"
+
+    # Existing decision first (I1): a decided request id is never re-decided,
+    # regardless of which generation now sees it.
+    existing = read_result(request_id)
+    if existing is not None:
+        with _best_effort():
+            _unlink_exclusive(newest)
+        prior = str(existing.get("outcome") or OUTCOME_REJECTED_INVALID)
+        if prior == OUTCOME_ACCEPTED:
+            return payload, OUTCOME_DUPLICATE, "replay of decided request"
+        return payload, prior, "replay of decided request"
+
+    if not _generation_matches(payload["target_generation"]):
+        # Not ours: leave the file for its real target (or expiry), but tell *this*
+        # wake-up's caller nothing was claimed.
+        return None, OUTCOME_REJECTED_TARGET_MISMATCH, "target generation mismatch"
+
+    mine = compute_service_identity()
+    if mine is None or not _identity_matches(payload["service_identity"], mine):
+        with _best_effort():
+            if not _unlink_exclusive(newest):
+                return None, "", "claim lost to another consumer"
+            write_result(request_id, OUTCOME_REJECTED_INVALID, detail="service identity mismatch")
+        return None, OUTCOME_REJECTED_INVALID, "service identity mismatch"
+
+    identity_key = service_identity_key(mine)
+    blocking = cooldown_active_for(identity_key, now=now)
+    if blocking is not None and blocking.get("request_id") != request_id:
+        with _best_effort():
+            if not _unlink_exclusive(newest):
+                return None, "", "claim lost to another consumer"
+            write_result(request_id, OUTCOME_REJECTED_COOLDOWN,
+                         detail=f'cooldown window active until +{COOLDOWN_WINDOW_S:.0f}s',
+                         service_key=identity_key)
+        return None, OUTCOME_REJECTED_COOLDOWN, "cooldown active"
+
+    # Claim: only the consumer that removes the file may schedule (review item 5).
+    if not _unlink_exclusive(newest):
+        return None, "", "claim lost to another consumer"
+    with _best_effort():
+        _atomic_write_json(_claim_path(request_id), {
+            "schema_version": PROTOCOL_SCHEMA_VERSION,
+            "request_id": request_id,
+            "generation": me if (me := process_generation()) else None,
+            "claimed_at": now,
+            "service_key": identity_key,
+        })
+    return payload, OUTCOME_ACCEPTED, ""
+
+
+# ---------------------------------------------------------------------------
+# SIGUSR1 wake-up processing (the handler only dispatches this as a task;
+# no filesystem work happens inside the raw signal callback).
+# ---------------------------------------------------------------------------
+
+def process_sigusr1_request(schedule_restart, cancel_restart=None) -> None:
     """Handle one SIGUSR1 wake-up with deferred-request awareness (I3).
 
-    ``schedule_restart`` is the legacy scheduling callable (no args, returns
-    truthy when a NEW restart was scheduled). Behaviour:
+    ``schedule_restart()`` returns one of:
+      ``"scheduled"``       — a NEW drain-first restart was scheduled (I1 writes
+                              the acceptance only now);
+      ``"already"``         — a restart was already scheduled (explicit
+                              ``superseded`` outcome, still success for the CLI);
+      ``"stopping"``        — the gateway is stopping WITHOUT a restart path:
+                              explicit ``rejected_stopping`` outcome, never a
+                              fake success.
+    ``cancel_restart`` (optional) is invoked when the acceptance cannot be
+    persisted after retries: a controlled exit must never run without a
+    persisted decision (I1), so the scheduled restart is cancelled instead.
 
-    - No pending deferred request → legacy path: call ``schedule_restart()``
-      exactly as the pre-deferred handler did.
-    - Pending request valid for this generation → claim, then schedule; persist
-      ACCEPTED only when the schedule actually succeeded (linearization point),
-      before this generation can exit; otherwise persist SUPERSEDED (the restart
-      is already scheduled — an explicit outcome, never a silent drop).
+    Behaviour:
+    - No pending deferred request AND protocol traffic never seen this
+      generation → legacy path: schedule exactly as the pre-deferred handler.
+    - Pending request valid for this generation → claim, then schedule, then
+      persist ACCEPTED; unknown/failed listing or a second wake after the
+      traffic was consumed takes NO action (double-wake races cannot resurrect
+      a legacy restart — review item 1).
     - Pending request present but INVALID → persist the rejection and do NOT
       restart: an invalid request must never fall through to the legacy
       unconditional restart (attacker-dropped files must not cause restarts).
     """
+    global _deferred_engaged
+
     cleanup_expired()
-    if not list_pending_request_files():
+    pending = list_pending_request_files()
+    if pending is None:
+        logger.error(
+            "SIGUSR1: cannot list deferred restart requests — refusing both the "
+            "deferred path and the legacy restart (invariant I3, fail-closed)")
+        return
+    if not pending:
+        if _deferred_engaged:
+            logger.info(
+                "SIGUSR1: deferred restart protocol traffic was consumed earlier "
+                "this generation — no legacy restart fallback (invariant I3)")
+            return
         # Legacy compatibility: plain SIGUSR1 restart behaviour, unchanged.
         schedule_restart()
         return
 
-    payload, outcome, detail = consume_pending_request()
-    if payload is None:
-        logger.warning(
-            "SIGUSR1: deferred restart request not claimed (outcome=%s detail=%s) — "
-            "no legacy restart fallback (invariant I3)", outcome, detail)
-        return
+    _deferred_engaged = True
 
-    request_id = payload["request_id"]
-    if outcome == OUTCOME_DUPLICATE:
-        # Replay of an already-ACCEPTED request: the original decision stands (I2)
-        # — nothing to schedule and the original result is left untouched.
-        logger.info("SIGUSR1: deferred restart %s is a duplicate of an accepted request", request_id)
-        return
-    if outcome != OUTCOME_ACCEPTED:
-        # Replay of an already-decided (rejected) request: repeat that decision.
-        with _best_effort():
-            write_result(request_id, outcome, detail=f"replay: {detail}")
-        return
+    # Decide on EVERY pending request (one wake must not leave other CLIs
+    # without their explicit outcomes): the first claimable one schedules, the
+    # rest get explicit cooldown/superseded/replay outcomes from their own runs.
+    while True:
+        payload, outcome, detail = consume_pending_request()
+        if payload is None and outcome == "":
+            return  # listing vanished mid-loop, or claim lost: no action (I3)
+        if payload is None:
+            logger.warning(
+                "SIGUSR1: deferred restart request not claimed (outcome=%s detail=%s) — "
+                "no legacy restart fallback (invariant I3)", outcome, detail)
+            if outcome == OUTCOME_REJECTED_TARGET_MISMATCH:
+                return  # addressed elsewhere: leave the rest alone
+            continue
 
-    scheduled = False
-    try:
-        scheduled = bool(schedule_restart())
-    except Exception as exc:
-        logger.warning("defer-restart: scheduling failed after claim: %s", exc)
-    if scheduled:
-        with _best_effort():
-            record_cooldown(service_identity_key(payload["service_identity"]), request_id)
-            write_result(request_id, OUTCOME_ACCEPTED,
-                         generation=payload.get("target_generation"))
-    else:
-        with _best_effort():
-            write_result(request_id, OUTCOME_SUPERSEDED,
-                         detail="restart already scheduled for this gateway")
+        request_id = payload["request_id"]
+        if outcome == OUTCOME_DUPLICATE:
+            # Replay of an already-ACCEPTED request: the original decision stands
+            # (I2) — nothing to schedule and the original result is untouched.
+            logger.info("SIGUSR1: deferred restart %s duplicates an accepted request", request_id)
+            continue
+        if outcome != OUTCOME_ACCEPTED:
+            # Replay of an already-decided (rejected) request: repeat that decision
+            # without overwriting it (write_result refuses overwrites anyway).
+            continue
+
+        scheduled = "already"
+        try:
+            scheduled = schedule_restart()
+        except Exception as exc:
+            logger.warning("defer-restart: scheduling failed after claim: %s", exc)
+            scheduled = "stopping"
+        key = service_identity_key(payload["service_identity"])
+        if scheduled == "scheduled":
+            # Linearization point (I1): acceptance is recorded only for a restart
+            # that actually got scheduled — and must persist before this
+            # generation can exit, else the restart is cancelled.
+            if not write_result_with_retry(request_id, OUTCOME_ACCEPTED,
+                                           generation=payload.get("target_generation"),
+                                           service_key=key):
+                logger.critical(
+                    "defer-restart: could not persist acceptance for %s — cancelling "
+                    "the scheduled restart (no exit without a decision, invariant I1)",
+                    request_id)
+                if cancel_restart is not None:
+                    with _best_effort():
+                        cancel_restart()
+                continue
+            with _best_effort():
+                record_cooldown(key, request_id)
+        elif scheduled == "already":
+            with _best_effort():
+                write_result(request_id, OUTCOME_SUPERSEDED,
+                             detail="restart already scheduled for this gateway",
+                             service_key=key)
+        else:  # "stopping" or unexpected value
+            with _best_effort():
+                write_result(request_id, OUTCOME_REJECTED_STOPPING,
+                             detail="gateway is stopping without a scheduled restart",
+                             service_key=key)
 
 
 # ---------------------------------------------------------------------------
-# Expiry cleanup — never deletes accepted/unknown audit evidence (spec).
+# Expiry cleanup — never overwrites an existing decision (I1) and never
+# deletes accepted/unknown audit evidence inside its retention window.
+# Consuming an expired pending request is protocol traffic: it engages the
+# I3 latch so a same-generation wake can never resurrect a legacy restart.
 # ---------------------------------------------------------------------------
 
 def cleanup_expired(*, now: Optional[float] = None) -> None:
+    global _deferred_engaged
     now = time.time() if now is None else now
     try:
         files = list(requests_dir().iterdir())
@@ -500,10 +711,14 @@ def cleanup_expired(*, now: Optional[float] = None) -> None:
             with _best_effort():
                 # Expired without a decision → persist an explicit EXPIRED outcome so
                 # the CLI of a crashed sender has something attributable to read.
+                # write_result never overwrites an earlier decision (I1).
                 if read_result(request_id) is None:
                     write_result(request_id, OUTCOME_EXPIRED, detail="pending request expired unconsumed")
                 _unlink_quiet(path)
+            _deferred_engaged = True
         elif name.startswith("result-") and now - mtime > RESULT_RETENTION_S:
+            _unlink_quiet(path)
+        elif name.startswith("claim-") and now - mtime > RESULT_RETENTION_S:
             _unlink_quiet(path)
         elif name == "cooldown.json" and now - mtime > RESULT_RETENTION_S:
             _unlink_quiet(path)

@@ -36284,6 +36284,18 @@
             ],
             "default": null,
             "title": "Last Seen"
+          },
+          "replay_epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replay Epoch"
           }
         },
         "required": [

@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   decideNvidiaEglFallback,
+  NVIDIA_EGL_REPROBE_INTERVAL_DAYS,
   NVIDIA_GPU_DEATH_REASONS,
   nvidiaEglFallbackMarker,
   nvidiaEglMarkerAfterSuccessfulBoot,
+  nvidiaEglReprobeIntervalMs,
   parseNvidiaDriverMajor,
   parseNvidiaDriverVersion,
   readNvidiaEglMarker,
@@ -118,6 +120,91 @@ describe('decideNvidiaEglFallback — behavioral probe', () => {
   })
 })
 
+// ─── bounded witness: a stale death re-probes (#124255) ──────────────────────
+//
+// A false or transient witness used to pin the host to the 4-9 core SwiftShader
+// path until the app, driver or build changed — unbounded on an install that
+// does not update (observed at 13 days on a host whose GPU probed clean). The
+// witness now ages: once it is older than the re-probe window the next launch
+// boots hardware GL once. A death re-arms the sticky marker through the existing
+// one-shot relaunch; a healthy GPU returns to hardware rendering.
+
+describe('decideNvidiaEglFallback — stale witness re-probe', () => {
+  const NOW = Date.parse('2026-10-02T12:00:00.000Z')
+  const WITNESS = (since: string) => nvidiaEglFallbackMarker('0.21.5', '580.178.04', since)
+
+  it('a fresh witness stays sticky', () => {
+    const marker = WITNESS('2026-10-01T12:00:00.000Z')
+    const decision = decideNvidiaEglFallback({ ...PROBE, marker, now: NOW })
+
+    expect(decision.enable).toBe(true)
+    expect(decision.nextMarker).toEqual(marker)
+  })
+
+  it('a witness older than the window re-probes hardware GL once', () => {
+    const decision = decideNvidiaEglFallback({ ...PROBE, marker: WITNESS('2026-09-24T11:59:59.000Z'), now: NOW })
+
+    expect(decision.enable).toBe(false)
+    expect(decision.reason).toContain('stale witness')
+    expect(decision.nextMarker.state).toBe('booting')
+  })
+
+  it('the window boundary: exactly the interval old re-probes', () => {
+    const decision = decideNvidiaEglFallback({ ...PROBE, marker: WITNESS('2026-09-25T12:00:00.000Z'), now: NOW })
+
+    expect(decision.enable).toBe(false)
+    expect(decision.reason).toContain('stale witness')
+  })
+
+  it('a marker with no witness time (older build) re-probes once', () => {
+    const decision = decideNvidiaEglFallback({
+      ...PROBE,
+      marker: { state: 'fallback', version: '0.21.5', driverVersion: '580.178.04' },
+      now: NOW
+    })
+
+    expect(decision.enable).toBe(false)
+    expect(decision.reason).toContain('no recorded witness time')
+    expect(decision.nextMarker.state).toBe('booting')
+  })
+
+  it('a garbage witness time re-probes once instead of pinning the host', () => {
+    const decision = decideNvidiaEglFallback({ ...PROBE, marker: WITNESS('not-a-date'), now: NOW })
+
+    expect(decision.enable).toBe(false)
+    expect(decision.nextMarker.state).toBe('booting')
+  })
+
+  it('a witness timestamp in the future (clock skew) stays sticky', () => {
+    const decision = decideNvidiaEglFallback({ ...PROBE, marker: WITNESS('2026-10-03T00:00:00.000Z'), now: NOW })
+
+    expect(decision.enable).toBe(true)
+  })
+
+  it('HERMES_DESKTOP_NVIDIA_SWIFTSHADER_REPROBE_DAYS=0 keeps the old sticky-forever behaviour', () => {
+    const marker = WITNESS('2026-01-01T00:00:00.000Z')
+
+    const decision = decideNvidiaEglFallback({
+      ...PROBE,
+      env: { HERMES_DESKTOP_NVIDIA_SWIFTSHADER_REPROBE_DAYS: '0' },
+      marker,
+      now: NOW
+    })
+
+    expect(decision.enable).toBe(true)
+    expect(decision.nextMarker).toEqual(marker)
+  })
+
+  it('the window is configurable and reported by the helper', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000
+
+    expect(nvidiaEglReprobeIntervalMs({})).toBe(NVIDIA_EGL_REPROBE_INTERVAL_DAYS * DAY_MS)
+    expect(nvidiaEglReprobeIntervalMs({ HERMES_DESKTOP_NVIDIA_SWIFTSHADER_REPROBE_DAYS: '2' })).toBe(2 * DAY_MS)
+    expect(nvidiaEglReprobeIntervalMs({ HERMES_DESKTOP_NVIDIA_SWIFTSHADER_REPROBE_DAYS: '0' })).toBeNull()
+    expect(nvidiaEglReprobeIntervalMs({ HERMES_DESKTOP_NVIDIA_SWIFTSHADER_REPROBE_DAYS: '-1' })).toBeNull()
+  })
+})
+
 // ─── the same standing exclusions as before ────────────────────────────────
 
 describe('decideNvidiaEglFallback — exclusions', () => {
@@ -207,6 +294,14 @@ describe('marker persistence', () => {
     expect(readNvidiaEglMarker(dir)).toEqual(marker)
   })
 
+  it('the witness time survives a write/read cycle', () => {
+    const dir = tmpUserData()
+
+    writeNvidiaEglMarker(dir, nvidiaEglFallbackMarker('0.21.5', '580.178.04', '2026-09-01T00:00:00.000Z'))
+
+    expect(readNvidiaEglMarker(dir)?.since).toBe('2026-09-01T00:00:00.000Z')
+  })
+
   it('returns null for a missing or garbage marker', () => {
     const dir = tmpUserData()
 
@@ -214,15 +309,18 @@ describe('marker persistence', () => {
     expect(readNvidiaEglMarker(dir, { readFileSync: () => 'not json' as never })).toBeNull()
   })
 
-  it('a healthy boot marks ok; a fallback boot keeps the sticky marker', () => {
+  it('a healthy boot marks ok; a fallback boot keeps the sticky marker and its witness time', () => {
     expect(nvidiaEglMarkerAfterSuccessfulBoot({ fallbackActive: false })).toEqual({ state: 'ok' })
+
+    const since = '2026-10-01T00:00:00.000Z'
 
     expect(
       nvidiaEglMarkerAfterSuccessfulBoot({
         fallbackActive: true,
         appVersion: '0.21.5',
-        driverVersion: '580.178.04'
+        driverVersion: '580.178.04',
+        since
       })
-    ).toEqual(nvidiaEglFallbackMarker('0.21.5', '580.178.04'))
+    ).toEqual(nvidiaEglFallbackMarker('0.21.5', '580.178.04', since))
   })
 })

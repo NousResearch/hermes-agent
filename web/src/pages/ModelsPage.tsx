@@ -214,6 +214,8 @@ function UseAsMenu({
     message: string;
     scope: "main" | "auxiliary";
     task: string;
+    /** Guard title from /api/model/set: "Data-Training Tier Warning" is not a pricing warning. */
+    title?: string;
   } | null>(null);
 
   const assign = async (
@@ -239,6 +241,7 @@ function UseAsMenu({
         setPendingConfirm({
           scope,
           task,
+          title: result.confirm_title,
           message:
             result.confirm_message ||
             "This model has unusually high known pricing.",
@@ -335,7 +338,7 @@ function UseAsMenu({
       )}
       <ConfirmDialog
         open={!!pendingConfirm}
-        title="Expensive Model Warning"
+        title={pendingConfirm?.title || "Expensive Model Warning"}
         description={pendingConfirm?.message}
         destructive
         confirmLabel="Switch anyway"

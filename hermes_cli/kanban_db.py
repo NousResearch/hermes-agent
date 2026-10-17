@@ -264,6 +264,11 @@ def _fire_dispatch_tick_hook(
         outcome = "ok"
         if result.skipped_locked:
             outcome = "skipped_locked"
+        elif getattr(result, "tick_yielded", ""):
+            # A refused tick is its own outcome -- never "idle" (which reads as a healthy quiet
+            # loop). Ruling t_8fed34c8: a yielding ticker must be distinguishable from a healthy
+            # one at every status surface, this observer included.
+            outcome = "yielded_tree_skew"
         elif not any(getattr(result, f) for f in _TICK_ACTIVITY_FIELDS):
             outcome = "idle"
         invoke_hook(

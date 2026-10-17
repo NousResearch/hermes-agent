@@ -15,6 +15,10 @@ def _failure(answer):
     return "host control socket did not answer"
 
 
+def _still_served(answer, name):
+    return isinstance(answer, dict) and name in answer.get("served_profiles", ())
+
+
 def host_scope_for_all_verb(owner):
     """Home a ``--all`` verb acts as: the live host owner's, else the default root.
 
@@ -72,15 +76,19 @@ def profile_lifecycle(command: str, args) -> bool:
         return False
     host_home = owner.home if owner is not None else get_default_hermes_root()
     if command == "stop":
-        # Persist intent BEFORE teardown: the periodic rescan must not re-add this profile.
-        marker.touch()
-        answer = request_unserve_profile(host_home, name)
+        answer = request_unserve_profile(host_home, name, park=True)
         if _confirmed(answer, "unserved", name):
+            # Older hosts ignore ``park``; preserve their compatible success path.
+            marker.touch()
             print(f"Profile '{name}' parked; its bots and cron are stopped. "
                   f"Start again with: hermes -p {name} gateway start")
-        else:
+        elif answer is None or not _still_served(answer, name):
+            marker.touch()
             print(f"Profile '{name}' parked, but immediate stop was not confirmed: {_failure(answer)}.")
             print("The host drops it on its next rescan (within 30s).")
+        else:
+            print(f"Profile '{name}' stop was not confirmed: {_failure(answer)}.")
+            print("The profile remains served; check gateway status and retry.")
         return True
 
     answer = request_unserve_profile(host_home, name)

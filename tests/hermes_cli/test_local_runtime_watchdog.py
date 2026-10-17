@@ -75,12 +75,12 @@ def test_boot_force_controls_disabled_restarts(crashing, monkeypatch, tmp_path, 
     monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
     monkeypatch.setattr(bootstrap, "runtimes_root", lambda: tmp_path)
     monkeypatch.setattr(bootstrap, "models_dir", lambda: tmp_path / "models")
-    monkeypatch.setattr(bootstrap, "adopt_legacy_models", lambda: [])
+    monkeypatch.setattr(bootstrap, "adopt_legacy_models", list)
     monkeypatch.setattr(bootstrap, "staged_models", lambda: [tmp_path / "model.gguf"])
     monkeypatch.setattr(endpoint, "_state_endpoint", lambda: None)
     monkeypatch.setattr(binaries, "installed_engine", lambda *_: SimpleNamespace(
         binary=tmp_path / "llama-server", backend="cpu", tag="test"))
-    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *_: None)
+    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *_, **__: None)
     monkeypatch.setattr(bootstrap, "_admitted_models_max", lambda *_: 4)
     monkeypatch.setattr(bootstrap, "_start_idle_sweeper", lambda *_: None)
     monkeypatch.setattr(supervisor.LlamaServerSupervisor, "start", lambda *_: None)
@@ -132,8 +132,8 @@ def test_start_replaces_a_supervisor_whose_watchdog_gave_up(monkeypatch):
     stopped = []
     monkeypatch.setattr(bootstrap, "_SUPERVISOR",
                         SimpleNamespace(watching=lambda: False, stop=lambda: stopped.append(True)))
-    monkeypatch.setattr(bootstrap, "adopt_legacy_models", lambda: [])
-    monkeypatch.setattr(bootstrap, "staged_models", lambda: [])  # end the fresh boot early
+    monkeypatch.setattr(bootstrap, "adopt_legacy_models", list)
+    monkeypatch.setattr(bootstrap, "staged_models", list)  # end the fresh boot early
     assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}}) is None
     assert stopped == [True]
     assert bootstrap._SUPERVISOR is None

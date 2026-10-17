@@ -230,12 +230,15 @@ class LlamaServerSupervisor:
         self._write_state()
 
     def start(self, timeout_s: int = 120) -> None:
+        from agent.memory_provider import spawn_context_thread
+
         with self._lifecycle_lock:
             self._stopping = False
             self._stop_event.clear()
             self._spawn()
         self._wait_health(timeout_s)
-        self._watchdog = threading.Thread(target=self._watch, daemon=True, name="llamacpp-supervisor")
+        # The runtime may have booted from a named profile in a multiplexed process.
+        self._watchdog = spawn_context_thread(self._watch, name="llamacpp-supervisor")
         self._watchdog.start()
 
     def _write_state(self) -> None:
@@ -307,6 +310,11 @@ class LlamaServerSupervisor:
             if self._stopping:
                 return
             if self._restarts >= _MAX_RESTARTS:
+                with self._lifecycle_lock:
+                    if self._stopping:
+                        return
+                    # The final crashed router can leave model children holding VRAM too.
+                    self._reap_orphaned_children()
                 logger.error("llama-server exited rc=%s; giving up after %s restarts (log: %s)",
                              rc, self._restarts, self.log_path)
                 return

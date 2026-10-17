@@ -46,6 +46,35 @@ def _get(params: dict) -> dict:
 class TestConfigSetFastSessionScope:
     """Session-targeted fast changes must never touch global config."""
 
+    def test_isolated_session_validates_its_live_model_not_the_profile_default(self, tmp_path, monkeypatch) -> None:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model:\n  default: claude-sonnet-4-6\n  provider: anthropic\n", encoding="utf-8")
+        monkeypatch.setattr(server, "_active_config_path", lambda: config_path)
+        session = {
+            "session_key": "isolated", "agent": None, "_compute_host_active": True,
+            "_metadata_mirror": {"model": "gpt-6.1-sol", "provider": "openai-codex", "service_tier": ""},
+        }
+        with patch.dict(server._sessions, {"isolated": session}), \
+                patch.object(server, "_write_config_key") as write_key:
+            response = _set({"key": "fast", "session_id": "isolated", "value": "on"})
+            assert response.get("result", {}).get("value") == "fast", response
+            assert session["create_service_tier_override"] == "priority"
+            assert _get({"key": "fast", "session_id": "isolated"})["result"]["value"] == "fast"
+            assert server._session_info(None, session)["fast"] is True
+            response = _set({"key": "fast", "session_id": "isolated", "value": "toggle"})
+            assert response["result"]["value"] == "normal"
+            assert session["create_service_tier_override"] == ""
+            session["_metadata_mirror"]["service_tier"] = "priority"
+            assert server._session_info(None, session)["fast"] is False
+            session.pop("create_service_tier_override")
+            assert _get({"key": "fast", "session_id": "isolated"})["result"]["value"] == "fast"
+            assert _set({"key": "fast", "session_id": "isolated", "value": "status"})["result"]["value"] == "fast"
+            session["_metadata_mirror"]["provider"] = "openrouter"
+            response = _set({"key": "fast", "session_id": "isolated", "value": "on"})
+            assert response["error"]["code"] == 4002
+            assert "create_service_tier_override" not in session
+        write_key.assert_not_called()
+
     def test_session_scoped_fast_skips_global_write(self) -> None:
         agent = _agent()
         session = {"session_key": "k1", "agent": agent}

@@ -49,6 +49,10 @@ def _refused_check(exc):
     return f'{cause}{where}{chained}'
 
 
+class _ReceiptRefused(RuntimeStoreError):
+    """A refused receipt ``restore_local_session`` already logged with its failing check."""
+
+
 def _with_untracked_compression(authority, sid, receipt):
     """*receipt*, after recording compression steps an older build published past its tip (#140060)."""
     from hermes_state_local_lineage import adopt_untracked_compression, untracked_compression_tip
@@ -107,8 +111,8 @@ def restore_local_session(authority, sid):
         # The client only sees the bounded code: gateway.log names the check that refused (#140099).
         logging.getLogger(__name__).warning('Local session %s receipt refused: %s', sid, _refused_check(exc))
         if isinstance(exc, RuntimeStoreError):
-            raise
-        raise RuntimeStoreError('storage_unavailable') from exc
+            raise _ReceiptRefused(exc.reason, field=exc.field, detail=exc.detail) from exc
+        raise _ReceiptRefused('storage_unavailable') from exc
     adapters = local_adapter_map(authority)
     adapter = adapters.get(Platform.LOCAL)
     if adapter is None:
@@ -213,5 +217,7 @@ def recover_local_sessions(authority, *, schedule=False):
             pending = list_session_admissions(authority.db, session_id=sid)
             if schedule and pending and not any(row['status'] == 'unknown' for row in pending):
                 authority._schedule(ref)
+        except _ReceiptRefused:
+            continue  # restore_local_session logged the check that refused it
         except RuntimeStoreError as exc:
             logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)

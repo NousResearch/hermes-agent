@@ -649,7 +649,7 @@ class GatewayAgentCacheMixin:
         member/speaking churn can't touch the prompt."""
         if source.platform != Platform.DISCORD:
             return None
-        adapter = self.adapters.get(Platform.DISCORD)
+        adapter = self._delivery_adapter_for(source)
         guild_id = self._get_guild_id(event)
         if not (guild_id and adapter and hasattr(adapter, "get_voice_channel_context")):
             return None

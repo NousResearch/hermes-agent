@@ -69,8 +69,8 @@ vi.mock('./group-panes', () => ({ closeGroupChatMainTab: vi.fn() }))
 
 /** A bot whose canonical Bot Chat carries the activity — the only shape that
  *  can be marked unread, since the marker is keyed by canonical session id. */
-const chatting = (name: string, lastActive: number, preview = 'hello'): RosterRow =>
-  ({ canonical_session: { id: `${name}-chat`, last_active: lastActive, preview }, name }) as RosterRow
+const chatting = (name: string, lastActive: number, preview = 'hello', previewRole?: string): RosterRow =>
+  ({ canonical_session: { id: `${name}-chat`, last_active: lastActive, preview, preview_role: previewRole }, name }) as RosterRow
 
 async function loadActions() {
   vi.resetModules()
@@ -121,6 +121,17 @@ describe('new activity after the seed', () => {
 
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
     expect(hostMock.notify.mock.calls[0][0]).toMatchObject({ kind: 'info', message: 'a plain update' })
+  })
+
+  it('never toasts the user’s external send but still marks it unread', async () => {
+    const { $activityToasts, trackInboundActivity } = await loadActions()
+
+    $activityToasts.set(true)
+    trackInboundActivity([chatting('researcher', 5000)])
+    trackInboundActivity([chatting('researcher', 6000, 'my own message', 'user')])
+
+    expect(markUnreadMock).toHaveBeenCalledWith('researcher-chat', 'researcher')
+    expect(hostMock.notify).not.toHaveBeenCalled()
   })
 
   it('titles a bot-to-bot delivery differently from ordinary activity', async () => {

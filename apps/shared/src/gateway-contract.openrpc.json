@@ -28696,6 +28696,22 @@
             "title": "Preview",
             "type": "string"
           },
+          "preview_role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "user",
+                  "assistant"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview Role"
+          },
           "started_at": {
             "anyOf": [
               {

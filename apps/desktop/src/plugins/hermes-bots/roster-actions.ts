@@ -108,6 +108,13 @@ export function trackInboundActivity(roster: RosterRow[]) {
     // per-message notification fires only when the user enabled it.
     const preview = (activity?.preview || '').trim()
 
+    // Older gateways omit the role, so preserve their existing activity
+    // signal. A current gateway can prove this was the user's own external
+    // send; retain its unread mark but never present it as bot activity.
+    if (activity?.preview_role === 'user') {
+      continue
+    }
+
     // Content-level dedup, tracked independently of the toast pref so the
     // memory stays accurate whether or not toasts are on: skip re-surfacing an
     // identical preview a busy bridge keeps re-pinging (last_active advances

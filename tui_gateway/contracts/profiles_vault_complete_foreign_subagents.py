@@ -142,6 +142,7 @@ class ProfileCanonicalSession(Result):
     root_title: str = ""
     title: str = ""
     preview: str = ""
+    preview_role: Literal["user", "assistant"] | None = None
     started_at: float | int = 0
     last_active: float | int = 0
     message_count: int = 0

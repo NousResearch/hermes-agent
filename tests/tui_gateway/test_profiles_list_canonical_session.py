@@ -116,6 +116,7 @@ def test_canonical_session_is_the_bot_chat_row_not_latest(home):
     assert canonical["root_title"] == "Bot Chat"
     assert canonical["title"] == "Bot Chat"
     assert "forever chat content" in canonical["preview"]
+    assert canonical["preview_role"] == "user"
     # last_session keeps its own contract: the most recently active session.
     assert row["last_session"]["id"] == "other1"
 

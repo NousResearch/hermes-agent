@@ -2045,6 +2045,7 @@ export interface ProfileCanonicalSession {
   root_title?: string
   title?: string
   preview?: string
+  preview_role?: 'user' | 'assistant' | null
   started_at?: number
   last_active?: number
   message_count?: number

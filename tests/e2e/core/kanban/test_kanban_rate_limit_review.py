@@ -29,7 +29,6 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.kanban._helpers import Board
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, ToolCall
 
@@ -46,18 +45,6 @@ REVIEW_SKILL = "sdlc-review"
 REVIEW_MARK = "E2E_REVIEW_LANE_SKILL_5d21c9"
 RATE_LIMIT_EXIT_CODE = 75  # KANBAN_RATE_LIMIT_EXIT_CODE — documented worker exit contract
 MAX_TICKS = 6  # a healthy rate-limited card is done on tick 3; the rest prove "forever"
-
-# Scenario -> (pattern, reason) for ``known_gate``; it only matches ``ReviewerNeverSpawned``.
-KNOWN: dict[str, tuple[str, str]] = {
-    "rate_limited_then_review": (
-        r"reviewer attempts=0, respawn_guarded=\[[^\]]*'blocker_auth'",
-        "#119070 stale rate-limit stamp parks the review handoff as blocker_auth"),
-}
-
-
-class ReviewerNeverSpawned(AssertionError):
-    """The card reached ``review`` but the review lane never started a reviewer (#119070); the only
-    type ``known_gate`` accepts here."""
 
 
 # fake provider -----------------------------------------------------------------------------------
@@ -238,11 +225,9 @@ def test_rate_limited_then_review_handoff_reaches_the_reviewer(rate_limited_flow
     assert f.run_outcomes()[:2] == ["rate_limited", "review_requested"], diag
     reviewers = f.model.by_role("review")
     guarded = [g for t in f.ticks for g in t["guarded"]]
-    with known_gate(KNOWN, scenario, raises=ReviewerNeverSpawned):
-        if not reviewers or b.task(tid)["status"] != "done":
-            raise ReviewerNeverSpawned(
-                f"{scenario}: status={b.task(tid)['status']} after {len(f.ticks)} ticks, "
-                f"reviewer attempts={len(reviewers)}, respawn_guarded={guarded}\n{diag}")
+    assert reviewers and b.task(tid)["status"] == "done", (
+        f"{scenario}: status={b.task(tid)['status']} after {len(f.ticks)} ticks, "
+        f"reviewer attempts={len(reviewers)}, respawn_guarded={guarded}\n{diag}")
     # Once fixed, the whole contract must hold, not just "something spawned".
     assert f.run_outcomes() == ["rate_limited", "review_requested", "completed"], diag
     # The reviewer starts on the tick right after the handoff (cooldown 0), billed one tool turn.

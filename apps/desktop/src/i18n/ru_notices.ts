@@ -20,6 +20,10 @@ export const ruNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'Этот сервер не смог подтвердить предыдущую отправку этого сообщения, поэтому оно, возможно, уже выполнено. Проверьте беседу, прежде чем отправлять его снова.',
+    mcpReloadDeferred:
+      'Чат занят: изменение MCP применится, когда завершится текущий ход и MCP будет перезагружен снова, или при повторном открытии чата',
+    mcpReloadNotInChat: server => `${server} не включён в этом чате`,
+    mcpReloadUnavailable: servers => `Не удалось подключиться: ${servers}`,
     sessionCommands: ruSessionCommands
   },
   keepAwakeOffer: {

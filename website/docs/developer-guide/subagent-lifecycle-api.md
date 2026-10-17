@@ -51,8 +51,16 @@ The stable states are `PENDING`, `STARTING`, `RUNNING`, `SUCCEEDED`, `FAILED`,
 `cancel(handle, reason=...)` is cooperative: it asks the child agent to
 interrupt at its next safe boundary and returns `CANCEL_REQUESTED`; it never
 claims completion until `wait` or `result` observes a terminal state. Terminal
-results are immutable, idempotent, bounded to 32k characters, omit transcripts
+results are immutable, idempotent, omit transcripts
 and hidden reasoning, and include a stable result hash.
+
+Summary budgeting is owned entirely by native finalization
+(`delegation.max_summary_chars` plus dynamic parent headroom): a summary within
+that budget reaches the result unmodified, and an over-budget summary is
+trimmed natively, with the recovery footer preserved at the end of the text and
+`summary_truncated` / `summary_full_path` set so consumers can recover the full
+output. The lifecycle adds no second summary cap of its own; `error_message`
+remains bounded to 32k characters.
 
 This API is lifecycle-managed asynchronous execution. Child construction and
 completion use the same host-owned path as `delegate_task`, including parent

@@ -347,6 +347,67 @@ def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
         narrow.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))
 
 
+def _lifecycle_with_summary(monkeypatch, summary, ceiling):
+    """Lifecycle service whose child returns ``summary``; the native static summary ceiling is ``ceiling``."""
+    parent = SimpleNamespace(session_id="parent-summary", enabled_toolsets=["file"])
+    child = FakeChild("sa-summary")
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
+    monkeypatch.setattr(
+        "tools.delegate_tool._run_single_child",
+        lambda *_args, **_kwargs: {
+            "task_index": 0,
+            "status": "completed",
+            "summary": summary,
+            "api_calls": 1,
+            "duration_seconds": 0.01,
+        },
+    )
+    monkeypatch.setattr("tools.delegate_tool._load_config", lambda: {"max_summary_chars": ceiling})
+    return SubagentLifecycleService(lambda: parent)
+
+
+def test_native_sized_summary_is_not_clipped_again(monkeypatch):
+    """Native finalization already owns the summary budget: a summary under the native ceiling but over the
+    lifecycle's legacy 32k clip must reach the result intact (second clip silently halves uncapped answers)."""
+    full_summary = "s" * 40_000
+    service = _lifecycle_with_summary(monkeypatch, full_summary, ceiling=60_000)
+    handle = service.launch(SubagentLaunchRequest(goal="long answer"))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    result = service.result(handle)
+    assert result.summary == full_summary
+
+
+def test_spill_metadata_and_footer_reach_lifecycle_result(monkeypatch):
+    """When native trimming spills an over-budget summary, the recovery footer and the structured
+    summary_truncated/summary_full_path fields must survive to the lifecycle result so consumers can
+    recover the full text; the legacy 32k clip cuts the footer off the end of the finalized summary."""
+    full_summary = "body line\n" * 9_000  # 90_000 chars, over the 40_000 native ceiling
+    service = _lifecycle_with_summary(monkeypatch, full_summary, ceiling=40_000)
+    handle = service.launch(SubagentLaunchRequest(goal="spill me"))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    result = service.result(handle)
+    assert result.summary_truncated is True
+    assert isinstance(result.summary_full_path, str) and result.summary_full_path
+    # Footer presence is proven structurally (full path embedded at the end of the
+    # summary); pinning the English display sentence would make a UI string a contract.
+    assert result.summary_full_path in result.summary
+
+
+def test_no_lifecycle_clip_when_native_budget_disabled(monkeypatch):
+    """With the native budget disabled (max_summary_chars=0, no parent headroom), the summary must
+    reach the result in full: the lifecycle adds no second cap, so this branch is the only guard
+    between the user and silently-truncated output."""
+    full_summary = "u" * 90_000
+    service = _lifecycle_with_summary(monkeypatch, full_summary, ceiling=0)
+    handle = service.launch(SubagentLaunchRequest(goal="uncapped"))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    result = service.result(handle)
+    assert result.summary == full_summary
+    assert result.summary_truncated is False
+    assert result.summary_full_path is None
+
+
 def test_provider_is_plugin_facing_only():
     """``provider`` lives on the plugin request; no model-facing delegate_task field can carry a route."""
     import dataclasses

@@ -11,6 +11,7 @@ import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { deProjects } from './de_projects'
+import { deSettingsNav, deSettingsPage } from './de_settings_nav'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
@@ -748,25 +749,8 @@ export const deOverrides = {
       pageCount: (n: number) => (n === 1 ? '1 Seite' : `${n} Seiten`),
       missing: 'Dieses Plugin hat keine Einstellungsseite. Es ist eventuell deaktiviert oder deinstalliert.'
     },
-    nav: {
-      providers: 'Anbieter',
-      providerAccounts: 'Konten',
-      providerApiKeys: 'API-Schlüssel',
-      providerCustomEndpoints: 'Benutzerdefinierte Endpunkte',
-      providerLocalModels: 'Lokale Modelle',
-      gateway: 'Gateways',
-      apiKeys: 'Tools & Schlüssel',
-      keybinds: 'Tastaturkürzel',
-      keysTools: 'Tools',
-      keysSettings: 'Einstellungen',
-      mcp: 'MCP',
-      archivedChats: 'Archivierte Chats',
-      sessions: 'Sessions',
-      about: 'Über',
-      billing: 'Abrechnung',
-      notifications: 'Benachrichtigungen',
-      vault: 'Passwörter & Logins'
-    },
+    nav: deSettingsNav,
+    page: deSettingsPage,
     plugins: {
       title: 'Desktop-Plugins',
       openFolder: 'Ordner für Desktop-Plugins öffnen',

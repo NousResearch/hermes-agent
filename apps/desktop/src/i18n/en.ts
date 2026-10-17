@@ -14,6 +14,7 @@ import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
+import { enSettingsNav, enSettingsPage } from './en_settings_nav'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
@@ -745,26 +746,8 @@ export const en: Translations = {
       pageCount: (n: number) => (n === 1 ? '1 page' : `${n} pages`),
       missing: 'That plugin has no settings page. It may be disabled or uninstalled.'
     },
-    nav: {
-      providers: 'Providers',
-      providerAccounts: 'Accounts',
-      providerApiKeys: 'API keys',
-      providerCustomEndpoints: 'Custom Endpoints',
-      providerLocalModels: 'Local Models',
-      gateway: 'Gateways',
-      apiKeys: 'Tools & Keys',
-      keybinds: 'Keyboard Shortcuts',
-      keysTools: 'Tools',
-      keysSettings: 'Settings',
-      mcp: 'MCP',
-      archivedChats: 'Archived Chats',
-      sessions: 'Sessions',
-      about: 'About',
-      billing: 'Billing',
-      notifications: 'Notifications',
-      vault: 'Passwords & Logins',
-      plugins: 'Plugins'
-    },
+    nav: enSettingsNav,
+    page: enSettingsPage,
     plugins: {
       title: 'Desktop plugins',
       openFolder: 'Open Desktop plugins folder',

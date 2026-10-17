@@ -13,6 +13,7 @@ import { jaNotices } from './ja_notices'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
+import { jaSettingsNav, jaSettingsPage } from './ja_settings_nav'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
@@ -334,26 +335,8 @@ export const jaOverrides = {
     exportFailed: '書き出しに失敗しました',
     resetFailed: 'リセットに失敗しました',
     pluginPages: jaPluginSettings.pluginPages,
-    nav: {
-      providers: 'プロバイダー',
-      providerAccounts: 'アカウント',
-      providerApiKeys: 'API キー',
-      providerCustomEndpoints: 'カスタムエンドポイント',
-      providerLocalModels: 'ローカルモデル',
-      gateway: 'ゲートウェイ',
-      apiKeys: 'ツールとキー',
-      keybinds: 'キーボードショートカット',
-      keysTools: 'ツール',
-      keysSettings: '設定',
-      mcp: 'MCP',
-      archivedChats: 'アーカイブ済みチャット',
-      sessions: 'セッション',
-      about: '情報',
-      billing: '請求',
-      notifications: '通知',
-      vault: 'パスワードとログイン',
-      plugins: 'プラグイン'
-    },
+    nav: jaSettingsNav,
+    page: jaSettingsPage,
     vault: {
       title: 'パスワードとログイン',
       blurb:

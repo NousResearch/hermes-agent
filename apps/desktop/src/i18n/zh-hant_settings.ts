@@ -125,6 +125,13 @@ export const zhHantSettings = {
       vault: '密碼與登入',
       plugins: '外掛程式'
     },
+    page: {
+      back: '返回工作區',
+      agent: '代理',
+      connections: '連線',
+      app: '應用程式',
+      actions: '設定操作'
+    },
     vault: {
       title: '密碼與登入',
       blurb:

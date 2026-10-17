@@ -20,6 +20,7 @@ import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { SettingsNavTranslations, SettingsPageTranslations } from './types_settings_nav'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
@@ -604,26 +605,8 @@ export interface Translations extends NoticeTranslations {
     pluginPages: Record<'agentSettings' | 'blurb' | 'empty' | 'manage' | 'missing', string> & {
       pageCount: (n: number) => string
     }
-    nav: {
-      providers: string
-      providerAccounts: string
-      providerApiKeys: string
-      providerCustomEndpoints: string
-      providerLocalModels: string
-      gateway: string
-      apiKeys: string
-      keybinds: string
-      keysTools: string
-      keysSettings: string
-      mcp: string
-      archivedChats: string
-      sessions: string
-      about: string
-      billing: string
-      notifications: string
-      vault: string
-      plugins: string
-    }
+    nav: SettingsNavTranslations
+    page: SettingsPageTranslations
     plugins: {
       title: string
       openFolder: string

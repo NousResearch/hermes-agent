@@ -62,36 +62,33 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '}',
     '}',
     `$explicit=${explicit}`,
-    'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
+    'if($explicit){Assert-NoReparse $explicit $false}',
     // HERMES_HOME is only trusted when it names a directory on the REMOTE: a stale User-scope
     // value (older install.ps1 persisted one) or a client path leaked over SSH otherwise fails
     // assertSafeRemoteHome as "Unsafe remote Hermes home" (#118988).
     '$hermesHome=$env:HERMES_HOME',
     'if(-not $hermesHome -or -not (Test-Path -LiteralPath $hermesHome -PathType Container)){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
     'Assert-NoReparse $hermesHome $true',
-    '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',
-    '$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe")',
-    'Assert-NoReparse $candidate $true',
-    'Assert-NoReparse $candidatePython $true',
-    '$profileCandidate=[IO.Path]::Combine($HOME, "hermes-agent\\.venv\\Scripts\\hermes.exe")',
-    '$profileCandidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($profileCandidate), "python.exe")',
-    'Assert-NoReparse $profileCandidate $true',
-    'Assert-NoReparse $profileCandidatePython $true',
-    '$fallbackHomeCandidate=Join-Path $hermesHome "hermes-agent\\venv\\Scripts\\hermes.exe"',
-    '$fallbackProfileCandidate=Join-Path $HOME "hermes-agent\\.venv\\Scripts\\hermes.exe"',
+    '$launcherExeCandidate=Join-Path $hermesHome "bin\\hermes.exe"',
+    '$launcherCmdCandidate=Join-Path $hermesHome "bin\\hermes.cmd"',
+    'Assert-NoReparse $launcherExeCandidate $true',
+    'Assert-NoReparse $launcherCmdCandidate $true',
     '$candidates=@()',
     'if($explicit){$candidates+=$explicit}',
-    '$cmd=Get-Command hermes.exe -ErrorAction SilentlyContinue',
-    'if($cmd){Assert-NoReparse $cmd.Source $true;$cmdPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($cmd.Source), "python.exe");Assert-NoReparse $cmdPython $true;$candidates+=$cmd.Source}',
-    '$candidates+=$fallbackHomeCandidate',
-    '$candidates+=$fallbackProfileCandidate',
-    '$hermes=$null',
-    'foreach($candidate in $candidates){Assert-NoReparse $candidate $true;$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe");Assert-NoReparse $candidatePython $true;try{$item=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $item.PSIsContainer){$hermes=$item.FullName;break}}catch [Management.Automation.ItemNotFoundException]{continue}}',
+    // A PM install publishes bin\hermes.exe or bin\hermes.cmd; PATHEXT resolves a bare `hermes`
+    // to whichever exists first (an Application), so a .cmd launcher is found the same way.
+    '$cmd=@(Get-Command hermes -CommandType Application -ErrorAction SilentlyContinue)|Select-Object -First 1',
+    'if($cmd){Assert-NoReparse $cmd.Source $true;$candidates+=$cmd.Source}',
+    '$candidates+=$launcherExeCandidate',
+    '$candidates+=$launcherCmdCandidate',
+    // A published bin launcher need not ship a sibling python.exe, so a candidate is trusted only
+    // once it reports a runtime whose argv[0] is a real interpreter. A venv console script fails
+    // the same check and simply falls through; no special case is needed for it.
+    '$hermes=$null;$python=$null',
+    'foreach($candidate in $candidates){Assert-NoReparse $candidate $true;try{$item=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop}catch [Management.Automation.ItemNotFoundException]{continue}if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer){continue}try{$runtimeLines=@(& $item.FullName --print-runtime-command)}catch{continue}if($LASTEXITCODE -ne 0 -or $runtimeLines.Count -eq 0){continue}try{$runtimeCommand=$runtimeLines[-1]|ConvertFrom-Json}catch{continue}$candidatePython=[string]$runtimeCommand[0];if(-not $candidatePython){continue}try{Assert-NoReparse $candidatePython $false;$runtimeItem=Get-Item -LiteralPath $candidatePython -Force -ErrorAction Stop}catch{continue}if($runtimeItem.PSIsContainer){continue}$hermes=$item.FullName;$python=$runtimeItem.FullName;break}',
     'if(-not $hermes){throw "Hermes is not installed on the remote Windows host."}',
     'Assert-NoReparse $hermes $false',
     'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not an executable file."}',
-    '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
-    'Assert-NoReparse $python $false',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join('\r\n')
 
@@ -285,7 +282,9 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
 }
 
 function helperCommand(runtime, operation, args = []) {
-  const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation, ...args]
+  // Reach the runtime module through the launcher's --run-module: a bare `python -m` assumes a
+  // sibling python.exe that a bin launcher does not have.
+  const argv = [runtime.hermesPath, '--run-module', 'hermes_cli.windows_ssh_runtime', operation, ...args]
 
   const script = [
     '$ProgressPreference="SilentlyContinue"',
@@ -312,8 +311,8 @@ async function helper(ssh, runtime, operation, args = [], stdinData?) {
 }
 
 function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
-  const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', 'spawn']
-  const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
+  const argv = [runtime.hermesPath, '--run-module', 'hermes_cli.windows_ssh_runtime', 'spawn']
+  const helper = operation => [runtime.hermesPath, '--run-module', 'hermes_cli.windows_ssh_runtime', operation]
 
   const script = [
     '$ProgressPreference="SilentlyContinue"',
@@ -614,6 +613,15 @@ async function waitForWindowsSpawnCompletion(ssh, runtime, ownershipId, timeoutM
   throw error
 }
 
+/**
+ * The remote helper reports `launcher-ownership` once its process_state() recognises a backend the
+ * launcher started (`python -I -c …`). An older helper would judge that backend unowned and leave it
+ * running, so Connect and the connection Test both refuse it.
+ */
+function supportsLauncherOwnership(inspection): boolean {
+  return Array.isArray(inspection?.capabilities) && inspection.capabilities.includes('launcher-ownership')
+}
+
 async function connectWindowsRemote(deps) {
   const {
     ssh,
@@ -638,6 +646,17 @@ async function connectWindowsRemote(deps) {
 
   if (!inspection.supported) {
     const error: any = new Error('Update Hermes on the remote Windows host before connecting with Desktop SSH.')
+    error.kind = 'update-required'
+    throw error
+  }
+
+  // An older helper cannot own a launcher-started backend; refuse before uploading a token or
+  // starting anything on the box.
+  if (!supportsLauncherOwnership(inspection)) {
+    const error: any = new Error(
+      'Update Hermes on the remote Windows host before connecting with Desktop SSH: this launcher cannot own the backend it starts.'
+    )
+
     error.kind = 'update-required'
     throw error
   }
@@ -848,6 +867,7 @@ export {
   psLiteral,
   reusableWindowsLock,
   stripPowerShellNoise,
+  supportsLauncherOwnership,
   terminateOwnedWindowsDashboardForUpdate,
   validLock
 }

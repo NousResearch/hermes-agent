@@ -672,6 +672,7 @@ import {
   detectRemotePlatform,
   helper,
   probeWindowsRemote,
+  supportsLauncherOwnership,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
 import {
@@ -10521,7 +10522,8 @@ async function testDesktopConnectionConfig(input: any = {}) {
             hermesPath = runtime.hermesPath
             const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
             hermesVersion = inspection.version
-            supported = inspection.supported
+            // Same gate as Connect: an older helper is `supported` but cannot own a launcher backend.
+            supported = Boolean(inspection.supported) && supportsLauncherOwnership(inspection)
           } else {
             hermesPath = await remoteLifecycle.locateHermes(ssh, sshConfig.remoteHermesPath || '')
             hermesVersion = await remoteLifecycle.probeHermesVersion(ssh, hermesPath)

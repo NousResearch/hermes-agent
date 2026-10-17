@@ -321,20 +321,20 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
                 "actualCreationTimeNs": str(actual_creation), "expectedCreationTimeNs": str(creation_time_ns)}
     if not argv:
         return {"alive": True, "owned": False, "indeterminate": True, "reason": "argv-unavailable"}
+    # argv[0] is the hermes exe or (normally) the base Python, whose path varies by venv/uv layout.
+    # The launcher runs its runtime as `python -I -c <bootstrap> serve …`, so normalize a HERMES
+    # inline bootstrap to its `-m` equivalent (None for any other `-c` program) and accept only a
+    # `-m hermes_cli.main` entry point — a plain `-c` merely carrying the name is not identity.
+    from gateway.status_inline_source import inline_bootstrap_argv
+    normalized = inline_bootstrap_argv(argv) or argv
     expected = os.path.normcase(os.path.abspath(hermes_path))
     arg0 = os.path.normcase(os.path.abspath(argv[0]))
-    # argv[0] is the hermes exe or (normally) the base Python, whose path varies by venv/uv
-    # layout — so match "a python running our module" (`-c` bootstrap or plain `-m`). Identity
-    # is anchored by the unforgeable creation-time + secret owner-nonce below.
     is_python = os.path.basename(arg0).startswith("python")
-    launches_module = (
-        argv[1:3] == ["-m", "hermes_cli.main"]
-        or (len(argv) > 2 and argv[1] == "-c" and "hermes_cli.main" in argv[2]))
-    executable_match = arg0 == expected or (is_python and launches_module)
+    executable_match = arg0 == expected or (is_python and normalized[1:3] == ["-m", "hermes_cli.main"])
     try:
-        serve = argv.index("serve")
-        owner = argv.index("--ssh-owner-nonce", serve + 1)
-        owned = executable_match and "--isolated" in argv[serve + 1:] and argv[owner + 1] == spawn_nonce
+        serve = normalized.index("serve")
+        owner = normalized.index("--ssh-owner-nonce", serve + 1)
+        owned = executable_match and "--isolated" in normalized[serve + 1:] and normalized[owner + 1] == spawn_nonce
     except (ValueError, IndexError):
         owned = False
     return {"alive": process.is_running(), "owned": owned, "indeterminate": False,
@@ -426,7 +426,8 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     return {
         "path": path,
         "version": (version.stdout + version.stderr).splitlines()[0] if version.returncode == 0 else "",
-        "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text}
+        "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text,
+        "capabilities": ["launcher-ownership"]}
 
 
 def _probe(*_: str) -> dict[str, Any]:

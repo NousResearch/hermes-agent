@@ -9,10 +9,12 @@
  * not change keep their connection (the unified gateway reconciles, it does not restart them).
  */
 
+import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
-import { expect, test } from '@playwright/test'
+import { type ElectronApplication, expect, test } from '@playwright/test'
 import { parse, stringify } from 'yaml'
 
 import {
@@ -51,6 +53,16 @@ const serverPids = (log: string) =>
     .filter(record => record.msg?.method === 'initialize')
     .map(record => record.pid)
 
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 const callNonces = (log: string) =>
   inbound(log)
     .filter(record => record.msg?.method === 'tools/call')
@@ -79,7 +91,18 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
     provider.url,
     stringify({ mcp_servers: { alpha: fixtureServer('alpha', python!, alphaLog) } })
   )
-  const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
+  // Own this sandbox's gateway directly. Service discovery is outside this reload test and can see
+  // the runner account's installed launchd service even with HOME redirected on macOS.
+  const env = coreAppEnv(sandbox)
+  const backend = spawn(python!, ['-m', 'hermes_cli.main', 'gateway', 'run', '--quiet'], {
+    cwd: REPO_ROOT,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  const backendLog: string[] = []
+  backend.stdout.on('data', chunk => backendLog.push(chunk.toString()))
+  backend.stderr.on('data', chunk => backendLog.push(chunk.toString()))
+  let app: ElectronApplication | undefined
 
   const callServer = (server: string, nonce: string) => ({
     toolCalls: [{ name: 'tool_call', args: { calls: [{ name: `mcp__${server}__ro_probe`, arguments: { nonce } }] } }]
@@ -93,6 +116,31 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
   }
 
   try {
+    await expect
+      .poll(
+        async () => {
+          if (backend.exitCode !== null) {
+            throw new Error(`sandbox gateway exited before ready:\n${backendLog.join('')}`)
+          }
+
+          const { stdout } = await promisify(execFile)(
+            python!,
+            [
+              '-c',
+              'import sys; from hermes_cli.gateway_runtime import discover_gateway_endpoint; print(discover_gateway_endpoint(sys.argv[1]).state)',
+              sandbox.hermesHome
+            ],
+            { cwd: REPO_ROOT, env }
+          )
+
+          return stdout.trim()
+        },
+        { message: 'the isolated canonical gateway is ready', timeout: 60_000 }
+      )
+      .toBe('ready')
+    const launched = await launchCoreApp(env)
+    app = launched.app
+    const page = launched.page
     await waitForInteractive(app, page)
     provider.script('U1-mcpreload', [{ text: ['A1-mcpreload ready'] }])
     await send(page, 'U1-mcpreload hello')
@@ -112,7 +160,7 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
     await expect
       .poll(() => serverPids(gammaLog).length, { message: '/reload-mcp now started the added server' })
       .toBeGreaterThan(0)
-    expect(serverPids(alphaLog), 'an unchanged server kept its connection').toEqual(alphaPids)
+    expect(alphaPids.every(isAlive), 'the reload kept the original server alive').toBe(true)
 
     provider.script('U3-mcpreload', [callServer('gamma', 'afterreload'), { text: ['A3-mcpreload called'] }])
     await send(page, 'U3-mcpreload call gamma')
@@ -137,7 +185,9 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
     await expect
       .poll(() => serverPids(deltaLog).length, { message: 'the Connectors button started the added server' })
       .toBeGreaterThan(0)
-    expect(serverPids(alphaLog), 'the button reload kept the unchanged server').toEqual(alphaPids)
+    // Session-scoped discovery may open an additional connection. The original profile connection
+    // must survive either reload; counting every initialize across scopes would conflate the two.
+    expect(alphaPids.every(isAlive), 'the button reload kept the original server alive').toBe(true)
 
     await page.evaluate(id => {
       window.location.hash = `#/${id}`
@@ -149,7 +199,14 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
       .poll(() => callNonces(deltaLog), { message: 'the same chat reached the button-added server' })
       .toEqual(['afterbutton'])
   } finally {
-    await app.close()
+    await app?.close()
+    if (backend.exitCode === null && backend.signalCode === null) {
+      const exited = new Promise<void>(resolve => backend.once('exit', () => resolve()))
+      const deadline = setTimeout(() => backend.kill('SIGKILL'), 15_000)
+      backend.kill('SIGTERM')
+      await exited
+      clearTimeout(deadline)
+    }
     await provider.close()
     sandbox.cleanup()
   }

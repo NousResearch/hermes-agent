@@ -41,3 +41,20 @@ async def test_always_reports_an_unsaved_opt_out_as_failure(monkeypatch):
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_config_does_not_treat_a_stale_opt_out_as_fresh_consent(monkeypatch):
+    from hermes_cli.config_read_errors import FailedConfigRead
+
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    _reloadable(authority, monkeypatch)
+    owner = _connect(authority)
+    stale = FailedConfigRead({'approvals': {'mcp_reload_confirm': False}}, error=OSError('unreadable config'))
+    monkeypatch.setattr('hermes_cli.config.load_config', lambda: stale)
+    try:
+        assert (await _call(owner, 'reload.mcp'))['status'] == 'confirm_required'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

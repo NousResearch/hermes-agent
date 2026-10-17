@@ -832,3 +832,220 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+def _inbound_rich_table_message():
+    rich = {
+        "blocks": [
+            {
+                "type": "table",
+                "cells": [
+                    [
+                        {"text": "食物名称", "is_header": True},
+                        {"text": "能量 (kcal/100g)", "is_header": True},
+                        {"text": "蛋白质 P (g)", "is_header": True},
+                        {"text": "脂肪 F (g)", "is_header": True},
+                        {"text": "碳水化合物 C (g)", "is_header": True},
+                    ],
+                    [
+                        {"text": "西葫芦"},
+                        {"text": "19"},
+                        {"text": "0.8"},
+                        {"text": "0.2"},
+                        {"text": "3.8"},
+                    ],
+                ],
+            }
+        ]
+    }
+    return SimpleNamespace(
+        message_id=8807,
+        chat=SimpleNamespace(id=12345, type="private", title=None, full_name="U"),
+        from_user=SimpleNamespace(
+            id=42, username="u", first_name="U", last_name=None,
+            full_name="U", is_bot=False,
+        ),
+        text=None,
+        caption=None,
+        reply_to_message=None,
+        quote=None,
+        message_thread_id=None,
+        is_topic_message=False,
+        entities=[],
+        caption_entities=[],
+        api_kwargs={"rich_message": rich},
+        date=None,
+    )
+
+
+def test_inbound_rich_table_is_projected_to_markdown():
+    adapter = _make_adapter()
+    text = adapter._extract_rich_message_text(_inbound_rich_table_message())
+
+    assert text == (
+        "| 食物名称 | 能量 (kcal/100g) | 蛋白质 P (g) | 脂肪 F (g) | 碳水化合物 C (g) |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 西葫芦 | 19 | 0.8 | 0.2 | 3.8 |"
+    )
+
+
+def test_rich_reply_table_is_visible_in_reply_context():
+    adapter = _make_adapter()
+    rich_message = _inbound_rich_table_message()
+    reply = _reply_message("8807")
+    reply.reply_to_message = rich_message
+
+    from gateway.platforms.event import MessageType
+
+    event = adapter._build_message_event(reply, MessageType.TEXT)
+
+    assert "| 西葫芦 | 19 | 0.8 | 0.2 | 3.8 |" in event.reply_to_text
+
+
+@pytest.mark.asyncio
+async def test_rich_only_inbound_message_reaches_text_queue():
+    adapter = _make_adapter()
+    adapter._bot.username = "iris_bot"
+    msg = _inbound_rich_table_message()
+    update = SimpleNamespace(effective_message=msg, message=msg, update_id=321)
+
+    adapter._is_user_authorized_from_message = MagicMock(return_value=True)
+    adapter._gate_or_observe = MagicMock(return_value=True)
+    adapter._ensure_forum_commands = AsyncMock()
+    adapter._cache_replied_media = AsyncMock()
+    adapter._apply_telegram_group_observe_attribution = MagicMock(side_effect=lambda event: event)
+    adapter._enqueue_text_event = MagicMock()
+
+    await adapter._handle_rich_message(update, None)
+
+    adapter._enqueue_text_event.assert_called_once()
+    event = adapter._enqueue_text_event.call_args.args[0]
+    assert "| 西葫芦 | 19 | 0.8 | 0.2 | 3.8 |" in event.text
+
+
+@pytest.mark.parametrize("field,value", [
+    ("text", "already handled"),
+    ("caption", "already handled"),
+    ("photo", [SimpleNamespace(file_id="photo")]),
+    ("location", SimpleNamespace(latitude=1, longitude=2)),
+])
+@pytest.mark.asyncio
+async def test_rich_and_legacy_content_is_not_delivered_twice(field, value):
+    adapter = _make_adapter()
+    msg = _inbound_rich_table_message()
+    setattr(msg, field, value)
+    adapter._is_user_authorized_from_message = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+
+    await adapter._handle_rich_message(
+        SimpleNamespace(effective_message=msg, message=msg, update_id=322), None,
+    )
+
+    adapter._is_user_authorized_from_message.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_only_inbound_keeps_auth_and_group_gate():
+    adapter = _make_adapter()
+    msg = _inbound_rich_table_message()
+    update = SimpleNamespace(effective_message=msg, message=msg, update_id=323)
+    adapter._is_user_authorized_from_message = MagicMock(return_value=False)
+    adapter._gate_or_observe = MagicMock(return_value=True)
+    adapter._log_blocked_user = MagicMock()
+    adapter._enqueue_text_event = MagicMock()
+
+    await adapter._handle_rich_message(update, None)
+    adapter._log_blocked_user.assert_called_once_with(msg)
+    adapter._gate_or_observe.assert_not_called()
+    adapter._enqueue_text_event.assert_not_called()
+
+    adapter._is_user_authorized_from_message.return_value = True
+    adapter._gate_or_observe.return_value = False
+    await adapter._handle_rich_message(update, None)
+    adapter._gate_or_observe.assert_called_once()
+    adapter._enqueue_text_event.assert_not_called()
+
+
+def test_rich_table_without_header_keeps_data_rows_as_data():
+    adapter = _make_adapter()
+    msg = _inbound_rich_table_message()
+    msg.api_kwargs["rich_message"]["blocks"][0]["cells"] = [
+        [{"text": "A"}, {"text": "1"}],
+        [{"text": "B"}, {"text": "2"}],
+    ]
+    assert adapter._extract_rich_message_text(msg) == (
+        "| Column 1 | Column 2 |\n"
+        "| --- | --- |\n"
+        "| A | 1 |\n"
+        "| B | 2 |"
+    )
+
+
+def test_rich_table_escapes_pipes_and_retains_span_annotations():
+    adapter = _make_adapter()
+    msg = _inbound_rich_table_message()
+    msg.api_kwargs["rich_message"]["blocks"][0] = {
+        "type": "table",
+        "caption": {"text": "进度表"},
+        "cells": [
+            [{"text": "Name", "is_header": True}, {"text": "Value", "is_header": True}],
+            [{"text": "a|b", "colspan": 2}, {"text": "line 1\nline 2", "rowspan": 2}],
+        ],
+    }
+    text = adapter._extract_rich_message_text(msg)
+    assert text.startswith("进度表\n| Name | Value |\n| --- | --- |")
+    assert "| a\\|b (colspan=2) | line 1 line 2 (rowspan=2) |" in text
+
+
+def test_future_typed_rich_payload_uses_same_projection_for_message_and_reply():
+    adapter = _make_adapter()
+    msg = _inbound_rich_table_message()
+    msg.api_kwargs = {}
+    msg.rich_message = SimpleNamespace(blocks=[
+        SimpleNamespace(type="table", cells=[
+            [SimpleNamespace(text=SimpleNamespace(text="名称"), is_header=True),
+             SimpleNamespace(text=SimpleNamespace(text="数量"), is_header=True)],
+            [SimpleNamespace(text=SimpleNamespace(text="西葫芦")),
+             SimpleNamespace(text=SimpleNamespace(text="2"))],
+        ]),
+    ])
+    projected = adapter._extract_rich_message_text(msg)
+    assert "| 西葫芦 | 2 |" in projected
+    reply = _reply_message("8807")
+    reply.reply_to_message = msg
+    from gateway.platforms.event import MessageType
+    event = adapter._build_message_event(reply, MessageType.TEXT)
+    assert "| 西葫芦 | 2 |" in event.reply_to_text
+
+
+def test_rich_table_preserves_topic_when_building_text_event():
+    adapter = _make_adapter()
+    msg = _inbound_rich_table_message()
+    msg.chat.type = "supergroup"
+    msg.chat.title = "Study"
+    msg.message_thread_id = 512
+    msg.is_topic_message = True
+    from gateway.platforms.event import MessageType
+    event = adapter._build_message_event(msg, MessageType.TEXT, update_id=324)
+    assert event.source.thread_id == "512"
+    assert event.platform_update_id == 324
+    assert "| 西葫芦 | 19 |" in event.text
+
+
+def test_rich_only_handler_is_registered_outside_default_ptb_group():
+    from unittest.mock import patch
+    from plugins.platforms.telegram import adapter as telegram_module
+
+    adapter = _make_adapter()
+    app = MagicMock()
+    app.handlers = {}
+    with patch.object(telegram_module, "TelegramMessageHandler") as handler_factory:
+        adapter._register_handlers(app)
+    rich_handlers = [
+        call for call in handler_factory.call_args_list
+        if call.args[1] == adapter._handle_rich_message
+    ]
+    assert len(rich_handlers) == 1
+    assert rich_handlers[0].args[0] == telegram_module.filters.ALL
+    assert any(call.kwargs.get("group") == 1 for call in app.add_handler.call_args_list)

@@ -13,7 +13,6 @@ import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import {
-  boundedLiveRenderText,
   estimateTokensRough,
   formatToolCall,
   formatToolLabel,
@@ -1056,7 +1055,7 @@ class TurnController {
       this.streamTimer = null
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-      patchTurnState({ streaming: boundedLiveRenderText(visible) })
+      patchTurnState({ streaming: visible })
     }, this.streamDelay)
   }
 
@@ -1065,7 +1064,7 @@ class TurnController {
     this.bufRef = text
     const raw = this.bufRef.trimStart()
     const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-    patchTurnState({ streaming: boundedLiveRenderText(visible) })
+    patchTurnState({ streaming: visible })
   }
 
   startMessage() {

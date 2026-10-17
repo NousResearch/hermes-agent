@@ -401,6 +401,10 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Chat-originated kanban_create auto-subscriptions: true = notify+wake (each terminal event resumes the
+  # creator), false = passive notify, or a list of platforms that wake, e.g. [telegram] - an API-server
+  # front end then renders task events itself and decides when the agent takes a turn.
+  # auto_subscribe_wake: true
 
 # =============================================================================
 # Terminal Tool Configuration

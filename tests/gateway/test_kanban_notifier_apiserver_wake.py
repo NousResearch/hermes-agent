@@ -219,3 +219,40 @@ def test_apiserver_wake_failure_rewinds_then_retries_destination(
     assert "worker-session" not in attempted_sessions
     assert _unseen_terminal_events(tid, "api_server", "origin-session") == []
 
+
+def test_passive_apiserver_sub_is_acknowledged_without_send_or_wake(tmp_path, monkeypatch):
+    """A passive (notify) api_server sub (kanban.auto_subscribe_wake without api_server) has no
+    channel: no doomed send() (which used to count toward MAX_SEND_FAILURES and drop the sub),
+    no wake self-post; the cursor advances and the subscription stays for later events."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver-passive.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="passive", assignee="worker", session_id="origin-session")
+        kbn.add_notify_sub(conn, task_id=tid, platform="api_server", chat_id="origin-session",
+                           delivery_mode="notify")
+        kb.complete_task(conn, tid, summary="done once")
+    finally:
+        conn.close()
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append(session_id)
+
+    import gateway.wake as wake_mod
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    adapter = ApiServerLikeAdapter()
+    runner = _make_runner({Platform.API_SERVER: adapter})
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.send_calls == 0
+    assert posts == [] and adapter.handle_message_calls == []
+    assert runner._kanban_sub_fail_counts == {}
+    assert _unseen_terminal_events(tid, "api_server", "origin-session") == []
+    conn = kbc.connect()
+    try:
+        modes = [s["delivery_mode"] for s in kbn.list_notify_subs(conn, tid)]
+    finally:
+        conn.close()
+    assert modes == ["notify"]

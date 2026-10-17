@@ -1293,6 +1293,52 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     assert _list_subs_for_task(d["task_id"]) == []
 
 
+def _auto_sub_mode(monkeypatch, tmp_path, config_text, platform, chat_id="chat-1"):
+    """kanban_create from a gateway session on ``platform`` with ``config_text`` -> sub delivery modes."""
+    home = tmp_path / f"wake-home-{platform}" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", chat_id)
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_create({"title": f"auto-sub {platform}", "assignee": "peer"}))
+    assert d["ok"] is True and d["subscribed"] is True, d
+    return [s["delivery_mode"] for s in _sub_index(_list_subs_for_task(d["task_id"]))]
+
+
+def test_auto_subscribe_wake_list_keeps_listed_platforms_waking(monkeypatch, worker_env, tmp_path):
+    """kanban.auto_subscribe_wake: [telegram] -> an API-server session gets a passive notify sub
+    (its front end renders task events and wakes the agent itself); Telegram keeps notify+wake."""
+    cfg = "kanban:\n  auto_subscribe_wake: [telegram]\n"
+    assert _auto_sub_mode(monkeypatch, tmp_path, cfg, "api_server", "api-session-1") == ["notify"]
+    assert _auto_sub_mode(monkeypatch, tmp_path, cfg, "telegram") == ["notify+wake"]
+
+
+def test_auto_subscribe_wake_false_is_passive_everywhere(monkeypatch, worker_env, tmp_path):
+    cfg = "kanban:\n  auto_subscribe_wake: false\n"
+    assert _auto_sub_mode(monkeypatch, tmp_path, cfg, "discord") == ["notify"]
+
+
+def test_auto_subscribe_wake_default_unchanged(monkeypatch, worker_env, tmp_path):
+    """No key (and an explicit true) keep today's notify+wake auto-subscribe."""
+    assert _auto_sub_mode(monkeypatch, tmp_path, "{}\n", "api_server", "api-session-2") == ["notify+wake"]
+    cfg = "kanban:\n  auto_subscribe_wake: true\n"
+    assert _auto_sub_mode(monkeypatch, tmp_path, cfg, "slack") == ["notify+wake"]
+
+
+def test_wake_enabled_for_accepts_bool_list_and_comma_string():
+    from tools.kanban_tools import _wake_enabled_for
+    assert _wake_enabled_for("telegram", None) is True
+    assert _wake_enabled_for("telegram", True) is True
+    assert _wake_enabled_for("telegram", False) is False
+    assert _wake_enabled_for("api_server", ["Telegram"]) is False
+    assert _wake_enabled_for("telegram", ["Telegram"]) is True
+    assert _wake_enabled_for("discord", "telegram, discord") is True
+    assert _wake_enabled_for("discord", "off") is False
+    assert _wake_enabled_for("api_server", []) is False
+
+
 def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
     """If add_notify_sub itself raises (e.g. DB locked, schema drift),
     _maybe_auto_subscribe must NOT bubble that up and fail the parent

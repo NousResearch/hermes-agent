@@ -129,6 +129,75 @@ def test_invalid_ceiling_values_are_ignored_and_named(kanban_home, caplog):
         ), (slug, value)
 
 
+def test_a_non_integral_numeric_value_is_ignored_not_truncated(kanban_home, caplog):
+    """A YAML float such as ``2.5`` is a typo, never a ceiling.
+
+    ``int(2.5)`` is 2, so accepting it silently installs a DIFFERENT,
+    dispatch-governing cap than the one written in config.yaml — and the
+    documented contract is a positive integer.
+    """
+    kb.create_board("alpha")
+    with caplog.at_level("WARNING"):
+        settings = kwd._resolve_dispatcher_settings(
+            {"max_spawn": 6, "max_spawn_by_board": {"alpha": 2.5}}, kb
+        )
+    assert settings.max_spawn_by_board == {}
+    assert settings.max_spawn_for_board("alpha") == 6
+    assert any(
+        repr("alpha") in r.getMessage() and repr(2.5) in r.getMessage()
+        for r in caplog.records
+    ), "no warning naming alpha=2.5"
+
+
+def test_non_finite_values_are_ignored_and_never_reach_int(kanban_home, caplog):
+    """``.inf``/``.nan`` are ignored with a warning, not raised out of resolution.
+
+    ``int(float('inf'))`` raises OverflowError, which is not a ValueError, so a
+    single ``.inf`` in config.yaml would abort settings resolution instead of
+    warning and moving on.
+    """
+    kb.create_board("alpha")
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            settings = kwd._resolve_dispatcher_settings(
+                {"max_spawn": 6, "max_spawn_by_board": {"alpha": bad}}, kb
+            )
+        assert settings.max_spawn_by_board == {}
+        assert settings.max_spawn_for_board("alpha") == 6
+        assert any(
+            repr("alpha") in r.getMessage() and repr(bad) in r.getMessage()
+            for r in caplog.records
+        ), bad
+
+
+def test_a_bool_is_not_a_ceiling(kanban_home, caplog):
+    """``True`` is an ``int`` subclass but not a ceiling (it would cap a board at 1)."""
+    kb.create_board("alpha")
+    with caplog.at_level("WARNING"):
+        settings = kwd._resolve_dispatcher_settings(
+            {"max_spawn": 6, "max_spawn_by_board": {"alpha": True}}, kb
+        )
+    assert settings.max_spawn_by_board == {}
+    assert settings.max_spawn_for_board("alpha") == 6
+    assert any(
+        repr("alpha") in r.getMessage() and repr(True) in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_an_integral_numeric_value_is_still_accepted(kanban_home):
+    """``2.0`` and ``\"3\"`` are usable ceilings: the guard rejects typos, not numbers."""
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    settings = kwd._resolve_dispatcher_settings(
+        {"max_spawn": 8, "max_spawn_by_board": {"alpha": 2.0, "beta": "3"}}, kb
+    )
+    assert dict(settings.max_spawn_by_board) == {"alpha": 2, "beta": 3}
+    assert settings.max_spawn_for_board("alpha") == 2
+    assert settings.max_spawn_for_board("beta") == 3
+
+
 def test_unknown_board_slug_is_inert(kanban_home, caplog):
     kb.create_board("alpha")
     with caplog.at_level("WARNING"):

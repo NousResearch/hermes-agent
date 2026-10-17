@@ -93,9 +93,19 @@ def _parse_max_spawn_by_board(kanban_cfg: dict, kb: Any) -> dict:
     for slug in sorted(raw, key=str):
         value = raw[slug]
         key = str(slug).strip()
+        # A ceiling is a positive integer. A non-integral float (2.5) is a typo and
+        # must never be truncated into a different, dispatch-governing cap; a
+        # non-finite float (.inf/.nan) must never reach int() at all — that raises
+        # OverflowError out of settings resolution. A bool is an int subclass but
+        # not a ceiling. All three are invalid, like any other unusable value.
+        if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+            logger.warning(
+                "kanban dispatcher: invalid kanban.max_spawn_by_board[%r]=%r; ignoring", slug, value
+            )
+            continue
         try:
             ceiling = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             ceiling = None
         if ceiling is None or isinstance(value, bool) or ceiling < 1:
             logger.warning(

@@ -26,6 +26,7 @@ from typing import Callable
 
 import psutil
 
+from agent.skill_utils import EXCLUDED_SKILL_DIRS
 from hermes_constants import get_hermes_home
 from tools.environments.base import _file_mtime_key
 from utils import mtime_is_racy
@@ -492,7 +493,12 @@ class FileSyncManager:
                 continue
             remote_dir = posixpath.dirname(remote)  # remote paths are POSIX even on a Windows host
             if remote_path.startswith(remote_dir + "/"):
-                return str(Path(host).parent / remote_path[len(remote_dir) + 1:])
+                relative = remote_path[len(remote_dir) + 1:]
+                # The upload prunes these trees, so a remote copy was never the host's: returning it
+                # would overwrite host state such as skills/.hub/lock.json with a stale one.
+                if any(part in EXCLUDED_SKILL_DIRS for part in relative.split("/")[:-1]):
+                    continue
+                return str(Path(host).parent / relative)
         return None
 
     @staticmethod

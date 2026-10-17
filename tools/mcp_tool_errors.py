@@ -328,7 +328,9 @@ def _make_redirect_header_stripper(httpx_mod, original_url, *, strict: bool = Fa
 # Finite HTTP bodies are capped at this many bytes (a larger Content-Length is rejected up front);
 # each SSE *event* is capped, with the counter reset at completed event boundaries so a long-lived
 # stream and its keepalives have no cumulative limit. Violations raise the SDK httpx's ReadError and
-# flow through the ordinary transport teardown/reconnect path (#66092).
+# flow through the ordinary transport teardown/reconnect path (#66092). The Streamable HTTP client
+# hands this same bound to the SDK's own per-event SSE parser (``max_sse_event_size``), so one limit
+# judges an event rather than httpx2's tighter 1 MiB default underneath it.
 _MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
 # An SSE event ends at a blank line: two consecutive line terminators. The spec allows CR,
 # LF, or CRLF terminators and permits mixing them, so the boundary is any of \n\n, \r\r,
@@ -341,13 +343,21 @@ _SSE_BOUNDARY_CARRY = 3  # longest boundary ("\r\n\r\n") minus one byte
 def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
     """Wrap ``inner_transport`` so every response body is size-capped. ``httpx_mod`` must be the SDK's
     own httpx module (``sdk_httpx()``): the transport is handed to that SDK's ``AsyncClient``."""
+    # An oversized event is also this httpx's SSEError (httpx2; the plain httpx of mcp 1.x has none):
+    # the SDK fails the waiting request with an SSEError's message, while any other error mid-event
+    # reads as "SSE stream ended without a response" or triggers a Last-Event-ID reconnect that
+    # fetches the same event again.
+    bases = (httpx_mod.ReadError, httpx_mod.SSEError) if hasattr(httpx_mod, "SSEError") else (httpx_mod.ReadError,)
+    event_too_large = type("MCPEventTooLarge", bases, {})
 
     class _CappedStream(httpx_mod.AsyncByteStream):
         def __init__(self, inner, is_sse: bool, url: str):
             self._inner, self._is_sse, self._url = inner, is_sse, url
 
-        def _reject(self, kind: str):
-            return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {self._url})")
+        def _reject(self):
+            if self._is_sse:
+                return event_too_large(f"MCP response exceeded {limit} bytes in one SSE event (from {self._url})")
+            return httpx_mod.ReadError(f"MCP response exceeded {limit} bytes (from {self._url})")
 
         async def __aiter__(self):
             counted = 0
@@ -365,14 +375,14 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
                         if end <= len(tail):
                             continue  # boundary completed inside the carried suffix: already counted
                         if counted + end - max(pos, len(tail)) > limit:
-                            raise self._reject("SSE event")
+                            raise self._reject()
                         counted, pos = 0, end
                     counted += len(window) - max(pos, len(tail))
                     tail = window[-_SSE_BOUNDARY_CARRY:]
                 else:
                     counted += len(chunk)
                 if counted > limit:
-                    raise self._reject("SSE event" if self._is_sse else "HTTP response")
+                    raise self._reject()
                 yield chunk
 
         async def aclose(self):
@@ -388,8 +398,8 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
             with contextlib.suppress(ValueError):  # malformed header: the streamed cap still applies
                 if declared is not None and int(declared) > limit:
                     await response.aclose()
-                    raise httpx_mod.ReadError(f"MCP HTTP response declares Content-Length {declared} > {limit} "
-                                              f"bytes cap (from {request.url})")
+                    raise httpx_mod.ReadError(f"MCP response exceeded {limit} bytes (declared Content-Length "
+                                              f"{declared}, from {request.url})")
             is_sse = "text/event-stream" in response.headers.get("content-type", "").lower()
             response.stream = _CappedStream(response.stream, is_sse, str(request.url))
             return response
@@ -432,9 +442,30 @@ def _iter_exception_nodes(exc: BaseException) -> list[BaseException]:
     return ordered
 
 
+# A response over a byte cap, in each cap's words: the wire-body cap above, and httpx2's per-event SSE
+# parser limit, which the legacy SSE client cannot raise. Matched as text because on Streamable HTTP the
+# SDK returns the failure as a JSON-RPC error message ("SSE stream failed: ..."), not an exception chain.
+_OWN_CAP_RE = re.compile(r"MCP response exceeded \d+ bytes.*")
+_SDK_EVENT_LIMIT_RE = re.compile(r"Server-sent event exceeded the (\d+) byte limit")
+
+
+def _oversized_response(nodes: list[BaseException]) -> Optional[str]:
+    """The cap a response broke, worded alike for either cap; ``None`` when no cap tripped."""
+    for node in nodes:
+        text = str(node)
+        if own := _OWN_CAP_RE.search(text):
+            return own.group(0)
+        if sdk := _SDK_EVENT_LIMIT_RE.search(text):
+            return f"MCP response exceeded {sdk.group(1)} bytes in one SSE event (the MCP SDK's per-event limit)"
+    return None
+
+
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
     nodes = _iter_exception_nodes(exc)
+    oversized = _oversized_response(nodes)
+    if oversized is not None:  # the whole story; "SSE stream failed" / "Connection closed" add nothing
+        return _sanitize_error(oversized)
 
     def _find_missing() -> Optional[str]:
         for current in nodes:

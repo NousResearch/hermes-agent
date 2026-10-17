@@ -827,9 +827,13 @@ def _probe_failure_next_step(name: str, exc: BaseException) -> str:
         return f"The server rejected the sign-in. Run: hermes mcp login {name}"
     if isinstance(root, NodeAbiMismatchError):
         return f"After rebuilding it under Hermes's Node as above, run: hermes mcp test {name}"
-    if "missing executable" in _format_connect_error(exc):
+    reason = _format_connect_error(exc)
+    if "missing executable" in reason:
         return (f"Install that command, or set mcp_servers.{name}.command in {display_hermes_home()}/config.yaml "
                 "to its full path.")
+    if reason.startswith("MCP response exceeded"):
+        return (f"The server is up but sent one response over that limit. If mcp_servers.{name}.transport is "
+                "sse, try removing it: Streamable HTTP accepts larger events.")
     return f"Check the server is running and the URL/command in its config, then run: hermes mcp test {name}"
 
 

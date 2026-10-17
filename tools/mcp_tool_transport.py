@@ -4,6 +4,7 @@ protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py.""
 
 import logging
 import asyncio
+import inspect
 import os
 import urllib.parse
 import urllib.request
@@ -12,7 +13,7 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
@@ -76,6 +77,19 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
         mounts[f"{scheme}://"] = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.AsyncHTTPTransport(
             proxy=proxy_url, verify=ssl_verify, **_present(cert=client_cert)))
     return mounts or None
+
+
+def _sse_event_limit_kwargs(client_fn) -> dict:
+    """``max_sse_event_size`` at the wire-body cap, for an SDK Streamable HTTP client that takes it.
+
+    Left unset, the SDK parses each SSE event against httpx2's 1 MiB default, a tighter second cap
+    under the wire cap: a server sending ``tools/list`` as one ~1 MiB event (a 162-tool catalog)
+    could not connect at all. Older SDKs take no such argument."""
+    try:
+        accepted = "max_sse_event_size" in inspect.signature(client_fn).parameters
+    except (TypeError, ValueError):
+        accepted = False
+    return {"max_sse_event_size": _MCP_HTTP_MAX_BODY_BYTES} if accepted else {}
 
 
 def _pgroup_alive(pgid: Optional[int]) -> bool:
@@ -575,10 +589,12 @@ class MCPServerTransportMixin:
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
 
+        sdk_kwargs = _sse_event_limit_kwargs(_core.streamable_http_client)
+
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided
             async with _build_client(**client_kwargs) as http_client:
-                async with _core.streamable_http_client(url, http_client=http_client) as streams:
+                async with _core.streamable_http_client(url, http_client=http_client, **sdk_kwargs) as streams:
                     yield streams
         return _owned_client_streams()
 

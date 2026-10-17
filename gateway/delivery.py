@@ -3,10 +3,11 @@ platform home channel ("telegram"), origin (back to where the job was created), 
 
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import get_hermes_home
 
@@ -22,18 +23,61 @@ logger = logging.getLogger(__name__)
 MAX_PLATFORM_OUTPUT = 4000
 # Matches strings that are *only* a "silence" narration with optional markdown wrappers (*(silent)*,
 # _silent_, 🔇, a bare ".", "…"). Anchored so messages that merely *contain* "silent" never match.
-_SILENCE_NARRATION = re.compile(
-    r'^[\s*_~`]*\(?\s*(silent|silence|no\s+response|no\s+reply)\s*\.?\)?[\s*_~`]*$'
-    r'|^[\s*_~`]*[\U0001F507\.\u2026]+[\s*_~`]*$',
-    re.IGNORECASE,
-)
+#
+# The vocabulary and the length guard are DECLARED — ``gateway.silence_narration.tokens`` /
+# ``gateway.silence_narration.max_chars`` — because the class is language-specific by nature: an
+# instance whose channel reads Romanian, Chinese or anything else names its own tokens instead of
+# waiting for a second hand-written list here. Absent or invalid declaration keeps the built-in
+# English/symbol class byte-for-byte (the pre-declaration behaviour).
+DEFAULT_SILENCE_NARRATION_TOKENS: Tuple[str, ...] = ("silent", "silence", "no response", "no reply")
+DEFAULT_SILENCE_NARRATION_MAX_CHARS = 64
+# A bare symbol class needs no vocabulary: 🔇 / "." / "…" read the same in every language.
+_SILENCE_NARRATION_SYMBOLS = "\U0001F507.\u2026"
+_SILENCE_WRAP = r"[\s*_~`\"'\u201c\u201d]*"
+_SILENCE_SEP = r"[\s:;,.\-\u2013\u2014\u2026*_~`\"'\u201c\u201d]+"
+_SILENCE_OPEN = r"[(\[\uff08]?"
+_SILENCE_CLOSE = r"[)\]\uff09]?"
 _THREAD_ROUTING_KEYS = ("thread_id", "message_thread_id", "direct_messages_topic_id", "telegram_direct_messages_topic_id")
 
 
-def _is_silence_narration(content: Optional[str]) -> bool:
-    """True when ``content`` is *only* a silence-narration token (length-guarded)."""
+@lru_cache(maxsize=16)
+def _silence_narration_pattern(tokens: Tuple[str, ...]) -> "re.Pattern[str]":
+    """The class for *tokens*: the whole message is wrappers + declared tokens + separators.
+
+    Every token is matched literally (never as a pattern a deployment did not write) and the
+    alternation is anchored at both ends, so a message that merely *contains* a token is delivered.
+    """
+    alternatives = "|".join(re.escape(token) for token in tokens)
+    clause = rf"(?:{alternatives})(?:{_SILENCE_SEP}(?:{alternatives}))*"
+    return re.compile(
+        rf"^{_SILENCE_WRAP}{_SILENCE_OPEN}{_SILENCE_WRAP}{clause}{_SILENCE_WRAP}\.?{_SILENCE_CLOSE}{_SILENCE_WRAP}$"
+        rf"|^{_SILENCE_WRAP}[{re.escape(_SILENCE_NARRATION_SYMBOLS)}]+{_SILENCE_WRAP}$",
+        re.IGNORECASE,
+    )
+
+
+def _declared_silence_narration_tokens(tokens: Any) -> Tuple[str, ...]:
+    """The declared vocabulary when it parses, else the built-in one."""
+    if isinstance(tokens, (list, tuple)):
+        clean = tuple(token.strip() for token in tokens if isinstance(token, str) and token.strip())
+        if clean:
+            return clean
+    return DEFAULT_SILENCE_NARRATION_TOKENS
+
+
+def _declared_silence_narration_max_chars(max_chars: Any) -> int:
+    """The declared length guard when it parses, else the built-in one."""
+    if isinstance(max_chars, int) and not isinstance(max_chars, bool) and max_chars > 0:
+        return max_chars
+    return DEFAULT_SILENCE_NARRATION_MAX_CHARS
+
+
+def _is_silence_narration(content: Optional[str], *, tokens: Any = None, max_chars: Any = None) -> bool:
+    """True when ``content`` is *only* a silence narration (declared vocabulary, declared guard)."""
     stripped = content.strip() if content else ""
-    return bool(stripped) and len(stripped) <= 64 and bool(_SILENCE_NARRATION.match(stripped))
+    if not stripped or len(stripped) > _declared_silence_narration_max_chars(max_chars):
+        return False
+    return bool(_silence_narration_pattern(_declared_silence_narration_tokens(tokens)).match(stripped))
 
 
 class PartialDeliveryError(RuntimeError):
@@ -232,6 +276,15 @@ class DeliveryRouter:
         """filter silence narration based on gateway config without checking process env"""
         return bool(getattr(self.config, "filter_silence_narration", True))
 
+    def _silence_narration_declaration(self) -> Tuple[Any, Any]:
+        """``(tokens, max_chars)`` as the profile declared them on ``gateway.silence_narration``.
+
+        ``None`` on either side keeps the built-in vocabulary / guard, so a config that states
+        nothing reads exactly as it did before the declaration existed.
+        """
+        return (getattr(self.config, "silence_narration_tokens", None),
+                getattr(self.config, "silence_narration_max_chars", None))
+
     def _cap_oversized_output(self, adapter: Any, content: str, job_id: str) -> str:
         """Audit-save oversized cron output; truncate it for non-chunking adapters. Above MAX_PLATFORM_OUTPUT
         the full output is always written to disk as an audit trail, best-effort — a failed save (full disk,
@@ -287,7 +340,9 @@ class DeliveryRouter:
         # with nothing on the wire. Cron sends carry job_id in metadata; everything else is filtered.
         # See #77763.
         is_cron_artifact = "job_id" in (metadata or {})
-        if self._filter_silence_narration_enabled() and not is_cron_artifact and _is_silence_narration(content):
+        silence_tokens, silence_max_chars = self._silence_narration_declaration()
+        if (self._filter_silence_narration_enabled() and not is_cron_artifact
+                and _is_silence_narration(content, tokens=silence_tokens, max_chars=silence_max_chars)):
             logger.warning("Dropped silence-narration outbound to %s (chat=%s): %r",
                            target.platform.value, target.chat_id, content[:40])
             return {"success": True, "filtered": "silence_narration", "delivered": False}

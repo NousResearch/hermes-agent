@@ -211,6 +211,185 @@ async def test_non_cron_metadata_still_filters(tmp_path, monkeypatch):
     assert result["filtered"] == "silence_narration"
 
 
+# --- The declared class: vocabulary and guard are data -----------------------
+#
+# The silence-narration class is language-specific by nature, so the vocabulary and the length
+# guard are declared — ``gateway.silence_narration.tokens`` / ``.max_chars`` — and the delivery
+# path reads them instead of carrying a second hand-written list. Declaring nothing (or declaring
+# something that does not parse) keeps the built-in English/symbol class exactly as it was.
+#
+# The narration strings below are quoted as literals on purpose: they are the class a firm-facing
+# channel actually read (the delivery of the ``no_answer_owed`` verdict), and a literal keeps this
+# file collectable against the revision that predates the declaration.
+
+MEASURED_NARRATIONS = [
+    "_(tăcere)_",
+    "_(fără livrare: no_answer_owed)_",
+    "_(fără livrare — no_answer_owed)_",
+    "_(tăcere — clasa nu poartă răspuns)_",
+    "_(tăcere — `no_answer_owed`: clasa nu poartă text și nu se livrează niciun răspuns)_",
+    "_(fără răspuns: verdictul `no_answer_owed` nu poartă text — clasa nu compune niciun răspuns, "
+    "iar pe linia asta nu se livrează nimic)_",
+]
+
+DECLARED_VOCABULARY = [
+    "tăcere",
+    "fără livrare",
+    "fără răspuns",
+    "verdictul",
+    "no_answer_owed",
+    "clasa nu poartă răspuns",
+    "clasa nu poartă text și nu se livrează niciun răspuns",
+    "clasa nu compune niciun răspuns",
+    "nu poartă text",
+    "iar pe linia asta nu se livrează nimic",
+]
+
+DECLARED_MAX_CHARS = 200
+
+
+def _declared_config(**overrides):
+    """A config whose profile declares the class the way a deployment would."""
+    declaration = {"tokens": DECLARED_VOCABULARY, "max_chars": DECLARED_MAX_CHARS, **overrides}
+    return GatewayConfig.from_dict({"gateway": {"silence_narration": declaration}})
+
+
+def _router(config, adapter):
+    return DeliveryRouter(config, adapters={Platform.DISCORD: adapter})
+
+
+TARGET = "discord:99887766"
+
+
+@pytest.mark.parametrize("content", MEASURED_NARRATIONS)
+@pytest.mark.asyncio
+async def test_declared_vocabulary_drops_the_measured_narrations(tmp_path, monkeypatch, content):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = _router(_declared_config(), adapter)
+
+    result = await router._deliver_to_platform(DeliveryTarget.parse(TARGET), content, metadata=None)
+
+    assert adapter.calls == []
+    assert result == {"success": True, "filtered": "silence_narration", "delivered": False}
+
+
+@pytest.mark.asyncio
+async def test_declared_token_is_the_one_the_filter_uses(tmp_path, monkeypatch):
+    """A placeholder the built-in class never carried is dropped once the profile declares it."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    declared = RecordingAdapter()
+    built_in = RecordingAdapter()
+
+    declared_result = await _router(_declared_config(tokens=["无输出"]), declared)._deliver_to_platform(
+        DeliveryTarget.parse(TARGET), "（无输出）", metadata=None,
+    )
+    built_in_result = await _router(GatewayConfig(), built_in)._deliver_to_platform(
+        DeliveryTarget.parse(TARGET), "（无输出）", metadata=None,
+    )
+
+    assert declared.calls == []                                   # declared ⇒ dropped
+    assert declared_result["filtered"] == "silence_narration"
+    assert len(built_in.calls) == 1                               # nothing declared ⇒ delivered
+    assert built_in.calls[0]["content"] == "（无输出）"
+    assert built_in_result.get("filtered") is None
+
+
+@pytest.mark.asyncio
+async def test_declared_length_guard_bounds_the_class(tmp_path, monkeypatch):
+    """The 133-byte narration falls under the declared guard, and only under it."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    long_narration = MEASURED_NARRATIONS[-1]
+    generous = RecordingAdapter()
+    narrow = RecordingAdapter()
+
+    generous_result = await _router(_declared_config(), generous)._deliver_to_platform(
+        DeliveryTarget.parse(TARGET), long_narration, metadata=None,
+    )
+    narrow_result = await _router(_declared_config(max_chars=10), narrow)._deliver_to_platform(
+        DeliveryTarget.parse(TARGET), long_narration, metadata=None,
+    )
+
+    assert generous.calls == []
+    assert generous_result["filtered"] == "silence_narration"
+    assert len(narrow.calls) == 1                                 # declared guard refuses it
+    assert narrow_result.get("filtered") is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_declaration_keeps_the_built_in_class(tmp_path, monkeypatch):
+    """An absent or unparseable declaration is not a widening: the shipped class stands."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    for declaration in (
+        None,
+        "silence_narration: on",
+        {},
+        {"tokens": "not-a-list"},
+        {"tokens": []},
+        {"tokens": [1, 2]},
+        {"max_chars": "sixty"},
+        {"max_chars": -3},
+    ):
+        data = {} if declaration is None else {"silence_narration": declaration}
+        adapter = RecordingAdapter()
+        router = _router(GatewayConfig.from_dict({"gateway": data}), adapter)
+
+        english = await router._deliver_to_platform(
+            DeliveryTarget.parse(TARGET), "_(silent)_", metadata=None,
+        )
+        undeclared = await router._deliver_to_platform(
+            DeliveryTarget.parse(TARGET), "（无输出）", metadata=None,
+        )
+
+        assert english["filtered"] == "silence_narration", declaration
+        assert undeclared.get("filtered") is None, declaration
+        assert [call["content"] for call in adapter.calls] == ["（无输出）"], declaration
+
+
+@pytest.mark.asyncio
+async def test_a_message_merely_containing_a_declared_token_is_delivered(tmp_path, monkeypatch):
+    """The anchoring is preserved: a declared token inside prose is chat, not a narration."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = _router(_declared_config(), adapter)
+    contents = [
+        "Tăcere în sală — iată planul de lucru pentru mâine.",
+        "Am notat fără livrare pentru marți, restul rămâne cum am stabilit.",
+    ]
+
+    for content in contents:
+        result = await router._deliver_to_platform(DeliveryTarget.parse(TARGET), content, metadata=None)
+        assert result.get("filtered") is None, content
+
+    assert [call["content"] for call in adapter.calls] == contents
+
+
+@pytest.mark.asyncio
+async def test_config_yaml_declaration_reaches_the_filter(tmp_path, monkeypatch):
+    """The live path: ``gateway.silence_narration`` in config.yaml → the same two loader steps."""
+    from gateway import config_loader
+
+    (tmp_path / "config.yaml").write_text(
+        "gateway:\n"
+        "  silence_narration:\n"
+        "    max_chars: 200\n"
+        "    tokens:\n" + "".join(f"      - {token}\n" for token in DECLARED_VOCABULARY),
+        encoding="utf-8",
+    )
+    gw_data: dict = {}
+    config_loader.load_yaml_layer(tmp_path, gw_data)
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = _router(GatewayConfig.from_dict(gw_data), adapter)
+
+    result = await router._deliver_to_platform(
+        DeliveryTarget.parse(TARGET), MEASURED_NARRATIONS[0], metadata=None,
+    )
+
+    assert adapter.calls == []
+    assert result["filtered"] == "silence_narration"
+
+
 # --- Config round-trip ------------------------------------------------------
 
 

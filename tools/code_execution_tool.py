@@ -306,10 +306,20 @@ def _call(tool_name, args):
                     if not chunk:
                         raise RuntimeError("Agent process disconnected")
                     buf += chunk
-                    if buf.endswith(b"\\n"):
+                    # Every reply is one JSON object on one line, so a
+                    # blank line is never a reply body. Consuming one as
+                    # the reply left the real reply queued on the shared
+                    # socket and every later call read the PREVIOUS
+                    # call's result.
+                    if buf.endswith(b"\\n") and buf.strip():
                         break
+                raw = buf.decode().strip()
+                result = json.loads(raw)
                 break
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, ValueError):
+                # Unparseable reply: the stream is desynchronized, so
+                # drop the connection instead of leaving stale bytes
+                # for the next call to read.
                 global _sock
                 try:
                     if _sock is not None:
@@ -319,8 +329,6 @@ def _call(tool_name, args):
                 _sock = None
                 if _attempt + 1 >= _attempts:
                     raise
-    raw = buf.decode().strip()
-    result = json.loads(raw)
     if isinstance(result, str):
         try:
             return json.loads(result)

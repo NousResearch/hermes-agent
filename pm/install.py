@@ -292,11 +292,25 @@ def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
         _discard_entry(store, f"fetch-{artifact['sha256']}")
 
 
+def _raise_walk_error(error: OSError) -> None:
+    """os.walk onerror hook for tree_digest: surface unreadable subtrees."""
+    raise error
+
+
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
-    """Explicit installs re-check realized bytes; startup keeps its cheap facts check."""
+    """Explicit installs re-check realized bytes; startup keeps its cheap facts check.
+
+    An entry the current user cannot read counts as verified: replacing it
+    would first rename that same unreadable tree away, so a reinstall can
+    never succeed and only loops (#140575). The ACL problem is reported."""
     entry = store.entry(fact["entry"])
     try:
-        return not package.verify(entry, target) and fact.get("digest") == tree_digest(entry)
+        return not package.verify(entry, target) and fact.get("digest") == tree_digest(
+            entry, onerror=_raise_walk_error)
+    except PermissionError as error:
+        LOG.warning("cannot read entry %s (%s); keeping it instead of reinstalling",
+                    fact["entry"], error)
+        return True
     except OSError:
         return False
 

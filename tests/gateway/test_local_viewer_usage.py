@@ -61,7 +61,8 @@ def test_each_api_step_publishes_usage_only_for_local_viewers(platform):
     kinds = [kind for kind, _ in published]
     if platform == Platform.LOCAL:
         usage = next(payload for kind, payload in published if kind == 'session.usage')
-        assert set(usage) == FIELDS and usage['api_calls'] == 2
+        assert set(usage) == FIELDS | {'usage'} and usage['api_calls'] == 2
+        assert usage['usage']['cache_hit_pct'] == 9 and usage['usage']['avg_tps'] == 10.0
     else:
         assert 'session.usage' not in kinds
 
@@ -119,7 +120,27 @@ def test_local_viewer_turn_end_records_stats_for_the_completion():
         publish_usage(turn, _agent(), record=True)
     finally:
         execution_result.reset(token)
-    assert captured['session_usage'] == published[-1][1]
+    assert captured['session_usage'] == {k: v for k, v in published[-1][1].items() if k != 'usage'}
+
+
+def test_session_usage_frame_carries_the_projected_usage_object():
+    """``session.usage`` publishes both shapes ``SessionUsagePayload`` declares: the frozen counters
+    at the top level (the Ink TUI's ``usageFromTick``) *and* ``tui_usage(stats)`` under ``usage``,
+    which the desktop merges into its status-bar ``UsageStats``. A flat-only frame left
+    ``payload.usage`` undefined, so the desktop dropped every mid-turn tick and its cache-hit-rate /
+    tokens-per-second chips sat on the "no figure" placeholder until a turn ended."""
+    from gateway.session_usage import publish_usage, tui_usage, usage_stats
+    from tui_gateway.contracts.registry import EVENTS
+    published = []
+    agent = _agent()
+    publish_usage(_turn(Platform.LOCAL, published, agent), agent)
+    kind, payload = published[-1]
+    stats = usage_stats(agent)
+    assert kind == 'session.usage'
+    assert {k: v for k, v in payload.items() if k != 'usage'} == stats
+    assert payload['usage'] == tui_usage(stats)
+    assert payload['usage']['cache_hit_pct'] == 9 and payload['usage']['avg_tps'] == 10.0
+    EVENTS['session.usage'].payload.model_validate(payload)
 
 
 def test_turn_end_publishes_the_agents_banner_info():

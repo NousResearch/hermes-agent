@@ -84,7 +84,14 @@ def authority_delivery(home, params):
             async with GatewayClient(ws) as client:
                 return await client.rpc('bot_relay.deliver', **params)
 
-    return asyncio.run(request())
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(request())
+    # A gateway-hosted tool call runs on a thread with a live loop, where asyncio.run() raises
+    # before anything is dialed and message_agent misreports the DM as ambiguous (#139303).
+    from model_tools import _run_async
+    return _run_async(request())
 
 
 def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, str]:

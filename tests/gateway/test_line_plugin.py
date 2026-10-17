@@ -16,10 +16,11 @@ Covers LINE adapter behavior from the PR review:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
-import base64
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -535,4 +536,147 @@ class TestMediaPublicUrlGuard:
         result = asyncio.run(ad.send_image_file("Uchat", str(img)))
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
+
+
+class TestMediaServingAndStaging:
+    """Safe media serving, temporary file staging into cache/line_media, allowed roots, and MIME fallbacks."""
+
+    def _adapter(self, monkeypatch, **extra):
+        from gateway.config import PlatformConfig
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        monkeypatch.setenv("LINE_PUBLIC_URL", "https://line.example.com")
+        base = {"channel_access_token": "tok", "channel_secret": "sec"}
+        base.update(extra)
+        return LineAdapter(PlatformConfig(enabled=True, extra=base))
+
+    def test_serve_file_stages_temporary_file(self, monkeypatch, tmp_path):
+        home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        ad = self._adapter(monkeypatch)
+
+        # File in temporary directory (tmp_path is under system tempdir)
+        temp_file = tmp_path / "voice_sample.mp3"
+        temp_file.write_bytes(b"dummy-mp3-bytes")
+
+        url = ad._serve_file(temp_file)
+        assert "/line/media/" in url
+
+        # Staged copy should exist in hermes_home / cache / line_media
+        cache_dir = home / "cache" / "line_media"
+        assert cache_dir.is_dir()
+        staged_files = list(cache_dir.glob("*_voice_sample.mp3"))
+        assert len(staged_files) == 1
+        staged = staged_files[0]
+        assert staged.read_bytes() == b"dummy-mp3-bytes"
+        assert str(staged.resolve()) in ad._media_temp_paths
+
+    def test_serve_file_serves_hermes_home_in_place(self, monkeypatch, tmp_path):
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        ad = self._adapter(monkeypatch)
+
+        media_file = home / "downloads" / "photo.jpg"
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_bytes(b"dummy-photo-bytes")
+
+        url = ad._serve_file(media_file)
+        assert "/line/media/" in url
+
+        # Should NOT be staged to cache/line_media
+        cache_dir = home / "cache" / "line_media"
+        assert not cache_dir.exists()
+        assert str(media_file.resolve()) not in ad._media_temp_paths
+
+    @pytest.mark.asyncio
+    async def test_handle_media_allows_custom_safe_root(self, monkeypatch, tmp_path):
+        import shutil
+        from pathlib import Path
+        from aiohttp import web
+
+        home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        # Create a safe root folder outside /tmp and outside tempfile.gettempdir()
+        safe_root = Path.cwd() / ".test_safe_root"
+        safe_root.mkdir(exist_ok=True)
+        try:
+            monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"/nonexistent{os.pathsep}{safe_root}")
+
+            ad = self._adapter(monkeypatch)
+            media = safe_root / "chart.png"
+            media.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            token = ad._register_media(str(media))
+            req = MagicMock(match_info={"token": token})
+
+            resp = await ad._handle_media(req)
+            assert isinstance(resp, web.FileResponse)
+            assert resp.status == 200
+        finally:
+            shutil.rmtree(safe_root, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_handle_media_rejects_unallowed_path(self, monkeypatch, tmp_path):
+        import shutil
+        from pathlib import Path
+
+        home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+
+        # Create an unallowed directory outside /tmp and outside tempfile.gettempdir()
+        unallowed_dir = Path.cwd() / ".test_unallowed_dir"
+        unallowed_dir.mkdir(exist_ok=True)
+        try:
+            ad = self._adapter(monkeypatch)
+            unallowed_file = unallowed_dir / "secret.txt"
+            unallowed_file.write_text("sensitive")
+
+            token = ad._register_media(str(unallowed_file))
+            req = MagicMock(match_info={"token": token})
+
+            resp = await ad._handle_media(req)
+            assert resp.status == 403
+            assert resp.text == "forbidden"
+        finally:
+            shutil.rmtree(unallowed_dir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_handle_media_mime_type_fallback(self, monkeypatch, tmp_path):
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        ad = self._adapter(monkeypatch)
+
+        opus_file = home / "audio.opus"
+        opus_file.write_bytes(b"dummy-opus")
+
+        token = ad._register_media(str(opus_file))
+        req = MagicMock(match_info={"token": token})
+
+        with patch("mimetypes.guess_type", return_value=(None, None)):
+            resp = await ad._handle_media(req)
+            assert resp.headers.get("Content-Type") == "audio/opus"
+
+    @pytest.mark.asyncio
+    async def test_disconnect_unlinks_staged_temp_files(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        ad = self._adapter(monkeypatch)
+
+        temp_file = tmp_path / "temp_audio.wav"
+        temp_file.write_bytes(b"wav-bytes")
+
+        ad._serve_file(temp_file)
+        assert len(ad._media_temp_paths) == 1
+        staged_path = next(iter(ad._media_temp_paths))
+        assert Path(staged_path).exists()
+
+        await ad.disconnect()
+        assert not Path(staged_path).exists()
+        assert len(ad._media_temp_paths) == 0
+
 

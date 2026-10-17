@@ -102,12 +102,16 @@ class _NonStreamRequest:
                 "request_complete" if self.result["response"] is not None else "request_error_cleanup")
 
     def _abort_request(self, reason: str) -> None:
-        """Watchdog/interrupt kill: abort the request client (kind-aware, #67142)
-        and retire the codex token; the worker sees its own forced close via
-        the cancel flags."""
+        """Watchdog/interrupt kill: revoke ownership, then abort the request client.
+
+        ``close_once`` releases a blocked transport synchronously.  Retire the
+        Codex retry/writer lease first so the worker cannot handle the forced
+        transport error as a live request while this call still owns the client
+        registry lock.
+        """
+        self._retire_codex_request_token()
         with h.contextlib.suppress(Exception):
             self.clients.close_once(reason)
-        self._retire_codex_request_token()
 
     def _await_worker_after_kill(self, timeout_message: str) -> None:
         # Wait briefly for the worker to notice the closed connection.

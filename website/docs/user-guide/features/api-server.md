@@ -772,6 +772,37 @@ This means you can customize behavior per-frontend without losing capabilities:
 - Open WebUI system prompt: "You are a Python expert. Always include type hints."
 - The agent still has terminal, file tools, web search, memory, etc.
 
+### Markdown frontends
+
+The API server's built-in platform hint tells the model the rendering layer is unknown and to answer in
+plain text with no Markdown. A frontend `system` message or `instructions` field that asks for Markdown is
+layered *after* that hint, so the model gets two conflicting rules and formatting becomes unreliable.
+
+If every client of this server renders Markdown, replace the hint itself with the top-level
+`platform_hints` key in `config.yaml` (see
+[Prompt Assembly](../../developer-guide/prompt-assembly.md)):
+
+```yaml
+platform_hints:
+  api_server:
+    replace: >-
+      You're responding through an API server to a client that renders GitHub-Flavored Markdown. Use
+      Markdown when it improves clarity: headings, bullets, numbered lists, tables, links, emphasis, and
+      fenced code blocks are supported. Keep brief conversational replies natural rather than forcing document structure.
+      File/media delivery: images referenced as MEDIA:/absolute/path tags (.png/.jpg/.jpeg/.gif/.webp/.bmp,
+      up to 5MB) are inlined as base64 data URLs in responses on the chat, completions, and responses
+      endpoints. Non-image files are NOT intercepted anywhere, and the runs endpoint intercepts nothing — a
+      MEDIA: tag there renders as literal text exposing a raw host filesystem path. For those cases, state
+      the file path in your response text instead of a MEDIA: tag.
+```
+
+- Keep the media-delivery sentences: `replace` drops the whole built-in hint, including them.
+- Use `append` instead when you only want to add guidance and keep the plain-text default.
+- The hint is part of the stable system prompt, so it applies to sessions started (or compacted) after
+  the change and does not break prompt caching. Existing sessions keep the hint they were built with.
+- The setting is per server, not per request. A server shared by plain-text and Markdown clients should
+  keep the default hint, or run a separate [profile](#multi-user-setup-with-profiles) per client type.
+
 ## Authentication
 
 Bearer token auth via the `Authorization` header:

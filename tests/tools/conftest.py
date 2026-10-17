@@ -63,7 +63,10 @@ def _materialize_mcp_sdk_symbols():
     the module and expect the pre-lazy eager-import world: symbols bound,
     availability flags reflecting the installed SDK. Ensure that state up
     front so ``mock.patch`` sees real originals and ``_ensure_mcp_sdk()``
-    can never clobber a patched flag mid-test (it no-ops once attempted).
+    can never clobber a patched flag mid-test (it no-ops once loaded).
+    ``_run_http`` re-imports a missing HTTP/SSE client on every connect, so
+    simulate an unavailable transport by failing its import
+    (``patch.dict(sys.modules, {module: None})``), not by patching its flag.
     """
     try:
         from tools import mcp_tool

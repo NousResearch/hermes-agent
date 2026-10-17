@@ -4,7 +4,7 @@ export const enMcpReload: Translations['connectorsPage']['reload'] = {
   action: 'Reload MCP servers',
   title: 'Reload MCP servers?',
   description:
-    "This reconciles this profile's MCP servers with config and refreshes this chat's tools. The next message re-sends the full prompt, which costs prompt-cache tokens.",
+    "This reconciles this profile's MCP servers with config. If this chat's tools change, the next message starts a new prompt-cache prefix; a reload that changes nothing does not resend the prompt.",
   confirm: 'Reload now',
   deferred:
     'MCP servers updated for this profile. This chat keeps its tools until its running turn finishes; run the reload again then (or reopen the chat).',

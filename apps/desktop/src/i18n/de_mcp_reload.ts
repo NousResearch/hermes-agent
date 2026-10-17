@@ -5,7 +5,7 @@ export const deMcpReload: NonNullable<TranslationOverrides['connectorsPage']>['r
   action: 'MCP-Server neu laden',
   title: 'MCP-Server neu laden?',
   description:
-    'Dadurch werden die MCP-Server dieses Profils mit der Konfiguration abgeglichen und die Tools dieses Chats aktualisiert. Die nächste Nachricht sendet den vollständigen Prompt erneut — das kostet Prompt-Cache-Token.',
+    'Dadurch werden die MCP-Server dieses Profils mit der Konfiguration abgeglichen. Ändern sich die Tools dieses Chats, beginnt die nächste Nachricht ein neues Prompt-Cache-Präfix; ein Neuladen ohne Änderungen sendet den Prompt nicht erneut.',
   confirm: 'Jetzt neu laden',
   deferred:
     'MCP-Server für dieses Profil aktualisiert. Dieser Chat behält seine Tools, bis sein laufender Turn endet; lade danach erneut (oder öffne den Chat neu).',

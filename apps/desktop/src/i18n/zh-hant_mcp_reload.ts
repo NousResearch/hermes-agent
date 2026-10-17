@@ -4,7 +4,7 @@ export const zhHantMcpReload: NonNullable<TranslationOverrides['connectorsPage']
   action: '重新載入 MCP 伺服器',
   title: '重新載入 MCP 伺服器？',
   description:
-    '這會將此設定檔的 MCP 伺服器與設定同步，並重新整理此聊天的工具。下一則訊息會重新傳送完整提示，消耗提示快取的 token。',
+    '這會將此設定檔的 MCP 伺服器與設定同步。如果此聊天的工具發生變化，下一則訊息會開始新的提示快取前綴；沒有變化的重新載入不會重新傳送提示。',
   confirm: '立即重新載入',
   deferred:
     '此設定檔的 MCP 伺服器已更新。此聊天會保留目前工具，直到執行中的回合結束；屆時請再次重新載入（或重新開啟聊天）。',

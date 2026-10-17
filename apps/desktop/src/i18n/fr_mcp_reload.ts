@@ -5,7 +5,7 @@ export const frMcpReload: NonNullable<TranslationOverrides['connectorsPage']>['r
   action: 'Recharger les serveurs MCP',
   title: 'Recharger les serveurs MCP ?',
   description:
-    "Cela réconcilie les serveurs MCP de ce profil avec la configuration et actualise les outils de ce chat. Le prochain message renvoie l'invite complète, ce qui consomme des jetons du cache d'invite.",
+    "Cela réconcilie les serveurs MCP de ce profil avec la configuration. Si les outils de ce chat changent, le prochain message démarre un nouveau préfixe de cache d'invite ; un rechargement sans changement ne renvoie pas l'invite.",
   confirm: 'Recharger maintenant',
   deferred:
     "Serveurs MCP mis à jour pour ce profil. Ce chat conserve ses outils jusqu'à la fin de son tour en cours ; relancez le rechargement ensuite (ou rouvrez le chat).",

@@ -6,7 +6,6 @@ reconciles only the requesting profile's MCP servers; ``file.attach`` stages for
 """
 import asyncio
 from functools import partial
-import logging
 import sys
 
 from gateway.session_busy_controls import authorize
@@ -20,7 +19,6 @@ _SUBAGENT_FIELDS = (
 _TAIL_BYTES = 16384
 _PROCESS_TAIL_CHARS = 32768  # main's dock tail view (cli_process_dock.process_tail)
 
-logger = logging.getLogger(__name__)
 
 
 def handlers(connection):
@@ -281,8 +279,17 @@ async def reload_mcp(connection, ref, params):
         raise RuntimeStoreError('invalid_params')
     if 'session:control' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    if params.get('confirm') is not True and params.get('always') is not True:
-        return {'status': 'confirm_required', 'message': 'Reloading MCP refreshes every chat of this profile.'}
+    always = params.get('always') is True
+    if params.get('confirm') is not True and not always and _mcp_reload_confirm_required(connection):
+        return {'status': 'confirm_required', 'message': (
+            "Reloading reconciles this profile's MCP servers and applies this chat's new tools as its next "
+            'policy generation. The next message re-sends the full prompt, which costs prompt-cache tokens. '
+            'Reply `/reload-mcp now` to proceed once, or `/reload-mcp always` to proceed and stop asking in '
+            'this profile.')}
+    if always:
+        # Before reconcile: a failed preference write must not follow a claimed reload. Consent and grant
+        # checks above already passed, and the write raises storage_unavailable like every settings write.
+        await asyncio.to_thread(_persist_mcp_reload_confirm_off, connection)
     from tools.mcp_oauth import suppress_interactive_oauth
     from tools import mcp_tool_discovery as discovery
 
@@ -308,15 +315,31 @@ async def reload_mcp(connection, ref, params):
     unavailable = f'; did not connect: {", ".join(failed)}' if failed else ''
     selected = {'session_servers': await asyncio.to_thread(_session_servers, connection.authority, ref.session_id,
                                                            ready)} if session else {}
-    if params.get('always') is True:
-        await asyncio.to_thread(_persist_mcp_reload_confirm_off, connection)
     return {'status': 'reloaded', 'message': f'MCP servers reconciled ({changed}){note}{unavailable}',
             **({'session': session} if session else {}), **({'unavailable': failed} if failed else {}), **selected}
 
 
+def _mcp_reload_confirm_required(connection):
+    """The invoking profile's effective ``approvals.mcp_reload_confirm``. Fail closed: an unreadable
+    profile config still asks instead of turning a consent gate into silent approval."""
+    from pathlib import Path
+
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import load_config
+
+    try:
+        with _profile_runtime_scope(Path(connection.authority.profile_id), hydrate_secrets=False):
+            config = load_config()
+        approvals = config.get('approvals') if isinstance(config, dict) else None
+        return bool(approvals.get('mcp_reload_confirm', True)) if isinstance(approvals, dict) else True
+    except Exception:  # health: allow BLE001 -- an unreadable config must keep the consent gate closed
+        return True
+
+
 def _persist_mcp_reload_confirm_off(connection):
     """``/reload-mcp always``: the invoking profile stops asking (main's approval opt-out, written to
-    that profile's config.yaml by the same raw round-trip as the other owner-side preference writes)."""
+    that profile's config.yaml by the same raw round-trip as the other owner-side preference writes).
+    A failed write raises ``storage_unavailable``; the caller must not report a saved opt-out."""
     from gateway.session_tui_config import _write_profile_config
 
     def edit(config):
@@ -325,10 +348,7 @@ def _persist_mcp_reload_confirm_off(connection):
             approvals = config['approvals'] = {}
         approvals['mcp_reload_confirm'] = False
 
-    try:
-        _write_profile_config(connection, edit)
-    except Exception:  # health: allow BLE001 -- a preference write must not fail the completed reload
-        logger.warning('Could not persist the MCP reload confirmation opt-out', exc_info=True)
+    _write_profile_config(connection, edit)
 
 
 def _session_servers(authority, sid, ready):

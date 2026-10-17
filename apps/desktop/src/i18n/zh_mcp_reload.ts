@@ -4,7 +4,7 @@ export const zhMcpReload: NonNullable<TranslationOverrides['connectorsPage']>['r
   action: '重新加载 MCP 服务器',
   title: '重新加载 MCP 服务器？',
   description:
-    '这会将此配置文件的 MCP 服务器与配置同步，并刷新此聊天的工具。下一条消息会重新发送完整提示，消耗提示缓存的 token。',
+    '这会将此配置文件的 MCP 服务器与配置同步。如果此聊天的工具发生变化，下一条消息会开始新的提示缓存前缀；没有变化的重新加载不会重新发送提示。',
   confirm: '立即重新加载',
   deferred:
     '此配置文件的 MCP 服务器已更新。此聊天会保留当前工具，直到运行中的回合结束；届时请再次重新加载（或重新打开聊天）。',

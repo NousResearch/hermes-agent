@@ -7,7 +7,7 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
+    "postinstall": "node patch-spectrum-mixed-attachments.mjs && node patch-spectrum-poll-schema.mjs"
   },
   "engines": {
     "node": ">=18.17"

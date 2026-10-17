@@ -9,10 +9,10 @@ active/compacted/display_order/display_identity differing.
 
 This test rebuilds that measured end-state (compaction carry + a skewed stored
 identity/order on the copy, as left behind by a generation that computed the
-identity differently), drives one more compaction, and asserts the behavior
-contract: one logical message, one projection entry. The heal lives on the
-compaction write path (not the read path) so paged display reads stay bounded
-in the size of the page, not the transcript.
+identity differently), and asserts the behavior contract: one logical message,
+one projection entry -- both before the healing compaction (the read path
+folds same-uid twins page-locally, #128468 split-slot variant) and after it
+(the write-path heal makes the single group durable).
 """
 
 from hermes_state import SessionDB
@@ -63,12 +63,23 @@ def _reply_count(db, sid, reply_text):
     return sum(1 for m in rows if m["role"] == "assistant" and m["content"] == reply_text)
 
 
+def _visible_slot_count(db, sid, reply_text):
+    """Distinct display_order slots behind the reply, straight from the store."""
+    return len(db._read_all(
+        "SELECT DISTINCT display_order FROM messages WHERE session_id = ? "
+        "AND role = 'assistant' AND content = ? AND (active = 1 OR compacted = 1)",
+        (sid, db._encode_content(reply_text))))
+
+
 class TestSplitDisplayGenerationProjectsOnce:
     def test_text_reply_projects_once(self, tmp_path):
         from pathlib import Path
         db = SessionDB(Path(tmp_path) / "state.db")
         _carry_and_split(db, "chat", "same reply")
-        assert _reply_count(db, "chat", "same reply") == 2
+        # Two slots on disk (the split end-state is really built), one row out:
+        # the read path folds same-uid twins (#128468 split-slot variant).
+        assert _visible_slot_count(db, "chat", "same reply") == 2
+        assert _reply_count(db, "chat", "same reply") == 1
         _compact_again(db, "chat", "same reply")
 
         assert _reply_count(db, "chat", "same reply") == 1
@@ -82,7 +93,8 @@ class TestSplitDisplayGenerationProjectsOnce:
         from pathlib import Path
         db = SessionDB(Path(tmp_path) / "state.db")
         _carry_and_split(db, "chat", "")
-        assert _reply_count(db, "chat", "") == 2
+        assert _visible_slot_count(db, "chat", "") == 2
+        assert _reply_count(db, "chat", "") == 1
         _compact_again(db, "chat", "")
 
         assert _reply_count(db, "chat", "") == 1

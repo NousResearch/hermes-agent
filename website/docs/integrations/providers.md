@@ -1265,6 +1265,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
+| [Boundless](https://inference.boundless.network) | `https://api.inference.boundless.network/v1` | Open-weight models with tool calling; prepaid credits |
 | [Actual Computer](https://actual.inc) | `https://api.actual.inc/v1` | Private relay to your own cluster; local daemon at `http://127.0.0.1:8080/v1` |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
@@ -1282,6 +1283,33 @@ model:
   base_url: https://api.together.xyz/v1
   api_key: your-together-key
 ```
+
+---
+
+### Boundless
+
+[Boundless](https://inference.boundless.network) serves an OpenAI-compatible chat-completions API. Create an API key in the [Boundless console](https://inference.boundless.network/api-keys), then add it to `~/.hermes/.env`:
+
+```bash
+BOUNDLESS_API_KEY=your-boundless-key
+```
+
+Configure a [named custom provider](#named-custom-providers) in `~/.hermes/config.yaml`:
+
+```yaml
+providers:
+  boundless:
+    name: Boundless
+    api: https://api.inference.boundless.network/v1
+    key_env: BOUNDLESS_API_KEY
+    transport: chat_completions
+
+model:
+  provider: custom:boundless
+  default: deepseek-v4.1-flash
+```
+
+Use a model ID from the [Boundless model catalog](https://inference.boundless.network/models). You can also run `hermes model`, choose **Custom endpoint**, and enter the base URL and API key above.
 
 ---
 

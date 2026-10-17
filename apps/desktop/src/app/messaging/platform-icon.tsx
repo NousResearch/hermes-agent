@@ -8,6 +8,7 @@ import {
   SiMattermost,
   SiQq,
   SiSignal,
+  SiSimplex,
   SiTelegram,
   SiWechat,
   SiWhatsapp
@@ -59,6 +60,7 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   mattermost: { Icon: SiMattermost, color: '#0058CC', kind: 'brand' },
   matrix: { Icon: SiMatrix, color: '#000000', kind: 'brand' },
   signal: { Icon: SiSignal, color: '#3A76F0', kind: 'brand' },
+  simplex: { Icon: SiSimplex, color: '#000000', kind: 'brand' },
   whatsapp: { Icon: SiWhatsapp, color: '#25D366', kind: 'brand' },
   bluebubbles: { Icon: SiApple, color: '#0BD318', kind: 'brand' },
   photon: { Icon: PhotonIcon, color: '#6366F1', kind: 'brand' },

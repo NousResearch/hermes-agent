@@ -412,3 +412,60 @@ def test_format_dispatch_note_dispatched():
     )
     assert "security" not in note and "\n" not in note
     assert len(note) < 80
+
+
+def test_load_review_credentials_cfg_translates_ordered_fallback_chain(monkeypatch):
+    chain = [
+        {"provider": "anthropic", "model": "claude-opus-4-6"},
+        {"provider": "nous", "model": "astra"},
+    ]
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"auxiliary": {"review": {
+            "provider": "anthropic",
+            "model": "claude-fable-5-1",
+            "fallback_chain": chain,
+        }}},
+    )
+
+    cfg = re_mod._load_review_credentials_cfg()
+
+    assert cfg is not None
+    assert cfg["fallback_providers"] == chain
+    assert cfg["fallback_providers"] is not chain
+
+    from tools.delegate_tool_config import _resolve_child_fallback_chain
+
+    parent = MagicMock()
+    parent._fallback_chain = [
+        {"provider": "openrouter", "model": "unrelated-global"}
+    ]
+    assert _resolve_child_fallback_chain(parent, cfg, pinned=True) == chain
+
+
+def test_load_review_credentials_cfg_warns_on_internal_fallback_key(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"auxiliary": {"review": {
+            "provider": "anthropic",
+            "model": "claude-fable-5-1",
+            "fallback_providers": [{"provider": "anthropic", "model": "claude-opus-4-6"}],
+        }}},
+    )
+
+    cfg = re_mod._load_review_credentials_cfg()
+
+    assert cfg is not None
+    assert "fallback_providers" not in cfg
+    assert "use auxiliary.review.fallback_chain" in caplog.text
+
+
+@pytest.mark.parametrize("chain", [[], None, "not-a-list"])
+def test_load_review_credentials_cfg_ignores_unusable_fallback_chain(monkeypatch, chain):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"auxiliary": {"review": {
+            "provider": "auto", "model": "", "fallback_chain": chain,
+        }}},
+    )
+    assert re_mod._load_review_credentials_cfg() is None

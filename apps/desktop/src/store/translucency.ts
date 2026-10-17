@@ -170,6 +170,7 @@ export const isChatWindow = (search = typeof window === 'undefined' ? '' : windo
    the seam is measured from; styles.css picks the matching gradient
    direction off html[dir]. */
 let railObserver: null | ResizeObserver = null
+let railMountObserver: MutationObserver | null = null
 let railTarget: Element | null = null
 let railTrackingOn = false
 
@@ -229,6 +230,20 @@ const startRailTracking = (): void => {
     railObserver = new ResizeObserver(() => measureRailEdge())
   }
 
+  if (typeof MutationObserver !== 'undefined' && !railMountObserver) {
+    // The store starts before React mounts the sidebar on a cold launch. A
+    // ResizeObserver can follow a rail it already knows, but cannot discover
+    // one that did not exist when tracking began. Child-list changes are
+    // intentionally cheap while the current rail remains connected: only a
+    // missing or remounted target needs a geometry read.
+    railMountObserver = new MutationObserver(() => {
+      if (!railTarget || !railTarget.isConnected) {
+        measureRailEdge()
+      }
+    })
+    railMountObserver.observe(document.documentElement, { childList: true, subtree: true })
+  }
+
   window.addEventListener('resize', measureRailEdge)
   measureRailEdge()
 }
@@ -243,6 +258,9 @@ const stopRailTracking = (): void => {
   if (railObserver && railTarget) {
     railObserver.unobserve(railTarget)
   }
+
+  railMountObserver?.disconnect()
+  railMountObserver = null
 
   railTarget = null
   window.removeEventListener('resize', measureRailEdge)

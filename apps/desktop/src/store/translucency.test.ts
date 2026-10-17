@@ -274,6 +274,79 @@ describe('frost and area', () => {
   })
 })
 
+describe('sidebar glass rail tracking', () => {
+  afterEach(() => {
+    document.querySelector('[data-slot="sidebar"]')?.remove()
+    setTranslucencyMode('clear')
+    setTranslucency(TRANSLUCENCY_MIN)
+    setTranslucencyScope(DEFAULT_GLASS_SCOPE)
+  })
+
+  it('measures a sidebar that mounts after sidebar glass starts without a window resize', async () => {
+    setTranslucencyScope('sidebar')
+    setTranslucency(50)
+    setTranslucencyMode('glass')
+
+    expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('0px')
+
+    const sidebar = document.createElement('aside')
+    sidebar.dataset.slot = 'sidebar'
+    vi.spyOn(sidebar, 'getBoundingClientRect').mockReturnValue({ left: 0, right: 260 } as DOMRect)
+    document.body.append(sidebar)
+
+    await Promise.resolve()
+
+    expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('260px')
+
+    const measure = vi.spyOn(sidebar, 'getBoundingClientRect')
+    measure.mockClear()
+    const child = document.createElement('span')
+    sidebar.append(child)
+    await Promise.resolve()
+    expect(measure).not.toHaveBeenCalled()
+  })
+
+  it('reacquires a replacement rail and stops observing when glass is disabled', async () => {
+    setTranslucencyScope('sidebar')
+    setTranslucency(50)
+    setTranslucencyMode('glass')
+    const sidebar = document.createElement('aside')
+    sidebar.dataset.slot = 'sidebar'
+    vi.spyOn(sidebar, 'getBoundingClientRect').mockReturnValue({ left: 0, right: 260 } as DOMRect)
+    document.body.append(sidebar)
+    await Promise.resolve()
+    expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('260px')
+
+    sidebar.remove()
+    await Promise.resolve()
+    expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('0px')
+
+    const replacement = document.createElement('aside')
+    replacement.dataset.slot = 'sidebar'
+
+    const measure = vi.spyOn(replacement, 'getBoundingClientRect').mockReturnValue({ left: 0, right: 310 } as DOMRect)
+
+    document.body.append(replacement)
+    await Promise.resolve()
+    expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('310px')
+
+    setTranslucencyMode('clear')
+    replacement.remove()
+
+    const disabledRail = document.createElement('aside')
+    disabledRail.dataset.slot = 'sidebar'
+
+    const disabledMeasure = vi
+      .spyOn(disabledRail, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, right: 420 } as DOMRect)
+
+    document.body.append(disabledRail)
+    await Promise.resolve()
+    expect(disabledMeasure).not.toHaveBeenCalled()
+    expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('')
+  })
+})
+
 // A held slider drag and a timed pulse from a picker click can overlap, which
 // is why the peek counts rather than toggling: the drag must not be cancelled
 // by a pulse expiring underneath it.

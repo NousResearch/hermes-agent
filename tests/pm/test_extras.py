@@ -241,6 +241,29 @@ def test_legacy_selection_carries_extras_the_main_era_venv_lazily_installed(monk
     assert extras.legacy_selection(tmp_path / "no-venv") == ["all"]
 
 
+def test_legacy_selection_carries_extras_the_launcher_venv_lazily_installed(monkeypatch, tmp_path):
+    """A Windows-launcher install keeps its venv under ``$HERMES_HOME/venvs/<name>``
+    instead of the checkout (#124228): the migration runs from that venv, so the
+    choke point's running-interpreter fallback is how it is found, and its extras
+    must be carried like an in-tree venv's."""
+    launcher_venv = tmp_path / "hermes-home" / "venvs" / "hermes-agent"
+    site = launcher_venv / "Lib" / "site-packages"
+    (site / "telegram").mkdir(parents=True)
+    monkeypatch.setattr("hermes_constants.project_venv_dir", lambda root: launcher_venv)
+
+    selection = extras.legacy_selection(tmp_path / "checkout")
+
+    assert selection == ["all", "telegram"]
+
+
+def test_legacy_selection_without_any_venv_stays_all(monkeypatch, tmp_path):
+    """No in-tree venv and no provenance-checked running venv selects ``[all]``
+    alone — the choke point's None is respected, never second-guessed here."""
+    monkeypatch.setattr("hermes_constants.project_venv_dir", lambda root: None)
+
+    assert extras.legacy_selection(tmp_path) == ["all"]
+
+
 def test_runtime_marker_evaluation_answers_for_the_given_environment():
     """The delegate really evaluates the marker (in PM's runtime interpreter)."""
     import subprocess

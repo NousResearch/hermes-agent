@@ -12419,7 +12419,7 @@ def test_rollback_restore_resolves_number_and_file_path():
         def list_checkpoints(self, cwd):
             return [{"hash": "aaa111"}, {"hash": "bbb222"}]
 
-        def restore(self, cwd, target, file_path=None):
+        def restore(self, cwd, target, file_path=None, safe=False):
             calls["args"] = (cwd, target, file_path)
             return {"success": True, "message": "done"}
 
@@ -12437,6 +12437,30 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert resp["result"]["success"] is True
     assert calls["args"][1] == "bbb222"
     assert calls["args"][2] == "src/app.tsx"
+
+
+def test_rollback_restore_keeps_hand_edits_unless_all():
+    """The sidecar's whole-tree restore keeps the user's hand-edits like the owner's (``safe``); only
+    ``all: true`` reverts them too. A file-scoped restore is never ``safe``."""
+    calls = []
+
+    class _Mgr:
+        enabled = True
+        unsupported_backend_reason = staticmethod(lambda task_id="default": None)
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "aaa111"}]
+
+        def restore(self, cwd, target, file_path=None, safe=False):
+            calls.append((file_path, safe))
+            return {"success": True, "message": "done"}
+
+    for extra in ({}, {"all": None}, {"all": False}, {"all": True}, {"file_path": "a.py"}):
+        server._sessions["sid"] = _session(agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()), history=[])
+        resp = server.handle_request({"id": "1", "method": "rollback.restore",
+                                      "params": {"session_id": "sid", "hash": "1", **extra}})
+        assert resp.get("result", {}).get("success") is True, resp
+    assert calls == [(None, True), (None, True), (None, True), (None, False), ("a.py", False)]
 
 
 def test_rollback_list_carries_checkpoint_reason_as_message():
@@ -12474,7 +12498,7 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
 
-        def restore(self, cwd, target, file_path=None):
+        def restore(self, cwd, target, file_path=None, safe=False):
             return {"success": True, "message": "restored"}
 
     history = [
@@ -12531,7 +12555,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
 
-        def restore(self, cwd, target, file_path=None):
+        def restore(self, cwd, target, file_path=None, safe=False):
             return {"success": True, "message": "restored"}
 
     handoff = {
@@ -12592,7 +12616,7 @@ def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_
         def list_checkpoints(self, cwd):
             return [{"hash": "abc123"}]
 
-        def restore(self, cwd, target, file_path=None):
+        def restore(self, cwd, target, file_path=None, safe=False):
             return {"success": True, "message": "restored"}
 
     carrier = {

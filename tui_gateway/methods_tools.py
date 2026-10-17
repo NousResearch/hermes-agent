@@ -1134,7 +1134,9 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if reason := _container_checkpoint_refusal(session, mgr, cwd):
             return {"success": False, "error": reason}
-        result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
+        # A whole-tree restore keeps the user's hand-edits unless ``all`` (main's --all), as on the owner.
+        result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None,
+                             safe=not file_path and not params.get("all"))
         if result.get("success") and not file_path:
             removed = 0
             with session["history_lock"]:

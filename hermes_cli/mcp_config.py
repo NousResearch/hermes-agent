@@ -535,6 +535,16 @@ def _oauth_tokens_present(name: str) -> bool:
         return True  # permissive: don't block a real success
 
 
+def _oauth_grant_is_durable(name: str) -> bool:
+    """False when ``name``'s saved access token expires and came without a refresh token.
+    The login/reauth commissioning flow asks this. Other callers of ``_oauth_tokens_present``
+    (server lists, test endpoints, connector install and saved-grant reuse) take a working token
+    as it is."""
+    from tools.mcp_oauth import HermesTokenStorage
+
+    return HermesTokenStorage(name).has_durable_tokens()
+
+
 def _unwrap_exception_group(exc: BaseException) -> Exception:
     """Extract the root cause from anyio ``ExceptionGroup`` wrappers so e.g. "401 Unauthorized" surfaces."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
@@ -954,6 +964,18 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             print()
             _info("Then re-run `hermes mcp login " + name + "`.")
             return False
+        # The token is real and works now, but nothing can renew it: gateway and cron sessions
+        # would lose the server at the first expiry with no browser to sign in again.
+        if not _oauth_grant_is_durable(name):
+            _warning(
+                "Signed in, but the access token expires and the authorization server sent no "
+                "refresh token — Hermes cannot renew it without a browser."
+            )
+            _info(
+                "If the provider issues refresh tokens only on request (often the `offline_access` "
+                f"scope, set under mcp_servers.{name}.oauth.scope), add it and re-run `hermes mcp login {name}`."
+            )
+            return False
         if tools:
             _success(f"Authenticated — {len(tools)} tool(s) available")
         else:
@@ -969,14 +991,15 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         return False
 
 
-def cmd_mcp_login(args):
+def cmd_mcp_login(args) -> int:
     """Run an explicit browser or device authorization for an OAuth-based MCP server."""
     cfg = _lookup_server(args.name, _get_mcp_servers())
-    if cfg is not None:
-        _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None))
+    if cfg is None:
+        return 1
+    return 0 if _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None)) else 1
 
 
-def cmd_mcp_reauth(args):
+def cmd_mcp_reauth(args) -> int:
     """Re-authenticate one OAuth MCP server, or all of them sequentially.
 
     Serial-by-design: a human can only complete one browser OAuth flow at a time.
@@ -990,7 +1013,7 @@ def cmd_mcp_reauth(args):
         oauth_servers = [(n, c) for n, c in servers.items() if c.get("auth") == "oauth" and c.get("url")]
         if not oauth_servers:
             _info("No OAuth-based MCP servers found in config.")
-            return
+            return 0
         print()
         _info(f"Re-authenticating {len(oauth_servers)} OAuth server(s) one at a time...")
         succeeded = 0
@@ -1001,14 +1024,15 @@ def cmd_mcp_reauth(args):
                 succeeded += 1
         print()
         _success(f"Re-authenticated {succeeded}/{len(oauth_servers)} server(s)")
-        return
+        return 0 if succeeded == len(oauth_servers) else 1
     if not name:
         _error("Specify a server name, or use --all to re-auth every OAuth server.")
         _info("Usage: hermes mcp reauth <name>   |   hermes mcp reauth --all")
-        return
+        return 1
     cfg = _lookup_server(name, servers)
-    if cfg is not None:
-        _reauth_oauth_server(name, cfg)
+    if cfg is None:
+        return 1
+    return 0 if _reauth_oauth_server(name, cfg) else 1
 
 
 def _rebuild_exclude_list(

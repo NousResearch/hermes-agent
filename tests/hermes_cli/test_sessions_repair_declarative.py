@@ -1,0 +1,94 @@
+"""Explicit repair must restore browsing after additive schema drift (#140315)."""
+import sqlite3
+from contextlib import closing
+from types import SimpleNamespace
+
+import pytest
+
+from hermes_state import SessionDB
+from hermes_state_common import SCHEMA_VERSION
+from hermes_cli import sessions_cmd
+from hermes_cli.web_server_sessions import _open_session_db_at_path
+from fastapi import HTTPException
+
+
+def _legacy_store(tmp_path, monkeypatch):
+    path = tmp_path / 'state.db'
+    with SessionDB(db_path=path) as db:
+        db.create_session('retained', source='cli')
+        db.append_message('retained', role='user', content='history survives')
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute('ALTER TABLE sessions DROP COLUMN runtime_generation')
+        conn.execute('ALTER TABLE sessions DROP COLUMN runtime_revision')
+        conn.execute('ALTER TABLE async_delegations DROP COLUMN owner_execution_id')
+        for table in ('worker_receipts', 'worker_executions', 'session_admissions', 'runtime_epoch'):
+            conn.execute(f'DROP TABLE {table}')
+        conn.commit()
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == SCHEMA_VERSION
+    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', path)
+    monkeypatch.setattr(sessions_cmd, 'get_hermes_home', lambda: tmp_path)
+    return path
+
+
+def test_check_only_reports_drift_without_mutation(tmp_path, monkeypatch):
+    path = _legacy_store(tmp_path, monkeypatch)
+    before = path.read_bytes()
+    with pytest.raises(HTTPException) as exc:
+        _open_session_db_at_path(path, read_only=True)
+    assert exc.value.status_code == 503
+    assert sessions_cmd._cmd_repair(SimpleNamespace(check_only=True)) == 1
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('blocker', ['owner', 'ddl', 'incomplete', 'backup'])
+def test_refused_reconciliation_preserves_original(tmp_path, monkeypatch, blocker):
+    from gateway.runtime_ownership import ProfileOwnership
+    import hermes_state_repair as repair
+    import hermes_state_schema as schema
+
+    path = _legacy_store(tmp_path, monkeypatch)
+    before = path.read_bytes()
+    owner = ProfileOwnership()
+    if blocker == 'owner':
+        owner.reserve([tmp_path])
+    elif blocker == 'ddl':
+        def fail(conn):
+            conn.execute('CREATE TABLE only_in_scratch (id INTEGER)')
+            raise sqlite3.OperationalError('injected DDL refusal')
+        monkeypatch.setattr(schema, 'reconcile_state_schema', fail)
+    elif blocker == 'incomplete':
+        monkeypatch.setattr(schema, 'reconcile_state_schema', lambda conn: None)
+    else:
+        monkeypatch.setattr(repair, '_backup_db_file', lambda path: (None, 'injected backup refusal'))
+    try:
+        assert sessions_cmd._cmd_repair(SimpleNamespace(check_only=False, no_backup=False)) == 1
+    finally:
+        owner.close()
+    assert path.read_bytes() == before
+    assert not path.with_name(path.name + '.reconcile-scratch').exists()
+
+
+@pytest.mark.parametrize('with_history', [True, False])
+def test_canonical_store_is_unchanged(tmp_path, monkeypatch, with_history):
+    path = tmp_path / 'state.db'
+    with SessionDB(db_path=path) as db:
+        if with_history:
+            db.create_session('normal', source='cli')
+            db.append_message('normal', role='user', content='normal')
+    monkeypatch.setattr('hermes_state.DEFAULT_DB_PATH', path)
+    before = path.read_bytes()
+    assert sessions_cmd._cmd_repair(SimpleNamespace(check_only=False)) in (None, 0)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('backup', [True, False])
+def test_explicit_repair_restores_readonly_history(tmp_path, monkeypatch, backup):
+    path = _legacy_store(tmp_path, monkeypatch)
+    assert sessions_cmd._cmd_repair(SimpleNamespace(check_only=False, no_backup=not backup)) in (None, 0)
+    backups = list(tmp_path.glob('state.db.malformed-backup-*'))
+    assert bool(backups) is backup
+    with _open_session_db_at_path(path, read_only=True) as db:
+        assert [row['content'] for row in db.get_messages('retained')] == ['history survives']
+        assert db.session_count() == 1
+        assert db._conn.execute('SELECT version FROM schema_version').fetchone()[0] == SCHEMA_VERSION
+    assert sessions_cmd._cmd_repair(SimpleNamespace(check_only=True)) in (None, 0)

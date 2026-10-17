@@ -105,7 +105,16 @@ def _cmd_repair(args):
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
+    from hermes_state_reconcile import repair_declarative_schema, schema_drift_reason
     reason = _db_opens_cleanly(db_path)
+    repair = repair_state_db_schema
+    if reason is None:
+        try:
+            reason = schema_drift_reason(db_path)
+        except (sqlite3.Error, OSError) as exc:
+            print(f"✗ Could not check session schema: {exc}")
+            return 1
+        repair = repair_declarative_schema
     if reason is None:
         print(f"✓ {db_path} opens cleanly — no repair needed.")
         return
@@ -113,19 +122,23 @@ def _cmd_repair(args):
     if getattr(args, "check_only", False):
         return 1
     print("Repairing (a backup copy is made first)…")
-    report = repair_state_db_schema(db_path, backup=not getattr(args, "no_backup", False))
+    report = repair(db_path, backup=not getattr(args, "no_backup", False))
     if report.get("repaired"):
         if report.get("backup_path"):
             print(f"  backup: {report['backup_path']}")
         print(f"  strategy: {report.get('strategy')}")
         try:
-            with SessionDB() as _repair_db:
+            with SessionDB(db_path=db_path, read_only=repair is repair_declarative_schema) as _repair_db:
                 n = _repair_db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             print(f"✓ Repaired — {n} sessions recovered.")
         except Exception:
             print("✓ Repaired.")
         return
     print(f"✗ Repair failed: {report.get('error')}")
+    if repair is repair_declarative_schema:
+        if report.get('backup_path'):
+            print(f"  A backup is preserved at: {report['backup_path']}")
+        return 1
     if report.get("backup_path"):
         print(f"  A backup is preserved at: {report['backup_path']}")
     # Without this pointer the user is at a dead end; lead with --inspect-only before writing.

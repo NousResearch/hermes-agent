@@ -3,7 +3,6 @@
 import { spawn } from 'node:child_process'
 
 import { buildDesktopBackendEnv } from './backend-env'
-import { windowsShellCommand } from './windows-child-options'
 
 /** Default probe budget. 5s false-negativeed healthy Windows cold starts (#61764). */
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000
@@ -30,6 +29,10 @@ function resolveProbeTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 const PROBE_TIMEOUT_MS = resolveProbeTimeoutMs()
+
+// cmd.exe re-parses its command line, so these characters would change the
+// command instead of naming a file.
+const CMD_UNSAFE_PATH: RegExp = /["%&|<>^\r\n]/
 
 function isTimeoutError(err: unknown): boolean {
   if (!err || typeof err !== 'object') {
@@ -68,6 +71,7 @@ async function execProbe(
     timeout: number
     shell?: boolean
     windowsHide?: boolean
+    windowsVerbatimArguments?: boolean
   }
 ): Promise<void> {
   const run = () =>
@@ -163,16 +167,42 @@ function shouldTrustHermesOverride(hermesOverride?: string) {
   return typeof hermesOverride === 'string' && hermesOverride.trim().length > 0
 }
 
+function buildCommandScriptProbeInvocation(
+  hermesCommand: string,
+  env: NodeJS.ProcessEnv = process.env
+): { command: string; args: string[]; windowsVerbatimArguments: boolean } | null {
+  // Node does not escape spawn() arguments when ``shell: true``.  Run the
+  // script through cmd.exe explicitly so the executable path stays one quoted
+  // command even when the Windows profile path contains spaces.
+  if (CMD_UNSAFE_PATH.test(hermesCommand)) {
+    return null
+  }
+
+  return {
+    command: env.ComSpec || env.COMSPEC || 'cmd.exe',
+    args: ['/d', '/s', '/c', `""${hermesCommand}" --version"`],
+    windowsVerbatimArguments: true
+  }
+}
+
 async function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   if (!hermesCommand) {
     return false
   }
 
   try {
-    await execProbe(windowsShellCommand(hermesCommand, Boolean(opts?.shell)), ['--version'], {
+    const invocation = opts?.shell
+      ? buildCommandScriptProbeInvocation(hermesCommand)
+      : { command: hermesCommand, args: ['--version'], windowsVerbatimArguments: false }
+
+    if (!invocation) {
+      return false
+    }
+
+    await execProbe(invocation.command, invocation.args, {
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
-      shell: Boolean(opts?.shell),
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       windowsHide: true
     })
 
@@ -183,6 +213,7 @@ async function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }
 }
 
 export {
+  buildCommandScriptProbeInvocation,
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,

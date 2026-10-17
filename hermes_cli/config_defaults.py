@@ -2106,6 +2106,14 @@ DEFAULT_CONFIG = {
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
         # at-least-once). Disable to lose in-flight final responses on crash/restart.
         "delivery_ledger": True,
+        # Visible warnings prepended to ambiguous delivery-ledger redeliveries. Each cause may be
+        # customized, but blank or invalid values retain the built-in warning.
+        "delivery_ledger_markers": {
+            "recovered": "♻️ Recovered reply — the gateway restarted during delivery, so this may be a duplicate:\n\n",
+            "reconnected": "♻️ Recovered reply — the messaging platform reconnected after the original delivery failed, so this may be a duplicate:\n\n",
+            "flood": "♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of it may already have arrived above:\n\n",
+            "retry": "♻️ Recovered reply — the previous delivery attempt was refused, so this may be a duplicate:\n\n",
+        },
         # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
         # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
         # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.

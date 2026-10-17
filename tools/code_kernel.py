@@ -898,6 +898,16 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
                 timeout=timeout, sandbox_tools=sandbox_tools, reused=reused,
                 state_reset=state_reset, exec_start=exec_start,
             )
+            # Local child env is _scrub_child_env(os.environ) plus non-secret
+            # kernel plumbing. Name scrubbed provider creds; do not touch output.
+            try:
+                from tools.code_execution_tool import _local_credential_scrub_note
+                note = _local_credential_scrub_note()
+            except Exception:
+                logger.debug("Failed to compute credential scrub note (local path)", exc_info=True)
+                note = ""
+            if note:
+                result["credential_scrub_note"] = note
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:  # pragma: no cover - defensive parity with per-call
             from tools.code_execution_tool import _error_result

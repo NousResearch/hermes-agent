@@ -148,6 +148,9 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "Fast mode: fast = always, auto = first N seconds of each turn, cold = first turn only",
         "", "normal", "fast", "auto", "cold",
     ),
+    "delegation.busy_result_mode": _select(
+        "Subagent result that finishes while the agent is running", "queue", "steer",
+    ),
     "delegation.reasoning_effort": _select(
         "Reasoning effort for delegated subagents",
         "", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",

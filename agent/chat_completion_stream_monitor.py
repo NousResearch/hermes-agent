@@ -12,6 +12,8 @@ from agent.sleep_clock import SleepWatch
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 
 class StreamingWaitMonitor:
     def _poll_local_load_notice(self, now: float) -> bool:
@@ -106,11 +108,21 @@ class StreamingWaitMonitor:
 
     def _monitor_loop(self) -> None:
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+        # Wall clock may legitimately drift a little per 0.3s iteration (NTP, load).
+        # Only a jump far beyond that is a suspend or a clock step.
+        _SUSPEND_SLACK = 5.0
         self._mon = SimpleNamespace(
             last_heartbeat=time.time(), last_load_poll=0.0,
             load_notice_shown=False, load_notice_misses=0, wait_notice_started_ts=None,
             wait_notice=wn.WaitNoticeState(),
         )
+        # Suspend tracking. ``last_chunk_time`` is wall clock, and wall clock advances
+        # while the host sleeps, so a resumed process sees an elapsed value equal to the
+        # sleep and kills a connection whose peer was never asked for data. The kill then
+        # finds no socket to abort, so it cannot even recover what it interrupted. Every
+        # iteration compares how far each clock moved: only the monotonic delta is real
+        # elapsed time, and the excess is time this process did not run.
+        _prev_wall, _prev_mono = time.time(), time.monotonic()
         _is_local_base = bool(self.agent.base_url) and is_local_endpoint(self.agent.base_url)
         # Only a server on this machine sleeps with it; a remote one kept working (or died).
         sleep_watch = (SleepWatch(interval=0.3) if self.agent.base_url
@@ -132,7 +144,14 @@ class StreamingWaitMonitor:
             if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
                 self._mon.last_heartbeat = _hb_now
                 self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
-            _stale_elapsed = time.time() - self.last_chunk_time["t"]
+            _mono_now = time.monotonic()
+            _skew = (_hb_now - _prev_wall) - (_mono_now - _prev_mono)
+            _prev_wall, _prev_mono = _hb_now, _mono_now
+            if _skew > _SUSPEND_SLACK:
+                # Carry the baseline forward over the sleep instead of counting it.
+                self.last_chunk_time["t"] += _skew
+                logger.info("stream staleness clock skipped %.0fs of host suspend", _skew)
+            _stale_elapsed = _hb_now - self.last_chunk_time["t"]
             if _stale_elapsed > self._stream_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()

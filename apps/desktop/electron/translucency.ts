@@ -15,6 +15,7 @@ import {
   backgroundMaterialFor,
   glassActive,
   type TranslucencyState,
+  vibrancyFor,
   windowOpacityFor,
   type WindowsBackgroundMaterial
 } from '../../shared/src/translucency'
@@ -127,4 +128,84 @@ export function windowOpacityOptions(state: TranslucencyState): { opacity?: numb
   const opacity = windowOpacityFor(state)
 
   return opacityNeedsSetting(opacity) ? { opacity } : {}
+}
+
+/** Opt-in for alpha-capable chat windows on Linux (`HERMES_DESKTOP_TRANSPARENT=1`). */
+export const LINUX_TRANSPARENT_ENV = 'HERMES_DESKTOP_TRANSPARENT'
+
+/**
+ * Linux has no native material, so the translucency setting stays off there.
+ * A compositor (Hyprland, KWin, picom, …) can still blur whatever sits behind
+ * an alpha-capable window, which lets a theme's `customCSS` paint a
+ * translucent background. Electron only honours alpha when the window is
+ * CREATED `transparent`, so this is a launch-time opt-in rather than a live
+ * toggle. Every built-in theme still paints an opaque page, so opting in
+ * changes nothing until a theme asks for transparency; whole-window opacity
+ * is never used, so text and images stay solid.
+ */
+export function linuxTransparentWindows(platform: string, env: Record<string, string | undefined>): boolean {
+  return platform === 'linux' && env[LINUX_TRANSPARENT_ENV] === '1'
+}
+
+/** What `chatWindowSurfaceOptions` needs from the main process. */
+export interface ChatWindowSurfaceEnv {
+  isMac: boolean
+  isWindows: boolean
+  glassSupported: boolean
+  /** `linuxTransparentWindows(...)` for this process. */
+  linuxTransparent: boolean
+  /** The opaque themed anti-flash backing. */
+  themedColor: string
+}
+
+// Constructor options every chat window shares for its translucency surface:
+// the platform material, the webContents backing, and a native opacity only if
+// the state actually fades — all under the CURRENT state. Glass omits
+// backgroundColor so the material shows from the first frame (Electron hands a
+// translucent window a transparent default backing, and runtime swaps are lost
+// early in a window's life — see applyWindowTranslucency); otherwise the opaque
+// themed anti-flash backing. An opted-in Linux window is instead created
+// `transparent` with a clear backing (see linuxTransparentWindows).
+//
+// Call sites also register the window in translucencyBackedWindows so a live
+// toggle can re-apply. The HUD, pet overlay, quick entry and wake indicator
+// are `transparent: true` windows that own their backgrounds and are
+// deliberately not chat windows.
+export function chatWindowSurfaceOptions(state: TranslucencyState, env: ChatWindowSurfaceEnv) {
+  if (env.linuxTransparent) {
+    return { transparent: true, backgroundColor: '#00000000' }
+  }
+
+  return {
+    vibrancy: env.isMac ? vibrancyFor(state) : undefined,
+    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
+    // materials collapse to a shared inactive look when the window blurs
+    // (measured on macOS 26: sidebar, popover and under-window composited
+    // pixel-identically once unfocused), which would quietly erase the
+    // user's frost choice whenever they click elsewhere. Only observable
+    // under glass — everywhere else the page buries the material.
+    visualEffectState: env.isMac ? ('active' as const) : undefined,
+    // NOT `transparent: true` on Windows. The backdrop material already makes
+    // the window translucent on its own: `IsTranslucent` answers yes off
+    // `background_material_` alone, which is what gives the page its transparent
+    // default backing, and `SetBackgroundMaterial` flips widget translucency
+    // live, so a Clear→Glass toggle needs no recreate either way. Its one gate
+    // is a frameless window, and `titleBarStyle: 'hidden'` already makes
+    // `has_frame()` false here.
+    //
+    // What `transparent` adds on top is permanent and unwanted: it pins the
+    // widget to kTranslucent for the window's whole life, so even glass-OFF
+    // windows pay a DirectComposition redraw per frame (electron#39895), and it
+    // opts into the documented transparent-window limits — including that a
+    // RESIZABLE transparent window is unsupported and breaks (electron#48421).
+    // Every chat window is resizable.
+    ...windowBackgroundMaterialOptions(state, env.isWindows, env.glassSupported),
+    ...windowOpacityOptions(state),
+    ...windowBackingOptions(state, env.themedColor)
+  }
+}
+
+/** Runtime backing for a registered chat window: clear under glass or for an opted-in Linux window. */
+export function windowBackingColor(state: TranslucencyState, themedColor: string, linuxTransparent: boolean): string {
+  return linuxTransparent || glassActive(state) ? '#00000000' : themedColor
 }

@@ -240,6 +240,16 @@ desktop:
 
 The pre-window reader is a small YAML subset, not the full parser the rest of Hermes uses, because it has to run before the app loads anything. Other indentations are valid YAML but are ignored here; when that happens the app logs `desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored` at startup and launches with Chromium's defaults.
 
+### Transparent windows on Linux
+
+Linux has no native window material, so the **Translucency** setting is macOS and Windows only. If your compositor blurs behind windows (Hyprland, KWin, picom and others), start Desktop with `HERMES_DESKTOP_TRANSPARENT=1` to create its chat windows alpha-capable:
+
+```bash
+HERMES_DESKTOP_TRANSPARENT=1 hermes desktop
+```
+
+Nothing looks different until a theme paints a translucent background through `customCSS`; built-in themes stay opaque. Text and images never fade. Add your compositor's blur rule for the `com.nousresearch.hermes` window class.
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.

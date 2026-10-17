@@ -33,8 +33,10 @@ AUTHZ = {
     "allowed_users_env": "WECOM_ALLOWED_USERS",
     "allow_all_env": "WECOM_ALLOW_ALL_USERS",
     "own_policy_env": ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY"),
+    "allowlist_suppresses_pairing": True,
 }
 CALLBACK_AUTHZ = {
     "allowed_users_env": "WECOM_CALLBACK_ALLOWED_USERS",
     "allow_all_env": "WECOM_CALLBACK_ALLOW_ALL_USERS",
+    "allowlist_suppresses_pairing": True,
 }

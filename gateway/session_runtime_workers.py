@@ -20,7 +20,13 @@ def uncounted_runtime_work(runner):
                   for worker in getattr(authority, '_managed_workers', {}).values())
     return (managed + sum(live.route not in running and sid not in getattr(authority, '_managed_workers', {})
                 for authority in authorities for sid, live, _ in executing_sessions(authority))
-            + sum(len(mutation_tasks(authority)) for authority in authorities))
+            + sum(len(mutation_tasks(authority)) + len(side_agents(authority)) for authority in authorities))
+
+
+def side_agents(authority):
+    """``(thread, holder)`` for each detached side agent (/bg, /btw, preview restart) whose thread
+    has not unwound (``gateway/session_tui_side.py`` ``_spawn``)."""
+    return list(getattr(authority, '_side_agents', {}).items())
 
 
 def persist_work_count(authority, _task=None):
@@ -131,7 +137,7 @@ def stop_authority_work(authority):
     from gateway.run_runtime import stop_authority_turns
     from agent.interrupt_compat import request_hard_interrupt
     stop_authority_turns(authority, in_process=True)
-    for _, holder in physical_workers(authority):
+    for _, holder in [*physical_workers(authority), *side_agents(authority)]:
         if holder and holder[0] is not None:
             request_hard_interrupt(holder[0], 'Profile runtime is stopping')
     for cancel in getattr(authority, '_cron_cancellations', {}).values():
@@ -142,7 +148,8 @@ async def join_authority_work(authority, timeout):
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         stop_authority_work(authority)
-        if not list(physical_workers(authority)) and not list(executing_sessions(authority)) and not mutation_tasks(authority):
+        if (not list(physical_workers(authority)) and not list(executing_sessions(authority))
+                and not mutation_tasks(authority) and not side_agents(authority)):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError('Profile workers did not stop; ownership retained')

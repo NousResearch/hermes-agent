@@ -190,6 +190,7 @@ def _record_rate(job: dict[str, Any], done: int) -> None:
 
 def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
+    out.pop("plan_saved", None)
     running = _RUNNING.get(job["job_id"], {})
     pause = running.get("pause")
     out["pause_requested"] = bool(pause is not None and pause.is_set() and out["status"] == "running")
@@ -287,13 +288,15 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             raise
         return True
 
-    def discard() -> bool:
+    def retire(*, remove_plan: bool = False) -> bool:
         if not guard.acquire(blocking=False):
             return False
         try:
             key = job.get("plan_key")
             if (_JOBS.get(job["job_id"]) is not job or job["status"] != "paused"
-                    or not key or not download_plans.discard_plan(key)):
+                    or not key):
+                return False
+            if remove_plan and not download_plans.discard_plan(key):
                 return False
             if on_exit is not None:
                 on_exit()
@@ -305,7 +308,8 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             guard.release()
 
     if resumable:
-        _RUNNING[job["job_id"]] = {"resume": start, "pause": pause, "discard": discard}
+        _RUNNING[job["job_id"]] = {"resume": start, "pause": pause, "retire": retire,
+                                   "discard": lambda: retire(remove_plan=True)}
     if start_paused:
         job["status"] = "paused"
     else:
@@ -509,6 +513,7 @@ def _download_job(job: dict[str, Any], plan) -> None:
 
 def _download_owned_plan(job: dict[str, Any], plan, pause) -> None:
     download_plans.save_plan(job, plan)
+    job["plan_saved"] = True
     dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=pause,
                   state=lambda phase, detail: _step(job, phase, detail))
     tick = _download_progress_hook(job)
@@ -563,7 +568,7 @@ def _restore_download_plans() -> None:
             saved_total = record.get("total_bytes")
             if type(saved_total) is int and saved_total > 0:
                 total = saved_total
-            job.update(phase="interrupted", detail=_interrupted_detail(done),
+            job.update(phase="interrupted", detail=_interrupted_detail(done), plan_saved=True,
                        done_bytes=done, total_bytes=total or None, ranges=ranges)
             _spawn_job(job, "lr-model-recovery",
                        lambda job=job, plan=plan: _run_download_plan(job, plan, job["target"]),
@@ -574,7 +579,7 @@ def _restore_download_plans() -> None:
         for job in parked:
             key = job.get("plan_key")
             discard = _RUNNING.get(job["job_id"], {}).get("discard")
-            if key and not download_plans.has_plan(key) and discard:
+            if job.get("plan_saved") and key and not download_plans.has_plan(key) and discard:
                 discard()
 
 
@@ -966,6 +971,25 @@ def _repriced_quickstart(job: dict[str, Any], body: QuickstartBody, variant):
     return entry, picked, plan if any(not dest.is_file() for _, dest, _ in plan) else []
 
 
+def _quickstart_job(entry, plan) -> dict:
+    if not plan:
+        return _job("quickstart", entry.display_name, model_id=entry.id)
+    with _DOWNLOAD_START_LOCK:
+        job, created = _plan_job(entry.display_name, entry.id, plan)
+        if not created:
+            retire = _RUNNING.get(job["job_id"], {}).get("retire")
+            if job["kind"] != "model-download" or not retire or not retire():
+                raise HTTPException(status_code=409, detail="This model is already downloading. Pause it before starting setup")
+            # Retire the download-only callback before registering setup's
+            # continuation. Stale Resume handles must never run beside it.
+            previous = job
+            job = _job("quickstart", entry.display_name, model_id=entry.id)
+            job.update({key: previous[key] for key in ("phase", "detail", "done_bytes", "total_bytes", "ranges", "plan_saved") if key in previous})
+            job["plan_key"] = download_plans.plan_key(plan)
+        job["kind"] = "quickstart"
+        return job
+
+
 @router.post("/api/local-models/quickstart")
 def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
@@ -982,7 +1006,11 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
     download_bytes = sum(p[2] for p in download_plan)
     if not _QUICKSTART_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Setup is already running")
-    job = _job("quickstart", entry.display_name, model_id=entry.id)
+    try:
+        job = _quickstart_job(entry, download_plan)
+    except Exception:
+        _QUICKSTART_LOCK.release()
+        raise
     def _run():
         nonlocal entry, variant, download_plan
         if need_runtime and binaries.installed_engine(backend) is None:

@@ -150,6 +150,8 @@ A running process holds the plan's ownership lock, so another process cannot
 restore it as an abandoned download. Paused model downloads offer **Discard**
 beside **Resume**. Discard removes the pending plan and job. Completed files
 remain, and shared partial files follow normal cache cleanup.
+Starting setup for a paused model download adopts its saved plan and retains
+the server-start and default-model steps.
 ETags remain representation validators, not expected SHA-256 hashes; the model
 catalog's existing optional-hash policy is unchanged.
 

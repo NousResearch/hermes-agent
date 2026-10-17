@@ -1,11 +1,10 @@
 """Exact execution results commit with settlement, before delivery/publication."""
-import json
 from contextvars import ContextVar
 
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_session_input
 
 execution_result: ContextVar[dict | None] = ContextVar("execution_result", default=None)
-from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX
+from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX, load_result
 
 
 def record_unexecuted_failure(reply):
@@ -64,12 +63,13 @@ def prepare_result(row, response, outcome, result=None):
     return outcome, _redacted(compact_result(result, user_message=row['payload'].get('text')))
 
 
-def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None):
+def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=None, transfers=None):
     """Delivery failure cannot rewrite an already committed execution outcome.
 
     `result` is the exact structured result captured in-process; the managed
     worker path commits its own before this runs and is read back here.
     `prepared` is ``prepare_result``'s output computed before the caller took a lock.
+    `transfers` are the queued steers handed to this claim; they settle in the same write.
     """
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
@@ -81,11 +81,11 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
                                  (_RESULT_PREFIX + row['admission_id'],)).fetchone()
             if saved is None:
                 raise RuntimeStoreError('storage_unavailable')
-            result = json.loads(saved[0])
+            result = load_result(saved[0])
             return dict(current), result['result'].get('final_response') or ''
     outcome, stored = prepared or prepare_result(row, response, outcome, result)
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-        generation=row['generation'], outcome=outcome, result=stored)
+        generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers)
     return settled, response
 
 
@@ -96,7 +96,7 @@ def admission_result(db, admission_id):
             return None
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_RESULT_PREFIX + admission_id,)).fetchone()
-        return json.loads(saved[0]) if saved else None
+        return load_result(saved[0]) if saved else None
 
 
 def close_discarded_turn(db, conn, row):

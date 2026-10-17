@@ -673,6 +673,17 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     """
     default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
     cwd = _tenv("TERMINAL_CWD", default_cwd)
+    # A dead TERMINAL_CWD must never reach the subprocess as its cwd. The
+    # resume path pins TERMINAL_CWD to the session's recorded directory and
+    # refuses to enter a missing one at resume time — but the directory can
+    # also die MID-SESSION (the historical exit-126: every terminal command
+    # failed with `cd /tmp/primework: No such file or directory` until the
+    # gateway was restarted). The spawn-time guard lives here: resolve to the
+    # first candidate that actually exists, home last.
+    if env_type == "local" and cwd and not os.path.isdir(cwd):
+        fallback = default_cwd if (default_cwd and os.path.isdir(default_cwd)) else os.path.expanduser("~")
+        logger.info("TERMINAL_CWD=%r is gone; using %r for this command", cwd, fallback)
+        cwd = fallback
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)

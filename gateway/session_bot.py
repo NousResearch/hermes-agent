@@ -207,7 +207,7 @@ async def _create_bot_chat(authority, actor):
     principal (owner recovery) still gets ``not_found``."""
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('not_found')
-    from gateway.session_local import stage_local_session
+    from gateway.session_local import stage_local_session, staged_creation_follows
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_local_title import title_new_session
     from gateway.session_runtime_workers import tracked_write
@@ -218,8 +218,15 @@ async def _create_bot_chat(authority, actor):
     async with lock:
         if authority.db.get_session_by_title('Bot Chat') is not None:
             return None
-        ref = stage_local_session(authority, actor, {
-            'request_id': _bot_chat_creation_id(authority, actor), 'source': 'cli', 'cwd': str(Path.home())})
+        # The Bot Chat follows its profile whoever mints it (a Bot or cron delivery, a peer DM),
+        # the same contract Desktop's create asks for. A later profile change reaches it.
+        request_id = _bot_chat_creation_id(authority, actor)
+        params = {'request_id': request_id, 'source': 'cli', 'cwd': str(Path.home()),
+                  'follow_profile_config': True}
+        # A creation staged by an older build, before this flag, resumes as it was staged.
+        if not staged_creation_follows(authority, actor, request_id):
+            params.pop('follow_profile_config')
+        ref = stage_local_session(authority, actor, params)
         if isinstance(ref, dict):
             await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
             ref = restore_local_session(authority, ref['session_id'])

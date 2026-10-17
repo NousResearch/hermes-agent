@@ -137,3 +137,46 @@ def test_an_explicit_branch_to_a_pre_runtime_commit_is_still_refused(source, mon
     assert stopped.value.code == 1 and git(source.root, "rev-parse", "HEAD") == source.installed
     assert "Downgrading is unsupported" in out and "ahead of the" not in out
     assert source.completed == []
+
+
+def _stable_publishes(monkeypatch, commit):
+    monkeypatch.setattr(source_releases, "_resolve_stable", lambda repository, *_: source_releases.SourceTarget(
+        "stable", "stable", repository, commit=commit, version="0.22.2"))
+
+
+def _assert_held_at_head(source, out, channel="stable"):
+    assert git(source.root, "rev-parse", "HEAD") == source.installed
+    assert "Refusing" not in out and "Downgrading is unsupported" not in out
+    assert f"ahead of the {channel} release" in out
+    assert len(source.completed) == 1 and source.completed[0]["expected_sha"] == source.installed
+
+
+@pytest.mark.parametrize("argv", [
+    pytest.param(["update", "--yes"], id="cli-default-stable"),
+    # What scripts/desktop-update/posix.sh runs for the channel its source check reported.
+    pytest.param(["update", "--yes", "--keep-stash", "--channel", "stable"], id="desktop-handoff"),
+])
+def test_an_unconfigured_stable_install_on_a_main_commit_beside_the_release_is_held(
+        source, monkeypatch, capsys, argv):
+    """#140729 as reported: no recorded channel, an official checkout's default (stable), a main
+    commit past the cutover that neither contains nor is contained by the release."""
+    monkeypatch.setattr("hermes_cli.update_channel.default_channel", lambda *_a, **_k: "stable")
+    _stable_publishes(monkeypatch, source.release)
+    _ledgered(source.home)
+
+    update_cmd._cmd_update_impl(source.parser.parse_args(argv), False)  # no SystemExit
+
+    _assert_held_at_head(source, capsys.readouterr().out)
+
+
+def test_a_chosen_stable_release_this_checkout_contains_is_held_while_stores_use_the_runtime(
+        source, monkeypatch, capsys):
+    """--set-channel stable consents to moving back to the release, not past the runtime the stores
+    already depend on: the hold applies there too."""
+    set_install_channel("stable", source.root)
+    _stable_publishes(monkeypatch, git(source.root, "rev-parse", f"{source.installed}^"))
+    _ledgered(source.home)
+
+    update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--yes"]), False)  # no SystemExit
+
+    _assert_held_at_head(source, capsys.readouterr().out)

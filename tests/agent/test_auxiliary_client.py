@@ -3134,6 +3134,24 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         assert captured["output_config"] == {"effort": "medium"}
         assert "extra_body" not in captured
 
+    def test_forwards_per_task_timeout_to_messages_request(self):
+        adapter, captured = self._build_adapter()
+
+        adapter.create(
+            model="claude-fable-5",
+            messages=[{"role": "user", "content": "hi"}],
+            timeout=42.0,
+        )
+
+        assert captured["timeout"] == 42.0
+
+    def test_omits_timeout_when_caller_passes_none(self):
+        adapter, captured = self._build_adapter()
+
+        adapter.create(model="claude-fable-5", messages=[{"role": "user", "content": "hi"}])
+
+        assert "timeout" not in captured
+
     def test_build_call_kwargs_private_reasoning_only_for_anthropic_messages(self):
         anthropic_kwargs = _build_call_kwargs(
             "anthropic",

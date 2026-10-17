@@ -5,6 +5,8 @@
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
+  portaudio,
+  replaceVars,
   stdenv,
   # Filtered Python source (see lib.nix pythonSrc) — keeps JS/docs/skills
   # edits from invalidating the venv derivation.
@@ -66,6 +68,19 @@ let
         ] (_: null)
       )
     // {
+      # The PyPI wheel discovers PortAudio via the host's global library index,
+      # which NixOS intentionally does not have. Pin the dlopen target to the
+      # library in the Nix store, matching nixpkgs' sounddevice package.
+      sounddevice = prev.sounddevice.overrideAttrs (old: {
+        postInstall = (old.postInstall or "") + ''
+          patch -d "$out/${python.sitePackages}" -p1 < ${
+            replaceVars ./sounddevice-portaudio-library.patch {
+              portaudio = "${portaudio}/lib/libportaudio${stdenv.hostPlatform.extensions.sharedLibrary}";
+            }
+          }
+        '';
+      });
+
       # The locked sdist has no build-system metadata; setup.py imports
       # setuptools and uses CFFI to compile the bundled libolm.
       python-olm = prev.python-olm.overrideAttrs (old: {

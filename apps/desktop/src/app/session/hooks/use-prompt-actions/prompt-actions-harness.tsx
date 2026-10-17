@@ -26,7 +26,8 @@ export interface HarnessHandle {
   activeSessionIdRef: MutableRefObject<string | null>
   cancelRun: () => Promise<void>
   editMessage: (edited: Parameters<ReturnType<typeof usePromptActions>['editMessage']>[0]) => Promise<void>
-  reloadFromMessage: (parentId: null | string) => Promise<void>
+  reloadFromMessage: ReturnType<typeof usePromptActions>['reloadFromMessage']
+  reloadFromMessageRaw: ReturnType<typeof usePromptActions>['reloadFromMessage']
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   redirectPrompt: (text: string) => Promise<boolean>
   /** @deprecated Use `redirectPrompt`. */
@@ -150,6 +151,7 @@ export function Harness({
         act(async () => actions.cancelRun(...args)) as Promise<void>,
       editMessage: (...args: Parameters<typeof actions.editMessage>) =>
         act(async () => actions.editMessage(...args)) as Promise<void>,
+      reloadFromMessageRaw: actions.reloadFromMessage,
       reloadFromMessage: (...args: Parameters<typeof actions.reloadFromMessage>) =>
         act(async () => actions.reloadFromMessage(...args)) as Promise<void>,
       restoreToMessage: (...args: Parameters<typeof actions.restoreToMessage>) =>

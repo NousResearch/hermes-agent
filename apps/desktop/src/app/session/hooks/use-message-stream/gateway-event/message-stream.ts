@@ -78,6 +78,7 @@ function turnFailure(payload: GatewayEventPayload | undefined, finalText: string
   return {
     error: coerceGatewayText(payload.error).trim() || finalText || 'Hermes reported an error',
     partial: Boolean(payload.partial),
+    retryToken: typeof payload.retry_token === 'string' ? payload.retry_token : undefined,
     surface: parseErrorSurface(payload.error_surface)
   }
 }

@@ -57,6 +57,7 @@ import type {
 } from '../../../types'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 
+import { adoptRecoveredRetry, applyRetryOptimistic, planFailedRetry, retryMessageId, type RetryRunConfig, rollbackFailedRetry, submitFailedRetry } from './retry'
 import {
   appendMidTurnUserMessage,
   applyBranchVisibility,
@@ -1126,7 +1127,72 @@ export function usePromptActions({
 
   const runReloadRef = useRef(runReload)
   runReloadRef.current = runReload
-  const reloadFromMessage = useCallback((parentId: string | null) => runReload(parentId), [runReload])
+
+  const reloadFromMessage = useCallback(
+    async (parentId: string | null, config?: RetryRunConfig) => {
+      const messageId = retryMessageId(config)
+
+      if (!messageId) {
+        return runReload(parentId)
+      }
+
+      const sessionId = activeSessionIdRef.current
+
+      if (!sessionId || $sessionStates.get()[sessionId]?.busy) {
+        return
+      }
+
+      const messages = $sessionStates.get()[sessionId]?.messages ?? $messages.get()
+
+      let retryRuntimeId = sessionId
+      let optimisticMessages: ChatMessage[] | undefined
+
+      const update = (updater: (state: ClientSessionState) => ClientSessionState) =>
+        updateSessionState(retryRuntimeId, updater)
+
+      const storedId = selectedStoredSessionIdRef.current
+
+      try {
+        const plan = planFailedRetry(messages, messageId)
+
+        if (!plan) {
+          return
+        }
+
+        const optimistic = update(state => applyRetryOptimistic(state, messageId))
+        optimisticMessages = optimistic?.messages
+        await submitFailedRetry(
+          sessionId,
+          storedId,
+          plan,
+          requestGateway,
+          recoveredId => {
+            update(state => rollbackFailedRetry(state, messages, optimisticMessages))
+            retryRuntimeId = recoveredId
+
+            if (optimistic) {
+              updateSessionState(recoveredId, state => adoptRecoveredRetry(state, optimistic))
+            }
+
+            activeSessionIdRef.current = recoveredId
+            setActiveSessionId(recoveredId)
+          },
+          () => activeSessionIdRef.current === sessionId && selectedStoredSessionIdRef.current === storedId
+        )
+      } catch (error) {
+        update(state => rollbackFailedRetry(state, messages, optimisticMessages))
+        notifyError(error, copy.regenerateFailed)
+      }
+    },
+    [
+      activeSessionIdRef,
+      selectedStoredSessionIdRef,
+      updateSessionState,
+      requestGateway,
+      runReload,
+      copy.regenerateFailed
+    ]
+  )
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user
   // prompt and run it again from there. Reuses the edit composer's rewind

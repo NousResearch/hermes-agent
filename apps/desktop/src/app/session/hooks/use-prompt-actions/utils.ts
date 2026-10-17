@@ -686,7 +686,7 @@ export function isVisibleUserMessage(message: ChatMessage): boolean {
 export function isFailedUserTurn(messages: readonly ChatMessage[], index: number): boolean {
   const next = messages[index + 1]
 
-  return next?.role === 'assistant' && Boolean(next.error)
+  return messages[index]?.rowId === undefined && next?.role === 'assistant' && Boolean(next.error)
 }
 
 /**

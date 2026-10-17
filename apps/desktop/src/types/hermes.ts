@@ -792,6 +792,7 @@ export interface SessionResumeResult {
     /** Structured {layer, code, retryable} descriptor for the retained failed
      *  turn (see agent/error_surface.py). Omitted by older gateways. */
     error_surface?: unknown
+    retry_token?: string
     recoverable?: boolean
     status?: string
     streaming?: boolean

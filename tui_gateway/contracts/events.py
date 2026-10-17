@@ -252,6 +252,7 @@ class MessageCompletePayload(Payload):
     failure_reason: str | None = None
     rendered: str | None = None
     error: str | None = None
+    retry_token: str | None = None
     recoverable: bool | None = None
     error_surface: ErrorSurface | None = None
     partial: bool | None = None

@@ -44,6 +44,7 @@ class LiveSession:
     controls: PendingControls = field(init=False)
     # The messaging ingress tells the platform user once per pause episode (unknown head,
     # preflight refusal), not per message; the drain clears it when the FIFO moves again.
+    retry_checkpoint: dict | None = None
     pause_notified: bool = False
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Held by the FIFO claim and by compress across its summarization (which runs outside
@@ -459,6 +460,10 @@ class SessionAuthority:
         return current if current in self.sessions else session_id
 
     def _admitted(self, ref, event, row):
+        checkpoint = self.sessions[ref.session_id].retry_checkpoint
+        if ('retry_continuation_v1' not in row['payload']
+                and checkpoint is not None and not checkpoint['spent']):
+            self.sessions[ref.session_id].retry_checkpoint = None
         if event is not None:
             event._gateway_accepted = True
         self._publish_pending(ref)
@@ -947,6 +952,8 @@ class SessionAuthority:
         retirement's join) ever sees a committed claim that no execution stamp names."""
         if row:  # None or False (the head changed under the write) claimed nothing
             with live.event_stream.lock:
+                if 'retry_continuation_v1' not in row['payload']:
+                    live.retry_checkpoint = None
                 live.event_stream.execution = {
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],
                     'admission_id': row['admission_id']}

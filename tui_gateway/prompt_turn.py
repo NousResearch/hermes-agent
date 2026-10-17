@@ -502,6 +502,7 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    resume_user_row_id: int | None = None
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -806,7 +807,11 @@ def _invoke_agent(
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
-            st.result = agent.run_conversation(run_message, **st.run_kwargs)
+            agent._resume_user_row_id = st.resume_user_row_id
+            try:
+                st.result = agent.run_conversation(run_message, **st.run_kwargs)
+            finally:
+                agent._resume_user_row_id = None
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
@@ -950,6 +955,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
                 # Non-streaming results need a replay body too; keep existing streamed segments intact.
                 _append_inflight_delta(session, raw)
             _fail_inflight_turn(session, error_value, error_surface=_error_surface)
+            if token := _record_retry_checkpoint(session, st, _error_surface):
+                payload["retry_token"] = token
             st.error_retained = True
             st.error_detail = _turn_failure_detail(
                 error_value, result.get("failure_reason"), st.prompt_text)
@@ -1092,6 +1099,7 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
+    resume_user_row_id = session.pop("_retry_user_row_id", None)
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1136,7 +1144,7 @@ def _run_prompt_submit(
         runtime_session_token = _current_runtime_session_record.set(session)
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
-            receipt_committed=terminal_callback is None)
+            receipt_committed=terminal_callback is None, resume_user_row_id=resume_user_row_id)
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None

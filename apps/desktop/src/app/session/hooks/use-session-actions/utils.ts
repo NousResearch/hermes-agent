@@ -226,14 +226,14 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 //   serverRowSpan — backend rows the folded message covers; the older-page offset
 //                   accounting reads it, the transcript never paints it
 //
-// If your new field affects what the user sees in the transcript, add it to
-// COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
-// IGNORED.
+// Classify visible/action changes as COMPARED; other metadata as IGNORED.
 const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
 const COMPARED_FIELDS = [
+  'retryToken',
+  'admissionRejected',
   'rowId',
   'persistedTurn',
   'durableComplete',

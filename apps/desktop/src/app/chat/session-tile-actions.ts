@@ -1,3 +1,4 @@
+import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 /**
  * Prompt actions for a SESSION TILE — the same verbs the primary chat wires
  * (submit incl. slash, cancel, steer, edit, reload, restore, branch-hide
@@ -7,8 +8,6 @@
  * concerns (busy pill, transcript) reach the tile via its `$sessionStates`
  * slice — never the global `$busy`/`$messages`.
  */
-
-import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useCallback, useMemo, useRef } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
@@ -47,6 +46,15 @@ import type { SessionInfo } from '@/types/hermes'
 import type { GatewayRequester } from '../contrib/types'
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import { isStaleTargetError } from '../session/hooks/use-prompt-actions'
+import {
+  adoptRecoveredRetry,
+  applyRetryOptimistic,
+  planFailedRetry,
+  retryMessageId,
+  rollbackFailedRetry,
+  type RetryRunConfig,
+  submitFailedRetry
+} from '../session/hooks/use-prompt-actions/retry'
 import {
   appendMidTurnUserMessage,
   applyBranchVisibility,
@@ -636,7 +644,60 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
   const runReloadRef = useRef(runReload)
   runReloadRef.current = runReload
-  const reloadFromMessage = useCallback((parentId: string | null) => runReload(parentId), [runReload])
+
+  const reloadFromMessage = useCallback(
+    async (parentId: string | null, config?: RetryRunConfig) => {
+      const messageId = retryMessageId(config)
+
+      if (!messageId) {
+        return runReload(parentId)
+      }
+
+      const sessionId = runtimeIdRef.current
+      const state = readState()
+
+      if (!sessionId || !state || state.busy) {
+        return
+      }
+
+      const messages = state.messages
+      const storedId = storedIdRef.current
+      let retryRuntimeId = sessionId
+      let optimisticMessages: ChatMessage[] | undefined
+      const updateRetry = (updater: (state: ClientSessionState) => ClientSessionState) =>
+        sessionTileDelegate()?.updateSession(retryRuntimeId, updater)
+
+      try {
+        const plan = planFailedRetry(messages, messageId)
+
+        if (!plan) {
+          return
+        }
+
+        const optimistic = updateRetry(state => applyRetryOptimistic(state, messageId))
+        optimisticMessages = optimistic?.messages
+        await submitFailedRetry(
+          sessionId,
+          storedId,
+          plan,
+          requestSessionGateway,
+          recoveredId => {
+            updateRetry(state => rollbackFailedRetry(state, messages, optimisticMessages))
+            retryRuntimeId = recoveredId
+            if (optimistic) {
+              sessionTileDelegate()?.updateSession(recoveredId, state => adoptRecoveredRetry(state, optimistic))
+            }
+            bindRecoveredRuntime(recoveredId)
+          },
+          () => runtimeIdRef.current === sessionId && storedIdRef.current === storedId
+        )
+      } catch (error) {
+        updateRetry(state => rollbackFailedRetry(state, messages, optimisticMessages))
+        notifyError(error, copy.regenerateFailed)
+      }
+    },
+    [readState, requestSessionGateway, bindRecoveredRuntime, runReload, copy.regenerateFailed]
+  )
 
   const restoreToMessage = useCallback(
     async (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => {

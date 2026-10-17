@@ -8,6 +8,7 @@ from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
+from .sessions import InflightTurn
 
 
 class CanonicalSessionParams(ProfileParams):
@@ -135,6 +136,7 @@ class CanonicalSnapshot(Result):
     messages: list[TranscriptMessage]
     # Present only when ``display_projection`` was asked: the rows as main's TUI rendered them.
     display_messages: list[TranscriptMessage] | None = None
+    inflight: InflightTurn | None = None
     message_count: int
     running: bool
     authority_epoch: int

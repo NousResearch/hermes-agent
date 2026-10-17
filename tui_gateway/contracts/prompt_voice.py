@@ -537,3 +537,11 @@ class WakeFeedResult(WakeOwnerResult):
 
 method("wake.feed", params=WakeFeedParams, result=WakeFeedResult,
        doc="Push client-captured PCM into the armed detector (mic-less remote backends).")
+
+
+class PromptRetryParams(SessionParams):
+    retry_token: str
+
+
+method("prompt.retry", params=PromptRetryParams, result=PromptSubmitResult,
+       doc="Continue the exact retained failed provider request; stale checkpoints are refused without a rewind.")

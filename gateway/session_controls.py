@@ -88,7 +88,7 @@ def _log_storage_failure(profile, method, session_id, exc: sqlite3.Error) -> Non
 _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
-                               'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
+                               'prompt.submit', 'prompt.retry', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'approval.respond', 'clarify.respond'})
@@ -221,6 +221,8 @@ class AuthorityConnection:
         handlers['clarify.lock'] = partial(clarify_lock, self)
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
+        from gateway.session_retry import retry
+        handlers['prompt.retry'] = partial(retry, self)
         return handlers
 
     async def dispatch(self, request):
@@ -599,6 +601,7 @@ class AuthorityConnection:
             # (CFG-2); a snapshot poll on this attachment does not.
             from gateway.session_policy_refresh import refresh_resumed_policy
             await refresh_resumed_policy(self.authority, ref)
+        from gateway.session_retry import retry_inflight
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         self._spawn_notice(ref)
@@ -614,7 +617,8 @@ class AuthorityConnection:
         if params.get('display_projection'):
             display['display_messages'] = display_projection(snapshot.history, self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
+                'messages': list(snapshot.history), **display,
+                'inflight': retry_inflight(self.authority.sessions[ref.session_id], snapshot.pending), 'message_count': len(snapshot.history),
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,

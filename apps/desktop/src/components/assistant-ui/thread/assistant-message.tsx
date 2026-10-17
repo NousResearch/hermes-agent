@@ -766,7 +766,7 @@ const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
     const timer = window.setTimeout(
       () => {
         setFireAt(null)
-        aui.message().reload()
+        aui.message().reload({ runConfig: { custom: { retryMessageId: aui.message().getState().id } } })
       },
       Math.max(0, fireAt - Date.now())
     )
@@ -926,6 +926,8 @@ const ErrorRecoveryActions: FC = () => {
     setModelPickerOpen(true)
   }, [])
 
+  const retryAui = useAui()
+  const retryDisabled = useAuiState(s => s.thread.isRunning || s.thread.isDisabled || !s.message.isLast)
   const localFolders = Boolean(window.hermesDesktop?.logsRoot)
   // The provider's own reset moment (429 Retry-After / resets_at), so the user knows WHEN
   // Retry will work instead of guessing (#98852). Informational only: no automatic retry.
@@ -970,19 +972,19 @@ const ErrorRecoveryActions: FC = () => {
         </button>
       )}
       {plan.retry && (
-        <ActionBarPrimitive.Reload asChild>
-          <button
-            className="aui-error-action"
-            onClick={() => {
-              triggerHaptic('submit')
-              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
-            }}
-            type="button"
-          >
-            <RefreshCwIcon className="size-3" />
-            {copy.errorRetry}
-          </button>
-        </ActionBarPrimitive.Reload>
+        <button
+          disabled={retryDisabled}
+          className="aui-error-action"
+          onClick={() => {
+            triggerHaptic('submit')
+            recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+            retryAui.message().reload({ runConfig: { custom: { retryMessageId: retryAui.message().getState().id } } })
+          }}
+          type="button"
+        >
+          <RefreshCwIcon className="size-3" />
+          {copy.errorRetry}
+        </button>
       )}
       {plan.retry && limitReset && (
         <span className="px-1 text-xs text-muted-foreground" data-testid="error-limit-reset">

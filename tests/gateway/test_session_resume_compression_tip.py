@@ -50,7 +50,8 @@ async def test_session_resume_still_remaps_legacy_cli_source(monkeypatch):
             } if sid == tip_id else None,
             get_compression_tip=lambda sid: tip_id,
         ),
-        sessions={owner_id: SimpleNamespace(source=SimpleNamespace(platform=None))},
+        sessions={owner_id: SimpleNamespace(
+            source=SimpleNamespace(platform=None), retry_checkpoint=None)},
         authorize=lambda *a, **k: None,
         attach=AsyncMock(return_value=_attach_snapshot(owner_ref)),
     )

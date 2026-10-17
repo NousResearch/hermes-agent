@@ -446,11 +446,16 @@ describe('failed-turn-aware ordinal space', () => {
   })
 
   it('rebindSurvivorRowIds skips failed turns — they hold no survivor slot', () => {
-    const messages: ChatMessage[] = [user('u0', 1), failedAssistant('a0'), user('u1', 3), assistant('a1', 4)]
+    const messages: ChatMessage[] = [
+      { ...user('u0', 1), rowId: undefined },
+      failedAssistant('a0'),
+      user('u1', 3),
+      assistant('a1', 4)
+    ]
     const rebound = rebindSurvivorRowIds(messages, [9])
 
     // u0 failed: untouched. u1 is survivor ordinal 0.
-    expect(rebound[0].rowId).toBe(1)
+    expect(rebound[0].rowId).toBeUndefined()
     expect(rebound[2].rowId).toBe(9)
   })
 })

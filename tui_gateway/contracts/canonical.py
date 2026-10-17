@@ -543,3 +543,12 @@ canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDisc
 
 # Shared-name overrides load after the authority-only value shapes above.
 from . import canonical_sessions, canonical_projections
+
+
+class CanonicalRetryParams(Params):
+    session_id: str
+    retry_token: str
+
+
+canonical_method("prompt.retry", params=CanonicalRetryParams, result=AdmissionStatus,
+                 doc="Continue a proven failed provider request without new user input or rewind.")

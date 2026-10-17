@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.delegate_tool import DELEGATE_TASK_SCHEMA, delegate_task
+from tools.delegate_tool import delegate_task
 
 
 CODEX_CREDS = {
@@ -125,7 +125,12 @@ def test_tier_the_route_cannot_serve_fails_the_spawn():
     assert built == []
 
 
-def test_schema_advertises_task_tuning_fields():
-    props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+def test_schema_advertises_task_tuning_fields(monkeypatch):
+    from tools import delegate_tool_config
+    from tools.registry import registry
+
+    monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: {"allow_model_selection": True})
+    definition = registry.get_definitions({"delegate_task"})[0]
+    props = definition["function"]["parameters"]["properties"]["tasks"]["items"]["properties"]
     assert {"none", "medium", "xhigh"} <= set(props["reasoning_effort"]["enum"])
     assert props["service_tier"]["enum"] == ["normal", "fast", "ultrafast"]

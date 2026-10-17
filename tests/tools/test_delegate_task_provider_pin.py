@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import tools.delegate_tool as delegate_module
-from tools.delegate_tool import DELEGATE_TASK_SCHEMA, delegate_task
+from tools.delegate_tool import delegate_task
 
 
 PARENT_CREDS = {
@@ -478,8 +478,13 @@ def test_construction_failure_creates_no_live_transcripts(pinned):
     announce.assert_not_called()
 
 
-def test_schema_advertises_provider_and_model():
-    props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+def test_schema_advertises_provider_and_model(monkeypatch):
+    from tools import delegate_tool_config
+    from tools.registry import registry
+
+    monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: {"allow_model_selection": True})
+    definition = registry.get_definitions({"delegate_task"})[0]
+    props = definition["function"]["parameters"]["properties"]["tasks"]["items"]["properties"]
     assert "provider" in props
     assert "model" in props
     assert props["provider"]["type"] == "string"

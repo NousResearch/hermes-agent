@@ -289,6 +289,13 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
+Per-task routing is off by default. Set `delegation.allow_model_selection: true` to let the agent route a subagent you name in chat; with it off, `delegate_task` does not offer the per-task fields below and drops them if a model sends them anyway.
+
+```yaml
+delegation:
+  allow_model_selection: true
+```
+
 Each `tasks[]` entry may set optional `provider` and/or `model` to pin that child only (same resolution path as CLI/config, including custom `providers:` table names). Tasks that omit both inherit the batch/parent route or the global `delegation.*` pin. A leftover global `delegation.base_url` is not applied to a child that pins a different provider. An unknown provider fails the spawn instead of silently inheriting.
 
 A task that sets `model` without `provider` runs on the first logged-in provider whose model list includes it: provider plugins first, then first-party and subscription providers (`openai-codex`, `anthropic`, …), then aggregators (`nous`, `openrouter`, `copilot`, …). Within a group, the inherited provider wins. Names are matched in a fixed order, each step only when the one before found nothing: the exact id (ignoring case and a `vendor/` prefix); then fixed rules — the same id spelled differently (`claude-haiku-4-5` for `claude-haiku-4.5` or a dated `claude-haiku-4-5-20251001`), a family name meaning that family's newest standard id (`sol` → `gpt-6.1-sol`, never a `-900k` or `-pro` variant), or the start of exactly one id (`step-5` → `step-5-preview`); and only then a typo correction when one id or family is clearly closest (`gpt-6-astr` → `gpt-6-astra`, `atra` → `gpt-6-astra`). A name with different version numbers is never treated as a typo, and size words such as `flash` or `mini` never name a model. Provider aliases Hermes already knows are accepted (`codex` for `openai-codex`); a provider name sent as the model fails with a hint instead of being matched to a look-alike model. A model the model picker does not list, or a name equally close to two ids, fails the spawn with similar ids before any child is built. The spawn result's `route_notes` lists every provider chosen this way and every corrected id. A model the picker lists is treated as available: an authentication or permission error is reported by that child's failure.
@@ -668,6 +675,7 @@ delegation:
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
+  # allow_model_selection: false            # true = tasks may set provider/model/reasoning_effort/service_tier
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override

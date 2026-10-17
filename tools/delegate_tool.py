@@ -767,7 +767,7 @@ def _with_route_notes(result: str, resolved_routes: list) -> str:
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────
 
-def _build_top_level_description(*, independent_completions=None) -> str:
+def _build_top_level_description(*, independent_completions=None, allow_model_selection=None) -> str:
     """delegate_task description: ONLY guidance stated nowhere else in the schema
     (limits live in the 'tasks' parameter description, rebuilt per get_definitions())."""
     try:
@@ -784,15 +784,18 @@ def _build_top_level_description(*, independent_completions=None) -> str:
         )
     else:
         restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
-    from tools.delegate_tool_config import _get_independent_completions
+    from tools.delegate_tool_config import _get_allow_model_selection, _get_independent_completions
 
     if independent_completions is None:
         independent_completions = _get_independent_completions()
+    if allow_model_selection is None:
+        allow_model_selection = _get_allow_model_selection()
     delivery = (
         "each ungrouped task / `group` returns on its own"
         if independent_completions else "one message per call"
     )
-    return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
+    tail = _DESCRIPTION_TAIL_TASK_ROUTES if allow_model_selection else _DESCRIPTION_TAIL
+    return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + tail
 
 _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
@@ -823,6 +826,10 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
+    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
+)
+# delegation.allow_model_selection: the task-level route fields are advertised, so the guidance names them.
+_DESCRIPTION_TAIL_TASK_ROUTES = (
     "- Children inherit the parent model unless a task sets provider/model, or via "
     "delegation.provider / delegation.model in config.yaml. When the user names a model, provider, thinking level "
     "or speed for a subagent, set that task's provider/model/reasoning_effort/service_tier — map shorthand to the "
@@ -845,9 +852,10 @@ def _build_tasks_param_description() -> str:
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
     get_definitions() pass rewrites the descriptions to the user's actual limits."""
-    from tools.delegate_tool_config import _get_independent_completions
+    from tools.delegate_tool_config import _get_allow_model_selection, _get_independent_completions
 
     independent_completions = _get_independent_completions()
+    allow_model_selection = _get_allow_model_selection()
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
@@ -858,14 +866,50 @@ def _build_dynamic_schema_overrides() -> dict:
         tasks["items"] = {**tasks["items"], "properties": {
             k: v for k, v in tasks["items"]["properties"].items() if k != "group"
         }}
+    if allow_model_selection:
+        tasks = overrides_params["properties"]["tasks"]
+        tasks["items"] = {**tasks["items"], "properties": {**tasks["items"]["properties"], **_TASK_ROUTE_PROPERTIES}}
 
     return {
-        "description": _build_top_level_description(independent_completions=independent_completions),
+        "description": _build_top_level_description(
+            independent_completions=independent_completions, allow_model_selection=allow_model_selection,
+        ),
         "parameters": overrides_params,
     }
 
 def _p(type_: str, description: str, **extra) -> dict:
     return {"type": type_, **extra, "description": description}
+
+# Task-level route fields, advertised only under delegation.allow_model_selection (off by default) and stripped
+# from model-supplied tasks otherwise, so a default schema carries no model-facing provider/model field.
+_TASK_ROUTE_PROPERTIES = {
+    "provider": _p(
+        "string",
+        "Optional provider pin for THIS child only (named provider or a custom providers: table "
+        "entry). Resolved like CLI/config. Unknown providers fail the spawn; omit or leave blank "
+        "to inherit the batch/parent route.",
+    ),
+    "model": _p(
+        "string",
+        "Optional model pin for THIS child only. Omit or leave blank to inherit the batch/parent model. "
+        "Without a provider, the child runs on the first logged-in provider listing the model "
+        "(provider plugins, then first-party, then aggregators). A clear typo of a catalog id is "
+        "corrected; the spawn result's route_notes report any chosen provider or correction.",
+    ),
+    "reasoning_effort": _p(
+        "string",
+        "Optional thinking level for THIS child only ('none' disables thinking). Omit to use "
+        "delegation.reasoning_effort or the parent's level. Unknown values fail the spawn.",
+        enum=["none", *VALID_REASONING_EFFORTS],
+    ),
+    "service_tier": _p(
+        "string",
+        "Optional speed tier for THIS child only, as with /fast: 'fast' (priority), 'ultrafast', "
+        "or 'normal'. Omit to inherit. A tier the child's model/provider does not offer fails the "
+        "spawn.",
+        enum=["normal", "fast", "ultrafast"],
+    ),
+}
 
 DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
@@ -921,32 +965,6 @@ DELEGATE_TASK_SCHEMA = {
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
                         ),
-                        "provider": _p(
-                            "string",
-                            "Optional provider pin for THIS child only (named provider or a custom providers: table "
-                            "entry). Resolved like CLI/config. Unknown providers fail the spawn; omit or leave blank "
-                            "to inherit the batch/parent route.",
-                        ),
-                        "model": _p(
-                            "string",
-                            "Optional model pin for THIS child only. Omit or leave blank to inherit the batch/parent model. "
-                            "Without a provider, the child runs on the first logged-in provider listing the model "
-                            "(provider plugins, then first-party, then aggregators). A clear typo of a catalog id is "
-                            "corrected; the spawn result's route_notes report any chosen provider or correction.",
-                        ),
-                        "reasoning_effort": _p(
-                            "string",
-                            "Optional thinking level for THIS child only ('none' disables thinking). Omit to use "
-                            "delegation.reasoning_effort or the parent's level. Unknown values fail the spawn.",
-                            enum=["none", *VALID_REASONING_EFFORTS],
-                        ),
-                        "service_tier": _p(
-                            "string",
-                            "Optional speed tier for THIS child only, as with /fast: 'fast' (priority), 'ultrafast', "
-                            "or 'normal'. Omit to inherit. A tier the child's model/provider does not offer fails the "
-                            "spawn.",
-                            enum=["normal", "fast", "ultrafast"],
-                        ),
                     },
                     "required": ["goal"],
                 },
@@ -990,10 +1008,14 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
 
 def _strip_model_hidden_task_fields(tasks: Any) -> Any:
-    """Drop trusted-config-only task fields from model-supplied tasks (same list object back when nothing changed)."""
-    if not isinstance(tasks, list) or not any(isinstance(t, dict) and _MODEL_HIDDEN_TASK_FIELDS & t.keys() for t in tasks):
+    """Drop trusted-config-only task fields from model-supplied tasks (same list object back when nothing changed);
+    the task route fields too unless delegation.allow_model_selection advertises them."""
+    from tools.delegate_tool_config import _get_allow_model_selection
+    hidden = _MODEL_HIDDEN_TASK_FIELDS if _get_allow_model_selection() else (
+        _MODEL_HIDDEN_TASK_FIELDS | _TASK_ROUTE_PROPERTIES.keys())
+    if not isinstance(tasks, list) or not any(isinstance(t, dict) and hidden & t.keys() for t in tasks):
         return tasks
-    return [{k: v for k, v in t.items() if k not in _MODEL_HIDDEN_TASK_FIELDS} if isinstance(t, dict) else t for t in tasks]
+    return [{k: v for k, v in t.items() if k not in hidden} if isinstance(t, dict) else t for t in tasks]
 
 
 registry.register(

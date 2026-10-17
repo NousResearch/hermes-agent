@@ -1383,6 +1383,18 @@ def _apply_parked_branch_guard(
     return False, True, switch_block_reason
 
 
+def _unfinished_git_operation(git_cmd, cwd):
+    """Fail closed before the legacy stash helper can clear conflict state."""
+    for state in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"):
+        result = _git_run(git_cmd, ["rev-parse", "--git-path", state], cwd)
+        if result.returncode != 0 or not result.stdout.strip():
+            return "unverifiable"
+        path = Path(result.stdout.strip())
+        if (path if path.is_absolute() else cwd / path).exists():
+            return state
+    return None
+
+
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
     switch_branch, target_ref=None, _windows_gateway_resume):
@@ -1391,22 +1403,47 @@ def _prepare_checkout_for_update(
     date, -1 when tips differ but the shallow count is unrecoverable."""
     if target_ref is None:
         target_ref = f"origin/{branch}"
+    early_stash = None
     release_tag = target_ref != f"origin/{branch}"
     if release_tag:
         # A release lands detached at its exact commit, never merges into or
         # rewrites the user's branch. Branch-policy machinery is main-only.
         parked_branch_switched, in_place_update, switch_block_reason = False, True, None
     else:
-        parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
-            git_cmd, branch, current_branch, switch_branch=switch_branch,
-            _windows_gateway_resume=_windows_gateway_resume)
+        # Only an explicitly maintained branch may park edits before assessment.
+        # Keep native merge/commit-point recovery instead of reviving a legacy rebase.
+        early_stash = None
+        if current_branch not in (branch, "HEAD") and not switch_branch and (
+                _updates_config().get("parked_branch_strategy", "switch") == "update_in_place"):
+            unfinished = _unfinished_git_operation(git_cmd, _m().PROJECT_ROOT)
+            if unfinished:
+                print(f"✗ Update stopped: unfinished Git operation ({unfinished}).")
+                _record_stop("parked_branch_blocked")
+                sys.exit(1)
+            early_stash = _m()._stash_local_changes_if_needed(
+                git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume))
+        try:
+            parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
+                git_cmd, branch, current_branch, switch_branch=switch_branch,
+                _windows_gateway_resume=_windows_gateway_resume)
+            if early_stash is not None and not in_place_update:
+                print("✗ Dirty branch has no unique maintained overlay; not switching branches.")
+                _record_stop("parked_branch_blocked")
+                sys.exit(1)
+        except BaseException:
+            if early_stash is not None:
+                _m()._restore_stashed_changes(
+                    git_cmd, _m().PROJECT_ROOT, early_stash, prompt_user=False, input_fn=gw_input_fn,
+                    checkout_move=_moves_for(_windows_gateway_resume))
+            raise
 
     if not release_tag and not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
         # Before the stash: its refs/stash would contain HEAD until it is dropped.
         _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
-    auto_stash_ref = _m()._stash_local_changes_if_needed(
-        git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume))
+    auto_stash_ref = (early_stash if not release_tag and early_stash is not None else
+                      _m()._stash_local_changes_if_needed(
+                          git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume)))
     moved_from_sha = None
     rollback_branch = None
     if not release_tag and not in_place_update and current_branch != branch:

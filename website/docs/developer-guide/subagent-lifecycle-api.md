@@ -14,7 +14,7 @@ The facade also works when a plugin runs under `plugins.isolation: host`.
 
 Requests accept `goal`, `context`, `role`, `model`, `provider`, `allowed_toolsets`,
 `blocked_tools`, `working_directory`, `parent_session_id`, `correlation_id`,
-`metadata`, and `timeout_seconds`, subject to the restrictions below.
+`metadata`, `timeout_seconds`, and `reasoning_effort`, subject to the restrictions below.
 
 ```python
 from agent.subagent_lifecycle import SubagentLaunchRequest
@@ -82,3 +82,11 @@ delegation config > parent; the selected provider supplies its own credential
 bundle. An unresolvable provider raises `SubagentLifecycleError` before launch.
 Core does not expose `provider` to the model: the plugin chooses it, for example
 from operator config.
+
+`reasoning_effort` is an optional, launch-local override. When omitted or `None`,
+the child keeps the existing precedence of `delegation.reasoning_effort` over
+the parent's reasoning configuration. An explicit value takes precedence for
+that child only and is normalized by Hermes' reasoning parser. `False` and
+`"none"` explicitly disable reasoning; unsupported values raise
+`SubagentLifecycleError` before a child is constructed. This field is available
+to in-process plugins and host-isolated plugins through the same request mapping.

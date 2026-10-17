@@ -59,6 +59,7 @@ class SubagentLaunchRequest:
     correlation_id: Optional[str] = None
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     timeout_seconds: Optional[float] = None
+    reasoning_effort: Any = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -304,6 +305,8 @@ class SubagentLifecycleService:
             toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
             model=request.model or creds["model"], max_iterations=DEFAULT_MAX_ITERATIONS,
             task_count=1, parent_agent=parent, role=request.role, **_credential_overrides(creds, routing_cfg),
+            reasoning_config_override=_parse_launch_reasoning_effort(request.reasoning_effort)
+            if request.reasoning_effort is not None else None,
         )
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
@@ -454,6 +457,11 @@ class SubagentLifecycleService:
         for rejected, message in _REQUEST_REJECTIONS:
             if rejected(request):
                 raise SubagentLifecycleError(message)
+        if request.reasoning_effort is not None:
+            try:
+                _parse_launch_reasoning_effort(request.reasoning_effort)
+            except (TypeError, ValueError) as exc:
+                raise SubagentLifecycleError(f"Invalid reasoning_effort: {exc}") from exc
         try:
             metadata_bytes = len(json.dumps(dict(request.metadata), sort_keys=True).encode())
         except (TypeError, ValueError) as exc:
@@ -470,3 +478,13 @@ class SubagentLifecycleService:
         enabled = getattr(parent, "enabled_toolsets", None)
         if enabled is not None and not set(request.allowed_toolsets).issubset(set(enabled)):
             raise SubagentLifecycleError("Requested toolsets would broaden parent permissions.")
+
+
+def _parse_launch_reasoning_effort(value: Any) -> dict[str, Any]:
+    """Normalize the public per-launch effort with Hermes' canonical parser."""
+    from hermes_constants import parse_reasoning_effort
+
+    parsed = parse_reasoning_effort(value)
+    if parsed is None:
+        raise ValueError("must be a recognized effort level or an explicit disable value")
+    return parsed

@@ -295,7 +295,7 @@ from agent.subagent_lifecycle import SubagentLaunchRequest
 def register(ctx):
     def run(args, **kw):
         service = ctx.subagent_lifecycle
-        handle = service.launch(SubagentLaunchRequest(goal="review from host"))
+        handle = service.launch({"goal": "review from host", "reasoning_effort": "high"})
         return json.dumps({"pid": os.getpid(), "state": service.status(handle).state,
                            "accepted": service.steer(handle, "check correctness"), "handle": handle})
     ctx.register_tool(name="host_lifecycle", toolset="hostlife",
@@ -310,6 +310,7 @@ def register(ctx):
     def build(**kwargs):
         assert kwargs["parent_agent"] is parent
         assert kwargs["goal"] == "review from host"
+        assert kwargs["reasoning_config_override"] == {"enabled": True, "effort": "high"}
         _register_subagent({"subagent_id": child._subagent_id, "agent": child})
         return child
 

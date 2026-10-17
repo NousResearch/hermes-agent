@@ -95,7 +95,8 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
-                and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
+                and (entry.name == "locales"  # bundled i18n data (#134965): not a package, but _locales_dir resolves it from the workspace root
+                     or any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots))):
             target = destination / entry.name
             shutil.copytree(entry, target, ignore=ignore)
     for name in files:

@@ -72,6 +72,48 @@ def _wsl_windows_path_to_posix(path: str) -> str:
     drive = (win.drive or "").rstrip(":").lower()
     return "/".join(["/mnt", drive, *win.parts[1:]]) if wsl and drive else path
 
+_WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_WINDOWS_EXECUTABLE_SUFFIXES = (".exe", ".com")
+
+def _reads_windows_pe_header(path: str) -> bool:
+    """True when *path* starts with the DOS/PE ``MZ`` magic; False when it cannot be read as a file."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) == b"MZ"
+    except OSError:
+        return False
+
+def cua_driver_command_is_windows(command: Optional[str]) -> bool:
+    """True when *command* launches a Windows executable, and therefore only accepts a Windows socket (a named
+    pipe — see ``_EmbeddedCuaDaemon._socket_path_for``).
+
+    Windows notation (``C:\\...``, ``C:/...``, UNC) is Windows by construction. For a POSIX path the file itself
+    decides: the ``MZ`` header of the resolved target (symlinks followed) is authoritative, which is what keeps a
+    Linux driver that merely happens to be named ``*.exe`` recognised as a Linux driver. Only when the target
+    cannot be read — a bare name resolved through ``PATH`` — do the ``.exe``/``.com`` suffixes decide. Hermes
+    reaches a Windows driver from WSL through interop, as ``/mnt/c/.../cua-driver.exe`` here and as the
+    ``C:\\...`` its own manifest reports there, so the answer cannot come from ``sys.platform``
+    (NousResearch/hermes-agent#80227)."""
+    if not command:
+        return False
+    if "\\" in command or _WINDOWS_ABSOLUTE_RE.match(command):
+        return True
+    if not _has_path_separator(command):
+        # A bare name is resolved through ``PATH`` (symlinks followed) before the suffix is trusted, so an
+        # extension-less symlink that points at a Windows PE still reads as Windows and a Linux ELF is never
+        # mistaken for one; the ``.exe``/``.com`` suffix is the fallback only when PATH yields no readable file
+        # to inspect.
+        resolved = shutil.which(command)
+        if resolved is not None:
+            candidate = os.path.realpath(resolved)
+            if os.path.exists(candidate):
+                return _reads_windows_pe_header(candidate)
+        return command.lower().endswith(_WINDOWS_EXECUTABLE_SUFFIXES)
+    candidate = os.path.realpath(command)
+    if os.path.exists(candidate):
+        return _reads_windows_pe_header(candidate)
+    return candidate.lower().endswith(_WINDOWS_EXECUTABLE_SUFFIXES)
+
 def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:
     """Read PM's selected binary without installing; never replace an explicit override."""
     configured = (override if override is not None else os.environ.get(_CUA_DRIVER_CMD_ENV, "")).strip()

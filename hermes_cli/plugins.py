@@ -340,36 +340,7 @@ class PluginContext:
         logger.debug(log_fmt, self.manifest.name, *log_args)
         return handle
 
-    def _register_scoped_provider(
-        self, provider: Any, *, kind: str, base_class: type, registry: Any, label: str,
-        article: str = "a", normalize: Optional[Callable[[str], str]] = lambda n: n.strip(),
-        register: Optional[Callable[..., Any]] = None, reject_message: Optional[str] = None,
-    ) -> Optional[PluginRegistration]:
-        """Shared body of the ``register_<category>_provider`` methods: type-check (warn + ignore),
-        register in the scope-keyed ``registry``, lease the slot so unload restores the displaced entry.
-        ``None`` when the registry refused/replaced the provider (``ValueError`` with ``reject_message``
-        set, or a falsy ``register``)."""
-        if self._wrong_type(provider, base_class, label, article):
-            return None
-        registry_name = provider.name if normalize is None else normalize(provider.name)
-        scope = self._manager.scope_key
-        previous = registry.snapshot_registration(registry_name, scope=scope)
-        try:
-            accepted = (register or registry.register_provider)(provider, scope=scope)
-        except ValueError as exc:
-            if reject_message is None:
-                raise
-            logger.warning(reject_message, self.manifest.name, exc)
-            return None
-        if (register is not None and not accepted) or registry.snapshot_registration(
-            registry_name, scope=scope
-        ) is not provider:
-            return None
-        handle = self._manager._track_scoped_registration(
-            self.manifest, kind, registry_name, registry, provider, previous
-        )
-        logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
-        return handle
+    from hermes_cli.plugins_providers import _register_scoped_provider
 
     @property
     def llm(self) -> Any:
@@ -1049,6 +1020,13 @@ _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str,
      "orchestrator owns ordering/precedence/provenance; the source only fetches. Since dotenv usually "
      "loads before discovery, the manager re-pulls enabled plugin sources afterwards.",
      {"normalize": None, "register": "register_source", "param": "source"}),
+    ("register_login_backend", "login_backend", "agent.vault_backends.registry",
+     "agent.vault_backends.base:LoginBackend", "login backend",
+     "Register a :class:`agent.vault_backends.base.LoginBackend` class. Hermes passes "
+     "``vault.<name>`` to its constructor, checks ``is_available(config)``, and routes opaque handles by its "
+     "unique ``prefix``. Built-in names and overlapping prefixes are rejected.",
+     {"normalize": None, "register": "register_backend", "param": "backend_cls",
+      "class_registration": True}),
     ("register_tts_provider", "tts_provider", "agent.tts_registry",
      "agent.tts_provider:TTSProvider", "TTS provider",
      "Register an :class:`agent.tts_provider.TTSProvider`; ``provider.name`` is matched by "
@@ -1080,12 +1058,17 @@ def _make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, l
             registry=registry, label=label, article=options.get("article", "a"), normalize=normalize_fn,
             register=getattr(registry, register_name) if register_name else None,
             reject_message=options.get("reject_message"),
+            class_registration=options.get("class_registration", False),
         )
 
     def register_source(self, source) -> Optional[PluginRegistration]:  # secret sources: ``source``
         return register(self, source)
 
-    method = register_source if options.get("param") == "source" else register
+    def register_backend(self, backend_cls) -> Optional[PluginRegistration]:
+        return register(self, backend_cls)
+
+    wrappers = {"source": register_source, "backend_cls": register_backend}
+    method = wrappers.get(options.get("param"), register)
     method.__name__, method.__qualname__, method.__doc__ = method_name, f"PluginContext.{method_name}", doc
     return _serialized_replacement(method)
 

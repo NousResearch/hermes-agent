@@ -10,8 +10,8 @@ paid per request) and available wherever a browser is. Its actions:
 - ``fill``  → server-side fill of the CURRENT page from a vault
   handle: the password field for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
-  resolved locally, the page origin must EXACTLY match the item's bound
-  origin (pre-checked AND re-asserted synchronously inside the fill script),
+  resolved locally, the page must match the provider's website policy
+  (exact-origin by default), and the selected origin is re-asserted inside the fill script,
   the field is chosen by the ported login-control classifier, injection runs
   exclusively over the supervisor CDP WebSocket (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
@@ -28,7 +28,11 @@ from __future__ import annotations
 import json
 import secrets
 import logging
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+
+if TYPE_CHECKING:
+    from agent.vault_backends.base import LoginBackend
+    from agent.vault_store import VaultItemMeta
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +202,8 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str, *,
+                        origin_match: Optional[Callable[[str], bool]] = None) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
@@ -208,13 +213,34 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         supervisor = None
     if supervisor is None:
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind), origin_match=origin_match)
+    if not focused.get("ok"):
+        return None
+    from agent.vault_store import normalize_origin
+
+    return normalize_origin(focused["url"])
 
 
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
+
+def _origin_matcher(backend: LoginBackend, meta: VaultItemMeta) -> Callable[[str], bool]:
+    """One authority for password/OTP tab selection and pre-retrieval checks."""
+    allowed = tuple(meta.allowed_origins) or ((str(meta.origin),) if meta.origin else ())
+
+    def matches_origin(origin: str) -> bool:
+        if not origin or not any(allowed):
+            return False
+        if meta.kind != "login":
+            return origin in allowed
+        try:
+            return backend.matches_origin(meta, origin) is True
+        except Exception:  # health: allow BLE001 -- plugin policy errors may contain credentials; fail closed without logging them
+            # A plugin exception may contain credentials. Deny without logging it.
+            return False
+    return matches_origin
+
 
 def browser_vault_list() -> str:
     """List login handles + metadata across every enabled backend. Passwords are never included.
@@ -331,21 +357,31 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
                       "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
-def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
+def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None, *, manual: bool = False) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
-    socket and never enters the conversation."""
+    socket and never enters the conversation. Explicit manual entry skips generation,
+    not the saved login's destination checks."""
     from agent.redact import register_vault_redaction_value
-    from agent.vault_backends import backend_for_handle
+    from agent.vault_backends import UnlockRequired
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
+    from tools.browser_vault_login import prepare_otp_login
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
+    backend, meta, error = prepare_otp_login(handle)
+    if error is not None:
+        return error
+    matches_origin = _origin_matcher(backend, meta) if backend is not None and meta is not None else None
+
+    origin = _focus_bound_origin(effective_task_id, "", "otp", origin_match=matches_origin)
+    origin = origin or _current_page_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "No page with a code field is open."})
+    if matches_origin is not None and not matches_origin(origin):
+        return json.dumps({"success": False, "error_type": "origin_mismatch",
+                           "error": "The saved login's website policy does not authorize this code destination."})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
@@ -361,12 +397,16 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
-    backend = backend_for_handle(handle) if handle else None
-    if backend is not None:
+    if backend is not None and not manual:
         try:
             code = backend.resolve_otp(handle)
+        except UnlockRequired:
+            return json.dumps({"success": False, "error_type": "unlock_required",
+                               "error": "The login backend is locked. Call browser_vault action=unlock."})
         except Exception:
-            code = None
+            return json.dumps({"success": False, "error_type": "code_unavailable",
+                               "error": "The login backend could not retrieve a one-time code. Nothing was filled.",
+                               "next": "If the user chooses manual entry, retry with the same handle and manual=true. Destination checks still apply."})
         if code:
             source = backend.name
     if not code:
@@ -382,10 +422,17 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     register_vault_redaction_value(code)
     fills = build_otp_fills(otp_controls, code)
-    result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
-    del code
+    try:
+        result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
+    except Exception:  # health: allow BLE001 -- transport errors may echo the secret-bearing fill expression; return a fixed diagnostic
+        # Transport diagnostics may include the secret-bearing expression.
+        return json.dumps({"success": False, "error_type": "code_fill_failed",
+                           "error": "Could not enter the one-time code."})
+    finally:
+        del code
     if not result.get("success"):
-        return json.dumps({"success": False, "error": str(result.get("error") or "fill failed")[:200]})
+        return json.dumps({"success": False, "error_type": "code_fill_failed",
+                           "error": "Could not enter the one-time code."})
     parsed = _parse_json_result(result.get("result"))
     if isinstance(parsed, str):
         parsed = _parse_json_result(parsed)
@@ -430,7 +477,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault action=unlock."})
-    if meta is None:
+    if backend is None or meta is None:
         return json.dumps(
             {
                 "success": False,
@@ -450,29 +497,25 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
-    # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);
-    # every saved origin is a valid fill target. Matching stays exact-origin —
-    # nothing wildcard/parent-domain is ever inferred.
-    allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-    page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
+    # Login providers own site matching; payment/address scope stays exact.
+    # The same policy selects a tab and checks it before resolving a password.
+    matches_origin = _origin_matcher(backend, meta)
+
+    page_origin = _focus_bound_origin(effective_task_id, "", meta.kind, origin_match=matches_origin)
     page_origin = page_origin or _current_page_origin(effective_task_id)
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
         )
-    if page_origin not in allowed:
+    if not matches_origin(page_origin):
         return json.dumps(
             {
                 "success": False,
                 "error_type": "origin_mismatch",
                 "error": (
                     f"Refused: current page origin ({page_origin}) does not match "
-                    f"the vault item's bound origin(s) ({', '.join(allowed)}). Vault fills "
-                    "only run on the exact origin(s) the credential was saved for."
+                    "the vault item's website policy. The credential provider "
+                    "does not authorize this destination."
                 ),
             }
         )
@@ -593,10 +636,12 @@ BROWSER_VAULT_SCHEMA = {
         "Actions: list (call first: saved logins/cards/addresses as handles; logins carry the identifier you type "
         "yourself with the browser's input tool; locked password managers appear under `locked`); fill (handle: "
         "the password for a login, card fields after the user confirms, address fields; refused unless the page "
-        "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
+        "origin matches the provider's website policy, exact-origin by default; cards/addresses require exact "
+        "origins; the selected origin is re-checked at write time); save_login (nothing saved for this site: "
+        "the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
-        "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
+        "ask the user to unlock an enabled password manager). Never type, ask for or repeat a password, card number, CVC "
         "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "
         "payment_declined."
     ),
@@ -604,9 +649,11 @@ BROWSER_VAULT_SCHEMA = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["list", "fill", "save_login", "enter_code", "unlock"]},
-            "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
-            "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
+            "handle": {"type": "string", "description": "fill / enter_code: a handle from list; its website policy also applies to manual code entry."},
+            "backend": {"type": "string", "description": "unlock only: backend name from list's locked sources."},
             "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
+            "manual": {"type": "boolean", "default": False,
+                       "description": "enter_code only: ask the user instead of automatic retrieval when they choose manual entry; keep the same handle."},
         },
         "required": ["action"],
     },
@@ -642,7 +689,7 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     page_ops = {
         "fill": lambda: browser_vault_fill(handle=handle, task_id=tid),
         "save_login": lambda: browser_vault_save_login(label=label, task_id=tid),
-        "enter_code": lambda: browser_vault_enter_code(handle=handle, task_id=tid),
+        "enter_code": lambda: browser_vault_enter_code(handle=handle, task_id=tid, manual=args.get("manual") is True),
     }
     if action not in page_ops:
         return json.dumps({"success": False, "error": f"Unknown action {action!r}; use list, fill, save_login, "

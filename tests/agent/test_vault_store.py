@@ -6,7 +6,18 @@ envelope, or format drift."""
 
 import pytest
 
-from agent.vault_store import VaultError, VaultStore
+from agent.vault_store import VaultError, VaultStore, normalize_origin
+
+
+@pytest.mark.parametrize(("url", "origin"), [
+    ("https://[::1]/login", "https://[::1]"),
+    ("https://[::1]:443/login", "https://[::1]"),
+    ("http://[::1]:80/login", "http://[::1]"),
+    ("https://[2001:DB8::1]:8443/login", "https://[2001:db8::1]:8443"),
+])
+def test_ipv6_origin_preserves_authority_and_is_idempotent(url: str, origin: str) -> None:
+    assert normalize_origin(url) == origin
+    assert normalize_origin(normalize_origin(url)) == origin
 
 
 def _corrupt(store: VaultStore, payload: bytes) -> None:

@@ -51,6 +51,7 @@ class _Pool:
         self.threads = 0  # worker threads alive: at most _WORKERS
         self.answers = {}  # answer task -> connection
         self.closed = False
+        self.stopping = asyncio.Event()  # set on the loop by ``stop``: each answer refuses as draining
 
     def submit(self, work):
         """Admit ``work`` (or refuse it: ``runtime_draining``, ``oneshot_busy``) and return its Future."""
@@ -119,14 +120,16 @@ def forget(connection):
 
 
 def stop(authority):
-    """Owner shutdown (whole runtime or one profile's unserve): refuse new calls, cancel every answer
-    and queued call. Running calls finish on their own (no SessionDB writes, only the model reply)."""
+    """Owner shutdown (whole runtime or one profile's unserve), on the loop: refuse new calls, cancel
+    every queued call, and answer each outstanding request once with ``runtime_draining``. One
+    profile's unserve leaves the host socket open for the others, so unlike ``forget`` its requests
+    still get a reply. Running calls finish on their own (no SessionDB writes, only the model reply)
+    and that reply is dropped."""
     pool = _pool(authority)  # an owner that never served one still refuses from now on
     with pool.lock:
         pool.closed = True
         queued = list(pool.queue)
-    for task in list(pool.answers):
-        task.cancel()
+    pool.stopping.set()
     for call in queued:
         call.cancel()
 
@@ -143,7 +146,7 @@ class DeferredReply:
         pool = _pool(connection.authority)
         # The handler's context (profile scope, secret scope) carries into the thread.
         call = pool.submit(partial(copy_context().run, self.work))
-        task = asyncio.get_running_loop().create_task(_answer(connection.transport, rid, call, check))
+        task = asyncio.get_running_loop().create_task(_answer(pool, connection.transport, rid, call, check))
         pool.answers[task] = connection
 
         def settled(done):
@@ -153,17 +156,34 @@ class DeferredReply:
         task.add_done_callback(settled)
 
 
-async def _answer(transport, rid, call, check):
+async def _answer(pool, transport, rid, call, check):
+    """Write the request's one reply: the call's result or failure, or ``runtime_draining`` once the
+    owner stops first. Its socket closing cancels this task instead, and then no frame goes out."""
+    reply = asyncio.wrap_future(call)
+    stopping = asyncio.ensure_future(pool.stopping.wait())
     try:
-        result = await asyncio.wrap_future(call)
-        if check is not None:
-            check(result)
-        frame = {'jsonrpc': '2.0', 'id': rid, 'result': result}
-    except Exception as exc:  # the request's only answer: every failure must reach the client
-        # The sidecar's own failure code and text (tui_gateway/methods_session.py).
-        logger.warning('llm.oneshot failed: %s', exc, exc_info=True)
-        frame = {'jsonrpc': '2.0', 'id': rid,
-                 'error': {'code': 5030, 'message': f'one-shot generation failed: {exc}'}}
+        await asyncio.wait((reply, stopping), return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:  # the socket closed (``forget``): nobody reads a reply
+        reply.cancel()
+        raise
+    finally:
+        stopping.cancel()
+    if not reply.done() or reply.cancelled():
+        # The owner stopped: a queued call was cancelled, a running call's late result is dropped.
+        reply.cancel()
+        frame = {'jsonrpc': '2.0', 'id': rid, 'error': {
+            'code': 4001, 'message': 'runtime_draining', 'data': {'reason': 'runtime_draining'}}}
+    else:
+        try:
+            result = reply.result()
+            if check is not None:
+                check(result)
+            frame = {'jsonrpc': '2.0', 'id': rid, 'result': result}
+        except Exception as exc:  # the request's only answer: every failure must reach the client
+            # The sidecar's own failure code and text (tui_gateway/methods_session.py).
+            logger.warning('llm.oneshot failed: %s', exc, exc_info=True)
+            frame = {'jsonrpc': '2.0', 'id': rid,
+                     'error': {'code': 5030, 'message': f'one-shot generation failed: {exc}'}}
     await transport.write_async(frame)
 
 

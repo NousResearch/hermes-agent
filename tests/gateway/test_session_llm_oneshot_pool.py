@@ -137,7 +137,12 @@ def test_a_reconnect_loop_never_retains_more_queued_payloads_than_the_bound():
     assert len(calls.ran) == oneshot._WORKERS and len(frames) == oneshot._WORKERS
 
 
+_DRAINING = {'code': 4001, 'message': 'runtime_draining', 'data': {'reason': 'runtime_draining'}}
+
+
 def test_owner_shutdown_refuses_new_calls_and_cancels_the_queue():
+    """A profile's unserve keeps the host socket open for the other profiles: every outstanding
+    request is answered once, by name, instead of left to the client's own timeout."""
     calls = _Calls()
 
     async def scenario():
@@ -160,7 +165,25 @@ def test_owner_shutdown_refuses_new_calls_and_cancels_the_queue():
     reason, frames = asyncio.run(scenario())
     assert reason == 'runtime_draining'
     assert len(calls.ran) == oneshot._WORKERS  # the queued two never started
-    assert frames == []
+    # Running and queued alike: one refusal each, and a running call's late result is dropped.
+    assert sorted(frame['id'] for frame in frames) == list(range(oneshot._WORKERS + 2))
+    assert all(frame == {'jsonrpc': '2.0', 'id': frame['id'], 'error': _DRAINING} for frame in frames), frames
+
+
+def test_owner_shutdown_answers_a_call_whose_reply_task_has_not_started_yet():
+    calls = _Calls()
+
+    async def scenario():
+        authority = SimpleNamespace()
+        connection = _connection(authority)
+        oneshot.DeferredReply(calls.work('fresh')).start(connection, 'fresh')
+        oneshot.stop(authority)  # before the answer task's first step
+        pool = authority._oneshot_pool
+        await async_wait_until(lambda: not pool.answers)
+        calls.gate.set()
+        await async_wait_until(lambda: not pool.calls)
+        return connection.transport.frames
+    assert asyncio.run(scenario()) == [{'jsonrpc': '2.0', 'id': 'fresh', 'error': _DRAINING}]
 
 
 def test_the_call_runs_in_the_handlers_context_and_its_result_is_checked_before_the_reply():

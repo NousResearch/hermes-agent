@@ -95,7 +95,9 @@ retains the shipped extras along with the new requirements. Later generations
 use the recorded extra selection as their baseline.
 
 Termux uses a separate bionic build and a sealed APT package. Docker bakes its
-runtime into the image and disables on-demand dependency installation. Nix
+runtime into the image and keeps its sealed `/opt/hermes` environment
+read-only, but opt-in backend SDKs still install on first use into PM
+dependency generations under `/opt/data/installs`. Nix
 provides its runtime through derivations. See the
 [Termux](../getting-started/termux.md), [Docker](../user-guide/docker.md), and
 [Nix](../getting-started/nix-setup.md) guides for their limits.
@@ -182,7 +184,10 @@ a bundle's frozen feature list still restricts requested Python extra names
 when lazy installs are disabled. Explicit plugin admission is a separate
 operation, not an on-demand feature request. Do not treat this setting as a
 sandbox or a blanket prohibition on manual package installation.
-Docker additionally sets the internal lazy-install disable flag in the image.
+Docker bakes its runtime into the image, so the sealed `/opt/hermes`
+environment is never written; opt-in backend SDKs install on first use into PM
+dependency generations under `/opt/data/installs`. Set
+`security.allow_lazy_installs: false` to refuse those on-demand installs.
 
 PM is a dependency manager, not a sandbox for plugin code. Installing a plugin
 requires trust in that plugin and its dependencies.

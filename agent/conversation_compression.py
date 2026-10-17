@@ -4372,7 +4372,7 @@ def _shrink_data_url(url: str, *, max_dimension: int, resize_fn: Any) -> tuple:
         new_dims = _decode_pixels(resized)
         if triggered_by == "bytes":
             # Byte budget is binding — bytes must shrink; and the resizer may return an
-            # over-cap blob (long side freezes at the 64px short-side floor) → still 400.
+            # over-cap blob (an unmeasurable file, or the raw bytes without Pillow) → still 400.
             ok = len(resized) < len(url) and (new_dims is None or max(new_dims) <= max_dimension)
         elif new_dims is not None:
             # Dimension cap is binding: accept a byte-larger re-encode if now within cap.

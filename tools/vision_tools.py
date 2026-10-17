@@ -360,11 +360,29 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # tokens per image (#92699), so we size for model reading instead: the byte budget is
 # ``vision.embed_target_bytes`` (default 256 KB, see vision_tools_history_budget) — it keeps a 1568px
 # screenshot cheap enough to ride the session (PNGs that exceed it are downscaled further by the
-# byte-budget ladder), well under every provider's per-image limit.
+# descending scan in ``_resize_image_for_vision``), under the per-image limits the providers document.
 _EMBED_MAX_DIMENSION = 1568
+# The descending candidate scan in ``_resize_image_for_vision``: candidates step down by
+# ``_RESIZE_STEP`` from the cap fit, ``_RESIZE_MAX_PROBES`` bounds the scan, and
+# ``_RESIZE_REFINE_PROBES`` narrows the bracket between the first fit and the smallest failure above
+# it.
+_RESIZE_STEP = 0.85
+_RESIZE_REFINE_PROBES = 3
+_RESIZE_MAX_PROBES = 24
+# Below this edge on either side an embed is not worth its bytes: a reading-quality floor on the
+# result, not a cap on it.
+_MIN_EMBED_EDGE = 64
 
 # Target when auto-resizing after a provider size rejection (retry once).
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
+
+
+def _size_label(chars: int) -> str:
+    """A payload length (base64 characters) as KB or MB."""
+    if chars < 1024 * 1024:
+        return f"{chars / 1024:.1f} KB"
+    return f"{chars / (1024 * 1024):.1f} MB"
+
 
 _SIZE_ERROR_HINTS = (
     "too large", "payload", "413", "content_too_large",
@@ -424,14 +442,16 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_dimension: Optional[int] = None,
                               scale_out: Optional[dict] = None,
                               force_jpeg: bool = False) -> str:
-    """Base64 data URL, progressively downscaled with Pillow while over budget.
+    """Base64 data URL, downscaled with Pillow until it fits both of the caller's limits.
 
-    Halves dimensions (aspect-preserving, 64px floor) up to 4 times; JPEG also walks a
-    quality ladder (85/70/50) per step. Without Pillow, or if it still doesn't fit, returns
-    the best attempt (or raw bytes) and lets the caller apply the size check.
+    Candidates descend from the largest scale the cap allows and the first encoding that fits both
+    the byte budget and the cap wins; JPEG walks its quality ladder (85/70/50) at every candidate.
+    The cap therefore costs only its own overflow, and a source the cap cuts below
+    ``_MIN_EMBED_EDGE`` on one side is still returned inside the cap. Without Pillow, or when
+    nothing fits at all, returns the best attempt and lets the caller apply the size check.
     ``max_dimension``: force a downscale above this long edge even when bytes fit
     (Anthropic's 8000px cap is independent of bytes). ``force_jpeg``: re-encode PNG as JPEG
-    when resizing — halving PNG dimensions destroys text legibility on dense screenshots.
+    when resizing — a scale-only PNG re-encode destroys text legibility on dense screenshots.
 
     Args: max_dimension: If set, images whose longest side exceeds this pixel count are forcibly downscaled
     even if they're under the byte budget. Anthropic enforces an 8000 px per-side cap independently of the 5
@@ -471,41 +491,77 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     if not is_png and img.mode not in {"RGB", "L"}:
         img = img.convert("RGB")
     quality_steps = (None,) if is_png else (85, 70, 50)
-    orig_dims = prev_dims = (img.width, img.height)
-    candidate = None
+    orig_dims = (img.width, img.height)
 
     def _record_scale(w: int, h: int) -> None:
         if scale_out is not None and (w, h) != orig_dims:
             scale_out.update(orig_width=orig_dims[0], orig_height=orig_dims[1], new_width=w, new_height=h)
-    for attempt in range(5):
-        if attempt > 0:
-            # Halve, then re-derive from whichever axis hit the 64px floor so both shrink equally.
-            new_w, new_h = max(int(img.width * 0.5), 64), max(int(img.height * 0.5), 64)
-            if new_w == 64 and img.width > 0:
-                new_h = max(int(img.height * (64 / img.width)), 64)
-            elif new_h == 64 and img.height > 0:
-                new_w = max(int(img.width * (64 / img.height)), 64)
-            if (new_w, new_h) == prev_dims:
-                break
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            prev_dims = (new_w, new_h)
-            logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
-        dims_ok = max_dimension is None or max(img.width, img.height) <= max_dimension
+
+    top = min(1.0, max_dimension / max(orig_dims)) if max_dimension is not None else 1.0
+    state: dict = {"scale": top, "fail_above": top, "fit_scale": None, "fallback": None}
+
+    def _candidate_dims(scale: float) -> tuple[int, int]:
+        return (max(round(orig_dims[0] * scale), 1), max(round(orig_dims[1] * scale), 1))
+
+    def _probe(scale: float) -> tuple[bool, tuple[int, int], str]:
+        w, h = _candidate_dims(scale)
+        probe_img = img if (w, h) == orig_dims else img.resize((w, h), Image.LANCZOS)
+        ok, best = False, ""
         for q in quality_steps:
             buf = BytesIO()
-            img.save(buf, format=pil_format, **({} if q is None else {"quality": q}))
-            candidate = f"data:{out_mime};base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
-            if len(candidate) <= max_base64_bytes and dims_ok:
-                logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
-                            len(candidate) / (1024 * 1024), q, img.width, img.height)
-                _record_scale(img.width, img.height)
-                return candidate
-    if candidate is None:
-        return _raw()
-    logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
-                   max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
-    _record_scale(img.width, img.height)
-    return candidate
+            probe_img.save(buf, format=pil_format, **({} if q is None else {"quality": q}))
+            url = f"data:{out_mime};base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+            if not best or len(url) < len(best):
+                best = url
+            if len(url) <= max_base64_bytes:
+                ok = True
+                break
+        return ok, (w, h), best
+
+    def _scan() -> Optional[tuple[tuple[int, int], str]]:
+        """Descending scan from the cap fit; the first candidate inside both limits wins."""
+        fit = None
+        for _ in range(_RESIZE_MAX_PROBES):
+            dims = _candidate_dims(state["scale"])
+            if state["scale"] < top and min(dims) < _MIN_EMBED_EDGE:
+                break  # below the reading floor, with the cap fit already measured
+            ok, dims, url = _probe(state["scale"])
+            state["fallback"] = (dims, url)
+            if ok:
+                fit, state["fit_scale"] = (dims, url), state["scale"]
+                break
+            state["fail_above"] = state["scale"]
+            state["scale"] *= _RESIZE_STEP
+        return fit
+
+    fit = _scan()
+    if fit is not None and state["fit_scale"] is not None and state["fit_scale"] < state["fail_above"]:
+        # Narrow the bracket between the answer and the smallest failure above it: bounded on its own,
+        # and it only ever replaces the fit with a larger one.
+        low, high = state["fit_scale"], state["fail_above"]
+        for _ in range(_RESIZE_REFINE_PROBES):
+            if high - low <= 0.01:
+                break
+            mid = (low + high) / 2
+            ok, dims, url = _probe(mid)
+            if ok:
+                if dims[0] * dims[1] > fit[0][0] * fit[0][1]:
+                    fit = (dims, url)
+                low = mid
+            else:
+                high = mid
+    if fit is None:
+        # Nothing fits: hand back the smallest encoding measured. The raw file is the one answer the
+        # caller's own budget has already refused.
+        dims, url = state["fallback"] or (orig_dims, _raw())
+        logger.warning("Auto-resize could not fit image under %s (best: %s at %dx%d)",
+                       _size_label(max_base64_bytes), _size_label(len(url)), dims[0], dims[1])
+        _record_scale(dims[0], dims[1])
+        return url
+    _record_scale(fit[0][0], fit[0][1])
+    logger.info("Auto-resized image fits: %s at %dx%d",
+                _size_label(len(fit[1])), fit[0][0], fit[0][1])
+    return fit[1]
 
 
 # Native fast path: a vision-capable main model gets the image bytes as a multimodal

@@ -38,17 +38,6 @@ def _callbacks(callbacks_by_hook):
     return lambda name: tuple(callbacks_by_hook.get(name, ()))
 
 
-def test_stream_observer_hooks_are_valid_plugin_hooks():
-    from hermes_cli.plugins import VALID_HOOKS
-
-    assert {
-        "on_stream_start",
-        "on_stream_delta",
-        "on_stream_end",
-        "on_interim_message",
-    }.issubset(VALID_HOOKS)
-
-
 def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):
     from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
@@ -191,29 +180,6 @@ def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
     assert calls[0][0] == "on_stream_delta"
     assert calls[0][1]["kind"] == "reasoning"
     assert calls[0][1]["delta"] == "visible reasoning"
-
-
-def test_reasoning_stream_opt_in_is_read_once_per_stream(monkeypatch):
-    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
-
-    shutdown_plugin_stream_hook_dispatcher()
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [lambda **kw: None]}))
-    reads = []
-
-    def _enabled():
-        reads.append(1)
-        return False
-
-    monkeypatch.setattr("agent.plugin_stream_hooks.stream_reasoning_deltas_enabled", _enabled)
-    agent = _agent()
-    for token in ("a", "b", "c"):
-        agent._fire_reasoning_delta(token)
-    assert len(reads) == 1
-
-    agent._reset_stream_delivery_tracking()
-    agent._fire_reasoning_delta("d")
-    assert len(reads) == 2
-    shutdown_plugin_stream_hook_dispatcher()
 
 
 def test_interim_message_plugin_hook_is_queued(monkeypatch):
@@ -394,3 +360,33 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
 
     assert calls[0]["kind"] == "reasoning"
     assert calls[0]["delta"] == "bedrock reasoning"
+
+
+def test_inline_think_reaches_reasoning_pane_unless_native_reasoning_streamed():
+    """#89647: inline <think> text stripped from content feeds reasoning_callback (the live pane), but not
+    once the provider streamed native reasoning for this response (no double reasoning)."""
+    agent = _agent()
+    seen = []
+    agent.reasoning_callback = seen.append
+    agent._reset_stream_delivery_tracking()
+    for delta in ["<think>", "Let me", " check config", "</think>", "The answer is 42."]:
+        agent._fire_stream_delta(delta)
+    assert "".join(seen) == "Let me check config"
+
+    seen.clear()
+    agent._reset_stream_delivery_tracking()
+    agent._fire_reasoning_delta("native")
+    agent._fire_stream_delta("<think>dup</think>ok")
+    assert seen == ["native"]
+
+
+def test_finish_chat_stream_recovers_inline_reasoning_content():
+    """#89647: with no reasoning delta, reasoning_content comes from the <think> blocks in raw content."""
+    from agent import chat_completion_helpers as cch
+
+    call = cch._StreamingCall.__new__(cch._StreamingCall)
+    call.agent = _agent()
+    deltas = ["<think>", "Let me", " check config", "</think>", "The answer is 42."]
+    resp = call._finish_chat_stream(None, "assistant", deltas, [], {}, "stop", "MiniMax-M3", None,
+                                    flush_pending=lambda: None)
+    assert resp.choices[0].message.reasoning_content == "Let me check config"

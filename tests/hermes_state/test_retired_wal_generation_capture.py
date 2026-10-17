@@ -28,7 +28,7 @@ from tests.hermes_state._wal_generation_harness import (
 )
 
 FD_DIRECTORY = "/proc/self/fd" if sys.platform.startswith("linux") else "/dev/fd"
-not_windows = pytest.mark.skipif(sys.platform == "win32", reason="a held sidecar cannot be unlinked on Windows")
+not_windows = pytest.mark.platforms("posix")  # a held sidecar cannot be unlinked on Windows
 
 
 @pytest.fixture
@@ -299,11 +299,11 @@ def _assert_retired_rows_recoverable_after_exit(tmp_path, *, rename):
         live.close()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_retired_rows_recoverable_after_process_exit(tmp_path):
     _assert_retired_rows_recoverable_after_exit(tmp_path, rename=False)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_retired_rows_recoverable_after_process_exit_with_renamed_sidecars(tmp_path):
     _assert_retired_rows_recoverable_after_exit(tmp_path, rename=True)

@@ -35,6 +35,7 @@ class PromptSubmitParams(SessionParams):
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
     surface: str | None = None  # a ClientSurface value; unknown values clear the surface
     voice_context: str | None = None  # recent spoken transcript, model input only (voice-live)
+    voice_turn: bool | None = None  # a spoken voice-conversation turn: runs on auxiliary.voice_chat
     # Desktop-generated large-paste preview (first ~1000 chars); TITLE input only, never the model turn.
     title_preview: str | None = None
     truncate_before_user_ordinal: int | None = None
@@ -42,6 +43,7 @@ class PromptSubmitParams(SessionParams):
     truncate_before_message_id: str | None = None
     confirm_truncate: bool | None = None
     confirm_empty_truncate: bool | None = None
+    confirm_deep_truncate: bool | None = None  # send when the cut archives >1 user turn (enforced next release)
     rebind_survivor_row_ids: list[int] | None = None
     # In-process only: injected by the hosted-room / bot-relay handlers, never accepted from a
     # client (a client dict for ``_turn_author`` answers 4124). Excluded from the rendered wire.
@@ -65,6 +67,9 @@ class PromptSubmitResult(Result):
 
     status: PromptSubmitStatus | None = None
     voice_stopped: bool | None = None
+    # The row written for THIS accepted input, captured before the worker can consume it.
+    # Absent on queued/steered/redirected inputs and whenever persistence is not yet proven.
+    user_row_id: int | None = None
     survivor_user_row_ids: list[int | None] | None = None
     survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None

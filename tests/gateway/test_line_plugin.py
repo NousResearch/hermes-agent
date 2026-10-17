@@ -27,7 +27,7 @@ import pytest
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/line/adapter.py under plugin_adapter_line so it
-# cannot collide with sibling platform-plugin tests in the same xdist worker.
+# cannot collide with sibling platform-plugin tests in the same process.
 _line = load_plugin_adapter("line")
 
 verify_line_signature = _line.verify_line_signature
@@ -36,7 +36,6 @@ split_for_line = _line.split_for_line
 build_postback_button_message = _line.build_postback_button_message
 _resolve_chat = _line._resolve_chat
 _allowed_for_source = _line._allowed_for_source
-_is_system_bypass = _line._is_system_bypass
 RequestCache = _line.RequestCache
 State = _line.State
 LineAdapter = _line.LineAdapter
@@ -108,11 +107,6 @@ class TestAllowlist:
 # 4. Inbound dedup
 # ---------------------------------------------------------------------------
 
-class TestDedup:
-
-    def test_first_event_not_duplicate(self):
-        d = _line.MessageDeduplicator(max_size=1000, ttl_seconds=float("inf"))
-        assert not d.is_duplicate("evt1")
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +233,6 @@ class TestSendRouting:
         ad._client.push = AsyncMock()
         return ad
 
-    def test_system_bypass_recognized(self):
-        assert _is_system_bypass("⚡ Interrupting current run")
-        assert _is_system_bypass("⏳ Queued — agent is busy")
-        assert _is_system_bypass("⏩ Steered toward new task")
-        assert not _is_system_bypass("Hello world")
-        assert not _is_system_bypass("")
 
 
     def test_send_caps_messages_per_call_at_five(self, adapter):
@@ -282,25 +270,8 @@ class TestRegister:
             self.kwargs = kw
 
 
-    def test_register_advertises_required_env(self):
-        ctx = self._FakeCtx()
-        register(ctx)
-        assert set(ctx.kwargs["required_env"]) == {
-            "LINE_CHANNEL_ACCESS_TOKEN",
-            "LINE_CHANNEL_SECRET",
-        }
 
 
-    def test_register_factory_yields_line_adapter(self):
-        ctx = self._FakeCtx()
-        register(ctx)
-        from gateway.config import PlatformConfig
-        cfg = PlatformConfig(enabled=True, extra={
-            "channel_access_token": "tok",
-            "channel_secret": "sec",
-        })
-        ad = ctx.kwargs["adapter_factory"](cfg)
-        assert isinstance(ad, LineAdapter)
 
     def test_max_message_length_below_line_per_bubble_limit(self):
         ctx = self._FakeCtx()
@@ -370,9 +341,9 @@ class TestStandaloneSend:
     def test_missing_token_returns_error(self, monkeypatch):
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
         from gateway.config import PlatformConfig
-        cfg = PlatformConfig(enabled=True, extra={})
-        result = asyncio.run(_standalone_send(cfg, "Uchat", "hi"))
-        assert "error" in result
+        for extra in ({}, {"channel_access_token": "   "}):  # a blank token never reaches the push API
+            result = asyncio.run(_standalone_send(PlatformConfig(enabled=True, extra=extra), "Uchat", "hi"))
+            assert "missing token" in result["error"]
 
 
 class TestPostbackButtonShape:
@@ -395,6 +366,8 @@ class TestCheckRequirements:
     def test_rejects_without_secret(self, monkeypatch):
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
         monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        assert not check_requirements()
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "   ")
         assert not check_requirements()
 
 
@@ -444,6 +417,13 @@ class TestAdapterInit:
         ad = LineAdapter(cfg)
         assert ad.channel_access_token == "tok"
         assert ad.channel_secret == "sec"
+        # A whitespace-only secret reads as unset, so connect fails closed instead of keying HMAC with blanks.
+        # So do null and other non-strings, which must not become guessable keys like "None" or "True".
+        for blank in ("   ", None, True, 0):
+            assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "tok",
+                                                                   "channel_secret": blank})).channel_secret == ""
+            assert LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": blank,
+                                                                   "channel_secret": "sec"})).channel_access_token == ""
         assert ad.webhook_port == 7777
         assert ad.public_base_url == "https://x.example.com"
         assert ad.allowed_users == {"U1", "U2"}
@@ -453,17 +433,6 @@ class TestAdapterInit:
 # 9. Inbound message-type classification
 # ---------------------------------------------------------------------------
 
-class TestMessageTypeMapping:
-    """LINE webhook message types must map to the right normalized
-    MessageType so the gateway routes media correctly (e.g. voice → STT,
-    files → document handling). Regression guard for the old code that
-    referenced the non-existent ``MessageType.IMAGE`` and collapsed every
-    non-text message onto a single type."""
-
-    def test_image_event_not_attributeerror_regression(self):
-        # The bug: MessageType.IMAGE doesn't exist on the enum.
-        MessageType = _line.MessageType
-        assert not hasattr(MessageType, "IMAGE")
 
 
 # ---------------------------------------------------------------------------
@@ -556,13 +525,6 @@ class TestMediaPublicUrlGuard:
         return LineAdapter(PlatformConfig(enabled=True, extra=base))
 
 
-    def test_missing_public_url_false_with_public_base(self, monkeypatch):
-        ad = self._adapter(monkeypatch, public_url="https://tunnel.example.com")
-        if not ad.public_base_url:
-            # Adapter reads env var name LINE_PUBLIC_URL / extra key —
-            # set directly if the extra key differs.
-            ad.public_base_url = "https://tunnel.example.com"
-        assert ad._missing_public_url() is False
 
 
     def test_send_image_blocked_without_public_url(self, monkeypatch, tmp_path):

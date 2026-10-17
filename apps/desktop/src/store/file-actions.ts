@@ -9,7 +9,7 @@ import {
   revealDesktopPath,
   trashDesktopPath
 } from '@/lib/desktop-fs'
-import { downloadGatewayMediaFile } from '@/lib/media'
+import { downloadGatewayFileWithFeedback } from '@/lib/media'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
@@ -94,18 +94,8 @@ export function shouldOfferRemoteFileDownload(isDirectory: boolean, remote = isD
   return remote && !isDirectory
 }
 
-export async function downloadRemoteFile(path: string): Promise<void> {
-  try {
-    const result = await downloadGatewayMediaFile(path)
-
-    if (result.canceled || !result.saved) {
-      return
-    }
-
-    notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.downloadSaved') })
-  } catch (error) {
-    notifyError(error, translateNow('fileMenu.downloadFailed'))
-  }
+export function downloadRemoteFile(path: string): Promise<void> {
+  return downloadGatewayFileWithFeedback(path)
 }
 
 /** Strip a `relativeTo` prefix to produce a repo/cwd-relative path. */

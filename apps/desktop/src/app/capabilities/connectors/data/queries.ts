@@ -2,6 +2,7 @@ import type { ConnectorAccountRow, ConnectorToolsResult } from '@hermes/shared'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo } from 'react'
 
+import { GATEWAY_NOT_CONNECTED_MESSAGE } from '@/api/client'
 import type { ProfileScope } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
@@ -45,15 +46,23 @@ import {
   mcpServerStatus
 } from './rpc'
 
+const CONNECTING_RETRIES = 5
+
+const retryWhileConnecting = (count: number, error: Error): boolean =>
+  count < CONNECTING_RETRIES && error.message === GATEWAY_NOT_CONNECTED_MESSAGE
+
 const read = (of: keyof typeof CONNECTOR_LIFETIMES) => ({
   gcTime: CONNECTOR_GC_TIME,
   refetchOnWindowFocus: CONNECTOR_LIFETIMES[of].focusRefetch,
-  retry: false,
+  retry: retryWhileConnecting,
+  retryDelay: (attempt: number) => Math.min(8000, 1000 * 2 ** attempt),
   staleTime: CONNECTOR_LIFETIMES[of].staleTime
 })
 
 export interface HostedConnectorsView {
   accounts: readonly ConnectorAccountRow[]
+  /** The account list has answered and no read is in flight, so an account missing from it is gone. */
+  accountsLoaded: boolean
   listSlugs: ReadonlySet<string>
   phase: HostedPhase
   policy: ConnectorPolicyView
@@ -143,6 +152,7 @@ export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
 
   return {
     accounts: accounts.data?.accounts ?? [],
+    accountsLoaded: accounts.data !== undefined && !accounts.isFetching,
     listSlugs,
     phase,
     policy: policyView,

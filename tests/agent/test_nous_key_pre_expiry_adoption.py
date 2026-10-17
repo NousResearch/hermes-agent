@@ -7,7 +7,7 @@ started the proactive keepalive, and nothing adopted a fresh key before a reques
 import base64
 import json
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent.client_lifecycle import ClientLifecycleMixin
 
@@ -84,6 +84,10 @@ def test_keepalive_thread_starts_when_an_agent_routes_to_nous(monkeypatch, tmp_p
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
     started = []
     monkeypatch.setattr("hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive", lambda: started.append(1))
+    # Tool discovery and the SDK client are irrelevant to the keepalive wiring and dominate runtime.
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda *a, **k: {})
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", MagicMock())
     AIAgent(api_key="k", base_url="https://inference-api.nousresearch.com/v1", provider="nous",
             model="anthropic/claude-fable-5.1", quiet_mode=True, skip_context_files=True, skip_memory=True)
     assert started == [1]

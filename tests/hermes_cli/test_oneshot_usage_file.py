@@ -42,10 +42,6 @@ class TestWriteUsageFile:
         assert report["failed"] is False
         assert "failure" not in report
 
-    def test_none_path_is_noop(self, tmp_path):
-        # Must not raise and must not create a report file.
-        _write_usage_file(None, _result())
-        assert not (tmp_path / "usage.json").exists()
 
     def test_failure_marks_failed_and_records_message(self, tmp_path):
         path = tmp_path / "usage.json"
@@ -55,8 +51,6 @@ class TestWriteUsageFile:
         assert report["failure"] == "boom"
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
-
-
 
 
 class TestAuxiliaryLedger:

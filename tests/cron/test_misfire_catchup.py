@@ -8,7 +8,6 @@ gateway housekeeping, claims and fires those jobs after a grace window.
 """
 
 import threading
-import time
 from datetime import timedelta
 
 import pytest
@@ -148,17 +147,22 @@ class TestFireOverdueJobs:
         """fire_claimed runs off-thread — a slow job must not stall the
         sweep (housekeeping loop) for the length of an agent run."""
 
-        class SlowProvider(RecordingProvider):
+        release = threading.Event()
+
+        class BlockedProvider(RecordingProvider):
             def fire_claimed(self, claimed_job, **kw):
-                time.sleep(3.0)
+                assert release.wait(10)
                 return super().fire_claimed(claimed_job, **kw)
 
         job = create_job(prompt="p", schedule="every 1h")
         _park_in_past(job["id"], minutes=30)
-        provider = SlowProvider()
-        start = time.monotonic()
-        assert fire_overdue_jobs(provider) == 1
-        assert time.monotonic() - start < 1.0  # returned before the run
+        provider = BlockedProvider()
+        try:
+            # Returns while fire_claimed is still blocked -> dispatched off-thread.
+            assert fire_overdue_jobs(provider) == 1
+            assert provider.fired == []
+        finally:
+            release.set()
         assert provider.wait_fired(timeout=10)
         assert provider.fired == [job["id"]]
 

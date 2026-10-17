@@ -832,22 +832,3 @@ def compute_task_diagnostics(
     severity_idx = {s: i for i, s in enumerate(SEVERITY_ORDER)}
     out.sort(key=lambda d: (-severity_idx.get(d.severity, -1), -(d.last_seen_at or 0)))
     return out
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-DIAGNOSTIC_KINDS = (
-    "hallucinated_cards",
-    "triage_aux_unavailable",
-    "prose_phantom_refs",
-    "repeated_failures",
-    "repeated_crashes",
-    "review_dependency_deadlock",
-    "stuck_in_blocked",
-    "block_unblock_cycling",
-    "stranded_in_ready",
-)
-# ---- END PLUGIN-COMPAT ----

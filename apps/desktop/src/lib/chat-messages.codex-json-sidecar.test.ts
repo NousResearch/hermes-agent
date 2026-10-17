@@ -30,9 +30,16 @@ it('hydrates the SQLite JSON-text sidecar returned by REST like the decoded RPC 
   expect(toChatMessages([{ ...empty, codex_message_items: '{invalid' }])).toEqual([])
   expect(toChatMessages([{ ...empty, display_kind: 'hidden', codex_message_items: JSON.stringify(items) }])).toEqual([])
 
-  for (const phase of ['analysis', 'commentary']) {
-    expect(toChatMessages([{ ...empty, codex_message_items: JSON.stringify([{ ...items[0], phase }]) }])).toEqual([])
-  }
+  expect(
+    toChatMessages([{ ...empty, codex_message_items: JSON.stringify([{ ...items[0], phase: 'analysis' }]) }])
+  ).toEqual([])
+  const rawCommentary = JSON.stringify([{ ...items[0], phase: 'commentary' }])
+  expect(toChatMessages([{ ...empty, codex_message_items: rawCommentary }])).toEqual([])
+  expect(
+    chatMessageText(
+      toChatMessages([{ ...empty, codex_message_items: rawCommentary, display_commentary: ['Durable reply'] }])[0]
+    )
+  ).toBe('Durable reply')
 
   expect(
     chatMessageText(

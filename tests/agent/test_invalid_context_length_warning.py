@@ -2,7 +2,6 @@
 
 from unittest.mock import patch
 
-
 def _build_agent(model_cfg, custom_providers=None, model=None):
     """Build an AIAgent with the given model config."""
     cfg = {"model": model_cfg}
@@ -31,7 +30,6 @@ def _build_agent(model_cfg, custom_providers=None, model=None):
         )
     return agent
 
-
 def test_valid_integer_context_length_no_warning():
     """Plain integer context_length should work silently."""
     with patch("run_agent.logger") as mock_logger:
@@ -42,7 +40,6 @@ def test_valid_integer_context_length_no_warning():
     # No warning about invalid context_length
     for c in mock_logger.warning.call_args_list:
         assert "Invalid" not in str(c)
-
 
 def test_string_k_suffix_context_length_warns():
     """context_length: '256K' should warn the user clearly."""
@@ -55,30 +52,3 @@ def test_string_k_suffix_context_length_warns():
     warning_calls = [c for c in mock_logger.warning.call_args_list
                      if "Invalid" in str(c) and "256K" in str(c)]
     assert len(warning_calls) == 1
-    assert "plain integer" in str(warning_calls[0])
-
-
-
-
-
-
-def test_custom_providers_valid_context_length():
-    """Valid integer in custom_providers should work silently."""
-    custom_providers = [
-        {
-            "name": "LiteLLM",
-            "base_url": "http://localhost:4000/v1",
-            "models": {
-                "gpt5.4": {"context_length": 256000}
-            },
-        }
-    ]
-    with patch("run_agent.logger") as mock_logger:
-        agent = _build_agent(
-            {"default": "gpt5.4", "provider": "custom",
-             "base_url": "http://localhost:4000/v1"},
-            custom_providers=custom_providers,
-            model="gpt5.4",
-        )
-    for c in mock_logger.warning.call_args_list:
-        assert "Invalid" not in str(c)

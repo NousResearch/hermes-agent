@@ -76,10 +76,26 @@ def untrack_connection(path: Path | str) -> None:
         _track_key(_key(path), -1)
 
 
+def _live_main_key(key: str) -> Optional[str]:
+    """The tracked main-database key that makes *key* live, or ``None`` (caller holds ``_live_lock``).
+
+    SQLite locks the main file and its WAL sidecars; a raw ``close()`` of any of those
+    inodes cancels this process's POSIX locks, but the registry is keyed by the main path."""
+    if key in _live_connections:
+        return key
+    for suffix in ("-wal", "-shm"):
+        if key.endswith(suffix) and key[:-len(suffix)] in _live_connections:
+            return key[:-len(suffix)]
+    return None
+
+
 def has_live_connection(path: Path | str) -> bool:
-    """Whether this process currently holds any connection to *path*."""
+    """Whether this process holds a connection to *path* (or to the database it is a sidecar of).
+
+    Point-in-time answer: a raw open/close right after it returns ``False`` can still race a
+    new connection. Hold :func:`offline_file_access` across the I/O whenever possible."""
     with _live_lock:
-        return _key(path) in _live_connections
+        return _live_main_key(_key(path)) is not None
 
 
 class _TrackingMixin:
@@ -211,7 +227,7 @@ def read_header_bytes_preopen(path: Path | str, *, length: int = 100, force: boo
     overwritten?). Check and open/read/close run together under ``_live_lock`` so a connection
     cannot be opened between deciding "nothing is live" and closing this descriptor."""
     with _live_lock:
-        if not force and _key(path) in _live_connections:
+        if not force and _live_main_key(_key(path)) is not None:
             logger.debug(
                 "refusing byte-level read of %s: a live connection exists in "
                 "this process and close() would cancel its POSIX locks",
@@ -230,19 +246,12 @@ def offline_file_access(path: Path | str, *, what: str = "read"):
     :func:`has_live_connection` and *then* doing raw I/O is a check/use race (a connection opened
     in between loses its POSIX locks to the raw ``close()``). Held only for the raw I/O."""
     with _live_lock:
-        if _key(path) in _live_connections:
+        main = _live_main_key(_key(path))
+        if main is not None:
+            subject = "it" if main == _key(path) else f"its main database {main}"
             raise LiveConnectionError(
-                f"Refusing to {what} {path}: a connection to it is still open "
+                f"Refusing to {what} {path}: a connection to {subject} is still open "
                 "in this process, and raw file access would cancel that "
                 "connection's POSIX advisory locks. Close all database "
                 "handles (stop the gateway/dashboard) and retry.")
         yield
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
-# ---- END PLUGIN-COMPAT ----

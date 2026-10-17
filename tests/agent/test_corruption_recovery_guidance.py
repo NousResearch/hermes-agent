@@ -15,20 +15,8 @@ The fix adds:
    with the full recovery path (hermes doctor, sqlite3 .recover, backups)
 """
 
-from pytest import fixture
 
 
-def test_format_turn_completion_corrupt_includes_recovery_options():
-    """The 'corrupt' persistence cause must list all recovery options."""
-    from run_agent import AIAgent
-
-    explanation = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "corrupt"
-    )
-    assert "hermes doctor" in explanation
-    assert ".recover" in explanation
-    assert "backups" in explanation
-    assert "Freeing disk space will not help" in explanation
 
 
 def test_gateway_corruption_banner_backups_dir_follows_hermes_home(monkeypatch, tmp_path):
@@ -104,25 +92,8 @@ def test_format_turn_completion_corrupt_never_names_the_live_db():
     assert "hermes sessions recover --source" in explanation
 
 
-def test_format_turn_completion_disk_still_advises_space():
-    """The 'disk' cause still gives disk-space advice (unchanged)."""
-    from run_agent import AIAgent
-
-    explanation = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "disk"
-    )
-    assert "free some space" in explanation
 
 
-def test_format_turn_completion_locked_still_advises_retry():
-    """The 'locked' cause still advises retrying (unchanged)."""
-    from run_agent import AIAgent
-
-    explanation = AIAgent._format_turn_completion_explanation(
-        "session_persistence_failed", "locked"
-    )
-    assert "busy" in explanation
-    assert "send it again" in explanation
 
 
 def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):

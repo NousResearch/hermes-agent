@@ -1798,8 +1798,8 @@ class TestQuickSnapshotProjectsKanban:
 
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
-        # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        # Copied via _safe_copy_db (not raw copy); the source is a real path ("\" on Windows).
+        assert any(s.replace(os.sep, "/").endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]

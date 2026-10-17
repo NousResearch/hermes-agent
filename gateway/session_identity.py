@@ -81,6 +81,12 @@ class RoutingIdentity:
         identity: the runtime profile under multiplexing, else ``None`` (legacy namespace)."""
         return self.runtime_profile if self.multiplexed else None
 
+    @property
+    def transport_known(self) -> bool:
+        """The receiving bot was named (live or restored), not guessed: its adapter delivers or
+        nothing does, never the runtime profile's."""
+        return self.multiplexed and not self.transport_inferred
+
     def adapter(self) -> Any:
         """The live receiving adapter, or None when it is gone or was never known."""
         return self.transport() if self.transport is not None else None

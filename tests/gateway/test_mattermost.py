@@ -261,6 +261,35 @@ class TestMattermostSend:
         payload = self.adapter._api_post.call_args_list[0][0][1]
         assert payload["root_id"] == "bad_root"
 
+    @pytest.mark.asyncio
+    async def test_thread_mode_dm_posts_flat(self):
+        """REPLY_MODE=thread must not set root_id on a direct message."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._remember_channel_type("dm_channel", "D")
+        self.adapter._api_post = AsyncMock(return_value={"id": "flat_dm"})
+
+        result = await self.adapter.send("dm_channel", "Cambio", reply_to="user_post")
+
+        assert result.success is True
+        payload = self.adapter._api_post.call_args_list[0][0][1]
+        assert "root_id" not in payload
+        assert payload["channel_id"] == "dm_channel"
+        assert payload["message"] == "Cambio"
+
+    @pytest.mark.asyncio
+    async def test_text_only_event_passes_empty_media_lists(self):
+        """Native admission rejects media_urls=None; a text post must pass lists."""
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter.handle_message = AsyncMock()
+        post = {"id": "post_text", "user_id": "user_123", "channel_id": "dm_1", "message": "Opa"}
+        event = {"event": "posted", "data": {"post": json.dumps(post), "channel_type": "D", "sender_name": "@vagner"}}
+
+        await self.adapter._handle_ws_event(event)
+
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.media_urls == []
+        assert msg_event.media_types == []
+
 
 # ---------------------------------------------------------------------------
 # WebSocket event parsing

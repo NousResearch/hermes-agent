@@ -6,13 +6,16 @@ other anchor exists (a relative/sentinel ``TERMINAL_CWD`` would silently anchor
 edits to the agent process cwd, e.g. the main repo during a worktree session).
 """
 
+import logging
 import os
 import posixpath
 import sys
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 
 from agent.runtime_self_protection import split_entry
+
+logger = logging.getLogger("tools.file_tools")
 
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
@@ -20,9 +23,9 @@ _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 _CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
 # Backend name inferred from the live environment's class name (first match wins).
 _ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "singularity", "modal", "daytona")
-# Container task id -> monotonic time of the last failed SSH bring-up in path resolution.
-_SSH_HOME_RETRY_AFTER = 30.0
-_ssh_home_failed_at: dict[str, float] = {}
+# Container task id -> monotonic time of the last failed environment bring-up in path resolution.
+_ENV_RETRY_AFTER = 30.0
+_env_bringup_failed_at: dict[str, float] = {}
 
 
 def _expand_tilde(path: str) -> str:
@@ -150,11 +153,34 @@ def _host_text(text: str, container_paths: bool) -> str:
     return _expand_tilde(text)
 
 
+def _is_host_only_absolute(text: str) -> bool:
+    """True for a path that is absolute on the Hermes host but not in a POSIX namespace:
+    a Windows drive or UNC path. Never true on a POSIX host."""
+    return os.path.isabs(text) and not posixpath.isabs(text)
+
+
+def _container_root(root: str, task_id: str) -> str:
+    """*root* as a directory inside the container. A host-only path (a Windows session
+    record, ``TERMINAL_CWD`` or process cwd) maps through the environment's mount, else
+    falls back to the environment's own cwd; any other *root* is already a container path."""
+    from tools.terminal_tool import _rewrite_via_env_mount
+
+    if not _is_host_only_absolute(root):
+        return root
+    env = _task_env(task_id)
+    mapped = _rewrite_via_env_mount(root, env)
+    if mapped:
+        return mapped
+    cwd = getattr(env, "cwd", None)
+    return cwd if isinstance(cwd, str) and posixpath.isabs(cwd) else root
+
+
 def _anchor(text: str, base, container_paths: bool) -> Path | PurePosixPath:
     """Return *text* as an absolute, normalized path, joining it onto ``base()`` when
     relative. Container: pure-posix, no host deref. Host: resolve() (win32: ntpath normpath)."""
     if container_paths:
-        if not posixpath.isabs(text):
+        # A host-only path the container did not mount is absolute, not a name under base().
+        if not posixpath.isabs(text) and not _is_host_only_absolute(text):
             text = posixpath.join(str(base()), text)
         return _normalize_without_host_deref(text)
     if sys.platform == "win32":
@@ -188,16 +214,16 @@ def _ssh_remote_anchor(task_id: str) -> str:
     return "~"
 
 
-def _ssh_remote_home(task_id: str) -> str | None:
-    """The SSH user's home as detected at connect (``echo $HOME``), else None.
+def _task_env(task_id: str):
+    """The task's live terminal environment, or None when it cannot be brought up.
 
     Brings the environment up through the file tools' own creator (same cwd
     and cache as the call that follows) when none is live: they resolve before
     touching the backend, and a first call keyed ``~/x`` while later ones key
     ``/home/u/x`` splits read tracking and staleness checks for one file. A
     failed bring-up is remembered briefly so one tool call's several
-    resolutions don't each wait out the SSH connect timeout; the tool's own
-    backend call reports the error.
+    resolutions don't each wait out a connect timeout; the tool's own backend
+    call reports the error.
     """
     from tools.file_tools import _get_file_ops
     from tools.terminal_tool import _resolve_container_task_id
@@ -206,14 +232,24 @@ def _ssh_remote_home(task_id: str) -> str | None:
     key = _resolve_container_task_id(task_id)
     env = get_active_env(task_id)
     if env is None:
-        if time.monotonic() - _ssh_home_failed_at.get(key, float("-inf")) < _SSH_HOME_RETRY_AFTER:
+        if time.monotonic() - _env_bringup_failed_at.get(key, float("-inf")) < _ENV_RETRY_AFTER:
             return None
         try:
             env = _get_file_ops(task_id).env
         except Exception:
-            _ssh_home_failed_at[key] = time.monotonic()
+            # Any backend can fail to come up; resolution degrades and the tool's own call reports it.
+            logger.debug("Environment bring-up for path resolution failed (task %s)", key, exc_info=True)
+            _env_bringup_failed_at[key] = time.monotonic()
             return None
-    _ssh_home_failed_at.pop(key, None)
+    _env_bringup_failed_at.pop(key, None)
+    return env
+
+
+def _ssh_remote_home(task_id: str) -> str | None:
+    """The SSH user's home as detected at connect (``echo $HOME``), else None."""
+    env = _task_env(task_id)
+    if env is None:
+        return None
     # A guessed /home/<user> (``echo $HOME`` failed) must not stand in for the real home.
     home = getattr(env, "_remote_home", None) if getattr(env, "_remote_home_detected", False) else None
     return home if isinstance(home, str) and posixpath.isabs(home) else None
@@ -259,19 +295,27 @@ def _resolve_base_dir(
         if _terminal_env_type_for_task(task_id) == "ssh":
             return _resolve_ssh_path(".", task_id)
         container_paths = _uses_container_paths(task_id)
-    root = _authoritative_workspace_root(task_id)
+    root = _host_text(_authoritative_workspace_root(task_id) or os.getcwd(), container_paths)
+    if container_paths:
+        root = _container_root(root, task_id)
     # A backend's relative cwd is anchored to the process cwd once, here.
-    return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
+    return _anchor(root, os.getcwd, container_paths)
 
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory
-    (absolute inputs are returned resolved-but-unanchored)."""
+    (absolute inputs are returned resolved-but-unanchored; on a container backend a
+    host path under the environment's mount becomes its container path)."""
     if _terminal_env_type_for_task(task_id) == "ssh":
         return _resolve_ssh_path(filepath, task_id)
     container_paths = _uses_container_paths(task_id)
-    return _anchor(_host_text(filepath, container_paths),
-                   lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
+    text = _host_text(filepath, container_paths)
+    if container_paths and _is_host_only_absolute(text):
+        # The env's bind (host_cwd -> host_cwd_mount) is the only host directory the container sees.
+        from tools.terminal_tool import _rewrite_via_env_mount
+
+        text = _rewrite_via_env_mount(text, _task_env(task_id)) or text
+    return _anchor(text, lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
 
 
 def _resolve_entry_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
@@ -285,30 +329,35 @@ def _resolve_entry_for_task(filepath: str, task_id: str = "default") -> Path | P
 
 
 
-def _path_resolution_warning(filepath: str, resolved: Path | PurePosixPath, task_id: str = "default") -> str | None:
+def _path_resolution_warning(filepath: str, resolved: str | PurePath, task_id: str = "default") -> str | None:
     """Warn when a RELATIVE path resolved OUTSIDE the task's workspace root (the
     edit is about to land in a different checkout than the terminal's cwd).
     ``None`` for absolute paths, an unknown root, or a path under the root.
-    SSH compares in the remote namespace, as ``_resolve_path_for_task`` resolved it."""
+    SSH and container paths compare in their POSIX namespace, as
+    ``_resolve_path_for_task`` resolved them, whatever the host OS."""
     try:
         if _terminal_env_type_for_task(task_id) == "ssh":
             if filepath.startswith("~") or posixpath.isabs(filepath):
                 return None
-            root = _resolve_ssh_path(".", task_id)
+            root, target = _resolve_ssh_path(".", task_id), PurePosixPath(resolved)
+        elif _uses_container_paths(task_id):
+            text = _expand_tilde(filepath)
+            workspace_root = _authoritative_workspace_root(task_id)
+            if posixpath.isabs(text) or _is_host_only_absolute(text) or not workspace_root:
+                return None
+            root = _normalize_without_host_deref(_container_root(_expand_tilde(workspace_root), task_id))
+            target = PurePosixPath(resolved)
         else:
             if Path(_expand_tilde(filepath)).is_absolute():
                 return None
             workspace_root = _authoritative_workspace_root(task_id)
             if not workspace_root:
                 return None
-            if _uses_container_paths(task_id):
-                root = _normalize_without_host_deref(Path(_expand_tilde(workspace_root)))
-            else:
-                root = Path(_expand_tilde(workspace_root)).resolve()
-        if resolved.is_relative_to(root):
+            root, target = Path(_expand_tilde(workspace_root)).resolve(), Path(resolved)
+        if target.is_relative_to(root):
             return None
         return (
-            f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
+            f"Relative path {filepath!r} resolved to {str(target)!r}, which is "
             f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
             f"a different directory than the terminal's cwd. If this is not "
             f"intended (e.g. a git-worktree session writing into the main "

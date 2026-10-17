@@ -25,7 +25,7 @@ def test_ssh_paths_resolve_on_the_remote_and_stay_guarded(monkeypatch):
         monkeypatch.setattr(module, "_terminal_env_type_for_task", lambda task_id="default": "ssh")
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(terminal_tool, "_active_environments", {})
-    monkeypatch.setattr(paths, "_ssh_home_failed_at", {})
+    monkeypatch.setattr(paths, "_env_bringup_failed_at", {})
 
     def unreachable(task_id="default"):
         raise ConnectionError("ssh unreachable")

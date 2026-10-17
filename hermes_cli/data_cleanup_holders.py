@@ -37,6 +37,12 @@ def manual_gateway_identity(home: Path) -> dict | None:
     return identity
 
 
+def pause_acked(response: dict | None, identity: dict | None) -> bool:
+    """True when the identified gateway itself accepted (or is already running) the drain."""
+    return bool(response and identity is not None and response.get("pid") == identity.get("pid")
+                and (response.get("pausing") or response.get("already_stopping")))
+
+
 def _drain_manual_gateway(home: Path) -> None:
     from gateway.control_socket import identify_gateway, pause_gateway_for_update
     from gateway.status import get_process_start_time, get_running_pid_identity_strict, _pid_exists
@@ -51,9 +57,7 @@ def _drain_manual_gateway(home: Path) -> None:
     if type(pid) is not int or pid <= 0 or start is None or get_process_start_time(pid) != start:
         raise RuntimeError(f"gateway process identity is unverified for {home}")
     response = pause_gateway_for_update(home)
-    if not response or response.get("pid") != identity.get("pid") or not (
-        response.get("pausing") or response.get("already_stopping")
-    ):
+    if not pause_acked(response, identity):
         raise RuntimeError(f"gateway refused to drain for {home}")
     deadline = time.monotonic() + min(120.0, max(5.0, float(response.get("drain_timeout", 30.0)) + 5.0))
     while time.monotonic() < deadline:

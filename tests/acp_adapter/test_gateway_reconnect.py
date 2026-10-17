@@ -19,7 +19,7 @@ class Owner:
 
     def __init__(self, profile_id, epoch, *, die_on_submit=None):
         self.profile_id, self.epoch, self.die_on_submit = profile_id, epoch, die_on_submit
-        self.calls = []
+        self.calls, self.configs = [], []
         self.server = None
 
     async def handler(self, ws):
@@ -27,6 +27,8 @@ class Owner:
             frame = json.loads(raw)
             method, params = frame["method"], frame["params"]
             self.calls.append(method)
+            if method == "config.set":
+                self.configs.append(params)
             if method == "prompt.submit" and self.die_on_submit == "before_ack":
                 await ws.close()  # the owner dies with the submit in flight
                 return
@@ -77,9 +79,11 @@ async def test_editor_reconnects_to_a_restarted_gateway_without_resending(monkey
         response = await asyncio.wait_for(agent.prompt([acp.text_block("after restart")], "s"), 5)
         assert response.stop_reason == "end_turn"
         assert agent._failure is None
-        # The replacement was re-verified and re-subscribed before the new submit; the
-        # lost input was submitted to the first owner only.
-        assert owners[1].calls == ["runtime.describe", "session.resume", "prompt.submit"]
+        # The replacement was re-verified and re-subscribed before the new submit, and asked again
+        # for the session's live reasoning: a restarted owner's live session starts without that
+        # flag (ACP-4). The lost input was submitted to the first owner only.
+        assert owners[1].calls == ["runtime.describe", "session.resume", "config.set", "prompt.submit"]
+        assert owners[1].configs == [{"session_id": "s", "key": "show_reasoning", "value": "1"}]
         assert owners[0].calls.count("prompt.submit") == 1
         assert agent._snapshots["s"]["replay_epoch"] == "second"
         texts = [call.kwargs["update"].content.text for call in agent._conn.session_update.await_args_list

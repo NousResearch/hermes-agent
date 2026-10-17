@@ -61,7 +61,7 @@ async def test_resumed_unknown_turn_names_the_existing_discard_recovery():
     agent._conn = AsyncMock()
     lost = 'admission-lost-0123456789abcdef'
     agent._gateway.rpc.side_effect = lambda method, **params: {
-        'session.info': {}, 'session.resume': {
+        'session.info': {}, 'config.set': {}, 'session.resume': {
             'session_id': 's', 'messages': [], 'prompts': [],
             'pending': [{'admission_id': lost, 'status': 'unknown', 'execution_generation': 4}]},
     }[method]
@@ -73,7 +73,9 @@ async def test_resumed_unknown_turn_names_the_existing_discard_recovery():
         assert 'chat --cli --resume s' in text and f'/discard {lost}' in text, text
         assert 'do not resend' in text
     assert 'nothing was submitted' in str(refused.value)
-    assert [call.args[0] for call in agent._gateway.rpc.await_args_list] == ['session.info', 'session.resume']
+    # The load's own RPCs only (the session's reasoning flag included): no prompt.submit.
+    asked = [call.args[0] for call in agent._gateway.rpc.await_args_list]
+    assert asked == ['session.info', 'session.resume', 'config.set']
 
 
 @pytest.mark.asyncio

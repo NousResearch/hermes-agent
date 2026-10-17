@@ -99,41 +99,27 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
 }
 
 
-# Kept in sync with the corresponding frontend validation in ChannelsPage.tsx.
-_TELEGRAM_BOT_TOKEN_RE = re.compile(r"\d+:[A-Za-z0-9_-]{30,}")
-_TELEGRAM_USER_ID_RE = re.compile(r"\d+")
-_SLACK_MEMBER_ID_RE = re.compile(r"[UW][A-Z0-9]{2,}")
+def _env_value_rules(platform_id: str) -> dict[str, tuple[Any, str]]:
+    """``{env key: (accepts(value), 400 detail)}`` declared on the platform plugin's PlatformEntry
+    (``env_value_rules``; e.g. Telegram/Slack reject credentials clearly in the wrong field).
+
+    Resolve this in the request's own scope, right after :func:`_require_platform`: the catalog build
+    there has just materialized every plugin entry, so the lookup imports nothing, whereas inside
+    ``_profile_scope`` the registry's profile overlay may not hold the entry and every rule would
+    silently stop applying. Without rules on the entry (the dashboard's own profile disabled the
+    plugin, a user plugin overrides it) a bundled platform's ``dashboard_card.py`` answers, read from
+    its file: the rules guard the edited profile's values whatever the dashboard's profile loads."""
+    from gateway.platform_env import bundled_sibling
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_id)
+    if entry is not None and entry.env_value_rules:
+        return dict(entry.env_value_rules)
+    card = getattr(bundled_sibling(platform_id, "dashboard_card"), "DASHBOARD_CARD", None) or {}
+    return dict(card.get("env_value_rules") or {})
 
 
-def _csv_ids(value: str) -> list[str]:
-    """Split like the gateway parsers (gateway/platforms/*.py): comma, strip, drop
-    empties — so a trailing/interior comma isn't rejected when the runtime accepts it."""
-    return [part.strip() for part in value.split(",") if part.strip()]
-
-
-# (platform, env key) -> (accepts(value), 400 detail). Rejects credentials that
-# are clearly in the wrong field. "*" is Slack's allow-all wildcard.
-_ENV_VALUE_RULES: dict[tuple[str, str], tuple[Any, str]] = {
-    ("telegram", "TELEGRAM_BOT_TOKEN"): (
-        _TELEGRAM_BOT_TOKEN_RE.fullmatch,
-        "Telegram bot token must be the complete token from @BotFather, such as 123456789:ABC…"),
-    ("telegram", "TELEGRAM_ALLOWED_USERS"): (
-        lambda v: all(_TELEGRAM_USER_ID_RE.fullmatch(u) for u in _csv_ids(v)),
-        "Telegram allowed users must be comma-separated numeric user IDs."),
-    ("slack", "SLACK_BOT_TOKEN"): (
-        lambda v: v.startswith("xoxb-"),
-        "Slack Bot Token must start with xoxb-. Paste the bot token from OAuth & Permissions."),
-    ("slack", "SLACK_APP_TOKEN"): (
-        lambda v: v.startswith("xapp-"),
-        "Slack App Token must start with xapp-. Paste the app-level token from Basic Information > App-Level Tokens."),
-    ("slack", "SLACK_ALLOWED_USERS"): (
-        lambda v: all(u == "*" or _SLACK_MEMBER_ID_RE.fullmatch(u) for u in _csv_ids(v)),
-        "Slack allowed user IDs must be comma-separated member IDs like U01ABC2DEF3."),
-}
-
-
-def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> None:
-    rule = _ENV_VALUE_RULES.get((platform_id, key))
+def _validate_messaging_env_value(rules: dict[str, tuple[Any, str]], key: str, value: str) -> None:
+    rule = rules.get(key)
     if value and rule and not rule[0](value):
         raise HTTPException(status_code=400, detail=rule[1])
 
@@ -675,6 +661,9 @@ def _prune_telegram_onboarding_pairings() -> None:
         _telegram_onboarding_pairings.pop(pairing_id, None)
 
 
+_TELEGRAM_USER_ID_RE = re.compile(r"\d+")
+
+
 def _normalize_telegram_user_id(value: Any) -> str | None:
     normalized = str(value or "").strip()
     return normalized if _TELEGRAM_USER_ID_RE.fullmatch(normalized) else None
@@ -874,6 +863,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
 @router.put("/api/messaging/platforms/{platform_id}")
 async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpdate, profile: Optional[str] = None):
     entry = _require_platform(platform_id)
+    env_value_rules = _env_value_rules(platform_id)
 
     target_profile = body.profile or profile
     if body.enabled:
@@ -907,7 +897,7 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                     continue
                 if is_redacted_credential_preview(trimmed):
                     raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
-                _validate_messaging_env_value(platform_id, key, trimmed)
+                _validate_messaging_env_value(env_value_rules, key, trimmed)
                 updates[key] = trimmed
 
             for key in body.clear_env:
@@ -956,20 +946,17 @@ def _platform_authz_env_names(platform_id: str) -> tuple[str, str]:
     """``(allowed_users_env, allow_all_env)`` for a platform, honoring plugin registry
     entries. Empty strings mean "this platform has no per-user authorization surface"
     (webhook-style trusted inbound or unknown), so no posture is computed for it."""
-    from gateway.pairing import _PLATFORM_ALLOWLIST_ENV
+    allowed = allow_all = ""
+    with contextlib.suppress(Exception):
+        from gateway.platform_registry import platform_registry
 
-    allowed = _PLATFORM_ALLOWLIST_ENV.get(platform_id, "")
-    allow_all = allowed.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS")
-    if not allowed:
-        with contextlib.suppress(Exception):
-            from gateway.platform_registry import platform_registry
+        from gateway.platform_env import authz_field
 
-            entry = platform_registry.get(platform_id)
-            if entry is not None:
-                if getattr(entry, "trusted_inbound", False) is True:
-                    return "", ""
-                allowed = getattr(entry, "allowed_users_env", "") or ""
-                allow_all = getattr(entry, "allow_all_env", "") or ""
+        entry = platform_registry.get(platform_id)
+        if entry is not None and getattr(entry, "trusted_inbound", False) is True:
+            return "", ""
+        allowed = authz_field(platform_id, "allowed_users_env", entry) or ""
+        allow_all = authz_field(platform_id, "allow_all_env", entry) or ""
     return allowed, allow_all
 
 
@@ -991,7 +978,9 @@ def _count_csv(value: str) -> int:
     return len([part for part in (value or "").split(",") if part.strip()])
 
 
-def _messaging_platform_posture(platform_id: str, entry: dict[str, Any], scoped: bool) -> dict[str, Any] | None:
+def _messaging_platform_posture(
+    platform_id: str, entry: dict[str, Any], scoped: bool, authz_env: tuple[str, str]
+) -> dict[str, Any] | None:
     """Auth-posture verdict for a CONNECTED platform (must be called inside the profile
     scope, after the connectivity chain has already reported ``connected``).
 
@@ -1011,8 +1000,10 @@ def _messaging_platform_posture(platform_id: str, entry: dict[str, Any], scoped:
     Everything failing → deny-all: the connection is up but no sender can get through,
     which the Channels "Test" button must not render as a plain green "connected".
     Returns ``None`` when the platform has no per-user authorization surface at all.
+    *authz_env* is :func:`_platform_authz_env_names`, resolved OUTSIDE the profile scope (see
+    :func:`_env_value_rules`: the scope's registry overlay may not hold the entry).
     """
-    allowed_env, allow_all_env = _platform_authz_env_names(platform_id)
+    allowed_env, allow_all_env = authz_env
     if not allowed_env:
         return None
 
@@ -1073,6 +1064,7 @@ def _messaging_platform_posture(platform_id: str, entry: dict[str, Any], scoped:
 @router.post("/api/messaging/platforms/{platform_id}/test")
 async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
     entry = _require_platform(platform_id)
+    authz_env = _platform_authz_env_names(platform_id)
 
     def _run():
         with _profile_scope(profile) as scoped_dir:
@@ -1082,7 +1074,7 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
                 # Still inside the profile scope: load_env()/load_config()/PairingStore
                 # must resolve the ACTIVE profile's env/config/pairing store, not the
                 # dashboard process's root home.
-                posture = _messaging_platform_posture(platform_id, entry, scoped_dir is not None)
+                posture = _messaging_platform_posture(platform_id, entry, scoped_dir is not None, authz_env)
             return payload, posture
 
     payload, posture = await asyncio.to_thread(_run)

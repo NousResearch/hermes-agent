@@ -11,6 +11,83 @@ from gateway.control_socket import _home_hash
 from hermes_cli.gateway_runtime_discovery import DiscoveryError, home_mode_unsafe, query_identify
 
 
+def _ready_owner_payload(home):
+    return {
+        "runtime_protocol": 1,
+        "state": "ready",
+        "served_profiles": [{"home": str(home), "profile_id": str(home)}],
+        "capabilities": ["session-authority-v1"],
+        "authority_epoch": 1,
+        "instance_id": "owner",
+        "api_origin": "http://127.0.0.1:8765",
+        "supervisor": "none",
+    }
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_discovery_resolves_a_private_overlay_lock_to_its_owner(tmp_path, monkeypatch):
+    """ACP task homes share the served profile's lock instead of publishing a socket of their own."""
+    import hermes_cli.gateway_runtime as runtime
+    import hermes_cli.gateway_runtime_discovery as discovery
+
+    owner = tmp_path / "owner"
+    overlay = tmp_path / "task-home"
+    owner.mkdir(mode=0o700)
+    overlay.mkdir(mode=0o700)
+    lock = owner / "gateway.lock"
+    lock.touch(mode=0o600)
+    (overlay / "gateway.lock").symlink_to(lock)
+    queried = []
+
+    def identify(home, *, timeout):
+        queried.append(home)
+        return _ready_owner_payload(owner)
+
+    monkeypatch.setattr(discovery, "query_identify", identify)
+    result = runtime.discover_gateway_endpoint(overlay)
+
+    assert result.state == "ready"
+    assert result.endpoint is not None and result.endpoint.profile_id == str(owner)
+    assert queried == [owner]
+
+    checked = []
+
+    def ready(home, *, timeout):
+        checked.append(home)
+        return runtime.GatewayDiscovery("ready")
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", ready)
+    assert runtime.ensure_gateway_runtime(overlay).state == "ready"
+    assert checked == [owner]
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_discovery_does_not_follow_an_overlay_lock_from_a_writable_home(tmp_path, monkeypatch):
+    """A task directory another user can replace must not select a gateway owner."""
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    import hermes_cli.gateway_runtime_discovery as discovery
+
+    owner = tmp_path / "owner"
+    overlay = tmp_path / "task-home"
+    owner.mkdir(mode=0o700)
+    overlay.mkdir(mode=0o700)
+    overlay.chmod(0o707)
+    lock = owner / "gateway.lock"
+    lock.touch(mode=0o600)
+    (overlay / "gateway.lock").symlink_to(lock)
+    queried = []
+
+    def identify(home, *, timeout):
+        queried.append(home)
+        return _ready_owner_payload(owner)
+
+    monkeypatch.setattr(discovery, "query_identify", identify)
+    result = discover_gateway_endpoint(overlay)
+
+    assert result.state == "inaccessible"
+    assert queried == [overlay]
+
+
 @pytest.mark.platforms("linux")
 def test_fallback_pointer_uses_owner_location_and_keeps_identity_checks(tmp_path):
     home = tmp_path / 'profile'

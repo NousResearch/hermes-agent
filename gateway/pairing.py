@@ -59,32 +59,22 @@ def _default_pairing_dir() -> Path:
     return PAIRING_DIR if PAIRING_DIR is not None else get_hermes_dir("platforms/pairing", "pairing")
 
 
-# Platform value -> allowlist env var. Approving a code also writes the user into
-# an already-configured allowlist (revoke removes them) so the operator's list stays
-# the visible source of truth. Platforms absent here (or with no allowlist
-# configured) keep the pairing store as the sole grant record (authz union).
-# See #23778.
-_PLATFORM_ALLOWLIST_ENV = {
-    "telegram": "TELEGRAM_ALLOWED_USERS", "discord": "DISCORD_ALLOWED_USERS",
-    "whatsapp": "WHATSAPP_ALLOWED_USERS", "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOWED_USERS",
-    "slack": "SLACK_ALLOWED_USERS", "signal": "SIGNAL_ALLOWED_USERS",
-    "email": "EMAIL_ALLOWED_USERS", "sms": "SMS_ALLOWED_USERS",
-    "mattermost": "MATTERMOST_ALLOWED_USERS", "matrix": "MATRIX_ALLOWED_USERS",
-    "dingtalk": "DINGTALK_ALLOWED_USERS", "feishu": "FEISHU_ALLOWED_USERS",
-    "wecom": "WECOM_ALLOWED_USERS", "wecom_callback": "WECOM_CALLBACK_ALLOWED_USERS",
-    "weixin": "WEIXIN_ALLOWED_USERS", "bluebubbles": "BLUEBUBBLES_ALLOWED_USERS",
-    "qqbot": "QQ_ALLOWED_USERS", "yuanbao": "YUANBAO_ALLOWED_USERS",
-}
-
-
 def _allowlist_env_for_platform(platform: str) -> Optional[str]:
-    """Allowlist env var name for ``platform`` (plugin registry fallback), or None."""
+    """Allowlist env var name for ``platform`` (its ``PlatformEntry.allowed_users_env``), or None.
+
+    Approving a code also writes the user into an already-configured allowlist (revoke removes
+    them) so the operator's list stays the visible source of truth. Platforms without one (or with
+    no allowlist configured) keep the pairing store as the sole grant record (authz union). See
+    #23778. Discovers plugins first: ``hermes pairing approve`` runs in a CLI process that may not
+    have loaded them yet."""
     platform = (platform or "").lower().strip()
-    if env_var := _PLATFORM_ALLOWLIST_ENV.get(platform):
-        return env_var
     with contextlib.suppress(Exception):
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()  # idempotent
+    with contextlib.suppress(Exception):
+        from gateway.platform_env import authz_field
         from gateway.platform_registry import platform_registry
-        return platform_registry.get(platform).allowed_users_env or None
+        return authz_field(platform, "allowed_users_env", platform_registry.get(platform)) or None
     return None
 
 

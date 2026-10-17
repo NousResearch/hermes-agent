@@ -177,6 +177,9 @@ def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwa
         accepted = _run_prompt_submit(rid, sid, session, text, **kwargs)
         if not accepted:
             _notif_release_turn(session)
+            # Admission can refuse even after the local running flag was claimed.
+            # Callers requeue immediately; queue.get(timeout=...) then never waits.
+            time.sleep(0.25)
         return accepted
     except Exception as exc:
         _notif_log_failure(what, exc)
@@ -540,7 +543,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
     try:
         if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
-                             "notification poller dispatch failed", **kwargs):
+                             "notification poller dispatch failed", report_ownership_refusal=False, **kwargs):
             _notif_defer_event(evt, claim)
             return
     except Exception:
@@ -646,6 +649,7 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         if text is not None:
             if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
                                  "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
+                                 report_ownership_refusal=False,
                                  display_metadata={"display_text": batch.display_text(registry)}):
                 for event, _text, claim in claimed:
                     _notif_defer_event(event, claim,

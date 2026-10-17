@@ -399,6 +399,43 @@ def _anthropic_cfg_base_url(model_cfg: dict[str, Any]) -> str:
     return cfg_base_url if _anthropic_base_url_override_ok(cfg_base_url) else ""
 
 
+def _anthropic_source_runtime(
+    requested_provider: str, *, explicit_api_key: Optional[str], explicit_base_url: Optional[str],
+    target_model: Optional[str],
+) -> dict[str, Any]:
+    """Resolve the source-specific Claude choices without falling through the mixed Anthropic ladder."""
+    native_url = _ANTHROPIC_DEFAULT_BASE_URL
+    if explicit_base_url and explicit_base_url.rstrip("/") != native_url:
+        raise AuthError(
+            "Claude API/subscription choices use Anthropic's native Messages API endpoint only.",
+            provider=requested_provider, code="invalid_base_url")
+
+    from agent.anthropic_credentials import _is_oauth_token
+    if requested_provider == "claude-api":
+        api_key = (explicit_api_key or get_secret_str("ANTHROPIC_API_KEY", "") or "").strip()
+        if not api_key or _is_oauth_token(api_key):
+            raise AuthError(
+                "Claude API requires ANTHROPIC_API_KEY; subscription OAuth credentials are not used here.",
+                provider=requested_provider, code="missing_api_key")
+        return _runtime(
+            "anthropic", "anthropic_messages", native_url, api_key,
+            source="anthropic_api_key", requested_provider=requested_provider)
+
+    if explicit_api_key and not _is_oauth_token(explicit_api_key):
+        raise AuthError(
+            "Claude Subscription requires an OAuth credential, not an API key.",
+            provider=requested_provider, code="invalid_credential")
+    from agent.anthropic_credentials import resolve_anthropic_oauth_token
+    token = explicit_api_key or resolve_anthropic_oauth_token(model=target_model)
+    if not token:
+        raise AuthError(
+            "No Claude subscription OAuth credentials found. Sign in with `hermes auth add anthropic`.",
+            provider=requested_provider, code="missing_oauth")
+    return _runtime(
+        "anthropic", "anthropic_messages", native_url, token,
+        source="anthropic_subscription_oauth", requested_provider=requested_provider)
+
+
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     from agent.anthropic_credentials import resolve_anthropic_token
     token = resolve_anthropic_token(model=model)
@@ -1058,6 +1095,10 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
+    if requested_provider in {"claude-api", "claude-subscription"}:
+        return _anthropic_source_runtime(
+            requested_provider, explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url, target_model=target_model)
     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
     # every path (background review, curator, MoA slots, delegation) instead of "Unknown provider".
     # The pre-expansion name is what the codex_app_server overlay judges: ``openai`` is eligible,

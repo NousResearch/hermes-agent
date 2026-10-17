@@ -949,7 +949,13 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = False
-        if cp_config and cp_config.api_key_env_vars:
+        if cp.slug == "claude-api":
+            from hermes_cli.model_switch import _scoped_key_env
+            has_creds = bool(_scoped_key_env("ANTHROPIC_API_KEY"))
+        elif cp.slug == "claude-subscription":
+            from hermes_cli.inventory import _anthropic_oauth_credentials_present
+            has_creds = _anthropic_oauth_credentials_present()
+        if cp_config and cp_config.api_key_env_vars and cp.slug != "claude-api":
             lit = {ev for ev in cp_config.api_key_env_vars if os.environ.get(ev)}
             has_creds = bool(lit)
             # A regional "-cn" twin lit only by key vars shared with its non-CN sibling is a

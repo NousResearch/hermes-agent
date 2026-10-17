@@ -486,6 +486,23 @@ export function appendMidTurnUserMessage<
   }
 }
 
+/**
+ * Durable row id of a failed turn's user row, or undefined when the turn never
+ * persisted. A provider failure lands AFTER the user row is stored, so the row
+ * id is the exact rewind address (ordinals cannot address it: both spaces
+ * diverge on failed turns, #86573). An admission failure stores nothing, so
+ * there is nothing to cut and the plain resubmit stays (#86623).
+ */
+function failedTurnRowId(messages: ChatMessage[], userIndex: number): number | undefined {
+  if (!isFailedUserTurn(messages, userIndex)) {
+    return undefined
+  }
+
+  const rowId = messages[userIndex]?.rowId
+
+  return typeof rowId === 'number' && Number.isInteger(rowId) ? rowId : undefined
+}
+
 // ---------------------------------------------------------------------------
 // Reload (regenerate)
 // ---------------------------------------------------------------------------
@@ -527,8 +544,10 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
       ? messages[parentIndex]
       : messages.slice(userIndex + 1).find(m => m.role === 'assistant')
 
-  // Failed turn: the user msg never reached the gateway, so any truncation
-  // address would mis-aim (#86573/#86623) — resubmit plainly instead.
+  // Failed turn with no durable row never reached the gateway, so any
+  // truncation address would mis-aim (#86573/#86623) — resubmit plainly
+  // instead. A failed turn WITH a row id persisted before the provider
+  // failed it: rewind to that row, or every retry appends another copy.
   const isFailedTurn = isFailedUserTurn(messages, userIndex)
 
   return {
@@ -538,7 +557,7 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
     text,
     truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, userIndex),
     truncateMessageId: isFailedTurn ? undefined : userMessage.id,
-    truncateRowId: isFailedTurn ? undefined : userMessage.rowId,
+    truncateRowId: isFailedTurn ? failedTurnRowId(messages, userIndex) : userMessage.rowId,
     userIndex
   }
 }
@@ -576,13 +595,25 @@ export async function planConfirmedReload(
  * A cut at *anchorIndex* that keeps a later user turn archives it: ask first and mark the plan
  * confirmed, or null when declined. A plan with no truncation address (failed turn) cuts nothing.
  */
-async function confirmIfDeepCut<P extends { truncateOrdinal: number | undefined }>(
+async function confirmIfDeepCut<
+  P extends {
+    truncateOrdinal: number | undefined
+    truncateRowId?: number | undefined
+    truncateMessageId?: string | undefined
+  }
+>(
   messages: ChatMessage[],
   plan: P,
   anchorIndex: number,
   confirmDeep: () => Promise<boolean>
 ): Promise<null | (P & { confirmDeepTruncate: boolean })> {
-  if (plan.truncateOrdinal === undefined || !messages.some((m, i) => i > anchorIndex && isVisibleUserMessage(m))) {
+  // Any truncation address cuts (a persisted failed turn rewinds by row id
+  // with no ordinal), so the deep-cut confirm keys on the cut, not the
+  // ordinal alone.
+  const cuts =
+    plan.truncateOrdinal !== undefined || plan.truncateRowId !== undefined || plan.truncateMessageId !== undefined
+
+  if (!cuts || !messages.some((m, i) => i > anchorIndex && isVisibleUserMessage(m))) {
     return { ...plan, confirmDeepTruncate: false }
   }
 
@@ -658,8 +689,9 @@ export function planRestore(messages: ChatMessage[], messageId: string, target?:
     throw new Error('Cannot restore an empty message.')
   }
 
-  // Failed turn: the target user msg never reached the gateway, so any
+  // Failed turn with no durable row never reached the gateway, so any
   // truncation address would mis-aim (#86573/#86623) — resubmit plainly.
+  // A persisted failed turn rewinds to its row id instead (see planReload).
   const isFailedTurn = isFailedUserTurn(messages, sourceIndex)
 
   const truncateOrdinal =
@@ -673,7 +705,7 @@ export function planRestore(messages: ChatMessage[], messageId: string, target?:
     text,
     truncateOrdinal: isFailedTurn ? undefined : truncateOrdinal,
     truncateMessageId: isFailedTurn ? undefined : source.id,
-    truncateRowId: isFailedTurn ? undefined : source.rowId
+    truncateRowId: isFailedTurn ? failedTurnRowId(messages, sourceIndex) : source.rowId
   }
 }
 
@@ -709,8 +741,9 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     return null
   }
 
-  // Failed turn: the optimistic user msg never reached the gateway, so a
-  // truncate-by-ordinal would 422 — resubmit plainly instead.
+  // Failed turn with no durable row never reached the gateway, so a
+  // truncate-by-ordinal would 422 — resubmit plainly instead. A persisted
+  // failed turn rewinds to its row id instead (see planReload).
   const isFailedTurn = isFailedUserTurn(messages, sourceIndex)
 
   return {
@@ -721,7 +754,7 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     text,
     truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex),
     truncateMessageId: isFailedTurn ? undefined : source.id,
-    truncateRowId: isFailedTurn ? undefined : source.rowId
+    truncateRowId: isFailedTurn ? failedTurnRowId(messages, sourceIndex) : source.rowId
   }
 }
 

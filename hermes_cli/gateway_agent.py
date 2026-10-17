@@ -10,6 +10,7 @@ Event contract: wave_a.md (frozen). Every frame is a gateway ``event`` with para
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import queue
@@ -273,9 +274,18 @@ class GatewayAgent:
         """Main repoints ``agent.session_id`` on /new, /resume and /branch: attach this viewer to that
         gateway session (idempotent) and read its state from then on."""
         previous = getattr(self, "_session_id", None)
-        self._session_id = value
         if previous is None or value == previous or not value:
+            self._session_id = value
             return
+        # Session boundary: stop following the old session's streams (a late ``session.usage`` for it
+        # would overwrite this session's figures) and drop its usage before reading the new session's.
+        old_state = self._state()
+        with contextlib.suppress(ValueError):
+            old_state.usage_listeners.remove(self.apply_session_usage)
+        with contextlib.suppress(ValueError):
+            old_state.request_listeners.remove(self._on_request_withdrawn)
+        self._session_id = value
+        self._reset_session_usage()
         store = self._session_db
         if store is not None and hasattr(store, "attach"):
             try:
@@ -368,6 +378,20 @@ class GatewayAgent:
 
     def get_rate_limit_state(self):
         return self._rate_limit_state
+
+    def _reset_session_usage(self):
+        """Zero the session-scoped figures ``apply_session_usage`` installs (counters, measured context
+        occupancy, compaction count, usage anchor) at a session boundary. The context window and its
+        config pin describe the model, not the session, and stay."""
+        for counter in _COUNTER_FROM_USAGE:
+            setattr(self, counter, 0)
+        compressor = self.context_compressor
+        compressor.last_prompt_tokens = 0
+        compressor.last_real_prompt_tokens = None
+        compressor.compression_count = 0
+        self._context_tokens = 0
+        self._turn_base_usage_anchor = None
+        self._usage_stale = False
 
     def apply_session_usage(self, usage):
         """Install one session-cumulative usage dict (the ``session.usage`` event / ``session.stats``

@@ -1994,34 +1994,6 @@ def _synthesize_ended_run(
 
 # --- Dependency resolution (todo -> ready) ---
 
-def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
-    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
-    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
-    protocol-violation budget or a systemic same-error wave. Those trip on a
-    policy independent of ``consecutive_failures``, so ``recompute_ready``'s
-    counter check cannot see them — without this the trip is promoted back to
-    ``ready`` in the same tick and the card respawns forever. A plain
-    (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
-    so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
-    releases it; a task with no such event at all (direct DB edit) auto-recovers.
-    """
-    row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
-        "ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    if row and row["kind"] == "blocked":
-        return True
-    trip = conn.execute(
-        "SELECT payload FROM task_events "
-        "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("
-        "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
-        "ORDER BY id DESC LIMIT 1", (task_id, task_id),
-    ).fetchone()
-    return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
-
-
 def _latest_event(
     conn: sqlite3.Connection, task_id: str, kind: str, run_id: Optional[int] = None,
 ) -> Optional[sqlite3.Row]:
@@ -2032,24 +2004,6 @@ def _latest_event(
         sql += " AND run_id = ?"
         params = (*params, int(run_id))
     return conn.execute(sql + " ORDER BY id DESC LIMIT 1", params).fetchone()
-
-
-def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
-    """``review`` when the newest lifecycle event carries a review
-    ``resume_status``/``retry_status``/``source_status``, else ``ready`` (legacy)."""
-    row = conn.execute(
-        "SELECT payload FROM task_events "
-        "WHERE task_id = ? AND kind IN ("
-        "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
-        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
-        ") ORDER BY id DESC LIMIT 1", (task_id,),
-    ).fetchone()
-    payload = _json_dict(_row_get(row, "payload"))
-    for key in ("resume_status", "retry_status", "source_status"):
-        if payload.get(key) == "review":
-            return "review"
-    return "ready"
 
 
 def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
@@ -2097,18 +2051,18 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                     )
                     if failures >= effective_limit:
                         continue
-                    conn.execute(
-                        "UPDATE tasks SET status = ? "
-                        "WHERE id = ? AND status = 'blocked'", (resume_status, task_id),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ? AND status = 'todo'",
-                        (resume_status, task_id),
-                    )
+                # Satisfied parents are a recovery point (like ``unblock_task``):
+                # failure text from a run before the wait must not re-trap the
+                # card in ``check_respawn_guard``. ``consecutive_failures`` is
+                # kept so the breaker still bounds retries across cycles.
+                conn.execute(
+                    "UPDATE tasks SET status = ?, last_failure_error = NULL "
+                    "WHERE id = ? AND status = ?", (resume_status, task_id, cur_status),
+                )
                 _append_event(
                     conn, task_id, "promoted",
-                    {"status": resume_status} if resume_status != "ready" else None,
+                    {"actor": "system", "reason": "parents_done",
+                     **({"status": resume_status} if resume_status != "ready" else {})},
                 )
                 promoted += 1
     return promoted
@@ -2182,19 +2136,21 @@ def _claim_and_open_run(
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
     _append_event(
         conn, task_id, "claimed",
-        {"lock": lock, "expires": expires, "run_id": run_id, **(event_extra or {})}, run_id=run_id,
+        {"lock": lock, "expires": expires, "run_id": run_id, **retry_of(conn, task_id, run_id), **(event_extra or {})},
+        run_id=run_id,
     )
     return run_id
 
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, actor: Optional[str] = None, source: str = "api",
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in ``ready`` status). ``actor``/``source`` land
+    on the ``claimed`` event; see ``_attribution``.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2214,7 +2170,8 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now,
+                                     event_extra=_attribution(actor, source))
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2224,7 +2181,7 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, actor: Optional[str] = None, source: str = "api",
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
@@ -2245,7 +2202,8 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review", **_attribution(actor, source)},
         )
         if run_id is None:
             return None
@@ -3139,7 +3097,8 @@ def edit_task(
 
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    kind: Optional[str] = None, expected_run_id: Optional[int] = None, from_review: bool = False,
+    actor: Optional[str] = None, source: Optional[str] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
@@ -3154,6 +3113,10 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+
+    ``from_review`` also accepts an unclaimed ``review`` card (the dispatcher
+    parking an exhausted review); ``unblock_task`` then resumes it in review.
+    ``source`` adds ``_attribution`` to the block event.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
@@ -3185,7 +3148,8 @@ def block_task(
                 "kind": kind, "reason": reason, "classified_in_place": True,
             })
             return True
-        source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+        source_status = (_retry_status_for_run(conn, task_id) if cur_row["status"] == "running"
+                         else "review" if from_review and cur_row["status"] == "review" else "ready")
         requested_kind = kind
         rekind_reason = None
         # ``dependency`` only waits on incomplete parents. A worker filing that
@@ -3202,6 +3166,8 @@ def block_task(
         if rekind_reason:
             payload["requested_kind"] = requested_kind
             payload["rekind_reason"] = rekind_reason
+        if source:
+            payload.update(_attribution(actor, source))
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
@@ -3210,9 +3176,9 @@ def block_task(
                        worker_pid    = NULL,
                        {set_sql}
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND (status IN ('running', 'ready') OR (? AND status = 'review'))
                 """
-        params = (*params, task_id)
+        params = (*params, task_id, int(from_review))
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
@@ -3573,9 +3539,12 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: Optional[str] = None, source: str = "api",
+) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first. The
+    ``unblocked`` event records who released it (``_attribution``)."""
     now = int(time.time())
     with write_txn(conn):
         resume_status = (
@@ -3608,11 +3577,11 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             return False
         _append_event(
             conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
+            {
+                **_attribution(actor, source),
+                **({"status": new_status, "resume_status": resume_status}
+                   if new_status != "ready" or resume_status != "ready" else {}),
+            },
         )
         return True
 
@@ -4241,6 +4210,12 @@ from hermes_cli.kanban_db_workspace import (
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+)
+from hermes_cli.kanban_db_respawn import (
+    _attribution,
+    _has_sticky_block,
+    _resume_status_from_events,
+    retry_of,
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,

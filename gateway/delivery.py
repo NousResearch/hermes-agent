@@ -3,6 +3,7 @@ platform home channel ("telegram"), origin (back to where the job was created), 
 
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -20,20 +21,51 @@ logger = logging.getLogger(__name__)
 # API limit is 4096; the headroom covers the "full output saved to …" footer. Adapters that split long
 # messages natively (splits_long_messages) bypass this entirely.
 MAX_PLATFORM_OUTPUT = 4000
-# Matches strings that are *only* a "silence" narration with optional markdown wrappers (*(silent)*,
-# _silent_, 🔇, a bare ".", "…"). Anchored so messages that merely *contain* "silent" never match.
-_SILENCE_NARRATION = re.compile(
-    r'^[\s*_~`]*\(?\s*(silent|silence|no\s+response|no\s+reply)\s*\.?\)?[\s*_~`]*$'
-    r'|^[\s*_~`]*[\U0001F507\.\u2026]+[\s*_~`]*$',
-    re.IGNORECASE,
-)
+# Declared data for the silence-narration filter (#135444). The vocabulary is the set of narrations
+# the instance actually emits — an English-only alternation dropped nothing on an install narrating
+# silence in its own language, and the length guard rode in the code, out of reach of the 82- and
+# 131-char narrations that report measured. ``gateway.silence_narration_tokens`` and
+# ``gateway.silence_narration_max_chars`` override both; leaving them undeclared keeps the shipped
+# English vocabulary and the 64-char guard verbatim.
+DEFAULT_SILENCE_NARRATION_TOKENS = ("silent", "silence", "no response", "no reply")
+DEFAULT_SILENCE_NARRATION_MAX_CHARS = 64
+# Matches strings that are *only* a declared narration with optional markdown wrappers (*(silent)*,
+# _silent_, 🔇, a bare ".", "…"). Anchored so messages that merely *contain* a token never match.
+_SILENCE_NARRATION_SYMBOLS = r'[\U0001F507\.\u2026]+'
 _THREAD_ROUTING_KEYS = ("thread_id", "message_thread_id", "direct_messages_topic_id", "telegram_direct_messages_topic_id")
 
 
-def _is_silence_narration(content: Optional[str]) -> bool:
-    """True when ``content`` is *only* a silence-narration token (length-guarded)."""
+def _silence_narration_alternation(tokens) -> str:
+    """``re`` alternation for declared *tokens*: each escaped, internal whitespace runs flexible
+    (``no response`` keeps matching ``no   response``), so a declared multi-word narration behaves
+    exactly like the built-ins. An empty vocabulary matches nothing (the symbol class still does)."""
+    parts = [r'\s+'.join(re.escape(word) for word in str(token).split())
+             for token in tokens if str(token).strip()]
+    return "|".join(parts) or r'(?!)'
+
+
+@lru_cache(maxsize=32)
+def _silence_narration_pattern(tokens: tuple) -> "re.Pattern[str]":
+    """Compiled whole-line predicate for *tokens* (cached: the pattern is rebuilt per declaration)."""
+    return re.compile(
+        r'^[\s*_~`]*\(?\s*(?:' + _silence_narration_alternation(tokens) + r')\s*\.?\)?[\s*_~`]*$'
+        r'|^[\s*_~`]*' + _SILENCE_NARRATION_SYMBOLS + r'[\s*_~`]*$',
+        re.IGNORECASE,
+    )
+
+
+def _is_silence_narration(content: Optional[str], *, tokens=None, max_chars: Optional[int] = None) -> bool:
+    """True when ``content`` is *only* a declared silence-narration token (length-guarded).
+
+    ``tokens``/``max_chars`` are the config-declared vocabulary and guard; omitted (or empty) means
+    the shipped English defaults, so a caller that declares nothing sees the historical behaviour.
+    """
     stripped = content.strip() if content else ""
-    return bool(stripped) and len(stripped) <= 64 and bool(_SILENCE_NARRATION.match(stripped))
+    if not stripped:
+        return False
+    limit = DEFAULT_SILENCE_NARRATION_MAX_CHARS if max_chars is None else int(max_chars)
+    vocabulary = tuple(tokens) if tokens else DEFAULT_SILENCE_NARRATION_TOKENS
+    return len(stripped) <= limit and bool(_silence_narration_pattern(vocabulary).match(stripped))
 
 
 class PartialDeliveryError(RuntimeError):
@@ -232,6 +264,15 @@ class DeliveryRouter:
         """filter silence narration based on gateway config without checking process env"""
         return bool(getattr(self.config, "filter_silence_narration", True))
 
+    def _silence_narration_vocabulary(self) -> tuple:
+        """Declared filter vocabulary (``gateway.silence_narration_tokens``); () = the built-ins."""
+        tokens = getattr(self.config, "silence_narration_tokens", None)
+        return tuple(tokens) if tokens else ()
+
+    def _silence_narration_max_chars(self) -> Optional[int]:
+        """Declared length guard (``gateway.silence_narration_max_chars``); None = the built-in."""
+        return getattr(self.config, "silence_narration_max_chars", None)
+
     def _cap_oversized_output(self, adapter: Any, content: str, job_id: str) -> str:
         """Audit-save oversized cron output; truncate it for non-chunking adapters. Above MAX_PLATFORM_OUTPUT
         the full output is always written to disk as an audit trail, best-effort — a failed save (full disk,
@@ -287,7 +328,9 @@ class DeliveryRouter:
         # with nothing on the wire. Cron sends carry job_id in metadata; everything else is filtered.
         # See #77763.
         is_cron_artifact = "job_id" in (metadata or {})
-        if self._filter_silence_narration_enabled() and not is_cron_artifact and _is_silence_narration(content):
+        if (self._filter_silence_narration_enabled() and not is_cron_artifact
+                and _is_silence_narration(content, tokens=self._silence_narration_vocabulary(),
+                                          max_chars=self._silence_narration_max_chars())):
             logger.warning("Dropped silence-narration outbound to %s (chat=%s): %r",
                            target.platform.value, target.chat_id, content[:40])
             return {"success": True, "filtered": "silence_narration", "delivered": False}

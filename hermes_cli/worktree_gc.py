@@ -51,9 +51,10 @@ class BranchRecord:
 
 
 def _run(cmd: list, timeout: int, cwd: Optional[str] = None,
-         env: Optional[dict] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, cwd=cwd, env=env, stdin=subprocess.DEVNULL, check=False)
+         env: Optional[dict] = None, binary: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=not binary,
+                          encoding=None if binary else "utf-8",
+                          errors=None if binary else "replace", timeout=timeout, cwd=cwd, env=env, stdin=subprocess.DEVNULL, check=False)
 
 
 @dataclass
@@ -68,7 +69,7 @@ class ExternalTreeRecord:
     missing: bool         # registered but the directory no longer exists
 
 
-def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess:
+def _git(args: list, cwd: str, timeout: int = 15, *, binary: bool = False) -> subprocess.CompletedProcess:
     """Run git, translating timeouts into returncode 124. Every verdict fails safe toward "keep"
     on nonzero, so a slow ``git cherry`` on a huge repo degrades to keep instead of aborting the
     audit mid-list. :func:`noninteractive_repo_git_env` because ``status`` executes the repo's
@@ -79,10 +80,10 @@ def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess
         return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="",
                                            stderr=FILTER_DISCOVERY_FAILED)
     try:
-        return _run(["git", *args], timeout, cwd, env=env)
+        return _run(["git", "-c", "core.excludesFile=", *args], timeout, cwd, env=env, binary=binary)
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(args=["git", *args], returncode=124, stdout="",
-                                           stderr=f"timeout after {timeout}s")
+        return subprocess.CompletedProcess(args=["git", "-c", "core.excludesFile=", *args], returncode=124,
+                                           stdout=b"" if binary else "", stderr=f"timeout after {timeout}s")
 
 
 def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
@@ -97,12 +98,27 @@ def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
 def _dirty_split(path: str) -> tuple[bool, list[str]]:
     """(has_tracked_modifications, untracked_paths) — tracked = real work, untracked = archivable."""
     try:
-        result = _git(["status", "--porcelain"], cwd=path, timeout=10)
-        if result.returncode != 0:
+        result = _git([
+            "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching",
+        ], cwd=path, timeout=10, binary=True)
+        if result.returncode != 0 or (result.stdout and not result.stdout.endswith(b"\0")):
             return True, []  # fail safe: treat as real work
-        lines = [line for line in result.stdout.splitlines() if line.strip()]
-        untracked = [line[3:].strip() for line in lines if line.startswith("??")]
-        return len(untracked) != len(lines), untracked
+        fields = iter(result.stdout.split(b"\0")[:-1])
+        untracked = []
+        tracked = False
+        for field in fields:
+            if len(field) < 4 or field[2:3] != b" ":
+                return True, []
+            status = field[:2]
+            if status in (b"??", b"!!"):
+                untracked.append(os.fsdecode(field[3:]))
+            else:
+                tracked = True
+                # Porcelain v1 -z adds an extra NUL-delimited *source* for renames/copies.
+                if b"R" in status or b"C" in status:
+                    if next(fields, None) is None:
+                        return True, []
+        return tracked, untracked
     except Exception:
         return True, []
 
@@ -115,13 +131,17 @@ def _archive_untracked(tree: Path, untracked: list[str]) -> Optional[Path]:
     try:
         for rel in untracked:
             src = tree / rel
-            if not src.exists() or src.is_symlink():
-                continue
+            # lexists: a dangling link is still a listed path that must be preserved.
+            if not os.path.lexists(src):
+                logger.warning("Could not archive untracked path %s", src)
+                return None
             (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-            if src.is_dir():
-                shutil.copytree(src, dest / rel, dirs_exist_ok=True)
+            if src.is_symlink():
+                os.symlink(os.readlink(src), dest / rel, target_is_directory=src.is_dir())
+            elif src.is_dir():
+                shutil.copytree(src, dest / rel, symlinks=True, dirs_exist_ok=True)
             else:
-                shutil.copy2(src, dest / rel)
+                shutil.copy2(src, dest / rel, follow_symlinks=False)
         return dest if dest.exists() else None
     except Exception as exc:
         logger.warning("Could not archive untracked files from %s: %s", tree, exc)
@@ -154,6 +174,15 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     return "reap", "clean and fully merged/pushed", []
 
 
+def _worktree_porcelain(repo_root: str) -> Optional[List[List[str]]]:
+    """Read worktree records without quoting or splitting paths containing newlines."""
+    result = _git(["worktree", "list", "--porcelain", "-z"], cwd=repo_root, timeout=10, binary=True)
+    if result.returncode != 0 or not result.stdout.endswith(b"\0\0"):
+        return None
+    return [[os.fsdecode(field) for field in block.split(b"\0")]
+            for block in result.stdout[:-2].split(b"\0\0")]
+
+
 def audit_external_trees(repo_root: str) -> list[ExternalTreeRecord]:
     """List linked worktrees registered OUTSIDE ``.worktrees/``.
 
@@ -165,8 +194,8 @@ def audit_external_trees(repo_root: str) -> list[ExternalTreeRecord]:
     flag registrations whose directory has vanished (safe to
     ``git worktree prune``).
     """
-    result = _git(["worktree", "list", "--porcelain"], cwd=repo_root, timeout=10)
-    if result.returncode != 0:
+    worktrees = _worktree_porcelain(repo_root)
+    if worktrees is None:
         return []
 
     managed_root = os.path.realpath(str(Path(repo_root) / ".worktrees"))
@@ -194,21 +223,18 @@ def audit_external_trees(repo_root: str) -> list[ExternalTreeRecord]:
             missing=not os.path.exists(path),
         ))
 
-    for line in result.stdout.splitlines():
-        line = line.rstrip()
-        if not line:
-            _flush()
-            current = {}
-            continue
-        if line.startswith("worktree "):
-            current["path"] = line[len("worktree "):]
-        elif line.startswith("branch refs/heads/"):
-            current["branch"] = line[len("branch refs/heads/"):]
-        elif line.startswith("HEAD "):
-            current["head"] = line[len("HEAD "):]
-        elif line == "locked" or line.startswith("locked "):
-            current["locked"] = True
-    _flush()
+    for fields in worktrees:
+        current = {}
+        for line in fields:
+            if line.startswith("worktree "):
+                current["path"] = line[len("worktree "):]
+            elif line.startswith("branch refs/heads/"):
+                current["branch"] = line[len("branch refs/heads/"):]
+            elif line.startswith("HEAD "):
+                current["head"] = line[len("HEAD "):]
+            elif line == "locked" or line.startswith("locked "):
+                current["locked"] = True
+        _flush()
     return records
 
 
@@ -349,10 +375,12 @@ def audit_branches(repo_root: str) -> list[BranchRecord]:
         return []
     branches = _lines(result)
 
-    wt = _git(["worktree", "list", "--porcelain"], cwd=repo_root, timeout=10)
+    wt = _worktree_porcelain(repo_root)
+    if wt is None:
+        return []  # unknown checkout state: do not offer branch deletion
     active = {
-        line.removeprefix("branch refs/heads/").strip()
-        for line in wt.stdout.splitlines() if line.startswith("branch refs/heads/")}
+        line.removeprefix("branch refs/heads/")
+        for fields in wt for line in fields if line.startswith("branch refs/heads/")}
     merged = set(_lines(_git(["branch", "--merged", upstream, "--format=%(refname:short)"], cwd=repo_root, timeout=15)))
 
     def _classify_branch(branch: str) -> BranchRecord:

@@ -41,13 +41,27 @@ _TRUTHY_STRINGS = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 
 # --- Config resolution ---
 
-def write_approval_enabled(subsystem: str) -> bool:
-    """Read ``<subsystem>.write_approval``; any unset/invalid value means gate off."""
+def write_approval_enabled(subsystem: str, *, fail_closed: bool = False) -> bool:
+    """Read the gate; optionally require approval when configuration cannot be read."""
     if subsystem not in _SUBSYSTEMS:
         return False
     try:
         from hermes_cli.config import load_config, cfg_get
-        return _normalize_enabled(cfg_get(load_config(), subsystem, CONFIG_KEY, default=False))
+        from hermes_cli.config_read_errors import FailedConfigRead
+        config = load_config()
+        if fail_closed and isinstance(config, FailedConfigRead):
+            return True
+        return _normalize_enabled(cfg_get(config, subsystem, CONFIG_KEY, default=False))
+    except Exception:
+        return fail_closed
+
+
+def unattended_literal_preservation_enabled() -> bool:
+    """Opt-in for background edits that retain every original memory entry verbatim."""
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        return _normalize_enabled(cfg_get(
+            load_config(), MEMORY, "auto_apply_literal_preserving_reviews", default=False))
     except Exception:
         return False
 
@@ -71,11 +85,12 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
-def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str) -> dict[str, Any]:
+def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str,
+                strict: bool = False) -> dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
-    Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
-    the safe failure for an approval gate (nothing silently committed)."""
+    Legacy callers log disk failures and still receive the unpersisted record. ``strict``
+    callers propagate failures instead, so subsequent writes cannot rely on a lost proposal."""
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
@@ -86,6 +101,8 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
         atomic_json_write(_pending_path(subsystem, pid), record)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
+        if strict:
+            raise
     return record
 
 

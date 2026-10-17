@@ -61,14 +61,15 @@ def load_on_disk_store() -> MemoryStore:
     return store
 
 
-def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optional[str]:
+def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any], *,
+                         for_staging: bool = False) -> Optional[str]:
     """Record on each staged replace/remove the FULL entry its old_text selects now. Approval
     then applies to exactly the entry the approver reviewed and refuses if it changed:
     re-running the old_text search at approve time could hit a newer entry that still
     contains it. Returns the JSON error when the search fails now, as the direct write would."""
     target = payload.get("target", "memory")
     if payload.get("action") == "batch":
-        result = store.resolve_batch_entries(target, payload["operations"])
+        result = store.resolve_batch_entries(target, payload["operations"], for_staging=for_staging)
         if result.get("success"):
             payload["operations"] = [op if entry is None else {**op, "matched_entry": entry}
                                      for op, entry in zip(payload["operations"], result["matched_entries"])]
@@ -96,8 +97,15 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
         return tool_error(decision.message, success=False)
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
+    try:
+        record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}",
+                                origin=wa.current_origin(), strict=True)
+    except Exception:
+        logger.warning("Failed to stage memory write", exc_info=True)
+        FAILURE_CLASS.set("gate_refused")
+        return tool_error("Could not save the pending memory proposal; no memory changes were applied.",
+                          success=False)
     FAILURE_CLASS.set("staged")
-    record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
 
@@ -178,12 +186,10 @@ def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
-    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``patch``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    """Unattended review auto-applies only literal-preserving changes when approval is off.
+    When a destructive batch needs approval, its independent additions may still save;
+    stage the original batch so approving it replays those additions idempotently.
+    A staging failure fails closed."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
@@ -196,20 +202,84 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
               else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
     try:
-        if (unmatched := _pin_matched_entries(store, payload)) is not None:
-            return unmatched
         from tools import write_approval as wa
+        approval_required = wa.write_approval_enabled(wa.MEMORY, fail_closed=True)
+        literal_auto_enabled = wa.unattended_literal_preservation_enabled() if not approval_required else False
+        # Explicit opt-in only: the default unattended gate remains unchanged.
+        # Even opted in, semantic rewrites/removals still need approval.
+        if literal_auto_enabled:
+            ops = operations if operations is not None else [payload]
+            result = store.apply_batch(target, ops, preserve_existing=True)
+            if result.get("success"):
+                if operations is None:
+                    plural = {"replace": "replaced_entries", "patch": "patched_entries", "remove": "removed_entries"}[action]
+                    singular = {"replace": "replaced_entry", "patch": "patched_entry", "remove": "removed_entry"}[action]
+                    result[singular] = result.pop(plural)[1]
+                    if action == "patch":
+                        result["patched_entry_after"] = result.pop("patched_entries_after")[1]
+                return json.dumps(result, ensure_ascii=False)
+            if not result.get("requires_approval"):
+                return json.dumps(result, ensure_ascii=False)
+        if (unmatched := _pin_matched_entries(store, payload, for_staging=True)) is not None:
+            return unmatched
         FAILURE_CLASS.set("staged")
         record = wa.stage_write(
             wa.MEMORY, payload,
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
-            origin=wa.current_origin())
+            origin=wa.current_origin(), strict=True)
+        additions_saved = 0
+        additions_error = None
+        if operations is not None and not approval_required:
+            # Pre-saving a replacement's output (or an entry later removed/replaced)
+            # would change replay semantics: replace Alpha->Beta; add Beta would
+            # otherwise produce two Betas on approval. Keep those dependent adds
+            # exclusively in the pinned proposal.
+            pinned_ops = payload["operations"]
+            dependent = {
+                (op.get("content") or op.get("new_text") or "").strip()
+                for op in pinned_ops if op.get("action") == "replace"
+            } | {
+                op["matched_entry"] for op in pinned_ops
+                if op.get("action") in _BG_DELETE_ACTIONS and op.get("matched_entry")
+            }
+            from tools.memory_tool_store import _patch_entry
+            for op in pinned_ops:
+                if op.get("action") == "patch":
+                    after, _, _ = _patch_entry(op["matched_entry"], op.get("old_text") or "",
+                                               op.get("content") or op.get("new_text") or "")
+                    if after is not None:
+                        dependent.add(after)
+            independent = [
+                (op.get("content") or op.get("new_text") or "").strip()
+                for op in pinned_ops if op.get("action") == "add" and
+                (op.get("content") or op.get("new_text") or "").strip() not in dependent
+            ]
+            if independent:
+                try:
+                    saved = store.add_independent_entries(target, independent)
+                    if saved.get("success"):
+                        additions_saved = saved.get("additions_saved", 0)
+                    else:
+                        additions_error = saved.get("error") or "Memory store rejected the additions."
+                except Exception as exc:
+                    logger.warning("Independent memory save failed after staging", exc_info=True)
+                    additions_error = str(exc) or type(exc).__name__
+        reason = ("Memory write approval is required (enabled or configuration unavailable). " if approval_required else
+                  "Background review could not retain all existing memory text verbatim. "
+                  if literal_auto_enabled else
+                  "Automatic literal-preserving review is not enabled. ")
+        saved_note = (f"{additions_saved} add operation(s) saved independently; "
+                      "approval will replay them idempotently; rejecting the proposal will not undo "
+                      "these saved additions. " if additions_saved else "")
         return json.dumps({
-            "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
+            "success": additions_error is None, "staged": True, "proposal_staged": True, "pending_id": record["id"],
+            **({"error": f"Independent additions were not saved: {additions_error}"} if additions_error else {}),
+            "additions_saved": additions_saved,
+            "message": (saved_note + reason +
+                        f"The proposed {'batch' if operations is not None else action} "
+                        "was staged for your approval — review it with /memory pending "
+                        "(approve to apply, reject to drop only the pending proposal)."),
         }, ensure_ascii=False)
     except Exception:
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
@@ -262,7 +332,7 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
             return _invalid(_REPLACE_REMOVED)
         denied = _background_delete_gate(store, action, operations, target)
         if denied is not None:
-            return "rejected", denied
+            return ("success" if json.loads(denied).get("done") else "rejected"), denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
         gate_result = _apply_write_gate(store, "batch", target, None, None, operations)
         if gate_result is not None:
@@ -285,7 +355,7 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
                or _background_delete_gate(store, action, None, target, content, old_text)
                or _apply_write_gate(store, action, target, content, old_text))
     if invalid is not None:
-        return "rejected", invalid
+        return ("success" if json.loads(invalid).get("done") else "rejected"), invalid
     return _applied(_STORE_ACTIONS[action][0](store, target, content, old_text))
 
 

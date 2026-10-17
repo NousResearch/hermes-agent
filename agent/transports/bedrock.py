@@ -16,6 +16,7 @@ class BedrockTransport(ProviderTransport):
     # The adapter already maps inside normalize_converse_response; this serves raw-response access.
     _STOP_REASON_MAP = {
         "end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length", "stop_sequence": "stop",
+        "model_context_window_exceeded": "length",
         "guardrail_intervened": "content_filter", "content_filtered": "content_filter",
     }
 

@@ -1805,9 +1805,10 @@ class SessionSessionsMixin:
             if eligible is None:
                 return False
             # Same BEGIN IMMEDIATE transaction as the check above: retire the ledger rows
-            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility.
+            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility. Housekeeping, not
+            # a user delete: its fence ages out at the horizon (an untitled row is never a Bot Chat).
             from hermes_state_mutation_retirement import retire_sessions
-            retire_sessions(conn, [session_id])
+            retire_sessions(conn, [session_id], expiring=[session_id])
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True

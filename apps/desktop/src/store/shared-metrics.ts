@@ -1,6 +1,8 @@
 import type { SharedMetricsConsentResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { invokeOptionalIpc } from '@/lib/optional-ipc'
+
 import { recordOnboarding, setDesktopMetricsGate } from './desktop-metrics'
 
 /** Public page describing exactly what shared metrics contain and how consent windows work. */
@@ -110,7 +112,7 @@ export async function reportPendingUpdateRun(request: SharedMetricsRequester): P
   const updates = window.hermesDesktop?.updates
 
   try {
-    const run = await updates?.takePendingRun?.()
+    const run = await invokeOptionalIpc('hermes:updates:metric:take', () => updates?.takePendingRun?.())
 
     if (!run) {
       return

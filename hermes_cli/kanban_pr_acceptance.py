@@ -16,6 +16,8 @@ import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
+from hermes_cli.kanban_pr_path_skip import Unproven, prove_path_skip
+
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
 
@@ -152,6 +154,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
         outcomes = []
+        evidence: dict = {}  # one read of the PR/run/files/workflow per acceptance pass
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
@@ -165,17 +168,33 @@ def collect_acceptance(contract: str, published_pr: str | None,
                 is_run = "conclusion" in check
                 outcome = check.get("conclusion") if is_run else check["state"]
                 classification = _classify(check, sha, outcome, is_run)
+                entry = {"name": context, "id": check["id"],
+                         "url": check.get("html_url") or check.get("target_url"),
+                         "head_sha": check.get("head_sha", check.get("sha")), "conclusion": outcome}
+                if classification == "skipped":
+                    # A skip is never a success: it is admitted as not_applicable only when the
+                    # trusted base workflow's path filter proves the job had nothing to check.
+                    try:
+                        entry["proof"] = prove_path_skip(
+                            lambda endpoint, **kw: _api(endpoint, profile_home=profile_home, **kw),
+                            repo, number, sha, check, context, app_id, evidence)
+                        classification = "not_applicable"
+                    except (ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
+                        classification = "unproven_skip"
+                        entry["detail"] = str(exc) if isinstance(exc, Unproven) else "skip evidence is malformed"
+                entry["classification"] = classification
                 outcomes.append(classification)
-                receipt["checks"].append({"name": context, "id": check["id"],
-                    "url": check.get("html_url") or check.get("target_url"),
-                    "head_sha": check.get("head_sha", check.get("sha")),
-                    "classification": classification, "conclusion": outcome})
+                receipt["checks"].append(entry)
         # Re-read after all pages: old-head successes are never transferable.
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
-        if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
+        # A skip proof read its workflow/filters at a pinned base SHA; same ref, new base is a different policy.
+        pinned_base = evidence["pr"]["base"]["sha"] if "pr" in evidence else None
+        if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")) \
+                or (pinned_base is not None and current["base"].get("sha") != pinned_base):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
-        receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
+        receipt["classification"] = next((x for x in outcomes if x not in {"success", "not_applicable"}),
+                                         "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
         return receipt
     except _GateAuthError as exc:
@@ -195,4 +214,6 @@ def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
         return "stale"
     if is_run and check.get("status") != "completed":
         return "pending"
+    if is_run and outcome == "skipped":
+        return "skipped"
     return {"success": "success", "failure": "failure", "error": "infra", "pending": "pending"}.get(outcome, "infra")

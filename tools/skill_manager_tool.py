@@ -654,6 +654,57 @@ _skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
 
 
+def _stage_preflight_result(payload: dict[str, Any]):
+    """Refuse to stage a skill proposal the approval replay is guaranteed to reject: the
+    SAME shape/name/frontmatter checks and patch matching approve runs, so a proposal that
+    cannot apply fails in the producing turn (#137276) instead of surfacing only at approval
+    with no durable record and then reappearing in every review round. Returns the JSON tool
+    result to return instead of staging, or None to stage. Only checks that fail against the
+    CURRENT state are refused — a proposal that applies now can still go stale before approval,
+    and that failure stays an approval-time event."""
+    from tools import write_approval as wa
+    from tools.skill_manager_batch import _op_shape_error
+
+    def _single_op_error(label: str, op: dict[str, Any]) -> Optional[str]:
+        op_action, op_name = op.get("action", ""), op.get("name", "")
+        if (shape_err := _op_shape_error(op_action, op)) is not None:
+            return f"{label}{shape_err}"
+        if (name_err := _validate_name(
+                op_name if op_action == "create" or not op_name else Path(op_name).name)) is not None:
+            return f"{label}{name_err}"
+        if op_action in {"create", "edit"} or (op_action == "patch" and op.get("content")):
+            if fm_err := _validate_frontmatter(op.get("content") or "", new_skill=(op_action == "create")):
+                return f"{label}{fm_err}"
+        return None
+
+    def _patch_error(label: str, op: dict[str, Any], staged) -> Optional[str]:
+        op_action, op_name = op.get("action", ""), op.get("name", "")
+        if op_action != "patch" or op.get("content") or not op.get("old_string"):
+            return None
+        base = wa._staged_base(op_name, op.get("file_path") or "SKILL.md", staged)
+        if not base:  # unreadable/missing target: matchability stays an approval-time check
+            return None
+        _, err = wa._fold_patch(base, op["old_string"], op.get("new_string") or "",
+                                op.get("replace_all"))
+        return (f"{label}cannot be staged — approval would reject the patch: {err}"
+                if err else None)
+
+    if payload.get("action") == "batch":
+        staged: dict[str, dict[str, str]] = {}
+        for i, op in enumerate(payload.get("operations") or []):
+            if not isinstance(op, dict):
+                continue
+            op = {**op, "name": op.get("name") or payload.get("name") or ""}
+            label = f"operations[{i}] ({op.get('action')} on '{op.get('name')}'): "
+            err = _single_op_error(label, op) or _patch_error(label, op, staged)
+            if err is not None:
+                return tool_error(err, success=False)
+            wa._fold_staged(staged, op.get("action", ""), op.get("name", ""), op)
+        return None
+    err = _single_op_error("", payload) or _patch_error("", payload, None)
+    return tool_error(err, success=False) if err is not None else None
+
+
 def _run_write_gate(build_staging):
     """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
     ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
@@ -668,6 +719,8 @@ def _run_write_gate(build_staging):
     if decision.blocked:
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)
+    if (preflight := _stage_preflight_result(payload)) is not None:
+        return preflight
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
                        "gist": gist, "message": decision.message}, ensure_ascii=False)

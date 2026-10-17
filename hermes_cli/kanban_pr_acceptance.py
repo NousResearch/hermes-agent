@@ -7,6 +7,9 @@ receipts only after rechecking the captured run/status/contract under its lock.
 login: :func:`_gh_env` resolves that profile's own credentials/config for the
 subprocess — a multi-profile host's default ``gh`` login cannot read another
 org's private repos (#122689).
+
+An exact Gitea PR URL (``https://ORIGIN/OWNER/REPO/pulls/N``) is assessed by the
+assignee profile's configured trusted gate: ``kanban_pr_acceptance_gitea``.
 """
 from __future__ import annotations
 
@@ -16,6 +19,8 @@ import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
+from hermes_cli.gitea_acceptance import parse_pr_url as _gitea_pr
+
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
 
@@ -23,8 +28,8 @@ _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
-    if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+    if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value) or _gitea_pr(value)):
+        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub/Gitea PR URL")
     return value
 
 
@@ -106,6 +111,9 @@ def _assignee_profile_home(assignee: str | None) -> str | None:
 
 def collect_acceptance(contract: str, published_pr: str | None,
                        assignee: str | None = None) -> dict:
+    if _gitea_pr(contract):
+        from hermes_cli.kanban_pr_acceptance_gitea import collect_gitea_acceptance
+        return collect_gitea_acceptance(contract, published_pr, assignee)
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "

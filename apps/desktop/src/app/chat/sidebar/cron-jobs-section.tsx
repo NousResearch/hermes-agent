@@ -154,9 +154,18 @@ export function SidebarCronJobsSection({
   }, [open, visible])
 
   // Upcoming first (soonest next run), jobs with no next run sink to the bottom,
-  // then alphabetical for stability.
+  // then alphabetical for stability. An inactive job (paused/disabled/completed)
+  // keeps the next_run_at it will never honor, and that stale slot is always in
+  // the past — without this gate it eats the section's first rows (#140608).
   const sorted = useMemo(() => {
     return [...jobs].sort((a, b) => {
+      const aInactive = INACTIVE_STATES.has(jobState(a))
+      const bInactive = INACTIVE_STATES.has(jobState(b))
+
+      if (aInactive !== bInactive) {
+        return aInactive ? 1 : -1
+      }
+
       const an = nextRunMs(a)
       const bn = nextRunMs(b)
 

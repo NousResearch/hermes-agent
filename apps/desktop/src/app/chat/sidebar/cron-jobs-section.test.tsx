@@ -154,3 +154,37 @@ describe('SidebarCronJobsSection run peek — zombie cron runs (#88443)', () => 
     expect(isStoredTranscriptReadOnly(output.id)).toBe(false)
   })
 })
+
+describe('SidebarCronJobsSection ordering', () => {
+  it('shows the jobs about to run ahead of paused jobs whose stale next_run_at is in the past', () => {
+    const base = 1_800_000_000_000
+
+    render(
+      <SidebarCronJobsSection
+        jobs={[
+          // A paused job keeps the next_run_at it will never honor, and that
+          // slot is always in the past — the smallest key in the comparator.
+          { id: 'paused-weeks', name: 'Paused weeks ago', next_run_at: new Date(base - 21 * 86_400_000).toISOString(), state: 'paused' },
+          { id: 'paused-days', name: 'Paused days ago', next_run_at: new Date(base - 3 * 86_400_000).toISOString(), state: 'paused' },
+          { id: 'live-later', name: 'Live later', next_run_at: new Date(base + 3_600_000).toISOString(), state: 'scheduled' },
+          { id: 'live-soon', name: 'Live soonest', next_run_at: new Date(base + 60_000).toISOString(), state: 'scheduled' },
+          { id: 'live-none', name: 'No next run yet', state: 'scheduled' }
+        ]}
+        label="Cron Jobs"
+        onManageJob={vi.fn()}
+        onOpenRun={vi.fn()}
+        onToggle={vi.fn()}
+        onTriggerJob={vi.fn()}
+        open
+      />
+    )
+
+    // Only the first INITIAL_VISIBLE_JOBS rows render; the visible peek must be
+    // the jobs that can still fire, not the paused pair with stale slots.
+    const rows = screen
+      .getAllByRole('button', { name: 'Show runs' })
+      .map(row => row.textContent?.trim())
+
+    expect(rows).toEqual(['Live soonest', 'Live later', 'No next run yet'])
+  })
+})

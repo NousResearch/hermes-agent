@@ -746,6 +746,25 @@ def _publish_inactive(change) -> None:
     receipt.record_venv_rebuild(False, "inactive plugin")
 
 
+def _payload_baseline_extras(package) -> list[str]:
+    """Extras the payload's own venv carries, inferred from its site-packages.
+
+    A ledger that records NO selection must not become an EMPTY selection. The first
+    generation built under it would drop every extra the payload ships -- aiohttp for the
+    api_server/webhook adapters, the messaging SDKs, the native providers -- and every
+    process that boots onto it silently loses those features (on a container the gateway's
+    API server never listens and the compose health check fails; 2026-10-09 fleet
+    incident). This is the same site-packages inference the main-era migration already
+    uses (``pm.extras.legacy_selection``); it reads the trees, never imports from them.
+    """
+    from pm.extras import legacy_selection
+
+    try:
+        return list(legacy_selection(package.project_root()))
+    except Exception:
+        return []
+
+
 def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool, shipped, frozen):
     """Return (enabled extras, expected stamp, package inputs) this sync must reach."""
     if repair:
@@ -758,7 +777,14 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.
-    enabled = sorted(set(_still_declared(package, fact.get("extras", shipped or []))) | set(extras or []))
+    # An empty recorded selection is a defect, not a choice -- sync_venv only ever
+    # UNIONS extras, so nothing can deliberately empty it. Seed it from the shipped
+    # feature set (bundles) or the payload venv (containers/source) instead of
+    # publishing a generation that is missing what the payload provides.
+    recorded = [extra for extra in (fact.get("extras") or []) if isinstance(extra, str)]
+    if not recorded:
+        recorded = list(shipped or []) or _payload_baseline_extras(package)
+    enabled = sorted(set(_still_declared(package, recorded)) | set(extras or []))
     return enabled, package.expected_stamp(enabled, **inputs), inputs
 
 

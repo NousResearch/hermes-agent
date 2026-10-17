@@ -337,7 +337,35 @@ Behavior:
 - Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` (a named profile uses `~/.hermes/profiles/<name>/mcp-tokens/`) and reused across sessions
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
-- Under a [multiplexed gateway](../user-guide/multi-profile-gateways.md), an OAuth connection is never shared across profiles: each profile authenticates with its own token and opens its own connection, even when the `mcp_servers` entries are identical
+- Under a [multiplexed gateway](../user-guide/multi-profile-gateways.md), an OAuth connection is never shared across profiles: each profile authenticates with its own token and opens its own connection, even when the `mcp_servers` entries are identical — unless the default profile explicitly exports that server's token pool with [`share_with_profiles`](#sharing-one-oauth-grant-with-named-profiles), in which case the profiles still open their own connections but present the root's grant
+
+### Sharing one OAuth grant with named profiles
+
+Named profiles never inherit MCP configuration, and by default each holds its own OAuth grant. When several profiles on one machine need the same identity at the same server, the default profile can export one server's **token pool** — and only the pool:
+
+```yaml
+# ~/.hermes/config.yaml (default profile)
+mcp_servers:
+  linear:
+    url: "https://mcp.linear.app/mcp"
+    auth: oauth
+    oauth:
+      share_with_profiles: true
+
+# ~/.hermes/profiles/work/config.yaml — must carry its own, identical entry
+mcp_servers:
+  linear:
+    url: "https://mcp.linear.app/mcp"
+    auth: oauth
+```
+
+A named profile reads and refreshes `~/.hermes/mcp-tokens/linear.json` instead of its own `mcp-tokens/` only when **all** of these hold; anything else keeps the profile on its own pool, with a warning in the log:
+
+- the root's entry for the same server name carries `oauth.share_with_profiles: true` (boolean);
+- the profile has its own entry for that name (nothing is inherited — no entry, no server);
+- both entries have the same `url`, `transport` and `oauth` block (ignoring the flag itself), and none of those contains a `${VAR}` reference — a reference resolves per profile scope, so two profiles could read different endpoints or clients from the same text.
+
+Lifecycle follows ownership. A profile that edits or removes its own entry *leaves* the pool (its cached provider is dropped; the root's grant is untouched and its siblings keep working). The root editing the exported entry's identity, or removing it, revokes the grant for every participant. `hermes mcp login linear` from any participant re-authorizes the shared pool. Trust, tool filters and connections stay per profile as documented above.
 
 ### Device-code login (RFC 8628)
 

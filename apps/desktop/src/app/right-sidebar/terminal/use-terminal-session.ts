@@ -249,6 +249,8 @@ interface UseTerminalSessionOptions {
   reviveBuffer?: string
   /** Reports the resolved shell name once the PTY is live (for the tab label). */
   onShell?: (shell: string) => void
+  /** Typed into the fresh shell once, right after its output stream attaches. */
+  command?: string
 }
 
 // Parse a working directory out of a cwd-reporting OSC payload. Covers OSC 7
@@ -391,7 +393,8 @@ export function useTerminalSession({
   onAddSelectionToChat,
   restoreCwd,
   reviveBuffer,
-  onShell
+  onShell,
+  command
 }: UseTerminalSessionOptions) {
   // Key off renderedMode (the painted surface type), not resolvedMode (the
   // clicked switch) — a skin can keep a light surface in "dark" mode, and we
@@ -415,6 +418,8 @@ export function useTerminalSession({
   // The cwd to boot the fresh PTY in — the last dir the prior session observed
   // (survives a `cd`), captured once so store-driven re-renders don't move it.
   const initialRestoreCwdRef = useRef(restoreCwd)
+  // The tab's start command, captured once: the PTY starts once per mount.
+  const initialCommandRef = useRef(command)
   // Latest cwd seen this session; de-dupes redundant store writes.
   const lastObservedCwdRef = useRef<string | null>(null)
   // Whether the user ever fed input into this session (keystrokes, paste,
@@ -969,6 +974,12 @@ export function useTerminalSession({
 
           if (!attached) {
             throw new Error('Terminal session disappeared before its output stream attached')
+          }
+
+          // Typed after attach so its echo and output land in this tab.
+          if (initialCommandRef.current) {
+            hasSessionActivityRef.current = true
+            void terminalApi.write(session.id, `${initialCommandRef.current}\r`)
           }
 
           setStatus('open')

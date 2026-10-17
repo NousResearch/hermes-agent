@@ -373,3 +373,77 @@ describe('shared WebGL atlas refresh fan-out', () => {
     }
   })
 })
+
+describe('command terminals (plugin host.openTerminal)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('opens a focused tab carrying the command, title, key and session cwd', async () => {
+    const store = await loadTerminalStore()
+
+    const id = store.openCommandTerminal({ command: "  tmux attach -t '=AI-1'  ", key: 'run:AI-1', title: 'AI-1' })
+
+    expect(id).toBeTruthy()
+    expect(store.$activeTerminalId.get()).toBe(id)
+    expect(store.$terminals.get()).toEqual([
+      expect.objectContaining({
+        auto: false,
+        command: "tmux attach -t '=AI-1'",
+        commandKey: 'run:AI-1',
+        cwd: '/workspace',
+        id,
+        kind: 'user',
+        title: 'AI-1'
+      })
+    ])
+  })
+
+  it('focuses the open tab for the same key instead of starting a second shell', async () => {
+    const store = await loadTerminalStore()
+    const first = store.openCommandTerminal({ command: 'echo one', key: 'k' })
+    const other = store.createTerminal()
+
+    expect(store.$activeTerminalId.get()).toBe(other)
+    expect(store.openCommandTerminal({ command: 'echo two', key: 'k' })).toBe(first)
+    expect(store.$activeTerminalId.get()).toBe(first)
+    expect(store.$terminals.get()).toHaveLength(2)
+
+    store.closeTerminal(first!)
+    const reopened = store.openCommandTerminal({ command: 'echo two', key: 'k' })
+
+    expect(reopened).not.toBe(first)
+    expect(store.$terminals.get().find(term => term.id === reopened)?.command).toBe('echo two')
+  })
+
+  it('opens a new tab per call without a key, titled by the command', async () => {
+    const store = await loadTerminalStore()
+    const a = store.openCommandTerminal({ command: 'htop' })
+    const b = store.openCommandTerminal({ command: 'htop', cwd: '/srv' })
+
+    expect(a).not.toBe(b)
+    expect(store.$terminals.get().map(term => [term.title, term.cwd])).toEqual([
+      ['htop', '/workspace'],
+      ['htop', '/srv']
+    ])
+  })
+
+  it('ignores an empty command', async () => {
+    const store = await loadTerminalStore()
+
+    expect(store.openCommandTerminal({ command: '   ' })).toBeNull()
+    expect(store.$terminals.get()).toEqual([])
+  })
+
+  it('never persists a command tab, so a relaunch cannot re-run its command', async () => {
+    const store = await loadTerminalStore()
+    const user = store.createTerminal('/repo')
+    store.openCommandTerminal({ command: 'tmux attach', key: 'k' })
+
+    const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null')
+
+    expect(saved.terminals.map((term: { id: string }) => term.id)).toEqual([user])
+    expect(JSON.stringify(saved)).not.toContain('tmux attach')
+  })
+})

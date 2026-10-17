@@ -10,6 +10,7 @@ from pathlib import Path
 import contextlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -46,7 +47,27 @@ def _probe_launchd_domain_for_label(label: str) -> str:
         except launchctl_errors:
             pass
 
-    # Not loaded anywhere: Aqua → gui/<uid>; anything else (Background, loginwindow) → user/<uid>,
+    # Not loaded anywhere (fresh install): prefer asking whether gui/<uid> itself has an active
+    # logged-in session, rather than this *process's* own ambient `launchctl managername` — that
+    # reflects the CALLING process's bootstrap context, which can read "Background"/non-Aqua even
+    # while a human is concurrently logged into gui/<uid> (e.g. invoked from the Desktop app's own
+    # helper process, a cron job, or a `hermes update` subprocess chain). That mismatch is what put
+    # a gateway into user/<uid> while gui/<uid> was the live interactive session (see #<incident
+    # 2026-10-12>: ai.hermes.gateway-ah2-suho bootstrapped under user/501 and every later probe
+    # just kept rediscovering it there, since domain, once chosen, is never re-judged).
+    # Anchored to a whole line (not a bare substring) per Hes audit AUDIT-2026-1012-AB N-1: a raw
+    # `"type = login" in stdout` check over the full ~121KB `launchctl print` dump could false-match
+    # if some unrelated service's metadata ever contained that text.
+    _TYPE_LOGIN_RE = re.compile(r"^\s*type\s*=\s*login\s*$", re.MULTILINE)
+    try:
+        result = subprocess.run(["launchctl", "print", gui_domain], timeout=5, **_gw()._CAPTURE_TEXT, check=False)
+        if result.returncode == 0 and _TYPE_LOGIN_RE.search(result.stdout or ""):
+            return gui_domain
+    except launchctl_errors:
+        pass
+
+    # gui/<uid> has no active login session right now (true headless/SSH/CI): fall back to the
+    # managername heuristic — Aqua → gui/<uid>; anything else (Background, loginwindow) → user/<uid>,
     # the pre-probing default and the recommended domain on macOS 26+.
     try:
         result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT, check=False)

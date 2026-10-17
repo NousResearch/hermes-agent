@@ -3,7 +3,7 @@ import asyncio
 import logging
 import sqlite3
 
-from hermes_state_runtime import RuntimeStoreError, _admission, _epoch
+from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, get_session_admission
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,6 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
     finally:
         with live.event_stream.lock:
             live.settling.pop(admission_id, None)
-    _release_media(authority, row)
 
 
 # Pauses between settlement attempts after a transient storage error (held writer past its
@@ -156,6 +155,97 @@ def publish_terminal(authority, ref, row, settled, response, captured):
     live = authority.sessions[ref.session_id]
     with live.event_stream.lock:
         _publish_completion(authority, live, ref, row, settled, response, captured)
-    _release_media(authority, row)
     # Idle follows the completion so a viewer cannot mistake a settled turn for a lost frame.
     authority._publish_pending(ref)
+
+
+async def settle_and_deliver(authority, live, ref, row, response, outcome):
+    """Own settlement through delivery even if the drain's waiter is cancelled.
+
+    Terminal media collection can scan a multi-GB transcript. Start it only after
+    delivery (or a failed attempt), tracked separately so it cannot delay the FIFO.
+    """
+    admission_id = row['admission_id']
+    settled = None
+    try:
+        settlement = {}
+        try:
+            # Redaction, encoding and the SQLite write run off-loop: one turn's settlement must
+            # not stall every other session. Publication takes the stream lock only after
+            # the write commits; this owner also outlives a cancelled drain.
+            captured = authority.pending_results.get(admission_id)
+            try:
+                await settle_with_retry(authority, live, ref, row, response, outcome, captured, settlement)
+            finally:
+                if 'settled' in settlement:
+                    settled, response = settlement['settled'], settlement['response']
+                    authority.pending_results.pop(admission_id, None)
+            # Idle follows the completion; its bot receipt wakeups are loop tasks. A delete
+            # that committed while the write yielded already retired this live entry.
+            if authority.sessions.get(ref.session_id) is live:
+                authority._publish_pending(ref)
+        except Exception:
+            logger.exception(
+                'Settlement or publication of admission %s failed', admission_id)
+            if settled is None:
+                authority.pending_results.setdefault(admission_id, {
+                    'result': {'final_response': response, 'failed': outcome == 'failed'}, 'usage': {}})
+                try:
+                    status = await recover_failed_settlement(authority, row)
+                except RuntimeStoreError:
+                    # Ownership moved; this owner may only release its process-local observers.
+                    authority._pause(ref, 'unknown_execution')
+                    return False
+                # Discard can race the off-loop recovery stamp; its terminal decision wins.
+                current = get_session_admission(authority.db, admission_id=admission_id)
+                status = current['status']
+                if status == 'unknown':
+                    from gateway.session_ingress import retain_unsettled_delivery
+                    retain_unsettled_delivery(authority, admission_id)
+                    authority._publish_pending(ref)
+                    authority._pause(ref, 'unknown_execution')
+                    return False
+                # A write can commit before reporting failure. Re-read its exact result,
+                # then publish the terminal outcome rather than inventing uncertainty.
+                from gateway.session_results import admission_result
+                with live.event_stream.lock:
+                    captured = admission_result(authority.db, admission_id)
+                    authority.pending_results.pop(admission_id, None)
+                    settled = current
+                    if captured is None:
+                        # An operator discarded uncertainty while recovery yielded. There is
+                        # no committed answer to replay; its queued successor may now run.
+                        authority.pending_deliveries.pop(admission_id, None)
+                        waiter = authority.waiters.pop(admission_id, None)
+                        if waiter is not None and not waiter.done():
+                            waiter.set_exception(RuntimeStoreError('unknown_execution'))
+                        return True
+                    response = captured['result'].get('final_response') or ''
+                    publish_terminal(authority, ref, row, settled, response, captured)
+        finally:
+            # The stamp names a claimed, unsettled execution. Left in place, idle
+            # mutations (session.updated) would carry a terminal generation and
+            # a versioned viewer fence would discard them as late frames.
+            with live.event_stream.lock:
+                live.event_stream.execution = {}
+            authority.pending_stops.pop(ref.session_id, None)
+            authority.pending_steers.pop(ref.session_id, None)
+            authority.adopted.pop(ref.session_id, None)
+            if settled is None:
+                # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
+                authority.pending_deliveries.pop(admission_id, None)
+            from gateway.session_ingress import waiter_replies
+            waiter_replies(authority).pop(admission_id, None)
+        from gateway.session_ingress import deliver_settled
+        await deliver_settled(authority, admission_id)
+        await authority._resolve_settled_waiter(admission_id, response)
+        return True
+    finally:
+        if settled is not None:
+            release_media_after_delivery(authority, row)
+
+
+def release_media_after_delivery(authority, row):
+    """Keep the off-loop collector owned until shutdown/profile retirement joins it."""
+    from gateway.session_runtime_workers import track_mutation
+    return track_mutation(authority, asyncio.to_thread(_release_media, authority, row))

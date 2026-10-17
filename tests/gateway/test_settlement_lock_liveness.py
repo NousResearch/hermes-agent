@@ -178,6 +178,8 @@ async def test_submit_claim_and_discard_behind_a_held_writer_leave_the_loop_free
             tmp_path, lambda: authority.resolve_unknown(ACTOR, REF, receipt.admission_id, row['generation']))
         assert (resolved.status, resolved.outcome) == ('terminal', 'interrupted')
         assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
+        from gateway.session_runtime_workers import join_authority_work
+        await join_authority_work(authority, timeout=5)
         assert not mutation_tasks(authority)
 
 

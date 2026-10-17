@@ -481,8 +481,17 @@ def _download_job(job: dict[str, Any], plan) -> None:
     """Model bytes use the same resumable transfer as pinned PM archives."""
     running = _RUNNING.get(job["job_id"], {})
     job["plan_key"] = download_plans.plan_key(plan)
+    pause = running.get("pause")
+    with download_plans.plan_lock(job["plan_key"], wait=True, cancelled=pause.is_set if pause else None,
+                                  on_wait=lambda: _step(job, "waiting", "Waiting for this model's other download to finish")) as acquired:
+        if not acquired:
+            raise DownloadPaused("download paused while waiting for its plan")
+        _download_owned_plan(job, plan, pause)
+
+
+def _download_owned_plan(job: dict[str, Any], plan, pause) -> None:
     download_plans.save_plan(job, plan)
-    dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=running.get("pause"),
+    dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=pause,
                   state=lambda phase, detail: _step(job, phase, detail))
     tick = _download_progress_hook(job)
     saved_total = None

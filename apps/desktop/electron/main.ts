@@ -195,6 +195,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseBackendScopeKey,
+  profileMetadataFromApiProfiles,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
@@ -15288,40 +15289,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
               : []
 
             const profileMetadata = Array.isArray(body?.profiles)
-              ? Object.fromEntries(
-                  body.profiles
-                    .map(profile => {
-                      const name = String(profile?.name || '').trim()
-
-                      if (!name) {
-                        return null
-                      }
-
-                      const metadata: RosterProfileMetadata = {}
-
-                      if (typeof profile?.display_name === 'string' && profile.display_name.trim()) {
-                        metadata.display_name = profile.display_name.trim()
-                      }
-
-                      // `/api/profiles` names the Bot Mode title `bot_title`. Carried even
-                      // when empty: "this backend has no title" is what lets the renderer
-                      // drop a stale local one instead of painting it on this bot.
-                      if (typeof profile?.bot_title === 'string') {
-                        metadata.title = profile.bot_title.trim()
-                      }
-
-                      if (profile?.ui_meta && typeof profile.ui_meta === 'object') {
-                        metadata.ui_meta = profile.ui_meta
-                      }
-
-                      if (typeof profile?.has_avatar === 'boolean') {
-                        metadata.has_avatar = profile.has_avatar
-                      }
-
-                      return [name, metadata] as const
-                    })
-                    .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
-                )
+              ? profileMetadataFromApiProfiles(body.profiles)
               : undefined
 
             // The root HERMES_HOME is an agent too; enumerations that omit it

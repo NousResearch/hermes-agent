@@ -26,6 +26,7 @@ from hermes_state_holders import read_only_db_uri
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.backup_exclusions import is_non_regular_path, is_runtime_lock
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
@@ -144,7 +145,7 @@ _EXCLUDED_PREFIXES = (
 # drives the container-boot reconciler (a foreign value leaves the gateway stuck "starting" and
 # disconnected from the Nous portal); PID/lock/registry files reference source PIDs. Mirrors
 # ``container_boot._STALE_RUNTIME_FILES``; import filters too because older backups predate the
-# backup-side exclusions.
+# backup-side exclusions. Runtime ``*.lock`` files (``is_runtime_lock``) are skipped the same way.
 _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
 
 try:  # zipfile already imports lzma (free); it is absent only from Pythons built without liblzma
@@ -281,21 +282,9 @@ def _iter_external_files(base: Path) -> list[Path]:
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
-                     if not (_is_non_regular_path(fp) or fp.name in _EXCLUDED_NAMES
-                             or fp.name.endswith(_EXCLUDED_SUFFIXES)))
+                     if not (is_non_regular_path(fp) or fp.name in _EXCLUDED_NAMES
+                             or fp.name.endswith(_EXCLUDED_SUFFIXES) or is_runtime_lock(fp.name)))
     return files
-
-
-def _is_non_regular_path(path: Path) -> bool:
-    """True for symlinks, sockets, devices, and other non-regular filesystem entries.
-
-    A failed ``lstat`` is not treated as an exclusion: the archive writer must see the path and
-    report the read failure instead of silently claiming a complete backup.
-    """
-    try:
-        return not stat.S_ISREG(path.lstat().st_mode)
-    except OSError:
-        return False
 
 
 def _is_link_path(path: Path) -> bool:
@@ -320,7 +309,8 @@ def _should_exclude(rel_path: Path) -> bool:
     if any(p in _EXCLUDED_DIRS and (p != "hermes-agent" or p == parts[0]) for p in parts):
         return True
     name = rel_path.name
-    return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
+    return (name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
+            or is_runtime_lock(name))
 
 
 def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
@@ -348,7 +338,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
             if _should_exclude(rel):
                 continue
-            if _is_non_regular_path(fpath):
+            if is_non_regular_path(fpath):
                 continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():
@@ -712,7 +702,7 @@ def _import_skipped(rel: str) -> bool:
         parts = tuple(normalize_archive_parts(rel))
     except ValueError:
         return False  # A rejected traversal is still reported by the import itself.
-    return (parts[-1] in _IMPORT_SKIP_NAMES or
+    return (parts[-1] in _IMPORT_SKIP_NAMES or is_runtime_lock(parts[-1]) or
             profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS or
             rel.endswith(_SQLITE_SIDECAR_SUFFIXES))
 
@@ -1014,7 +1004,7 @@ def _import_members_exclusive(
         # reconciler on the target and disconnects hosted instances from the
         # Nous portal. Matched by basename so both the root profile and
         # named profiles (profiles/<name>/gateway_state.json) are covered.
-        if parts[-1] in _IMPORT_SKIP_NAMES:
+        if parts[-1] in _IMPORT_SKIP_NAMES or is_runtime_lock(parts[-1]):
             skipped_runtime.append(rel)
             continue
 

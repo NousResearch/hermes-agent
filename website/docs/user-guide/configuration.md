@@ -264,9 +264,12 @@ stays as long as anything anywhere inside it was written in the last day, and go
 the last write. Before an idle entry is deleted, Hermes also stops any process still running
 with its working directory inside that entry (or inside a scratch path that no longer exists,
 such as a headless browser left behind by a test run) and drops any `git worktree`
-registration that pointed into it. Each entry is re-checked right before it is deleted, so
+registration that pointed into it. A process Hermes itself started and still tracks (a
+background `terminal` process, the gateway, a CLI session, or anything they launched that is
+still their child) is never stopped: an idle entry one of them is working inside is kept
+instead. Each entry is re-checked right before it is deleted, so
 one written to while the prune was stopping processes is kept. Every removal, stopped
-process and entry kept by that re-check is recorded in `~/.hermes/logs/scratch-prune.log`. `hermes doctor`
+process and kept entry is recorded in `~/.hermes/logs/scratch-prune.log`. `hermes doctor`
 reports the directory and its size, and
 warns about directories over 1 GB elsewhere under `cache/` that no pruner covers.
 

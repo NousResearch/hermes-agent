@@ -1855,6 +1855,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         _interrupt_depth, history, _status_thread_metadata = (
             turn_ctx._interrupt_depth, turn_ctx.history, turn_ctx._status_thread_metadata,
         )
+        # Compression publishes a child id; TurnContext still identifies the launch session.
+        session_id = (
+            (response.get("session_id") if isinstance(response, dict) else None)
+            or result.get("session_id") or session_id
+        )
         logger.debug("Processing pending message: '%s...'", pending[:40])
 
         # Clear the interrupt event so the recursive _run_agent isn't re-interrupted (infinite loop).
@@ -1882,6 +1887,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
+        next_context_prompt = turn_ctx.context_prompt
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
         # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
@@ -1919,12 +1925,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             next_persist_message = strip_discord_triggering_note(pending_event, next_message)
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
+            next_context_prompt = await self._event_session_context_prompt(
+                pending_event, build_session_context(next_source, self.config), next_session_key, session_id)
             next_channel_prompt, next_source = self._pinned_channel_inputs(
                 next_session_key, pending_event.channel_prompt, next_source,
                 internal=pending_event.internal or getattr(pending_event, "inherit_channel_pin", False),
             )
             if not pending_event.internal:
-                # A drained human turn re-pins its channel inputs; make them durable like a first turn.
+                # Persist the context+channel pair this queued turn will actually consume.
                 await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
         else:
@@ -1947,17 +1955,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             with suppress(Exception):
                 await _clear_adapter.send_typing(source.chat_id, metadata=_status_thread_metadata)
 
-        # Re-baseline the cached agent's message_count before recursing, else the coherence guard
-        # rebuilds on OUR OWN flushed rows (the outer handler re-baselines only after the chain).
-        # Re-baseline the cached agent's message_count snapshot before recursing into the in-band queued
-        # (/queue) follow-up turn. The first turn has completed and flushed its own user + assistant rows to
-        # the SessionDB, so the cross-process coherence guard (#45966) — which this recursive _run_agent
-        # call re-enters — would otherwise see the grown on-disk count against the stale build-time snapshot
-        # and rebuild the agent on THIS process's OWN writes, destroying the prompt-cache prefix #46237 was
-        # merged to preserve. The existing re-baseline in _handle_message_with_agent only runs after the
-        # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same (session_key,
-        # session_id) the recursive call runs under so the snapshot matches exactly what the follow-up's
-        # guard will consult. Fail-safe in helper.
+        # Re-baseline before recursing: the outer handler only does this after the whole chain,
+        # so the coherence guard would otherwise rebuild on this process's own flushed rows (#45966).
         # Acknowledge the follow-up the way an idle-session message is: this in-band drain is the only
         # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
         # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
@@ -1971,7 +1970,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             await self._refresh_agent_cache_message_count(session_key, session_id)
 
             followup_result = await self._run_agent(
-                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                message=next_message, context_prompt=next_context_prompt, history=updated_history,
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,

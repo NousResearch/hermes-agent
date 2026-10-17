@@ -609,13 +609,28 @@ class GatewayTurnPrepareMixin:
         persistence_owner: Optional[str] = None
         title_user_message: Optional[str] = None
 
+    async def _event_session_context_prompt(self, event, context, session_key, session_id):
+        """Apply the same context-pin policy to idle and in-band queued events."""
+        from gateway.run import _load_gateway_config
+        if context.source.platform == Platform.LOCAL:
+            # Local surfaces share a durable session without the messaging context block.
+            return ""
+        redact_pii = False  # privacy.redact_pii is re-read for each event
+        with suppress(Exception):
+            redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        # Human metadata changes re-key the pin; internal/goal/heartbeat/resume events
+        # have no fresh prompt authority and reuse it, including after eviction/restart.
+        reuse_pins = event.internal or getattr(event, "inherit_channel_pin", False)
+        if reuse_pins and session_key:
+            await self._rehydrate_prompt_pins(session_key, session_id)
+        return self._pinned_session_context_prompt(context, redact_pii, session_key, internal=reuse_pins)
+
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
         context prompt, sidecar notes, turn lease, transcript load + hygiene, inbound text. Returns
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable, a local turn's refused ``@`` references); ``None`` drops the turn
         (inbound text rejected)."""
-        from gateway.run import _load_gateway_config
         from tools.approval_yolo import restore_gateway_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
@@ -625,24 +640,8 @@ class GatewayTurnPrepareMixin:
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.
         from gateway.response_filters import display_kind_for_event
         persist_user_display_kind = display_kind_for_event(event)
-        _redact_pii = False  # privacy.redact_pii, re-read per message
-        with suppress(Exception):
-            _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
-
-        # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
-        # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        # A LOCAL session (CLI one-shot, ACP, cron run-now, TUI attach) is the operator's own machine:
-        # the messaging block ("Source: Local", connected platforms, cron delivery targets) was never
-        # part of the classic in-process prompt, and the TUI gateway still builds that prompt in-process.
-        # Rendering it here would make every surface hop of one durable session a system-prompt
-        # (and prompt-cache) break.
-        # Synthetic goal/heartbeat/resume turns carry no prompt inputs of their own, so they reuse the
-        # pins exactly like internal events do (and still pass authorization, unlike internal ones).
-        _reuse_pins = event.internal or getattr(event, "inherit_channel_pin", False)
-        if source.platform != Platform.LOCAL and _reuse_pins and session_key:
-            await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
-        context_prompt = "" if source.platform == Platform.LOCAL else \
-            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=_reuse_pins)
+        context_prompt = await self._event_session_context_prompt(
+            event, context, session_key, session_entry.session_id)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).

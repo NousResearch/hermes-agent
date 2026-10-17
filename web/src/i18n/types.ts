@@ -1011,6 +1011,7 @@ export interface Translations {
     hermesLabel: string;
     behindCount: string;
     updateAvailable: string;
+    rollbackToBadge: string;
     latest: string;
     cpuLabel: string;
     cores: string;

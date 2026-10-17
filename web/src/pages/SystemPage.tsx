@@ -116,6 +116,23 @@ function backupFileName(path: string | null, fallback: string): string {
  * backup, import, skills update, checkpoints prune, gateway start/stop).
  * Polls /api/actions/<name>/status until the process exits.
  */
+/** Badge for an available update; a rollback names the release it returns to. */
+function updateBadge(info: UpdateCheckResponse, SP: SystemPageCopy): string {
+  if (info.rollback_to) return SP.rollbackToBadge.replace("{version}", info.rollback_to);
+  return info.behind && info.behind > 0
+    ? SP.behindCount.replace("{count}", String(info.behind))
+    : SP.updateAvailable;
+}
+
+function updateToast(info: UpdateCheckResponse, SP: SystemPageCopy): string {
+  if (info.rollback_to && info.message) return info.message;
+  return info.behind && info.behind > 0
+    ? SP.toastUpdateAvailableBehind
+        .replace("{count}", String(info.behind))
+        .replace("{s}", info.behind === 1 ? "" : "s")
+    : SP.toastUpdateAvailable;
+}
+
 function ActionLogViewer({
   action,
   onClose,
@@ -606,14 +623,7 @@ export default function SystemPage() {
         setUpdateInfo(info);
         if (force) {
           if (info.update_available) {
-            showToast(
-              info.behind && info.behind > 0
-                ? SP.toastUpdateAvailableBehind
-                    .replace("{count}", String(info.behind))
-                    .replace("{s}", info.behind === 1 ? "" : "s")
-                : SP.toastUpdateAvailable,
-              "success",
-            );
+            showToast(updateToast(info, SP), "success");
           } else if (info.behind === 0) {
             showToast(SP.toastLatest, "success");
           } else if (info.message) {
@@ -958,9 +968,7 @@ export default function SystemPage() {
                     updateInfo &&
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
-                        {updateInfo.behind && updateInfo.behind > 0
-                          ? SP.behindCount.replace("{count}", String(updateInfo.behind))
-                          : SP.updateAvailable}
+                        {updateBadge(updateInfo, SP)}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
                       <Badge tone="success">{SP.latest}</Badge>

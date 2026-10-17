@@ -199,7 +199,7 @@ def test_main_writes_catalog_and_meta(mod, tmp_path):
     assert [p["name"] for p in plugins] == ["gamma", "beta", "alpha"]  # stars desc, unknown stars last
     assert {p["name"]: p["stars"] for p in plugins} == {"alpha": None, "gamma": 50, "beta": 3}
     assert meta["total"] == 3
-    assert meta["byTier"] == {"official": 1, "community": 2}
+    assert meta["byTier"] == {"official": 1, "verified": 0, "community": 2}
     assert {p["name"]: p["category"] for p in plugins} == {"alpha": "memory", "beta": "desktop", "gamma": "desktop"}
     assert meta["byCategory"] == {"desktop": 2, "memory": 1}
     assert meta["starsFetchedAt"] == "2026-09-15T00:00:00+00:00"
@@ -222,7 +222,7 @@ def test_missing_catalog_dir_degrades_to_empty_outputs_exit_zero(mod, tmp_path):
     meta = json.loads((out_dir / "plugins-meta.json").read_text(encoding="utf-8"))
     assert plugins == []
     assert meta["total"] == 0
-    assert meta["byTier"] == {"official": 0, "community": 0}
+    assert meta["byTier"] == {"official": 0, "verified": 0, "community": 0}
     assert meta["removedCount"] == 0
 
 

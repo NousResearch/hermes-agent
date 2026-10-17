@@ -1346,7 +1346,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
             <span className="truncate font-semibold">{entry.name}</span>
 
-            <Badge tone={entry.tier === "official" ? "success" : "secondary"}>
+            <Badge tone={entry.tier === "community" ? "secondary" : "success"}>
               {entry.tier}
             </Badge>
 

@@ -982,6 +982,7 @@ export const zh: Translations = {
     hermesLabel: "Hermes",
     behindCount: "落后 {count} 个提交",
     updateAvailable: "有可用更新",
+    rollbackToBadge: "比 v{version} 更新",
     latest: "已是最新",
     cpuLabel: "CPU",
     cores: "{count} 核",

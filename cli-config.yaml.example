@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 50
+_config_version: 51
 
 # =============================================================================
 # Database Configuration
@@ -431,6 +431,17 @@ terminal:
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
+  # A `hermes` / `hermes --tui` session's local tools (terminal, background processes, execute_code)
+  # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
+  # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
+  # the client runs on the gateway's host (a remote client's session keeps the gateway's toolchain).
+  # As in the classic CLI, the venv reaches `terminal` through PATH (`which python`): VIRTUAL_ENV and
+  # CONDA_PREFIX themselves are unset there; execute_code sees them.
+  # A toolchain name the client did not export is unset for its session's tools (PATH excepted).
+  # List more non-secret names here (default: none); names execute_code treats as credentials (…TOKEN,
+  # …KEY, …SECRET, …PASSWORD, …AUTH, …DSN, …WEBHOOK, …CREDS, …BEARER, …COOKIE) and HERMES_* names
+  # are never sent: pass secrets with `env_passthrough` instead.
+  client_env_passthrough: []  # e.g. ["GEM_HOME", "POETRY_HOME"]
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 
@@ -895,6 +906,10 @@ prompt_caching:
 #   # per session. Unset = 3 inside delegated subagents, unlimited for the main
 #   # agent; a number applies everywhere; 0 = unlimited.
 #   max_calls_per_image: 3
+#   # Newest user images re-sent on turns rebuilt from the session DB (API server,
+#   # --resume) when the model takes images natively; 0 = off. Older images drop
+#   # in whole batches of this size, so the cached prefix changes once per batch.
+#   replay_recent_images: 3
 #
 # auxiliary:
 #   # Image analysis: vision_analyze tool + browser screenshots
@@ -1035,10 +1050,11 @@ group_sessions_per_user: true
 # Session Storage Retention (state.db)
 # =============================================================================
 # ~/.hermes/state.db keeps every session, message, and tool call, plus the
-# FTS5 search indexes. Since #54189, auto-pruning is ON by default so the file
-# stays bounded: at CLI/gateway/cron startup (at most once per
-# min_interval_hours) Hermes deletes ENDED sessions whose last activity is
-# older than retention_days. Open, pinned, and in-progress sessions are never
+# FTS5 search indexes. Auto-pruning is OFF by default; when enabled, at
+# CLI/gateway/cron startup (at most once per min_interval_hours) Hermes deletes
+# ENDED sessions whose last activity is older than retention_days. While
+# auto_prune is unset, Hermes asks once when the disk holding state.db runs
+# low (/autoprune on|off|later answers it). Open, pinned, and in-progress sessions are never
 # deleted. Stale automation sessions (cron/kanban/subagent/one-shot CLI) whose
 # process died without closing them are first *closed*, then aged through a
 # further full retention window before removal.
@@ -1048,10 +1064,10 @@ group_sessions_per_user: true
 # of the file's pages are reclaimable — a dense database never pays for a full
 # rewrite to reclaim a few MB.
 #
-# Uncomment to change the defaults shown; set auto_prune: false to keep every
-# ended session forever (the pre-#54189 behavior).
+# Uncomment to change the defaults shown; auto_prune: true bounds the file,
+# auto_prune: false keeps every ended session and silences the low-disk prompt.
 # sessions:
-#   auto_prune: true
+#   auto_prune: false
 #   retention_days: 90
 #   vacuum_after_prune: true
 #   min_vacuum_interval_days: 30

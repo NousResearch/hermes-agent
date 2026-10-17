@@ -1015,6 +1015,7 @@ export const en: Translations = {
     hermesLabel: "Hermes",
     behindCount: "{count} behind",
     updateAvailable: "update available",
+    rollbackToBadge: "newer than v{version}",
     latest: "latest",
     cpuLabel: "CPU",
     cores: "{count} cores",

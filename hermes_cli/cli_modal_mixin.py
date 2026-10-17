@@ -414,7 +414,7 @@ class CLIModalMixin:
         """Flat (command, category, desc) rows for the Ctrl+P palette: the COMMAND_REGISTRY behind
         /help filtered to this surface, plus installed skill commands. Selecting inserts the exact
         command string — never a fuzzy resolution."""
-        from cli import _ensure_skill_commands
+        from cli import _session_skill_commands
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
 
         entries: list[tuple[str, str, str]] = []
@@ -423,7 +423,7 @@ class CLIModalMixin:
                 if self._command_available(cmd):
                     entries.append((cmd, category, desc))
         try:
-            for cmd, info in sorted(_ensure_skill_commands().items()):
+            for cmd, info in sorted(_session_skill_commands(self).items()):
                 entries.append((cmd, t("cli.palette.category_skill"), info.get("description", "")))
         except Exception:
             pass
@@ -909,6 +909,10 @@ class CLIModalMixin:
             lines.extend([t("cli.connect.authorized_no_tools"), t("cli.connect.button_continue")])
         elif phase == "connected":
             lines.append(t("cli.connect.connected"))
+            if target.get("alias"):
+                from tools.tool_labels import app_title
+
+                lines.append(t("cli.connect.named_account", name=app_title(target.get("name", "")), alias=target["alias"]))
         else:
             lines.append(str(target.get("detail") or t("cli.connect.waiting")))
         return [line for line in lines if line]

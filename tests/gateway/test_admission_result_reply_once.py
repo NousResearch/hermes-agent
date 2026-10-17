@@ -175,8 +175,8 @@ _LEGACY = {'result': {'final_response': REPLY, '_messages_are_turn_suffix': True
 ])
 def test_any_stored_row_reads_back_as_the_pre_change_shape(owner, result, copies):
     """Every row, new or written by an earlier release, decodes to the identical dict, key order
-    included. Message fields are not format metadata, and a producer-built ``_stored`` is never
-    taken for the envelope."""
+    included, before and after its session is deleted. Message fields are not format metadata,
+    and a producer-built ``_stored`` is never taken for the envelope."""
     admission_id, expected = _stored_round_trip(owner, result)
     if copies is None:  # the row as an earlier release wrote it
         expected = result
@@ -187,3 +187,12 @@ def test_any_stored_row_reads_back_as_the_pre_change_shape(owner, result, copies
     assert copies is None or raw.count(REPLY) == copies
     assert json.dumps(admission_result(owner.db, admission_id)) == json.dumps(expected)
     assert json.dumps(load_result(json.dumps(encode_result(expected)))) == json.dumps(expected)
+    # Retirement rewrites the row (keys sorted) without its transcript copies; nothing else changes.
+    snap = owner.db.get_session('r')
+    mutate_runtime_session(owner.db, epoch=owner.epoch, principal_id='human', session_id='r', request_id='del',
+                           operation='delete', payload={}, expected_revision=snap['runtime_revision'],
+                           expected_generation=snap['runtime_generation'])
+    from hermes_state_mutation_retirement import _TRANSCRIPT_FIELDS
+    kept = json.loads(_json({**expected, 'result': {
+        **{k: v for k, v in expected['result'].items() if k not in _TRANSCRIPT_FIELDS}, 'messages': []}}))
+    assert json.dumps(admission_result(owner.db, admission_id)) == json.dumps(kept)

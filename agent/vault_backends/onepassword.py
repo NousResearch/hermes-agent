@@ -4,7 +4,8 @@ Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
 integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
 A configured service-account token skips the prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
-username. Resolve: ``op item get <id> --fields label=password --reveal``.
+username, vault. Resolve: ``op item get <id> --vault <vault-id> ...`` (service
+accounts reject an item read without a vault query).
 """
 
 from __future__ import annotations
@@ -33,11 +34,12 @@ class OnePasswordLoginBackend(LoginBackend):
     prefix = "op:"
     needs_unlock = True
 
-    def __init__(self, cfg: Optional[Dict] = None):
+    def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
         from agent.secret_scope import get_secret
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
+        self._item_vaults: dict[str, str] = {}  # item id -> vault id from the latest ``item list``
 
     # ── auth ────────────────────────────────────────────────────────────────
 
@@ -47,7 +49,7 @@ class OnePasswordLoginBackend(LoginBackend):
             raise RuntimeError("1Password CLI (op) not found — install it or set vault.onepassword.binary_path")
         return op
 
-    def _env(self, session_token: Optional[str]) -> Dict[str, str]:
+    def _env(self, session_token: Optional[str]) -> dict[str, str]:
         from agent.secret_scope import get_secret
         env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_CONNECT_")}
         # Connect credentials outrank OP_SERVICE_ACCOUNT_TOKEN inside op, so they must come from the
@@ -91,50 +93,85 @@ class OnePasswordLoginBackend(LoginBackend):
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             err = _scrub(proc.stderr or "")
-            if "session" in err.lower() or "sign in" in err.lower() or "not signed in" in err.lower():
+            # A service account never holds a session, so an auth failure there is not a lock to undo:
+            # surface op's own error instead of an unlock prompt that reports "already unlocked".
+            if not self._service_token and any(w in err.lower() for w in ("session", "sign in", "not signed in")):
                 _unlock.lock(self.name)
                 raise UnlockRequired(self)
             raise RuntimeError(f"op failed: {err[:200]}")
         return proc.stdout or ""
 
     # ── backend contract ───────────────────────────────────────────────────
-    def list_items(self) -> List[VaultItemMeta]:
+    def list_items(self) -> list[VaultItemMeta]:
         if not self.is_unlocked():
             return []
         raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
-        out: List[VaultItemMeta] = []
+        out: list[VaultItemMeta] = []
+        self._item_vaults = {}
         for item in raw if isinstance(raw, list) else []:
+            vault = item.get("vault") or {}
+            if item.get("id"):
+                self._item_vaults[str(item["id"])] = str(vault.get("id") or "") if isinstance(vault, dict) else ""
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
-            origin = _first_origin(urls)
-            if not origin:
+            origins = _all_origins(urls)
+            if not origins:
                 continue
             username = str(item.get("additional_information") or "").strip() or None
             out.append(VaultItemMeta(
-                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origin),
-                origin=origin, created_at=str(item.get("created_at") or ""),
-                identifier_type="username" if username else None, identifier=username))
+                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origins[0]),
+                origin=origins[0], created_at=str(item.get("created_at") or ""),
+                identifier_type="username" if username else None, identifier=username,
+                allowed_origins=_web_origins(origins)))
         return out
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
-    def resolve_password(self, handle: str) -> str:
+    def _item_selector(self, handle: str) -> list[str]:
+        """``op item get`` target for a listed login. A service account must name the item's vault
+        (``--vault``) and ``item list`` reports it, so the vault comes from the same listing that
+        proved the handle is a Login item; a handle nothing listed is refused before any secret read."""
         item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        if item_id not in self._item_vaults:
+            self.list_items()
+        if item_id not in self._item_vaults:
+            raise RuntimeError("1Password login not found; list logins again")
+        vault_id = self._item_vaults[item_id]
+        return [item_id, "--vault", vault_id] if vault_id else [item_id]
+
+    def resolve_password(self, handle: str) -> str:
+        return self._run("item", "get", *self._item_selector(handle),
+                         "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run("item", "get", *self._item_selector(handle), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None
 
 
-def _first_origin(urls: List[str]) -> Optional[str]:
+def _web_origins(origins: list[str]) -> tuple:
+    """Fill targets are browser pages, so app URIs (``androidapp://`` etc.) never
+    widen the fill set; an item whose only URI is an app URI keeps its single
+    (unfillable-from-a-page) origin exactly as before."""
+    web = tuple(o for o in origins if o.startswith(("http://", "https://")))
+    return web or (origins[0],)
+
+
+def _all_origins(urls: list[str]) -> list[str]:
+    """Every normalized origin saved on the item, deduped, order preserved.
+
+    A 1Password Login item can carry several websites; each of them is a place the
+    user told 1Password the credential belongs, so all of them are valid fill targets.
+    """
+    out: list[str] = []
     for u in urls:
         try:
-            return normalize_origin(u)
+            origin = normalize_origin(u)
         except Exception:
             continue
-    return None
+        if origin not in out:
+            out.append(origin)
+    return out

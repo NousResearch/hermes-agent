@@ -11,9 +11,13 @@ logger = logging.getLogger("tools.process_registry")
 
 
 class ProcessCheckpointMixin:
+    def _detached_host_fate(self, pid: Optional[int], expected_start: Optional[int]) -> str:
+        """Subclass supplies the live PID decision. See ProcessRegistry."""
+        raise NotImplementedError
+
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self, extra_entries: Optional[List[Dict[str, Any]]] = None):
+    def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
         """Write running process metadata to the checkpoint file atomically."""
         from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
@@ -38,10 +42,32 @@ class ProcessCheckpointMixin:
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
+                known = {*self._running, *self._finished}
+            from hermes_cli.active_sessions import _FileLock
             from utils import atomic_json_write
-            atomic_json_write(_checkpoint_path(), entries)
+            path = _checkpoint_path()
+            # Every interpreter of the profile (owner, each managed worker) rewrites this file from
+            # its own table; a worker's output-log handoff is its only path to the next one, so a
+            # writer keeps the handoffs it does not track (read-merge-write under one file lock).
+            with _FileLock(path.with_name(path.name + ".lock")):
+                entries.extend(self._foreign_handoffs(path, known))
+                atomic_json_write(path, entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
+
+    def _foreign_handoffs(self, path, known) -> list[dict[str, Any]]:
+        """On-disk worker handoffs this registry never tracked whose log still decides an outcome:
+        the process is alive (same start time) or its recorded exit is waiting to be read."""
+        from pathlib import Path
+        from tools.process_registry_output_log import _exit_path, adoptable_log
+        try:
+            on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return []
+        return [entry for entry in on_disk if isinstance(entry, dict) and entry.get("session_id") not in known
+                and (log := adoptable_log(entry.get("output_log"))) and Path(log).exists()
+                and (_exit_path(log).exists() or self._detached_host_fate(
+                    entry.get("pid"), entry.get("host_start_time")) == "running")]
 
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
@@ -50,35 +76,51 @@ class ProcessCheckpointMixin:
             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
+        from tools.process_registry_output_log import adoptable_log
 
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():
             return 0
         try:
-            entries = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            entries = json.loads(checkpoint_path.read_text(encoding="utf-8-sig"))
         except Exception:
             return 0
         recovered = 0
-        unresolved_scope_entries: List[Dict[str, Any]] = []
+        unresolved_scope_entries: list[dict[str, Any]] = []
         for entry in entries:
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
+                continue
+            # The registry is process-global, so every profile's checkpoint carries every live
+            # process; a multiplexer recovering several homes must adopt each session once.
+            with self._lock:
+                already_tracked = entry.get("session_id") in self._running
+            if already_tracked:
                 continue
             if pid_scope != "host":  # in-sandbox PIDs mean nothing once the env handle is gone
                 logger.info(
                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
                     entry.get("command", "unknown")[:60], pid, pid_scope)
                 continue
-            # Alive AND the same process: across a restart the kernel may have
-            # recycled the PID onto a stranger, and adopting it would let a later
-            # kill tree-kill e.g. a browser.
-            if not self._host_pid_is_ours(pid, entry.get("host_start_time")):
-                if self._is_host_pid_alive(pid):
-                    logger.info(
-                        "Not recovering session %s: pid %d is alive but its "
-                        "start time no longer matches — PID was recycled onto "
-                        "an unrelated process; refusing to adopt it.",
-                        entry.get("session_id", "?"), pid)
+            # Alive and still ours: re-attach. A start-time probe that cannot
+            # be read is not proof the PID was reused — dropping it would leave
+            # a live child unsupervised, and marking it exited would invent a
+            # completion. A positive mismatch means the number was recycled:
+            # do not adopt it and do not signal it.
+            fate = self._detached_host_fate(pid, entry.get("host_start_time"))
+            # A worker spawn's output log and recorded exit outlive both the spawner and the PID,
+            # so its reader decides the outcome (a recycled PID is never signalled: fate != running).
+            log = adoptable_log(entry.get("output_log"))
+            if log:
+                fate = "running"
+            if fate == "reused":
+                logger.info(
+                    "Not recovering session %s: pid %d is alive but its "
+                    "start time no longer matches — PID was recycled onto "
+                    "an unrelated process; refusing to adopt or signal it.",
+                    entry.get("session_id", "?"), pid)
+                continue
+            if fate != "running":
                 systemd_unit = entry.get("systemd_unit", "")
                 if systemd_unit and not _stop_systemd_unit(systemd_unit):
                     logger.warning(
@@ -92,10 +134,15 @@ class ProcessCheckpointMixin:
                 command=entry.get("command", "unknown"),
                 owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
                 started_at=entry.get("started_at", time.time()))
-            # detached: can't read output, but can report status + kill
+            # detached: no Popen handle, but can report status + kill; a worker spawn's output log
+            # (and recorded exit) outlives its spawner, so tail it from the start.
+            fields["output_log"] = log
             session = ProcessSession(id=entry["session_id"], detached=True, **fields)
-            with self._lock:
-                self._running[session.id] = session
+            if session.output_log:
+                self._track_started(session, self._log_reader_loop, f"proc-log-reader-{session.id}")
+            else:
+                with self._lock:
+                    self._running[session.id] = session
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
             # Re-enqueue watcher so gateway can resume notifications

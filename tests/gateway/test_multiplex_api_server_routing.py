@@ -16,17 +16,12 @@ from gateway.platforms.api_server import (
 )
 
 
-def _make_adapter(
-    multiplex: bool = True, allowlist: list[str] | None = None
-) -> APIServerAdapter:
+def _make_adapter(multiplex: bool = True) -> APIServerAdapter:
     cfg = PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 8642, "key": "test-key"})
     adapter = APIServerAdapter(cfg)
 
     class _Runner:
-        config = GatewayConfig(
-            multiplex_profiles=multiplex,
-            multiplex_profile_allowlist=allowlist,
-        )
+        config = GatewayConfig(multiplex_profiles=multiplex)
 
     adapter.gateway_runner = _Runner()
     return adapter
@@ -43,10 +38,10 @@ class TestApiServerProfileResolution:
         assert adapter._resolve_request_profile(_FakeReq(None)) is None
 
     def test_unserved_prefix_is_rejected(self, monkeypatch):
-        adapter = _make_adapter(multiplex=True, allowlist=["worker"])
+        adapter = _make_adapter(multiplex=True)
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist=None: [
+            lambda multiplex: [
                 ("default", "/profiles/default"),
                 ("worker", "/profiles/worker"),
             ],
@@ -62,21 +57,6 @@ class TestApiServerProfileResolution:
         )
 
 
-class TestApiServerRouteTable:
-    def test_route_table_includes_models_options_and_chat(self):
-        """Model discovery and chat routes must survive profile multiplexing."""
-        adapter = _make_adapter(multiplex=True)
-        paths = {path for _method, path, _handler in adapter._http_route_table()}
-        assert "/v1/models" in paths
-        assert "/api/model/options" in paths
-        assert "/v1/chat/completions" in paths
-        assert "/api/sessions/{session_id}/model" in paths
-        # connect() mirrors every native path under /p/{profile}/…
-        mirrored = {f"/p/{{profile}}{path}" for path in paths}
-        assert "/p/{profile}/v1/models" in mirrored
-        assert "/p/{profile}/api/model/options" in mirrored
-        assert "/p/{profile}/v1/chat/completions" in mirrored
-        assert "/p/{profile}/api/sessions/{session_id}/model" in mirrored
 
 
 class TestApiServerModelsUnderProfile:

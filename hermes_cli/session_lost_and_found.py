@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -15,15 +16,14 @@ from typing import Any, Callable, Optional, Sequence
 
 from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
+from hermes_state_ids import is_known_session_id  # every minted id shape: sentinel for schema-less rows
 from hermes_cli.session_recovery import (
-    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
-    _placeholder_titles, _quoted_columns, _table_columns,
+    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _DANGLING_TOOL_PIN, _count_rows,
+    _immediate_transaction, _placeholder_titles, _quoted_columns, _table_columns,
 )
 
 logger = logging.getLogger(__name__)
 
-# Hermes session ids are timestamps (20260812_135332_ab12cd): the strongest sentinel for schema-less rows.
-SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
 MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 # Values observed in sessions.source across gateway platforms and tooling.
@@ -84,7 +84,7 @@ SQLITE3_CLI_GUIDANCE = (
 # The predicate lives in hermes_cli.sqlite_runtime (stdlib-only, shared with
 # the installer/update gates) so the embedded runtime and the salvage shell
 # can never disagree about which versions are safe.
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable  # noqa: E502
+from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable
 
 _WAL_RESET_VULNERABLE_GUIDANCE = (
     "salvage against a Hermes database with the WAL-reset bug "
@@ -103,7 +103,7 @@ class LostAndFoundError(RuntimeError):
 def _parse_sqlite3_cli_version(binary: str) -> Optional[tuple[int, int, int]]:
     """Version of the sqlite3 CLI at *binary* via ``--version``, or None when it cannot run or be parsed."""
     try:
-        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30)
+        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if probe.returncode != 0:
@@ -172,7 +172,7 @@ def _cli_supports_recover(binary: str) -> bool:
             conn.commit()
         finally:
             conn.close()
-        probe = subprocess.run([binary, "-readonly", str(scratch), ".recover"], capture_output=True, timeout=30)
+        probe = subprocess.run([binary, "-readonly", str(scratch), ".recover"], capture_output=True, timeout=30, check=False)
         return probe.returncode == 0 and b"sqlite_dbpage" not in probe.stderr
     except (OSError, subprocess.SubprocessError, sqlite3.Error):
         return False
@@ -219,22 +219,31 @@ def _cli_recover_attempts(source: Path, lf_path: Path, sqlite3_bin: str, *, time
     for command in (".recover --ignore-freelist", ".recover"):
         if lf_path.exists():
             lf_path.unlink()
-        dump = subprocess.Popen(
-            [sqlite3_bin, "-readonly", str(source), command], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        load = subprocess.Popen(
-            [sqlite3_bin, str(lf_path)], stdin=dump.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-        )
-        assert dump.stdout is not None
-        dump.stdout.close()  # let dump receive SIGPIPE if load dies
-        try:
-            _, load_err = load.communicate(timeout=timeout)
-            dump_err = dump.stderr.read() if dump.stderr is not None else b""
-            dump.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            dump.kill()
-            load.kill()
-            raise LostAndFoundError(f"sqlite3 .recover timed out after {timeout:.0f}s")
+        # .recover reports per-page diagnostics on stderr; a heavily damaged source can emit
+        # far more than a pipe buffer holds, so stderr drains to a temp file — an undrained
+        # PIPE would block the dump child, stall load's stdin, and burn the whole timeout.
+        with tempfile.TemporaryFile(prefix="hermes-recover-dump-stderr-") as dump_stderr:
+            dump = subprocess.Popen(
+                [sqlite3_bin, "-readonly", str(source), command], stdout=subprocess.PIPE, stderr=dump_stderr
+            )
+            load = subprocess.Popen(
+                [sqlite3_bin, str(lf_path)], stdin=dump.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+            assert dump.stdout is not None
+            dump.stdout.close()  # let dump receive SIGPIPE if load dies
+            try:
+                _, load_err = load.communicate(timeout=timeout)
+                dump.wait(timeout=60)
+                dump_stderr.seek(0, os.SEEK_END)
+                tail_size = min(dump_stderr.tell(), 65536)
+                dump_stderr.seek(-tail_size, os.SEEK_END)
+                dump_err = dump_stderr.read()
+            except subprocess.TimeoutExpired:
+                dump.kill()
+                load.kill()
+                dump.wait()  # reap: kill() alone leaves returncode None and a zombie until GC
+                load.wait()
+                raise LostAndFoundError(f"sqlite3 .recover timed out after {timeout:.0f}s")
         attempts.append({
             "command": command, "dump_returncode": dump.returncode, "load_returncode": load.returncode,
             "dump_stderr_tail": dump_err.decode("utf-8", "replace")[-2000:],
@@ -288,13 +297,25 @@ def _parse_sql_default(text: str) -> Any:
 
 
 def _is_session_id(value: Any) -> bool:
-    return isinstance(value, str) and bool(SESSION_ID_PATTERN.match(value))
+    """A cell that can be a session id: any shape in ``SESSION_ID_RECOGNIZERS``."""
+    return isinstance(value, str) and is_known_session_id(value)
 
 
 def _looks_like_source(value: Any) -> bool:
     return bool(value) and isinstance(value, str) and (
         value in KNOWN_SOURCES or bool(re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value))
     )
+
+
+def _session_source_index(cells: tuple[Any, ...]) -> Optional[int]:
+    if len(cells) > 1 and _looks_like_source(cells[1]):
+        return 1
+    # Fresh runtime schemas inserted counters after id; upgraded databases
+    # append those same columns. Width alone cannot distinguish the layouts.
+    if (len(cells) > 3 and _looks_like_source(cells[3])
+            and all(v is None or isinstance(v, int) for v in cells[1:3])):
+        return 3
+    return None
 
 
 def classify_lost_and_found_row(nfield: int, cells: tuple[Any, ...]) -> Optional[str]:
@@ -311,9 +332,10 @@ def classify_lost_and_found_row(nfield: int, cells: tuple[Any, ...]) -> Optional
     second = cells[1] if len(cells) > 1 else None
     if nfield == SESSION_MODEL_USAGE_NFIELD:  # session id first, model string second
         return "session_model_usage" if isinstance(second, str) and second else None
-    # Any historical sessions width: session id first + recognizable source second (every sessions
-    # layout ever shipped has at least the 14 original columns).
-    if nfield >= SESSIONS_LEGACY_MINIMAL_NFIELD and _looks_like_source(second):
+    # Any historical sessions width: session id first + recognizable source (every sessions layout ever
+    # shipped has at least the 14 original columns). Stores created at the runtime-authority schema carry
+    # runtime_revision/runtime_generation right after id, so the source cell sits at 3 there (#101409 lane).
+    if nfield >= SESSIONS_LEGACY_MINIMAL_NFIELD and _session_source_index(cells) is not None:
         return "sessions"
     return None
 
@@ -335,6 +357,27 @@ def _insert_prefix_row(
             for index, value in enumerate(values)
         ]
     return _execute_insert(dest, table, dest_columns[: len(values)], values)
+
+
+def _sessions_prefix_columns(
+    columns: list[str], defaults: dict[int, Any], cells: tuple[Any, ...],
+) -> tuple[list[str], dict[int, Any]]:
+    """Positional fallback for a sessions record no history layout claimed.
+
+    The destination declares runtime_revision/runtime_generation right after ``id``; an
+    upgraded store appended them at the end instead. Which order produced the record is
+    read off the cells (where the source sits), so the prefix zip lands ``source`` on
+    ``source`` instead of shifting every field by two.
+    """
+    runtime_columns = ["runtime_revision", "runtime_generation"]
+    base_columns = [c for c in columns if c not in runtime_columns]
+    ordered = (
+        [base_columns[0], *runtime_columns, *base_columns[1:]]
+        if _session_source_index(cells) == 3
+        else [*base_columns, *runtime_columns]
+    )
+    named_defaults = {columns[i]: value for i, value in defaults.items()}
+    return ordered, {i: named_defaults[c] for i, c in enumerate(ordered) if c in named_defaults}
 
 
 def _declared_types(conn: sqlite3.Connection, table: str) -> dict[str, str]:
@@ -689,11 +732,15 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
         # Per-kind destination columns + NOT NULL substitutes. Identity fields are never fabricated:
         # rows with a NULL session id / role / source were already rejected by classify_lost_and_found_row.
         targets: dict[str, tuple[list[str], dict[int, Any]]] = {}
-        for kind_name, protected in (("sessions", (0, 1)), ("messages", (1, 2)), ("session_model_usage", (0, 1))):
+        for kind_name, protected in (
+            ("sessions", ("id", "source")), ("messages", ("session_id", "role")),
+            ("session_model_usage", ("session_id", "model")),
+        ):
+            columns = _table_columns(dest, kind_name)
             defaults = _notnull_defaults(dest, kind_name)
-            for index in protected:
-                defaults.pop(index, None)
-            targets[kind_name] = (_table_columns(dest, kind_name), defaults)
+            for name in protected:
+                defaults.pop(columns.index(name), None)
+            targets[kind_name] = (columns, defaults)
         dest_types = {table: _declared_types(dest, table) for table in targets}
         lf_tables = [
             str(row[0]) for row in
@@ -770,6 +817,8 @@ def map_lost_and_found_rows(lf_conn: sqlite3.Connection, dest: sqlite3.Connectio
                     values = list(cells[:len(columns)])
                     if kind == "messages":
                         values[0] = lf_rowid
+                    elif kind == "sessions":
+                        columns, defaults = _sessions_prefix_columns(columns, defaults, cells)
                     inserted = _insert_prefix_row(dest, kind, columns, values, defaults)
             except sqlite3.DatabaseError:
                 report["unmapped_rows"] += 1
@@ -821,6 +870,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
             "UPDATE sessions SET system_prompt_hash = NULL WHERE system_prompt_hash IS NOT NULL AND NOT EXISTS "
             "(SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.system_prompt_hash)"
         )
+        dest.execute(f"UPDATE sessions SET tool_names = NULL WHERE {_DANGLING_TOOL_PIN}")
     return result
 
 

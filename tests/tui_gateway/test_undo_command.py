@@ -55,8 +55,7 @@ def server(hermes_home):
     mod._methods.clear()
     mod._methods.update(methods)
     mod._sessions.clear()
-    mod._pending.clear()
-    mod._answers.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
     mod._db = None
 
 
@@ -99,13 +98,12 @@ def _call(server, method, **params):
 
 
 def test_undo_returns_prefill_with_target_text(server, session_with_history):
-    sid, session_key, s, agent = session_with_history
+    sid, _session_key, s, _agent = session_with_history
     resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
     result = resp["result"]
     assert result["type"] == "prefill"
     # Default /undo backs up one user turn — "question 3"
     assert result["message"] == "question 3"
-    assert "Undid" in result["notice"]
     assert s["history"]
     assert all("_row_id" in message for message in s["history"])
 

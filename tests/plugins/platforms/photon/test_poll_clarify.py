@@ -32,8 +32,8 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
 
 def _capture(
     adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch
-) -> List[MessageEvent]:
-    captured: List[MessageEvent] = []
+) -> list[MessageEvent]:
+    captured: list[MessageEvent] = []
 
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
@@ -44,7 +44,7 @@ def _capture(
 
 def _poll_option_event(
     *, title: str, selected: bool = True, msg_id: str = "spc-msg-vote"
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return {
         "messageId": msg_id,
         "platform": "iMessage",
@@ -111,8 +111,8 @@ async def test_poll_vote_and_later_text_remain_distinct(
 
 def _stub_sidecar_poll(
     adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch, *, ok: bool = True
-) -> List[Tuple[str, str, list]]:
-    calls: List[Tuple[str, str, list]] = []
+) -> list[tuple[str, str, list]]:
+    calls: list[tuple[str, str, list]] = []
 
     async def fake_send_poll(space_id: str, title: str, options: list):
         calls.append((space_id, title, list(options)))
@@ -128,8 +128,8 @@ def _stub_sidecar_poll(
 
 def _stub_sidecar_text(
     adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch
-) -> List[Tuple[str, str]]:
-    sends: List[Tuple[str, str]] = []
+) -> list[tuple[str, str]]:
+    sends: list[tuple[str, str]] = []
 
     async def fake_send(space_id: str, text: str):
         sends.append((space_id, text))
@@ -146,7 +146,7 @@ async def test_send_clarify_with_choices_sends_native_poll(
     adapter = _make_adapter(monkeypatch)
     poll_calls = _stub_sidecar_poll(adapter, monkeypatch)
 
-    marked: List[str] = []
+    marked: list[str] = []
     import tools.clarify_gateway as cg
 
     monkeypatch.setattr(cg, "mark_awaiting_text", lambda cid: marked.append(cid))

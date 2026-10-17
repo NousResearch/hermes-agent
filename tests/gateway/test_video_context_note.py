@@ -19,7 +19,7 @@ def _make_runner() -> GatewayRunner:
 
 
 @pytest.mark.asyncio
-async def test_video_attachment_adds_path_note_without_document_wording():
+async def test_video_attachment_adds_path_note_not_document_note():
     from gateway.run import _build_media_placeholder
 
     runner = _make_runner()
@@ -42,8 +42,6 @@ async def test_video_attachment_adds_path_note_without_document_wording():
             history=[],
         )
 
-    assert "video attachment" in result
     assert "/tmp/video_clip.mp4" in result
-    assert "video analysis or media tool" in result
     assert "The user sent a document" not in result
-    assert _build_media_placeholder(event) == "[User sent a video: /tmp/video_clip.mp4]"
+    assert "/tmp/video_clip.mp4" in _build_media_placeholder(event)

@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $desktopOnboarding, refreshOnboarding } from '@/store/onboarding'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
+
+// The boot due check has run and no first-run onboarding is open.
+markOnboardingDecided()
 
 const READY: FreeTierStatus = {
   available: true,
@@ -23,7 +27,7 @@ function gatewayReturning(freeTier: FreeTierStatus, route = true) {
     }
 
     if (method === 'setup.runtime_check') {
-      return { free_tier: route, ok: true } as T
+      return { free_tier_route: route, ok: true } as T
     }
 
     return { provider_configured: true } as T
@@ -73,5 +77,14 @@ describe('acknowledging the introduction', () => {
 
     expect(await ackFreeTierIntro({ requestGateway: failing })).toBe(false)
     expect(await ackFreeTierIntro({ requestGateway: gatewayReturning(READY) })).toBe(false) // status stub returns no {acked: true}
+  })
+})
+
+describe('a background readiness round', () => {
+  it('never completes onboarding when the picker was touched during the round', async () => {
+    // The `setup.ready` listener passes `stillWanted`; a user opening the API-key form while the
+    // readiness request was out must not have it dismissed by a late "ready".
+    expect(await refreshOnboarding({ requestGateway: gatewayReturning(READY) }, () => false)).toBe(false)
+    expect($desktopOnboarding.get().freeTierReady).toBe(false)
   })
 })

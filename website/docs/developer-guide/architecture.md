@@ -117,13 +117,15 @@ hermes-agent/
 │   ├── mirror.py             # Cross-session message mirroring
 │   ├── status.py             # Token locks, profile-scoped process tracking
 │   ├── builtin_hooks/        # Extension point for always-registered hooks (none shipped)
-│   └── platforms/            # Built-in adapters: signal, weixin, bluebubbles,
-│                             #   qqbot, whatsapp_cloud, yuanbao, webhook, api_server
+│   └── platforms/            # Core ingress adapters: api_server, webhook,
+│                             #   msgraph_webhook
 │
 ├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
 │                             #   whatsapp, matrix, mattermost, email, sms, dingtalk,
-│                             #   feishu, wecom, homeassistant, irc, line, teams,
-│                             #   google_chat, buzz, ntfy, photon, raft, simplex
+│                             #   feishu, wecom, irc, line, teams, google_chat,
+│                             #   buzz, ntfy, photon, raft, simplex, whatsapp_cloud,
+│                             #   signal, weixin, bluebubbles, qqbot, yuanbao
+│                             #   (Home Assistant: `homeassistant` catalog plugin)
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)
@@ -233,7 +235,7 @@ Long-running process with 25+ platform adapters (built-in + bundled plugins), un
 
 Three discovery sources: `~/.hermes/plugins/` (user), `.hermes/plugins/` (project), and pip entry points. Plugins register tools, hooks, and CLI commands through a context API. Two specialized plugin types exist: memory providers (`plugins/memory/`) and context engines (`plugins/context_engine/`). Both are single-select — only one of each can be active at a time, configured via `hermes plugins` or `config.yaml`.
 
-→ [Plugin Guide](/developer-guide/plugins), [Memory Provider Plugin](./memory-provider-plugin.md)
+→ [Plugin Guide](./plugins/index.md), [Memory Provider Plugin](./memory-provider-plugin.md)
 
 ### Cron
 

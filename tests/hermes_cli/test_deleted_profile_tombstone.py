@@ -13,18 +13,24 @@ from unittest.mock import patch
 
 import pytest
 
+from cron.scheduler_delivery import BOT_CHAT_PLATFORM, cron_delivery_targets
 from hermes_cli.config import ensure_hermes_home
 from hermes_cli.profiles import (
     backfill_profile_envs,
     create_profile,
     delete_profile,
+    list_profile_names,
     list_profiles,
     profile_exists,
     profiles_to_serve,
     resolve_profile_env,
     set_active_profile,
 )
-from hermes_constants import named_profile_home
+from hermes_constants import (
+    named_profile_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from hermes_logging import setup_logging
 
 
@@ -67,6 +73,43 @@ class TestDeletedProfileTombstone:
         monkeypatch.setenv("HERMES_HOME", str(profile_env / ".hermes"))
         assert "worker" not in _named_homes(profile_env)
 
+    def test_late_reasoning_caps_save_does_not_recreate_deleted_home(self, profile_env):
+        """A daemon retaining a deleted profile context must not recreate its cache tree."""
+        from hermes_cli import models_reasoning_caps
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        _delete("worker")
+
+        token = set_hermes_home_override(profile_dir)
+        try:
+            models_reasoning_caps._save_reasoning_caps_disk(
+                "https://example.test/v1/models",
+                {"example/model": {"supports_reasoning": True}},
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not profile_dir.exists()
+
+    def test_atomic_cache_write_allows_live_profile_home(self, profile_env):
+        from hermes_cli.models import _write_json_cache
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        cache_path = profile_dir / "cache" / "models.json"
+
+        _write_json_cache(cache_path, {"cached": True})
+
+        assert cache_path.read_text(encoding="utf-8") == '{\n  "cached": true\n}'
+
+    def test_atomic_cache_write_allows_unrelated_profiles_path(self, tmp_path):
+        from hermes_cli.models import _write_json_cache
+
+        cache_path = tmp_path / "custom" / "profiles" / "cache" / "models.json"
+
+        _write_json_cache(cache_path, {"cached": True})
+
+        assert cache_path.read_text(encoding="utf-8") == '{\n  "cached": true\n}'
+
     def test_empty_shell_after_delete_is_not_listed_or_served(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         with patch("hermes_cli.profiles._cleanup_gateway_service"), patch(
@@ -81,6 +124,11 @@ class TestDeletedProfileTombstone:
         assert "worker" not in _named_homes(profile_env)
         served = [name for name, _ in profiles_to_serve(True)]
         assert "worker" not in served
+        # The name-only hot path (cron Bot Chat targets, kanban profile hints)
+        # honors the same tombstone: a recreated shell must not resurface as a
+        # `bot-chat:worker` delivery target.
+        assert "worker" not in list_profile_names()
+        assert f"{BOT_CHAT_PLATFORM}:worker" not in [t["id"] for t in cron_delivery_targets()]
 
     def test_tombstoned_home_is_not_bootstrapped(self, profile_env, monkeypatch):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
@@ -146,6 +194,49 @@ class TestDeletedProfileTombstone:
 
         assert "worker" not in backfilled
         assert not (profile_dir / ".env").exists()
+
+    def test_marker_less_shell_is_not_a_profile(self, profile_env):
+        """A ``profiles/<name>`` dir with no identity file (a pre-tombstone ghost shell left by a
+        cron ticker, or a stray infrastructure dir) is not listed, served, or seeded with the
+        default install's ``.env`` — that seeding is what legitimised ghosts on ``hermes update``
+        (#95188 path D, #94823, #99392). ``profile create`` may take the name back."""
+        default_env = profile_env / ".hermes" / ".env"
+        default_env.write_text("OPENAI_API_KEY=sk-real\n", encoding="utf-8")
+        shell = profile_env / ".hermes" / "profiles" / "ghost"
+        (shell / "cron").mkdir(parents=True)
+        (shell / "cron" / "ticker_heartbeat").write_text("1\n", encoding="utf-8")
+        legacy = profile_env / ".hermes" / "profiles" / "legacy"
+        legacy.mkdir()
+        (legacy / "state.db").write_bytes(b"")
+
+        assert backfill_profile_envs(quiet=True) == ["legacy"]
+        assert not (shell / ".env").exists()
+        assert _named_homes(profile_env) == ["legacy"]
+        assert [name for name, _ in profiles_to_serve(True)] == ["default", "legacy"]
+        # ``hermes --profile ghost serve`` (a stale Desktop boot target) must not start a backend
+        # in the shell — its ensure_hermes_home() would rebuild the full profile tree.
+        assert not profile_exists("ghost")
+        with pytest.raises(FileNotFoundError):
+            resolve_profile_env("ghost")
+        assert Path(resolve_profile_env("legacy")) == legacy
+
+        # A live marker-less dir may still hold user files: ``profile create`` must fail closed,
+        # naming the stray dir, and leave every byte in place (never rmtree a non-tombstoned dir).
+        (shell / "skills" / "my-skill").mkdir(parents=True)
+        (shell / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
+        with pytest.raises(FileExistsError, match=str(shell)):
+            create_profile("ghost", no_alias=True, no_skills=True)
+        assert (shell / "skills" / "my-skill" / "SKILL.md").exists()
+        assert "ghost" not in _named_homes(profile_env)
+
+    def test_dangling_symlink_marker_is_still_identity(self, profile_env):
+        """A profile whose only marker is a dangling symlinked ``config.yaml`` (clone/migration
+        leftover) stays resolvable: ``is_file()`` follows links and would make it invisible."""
+        legacy = profile_env / ".hermes" / "profiles" / "legacy"
+        legacy.mkdir(parents=True)
+        (legacy / "config.yaml").symlink_to(profile_env / "gone" / "config.yaml")
+        assert profile_exists("legacy")
+        assert Path(resolve_profile_env("legacy")) == legacy
 
     def test_create_after_delete_replaces_empty_shell(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)

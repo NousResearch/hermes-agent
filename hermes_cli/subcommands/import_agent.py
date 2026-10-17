@@ -28,4 +28,9 @@ def build_import_agent_parser(subparsers, *, cmd_import_agent: Callable) -> None
         "--overwrite", action="store_true",
         help="Overwrite existing Hermes items on name conflicts (default: skip)")
     add_yes_flag(parser, "Skip confirmation prompts")
+    parser.add_argument(
+        "--sync", action="store_true",
+        help="Re-import every previously imported source whose files changed since the last "
+             "import (registered in HERMES_HOME/import-sync.json). Runs without prompts; "
+             "combine with --dry-run to preview.")
     parser.set_defaults(func=cmd_import_agent)

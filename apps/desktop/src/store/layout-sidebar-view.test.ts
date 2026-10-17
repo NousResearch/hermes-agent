@@ -6,10 +6,13 @@ import {
   $sidebarRowMeta,
   $sidebarShowAllSessions,
   $sidebarViewCustomized,
+  cycleSidebarGrouping,
   resetSidebarView,
   setSidebarGrouping,
   setSidebarOrdering,
   setSidebarShowAllSessions,
+  SIDEBAR_GROUPING_ORDER,
+  type SidebarGrouping,
   toggleSidebarRowMeta,
   toggleSidebarStatusFilter
 } from './layout'
@@ -36,12 +39,6 @@ describe('the sidebar as it ships', () => {
     expect($sidebarShowAllSessions.get()).toBe(false)
     expect($sidebarViewCustomized.get()).toBe(false)
     expect(window.localStorage.getItem('hermes.desktop.sidebarShowAllSessions')).toBe('false')
-  })
-
-  it('groups by date, sorts by recency, and pins the timestamp and preview', () => {
-    expect($sidebarGrouping.get()).toBe('date')
-    expect($sidebarOrdering.get()).toBe('updated')
-    expect($sidebarRowMeta.get()).toEqual(['preview', 'updated'])
   })
 
   it('offers no reset until something actually moves off the defaults', () => {
@@ -93,5 +90,22 @@ describe('the sidebar as it ships', () => {
 
     expect($showAllProfiles.get()).toBe(true)
     expect($sidebarGrouping.get()).toBe('profile')
+  })
+
+  it('visits every grouping once per lap and comes back to where it started', () => {
+    const start = $sidebarGrouping.get()
+    const visited: SidebarGrouping[] = []
+
+    for (let step = 0; step < SIDEBAR_GROUPING_ORDER.length; step++) {
+      cycleSidebarGrouping()
+      visited.push($sidebarGrouping.get())
+
+      if ($sidebarGrouping.get() === 'profile') {
+        expect($showAllProfiles.get()).toBe(true)
+      }
+    }
+
+    expect(new Set(visited)).toEqual(new Set(SIDEBAR_GROUPING_ORDER))
+    expect($sidebarGrouping.get()).toBe(start)
   })
 })

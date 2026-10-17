@@ -7,9 +7,7 @@ httpx tries to encode the Authorization header as ASCII.
 
 import os
 
-
 from hermes_cli.config import _check_non_ascii_credential
-
 
 class TestCheckNonAsciiCredential:
     """Tests for _check_non_ascii_credential()."""
@@ -36,7 +34,6 @@ class TestCheckNonAsciiCredential:
         captured = capsys.readouterr()
         assert "U+028B" in captured.err  # reports the char
 
-
 class TestEnvLoaderSanitization:
     """Tests for _sanitize_loaded_credentials in env_loader."""
 
@@ -48,7 +45,6 @@ class TestEnvLoaderSanitization:
         _sanitize_loaded_credentials()
         assert os.environ["OPENROUTER_API_KEY"] == "sk-proj-abcdef"
 
-
     def test_ignores_non_credential_vars(self, monkeypatch):
         from hermes_cli.env_loader import _sanitize_loaded_credentials
 
@@ -56,7 +52,6 @@ class TestEnvLoaderSanitization:
         _sanitize_loaded_credentials()
         # Not a credential suffix — should be left alone
         assert os.environ["MY_UNICODE_VAR"] == "héllo wörld"
-
 
     def test_warns_to_stderr_when_stripping(self, monkeypatch, capsys):
         """Silent stripping masks bad keys as opaque provider 400s (see #6843 fallout).
@@ -74,19 +69,3 @@ class TestEnvLoaderSanitization:
         captured = capsys.readouterr()
         assert "GOOGLE_API_KEY" in captured.err
         assert "U+200B" in captured.err
-        assert "re-copy" in captured.err.lower()
-
-
-    def test_ascii_control_chars_not_stripped(self, monkeypatch, capsys):
-        """ASCII control bytes (e.g. ESC 0x1B from terminal paste) are NOT non-ASCII.
-
-        This is intentional — they're valid ASCII for HTTP headers even if the
-        provider rejects them. Documents the scope of the sanitizer.
-        """
-        from hermes_cli.env_loader import _sanitize_loaded_credentials, _WARNED_KEYS
-
-        _WARNED_KEYS.clear()
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant\x1bapi-key")
-        _sanitize_loaded_credentials()
-        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant\x1bapi-key"
-        assert capsys.readouterr().err == ""

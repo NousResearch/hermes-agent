@@ -2767,6 +2767,51 @@ class TestSystemdCgroupIsolation:
         assert pr._SYSTEMD_SCOPE_AVAILABLE is False
 
     @pytest.mark.platforms("linux")
+    def test_scoped_spawn_lost_user_bus_honours_configured_bus_address(
+        self, monkeypatch, request
+    ):
+        """A hardened system unit bind-mounts its user bus at a custom path and exports
+        ``DBUS_SESSION_BUS_ADDRESS`` directly; ``ProtectHome`` hides ``/run/user`` so the
+        ``XDG_RUNTIME_DIR`` derivation finds nothing (#133546). While the socket the spawn
+        actually used is still there, a pre-ack wrapper exit is a worker failure, not a lost
+        bus — the verdict must not flip and the next dispatch stays scoped."""
+        import socket
+        import tempfile
+
+        import tools.process_registry as pr
+
+        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-addr-", dir="/tmp"))
+        runtime_dir.chmod(0o700)
+        bus_path = runtime_dir / "bus"
+        bus_socket = socket.socket(socket.AF_UNIX)
+        bus_socket.bind(str(bus_path))
+
+        def _cleanup():
+            bus_socket.close()
+            bus_path.unlink(missing_ok=True)
+            runtime_dir.rmdir()
+
+        request.addfinalizer(_cleanup)
+
+        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: pr.Path("/nonexistent/run/user/0"))
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
+        spawn_env = {
+            "XDG_RUNTIME_DIR": "/nonexistent/run/user/0",
+            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={bus_path}",
+        }
+
+        assert pr.scoped_spawn_lost_user_bus(spawn_env) is False
+        assert pr._SYSTEMD_SCOPE_AVAILABLE is True
+
+        # Configured socket gone: the address proves nothing, so the lost-bus path
+        # (#110803) decides again — the derivation still finds nothing, verdict flips.
+        bus_socket.close()
+        bus_path.unlink()
+        assert pr.scoped_spawn_lost_user_bus(spawn_env) is True
+        assert pr._SYSTEMD_SCOPE_AVAILABLE is False
+
+    @pytest.mark.platforms("linux")
     def test_probe_succeeds_without_bin_true(self, monkeypatch):
         """An absent ``/bin/true`` must not make a usable scope fail its probe."""
         import tools.process_registry as pr

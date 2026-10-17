@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags
+from agent.redact import redact_sensitive_text
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
@@ -432,6 +433,11 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
 
 # ---------------------------------------------------------- result rendering
 
+
+def _mcp_result_json(payload: Any) -> str:
+    """Scrub the complete wire result, including structured content and metadata."""
+    return redact_sensitive_text(json.dumps(payload, ensure_ascii=False), file_read=True)
+
 def _error_result_text(result) -> str:
     """Concatenated text of an ``isError`` result's blocks (EmbeddedResource error payloads
     carry text under ``.resource.text``)."""
@@ -457,7 +463,7 @@ def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str
     # tag + cache_image_from_bytes) was the cleaner of the two — plugs into existing infrastructure.
     for block in (result.content or []):
         if getattr(block, "text", None):
-            parts.append(strip_unicode_tags(block.text))
+            parts.append(redact_sensitive_text(strip_unicode_tags(block.text), file_read=True))
             if block.text.strip():
                 usable_parts += 1
             continue
@@ -546,7 +552,7 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
     if structured is not None and usable_parts > 0 and (isinstance(structured, str) or _content_dual_emits_structured(result, structured)):
         structured = None
     if structured is None and meta is None:
-        return json.dumps({"result": text_result}, ensure_ascii=False)
+        return _mcp_result_json({"result": text_result})
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
     payload: dict[str, Any] = {"result": text_result} if text_result else {}
     # Cap structuredContent too — a malicious server could flood context via a multi-MB JSON payload
@@ -558,9 +564,9 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
         payload["_meta"] = meta
     payload.setdefault("result", text_result)
     try:
-        return json.dumps(payload, ensure_ascii=False)
+        return _mcp_result_json(payload)
     except (TypeError, ValueError):  # Non-serializable metadata: drop the extras, keep the call.
-        return json.dumps({"result": text_result}, ensure_ascii=False)
+        return _mcp_result_json({"result": text_result})
 
 
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *, native_images: bool = False):
@@ -624,7 +630,7 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
             async def _call():
                 async with server._rpc_lock:
                     result = await rpc(server.session, args, server_name)
-                return json.dumps(render(result, server_name), ensure_ascii=False)
+                return _mcp_result_json(render(result, server_name))
             return _dispatch(
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
@@ -665,7 +671,7 @@ def _render_read_resource(result, server_name: str) -> dict:
         elif getattr(block, "blob", None) is not None:  # binary -> document cache, like EmbeddedResource blocks
             rendered = _render_mcp_resource_block(SimpleNamespace(type="resource", resource=block), server_name)
             parts.append(rendered or f"[binary data, {len(block.blob)} bytes]")
-    return {"result": "\n".join(parts)}
+    return {"result": redact_sensitive_text("\n".join(parts), file_read=True)}
 
 
 def _render_prompt_list(all_prompts, server_name: str) -> dict:
@@ -684,7 +690,9 @@ def _render_get_prompt(result, server_name: str) -> dict:
     for msg in getattr(result, "messages", []):
         entry = _pick(msg, ("role", "role"))
         if hasattr(msg, "content"):
-            entry["content"] = strip_unicode_tags(msg.content.text if hasattr(msg.content, "text") else str(msg.content))
+            entry["content"] = redact_sensitive_text(
+                strip_unicode_tags(msg.content.text if hasattr(msg.content, "text") else str(msg.content)),
+                file_read=True)
         messages.append(entry)
     return {"messages": messages, **_pick(result, ("description", "description", True))}
 

@@ -130,15 +130,17 @@ def _line_buffer_piped_stdout() -> None:
     stream = sys.stdout
     if stream is None or stream is _line_buffered_stdout:
         return
-    if getattr(stream, "line_buffering", False) is True:
-        _line_buffered_stdout = stream
-        return
-    reconfigure = getattr(stream, "reconfigure", None)
-    if reconfigure is None:
-        return
-    # A closed/detached stream raises ValueError / io.UnsupportedOperation (an OSError);
-    # buffering is observability, not correctness — never crash setup_logging over it.
-    with contextlib.suppress(OSError, ValueError):
+    # Buffering is observability, not correctness: a closed or detached stream
+    # (ValueError/OSError) or a misbehaving one — e.g. stdio proxies whose
+    # attribute delegation recursed instead of missing (gateway incident,
+    # gateway.error.log 2026-10-09) — must never crash setup_logging.
+    with contextlib.suppress(Exception):
+        if getattr(stream, "line_buffering", False) is True:
+            _line_buffered_stdout = stream
+            return
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            return
         if not stream.isatty():
             reconfigure(line_buffering=True)
             _line_buffered_stdout = stream
@@ -151,16 +153,19 @@ def _safe_stderr():  # type: ignore[return]
     ``?`` instead of crashing the process.
     """
     stream = sys.stderr
-    encoding = getattr(stream, "encoding", None) or "utf-8"
-    if encoding.lower().replace("-", "") in ("utf8", "utf8surrogateescape"):
-        return stream
+    # Same never-crash rule as _line_buffer_piped_stdout: the encoding probe and
+    # the wrap below can both hit a misbehaving stream (a delegation-cycled
+    # proxy raises instead of missing); fall back to the original stream.
     try:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        if encoding.lower().replace("-", "") in ("utf8", "utf8surrogateescape"):
+            return stream
         wrapped = io.TextIOWrapper(stream.buffer, encoding="utf-8", errors="replace", line_buffering=True)
         # Prevent the wrapper from closing the underlying buffer when garbage-collected.
         wrapped.close = lambda: None  # type: ignore[assignment]
         return wrapped
     except Exception:
-        return stream  # best-effort: no buffer / wrapping failed -> original stream
+        return stream  # best-effort: probe or wrap failed -> original stream
 
 
 class _RedactingStdio:

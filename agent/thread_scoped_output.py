@@ -24,6 +24,13 @@ _installed: dict[str, _ThreadRoutingStream] = {}
 # restore a proxy must not leak a new /dev/null descriptor each time.
 _sinks: dict[str, TextIO] = {}
 _routing_states: dict[str, _RoutingState] = {}
+# (id(proxy), name) delegations in flight on this thread — the cycle breaker for
+# ``_ThreadRoutingStream.__getattr__``: a proxy whose chain wraps back onto
+# itself (directly or through the bootstrap _SafeWriter) must surface as a plain
+# AttributeError, which ``getattr(obj, name, default)`` already tolerates;
+# unguarded it recursed to RecursionError and killed every later agent build
+# in long-lived gateway processes (gateway.error.log, 2026-10-09).
+_DELEGATING = threading.local()
 
 
 class _RoutingState:
@@ -84,7 +91,17 @@ class _ThreadRoutingStream:
         return self._target().fileno()
 
     def __getattr__(self, name):  # type: ignore[no-untyped-def]
-        return getattr(self._target(), name)
+        inflight = getattr(_DELEGATING, "keys", None)
+        if inflight is None:
+            inflight = _DELEGATING.keys = set()
+        key = (id(self), name)
+        if key in inflight:
+            raise AttributeError(name)
+        inflight.add(key)
+        try:
+            return getattr(self._target(), name)
+        finally:
+            inflight.discard(key)
 
 
 def _ensure_installed(attr: str, passthrough: TextIO) -> _ThreadRoutingStream:

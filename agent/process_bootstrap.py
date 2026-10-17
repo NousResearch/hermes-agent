@@ -130,6 +130,15 @@ class _OpenAIProxy:
         return "<lazy openai.OpenAI proxy>"
 
 
+# (id(proxy), name) delegations in flight on this thread — the cycle breaker for
+# ``_SafeWriter.__getattr__``: a proxy whose chain wraps back onto itself
+# (directly or through agent.thread_scoped_output's routing proxy) must surface
+# as a plain AttributeError, which ``getattr(obj, name, default)`` and the
+# hermes_logging probes already tolerate; unguarded it recursed to
+# RecursionError and killed every later agent build in long-lived gateway
+# processes (gateway.error.log, 2026-10-09).
+_DELEGATING = threading.local()
+
 class _SafeWriter:
     """Transparent stdio wrapper swallowing OSError/ValueError from broken pipes.
 
@@ -165,7 +174,17 @@ class _SafeWriter:
             return False
 
     def __getattr__(self, name):
-        return getattr(self._inner, name)
+        inflight = getattr(_DELEGATING, "keys", None)
+        if inflight is None:
+            inflight = _DELEGATING.keys = set()
+        key = (id(self), name)
+        if key in inflight:
+            raise AttributeError(name)
+        inflight.add(key)
+        try:
+            return getattr(self._inner, name)
+        finally:
+            inflight.discard(key)
 
 
 def _get_proxy_from_env() -> Optional[str]:
@@ -332,9 +351,17 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
 
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
+    from agent.thread_scoped_output import _ThreadRoutingStream
+
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is not None and not isinstance(stream, _SafeWriter):
+        # Never wrap the thread-routing proxy: it already delegates to the
+        # safe-writer-backed stream under it, and this call runs on every AIAgent
+        # build — wrapping the proxy let each build × silenced-worker alternation
+        # stack another proxy/safe-writer pair until attribute misses (the
+        # per-build ``line_buffering`` read in hermes_logging) exhausted the
+        # recursion limit in long-lived gateway processes.
+        if stream is not None and not isinstance(stream, (_SafeWriter, _ThreadRoutingStream)):
             setattr(sys, stream_name, _SafeWriter(stream))
 
 

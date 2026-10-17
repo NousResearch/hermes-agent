@@ -6,6 +6,7 @@ docker with ``docker_mount_cwd_to_workspace`` still mounts it at ``/workspace``.
 """
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -35,3 +36,52 @@ def test_terminal_cwd_follows_the_backend(tmp_path, monkeypatch, terminal, param
     with policy_scope(restore_policy(asdict(policy))):
         config = _get_env_config()
     assert (config["cwd"], config.get("host_cwd")) == tuple(str(launch) if v is LAUNCH else v for v in expected)
+
+
+@pytest.mark.parametrize("cwd", ["/work/hermes-test", "/home/hermes-test/work", "/Users/hermes-test/work"])
+def test_container_namespace_survives_create_restore_and_turn(tmp_path, monkeypatch, cwd):
+    """A declared container mount is not required to exist on the gateway host (#140527)."""
+    from gateway.session_policy import build_policy, policy_scope, restore_policy
+    from tools.terminal_tool import _get_env_config, _resolve_command_cwd, record_session_cwd, clear_session_cwd
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    terminal = {"backend": "docker", "cwd": cwd, "docker_mount_cwd_to_workspace": False,
+                "docker_volumes": [f"{tmp_path}:{cwd}:ro"]}
+    (home / "config.yaml").write_text(json.dumps({"terminal": terminal}), encoding="utf-8")
+    assert not Path(cwd).exists()
+    policy = build_policy({"source": "tui", "cwd": cwd, "model": "m"}, {})
+    with policy_scope(restore_policy(asdict(policy))):
+        config = _get_env_config()
+        assert (config["cwd"], config["host_cwd"]) == (cwd, None)
+        assert config["docker_volumes"] == terminal["docker_volumes"]
+        record_session_cwd("container-namespace", cwd)
+        try:
+            assert _resolve_command_cwd(workdir=None, default_cwd="/root", env_type="docker",
+                                        session_key="container-namespace") == cwd
+        finally:
+            clear_session_cwd("container-namespace")
+
+
+@pytest.mark.parametrize("mount", [False, True])
+def test_host_namespace_still_requires_existing_directory(tmp_path, monkeypatch, mount):
+    from gateway.session_policy import build_policy, policy_scope
+    from hermes_state_runtime import RuntimeStoreError
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    terminal = {"backend": "docker" if mount else "local", "docker_mount_cwd_to_workspace": mount}
+    (home / "config.yaml").write_text(json.dumps({"terminal": terminal}), encoding="utf-8")
+    cwd = tmp_path / "workspace"
+    with pytest.raises(RuntimeStoreError, match="invalid_params"):
+        build_policy({"cwd": str(cwd), "model": "m"}, {})
+    cwd.mkdir()
+    policy = build_policy({"cwd": str(cwd), "model": "m"}, {})
+    cwd.rmdir()
+    with pytest.raises(RuntimeStoreError, match="workspace_unavailable"):
+        with policy_scope(policy):
+            pass

@@ -418,6 +418,12 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
                     url, "Blocked: URL targets a private or internal network address"
                 )
 
+        # PDFs are read before paid provider resolution/dispatch. The helper
+        # re-checks SSRF and website policy at every network hop.
+        from tools.web_pdf_local import split_local_pdfs
+        local_pdf_done, safe_urls, safe_indices = await split_local_pdfs(
+            safe_urls, safe_indices, _load_web_config()
+        )
         results = []
         if safe_urls:
             backend = _get_extract_backend()
@@ -428,8 +434,8 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
             results = await _extract_safe_urls(provider, safe_urls, format)
         # Reconstruct input order across invalid, blocked, and provider entries (providers preserve
         # the order of the safe URL list they receive).
-        if invalid_urls or ssrf_blocked:
-            fixed = {**ssrf_blocked, **invalid_urls}
+        if invalid_urls or ssrf_blocked or local_pdf_done:
+            fixed = {**ssrf_blocked, **invalid_urls, **local_pdf_done}
             results = _merge_in_order(len(urls), fixed, safe_indices, safe_urls, results)
 
         logger.info("Extracted content from %d pages", len(results))

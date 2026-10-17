@@ -361,14 +361,8 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
         else:
             _attach_tool_calls(db, cutoff, raw_rows)
 
-        # Aux usage (vision/compression/title/approval/...) is folded into the
-        # (model, provider) row the sessions query already produced. #23270 made
-        # aux-only models visible; _aux_usage_rows groups by (model, task,
-        # provider), so appending each row emitted one card per aux task beside
-        # the main card, and their session counts summed past
-        # totals.total_sessions (#89631). Only a pair with no sessions-derived
-        # row becomes a new row, carrying its own session count.
-        _merge_aux_into_rows(raw_rows, _aux_usage_rows(db, cutoff))
+        aux_rows = _aux_usage_rows(db, cutoff)
+        _merge_aux_into_rows(raw_rows, aux_rows)
 
         rows = _fold_session_only_rows(raw_rows)
         rows.sort(
@@ -401,6 +395,18 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
         # reached only through auxiliary usage is in the header as well as on
         # the page (#89631).
         totals["distinct_models"] = len({row["model"] for row in rows})
+
+        # The headline describes the same set the cards show: fold aux in exactly as the cards
+        # did (the CLI's own ``hermes insights`` overview already counts it, #9979/#58592), so a
+        # model that only ever spent aux tokens does not make the token total smaller than the
+        # sum of the cards.
+        for aux in aux_rows:
+            totals["total_input"] = (totals.get("total_input") or 0) + (aux.get("input_tokens") or 0)
+            totals["total_output"] = (totals.get("total_output") or 0) + (aux.get("output_tokens") or 0)
+            totals["total_cache_read"] = (totals.get("total_cache_read") or 0) + (aux.get("cache_read_tokens") or 0)
+            totals["total_reasoning"] = (totals.get("total_reasoning") or 0) + (aux.get("reasoning_tokens") or 0)
+            totals["total_estimated_cost"] = (totals.get("total_estimated_cost") or 0) + (aux.get("estimated_cost") or 0)
+            totals["total_api_calls"] = (totals.get("total_api_calls") or 0) + (aux.get("api_calls") or 0)
 
         return {"models": models, "totals": totals, "period_days": days}
     finally:

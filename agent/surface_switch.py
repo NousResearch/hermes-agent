@@ -87,8 +87,14 @@ def note_inert_pinned_tools(agent: Any, built_for_this_surface: list[str]) -> No
     thing that would still re-prefill the request behind the preserved prompt — so the model has
     to be TOLD they are inert here, or it plans around a ``focus_pane`` a terminal turn can only
     answer with ``tool_error("desktop only")``."""
+    from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, message_agent_authorized
     from tools.mcp_tool_agent import agent_tool_names
     surface_names = set(built_for_this_surface)
+    # message_agent is injected by its Bot Mode gate, never registered, so the registry build
+    # above can never contain it; where the gate authorizes it, it is re-published every turn
+    # and dispatchable, so it is not inert here.
+    if message_agent_authorized(agent):
+        surface_names.add(MESSAGE_AGENT_TOOL_NAME)
     inert = [name for name in agent_tool_names(agent) if name not in surface_names]
     note = getattr(agent, "_surface_switch_note", "") or ""
     if not inert or not note:

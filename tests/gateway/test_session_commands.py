@@ -44,7 +44,7 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1',
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url,
-               HERMES_DASHBOARD_SESSION_TOKEN='owned-slash-negative')
+               HERMES_DASHBOARD_SESSION_TOKEN='slash-command-disposable-dashboard-test-token')
     receipts = []
 
     def rows():
@@ -103,7 +103,7 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
                 denied = await command(**params)
                 assert denied['error']['message'] == reason, denied
             # A second dashboard operator shares access but still obeys the busy fence.
-            other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=owned-slash-negative'
+            other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=slash-command-disposable-dashboard-test-token'
             async with connect(other_url) as other:
                 for method, payload in [('slash.exec', {'command': 'title stolen'}),
                                         ('command.dispatch', {'name': 'title', 'arg': 'stolen'})]:

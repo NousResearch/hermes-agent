@@ -35,7 +35,7 @@ async def _legacy_ws_snapshot(root, home, env, requests):
     for directory in ('skills', 'plugins'):
         shutil.copytree(home / directory, legacy_home / directory)
     legacy_env = {**env, 'HERMES_HOME': str(legacy_home),
-                  'HERMES_DASHBOARD_SESSION_TOKEN': 'disposable-discovery-token'}
+                  'HERMES_DASHBOARD_SESSION_TOKEN': 'legacy-discovery-disposable-dashboard-test-token'}
     with (home.parent / 'legacy-serve.log').open('w+') as log:
         process = subprocess.Popen([sys.executable, '-m', 'hermes_cli.main', 'serve',  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                     '--host', '127.0.0.1', '--port', '0', '--skip-build', '--isolated'],
@@ -54,7 +54,7 @@ async def _legacy_ws_snapshot(root, home, env, requests):
                 await asyncio.sleep(.1)
             assert port, output
             results = []
-            async with connect(f'ws://127.0.0.1:{port}/api/ws?token=disposable-discovery-token') as ws:
+            async with connect(f'ws://127.0.0.1:{port}/api/ws?token=legacy-discovery-disposable-dashboard-test-token') as ws:
                 for rid, (method, params) in enumerate(requests):
                     await ws.send(json.dumps({'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params}))
                     results.append(await _rpc_result(ws, rid))

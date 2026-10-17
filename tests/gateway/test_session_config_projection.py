@@ -49,7 +49,7 @@ def test_client_config_projection_keeps_session_policy_and_secrets_private(tmp_p
                     ('config.set', {'key': 'model', 'session_id': sid, 'value': 'other'}, 'use_session_mutation_model'),
                 ]:
                     assert (await rpc(ws, method, **params))['error']['message'] == reason
-                other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=other-controls-actor'
+                other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=busy-controls-disposable-dashboard-test-token'
                 async with connect(other_url) as other:
                     # Verified dashboard operators receive the same redacted projection.
                     shared = await rpc(other, 'config.get', key='full', session_id=sid)
@@ -78,7 +78,7 @@ def test_model_options_uses_frozen_selection_without_composer_global_writes(tmp_
                 assert 'loopback-only' not in json.dumps(result)
                 assert (await rpc(ws, 'model.options', session_id=sid, profile='foreign'))['error']['message'] == 'profile_mismatch'
                 assert (await rpc(ws, 'model.options', session_id=sid, refresh='yes'))['error']['message'] == 'invalid_params'
-                other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=other-controls-actor'
+                other_url = desc['api_origin'].replace('http:', 'ws:') + '/api/ws?token=busy-controls-disposable-dashboard-test-token'
                 async with connect(other_url) as other:
                     shared = await rpc(other, 'model.options', session_id=sid)
                     current = await rpc(ws, 'model.options', session_id=sid)

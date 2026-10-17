@@ -22,14 +22,14 @@ def test_static_token_http_mutations_reuse_ws_owner(tmp_path):
     }))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
-               PYTHONPATH=str(root), HERMES_DASHBOARD_SESSION_TOKEN='owned-static-token')
+               PYTHONPATH=str(root), HERMES_DASHBOARD_SESSION_TOKEN='static-mutation-disposable-dashboard-test-token')
     params = dict(request_id='same-create', source='cli', cwd=str(home),
                   model='no-inference', toolsets=[])
     saved = {}
 
     async def exercise(desc):
         origin = desc['api_origin']
-        async with connect(origin.replace('http:', 'ws:') + '/api/ws?token=owned-static-token') as ws:
+        async with connect(origin.replace('http:', 'ws:') + '/api/ws?token=static-mutation-disposable-dashboard-test-token') as ws:
             created = await rpc(ws, 'session.create', **params)
             assert 'result' in created, created
             sid = created['result']['session_id']
@@ -38,7 +38,7 @@ def test_static_token_http_mutations_reuse_ws_owner(tmp_path):
                 url = origin + '/api/sessions/' + sid
                 async with http.patch(url, json=body, headers={'Authorization': 'Bearer wrong-token'}) as response:
                     assert response.status in (401, 403)
-                async with http.patch(url, json=body, headers={'Authorization': 'Bearer owned-static-token'}) as response:
+                async with http.patch(url, json=body, headers={'Authorization': 'Bearer static-mutation-disposable-dashboard-test-token'}) as response:
                     result = await response.json()
                     assert response.status == 200, result
                 retry = await rpc(ws, 'session.mutate', session_id=sid, request_id='same-edit',

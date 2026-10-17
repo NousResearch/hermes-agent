@@ -36,7 +36,7 @@ def test_used_api_and_native_delete_restart_exact_retry(tmp_path):
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base, API_SERVER_KEY='ordinary-daemon-owned-secret',
                API_SERVER_ENABLED='true', API_SERVER_PORT=str(port), PYTHONUNBUFFERED='1',
-               HERMES_DASHBOARD_SESSION_TOKEN='foreign-dashboard-owner')
+               HERMES_DASHBOARD_SESSION_TOKEN='foreign-owner-disposable-dashboard-test-token')
     url = f'http://127.0.0.1:{port}/v1'
     headers = {'Authorization': 'Bearer ordinary-daemon-owned-secret'}
     body = {'messages': [{'role': 'user', 'content': 'API_USED_ONCE'}]}
@@ -119,7 +119,7 @@ def test_used_api_and_native_delete_restart_exact_retry(tmp_path):
                     assert retry.status_code == 200 and retry.json() == receipt, retry.text
                     changed = client.delete(path, params=params | {'expected_revision': 999}, headers=native_headers(ticket(home, desc)))
                     assert changed.status_code == 409 and 'admission_conflict' in changed.text
-                    foreign = client.delete(path, params=params, headers={'Authorization': 'Bearer foreign-dashboard-owner'})
+                    foreign = client.delete(path, params=params, headers={'Authorization': 'Bearer foreign-owner-disposable-dashboard-test-token'})
                     # Another principal never replays this receipt; for the gone id it gets main's
                     # idempotent ``already_absent`` (Desktop ghost-row contract, #48641) at most.
                     assert foreign.status_code != 200 or foreign.json() == {'ok': True, 'already_absent': True}, foreign.text

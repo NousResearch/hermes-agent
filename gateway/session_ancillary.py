@@ -283,9 +283,9 @@ async def reload_mcp(connection, ref, params):
             and await asyncio.to_thread(_mcp_reload_confirm_required, connection)):
         return {'status': 'confirm_required', 'message': (
             "Reloading reconciles this profile's MCP servers and applies this chat's new tools as its next "
-            'policy generation. The next message re-sends the full prompt, which costs prompt-cache tokens. '
-            'Reply `/reload-mcp now` to proceed once, or `/reload-mcp always` to proceed and stop asking in '
-            'this profile.')}
+            'policy generation. If that changes this chat\'s prompt prefix, the next message re-sends the full '
+            'prompt, which costs prompt-cache tokens. Reply `/reload-mcp now` to proceed once, or '
+            '`/reload-mcp always` to proceed and stop asking in this profile.')}
     if always:
         # Before reconcile: a failed preference write must not follow a claimed reload. Consent and grant
         # checks above already passed, and the write raises storage_unavailable like every settings write.

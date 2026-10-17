@@ -924,3 +924,62 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_ollama_cloud_routes_price_from_official_snapshot():
+    """Ollama Cloud (ollama.com) is a first-party pay-as-you-go provider whose
+    per-model rates are published at ollama.com/pricing, but it had no
+    snapshot row, so every ollama-cloud session priced as ``unknown`` — the
+    estate's dominant cached-read workload recorded $0 cost. The route must
+    resolve to the official-docs snapshot, not fall through to endpoint
+    metadata / models.dev.
+    """
+    route = resolve_billing_route("glm-5.3", provider="ollama-cloud", base_url="https://ollama.com/v1")
+    assert route.billing_mode == "official_docs_snapshot"
+    assert route.provider == "ollama-cloud"
+
+
+def test_ollama_cloud_glm_53_prices_cached_reads_at_discounted_rate():
+    """glm-5.3 is the estate's dominant model; its Ollama cached-input rate is
+    $0.26/M vs $1.40/M input — a 5.4x discount that the cost ledger depends on.
+    A cached session must bill cache reads at the cached rate, not input rate.
+    """
+    usage = CanonicalUsage(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_read_tokens=1_000_000,
+        cache_write_tokens=0,
+    )
+    result = estimate_usage_cost("glm-5.3", usage, provider="ollama-cloud", base_url="https://ollama.com/v1")
+    assert result.status == "estimated"
+    # 1.40 (input) + 0.26 (cache read) + 4.40 (output)
+    assert result.amount_usd == Decimal("6.06")
+
+
+def test_ollama_cloud_models_with_no_cache_rate_bill_cached_at_input():
+    """mistral-large-3 publishes no cached-input rate ("-" on the page); its
+    snapshot omits the cache-read tuple member, so cache reads bill at the
+    full input rate rather than pricing as unknown or zero.
+    """
+    entry = _OFFICIAL_DOCS_PRICING[("ollama-cloud", "mistral-large-3")]
+    assert entry.cache_read_cost_per_million is None
+    assert entry.input_cost_per_million == Decimal("0.50")
+
+
+def test_ollama_cloud_snapshot_has_cache_read_never_more_than_input():
+    """Invariant across the ollama-cloud card: a published cached-input rate is
+    never MORE expensive than the input rate (some models — nemotron-3-super —
+    list them equal, $0.015 = $0.015). A cache read must never bill above a
+    fresh input read.
+    """
+    ollama_rows = [
+        (prov, model) for (prov, model) in _OFFICIAL_DOCS_PRICING if prov == "ollama-cloud"
+    ]
+    assert ollama_rows, "expected ollama-cloud pricing rows"
+    for key in ollama_rows:
+        entry = _OFFICIAL_DOCS_PRICING[key]
+        assert entry.input_cost_per_million is not None, key
+        assert entry.output_cost_per_million is not None, key
+        if entry.cache_read_cost_per_million is not None:
+            assert entry.cache_read_cost_per_million <= entry.input_cost_per_million, key
+

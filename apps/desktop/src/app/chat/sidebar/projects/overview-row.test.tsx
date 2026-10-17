@@ -29,6 +29,7 @@ vi.mock('@/i18n', () => ({
           reorder: (label: string) => `Reorder ${label}`,
           toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
           showAllCount: (count: number) => `Show all ${count} sessions`,
+          showFewer: 'Show fewer sessions',
           autoDiscovered: 'Auto-discovered'
         },
         showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
@@ -102,6 +103,11 @@ describe('ProjectOverviewRow', () => {
     await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
     expect(projectsStore.fetchProjectSessions).toHaveBeenCalledWith('p1', { supersedable: false })
     expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show fewer sessions' }))
+
+    expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3')
+    expect(screen.getByRole('button', { name: 'Show all 5 sessions' })).toBeTruthy()
   })
 
   // A project with hundreds of chats hydrates them all, but the overview must
@@ -128,6 +134,13 @@ describe('ProjectOverviewRow', () => {
 
     fireEvent.click(screen.getByText('Show all 120 sessions'))
 
+    await waitFor(() => expect(shown()).toBe(50))
+    fireEvent.click(screen.getByText('Show 50 more in Test D'))
+    expect(shown()).toBe(100)
+    fireEvent.click(screen.getByText('Show fewer sessions'))
+    expect(shown()).toBe(3)
+
+    fireEvent.click(screen.getByText('Show all 120 sessions'))
     await waitFor(() => expect(shown()).toBe(50))
     fireEvent.click(screen.getByText('Show 50 more in Test D'))
     expect(shown()).toBe(100)

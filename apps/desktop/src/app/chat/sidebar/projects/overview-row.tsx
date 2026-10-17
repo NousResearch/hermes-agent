@@ -307,6 +307,15 @@ export function ProjectOverviewRow({
           {expanded && page.more > 0 && (
             <WorkspaceShowMoreRow label={s.showMoreIn(page.more, project.label)} onClick={page.showMore} />
           )}
+          {expanded && !showAllSessions && (
+            <WorkspaceShowMoreRow
+              label={s.projects.showFewer}
+              onClick={() => {
+                page.reset()
+                setExpanded(null)
+              }}
+            />
+          )}
         </SidebarRowNest>
       )}
     </div>

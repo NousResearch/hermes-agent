@@ -513,7 +513,11 @@ def _seed_hygiene_system_prompt(agent: Any, session_row: Optional[dict[str, Any]
 _TRANSIENT_NETWORK_ERROR_CLASS_NAMES = frozenset({
     "TimedOut", "NetworkError", "ReadError", "WriteError", "ConnectError", "ConnectTimeout",
     "ReadTimeout", "WriteTimeout", "PoolTimeout", "RemoteProtocolError", "ServerDisconnectedError",
-    "ClientConnectorError", "ClientOSError"})
+    "ClientConnectorError", "ClientOSError",
+    # Feishu/Lark normal closes only (#67358). Not bare ConnectionClosed /
+    # ConnectionClosedError — those cover policy/auth/abnormal closes (1008, 4401).
+    "ConnectionClosedOK", "ConnectionClosedException",
+})
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:

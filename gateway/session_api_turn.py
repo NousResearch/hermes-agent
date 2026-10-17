@@ -258,7 +258,7 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
         from gateway.session_contract import SessionRef
         return authority, SessionRef(authority.profile_id, sid), row
     ref = yield from bind_api_steps(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key,
-                                    caller_key=kwargs.get('gateway_session_key'))
+                                    caller_key=kwargs.get('gateway_session_key'), walked_from=kwargs.get('walked_from'))
     check_api_turn(authority, ref, payload)
     row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
                         session_id=sid, request_id=request_id, payload=payload,

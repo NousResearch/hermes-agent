@@ -141,16 +141,16 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         history, error = _parse_conversation_history(body['conversation_history'])
         if error is not None:
             return None, error
-    stored_session_id = None
+    stored_session_id = chain_root = None
     instructions = body.get('instructions')
     if not history and previous:
         stored = adapter._current_response_store().get(previous)
         if stored is None:
             return None, _error_response(f'Previous response not found: {previous}', 404)
         history = list(stored.get('conversation_history', []))
-        stored_session_id = await asyncio.to_thread(_stored_owner, adapter, stored.get('session_id'))
+        chain_root = await asyncio.to_thread(_stored_owner, adapter, stored.get('session_id'))
         from gateway.platforms.api_server_authority_runs import continued_session
-        stored_session_id, error = await continued_session(adapter, stored_session_id, request_id)
+        stored_session_id, error = await continued_session(adapter, chain_root, request_id)
         if error is not None:
             return None, error
         if instructions is None:
@@ -175,6 +175,8 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
         ephemeral_system_prompt=instructions, session_id=session_id,
         gateway_session_key=gateway_session_key, bind_declared_conversation=declared_selected,
         **overrides, route=route, relay_metadata=_request_relay_metadata(body))
+    if stored_session_id and stored_session_id != chain_root:
+        run_kwargs['walked_from'] = chain_root  # the chain moved past its swept stored session
     if durable_key:
         return await _admit(adapter, durable_key, request_id, request_binding(adapter, request, durable_key),
                             run_kwargs, body.get('model', adapter._model_name)), None

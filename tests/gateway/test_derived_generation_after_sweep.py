@@ -9,6 +9,7 @@ and split the conversation across two sessions.
 from types import SimpleNamespace
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from tests.gateway import test_api_implicit_session_after_delete as chat
@@ -90,3 +91,53 @@ def test_an_ordinary_swept_session_still_ages_out(owner):
     assert owner.db.get_meta(RETIRED_PREFIX + 'cron_job_run_1') is not None
     _past_the_horizon(owner)
     assert owner.db.get_meta(RETIRED_PREFIX + 'cron_job_run_1') is None
+
+
+@pytest.mark.asyncio
+async def test_a_swept_caller_named_api_session_id_is_usable_again_past_the_horizon(api, owner, served):
+    """``POST /api/sessions`` and ``X-Hermes-Session-Id`` name the id: no door derives it or walks its
+    generations, so its sweep marker ages out like any other, and the caller can use the id again."""
+    app = _app(api)
+    app.router.add_post('/api/sessions', api._handle_create_session)
+    auth = {'Authorization': 'Bearer ' + chat._API_KEY}
+    async with TestClient(TestServer(app)) as client:
+        created = await client.post('/api/sessions', json={'id': 'user-42'}, headers=auth)
+        assert created.status == 201, await created.text()
+        status, first, _ = await _post(client, _OPENING, session_id='user-42')
+        assert status == 200, first
+        _sweep(owner, 'user-42')
+        _past_the_horizon(owner)
+        again = await client.post('/api/sessions', json={'id': 'user-42'}, headers=auth)
+        assert again.status == 201, await again.text()
+        status, second, landed = await _post(client, _OPENING, session_id='user-42')
+        assert status == 200, second
+        assert landed == 'user-42'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/v1/responses', '/v1/runs'])
+async def test_a_chain_resumed_after_a_sweep_never_returns_to_its_swept_root(api, owner, served, path):
+    """Any id can root a Responses/Runs chain (here a server-minted one), so its sweep marker is not
+    permanent by itself. Once a continuation moved past the swept root to its next generation, a
+    later continuation of a response stored on the root goes there too, past the horizon. Both
+    continuations use one door, so each door's bind is the one that keeps the fence."""
+    from gateway.session_api import implicit_api_session
+    app = web.Application()
+    app.router.add_post('/v1/responses', api._handle_responses)
+    app.router.add_post('/v1/runs', api._handle_runs)
+    auth = {'Authorization': 'Bearer ' + chat._API_KEY}
+    store = api._current_response_store()
+    async with TestClient(TestServer(app)) as client:
+        opened = await client.post('/v1/responses', json={'input': 'remember 42'}, headers=auth)
+        assert opened.status == 200, await opened.text()
+        first = (await opened.json())['id']
+        root = store.get(first)['session_id']
+        _sweep(owner, root)
+        resumed = await client.post(path, json={'input': 'and then?', 'previous_response_id': first}, headers=auth)
+        assert resumed.status in (200, 202), await resumed.text()
+        successor = implicit_api_session(owner.db, root)
+        assert successor != root and owner.db.get_session(successor) is not None, 'no next generation was opened'
+        _past_the_horizon(owner)
+        forked = await client.post(path, json={'input': 'what number?', 'previous_response_id': first}, headers=auth)
+        assert forked.status in (200, 202), await forked.text()
+    assert owner.db.get_session(root) is None, 'the continuation went back to the swept root'

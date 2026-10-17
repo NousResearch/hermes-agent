@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import NoReturn
 
-from hermes_cli._old_updater import stop_for_relaunch
+from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
 
 # Frozen data for old imports, not a download performed by this module.
 PSUTIL_URL = (
@@ -21,4 +21,8 @@ def prepare_patched_psutil_sdist(archive: Path, destination: Path) -> NoReturn:
 # Shim to stop the old updater doing work until relaunch. Historical callers
 # download PSUTIL_URL BEFORE calling prepare_patched_psutil_sdist, so waiting
 # for that call is too late. Stop the import without offering a fake URL.
-stop_for_relaunch()
+# Only under a historical updater frame: anything else that imports this module
+# (an import smoke, a doc tool) would otherwise run a whole update takeover --
+# dependency sync, launcher publication and a gateway fleet restart.
+if in_historical_update():
+    stop_for_relaunch()

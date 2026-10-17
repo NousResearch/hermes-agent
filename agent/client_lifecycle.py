@@ -604,6 +604,86 @@ class ClientLifecycleMixin:
             return False
         return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
 
+    def _adopt_codex_singleton_account_switch(self) -> bool:
+        """Adopt a singleton account switch (``hermes auth add openai-codex``/``xai-oauth``) on a live agent.
+
+        A long-lived agent keeps the access token it was built with: after the user re-auths to a
+        different account, the agent keeps spending the OLD account's quota until that stale token
+        expires (#136685). The 401-path refresh above refuses exactly this swap on purpose — a pool
+        or explicit credential must not be silently re-attributed — so the switch is adopted here,
+        at the turn boundary, only for agents whose credential demonstrably follows the singleton:
+        the followed account id (JWT ``sub``) is recorded once agent and singleton agree, and
+        adoption happens only when the singleton's account id later changes. Pool-rotated and
+        never-matching credentials never register and are never touched.
+        """
+        if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
+            return False
+        if getattr(self, "_fallback_activated", False):
+            return False
+        try:
+            from hermes_cli import auth as _auth
+            if self.provider == "openai-codex":
+                singleton_now = _auth.resolve_codex_runtime_credentials(refresh_if_expiring=False, read_only=True)
+            else:
+                singleton_now = _auth.resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False)
+        except Exception:
+            logger.debug("%s singleton read failed", self.provider, exc_info=True)
+            return False
+        # A pool fallback (singleton store empty) is not a user re-auth — never follow it.
+        if str(singleton_now.get("source") or "") != "hermes-auth-store":
+            return False
+        from hermes_cli.auth_constants import _decode_jwt_claims
+        singleton_key = str(singleton_now.get("api_key") or "").strip()
+        singleton_sub = str(_decode_jwt_claims(singleton_key).get("sub") or "")
+        if not singleton_key or not singleton_sub:
+            return False
+        followed = getattr(self, "_codex_singleton_followed_sub", None)
+        if followed is None:
+            # First look: register as a follower only when the agent demonstrably runs on the
+            # singleton's account. A pool/explicit credential for another account never registers.
+            agent_sub = str(
+                _decode_jwt_claims(str(self.api_key or "")).get("sub") or ""
+            )
+            if agent_sub == singleton_sub:
+                self._codex_singleton_followed_sub = singleton_sub
+            return False
+        if singleton_sub == followed:
+            return False
+        # Route guard: a custom base_url is a deliberate routing choice this adoption must not
+        # overwrite — only the account moves, never the endpoint.
+        singleton_base = str(singleton_now.get("base_url") or "").strip().rstrip("/")
+        current_base = str(self.base_url or "").strip().rstrip("/")
+        if singleton_base and current_base and singleton_base != current_base:
+            return False
+        if not self._adopt_openai_credentials(
+            singleton_key,
+            singleton_base or self.base_url,
+            reason="codex_account_switch",
+        ):
+            return False
+        self._codex_singleton_followed_sub = singleton_sub
+        logger.info(
+            "%s: adopted the re-authed account at the turn boundary", self.provider
+        )
+        return True
+
+    def _refresh_turn_boundary_credentials(self) -> None:
+        """Turn-boundary credential adoption for a cached agent: ``.env`` edits and re-auths.
+
+        A live worker keeps init-time values otherwise: a Settings save updates ``.env``, not
+        this worker's client (#67821), and ``hermes auth add`` re-auths to a different account
+        without rebuilding cached gateway agents (#136685). Both adoptions are best-effort —
+        a failure retries at the next turn boundary and never fails the turn.
+        """
+        try:
+            self._try_refresh_env_client_credentials()
+        except Exception:
+            logger.debug("per-turn env credential refresh failed", exc_info=True)
+        try:
+            self._adopt_codex_singleton_account_switch()
+        except Exception:
+            logger.debug("per-turn codex account-switch adoption failed", exc_info=True)
+
     def _try_refresh_nous_client_credentials(self, *, force: bool = True, require_account: str | None = None) -> bool:
         # Portal serves anthropic/* on the native Messages route, so either client kind may hold the expiring JWT.
         if self.provider != "nous" or self.api_mode not in ("chat_completions", "anthropic_messages"):
@@ -992,6 +1072,10 @@ class ClientLifecycleMixin:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
         self._credential_pool_entry_id = getattr(entry, "id", None)
+        # A rotation moves the agent off the singleton's credential: stop following the singleton
+        # account, so a later re-auth never re-attributes a pool credential (the account-switch
+        # adoption keys off this marker).
+        self._codex_singleton_followed_sub = None
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
         if self.api_mode == "anthropic_messages":

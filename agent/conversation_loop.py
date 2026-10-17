@@ -1590,12 +1590,13 @@ def _run_conversation_turn(
     agent._last_compression_attempt_in_place = None
     begin_fast_mode_turn(agent, conversation_history)
 
-    # Adopt ~/.hermes/.env credential/base-url edits made since the last turn — a
-    # Settings save updates .env, not this worker's client (#67821). No-op if unchanged.
+    # Adopt credential changes made since the last turn — .env edits (#67821) and an explicit
+    # re-auth onto a different account (hermes auth add …), which a cached gateway agent would
+    # otherwise keep running past on the previous account's token (#136685).
     try:
-        agent._try_refresh_env_client_credentials()
+        agent._refresh_turn_boundary_credentials()
     except Exception:
-        logger.debug("per-turn env credential refresh failed", exc_info=True)
+        logger.debug("per-turn credential refresh failed", exc_info=True)
 
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:

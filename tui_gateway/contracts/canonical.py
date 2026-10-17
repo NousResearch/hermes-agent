@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, ProjectRef
+from .common import McpServerStatus, OpenModel, ProjectRef, TranscriptMessage
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .registry import canonical_method
@@ -283,6 +283,33 @@ class SessionAutomationResult(Result):
 canonical_method("session.automation", params=SessionAutomationParams, result=SessionAutomationResult,
                  doc="The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the "
                      "goal judge, quality gates), run by the owner on the session's row.")
+
+
+class SubagentTranscriptParams(Params):
+    session_id: str
+    subagent_id: str
+    #: A ``row_id`` cursor: only rows after it (the previous reply's ``cursor``); 0 = from the start.
+    after: int = 0
+    profile: str | None = None
+
+
+class SubagentTranscriptResult(Result):
+    """``gateway/session_subagent_transcript.py``: one child of the session's conversation (live
+    through the roster, finished through its stored row). ``messages`` are ``session.resume`` rows;
+    ``available`` is false for an unknown or foreign child. A changed ``child_session_id`` (the
+    child's compression rotated it) means reload from ``after: 0``."""
+
+    subagent_id: str
+    available: bool
+    child_session_id: str | None
+    running: bool
+    messages: list[TranscriptMessage]
+    cursor: int
+
+
+canonical_method("subagent.transcript", params=SubagentTranscriptParams, result=SubagentTranscriptResult,
+                 doc="A delegated child's stored transcript, live or finished, for a viewer of its parent "
+                     "session; poll with the returned cursor.")
 
 
 class SessionDetachParams(Params):

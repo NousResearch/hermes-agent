@@ -117,13 +117,18 @@ def transcript_target(authority, ref):
 
 
 def local_history(authority, ref):
-    """Display history from the current physical transcript; *ref* stays the logical root.
+    """Display history from the current physical transcript; *ref* stays the logical root."""
+    return stored_history(authority.db, transcript_target(authority, ref))
+
+
+def stored_history(db, session_id):
+    """The ``session.resume`` rows of one physical transcript (``subagent.transcript`` reuses them).
 
     Each row carries its durable ``messages.id`` as ``row_id`` (the ``TranscriptMessage`` field
     Desktop hydration and the legacy ``session.history`` already use): a ``session.mutate`` rewind
     addresses its ``target_message_id`` by it, so a snapshot without it leaves no way to undo/retry.
     """
-    rows = authority.db.get_messages_as_conversation(transcript_target(authority, ref), include_row_ids=True)
+    rows = db.get_messages_as_conversation(session_id, include_row_ids=True)
     return [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']}
             if '_row_id' in row else row for row in rows]
 

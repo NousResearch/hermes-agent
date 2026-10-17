@@ -57,6 +57,31 @@ Subagent reads require the current parent's live object ancestry, not merely equ
 session IDs; tails are bounded to 16 KiB. Missing or retired children return
 `available: false`. These are reads, not child steering or stop controls.
 
+`subagent.list` rows also carry `child_session_id`: the child's own stored session
+(`null` until it has one).
+
+`subagent.transcript({session_id, subagent_id, after?})` returns a delegated child's
+stored transcript, live or finished, for a viewer of its parent session:
+
+```json
+{"subagent_id": "sa-0-1a2b3c4d", "available": true, "child_session_id": "20261017_104110_e10994",
+ "running": true, "cursor": 42,
+ "messages": [{"role": "user", "content": "…", "row_id": 40, "timestamp": 1760697670.1},
+              {"role": "assistant", "content": "…", "row_id": 42, "timestamp": 1760697674.8}]}
+```
+
+`messages` are the same rows `session.resume` returns (`stored_history`), oldest first.
+`after` is a `row_id` cursor (default `0`, the whole transcript): pass the previous
+reply's `cursor` to receive only rows written since. When `child_session_id` changes
+(the child's own compression rotated it), reload with `after: 0`. A running child is
+the one the parent's roster names (the `subagent.list` rule, nested children included).
+A finished child is found through the `_subagent_id` stamped on its row at spawn, and
+only when its `parent_session_id` chain reaches this conversation through delegation and
+compression hops alone; a branch of the conversation does not lend its children. An
+unknown or foreign child answers `available: false` with no messages; an unknown session
+is `not_found`. Runtimes that serve it advertise `subagent-transcript-v1` in
+`runtime.describe.capabilities`.
+
 Managed-worker policies return `unsupported_projection` for process/subagent reads:
 the owner's process-local registry cannot truthfully describe another interpreter.
 Control mutations (`session.control`), process mutations and subagent steering are

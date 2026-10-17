@@ -58,9 +58,16 @@ def _(rid, params):
         return _err(rid, 4001, "session not found or not owned by this transport")
     live = _visible_subagent_records(session_id, transport, owner)
     return _ok(rid, {
-        "subagents": [{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live],
+        "subagents": [{**{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS},
+                       "child_session_id": _child_session_id(r)} for r in live],
         "delegations": _failed_delegations(session_id, owner),
     })
+
+
+def _child_session_id(record):
+    """The child's own stored session (its transcript), as the shared owner's rows name it."""
+    child = getattr(record.get("agent"), "session_id", None)
+    return child if isinstance(child, str) and child else None
 
 
 def _failed_delegations(session_id, owner):

@@ -41816,6 +41816,18 @@
             ],
             "default": null,
             "title": "Accepting Steer"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Child Session Id"
           }
         },
         "required": [
@@ -41926,6 +41938,92 @@
           "subagent_id"
         ],
         "title": "SubagentTailResult",
+        "type": "object"
+      },
+      "SubagentTranscriptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "after": {
+            "default": 0,
+            "title": "After",
+            "type": "integer"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "subagent_id"
+        ],
+        "title": "SubagentTranscriptParams",
+        "type": "object"
+      },
+      "SubagentTranscriptResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_subagent_transcript.py``: one child of the session's conversation (live\nthrough the roster, finished through its stored row). ``messages`` are ``session.resume`` rows;\n``available`` is false for an unknown or foreign child. A changed ``child_session_id`` (the\nchild's compression rotated it) means reload from ``after: 0``.",
+        "properties": {
+          "subagent_id": {
+            "title": "Subagent Id",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "child_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Session Id"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subagent_id",
+          "available",
+          "child_session_id",
+          "running",
+          "messages",
+          "cursor"
+        ],
+        "title": "SubagentTranscriptResult",
         "type": "object"
       },
       "SubscriptionChangeEffect": {
@@ -47384,6 +47482,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ShellExecResult"
+        }
+      }
+    },
+    {
+      "name": "subagent.transcript",
+      "summary": "A delegated child's stored transcript, live or finished, for a viewer of its parent session; poll with the returned cursor.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SubagentTranscriptParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SubagentTranscriptResult"
         }
       }
     },

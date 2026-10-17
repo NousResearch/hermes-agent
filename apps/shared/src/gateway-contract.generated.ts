@@ -2353,6 +2353,7 @@ export interface SubagentSnapshot {
   tool_count?: number | null
   last_tool?: string | null
   accepting_steer?: boolean | null
+  child_session_id?: string | null
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
@@ -4682,6 +4683,21 @@ export interface SessionAutomationResult {
   value?: unknown | null
   error?: Record<string, string> | null
 }
+export interface SubagentTranscriptParams {
+  session_id: string
+  subagent_id: string
+  after?: number
+  profile?: string | null
+}
+/** ``gateway/session_subagent_transcript.py``: one child of the session's conversation (live through the roster, finished through its stored row). ``messages`` are ``session.resume`` rows; ``available`` is false for an unknown or foreign child. A changed ``child_session_id`` (the child's compression rotated it) means reload from ``after: 0``. */
+export interface SubagentTranscriptResult {
+  subagent_id: string
+  available: boolean
+  child_session_id: string | null
+  running: boolean
+  messages: TranscriptMessage[]
+  cursor: number
+}
 export interface SessionDetachParams {
   session_id: string
   subscription_id: string
@@ -6747,6 +6763,8 @@ export interface CanonicalRpcMethods {
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
+  /** A delegated child's stored transcript, live or finished, for a viewer of its parent session; poll with the returned cursor. */
+  'subagent.transcript': { params: SubagentTranscriptParams; result: SubagentTranscriptResult }
   /** Adopt a registered execution after verifying the live producer claim. */
   'worker.adopt': { params: WorkerScopeParams; result: WorkerExecution }
   /** Sequence-fenced typed persistence write from an adopted worker. */
@@ -6796,6 +6814,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.stats',
   'session.steer',
   'shell.exec',
+  'subagent.transcript',
   'worker.adopt',
   'worker.persist',
   'worker.register'

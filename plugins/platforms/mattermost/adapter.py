@@ -104,6 +104,7 @@ def validate_mattermost_config(config: PlatformConfig) -> bool:
 class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
+    MAX_MESSAGE_LENGTH = MAX_POST_LENGTH
     splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
 
     def __init__(self, config: PlatformConfig):

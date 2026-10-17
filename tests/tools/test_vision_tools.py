@@ -167,6 +167,95 @@ class TestHandleVisionAnalyze:
         ) == "fallback-model"
 
 
+class TestAuxVisionModelProfileScope:
+    """The multiplexed gateway bridges its LAUNCH profile's config.yaml into ``os.environ``
+    (``AUXILIARY_VISION_MODEL=GLM-5.3-Flash-EXL3`` from a root aux route). A routed profile with
+    no vision model of its own resolves its vision PROVIDER from its own config (auto → its main
+    provider, e.g. the Claude CLI plugin); borrowing the launch profile's MODEL sent that GLM id
+    through the Claude CLI → upstream 404 → ``400 HERMES_MODEL_ADMISSION_CONSUMED``."""
+
+    LAUNCH_ENV = {"AUXILIARY_VISION_MODEL": "GLM-5.3-Flash-EXL3"}
+    ROUTED_CONFIG = {"auxiliary": {"vision": {"provider": "auto", "model": ""}}}
+
+    @staticmethod
+    def _resolve(resolver, *, multiplex, home=None, scope=None, config=None):
+        from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        with ExitStack() as st:
+            st.enter_context(patch.dict(os.environ, TestAuxVisionModelProfileScope.LAUNCH_ENV))
+            st.enter_context(patch(
+                "hermes_cli.config.load_config",
+                return_value=TestAuxVisionModelProfileScope.ROUTED_CONFIG if config is None else config))
+            set_multiplex_active(multiplex)
+            st.callback(set_multiplex_active, False)
+            if home is not None:
+                st.callback(reset_hermes_home_override, set_hermes_home_override(str(home)))
+            if scope is not None:
+                st.callback(reset_secret_scope, set_secret_scope(
+                    scope, profile_home=str(home) if home is not None else None))
+            return resolver()
+
+    @staticmethod
+    def _vision_model():
+        from tools.vision_tools import _configured_aux_model
+        return _configured_aux_model(("vision",), ("AUXILIARY_VISION_MODEL",))
+
+    def test_routed_profile_does_not_borrow_launch_profile_model(self, tmp_path):
+        assert self._resolve(self._vision_model, multiplex=True, home=tmp_path / "cos", scope={}) is None
+
+    def test_routed_profile_own_env_model_is_honored(self, tmp_path):
+        assert self._resolve(
+            self._vision_model, multiplex=True, home=tmp_path / "cos",
+            scope={"AUXILIARY_VISION_MODEL": "profile-own-vision"},
+        ) == "profile-own-vision"
+
+    def test_routed_profile_config_model_still_wins(self, tmp_path):
+        assert self._resolve(
+            self._vision_model, multiplex=True, home=tmp_path / "cos", scope={},
+            config={"auxiliary": {"vision": {"model": "qwen3.7-plus"}}},
+        ) == "qwen3.7-plus"
+
+    def test_unscoped_multiplex_task_borrows_nothing(self):
+        assert self._resolve(self._vision_model, multiplex=True) is None
+
+    def test_home_override_without_scope_borrows_nothing(self, tmp_path):
+        """Not a multiplexer, but a task served for a sibling profile (desktop backend, cron ticker)."""
+        assert self._resolve(self._vision_model, multiplex=False, home=tmp_path / "sibling") is None
+
+    def test_single_profile_legacy_env_override_unchanged(self):
+        assert self._resolve(self._vision_model, multiplex=False) == "GLM-5.3-Flash-EXL3"
+
+    @pytest.mark.asyncio
+    async def test_handler_passes_no_borrowed_model_to_the_router(self, tmp_path):
+        """The tool entry point, not just the helper: ``model`` reaches ``async_call_llm`` as an
+        explicit override that beats the auto route's own model, so it must be None here."""
+        from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        with ExitStack() as st:
+            mock_tool = st.enter_context(patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock))
+            st.enter_context(patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False))
+            st.enter_context(patch.dict(os.environ, self.LAUNCH_ENV))
+            st.enter_context(patch("hermes_cli.config.load_config", return_value=self.ROUTED_CONFIG))
+            set_multiplex_active(True)
+            st.callback(set_multiplex_active, False)
+            st.callback(reset_hermes_home_override, set_hermes_home_override(str(tmp_path / "cos")))
+            st.callback(reset_secret_scope, set_secret_scope({}, profile_home=str(tmp_path / "cos")))
+            mock_tool.return_value = json.dumps({"result": "ok"})
+            await _handle_vision_analyze({"image_url": "https://example.com/img.png", "question": "q"})
+        assert mock_tool.call_args[0][2] is None
+
+    def test_browser_vision_uses_the_same_scoped_resolution(self, tmp_path):
+        from tools.browser_tool import _get_vision_model
+        assert self._resolve(_get_vision_model, multiplex=True, home=tmp_path / "cos", scope={}) is None
+        assert self._resolve(
+            _get_vision_model, multiplex=True, home=tmp_path / "cos", scope={},
+            config={"auxiliary": {"vision": {"model": "qwen3.7-plus"}}},
+        ) == "qwen3.7-plus"
+        assert self._resolve(_get_vision_model, multiplex=False) == "GLM-5.3-Flash-EXL3"
+
+
 # ---------------------------------------------------------------------------
 # Error logging with exc_info — verify tracebacks are logged
 # ---------------------------------------------------------------------------

@@ -1975,13 +1975,21 @@ def _(rid, params: dict, session: dict) -> dict:
     mirror = _metadata_mirror(session)
     # Under turn isolation the compute host owns the live route: a stale in-process agent object
     # must not outrank the host's mirrored model/provider. Before the first host frame fills the
-    # mirror, the in-process agent is still the only route we know (same order as _session_info).
+    # mirror, the in-process agent is still the only route we know.
     live_agent = session.get("agent")
     agent = None if session.get("_compute_host_active") else live_agent
+
+    def _custom_provider(a) -> str:
+        from tui_gateway.server import _custom_provider as _shared
+        return _shared(a, session.get("profile_home"))
+
     fields = build_status_fields(
         key, agent, _status_row(session, params, key),
-        model=mirror.get("model") or getattr(live_agent, "model", None),
-        provider=mirror.get("provider") or getattr(live_agent, "provider", None),
+        mirror=mirror,
+        pending=session.get("pending_model_switch") or {},
+        custom_resolver=_custom_provider,
+        model=getattr(live_agent, "model", None),
+        provider=getattr(live_agent, "provider", None),
         tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
         home=session.get("profile_home"),
     )

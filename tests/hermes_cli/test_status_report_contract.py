@@ -110,3 +110,101 @@ def test_three_status_surfaces_report_the_same_common_fields():
     assert HOME in outputs["cli"] and HOME in outputs["tui"]
     assert "Agent Running: Yes" in outputs["cli"] and "Agent Running: Yes" in outputs["tui"]
     assert "Yes" in outputs["gateway"]
+
+
+def test_tui_status_bar_and_session_status_agree_on_identity():
+    """The Ink TUI status bar (``_session_info``) and ``/status`` (``session.status``)
+    must report the SAME (model, provider) for one session.
+
+    Regression: each picked its own source order — the bar preferred the compute-host
+    metadata mirror, ``/status`` preferred the live agent — so after a fallback or a
+    model switch the bar named a stale provider while ``/status`` named the working one.
+    Both now resolve through ``resolve_display_identity``.
+    """
+    from hermes_cli.status_report import resolve_display_identity
+    from tui_gateway import server
+
+    LIVE_MODEL, LIVE_PROVIDER = "vendor/live-model", "live-provider"
+    STALE_PROVIDER = "stale-provider"
+    live_agent = SimpleNamespace(model=LIVE_MODEL, provider=LIVE_PROVIDER)
+
+    class _DB:
+        def get_session(self, key):
+            return {}
+
+    def _bar_and_status(extra):
+        session = {
+            "agent": live_agent, "session_key": SESSION_ID, "history": [],
+            "history_lock": threading.Lock(), "history_version": 0, "running": True,
+            "attached_images": [], "image_counter": 0, "cols": 80,
+            "slash_worker": None, "show_reasoning": False, "tool_progress_mode": "all",
+            **extra,
+        }
+        server._sessions["identity-contract-sid"] = session
+        try:
+            with patch.object(server, "_get_db", lambda: _DB()):
+                status = server.handle_request(
+                    {"id": "1", "method": "session.status",
+                     "params": {"session_id": "identity-contract-sid"}})["result"]["output"]
+                info = server._session_info(live_agent, session)
+            return info, status
+        finally:
+            server._sessions.pop("identity-contract-sid", None)
+
+    # The mirror is the host's own view of the route and outranks the in-process agent,
+    # so both surfaces name it — never the agent's stale or sentinel value.
+    info, status = _bar_and_status({"_metadata_mirror": {"model": LIVE_MODEL, "provider": STALE_PROVIDER}})
+    assert (info["model"], info["provider"]) == (LIVE_MODEL, STALE_PROVIDER), info
+    assert f"{LIVE_MODEL} ({STALE_PROVIDER})" in status, status
+    assert LIVE_PROVIDER not in status
+
+    # No mirror at all: the live agent is the only identity there is, on both surfaces.
+    info, status = _bar_and_status({})
+    assert (info["model"], info["provider"]) == (LIVE_MODEL, LIVE_PROVIDER), info
+
+    # A queued switch outranks the live agent on both, and does not blip back to it.
+    info, _ = _bar_and_status({
+        "pending_model_switch": {"display_model": "vendor/queued", "display_provider": "queued-provider"}})
+    assert (info["model"], info["provider"]) == ("vendor/queued", "queued-provider"), info
+
+    # Compute-host isolation: the in-process agent is a stale proxy, so the mirror is
+    # authoritative — the same rule `session.status` applies when it drops the agent.
+    info, status = _bar_and_status({
+        "_compute_host_active": True,
+        "_metadata_mirror": {"model": LIVE_MODEL, "provider": STALE_PROVIDER}})
+    assert (info["model"], info["provider"]) == (LIVE_MODEL, STALE_PROVIDER), info
+    assert f"{LIVE_MODEL} ({STALE_PROVIDER})" in status, status
+
+    # The resolver's own contract: model and provider move as a pair, mirror before agent.
+    assert resolve_display_identity(
+        agent=SimpleNamespace(model="m1", provider="p1"),
+        mirror={"model": "m2", "provider": "p2"},
+        configured_model="m3", configured_provider="p3") == ("m2", "p2")
+    assert resolve_display_identity(
+        agent=None, mirror={"model": "m2", "provider": "p2"},
+        configured_model="m3", configured_provider="p3") == ("m2", "p2")
+    assert resolve_display_identity(
+        agent=None, mirror=None, configured_model="m3", configured_provider="p3") == ("m3", "p3")
+    assert resolve_display_identity(agent=None, mirror=None) == ("", "")
+    # A pending switch outranks both, as a pair.
+    assert resolve_display_identity(
+        pending={"display_model": "pm", "display_provider": "pp"},
+        agent=SimpleNamespace(model="m1", provider="p1"),
+        mirror={"model": "m2", "provider": "p2"}) == ("pm", "pp")
+    # A tier that names a model but no provider still takes the first provider on offer
+    # — a model-only switch keeps the current provider rather than showing none.
+    assert resolve_display_identity(
+        agent=SimpleNamespace(model="m1", provider=""),
+        mirror={"provider": "p2"}) == ("m1", "p2")
+    # ...but a tier that names both never has its provider donated to a lower tier.
+    assert resolve_display_identity(
+        agent=SimpleNamespace(model="m1", provider="p1"),
+        mirror={"provider": "p2"}) == ("m1", "p1")
+
+    # The "custom" sentinel resolves identically on both surfaces when a resolver is
+    # supplied — the bar must never print `custom:route` where `/status` prints `custom`.
+    custom_agent = SimpleNamespace(model=LIVE_MODEL, provider="custom")
+    resolve = lambda a: resolve_display_identity(
+        agent=a, custom_resolver=lambda _: "custom:resolved")
+    assert resolve(custom_agent) == (LIVE_MODEL, "custom:resolved")
+    assert resolve_display_identity(agent=custom_agent) == (LIVE_MODEL, "custom")

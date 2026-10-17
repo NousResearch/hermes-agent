@@ -16,7 +16,6 @@ import { writeKey } from '@/lib/storage'
 import { type InterfaceMode, modeLayout } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
-import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
@@ -48,6 +47,7 @@ import {
 import { isTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
+import { encodeStoredTree, persist, scrubEphemeralPanes } from './store-persist'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -55,26 +55,25 @@ writeKey('hermes.desktop.layoutTree.v1', null)
 
 const defaultTrees: Record<InterfaceMode, LayoutNode | null> = { advanced: null, simple: null }
 
-function persist(tree: LayoutNode | null) {
-  // A secondary window (single-chat pop-out) shares the origin's localStorage;
-  // writing its stripped-down DEFAULT tree back would wipe the primary's layout.
-  // A popped-out Browser is the same class of window.
-  if (isSecondaryWindow() || isBrowserWindow()) {
-    return
-  }
-
-  modeLayout.write(LAYOUT_KEYS.tree, tree === null ? null : JSON.stringify(tree))
-}
-
 /** The live tree (null until a default is declared). A secondary window ignores
  *  the persisted (primary) layout and boots to the default — nothing but its
  *  own routed session. */
 export const $layoutTree = modeLayout.atom<LayoutNode | null>(
   LAYOUT_KEYS.tree,
   () => defaultTrees[modeLayout.mode],
-  Codecs.json(parsed =>
-    isLayoutNode(parsed) ? normalize(migratePersistedTree(parsed)) : defaultTrees[modeLayout.mode]
-  ),
+  {
+    ...Codecs.json<LayoutNode | null>(parsed =>
+      // Canonicalize on load (see migratePersistedTree), then scrub ephemeral
+      // tile panes: trees written by older builds (before persist() scrubbed
+      // them) heal on their next boot instead of re-arranging around ghost
+      // preview tiles.
+      isLayoutNode(parsed)
+        ? (scrubEphemeralPanes(normalize(migratePersistedTree(parsed))) ?? defaultTrees[modeLayout.mode])
+        : defaultTrees[modeLayout.mode]
+    ),
+    // The mode-switch capture writes through the codec, not persist().
+    encode: encodeStoredTree
+  },
   true
 )
 

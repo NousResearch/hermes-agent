@@ -43,7 +43,8 @@ import {
   type PreviewTarget,
   setPreviewTabPinned
 } from '@/store/preview'
-import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { explicitOpenBlocksZone } from '@/store/preview-explicit'
+import { PREVIEW_TILE_PREFIX } from '@/store/preview-tile-id'
 import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'

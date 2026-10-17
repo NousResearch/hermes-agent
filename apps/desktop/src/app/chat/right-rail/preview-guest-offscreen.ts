@@ -19,7 +19,7 @@ import { type RefObject, useCallback, useEffect, useState } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $parkedTreePanes } from '@/components/pane-shell/tree/parked-panes'
-import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { PREVIEW_TILE_PREFIX } from '@/store/preview-tile-id'
 
 export interface OffscreenGuest {
   getWebContentsId?: () => number

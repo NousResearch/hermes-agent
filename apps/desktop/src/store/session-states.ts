@@ -931,6 +931,19 @@ export function dropSessionState(runtimeId: string) {
   $sessionStates.set(rest)
 }
 
+/** Drop the cached state of sessions by stored id. A released (transcript-less)
+ *  state kept without a runtime mapping reads as a draft once the tombstone is
+ *  pruned, so archive/delete must clear it by stored id too. */
+export function dropSessionStatesForStoredIds(storedIds: ReadonlyArray<null | string | undefined>) {
+  const ids = new Set(storedIds.filter(Boolean))
+
+  for (const [runtimeId, state] of Object.entries($sessionStates.get())) {
+    if (ids.has(state.storedSessionId)) {
+      dropSessionState(runtimeId)
+    }
+  }
+}
+
 /** Drop every cached session state — used on soft gateway-mode apply so the
  *  computed working / attention sets drain to empty alongside the session list.
  *  Also disarms every watchdog timer and drops all settle-grace entries: a

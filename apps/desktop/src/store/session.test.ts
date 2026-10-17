@@ -81,8 +81,10 @@ import {
   $attentionSessionIds,
   $draftSessionIds,
   clearAllSessionStates,
+  dropSessionStatesForStoredIds,
   getRecentlySettledSessionIds,
-  publishSessionState
+  publishSessionState,
+  releaseSessionTranscript
 } from './session-states'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
@@ -390,6 +392,25 @@ describe('computed $draftSessionIds', () => {
 
     tombstoneSessions(['s1'])
     expect($draftSessionIds.get()).toEqual([])
+  })
+
+  it('stays out of drafts after the tombstone is pruned once its released state is dropped', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1') })
+    releaseSessionTranscript('rt1')
+    tombstoneSessions(['s1'])
+    dropSessionStatesForStoredIds(['s1'])
+    untombstoneSessions(['s1'])
+
+    expect($draftSessionIds.get()).toEqual([])
+  })
+
+  it('reads a retained released state as a draft after pruning when never dropped', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1') })
+    releaseSessionTranscript('rt1')
+    tombstoneSessions(['s1'])
+    untombstoneSessions(['s1'])
+
+    expect($draftSessionIds.get()).toEqual(['s1'])
   })
 })
 

@@ -704,6 +704,38 @@ class TestToolSelection:
         """Return a list of (tool_name, description) tuples for mocking."""
         return [(n, f"description of {n}") for n in names]
 
+    @pytest.mark.parametrize("manifest_tools,prior_tools,expected_tools", [
+        pytest.param({}, None, None, id="unset-default"),
+        pytest.param({"default_enabled": []}, None, {"include": []}, id="empty-default"),
+        pytest.param({"default_enabled": ["read"]}, None, {"include": ["read"]}, id="explicit-default"),
+        pytest.param({"default_excluded": ["write*"]}, None, {"exclude": ["write*"]}, id="excluded-default"),
+        pytest.param({"default_enabled": []}, {"include": ["read"]}, {"include": ["read"]}, id="prior-include"),
+        pytest.param({"default_enabled": ["read"]}, {"include": []}, {"include": []}, id="prior-empty-include"),
+        pytest.param({"default_enabled": []}, {"exclude": ["write*"]}, {"exclude": ["write*"]}, id="prior-exclude"),
+        pytest.param({"default_enabled": []}, {"exclude": []}, {"exclude": []}, id="prior-empty-exclude"),
+    ])
+    def test_connection_card_preserves_tool_selection(
+        self, catalog_dir, monkeypatch, manifest_tools, prior_tools, expected_tools
+    ):
+        from hermes_cli import mcp_config
+        from hermes_cli.config import load_config, save_config
+        from tools.connectors.mcp import _CatalogBackend
+
+        _write_manifest(catalog_dir, "demo", _basic_manifest(tools=manifest_tools))
+        if prior_tools is not None:
+            cfg = load_config()
+            cfg["mcp_servers"] = {"demo": {"command": "npx", "tools": prior_tools}}
+            save_config(cfg)
+        monkeypatch.setattr(mcp_config, "_probe_single_server", lambda name, cfg: [("read", ""), ("write", "")])
+
+        _CatalogBackend().install("demo", {})
+
+        server = load_config()["mcp_servers"]["demo"]
+        if expected_tools is None:
+            assert "tools" not in server
+        else:
+            assert server["tools"] == expected_tools
+
     @pytest.mark.parametrize("probed", [None, [], [("tool_a", "Available tool")]])
     @pytest.mark.parametrize("interactive", [False, True])
     @pytest.mark.parametrize("default_enabled", [None, []])

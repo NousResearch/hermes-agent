@@ -742,7 +742,7 @@ def card_install_config(entry: CatalogEntry) -> dict:
         cfg["tools"] = {"exclude": prior_exclude}
     elif entry.tools.default_excluded:
         cfg["tools"] = {"exclude": list(entry.tools.default_excluded)}
-    elif entry.tools.default_enabled:
+    elif entry.tools.default_enabled is not None:
         cfg["tools"] = {"include": list(entry.tools.default_enabled)}
     return cfg
 

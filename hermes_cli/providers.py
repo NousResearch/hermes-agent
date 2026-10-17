@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils import base_url_host_matches, base_url_hostname
@@ -204,6 +204,14 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     if mdev_info is not None:
         ov = overlay or HermesOverlay()
         env_vars = list(mdev_info.env)
+        # A plugin profile's own credential/endpoint vars stay valid when models.dev later lists the
+        # same id under different names (models.dev keys commandcode as CMD_API_KEY; Hermes setup
+        # writes COMMANDCODE_API_KEY): the catalog entry adds names, it never retires Hermes's.
+        profile = _plugin_profile_pdef(canonical)
+        if profile is not None and profile.id == canonical:
+            env_vars += [ev for ev in profile.api_key_env_vars if ev not in env_vars]
+            if not ov.base_url_env_var:
+                ov = replace(ov, base_url_env_var=profile.base_url_env_var)
         for ev in ov.extra_env_vars:
             if ev not in env_vars:
                 env_vars.append(ev)

@@ -20,7 +20,7 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, NamedTuple, Optional, Tuple
 
-from utils import file_signature
+from utils import file_signature, mtime_is_racy
 
 
 # Process-global (describes the deployment mode, not a per-task value): set once
@@ -305,6 +305,9 @@ def _parse_env_value(raw_value: str) -> str:
 # revalidation on NFS, a vanished/unreadable file fails the open and is never cached (a transient
 # EACCES must not become "this profile has no secrets"), and the descriptor pins one inode so a
 # symlink repointed mid-read can't file one file's contents under another's identity.
+# A file whose mtime is still inside ``utils.RACY_MTIME_WINDOW_NS`` is parsed but never stored: on a
+# coarse-timestamp filesystem a same-size rewrite in the same tick keeps every field of the signature
+# (in-place write, same inode), so a memo taken that fresh would serve the old values indefinitely.
 # ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
 # calls it for Hermes's own .env writers.
 _ENV_FILE_CACHE: OrderedDict[str, tuple[tuple, dict[str, str]]] = OrderedDict()
@@ -371,7 +374,7 @@ def load_env_file(env_path: Path) -> dict[str, str]:
             raw = handle.read()
             # Same descriptor: a rewrite that landed between the fstat and the read is parsed but not
             # stored under the pre-write fingerprint.
-            settled = file_signature(os.fstat(handle.fileno())) == fingerprint
+            settled = file_signature(os.fstat(handle.fileno())) == fingerprint and not mtime_is_racy(fingerprint[0])
     except OSError:
         # Gone or unreadable: drop any entry so a stale map cannot outlive the file.
         invalidate_env_file_cache(env_path)

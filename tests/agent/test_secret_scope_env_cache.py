@@ -44,9 +44,16 @@ def _rewrite_same_size(path, text: str) -> None:
     os.utime(path, ns=(bumped, bumped))
 
 
+def _settle(path) -> None:
+    """Age the file past the racy-mtime window, as any .env not written this instant is."""
+    aged = path.stat().st_mtime_ns - _MTIME_STEP_NS
+    os.utime(path, ns=(aged, aged))
+
+
 def test_unchanged_file_is_parsed_once_and_each_caller_gets_its_own_dict(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_bytes(b"A=1\nB=2\n")
+    _settle(env)
     calls = _count_parses(monkeypatch)
     monkeypatch.setattr("hermes_cli.env_loader.get_secret_source_values", lambda home: {"EXT": "vault"})
 
@@ -77,3 +84,20 @@ def test_edits_and_deletion_are_seen(tmp_path, monkeypatch):
     env.write_bytes(b"KEY=ccc\n")
     assert ss.load_env_file(env) == {"KEY": "ccc"}
     assert len(calls) == 3
+
+
+def test_same_tick_rewrite_on_a_coarse_timestamp_filesystem_is_seen(tmp_path, monkeypatch):
+    """A filesystem whose timestamps did not tick between two in-place, same-size writes gives
+    both versions one signature; a memo taken while the mtime was that fresh must not serve the
+    first version after the second lands."""
+    import time
+
+    env = tmp_path / ".env"
+    env.write_bytes(b"KEY=one\n")
+    tick = time.time_ns()
+    # The coarse clock: every write inside this test lands in one timestamp tick.
+    monkeypatch.setattr(ss, "file_signature", lambda st: (tick, st.st_size, st.st_ino, tick))
+
+    assert ss.load_env_file(env) == {"KEY": "one"}
+    env.write_bytes(b"KEY=two\n")
+    assert ss.load_env_file(env) == {"KEY": "two"}

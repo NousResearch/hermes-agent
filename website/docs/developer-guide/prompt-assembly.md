@@ -28,16 +28,17 @@ Primary files:
 
 The cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
 
-1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, coding operating brief
+1. **stable** — identity (`SOUL.md` or fallback), help/model guidance, Kanban role guidance, pinned skills and coding operating brief
 2. **context** — caller-supplied `system_message`, project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`), then the worktree-dependent git workspace snapshot, operator instructions and platform hints
-3. **volatile** — skills index, built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line, then runtime environment hints (host / home / **current working directory**)
+3. **volatile** — skills index, memory/session-search/skill-management toolset guidance, built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line, then runtime environment hints (host / home / **current working directory**)
 
 The final system prompt is then joined as: `stable` → `context` → `volatile`.
 
 This ordering matters for precedence discussions:
-- skills are part of the **stable** tier
+- pinned skill content is part of the **stable** tier; the runtime skills index leads the **volatile** tier
+- memory/session-search/skill-management guidance follows the skills index in the **volatile** tier, gated by tool availability
 - memory/profile snapshots are part of the **volatile** tier
-- both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
+- these sections are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
 
 Inside the context tier the shared project files come **before** anything naming the current worktree.
 Sessions of one project running in different git worktrees then share a prompt prefix covering the whole
@@ -65,49 +66,37 @@ When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loa
 
 ### Concrete example: assembled system prompt
 
-Here is a simplified view of what the final system prompt looks like when all layers are present (comments show the source of each section):
+Here is a simplified view of the final system prompt in a project workspace (comments show each section's tier and source). Optional sections are omitted when unavailable. Without a workspace snapshot, platform guidance stays in the stable tier; the volatile order remains skills index → toolset guidance → memory/profile snapshots.
 
 ```
-# Layer 1: Agent Identity (from ~/.hermes/SOUL.md)
+# Layer 1: Agent Identity (stable; from ~/.hermes/SOUL.md)
 You are Hermes, an AI assistant created by Nous Research.
 You are an expert software engineer and researcher.
 You value correctness, clarity, and efficiency.
 ...
 
-# Layer 2: Tool-aware behavior guidance
-Task-learned procedures, pitfalls, and task-specific preferences belong
-in skills. Memory is the narrow exception for facts that apply to EVERY
-session regardless of task. Skill-writing instructions appear here only
-when skill_manage is available; its absence does not widen memory's scope.
-...
-When the user references something from a past conversation or you
-suspect relevant cross-session context exists, use session_search
-to recall it before asking them to repeat themselves.
-
-# Tool-use enforcement (for GPT/Codex models only)
+# Layer 2: Model guidance (stable; GPT/Codex only)
 You MUST use your tools to take action — do not describe what you
 would do or plan to do without actually doing it.
 ...
 
-# Layer 3: Honcho static block (when active)
-[Honcho personality/context data]
-
-# Layer 4: Optional system message (from config or API)
+# Layer 3: Optional system message (context; from config or API)
 [User-configured system message override]
 
-# Layer 5: Frozen MEMORY snapshot
-## Persistent Memory
-- User prefers Python 3.12, uses pyproject.toml
-- Default editor is nvim
-- Working on project "atlas" in ~/code/atlas
-- Timezone: US/Pacific
+# Layer 4: Context files (context; from project directory)
+# Project Context
+The following project context files have been loaded and should be followed:
 
-# Layer 6: Frozen USER profile snapshot
-## User Profile
-- Name: Alice
-- GitHub: alice-dev
+## AGENTS.md
+This is the atlas project. Use pytest for testing. The main
+entry point is src/atlas/main.py. Always run `make lint` before
+committing.
 
-# Layer 7: Skills index
+# Layer 5: Platform hint (context when a workspace snapshot is present)
+You are a CLI AI Agent. Try not to use markdown but simple text
+renderable inside a terminal.
+
+# Layer 6: Skills index (volatile)
 ## Skills (mandatory)
 Before replying, scan the skills below. If one clearly matches
 your task, load it with skill_view(name) and follow its instructions.
@@ -120,27 +109,43 @@ your task, load it with skill_view(name) and follow its instructions.
     - arxiv: Search and summarize arXiv papers
 </available_skills>
 
-# Layer 8: Context files (from project directory)
-# Project Context
-The following project context files have been loaded and should be followed:
+# Layer 7: Toolset guidance (volatile; gated by tool availability)
+Task-learned procedures, pitfalls, and task-specific preferences belong
+in skills. Memory is the narrow exception for facts that apply to EVERY
+session regardless of task. Skill-writing instructions appear here only
+when skill_manage is available; its absence does not widen memory's scope.
+...
+When the user references something from a past conversation or you
+suspect relevant cross-session context exists, use session_search
+to recall it before asking them to repeat themselves.
 
-## AGENTS.md
-This is the atlas project. Use pytest for testing. The main
-entry point is src/atlas/main.py. Always run `make lint` before
-committing.
+# Layer 8: Frozen MEMORY snapshot (volatile)
+## Persistent Memory
+- User prefers Python 3.12, uses pyproject.toml
+- Default editor is nvim
+- Working on project "atlas" in ~/code/atlas
+- Timezone: US/Pacific
 
-# Layer 9: Timestamp + session
+# Layer 9: Frozen USER profile snapshot (volatile)
+## User Profile
+- Name: Alice
+- GitHub: alice-dev
+
+# Layer 10: External memory-provider block (volatile; when active)
+[Honcho personality/context data]
+
+# Layer 11: Timestamp + session (volatile)
 Current time: 2026-03-30T14:30:00-07:00
 Session: abc123
 
-# Layer 10: Platform hint
-You are a CLI AI Agent. Try not to use markdown but simple text
-renderable inside a terminal.
+# Layer 12: Runtime environment hints (volatile)
+# Hermes runtime environment
+[Host, home and current working directory]
 ```
 
 ## Customizing platform hints
 
-The platform hint (Layer 10 above) is the per-surface guidance Hermes
+The platform hint (Layer 5 above) is the per-surface guidance Hermes
 injects for Telegram, WhatsApp, Slack, CLI, and other platforms — for
 example "you are on a terminal, avoid Markdown." The built-in defaults
 live in `PLATFORM_HINTS` (`agent/system_prompt.py`); plugin-provided

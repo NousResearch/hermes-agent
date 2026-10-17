@@ -295,6 +295,27 @@ def test_codex_api_preflight_rejects_reserved_token_in_structural_key():
         _preflight_codex_api_kwargs(kwargs, sanitize_harmony_tokens=True)
 
 
+@pytest.mark.parametrize("carrier", ["tool", "reasoning"])
+def test_codex_api_preflight_rejects_excessively_nested_harmony_payloads(carrier):
+    """Regression for #137058: malformed external payloads fail diagnostically, not recursively."""
+    nested = {"type": "string"}
+    for _ in range(600):
+        nested = {"nested": nested}
+    kwargs = {
+        "model": "gpt-5-codex",
+        "instructions": "test",
+        "input": [{"role": "user", "content": "hello"}],
+        "store": False,
+    }
+    if carrier == "tool":
+        kwargs["tools"] = [{"type": "function", "name": "deep", "parameters": nested}]
+    else:
+        kwargs["input"] = [{"type": "reasoning", "encrypted_content": "opaque", "summary": [nested]}]
+
+    with pytest.raises(ValueError, match="nesting exceeds"):
+        _preflight_codex_api_kwargs(kwargs, sanitize_harmony_tokens=True)
+
+
 def test_codex_api_preflight_defangs_every_outbound_text_carrier():
     raw = [
         {

@@ -34,6 +34,7 @@ from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_messag
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from agent.model_owned_state import apply_model_owned_state
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -2336,7 +2337,8 @@ def _resolve_switch_context_length(agent, snapshot):
         try:
             runtime_len = agent._ensure_lmstudio_runtime_loaded(intent)
         except Exception:
-            _restore_switch_snapshot(agent, snapshot)
+            if snapshot is not None:
+                _restore_switch_snapshot(agent, snapshot)
             raise
     if hasattr(agent, "_lmstudio_load_was_unverified") and agent._lmstudio_load_was_unverified(runtime_len):
         logger.warning(
@@ -2376,7 +2378,8 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             api_mode=agent.api_mode,
         )
     except Exception:
-        _restore_switch_snapshot(agent, snapshot)
+        if snapshot is not None:
+            _restore_switch_snapshot(agent, snapshot)
         raise
     # Outside the rollback guard: a probe hiccup must not undo a good switch. Eager, so the aux
     # clamp lands before the first compaction on the new window, not after it (#114707).
@@ -2489,28 +2492,9 @@ def switch_model(
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
-    custom_providers, effective_context_length = _resolve_switch_context_length(agent, snapshot)
-    # Refresh the custom-provider snapshot from the config just loaded so the prompt_caching lookup
-    # sees flags added to config.yaml after session start.
-    if custom_providers is not None:
-        agent._custom_providers = custom_providers
-    agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-        provider=new_provider, base_url=agent.base_url, api_mode=api_mode, model=new_model
+    apply_model_owned_state(
+        agent, new_model, snapshot, provider=new_provider, api_mode=api_mode
     )
-    if hasattr(agent, "context_compressor") and agent.context_compressor:
-        _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
-    # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
-    # YAML False = disabled).
-    try:
-        from hermes_constants import resolve_reasoning_config
-        from hermes_cli.config import load_config as _sm_load_config
-        agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
-        logger.info(
-            "switch_model: reasoning_config resolved for %s: %s", agent.model, agent.reasoning_config
-        )
-    except Exception as _reasoning_err:
-        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
-    # Invalidate the cached system prompt so it rebuilds next turn.
     agent._cached_system_prompt = None
     # Publish the destination capability map only after every runtime setup above has succeeded.
     # Failed switches must leave the old map intact.

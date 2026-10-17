@@ -61,6 +61,7 @@ class QQCloseError(Exception):
         super().__init__(f"WebSocket closed (code={self.code}, reason={self.reason})")
 
 
+from .api_errors import QQAPIError, raise_for_qq_error
 from .constants import (
     API_BASE, TOKEN_URL, GATEWAY_URL_PATH, DEFAULT_API_TIMEOUT, FILE_UPLOAD_TIMEOUT,
     CONNECT_TIMEOUT_SECONDS, RECONNECT_BACKOFF, MAX_RECONNECT_ATTEMPTS, RATE_LIMIT_DELAY,
@@ -1298,8 +1299,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             resp = await client.request(method, f"{API_BASE}{path}", headers=headers, json=body, timeout=timeout)
             data = resp.json()
-            if resp.status_code >= 400:
-                raise RuntimeError(f"QQ Bot API error [{resp.status_code}] {path}: {data.get('message', data)}")
+            raise_for_qq_error(resp.status_code, path, data)
             return data
         except httpx.TimeoutException as exc:
             raise RuntimeError(f"QQ Bot API timeout [{path}]: {exc}") from exc
@@ -1325,6 +1325,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             try:
                 return await self._api_request("POST", path, body, timeout=FILE_UPLOAD_TIMEOUT)
             except RuntimeError as exc:
+                if isinstance(exc, QQAPIError) and exc.business_error:
+                    raise
                 if attempt == 2 or any(kw in str(exc) for kw in ("400", "401", "Invalid", "timeout", "Timeout")):
                     raise
                 await asyncio.sleep(1.5 * (attempt + 1))
@@ -1387,6 +1389,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return await sender(chat_id, content, reply_to)
             except Exception as exc:
                 last_exc = exc
+                if isinstance(exc, QQAPIError) and exc.business_error:
+                    break
                 if any(k in str(exc).lower() for k in self._PERMANENT_SEND_ERRORS + ("bad request",)):
                     break  # permanent — don't retry
                 if attempt < 2:
@@ -1396,7 +1400,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         error_msg = (str(last_exc) or type(last_exc).__name__) if last_exc else "Unknown error"
         logger.error("[%s] Send failed: %s", self._log_tag, error_msg)
-        retryable = not any(k in error_msg.lower() for k in self._PERMANENT_SEND_ERRORS)
+        business_error = isinstance(last_exc, QQAPIError) and last_exc.business_error
+        retryable = not business_error and not any(k in error_msg.lower() for k in self._PERMANENT_SEND_ERRORS)
         return SendResult(success=False, error=error_msg, retryable=retryable)
 
     @staticmethod

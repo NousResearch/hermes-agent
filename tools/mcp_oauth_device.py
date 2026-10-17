@@ -208,7 +208,13 @@ async def login_device(name, server_url, oauth_config):
     from tools.mcp_oauth_provider import prepare_oauth_config
     from tools.mcp_tool import sdk_httpx
 
+    from hermes_constants import get_hermes_home
+    from tools.mcp_oauth import (OAuthStorageDetachedError, PoolAuthority, acquire_refresh_fence,
+                                 release_refresh_fence)
+
     cfg, storage = prepare_oauth_config(name, server_url, oauth_config)
+    # Captured before the (minutes-long) user approval: the commit below must still hold it.
+    authority = PoolAuthority.capture(storage.pool_path, get_hermes_home(), name, None)
     # Device flow never binds a callback socket or uses the hosted browser CIMD.
     cfg["_resolved_port"] = cfg.get("redirect_port", 8420)
     provider = HermesMCPOAuthProvider(server_url=server_url, server_name=name, storage=storage,
@@ -225,12 +231,21 @@ async def login_device(name, server_url, oauth_config):
     except httpx.HTTPError:
         raise RuntimeError("Device OAuth network request failed") from None
     # Validate the entire grant before touching disk; reuse the existing scoped store.
-    previous = storage.snapshot()
+    # Commit under the refresh fence, which an owner's revocation also takes: either the grant
+    # lands before the revocation (and is deleted by it) or authority is re-proved here and fails.
+    fence = await acquire_refresh_fence(storage._tokens_path())
     try:
-        await storage.set_client_info(provider.context.client_info)
-        storage.save_oauth_metadata(provider.context.oauth_metadata)
-        await storage.set_tokens(tokens)
-    except OSError:
-        storage.restore(previous)
-        raise
+        verdict = authority.revocation()
+        if verdict is not None:
+            raise OAuthStorageDetachedError(f"MCP OAuth '{name}': {verdict[0]}; nothing was saved")
+        previous = storage.snapshot()
+        try:
+            await storage.set_client_info(provider.context.client_info)
+            storage.save_oauth_metadata(provider.context.oauth_metadata)
+            await storage.set_tokens(tokens)
+        except OSError:
+            storage.restore(previous)
+            raise
+    finally:
+        release_refresh_fence(fence)
     get_manager().evict(name)

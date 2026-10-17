@@ -448,6 +448,49 @@ def test_authorizing_a_changed_oauth_client_never_touches_the_shared_pool(estate
     assert HermesTokenStorage("team", requested=edited).pool_path == str((a / "mcp-tokens" / "team.json").resolve())
 
 
+def test_authorizing_a_changed_transport_never_touches_the_shared_pool(estate):
+    """Transport is part of the shared identity: a pending transport edit resolves to A's own pool
+    even though the saved entry (still ``http``) matches root. The resolver must read the whole
+    pending identity, not overlay url/oauth on the saved entry."""
+    from tools.mcp_oauth import HermesTokenStorage
+
+    root, a, b, activate = estate
+    activate(a)
+    assert HermesTokenStorage("team").pool_path == str(_grant(root).resolve()), "precondition: A shares"
+    edited = {**SERVER, "transport": "sse"}
+    assert HermesTokenStorage("team", requested=edited).pool_path == str((a / "mcp-tokens" / "team.json").resolve())
+
+
+def test_dashboard_authorizing_a_transport_edit_lands_locally_and_saves_it(estate, monkeypatch):
+    """End to end through the dashboard worker: a sharing profile authorizes a transport change
+    before saving it. The grant lands in A's own pool, root and sibling state stay byte-identical,
+    and the save keeps the grant it just minted."""
+    import hermes_cli.mcp_config as mcp_config
+    from hermes_cli.web_server_mcp import _run_dashboard_mcp_oauth
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    root, a, b, activate = estate
+    activate(a)
+    before = {p: p.read_bytes() for p in (root / "mcp-tokens").iterdir()}
+    edited = {**SERVER, "transport": "sse"}
+
+    def probe(name, cfg, **_kwargs):
+        # The authorization: the provider writes the new grant to the pool resolved for *cfg*.
+        _seed_tokens(a, name, "MINTED_FOR_SSE")
+        return [("tool", "desc")]
+
+    monkeypatch.setattr(mcp_config, "_probe_single_server", probe)
+    flow = DashboardOAuthFlow(flow_id="f-transport", server_name="team", profile="a",
+                              hermes_home=str(a), redirect_uri="http://127.0.0.1/cb")
+    _run_dashboard_mcp_oauth(flow, dict(edited))
+
+    assert flow.status != "error", getattr(flow, "error", None)
+    assert {p: p.read_bytes() for p in (root / "mcp-tokens").iterdir()} == before, "root pool untouched"
+    assert json.loads(_grant(a).read_text())["access_token"] == "MINTED_FOR_SSE"
+    assert _servers(a)["team"].get("transport") == "sse"
+    assert _servers(b)["team"] == SERVER, "sibling config untouched"
+
+
 def test_saving_an_authorized_edit_keeps_the_grant_it_just_minted(estate, monkeypatch):
     """A local-pool profile authorizes an endpoint change, then the flow saves it: the grant the
     authorization wrote must survive the identity-change revocation that the save would

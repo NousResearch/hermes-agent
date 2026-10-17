@@ -331,3 +331,58 @@ class TestManagerPools:
         assert provider._initialized is False
         grant.unlink()  # a sibling's re-auth is in flight: not a change, keep the in-memory grant
         assert await manager.invalidate_if_disk_changed("team", hermes_home=prof) is False
+
+
+def test_config_cache_sees_a_same_size_rewrite_with_a_pinned_mtime(tmp_path):
+    """The resolver's cache is keyed on ctime too: ``cp -p``/``os.utime`` rewrites that keep mtime,
+    size and inode must still be re-read, or a withdrawn export would stay cached as shared."""
+    import os
+
+    from tools.mcp_oauth import _load_mcp_server_config
+
+    home = tmp_path / "h"
+    home.mkdir()
+    cfg = home / "config.yaml"
+    cfg.write_text("mcp_servers:\n  team: {url: 'https://a.example/mcp', auth: oauth}\n")
+    st = cfg.stat()
+    assert _load_mcp_server_config(home, "team")["url"] == "https://a.example/mcp"
+    time.sleep(0.05)  # past the kernel's coarse timestamp tick, as any real edit is
+    with open(cfg, "r+") as fh:  # in place: same inode, same size
+        fh.write("mcp_servers:\n  team: {url: 'https://b.example/mcp', auth: oauth}\n")
+    os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert cfg.stat().st_size == st.st_size and cfg.stat().st_ino == st.st_ino
+    assert _load_mcp_server_config(home, "team")["url"] == "https://b.example/mcp"
+
+
+def test_abandoning_the_auth_flow_mid_refresh_releases_the_fence_now(tmp_path, monkeypatch):
+    """httpx cancels the flow while the refresh POST is in flight: the fence must be free
+    immediately, or an owner's revocation (which takes it) would stall until GC."""
+    import asyncio
+
+    import httpx
+
+    from tools.mcp_oauth import hold_refresh_fence
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    pool = tmp_path / "mcp-tokens" / "team.json"
+    pool.parent.mkdir(parents=True)
+    pool.write_text(json.dumps({"access_token": "OLD", "token_type": "Bearer", "expires_in": 1,
+                                "refresh_token": "R", "expires_at": 1, "issuer": "https://auth.example.com"}))
+    (pool.parent / "team.client.json").write_text(json.dumps({
+        "client_id": "cid", "redirect_uris": ["http://127.0.0.1:1/callback"], "token_endpoint_auth_method": "none"}))
+    (pool.parent / "team.meta.json").write_text(json.dumps({
+        "issuer": "https://auth.example.com", "authorization_endpoint": "https://auth.example.com/a",
+        "token_endpoint": "https://auth.example.com/token", "response_types_supported": ["code"]}))
+    provider = MCPOAuthManager().get_or_build_provider("team", "https://mcp.example.com/mcp", None)
+
+    async def abandon_mid_refresh():
+        flow = provider.async_auth_flow(httpx.Request("GET", "https://mcp.example.com/mcp"))
+        out = await flow.__anext__()
+        assert str(out.url) == "https://auth.example.com/token", "precondition: the refresh POST"
+        await flow.aclose()
+        # Still inside the loop: no async-generator finalizer has had a chance to run.
+        with hold_refresh_fence(pool, timeout=0.5):
+            pass
+
+    asyncio.run(abandon_mid_refresh())

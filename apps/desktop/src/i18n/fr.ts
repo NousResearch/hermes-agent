@@ -2677,6 +2677,8 @@ export const frOverrides = {
       installBlockedTitle: name => `Impossible d'installer ${name}`,
       installBlockedMessage: (findings, unverified) =>
         `Le scan de sécurité a signalé ${findings > 0 ? `${findings} élément${findings === 1 ? '' : 's'}` : 'des motifs risqués'} à examiner${unverified ? " et le skill provient d'une source non vérifiée" : ''}. Consultez le scan avant de décider si vous faites confiance à l'auteur.`,
+      installPathBlocked: component =>
+        `Installation impossible via ${component} : ce dossier est un lien symbolique, une désinstallation ultérieure pourrait supprimer des fichiers hors du répertoire des skills.`,
       viewScan: 'Voir le scan',
       openLog: 'Ouvrir le journal',
       actionLog: "Journal d'action",

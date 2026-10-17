@@ -2065,6 +2065,7 @@ export interface Translations extends NoticeTranslations {
       actionFailed: string
       installBlockedTitle: (name: string) => string
       installBlockedMessage: (findings: number, unverified: boolean) => string
+      installPathBlocked: (component: string) => string
       viewScan: string
       openLog: string
       actionLog: string

@@ -15,7 +15,7 @@ vi.mock('@/store/profile', () => ({
   normalizeProfileKey: (v: string | null | undefined) => v || 'default'
 }))
 
-import { HubInstallBlockedError, notifyHubActionFailed, parseInstallBlocked } from './hub-actions'
+import { hubActionFailureDetail, HubInstallBlockedError, notifyHubActionFailed, parseInstallBlocked } from './hub-actions'
 import { $notifications, clearNotifications } from './notifications'
 
 beforeEach(() => clearNotifications())
@@ -82,4 +82,31 @@ test('the legacy "Installation blocked:" tail still parses and toasts a plain ex
   const toast = $notifications.get()[0]
   expect(toast?.message).not.toMatch(/--force/)
   expect(toast?.detail).toContain('Installation blocked')
+})
+
+test('a symlink path refusal is not reported as an unpinned_pip_install block', () => {
+  // Exact tail from `hermes skills install official/research/searxng-search`.
+  // The provenance line names the scan rule; the next line is the real block.
+  const lines = [
+    'Scan provenance: cached; scanner skills-guard-v10; hash sha256:aebcbff6',
+    'Source: official/research/searxng-search; scanned 2026-10-13T12:54:18.754184+00:00; rules: unpinned_pip_install',
+    'Installation blocked: Unsafe install path: research/searxng-search (research is a symlink to ../../.agents/skills/research; refusing to install through it so a later uninstall cannot delete files outside the skills directory)'
+  ]
+
+  const detail = hubActionFailureDetail(lines)
+
+  expect(parseInstallBlocked(lines)).toBeNull()
+  expect(detail).toMatch(/^Unsafe install path:/)
+  expect(detail).not.toMatch(/unpinned_pip_install/)
+  expect(detail).toContain('research is a symlink')
+
+  notifyHubActionFailed(new Error(detail), 'Skill action failed', 'searxng-search')
+
+  const toast = $notifications.get()[0]
+  expect(toast?.title).toBe("Couldn't install searxng-search")
+  expect(toast?.message).toContain('research')
+  expect(toast?.message).toContain('symlink')
+  expect(toast?.message).not.toMatch(/unpinned_pip_install/)
+  expect(toast?.detail).toMatch(/Unsafe install path:/)
+  expect(toast?.action).toBeUndefined()
 })

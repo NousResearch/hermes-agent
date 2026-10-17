@@ -2665,6 +2665,8 @@ export const esOverrides = {
       installBlockedTitle: (name: string) => `No se pudo instalar ${name}`,
       installBlockedMessage: (findings: number, unverified: boolean) =>
         `El análisis de seguridad marcó ${findings > 0 ? `${findings} ${findings === 1 ? 'elemento' : 'elementos'}` : 'patrones de riesgo'} para revisar${unverified ? ' y la skill proviene de una fuente no verificada' : ''}. Lee el análisis antes de decidir si confías en el autor.`,
+      installPathBlocked: (component: string) =>
+        `No se puede instalar a través de ${component}: esa carpeta es un enlace simbólico, así que una desinstalación posterior podría borrar archivos fuera del directorio de skills.`,
       viewScan: 'Ver análisis',
       openLog: 'Abrir registro',
       actionLog: 'Registro de acciones',

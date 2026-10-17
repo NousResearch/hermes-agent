@@ -1969,6 +1969,7 @@
   "skills.hub.findings": ["ar","ja","zh-hant"],
   "skills.hub.install": ["ar","ja","zh-hant"],
   "skills.hub.installBlockedMessage": ["ar","ja","ru","zh","zh-hant"],
+  "skills.hub.installPathBlocked": ["ar","ja","ru","zh","zh-hant"],
   "skills.hub.installBlockedTitle": ["ar","ja","ru","zh","zh-hant"],
   "skills.hub.installStarted": ["ar"],
   "skills.hub.installed": ["ar"],

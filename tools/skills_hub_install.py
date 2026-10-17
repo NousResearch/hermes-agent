@@ -35,6 +35,59 @@ def _is_path_redirect(path: Path) -> bool:
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
 
 
+def _redirect_reason(path: Path, part: str) -> str:
+    """Why ``path`` cannot sit on an install path. Names the component and target."""
+    try:
+        dest = str(path.readlink())
+    except OSError:
+        dest = "unknown"
+    if len(dest) > 80:
+        dest = dest[:77] + "..."
+    return (
+        f"{part} is a symlink to {dest}; refusing to install through it "
+        "so a later uninstall cannot delete files outside the skills directory"
+    )
+
+
+def _first_redirect(rel_path: str) -> Optional[str]:
+    """Reason if an existing component of ``rel_path`` under skills/ is a symlink.
+
+    Stops at the first missing component — the rest would be created as real
+    directories, which is safe.
+    """
+    from tools.skills_hub import _skills_dir
+    target = _skills_dir()
+    for part in rel_path.split("/"):
+        if not part or part in {".", ".."}:
+            continue
+        target = target / part
+        if _is_path_redirect(target):
+            return _redirect_reason(target, part)
+        if not target.exists():
+            return None
+    return None
+
+
+def avoid_symlinked_category(category: str, *, explicit: bool) -> tuple[str, Optional[str]]:
+    """Drop an auto-derived category whose path is a symlink.
+
+    Official installs (and the Desktop Install button, which cannot pass
+    ``--category``) derive the category from the identifier. A user-created
+    category symlink — ``skills/research`` -> ``~/.agents/skills/research`` —
+    then fails every install into that category. Installing flat under
+    ``skills/<name>`` keeps the skill inside the skills directory.
+
+    An explicit ``--category`` is left unchanged so the path check can refuse
+    it with a named error instead of silently ignoring the flag.
+    """
+    if not category or explicit:
+        return category, None
+    reason = _first_redirect(category)
+    if not reason:
+        return category, None
+    return "", reason
+
+
 def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     """Resolve a lock-file install path without allowing escapes from ``SKILLS_DIR``.
 
@@ -50,7 +103,7 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     for part in normalized.split("/"):
         target = target / part
         if _is_path_redirect(target):
-            raise ValueError(f"Unsafe install path: {install_path}")
+            raise ValueError(f"Unsafe install path: {install_path} ({_redirect_reason(target, part)})")
     target = target.resolve()
     if target == skills_root or not target.is_relative_to(skills_root):
         raise ValueError(f"Unsafe install path: {install_path}")

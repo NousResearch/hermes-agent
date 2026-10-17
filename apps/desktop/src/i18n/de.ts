@@ -2668,6 +2668,8 @@ export const deOverrides = {
       installBlockedTitle: name => `${name} konnte nicht installiert werden`,
       installBlockedMessage: (findings, unverified) =>
         `Der Sicherheitsscan hat ${findings > 0 ? `${findings} Punkt${findings === 1 ? '' : 'e'}` : 'riskante Muster'} zur Prüfung markiert${unverified ? ' und der Skill stammt aus einer unbestätigten Quelle' : ''}. Lesen Sie den Scan, bevor Sie dem Autor vertrauen.`,
+      installPathBlocked: component =>
+        `Installation über ${component} nicht möglich: dieser Ordner ist ein Symlink, ein späteres Deinstallieren könnte Dateien außerhalb des Skills-Verzeichnisses löschen.`,
       viewScan: 'Scan ansehen',
       openLog: 'Log öffnen',
       actionLog: 'Aktionsprotokoll',

@@ -2306,6 +2306,8 @@ export const en: Translations = {
       installBlockedTitle: name => `Couldn't install ${name}`,
       installBlockedMessage: (findings, unverified) =>
         `The security scan flagged ${findings > 0 ? `${findings} item${findings === 1 ? '' : 's'}` : 'risky patterns'} to review${unverified ? ' and the skill comes from an unverified source' : ''}. Read the scan before deciding whether to trust the author.`,
+      installPathBlocked: component =>
+        `Can't install through ${component}: that folder is a symlink, so a later uninstall could delete files outside the skills directory.`,
       viewScan: 'View scan',
       openLog: 'Open log',
       actionLog: 'Action log',

@@ -25,7 +25,10 @@ from tools.browser_camofox import (
 
 class TestCamofoxMode:
     def test_disabled_by_default(self, monkeypatch):
-        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+        # every lane that can auto-activate the gateway mode must be cleared —
+        # BROWSER_MCP_URL also resolves via _backend_url() on this branch
+        for var in ("CAMOFOX_URL", "BROWSER_MCP_URL"):
+            monkeypatch.delenv(var, raising=False)
         assert is_camofox_mode() is False
 
 
@@ -309,4 +312,49 @@ class TestBrowserToolRouting:
         from tools.browser_tool_install import check_browser_requirements
         assert check_browser_requirements() is True
 
+# ---------------------------------------------------------------------------
+# Hosted gateway (MCP-only) transport routing
+# ---------------------------------------------------------------------------
 
+
+class TestGatewayMcpRouting:
+    """When the browser backend is a hosted gateway (non-loopback + API key),
+    verbs route through browser_mcp_transport (MCP tools/call) instead of the
+    REST /tabs endpoints (403 on hosted gateways)."""
+
+    def test_gateway_detect_loopback_is_mcp_no(self, monkeypatch):
+        from tools.browser_mcp_transport import _is_gateway_backend
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
+        assert _is_gateway_backend() is False
+
+    def test_gateway_detect_generic_lane(self, monkeypatch):
+        """Profiles configuring only BROWSER_MCP_URL + BROWSER_MCP_API_KEY (a hosted-gateway
+        lane) - the transport must treat that as a gateway backend too."""
+        from tools.browser_mcp_transport import _is_gateway_backend
+        monkeypatch.setenv("BROWSER_MCP_URL", "https://api.browser-gw.example")
+        monkeypatch.setenv("BROWSER_MCP_API_KEY", "k_gateway")
+        monkeypatch.delenv("CAMOFOX_URL", raising=False)
+        monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
+        assert _is_gateway_backend() is True
+
+    def test_gateway_detect_hosted_with_key_is_mcp_yes(self, monkeypatch):
+        from tools.browser_mcp_transport import _is_gateway_backend
+        monkeypatch.setenv("CAMOFOX_URL", "https://api.compat-gw.example")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
+        assert _is_gateway_backend() is True
+
+    def test_navigate_routes_to_mcp_on_gateway(self, monkeypatch):
+        from unittest.mock import patch
+        import tools.browser_camofox as bc
+        from tools import browser_mcp_transport as t
+
+        monkeypatch.setenv("CAMOFOX_URL", "https://api.compat-gw.example")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "k_test")
+
+        snap_text = 'Navigated to https://example.com\nStatus: 200\n\nSnapshot:\n- heading "Example Domain"\n- link "Learn more" [e1]'
+        fake_result = {"content": [{"type": "text", "text": snap_text}], "isError": False}
+        with patch.object(t, "_call", return_value=fake_result):
+            out = json.loads(bc.camofox_navigate("https://example.com", task_id="t_mcp"))
+        assert out["success"] is True
+        assert "Example Domain" in out.get("snapshot", "")

@@ -10,6 +10,7 @@ import logging
 import re
 import sqlite3
 import time
+from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -62,7 +63,7 @@ def save_completed_result(session) -> None:
         # A recovered session has no output or exit code; the producer's own receipt is the real one.
         if session.detached and (directory / f"{session.id}.json").exists():
             return
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
         atomic_json_write(directory / f"{session.id}.json", record, mode=0o600)
         _result_paths()
     except OSError:

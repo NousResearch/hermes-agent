@@ -11,7 +11,9 @@ scoped or not, exactly as before.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from hermes_constants import get_hermes_home, get_hermes_home_override, hermes_home_key
 from hermes_state_runtime import RuntimeStoreError
@@ -98,13 +100,55 @@ class SessionAuthorities:
     def serving(self) -> list:
         """Authorities that accept work: not a reserved-but-unbuilt slot, not one retiring (a
         failed serve or an unserve whose turn outlived Stop keeps its slot but refuses admissions)."""
-        return [a for a in self._by_key.values() if a is not None and not getattr(a, 'retiring', False)]
+        # A snapshot: hosted-room coordinator threads read the served set while the loop hot-serves.
+        return [a for a in list(self._by_key.values()) if a is not None and not getattr(a, 'retiring', False)]
 
     def served_profiles(self) -> list[dict]:
         return [{'profile_id': a.profile_id, 'home': a.profile_id} for a in self.serving()]
 
     def profile_ids(self) -> frozenset[str]:
         return frozenset(a.profile_id for a in self.serving())
+
+
+@dataclass(frozen=True)
+class LocalBot:
+    """One local bot this process serves: its profile ``name``, ``home`` and owning ``authority``.
+    ``problem`` says why a client cannot address it by that name (None when it can); ``retiring``
+    marks one being unserved, which still owns its rooms but takes no new work."""
+    name: str
+    home: Path
+    authority: Any
+    problem: str | None = None
+    retiring: bool = False
+
+
+def local_bots(runner) -> list[LocalBot]:
+    """The local bots this gateway serves, one per built authority, by the name the registry
+    reserved each under (the launch profile keeps ``served_profile_name``). The one answer to
+    "which bots are local here" for both the Bots roster (``profiles.list``) and group seating
+    (``session_hosted_members``). A name two homes answer to, or one that is not its home's own
+    name (a linked ``profiles/<name>`` resolves outside ``profiles/`` and reads as ``default``), is
+    flagged rather than bound: a client routes, and the member transport names, a bot by name."""
+    from collections import Counter
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is None:
+        authority = getattr(runner, 'session_authority', None)
+        pairs = [(served_profile_name(authority.profile_id), authority)] if authority is not None else []
+    else:
+        # A snapshot: hosted-room coordinator threads read the served set while the loop hot-serves.
+        pairs = [(registry.profile_name(a) or served_profile_name(a.profile_id), a)
+                 for a in list(registry._by_key.values()) if a is not None]
+    counts = Counter(name for name, _ in pairs)
+    bots = []
+    for name, authority in pairs:
+        problem = None
+        if counts[name] > 1:
+            problem = 'two served homes answer to that name'
+        elif name != served_profile_name(authority.profile_id):
+            problem = 'a linked profile home is not supported yet'
+        bots.append(LocalBot(name, Path(authority.profile_id), authority, problem,
+                             bool(getattr(authority, 'retiring', False))))
+    return bots
 
 
 def served_profile_name(home) -> str:
@@ -148,6 +192,17 @@ def all_authorities(runner):
     return [authority] if authority is not None else []
 
 
+def serving_authorities(runner):
+    """The authorities that accept work (``SessionAuthorities.serving``: no reserved-but-unbuilt slot,
+    none retiring): what startup recovery, service creation and cross-ledger reads cover. Shutdown
+    keeps ``all_authorities``, so a retained authority's live writer is still settled."""
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is not None:
+        return registry.serving()
+    authority = getattr(runner, 'session_authority', None)
+    return [authority] if authority is not None and not getattr(authority, 'retiring', False) else []
+
+
 def require_serving(authority):
     """Refuse a verb reached through a stale connection to a retired authority: its ownership is
     released, and until a successor bumps the epoch its own epoch still passes the store fence."""
@@ -165,6 +220,23 @@ def admission_owner(authority, session_id):
         return sid
     with authority.db._read_ctx() as conn:
         return local_lineage_owner(conn, sid)
+
+
+def holds_admission(authority, session_id) -> bool:
+    """Whether *authority*'s store holds a canonical admission for *session_id*. A parked profile's
+    retained (retiring) store that cannot answer counts as holding one: startup auto-resume fails
+    closed for that entry instead of stopping the boot or resuming a turn that FIFO may own."""
+    try:
+        return bool(authority.db._read_one(
+            'SELECT 1 FROM session_admissions WHERE target_session_id IN (?,?) LIMIT 1',
+            (session_id, admission_owner(authority, session_id))))
+    except Exception as exc:
+        if not getattr(authority, 'retiring', False):
+            raise
+        import logging
+        logging.getLogger('gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
+                                                 session_id, getattr(authority, 'profile_id', '?'), exc)
+        return True
 
 
 def owner_scope(authority, *, hydrate_secrets=False):

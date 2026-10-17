@@ -122,6 +122,35 @@ def test_the_client_verdict_names_the_unsafe_node_and_its_fix(monkeypatch, reque
 
 
 @pytest.mark.platforms("linux", "macos")
+def test_hermes_chat_prints_the_whole_repair_command(monkeypatch, request):
+    """``hermes chat`` shows a failed attach through ``agent_init_failure_message``, whose 120-character
+    summary cut the hint mid-path: the whole command must reach the user."""
+    import asyncio
+    import shutil
+    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+    from hermes_cli.gateway_client import GatewayUnavailableError, connect_gateway
+    root = Path(tempfile.mkdtemp(prefix='h-'))
+    request.addfinalizer(lambda: shutil.rmtree(root, ignore_errors=True))
+    home = root / ('profile-' + 'x' * 12)
+    home.mkdir(mode=0o700)
+    control = home / 'gateway.sock'
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.delenv('HERMES_TUI_GATEWAY_URL', raising=False)
+
+    async def attach():
+        async with connect_gateway():
+            pass
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(control))
+        control.chmod(0o660)
+        with pytest.raises(GatewayUnavailableError) as unavailable:
+            asyncio.run(attach())
+    message = agent_init_failure_message(unavailable.value)
+    assert f'chmod 600 {home.resolve() / "gateway.sock"})' in message, message
+
+
+@pytest.mark.platforms("linux", "macos")
 def test_a_long_home_keeps_the_repair_command_whole_or_drops_it(tmp_path):
     """The detail is bounded to 500 characters; a long profile home (named twice: the node and the
     command) must not leave the client printing a chmod cut off mid-path or missing its quote."""

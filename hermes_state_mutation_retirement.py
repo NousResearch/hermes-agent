@@ -8,10 +8,42 @@ RETIRED_PREFIX = 'gateway.retired_session.v1.'
 VIEWER_CLOSE_PREFIX = 'gateway.viewer_close.v1:'
 
 
+def retired_in(conn, session_id):
+    return conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone() is not None
+
+
 def retired_session(db, session_id):
     with db._read_ctx() as conn:
-        return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
-                            (RETIRED_PREFIX + session_id,)).fetchone() is not None
+        return retired_in(conn, session_id)
+
+
+def create_conflict(conn, session_id):
+    """``(code, message)`` refusing a create of the explicit *session_id*, else None: a live row, or a
+    deleted (retired) id. A row recreated beside the fence would list fine and refuse every turn."""
+    if conn.execute('SELECT 1 FROM sessions WHERE id=?', (session_id,)).fetchone():
+        return 'session_exists', 'Session already exists'
+    if retired_in(conn, session_id):
+        return 'session_deleted', 'Session was deleted; its id cannot be reused'
+    return None
+
+
+def first_generation(db, derive, *, pinned=None, spent=None):
+    """``(n, derive(n))``: the first generation of a derived session id a NEW request may use. A
+    user-deleted id stays retired for good, so a derived id (header-less chat, Bot Chat, hosted-room
+    member, A2A context) whose session was deleted moves to its next generation, never recreated.
+    ``pinned(conn, sid)`` keeps an exact retry on the retired generation holding its identity;
+    ``spent(conn, sid)`` skips a live one used up another way (a renamed Bot Chat). Read from
+    durable rows only, so a restart and every concurrent caller pick the same id."""
+    generation = 0
+    with db._read_ctx() as conn:
+        while True:
+            sid = derive(generation)
+            if retired_in(conn, sid):
+                if pinned is not None and pinned(conn, sid):
+                    return generation, sid
+            elif spent is None or not spent(conn, sid):
+                return generation, sid
+            generation += 1
 
 
 def has_mutation_receipt(db, principal_id, session_id, request_id):
@@ -89,19 +121,20 @@ _LIVE_LEDGER_SQL = """SELECT 1 FROM session_admissions WHERE target_session_id=?
     UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? AND status IN ('registered','running','unknown') LIMIT 1"""
 
 
-def retire_sessions(conn, session_ids):
+def retire_sessions(conn, session_ids, *, expiring=()):
     """The complete deletion fence for ids that are being deleted in this transaction.
 
     Terminal receipts alone are not enough: without the ``RETIRED_PREFIX`` marker an exact
     retry of a settled request reports ``not_found`` instead of its terminal receipt, a late
     accounting/constructor backfill recreates the deleted row, and the same request is then
     admitted a second time against it. Every delete path (canonical mutate, legacy
-    ``delete_session*``, prunes and sweeps) must publish the whole fence, so it lives here once."""
+    ``delete_session*``, prunes and sweeps) must publish the whole fence, so it lives here once.
+    The marker of an id in *expiring* (a housekeeping sweep's) ages out at the retry horizon."""
     from hermes_state_media import retire_spillover
     retire_spillover(conn, session_ids)  # before the caller's DELETEs take the pointers away
     retire_terminal_receipts(conn, session_ids)
     retire_mutation_receipts(conn, session_ids)
-    retire_routes(conn, session_ids)
+    retire_routes(conn, session_ids, expiring=expiring)
     from hermes_state_local import retire_local_receipts
     retire_local_receipts(conn, session_ids)
 
@@ -134,12 +167,21 @@ def retire_mutation_receipts(conn, session_ids):
             conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), key))
 
 
+# Creation ids of the local conversations a gateway door derives and walks by generation
+# (``first_generation``): Bot Chat and A2A contexts.
+_DERIVED_LOCAL_PREFIXES = ('bot-chat:', 'a2a:')
+# Stored sources of the API sessions whose ids a door derives: the header-less chat and a
+# Responses/Runs chain (``api_server``) and a hosted-room member (``bot_room``).
+_DERIVED_SOURCES = ('api_server', 'bot_room')
+
+
 def _local_conversations(conn):
-    """Member id -> every id of its local conversation: the creation id (policy, FIFO, generation),
-    each receipt lineage segment and the current target. One prefix scan, not a lookup per swept
-    id. Malformed receipts name nothing."""
+    """``(members, derived)``: member id -> every id of its local conversation (the creation id
+    (policy, FIFO, generation), each receipt lineage segment and the current target), and the ids
+    of every derived (Bot Chat, A2A) conversation. One prefix scan, not a lookup per swept id.
+    Malformed receipts name nothing."""
     from hermes_state_local import POLICY_PREFIX
-    members = {}
+    members, derived = {}, set()
     for (raw,) in conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)):
         try:
             receipt = json.loads(raw)
@@ -151,7 +193,16 @@ def _local_conversations(conn):
         ids = tuple(x for x in [receipt.get('session_id'), *(lineage if isinstance(lineage, list) else []),
                                 entry.get('session_id') if isinstance(entry, dict) else None] if isinstance(x, str))
         members.update(dict.fromkeys(ids, ids))
-    return members
+        if str(receipt.get('request_id') or '').startswith(_DERIVED_LOCAL_PREFIXES):
+            derived.update(ids)
+    return members, derived
+
+
+def _derived_api_sessions(conn, session_ids):
+    """The ids among *session_ids* whose stored source is a derived API session's."""
+    return {row[0] for row in conn.execute(
+        f"SELECT id FROM sessions WHERE source IN ({','.join('?' * len(_DERIVED_SOURCES))}) "
+        "AND id IN (SELECT value FROM json_each(?))", (*_DERIVED_SOURCES, json.dumps(list(session_ids))))}
 
 
 def retire_prunable(conn, session_ids):
@@ -159,14 +210,22 @@ def retire_prunable(conn, session_ids):
     A session with live or unknown work is skipped, so one busy row cannot abort a whole
     prune/empty-session sweep (explicit deletes still refuse with ``session_busy``). A local
     reset/compression conversation is swept only whole: while any of its ids is kept or has live
-    work (the owner's queued admission continues on the current segment), every one is skipped."""
-    swept, conversations = set(session_ids), _local_conversations(conn)
+    work (the owner's queued admission continues on the current segment), every one is skipped.
+
+    A sweep's markers age out at the retry horizon: housekeeping retires thousands of ids a pass
+    (cron), and a permanent marker each would grow ``state_meta`` without bound. A derived id's
+    stays (Bot Chat, A2A context, header-less chat, Responses chain, hosted-room member): its
+    conversation resumes on the next generation, and the generation walk stops at the first
+    unfenced id, so an aged-out marker would send the next turn back to the swept generation. A
+    Bot Chat's mailbox receipts also outlive the horizon."""
+    swept, (conversations, derived) = set(session_ids), _local_conversations(conn)
 
     def removable(sid):
         whole = conversations.get(sid, (sid,))
         return swept.issuperset(whole) and not any(conn.execute(_LIVE_LEDGER_SQL, (x, x)).fetchone() for x in whole)
     quiet = [sid for sid in session_ids if removable(sid)]
-    retire_sessions(conn, quiet)
+    derived |= _derived_api_sessions(conn, quiet)
+    retire_sessions(conn, quiet, expiring=[sid for sid in quiet if sid not in derived])
     return quiet
 
 
@@ -195,12 +254,20 @@ def entry_session_id(raw):
     return value.get('session_id') if isinstance(value, dict) else None
 
 
-def retire_routes(conn, session_ids):
+def retire_routes(conn, session_ids, *, expiring=()):
     # OR REPLACE: the marker is a fact, not a receipt; re-retiring an id that was recreated
     # beside its tombstone must not abort the delete that removes it again (and restarts its horizon).
+    # An ``expiring`` (sweep) marker ages out at the horizon and never shortens a permanent one.
+    expiring = set(expiring)
     for sid in session_ids:
-        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
-                     (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time()})))
+        if sid in expiring:
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE '
+                         "SET value=excluded.value WHERE json_valid(state_meta.value) "
+                         "AND json_extract(state_meta.value, '$.expires')",
+                         (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time(), 'expires': True})))
+        else:
+            conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
+                         (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time()})))
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
         conn.execute('DELETE FROM state_meta WHERE key=?', (VIEWER_CLOSE_PREFIX + sid,))
     targets = set(session_ids)
@@ -216,10 +283,13 @@ _EXPIRED = "json_valid(value) AND json_extract(value, '$.retired_at') < ?"
 
 def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     """Reclaim deletion tombstones retired more than *older_than* seconds ago: the terminal admission
-    with its identity pointer and compacted result, terminal workers and the retired-session marker.
+    with its identity pointer and compacted result, terminal workers and a sweep's (``expires``)
+    retired-session marker. A user delete's marker is the deletion fence itself and is never
+    reclaimed: it holds only ``retired_at``, and without it a deleted id could be recreated,
+    re-admitted or reissued as a Bot Chat generation.
     Tombstones written before ``retired_at`` existed are stamped now and age from this pass."""
     from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, WORKER_PREFIX, identity_key
-    prefixes = (ADMISSION_PREFIX, WORKER_PREFIX, RETIRED_PREFIX)
+    prefixes = (ADMISSION_PREFIX, WORKER_PREFIX)
     now = time.time()
     for prefix in prefixes:
         conn.execute("UPDATE state_meta SET value=json_set(value, '$.retired_at', ?) WHERE key GLOB ? "
@@ -230,5 +300,6 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
         row = json.loads(raw)
         conn.execute('DELETE FROM state_meta WHERE key IN (?,?,?)', (key, RESULT_PREFIX + row['admission_id'],
                      identity_key(row['principal_id'], row['target_session_id'], row['request_id'])))
-    for prefix in prefixes[1:]:
-        conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (prefix + '*', cutoff))
+    conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (WORKER_PREFIX + '*', cutoff))
+    conn.execute(f"DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED} AND json_extract(value, '$.expires')",
+                 (RETIRED_PREFIX + '*', cutoff))

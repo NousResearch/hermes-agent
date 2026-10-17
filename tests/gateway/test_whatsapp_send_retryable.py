@@ -43,7 +43,7 @@ class _RespCtx:
         return False
 
 
-def _make_adapter(responses) -> "WhatsAppAdapter":
+def _make_adapter(responses):
     """A WhatsAppAdapter whose bridge answers each POST with the next of ``responses``.
 
     Built with ``__new__`` like ``test_whatsapp_connect._make_adapter``: the bridge/session

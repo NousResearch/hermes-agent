@@ -332,7 +332,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         from hermes_cli.model_switch import switch_model
         from hermes_cli.models import parse_model_input
 
-        current_provider, current_model = getattr(state.agent, "provider", None), str(state.model or "")
+        # Prefer the route's named form (``custom:<name>``): it compares equal against
+        # switch_model's target_provider, which is named too, and an agent whose provider is
+        # empty (a resume that fell back) must never pin the old endpoint under a new
+        # provider's credentials (#139908).
+        current_provider = (getattr(state.agent, "provider_route", None)
+                            or getattr(state.agent, "provider", None))
+        current_model = str(state.model or "")
         explicit_provider, model_input = parse_model_input(raw_model, "")
         cfg = load_config()
         result = switch_model(
@@ -346,7 +352,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             raise ModelRejected(result.error_message or f"Cannot switch to {raw_model}")
         target_provider, new_model = result.target_provider, result.new_model
         endpoint: dict[str, Any] = {}
-        if keep_endpoint and not (current_provider and target_provider != current_provider):
+        # Keep the endpoint only when the provider is KNOWN and equal: an empty current
+        # provider (a resume that fell back) keeping the old base_url while the target
+        # provider's credentials are used is exactly the key/endpoint mismatch of #139908.
+        if keep_endpoint and current_provider and target_provider == current_provider:
             endpoint = {
                 "base_url": getattr(state.agent, "base_url", None), "api_mode": getattr(state.agent, "api_mode", None)
             }

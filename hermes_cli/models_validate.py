@@ -425,16 +425,34 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
     ``session.create``). ``None`` = coherent or undecidable — custom / aggregator / catalog-less
     providers, names in the provider's own family (a newer ``gpt-*`` the curated list lacks) and
     names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
-    the provider's family that another native vendor's catalog lists — or any foreign-family name
-    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817)."""
+    the provider's family that another native vendor's catalog lists — any foreign-family name
+    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) — or a model
+    identical to its own provider's id / short name, which no provider can route (#96817, #134899)."""
     from hermes_cli import models as _m
 
     requested = (model_name or "").strip()
+    if not requested:
+        return None
     normalized = _m.normalize_provider(provider)
     catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
-    if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
-        return None
     if _m._model_in_provider_catalog(requested.lower(), _m._provider_keys(normalized)):
+        return None
+    # A model spelled like its own provider (id or ``custom:<name>`` short name) only comes from
+    # picking/typing the provider where a model belongs; catalog-less custom endpoints used to
+    # permissively mint it and every turn died with the provider's 400 (#134899). The own-catalog
+    # check above keeps the one true spelling — ``copilot-acp`` lists a model named like its id.
+    provider_names = _m._provider_keys(provider)
+    if normalized.startswith("custom:"):
+        provider_names.add(normalized.split(":", 1)[1])
+    if requested.lower() in provider_names:
+        label = _m._PROVIDER_LABELS.get(normalized, normalized)
+        return {
+            "model": requested, "provider": normalized, "suggestions": [],
+            "message": (f"`{requested}` is the name of provider `{normalized}` ({label}), not a model — "
+                        "a session with the model set to its own provider name can never be routed. "
+                        "Pick a model served by this provider from the `/model` picker."),
+        }
+    if not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
         return None
     if _family_head(requested) in {_family_head(m) for m in catalog}:
         return None

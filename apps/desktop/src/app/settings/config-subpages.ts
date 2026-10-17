@@ -72,7 +72,12 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
     {
       id: 'conversation',
       labelKey: 'voiceConversation',
-      fields: ['voice.voice_chat_mode', 'voice.max_recording_seconds', 'voice.client_direct'],
+      fields: [
+        'voice.voice_chat_mode',
+        'voice.max_recording_seconds',
+        'voice.silence_duration',
+        'voice.client_direct'
+      ],
       prefixes: ['voice.gpt_live.']
     },
     { id: 'transcription', labelKey: 'voiceTranscription', prefixes: ['stt.'] },

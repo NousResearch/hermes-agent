@@ -2710,6 +2710,14 @@ def _teardown_cron_agent(
                 agent.close()
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        # agent.close() does not own the per-agent codex app-server subprocess (#62101);
+        # without this drop every cron tick leaks one codex process.
+        try:
+            if agent is not None:
+                from agent.codex_runtime import _close_codex_session
+                _close_codex_session(agent)
+        except Exception as e:
+            logger.debug("Job '%s': failed to close codex app-server session: %s", job_id, e)
         # Worker-thread event loop dies with the executor; reap httpx clients cached under it.
         try:
             from agent.auxiliary_client import cleanup_stale_async_clients

@@ -59,9 +59,14 @@ def encode_result(result):
     """The stored row keeps the reply once. When the turn's closing assistant message carries
     exactly ``final_response``, its ``content`` is stored as null and the row gets
     ``_stored: {v: 1, reply_ref: <that message's index>}``. Retirement drops ``messages`` and
-    keeps ``final_response``, so a deleted session's exact retry still has its reply."""
-    value = result.get('result') if isinstance(result, dict) else None
-    if not isinstance(value, dict) or _STORED in result or not isinstance(value.get('messages'), list):
+    keeps ``final_response``, so a deleted session's exact retry still has its reply. A result
+    that already has ``_stored`` is stored whole with that value escaped as ``{v: 1, raw: ...}``."""
+    if not isinstance(result, dict):
+        return result
+    if _STORED in result:
+        return {**result, _STORED: {'v': 1, 'raw': result[_STORED]}}
+    value = result.get('result')
+    if not isinstance(value, dict) or not isinstance(value.get('messages'), list):
         return result
     reply, messages = value.get('final_response'), list(value['messages'])
     last = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], dict)
@@ -78,6 +83,9 @@ def load_result(text):
     written before it, is returned as stored."""
     result = json.loads(text)
     if not isinstance(result, dict) or not isinstance(envelope := result.get(_STORED), dict):
+        return result
+    if envelope.keys() == {'v', 'raw'} and type(envelope['v']) is int and envelope['v'] == 1:
+        result[_STORED] = envelope['raw']
         return result
     value, ref = result.get('result'), envelope.get('reply_ref')
     messages = value.get('messages') if isinstance(value, dict) else None

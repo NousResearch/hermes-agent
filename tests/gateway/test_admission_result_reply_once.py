@@ -1,6 +1,8 @@
 """LC-9: a settled turn result stores the reply once, and every reader still gets it exactly."""
 import json
 
+import pytest
+
 from gateway.session_api_turn import _settled_api_result
 from gateway.session_bot import _admission_outcome
 from gateway.session_results import _redacted, admission_result, finish_result, retain_result
@@ -174,13 +176,14 @@ def test_a_legacy_row_with_any_message_fields_reads_back_unchanged(owner):
     assert json.dumps(admission_result(owner.db, row['admission_id'])) == old
 
 
-def test_a_result_that_already_has_the_envelope_key_is_stored_verbatim(owner):
+@pytest.mark.parametrize('theirs', ['not ours', {'v': 1, 'reply_ref': 0}, {'v': 1, 'raw': 'x'}])
+def test_a_result_that_already_has_the_envelope_key_round_trips_unchanged(owner, theirs):
+    """Even a producer-built ``_stored`` shaped exactly like the envelope is never decoded."""
     result = {'result': {'final_response': 'final', 'current_turn_user_idx': 0, 'messages': [
-        {'role': 'user', 'content': 'q'}, {'role': 'assistant', 'content': 'final'}]},
-        'usage': {}, '_stored': 'not ours'}
+        {'role': 'user', 'content': 'q'}, {'role': 'assistant', 'content': None}]},
+        '_stored': theirs, 'usage': {}}
     admission_id, expected = _stored_round_trip(owner, result)
     assert json.dumps(admission_result(owner.db, admission_id)) == json.dumps(expected)
-    assert encode_result(expected) == expected
 
 
 def test_the_encoded_row_decodes_to_the_identical_dict_and_key_order(owner):

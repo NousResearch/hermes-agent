@@ -439,10 +439,13 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     provider-specific conversion: the part types this stripper knows are that format's, and a
     converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
     past it. History is never touched. Keyed on each rejecting (provider, model), so a model
-    that accepts images gets them again.
+    that accepts images gets them again. A route that rejected an image COUNT keeps its images but
+    gets at most the ceiling it stated (oldest retired, see ``agent.image_count_limit``).
     """
     if _provider_model_key(agent) not in agent._image_rejecting_models:
-        return False
+        from agent.image_count_limit import apply_learned_image_count_limit
+
+        return apply_learned_image_count_limit(agent, api_messages) > 0
     return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
 
 

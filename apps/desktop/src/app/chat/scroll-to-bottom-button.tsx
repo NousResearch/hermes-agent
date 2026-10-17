@@ -87,14 +87,16 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
   }
 
   const state = visible ? 'in' : hasShownRef.current ? 'out' : 'idle'
-  const countLabel = count > 0 ? t.sidebar.messageCount(count) : ''
+  const countLabel = !isHistorical && count > 0 ? t.sidebar.messageCount(count) : ''
   const [beforeCount, afterCount] = countLabel ? countLabel.split(String(count)) : ['', '']
 
   const label = visibleApproval
     ? t.assistant.approval.jumpToApproval
-    : countLabel
-      ? `${t.assistant.thread.scrollToBottom} · ${countLabel}`
-      : t.assistant.thread.scrollToBottom
+    : isHistorical
+      ? t.assistant.thread.jumpToLatest
+      : countLabel
+        ? `${t.assistant.thread.scrollToBottom} · ${countLabel}`
+        : t.assistant.thread.scrollToBottom
 
   return (
     <button
@@ -128,7 +130,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       type="button"
     >
       <Codicon name="arrow-down" size="0.875rem" />
-      {visibleApproval || count <= 0 ? (
+      {visibleApproval || isHistorical || count <= 0 ? (
         <span>{label}</span>
       ) : (
         <span aria-hidden className="whitespace-nowrap tabular-nums">

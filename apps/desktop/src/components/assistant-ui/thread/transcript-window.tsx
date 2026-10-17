@@ -11,8 +11,13 @@ export interface TranscriptWindowValue {
   returnToLatest?: () => void
   isHistorical?: boolean
   newerAvailable?: boolean
+  revealNewer?: (beforeChange?: () => void) => Promise<boolean>
+  historyError?: 'unavailable' | 'failed' | null
+  leadingRowId?: number | null
   /** Exactly the selected bounded source slice, not the full live store. */
   currentMessages?: readonly ChatMessage[]
+  /** Canonical visible runtime branch expected after this history page commits. */
+  expectedRuntimeIds?: string | null
   /** Pull a page, capturing the reader immediately before the prepend commits.
    * A remote page resolves false on failure; callers can retry without growing
    * an empty render window or holding the reader still during network I/O. */
@@ -26,7 +31,11 @@ const DEFAULT_TRANSCRIPT_WINDOW: Required<TranscriptWindowValue> = {
   returnToLatest: () => {},
   isHistorical: false,
   newerAvailable: false,
-  currentMessages: []
+  revealNewer: async () => false,
+  historyError: null,
+  leadingRowId: null,
+  currentMessages: [],
+  expectedRuntimeIds: null
 }
 
 const TranscriptWindowContext = createContext<Required<TranscriptWindowValue>>(DEFAULT_TRANSCRIPT_WINDOW)

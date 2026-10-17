@@ -41,6 +41,8 @@ import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-pan
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { attachCompositionRegionTracker } from "@/lib/pty-composition-region";
+import { createComposingKeyGuard, type PtyComposingKeyGuard } from "@/lib/pty-composing-key";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -651,8 +653,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       (text) => term.paste(text),
     );
 
+    let composingKeys: PtyComposingKeyGuard | null = null;
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
+      // SwiftKey ends a word with a real key: xterm must not finalize mid-composition.
+      if (composingKeys?.onKeydown(ev)) return false;
 
       // Tab/Shift+Tab escape the terminal (WCAG 2.1.2); xterm stores one
       // key handler per Terminal, so a second registration overwrites this one.
@@ -797,29 +802,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
     term.open(host);
 
-    // IME composition guard (fixes #52111).
-    //
-    // React 18's root-level event delegation intercepts keydown events with
-    // keyCode 229 (the "composition in progress" signal sent by the browser
-    // during non-Latin IME input) and synthesises an onCompositionStart
-    // event.  That synthetic path sets internal composing state that
-    // interferes with xterm.js's own IME handling on its hidden textarea,
-    // causing the first keystroke of each composition chunk to be silently
-    // dropped — most visible with Cyrillic (Ukrainian/Russian) on
-    // Firefox-based browsers, but affects any locale that uses composition
-    // events (CJK, Arabic, Hebrew).
-    //
-    // xterm.js relies on native compositionstart/compositionend on its
-    // internal textarea, not on keydown, so blocking the keyCode-229
-    // keydown from reaching React's delegation layer is safe.  The listener
-    // sits in the *capture* phase on the terminal host so it fires before
-    // the event bubbles up to the React root.
+    // IME composition guard (#52111): keep keyCode-229 keydowns away from
+    // React's root-level composition handling, which runs in the bubble
+    // phase. It must sit in the *bubble* phase on the host: xterm handles
+    // these keys from its own keydown listener on the hidden textarea
+    // (Android IMEs report every key as keyCode 229; CompositionHelper diffs
+    // the textarea; the `input` path is off in screenReaderMode). A capture
+    // guard starved xterm, so typing and IME backspaces died (#136179).
     const _imeCompositionGuard = (e: KeyboardEvent) => {
       if (e.keyCode === 229 || e.key === "Process") {
         e.stopPropagation();
       }
     };
-    host.addEventListener("keydown", _imeCompositionGuard, true);
+    host.addEventListener("keydown", _imeCompositionGuard, false);
 
     const textarea = term.textarea;
     if (textarea) {
@@ -843,16 +838,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
         }
       };
-      const markCompositionEnd = (ev: CompositionEvent) => {
-        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        compositionForwarder.onCompositionEnd(ev.data);
-      };
-
+      // Only text a composition added reaches the fallback forwarder.
+      const compositionRegion = attachCompositionRegionTracker(textarea, {
+        onEnd: () => {
+          mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
+        },
+        onCommit: (data) => compositionForwarder.onCompositionEnd(data),
+      });
       textarea.addEventListener("beforeinput", markReplacementInput, true);
-      textarea.addEventListener("compositionend", markCompositionEnd, true);
+      composingKeys = createComposingKeyGuard(textarea, () =>
+        sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\r"),
+      );
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
-        textarea.removeEventListener("compositionend", markCompositionEnd, true);
+        compositionRegion.dispose();
+        composingKeys?.dispose();
       };
     }
 
@@ -1583,7 +1583,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
-      host.removeEventListener("keydown", _imeCompositionGuard, true);
+      host.removeEventListener("keydown", _imeCompositionGuard, false);
       // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
       // context alive on dispose, so a reconnect storm hits the browser's
       // context cap and blanks the live terminal (#111909).

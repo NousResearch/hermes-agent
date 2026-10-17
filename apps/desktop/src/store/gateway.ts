@@ -1916,7 +1916,8 @@ export async function ensureGatewayForAgent(
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
 // primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+export async function ensureGatewayForProfile(profile: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
@@ -1926,17 +1927,15 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     return
   }
 
-  // Global-remote share (routing case 3): one remote host serves every
-  // profile through the PRIMARY socket, scoped per request. Activate the
-  // primary instead of dialing a doomed duplicate socket at the same
-  // descriptor — $activeGatewayProfile still moves to `key`, so request
-  // scoping and profile-aware surfaces behave identically.
+  // Shared-remote profiles use the primary socket, scoped per request.
   if (await sharedPrimaryRoute(key)) {
+    signal?.throwIfAborted()
     applyActive(g.primaryProfile, activationEpoch)
 
     return
   }
 
+  signal?.throwIfAborted()
   let entry = g.secondaries.get(key)
 
   if (!entry) {
@@ -1957,6 +1956,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
       try {
         await openSecondary(entry)
       } catch (error) {
+        signal?.throwIfAborted()
         // #81094: a failed secondary dial must NOT fall through to setActive()
         // with a closed socket — that silently routes the user's messages to the
         // primary backend (cross-profile session writes). Keep the reconnect
@@ -1973,9 +1973,9 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     entry.activationLeaseUntil = 0
   }
 
-  // Only publish when the WebSocket actually reached open -- entry.connection
-  // is set before the dial completes, so a transient first-dial failure must
-  // not count as a successful activation (issue #92265).
+  // A warmup may finish after abort, but no longer owns foreground publication.
+  signal?.throwIfAborted()
+
   if (
     entry.wantOpen &&
     g.secondaries.get(key) === entry &&

@@ -391,9 +391,13 @@ export function useComposerTrigger({
         : null
 
     // The trailing space is a convenience for "keep typing after the chip", so
-    // it's wrong when the caret already has whitespace in front of it — a pick
-    // made mid-sentence would leave a double space in the prose.
-    const followedBySpace = /^\s/.test(composerPlainText(editor).slice(caretOffsetInEditor(editor)))
+    // it's wrong when whitespace already sits in front of the caret — a pick
+    // made mid-sentence would leave a double space in the prose, and that
+    // includes a non-breaking space the user typed. A following line break is
+    // NOT a double space: `/cmd\n<text>` reads as the command running into its
+    // break, so the space still belongs there. Hence any whitespace except a
+    // line break — `/[ \t]/` would miss NBSP and append a second space.
+    const followedBySpace = /^[^\S\r\n]/.test(composerPlainText(editor).slice(caretOffsetInEditor(editor)))
     const fragment = document.createDocumentFragment()
 
     chip

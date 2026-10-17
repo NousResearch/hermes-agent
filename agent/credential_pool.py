@@ -843,6 +843,7 @@ def _borrowed_single_use_pool_root() -> Optional[Path]:
 def _update_root_pool_rows(
     provider: str, payloads: list[dict[str, Any]], global_path: Path,
     *, status_cleared_ids: Optional[Iterable[str]] = None,
+    recovery_observed_at_by_id: Optional[dict[str, float]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
@@ -862,6 +863,7 @@ def _update_root_pool_rows(
         existing_list = existing if isinstance(existing, list) else []
         incoming_by_id = auth_mod._entry_ids(payloads)
         cleared = {cid for cid in (status_cleared_ids or ()) if cid}
+        recovery_observed = recovery_observed_at_by_id or {}
         bases = token_bases or {}
         merged: list[dict[str, Any]] = []
         changed = False
@@ -874,6 +876,7 @@ def _update_root_pool_rows(
             updated = auth_mod._merge_pool_row_generation(
                 incoming, disk_entry, provider,
                 base_pair=bases.get(did), status_cleared=did in cleared,
+                recovery_observed_at=recovery_observed.get(did),
             )
             if updated != disk_entry:
                 changed = True
@@ -890,6 +893,7 @@ def persist_pool_entries(
     *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
+    recovery_observed_at_by_id: Optional[dict[str, float]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
 ) -> Optional[list[dict[str, Any]]]:
     """Persist a provider's pool rows to the store that OWNS them.
@@ -908,7 +912,9 @@ def persist_pool_entries(
             try:
                 return _update_root_pool_rows(
                     provider, payloads, global_path,
-                    status_cleared_ids=status_cleared_ids, token_bases=token_bases,
+                    status_cleared_ids=status_cleared_ids,
+                    recovery_observed_at_by_id=recovery_observed_at_by_id,
+                    token_bases=token_bases,
                 )
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
@@ -922,7 +928,7 @@ def persist_pool_entries(
             return None
     return write_credential_pool(
         provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
-        token_bases=token_bases,
+        recovery_observed_at_by_id=recovery_observed_at_by_id, token_bases=token_bases,
     )
 
 
@@ -1122,6 +1128,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         *,
         removed_ids: Optional[list[str]] = None,
         status_cleared_ids: Optional[list[str]] = None,
+        recovery_observed_at_by_id: Optional[dict[str, float]] = None,
     ) -> None:
         # Self-locking: snapshotting self._entries must not race a rotation.
         with self._lock:
@@ -1130,12 +1137,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 self.provider, payloads,
                 removed_ids=removed_ids,
                 status_cleared_ids=status_cleared_ids,
+                recovery_observed_at_by_id=recovery_observed_at_by_id,
                 token_bases=self._persisted_token_pairs,
             )
             if written is None:
                 return
             rows = auth_mod._entry_ids(written)
             self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
+            recovery_ids = set(recovery_observed_at_by_id or {})
             for entry in self._entries:
                 row = rows.get(entry.id)
                 pair = self._persisted_token_pairs.get(entry.id, (None, None))
@@ -1146,7 +1155,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 # Adopt only rows the store overrode with a peer's newer pair; re-hydrating an
                 # unchanged row would replace the live object (and pull peer cooldown state
                 # merged into the written row) on every ordinary flush.
-                if pair != (entry.access_token, entry.refresh_token):
+                if pair != (entry.access_token, entry.refresh_token) or entry.id in recovery_ids:
                     self._replace_entry(entry, PooledCredential.from_dict(self.provider, row))
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
@@ -2056,6 +2065,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         now = time.time()
         cleared_any = False
+        recovery_observed_at_by_id: dict[str, float] = {}
         entries_to_prune: list[str] = []
         available: list[PooledCredential] = []
         pending_refresh: list[PooledCredential] = []
@@ -2095,6 +2105,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 # Codex quota windows can reopen EARLY; a throttled live probe
                 # lifts a stale cooldown (issue #43747).
+                recovery_observed_at = time.time()
                 if (
                     exhausted_until is not None
                     and now < exhausted_until
@@ -2107,6 +2118,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry = self._find(lambda e, i=entry.id: e.id == i) or entry
                     entry = self._adopt(entry, persist=False, **_MARK_OK)
                     cleared_any = True
+                    recovery_observed_at_by_id[entry.id] = recovery_observed_at
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in _TOKENS_SINGLETON_PROVIDERS:
                     pending_refresh.append(entry)
@@ -2125,7 +2137,18 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             pruned_ids = set(entries_to_prune)
             self._entries = [e for e in self._entries if e.id not in pruned_ids]
         if cleared_any:
-            self._persist(removed_ids=entries_to_prune)
+            self._persist(
+                removed_ids=entries_to_prune,
+                recovery_observed_at_by_id=recovery_observed_at_by_id,
+            )
+            # The disk merge may have kept a cooldown written while the probe
+            # was in flight.  Return that authoritative row, not the optimistic
+            # pre-persist candidate selected above.
+            available = [
+                live for entry in available
+                if (live := self._find(lambda e, i=entry.id: e.id == i)) is not None
+                and live.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}
+            ]
         return available, pending_refresh
 
     def _log_no_available_entries(self) -> None:

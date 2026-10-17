@@ -2105,6 +2105,65 @@ def test_a_persist_without_declared_intent_still_cannot_erase_a_cooldown(
     assert entry["last_error_code"] == 402
 
 
+def test_codex_quota_probe_persists_the_cooldown_clear(tmp_path, monkeypatch):
+    """A successful early-reopen probe must survive a fresh pool load (#137723)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {"version": 1, "credential_pool": {"openai-codex": [{
+            "id": "codex-1", "label": "quota", "auth_type": "oauth", "priority": 0,
+            "source": "manual:device_code", "access_token": "synthetic-token",
+            "last_status": "exhausted", "last_status_at": time.time() - 60,
+            "last_error_code": 429, "last_error_reason": "usage_limit_reached",
+            "last_error_reset_at": time.time() + 3600,
+        }]}},
+    )
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _: False)
+    monkeypatch.setattr(pool, "_codex_quota_restored_upstream", lambda _: True)
+
+    selected = pool.select()
+
+    assert selected is not None and selected.last_status == "ok"
+    stored = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert stored["credential_pool"]["openai-codex"][0]["last_status"] == "ok"
+    assert load_pool("openai-codex").select() is not None
+
+
+def test_codex_quota_probe_does_not_clear_a_newer_cooldown(tmp_path, monkeypatch):
+    """A peer 429 written during a probe stays authoritative (#137723)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {"version": 1, "credential_pool": {"openai-codex": [{
+            "id": "codex-1", "label": "quota", "auth_type": "oauth", "priority": 0,
+            "source": "manual:device_code", "access_token": "synthetic-token",
+            "last_status": "exhausted", "last_status_at": time.time() - 60,
+            "last_error_code": 429, "last_error_reason": "usage_limit_reached",
+            "last_error_reset_at": time.time() + 3600,
+        }]}},
+    )
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    pool = load_pool("openai-codex")
+    monkeypatch.setattr(pool, "_entry_needs_refresh", lambda _: False)
+
+    def _peer_writes_newer_cooldown(_entry):
+        row = read_credential_pool("openai-codex")[0]
+        row.update(last_status="exhausted", last_status_at=time.time() + 1,
+                   last_error_code=429, last_error_reason="usage_limit_reached")
+        write_credential_pool("openai-codex", [row])
+        return True
+
+    monkeypatch.setattr(pool, "_codex_quota_restored_upstream", _peer_writes_newer_cooldown)
+
+    assert pool.select() is None
+    assert pool.entries()[0].last_status == "exhausted"
+
+
 def test_live_pool_flush_does_not_resurrect_a_cooldown_reset_by_another_process(tmp_path, monkeypatch):
     """A running session's next ordinary flush must not undo ``hermes auth reset`` (#89415).
 

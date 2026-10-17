@@ -1007,6 +1007,7 @@ def _merge_pool_row_generation(
     *,
     base_pair: Optional[tuple[Any, Any]] = None,
     status_cleared: bool = False,
+    recovery_observed_at: Optional[float] = None,
 ) -> dict[str, Any]:
     """Keep a newer on-disk token generation authoritative during stale writes.
 
@@ -1019,7 +1020,9 @@ def _merge_pool_row_generation(
     merge_disk = None if status_cleared else disk_entry
     disk_pair = _credential_token_pair(disk_entry)
     if base_pair is None or not any(disk_pair) or disk_pair == base_pair:
-        return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
+        return _merge_disk_cooldown_state(
+            entry, merge_disk, provider_id, recovery_observed_at=recovery_observed_at,
+        )
 
     merged = dict(entry)
 
@@ -1035,11 +1038,14 @@ def _merge_pool_row_generation(
     _take_from_disk(_POOL_TOKEN_GENERATION_FIELDS)
     if not status_cleared and entry.get("last_status") == STATUS_DEAD:
         _take_from_disk((*_POOL_STATUS_FIELDS, "failure_reason"))
-    return _merge_disk_cooldown_state(merged, merge_disk, provider_id)
+    return _merge_disk_cooldown_state(
+        merged, merge_disk, provider_id, recovery_observed_at=recovery_observed_at,
+    )
 
 
 def _merge_disk_cooldown_state(
     entry: dict[str, Any], disk_entry: Optional[dict[str, Any]], provider_id: str,
+    *, recovery_observed_at: Optional[float] = None,
 ) -> dict[str, Any]:
     """Keep a newer on-disk cooldown/quarantine over a stale in-memory one.
 
@@ -1053,7 +1059,8 @@ def _merge_disk_cooldown_state(
         return entry
     try:
         from agent.credential_pool import (
-            PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, _exhausted_until, _parse_absolute_timestamp,
+            PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, STATUS_OK, _exhausted_until,
+            _parse_absolute_timestamp,
         )
 
         # Model cooldowns are independent observations: keep the latest reset per model so a
@@ -1077,6 +1084,16 @@ def _merge_disk_cooldown_state(
         if mem_access and disk_access and mem_access != disk_access:
             return entry
         disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
+        # A positive Codex quota probe is an observation that began before its
+        # network request.  It can clear only the exhausted state that existed
+        # at that point; a peer's newer exhaustion must still win the merge.
+        if (
+            recovery_observed_at is not None
+            and entry.get("last_status") == STATUS_OK
+            and disk_status == STATUS_EXHAUSTED
+            and disk_ts <= recovery_observed_at
+        ):
+            return merged
         if disk_ts <= mem_ts:
             return merged
         if disk_status == STATUS_EXHAUSTED:
@@ -1096,6 +1113,7 @@ def write_credential_pool(
     provider_id: str, entries: list[dict[str, Any]], *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
+    recovery_observed_at_by_id: Optional[dict[str, float]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Persist one provider's credential pool under auth.json.
@@ -1119,11 +1137,13 @@ def write_credential_pool(
         existing_by_id = _entry_ids(existing_list)
         new_ids = set(_entry_ids(sanitized))
         status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
+        recovery_observed = recovery_observed_at_by_id or {}
         merged: list[dict[str, Any]] = [
             _merge_pool_row_generation(
                 e, existing_by_id.get(e.get("id")), provider_id,
                 base_pair=bases.get(e.get("id")),
                 status_cleared=e.get("id") in status_cleared,
+                recovery_observed_at=recovery_observed.get(e.get("id")),
             )
             if isinstance(e, dict) else e
             for e in sanitized]

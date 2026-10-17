@@ -590,9 +590,11 @@ _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:
 # the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
 # at least 16 alphanumerics, so content-hash filenames (``<sha>.bundle``,
-# ``<md5>.sqlite3``) never match.
+# ``<md5>.sqlite3``) never match. A trailing dot blocks the match only when another
+# segment follows it: a sentence-final ``… <key>.`` is punctuation and must not
+# leave the key in clear.
 _ZHIPU_API_KEY_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
+    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])"
 )
 
 

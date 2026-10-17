@@ -36,8 +36,9 @@ def _load_cache() -> dict:
     path = _resolve_cache_path()
     if path.exists():
         try:
-            return json.loads(path.read_text(encoding="utf-8-sig"))
-        except (json.JSONDecodeError, OSError):  # OSError covers FileNotFoundError
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):  # OSError covers FileNotFoundError
             return {}
     return {}
 
@@ -54,7 +55,10 @@ _CACHE_LOCK = threading.Lock()
 
 def get_cached_description(file_unique_id: str) -> Optional[dict]:
     """Return ``{description, emoji, set_name, cached_at}`` or None."""
-    return _load_cache().get(file_unique_id)
+    entry = _load_cache().get(file_unique_id)
+    if not isinstance(entry, dict) or not isinstance(entry.get("description"), str):
+        return None
+    return entry
 
 
 def cache_sticker_description(

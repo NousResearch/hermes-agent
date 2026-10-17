@@ -142,7 +142,7 @@ async def pause_delegation(connection, ref, params):
 
 
 _ROLLBACK_FIELDS = {'list': {'session_id', 'profile'}, 'diff': {'session_id', 'profile', 'hash'},
-                    'restore': {'session_id', 'profile', 'hash', 'file_path'},
+                    'restore': {'session_id', 'profile', 'hash', 'file_path', 'safe'},
                     'session_diff': {'session_id', 'profile'}}
 # ``rollback.session_diff`` body bound: well inside one 8 MiB frame (the classic CLI shows 400 lines).
 _SESSION_DIFF_CHARS = 2 * 1024 * 1024
@@ -158,8 +158,10 @@ async def rollback(connection, ref, params, *, kind):
     resident agent. A whole-tree restore also rewinds the transcript to before the newest user turn
     (main's ``_rewind_active_session_history``) through the owner's fenced ``rewind`` mutation."""
     fields = _ROLLBACK_FIELDS[kind]
-    if any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
-           for key in ('hash', 'file_path')) or (kind in ('diff', 'restore') and 'hash' not in params):
+    if (any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
+            for key in ('hash', 'file_path'))
+            or (kind == 'restore' and params.get('safe') is not None and not isinstance(params['safe'], bool))
+            or (kind in ('diff', 'restore') and 'hash' not in params)):
         raise RuntimeStoreError('invalid_params')
     live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
     authority = connection.authority
@@ -218,7 +220,9 @@ async def rollback(connection, ref, params, *, kind):
             return payload
         if refusal:
             return {'success': False, 'error': refusal}
-        return mgr.restore(cwd, target, file_path=file_path or None)
+        safe = params.get('safe')
+        safe = not bool(file_path) if safe is None else safe
+        return mgr.restore(cwd, target, file_path=file_path or None, safe=safe)
     result = await asyncio.to_thread(run)
     if kind == 'restore' and result.get('success') and not file_path:
         result['history_removed'] = await _rewind_last_turn(connection, ref)

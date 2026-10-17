@@ -388,6 +388,7 @@ class RollbackRestoreParams(Params):
     session_id: str
     hash: str
     file_path: str | None = None
+    safe: bool | None = None
     profile: str | None = None
 
 
@@ -410,7 +411,7 @@ class RollbackRestoreResult(_Open):
 
 
 method("rollback.restore", params=RollbackRestoreParams, result=RollbackRestoreResult,
-       doc="Restore the working tree (or one file) to a checkpoint by hash or 1-based index.")
+       doc="Restore the working tree (or one file) to a checkpoint by hash or 1-based index; whole-tree restores preserve hand-edits unless ``safe`` is false.")
 
 
 class RollbackDiffParams(Params):

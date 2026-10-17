@@ -25,7 +25,9 @@ def _checkpoint_rows(result):
 
 def rollback(cli, connection, command):
     from tools.checkpoint_manager import format_checkpoint_list
-    args = [a for a in command.split()[1:] if a.lower() not in ("--all", "--force")]
+    raw_args = command.split()[1:]
+    restore_all = any(arg.lower() in ("--all", "--force") for arg in raw_args)
+    args = [arg for arg in raw_args if arg.lower() not in ("--all", "--force")]
     cwd = os.getenv("TERMINAL_CWD", os.getcwd())
     sid = cli.session_id
     try:
@@ -38,7 +40,7 @@ def rollback(cli, connection, command):
             if len(args) < 2:
                 return print(f"  {_t('rollback.usage_diff')}")
             return _diff(connection.call("rollback.diff", session_id=sid, hash=args[1]))
-        params = {"session_id": sid, "hash": args[0]}
+        params = {"session_id": sid, "hash": args[0], "safe": not restore_all and len(args) == 1}
         if len(args) > 1:
             params["file_path"] = args[1]
         _restored(cli, connection, connection.call("rollback.restore", **params), params.get("file_path"))

@@ -47,7 +47,9 @@ def test_rollback_lists_and_restores_through_the_gateway(capsys, monkeypatch, tm
         out = capsys.readouterr().out
         assert "1. 3101637" in out and "before write_file" in out, out
         gateway_rollback.rollback(cli, conn, "/rollback 1")
-        assert ("rollback.restore", {"session_id": "local-rb", "hash": "1"}) in client.calls
+        gateway_rollback.rollback(cli, conn, "/rollback 1 --all")
+        assert ("rollback.restore", {"session_id": "local-rb", "hash": "1", "safe": True}) in client.calls
+        assert ("rollback.restore", {"session_id": "local-rb", "hash": "1", "safe": False}) in client.calls
         assert cli.conversation_history == []  # the owner's rewound transcript
     finally:
         conn.close()

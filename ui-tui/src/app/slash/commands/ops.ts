@@ -306,12 +306,15 @@ export const opsCommands: SlashCommand[] = [
       }
 
       const hash = first
-      const filePath = rest.join(' ').trim()
+      const isRestoreAllFlag = (arg: string) => arg.toLowerCase() === '--all' || arg.toLowerCase() === '--force'
+      const restoreAll = rest.some(isRestoreAllFlag)
+      const filePath = rest.filter(arg => !isRestoreAllFlag(arg)).join(' ').trim()
 
       return ctx.gateway
         .rpc<RollbackRestoreResponse>('rollback.restore', {
           ...(filePath ? { file_path: filePath } : {}),
           hash,
+          safe: !restoreAll && !filePath,
           session_id: ctx.sid
         })
         .then(

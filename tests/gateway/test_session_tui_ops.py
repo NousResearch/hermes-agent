@@ -91,6 +91,17 @@ def _checkpoint(home, cwd, reason):
         reset_hermes_home_override(token)
 
 
+def _record_agent_write(home, path):
+    """Record an agent-authored write in the owner's checkpoint ledger."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.checkpoint_manager import CheckpointManager
+    token = set_hermes_home_override(str(home))
+    try:
+        CheckpointManager(enabled=True).record_agent_write(str(path))
+    finally:
+        reset_hermes_home_override(token)
+
+
 @pytest.mark.platforms("linux")
 def test_rollback_lists_diffs_and_restores_the_session_cwd_and_rewinds_the_last_turn(tmp_path):
     with owner(tmp_path) as (home, peer, desc):
@@ -112,6 +123,7 @@ def test_rollback_lists_diffs_and_restores_the_session_cwd_and_rewinds_the_last_
                 await settled(home)
                 await asyncio.to_thread(_checkpoint, home, work, 'before write_file')
                 (work / 'a.txt').write_text('edited\n')
+                await asyncio.to_thread(_record_agent_write, home, work / 'a.txt')
                 (work / 'b.txt').write_text('edited b\n')
                 listed = await _git_rpc(ws, 'rollback.list', session_id=sid)
                 assert listed.get('result', {}).get('enabled') is True, listed
@@ -138,13 +150,18 @@ def test_rollback_lists_diffs_and_restores_the_session_cwd_and_rewinds_the_last_
                 assert 'result' in full, full
                 full = full['result']
                 assert full['success'] is True and full['history_removed'] == 2, full
-                assert (work / 'b.txt').read_text() == 'original b\n'
+                assert (work / 'b.txt').read_text() == 'edited b\n'
+                assert full['skipped_user_edits'] == ['b.txt']
                 after = (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
                 assert [m['content'] for m in after] == [m['content'] for m in before[:-2]], (before, after)
                 assert after[-1]['content'] == 'CONTROL_ACK' and after[-2]['content'] == 'SECOND', after
+                forced = (await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash'], safe=False))['result']
+                assert forced['success'] is True
+                assert (work / 'b.txt').read_text() == 'original b\n'
                 for method, params, reason in [
                     ('rollback.diff', {'session_id': sid}, 'invalid_params'),
                     ('rollback.restore', {'session_id': sid, 'hash': ''}, 'invalid_params'),
+                    ('rollback.restore', {'session_id': sid, 'hash': '1', 'safe': 'no'}, 'invalid_params'),
                     ('rollback.diff', {'session_id': sid, 'hash': '9'}, 'invalid_checkpoint'),
                     ('rollback.list', {'session_id': sid, 'profile': 'foreign'}, 'profile_mismatch'),
                 ]:

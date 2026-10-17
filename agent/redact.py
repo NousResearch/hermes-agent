@@ -5,6 +5,7 @@ last 4 characters for debuggability.
 """
 
 import logging
+import math
 import os
 import re
 import shlex
@@ -994,6 +995,71 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+# --- Shape-keyed prose pass (compaction boundary only) -----------------------
+#
+# Every pass above is pattern-keyed: it fires on credential SYNTAX (vendor
+# prefixes, env/JSON assignments, Authorization headers). A third-party key
+# pasted into prose — "my Acme key is Xd7kPq2mVb9wRtY4uLz3" — has none of
+# those shapes, so it survived into committed compaction summaries and
+# replayed to the provider on every later turn of the session (#133538).
+# This pass is shape-keyed instead: a bare high-entropy token that sits near
+# secret-indicating words. It is deliberately NOT part of
+# ``redact_sensitive_text`` — terminal/tool flows legitimately echo hashes,
+# IDs and base64 blobs — and only the compaction boundary opts in, where a
+# false positive costs one masked word in a summary but a miss replays a live
+# key for the rest of the session.
+_BARE_TOKEN_RE = re.compile(r"[A-Za-z0-9+/_=-]{20,}")
+_SECRET_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:api[\s_-]?key|key|token|secret|pass(?:word|wd)?|credential|bearer)\b"
+)
+_SECRET_CONTEXT_WINDOW = 80  # chars of surrounding text searched for those words
+_BARE_TOKEN_MIN_UNIQUE_CHARS = 10
+_BARE_TOKEN_MIN_ENTROPY = 3.5  # bits/char; natural words stay well below this
+
+
+def _is_high_entropy_token(token: str) -> bool:
+    """Random-looking token body: enough distinct chars, no repetitive structure.
+
+    Natural-language words of this length ("internationalization") repeat
+    characters and never reach 10 distinct chars, while opaque key material
+    mixes at least 10 — the distinct-char floor rejects prose before the
+    entropy math runs.
+    """
+    if len(set(token)) < _BARE_TOKEN_MIN_UNIQUE_CHARS:
+        return False
+    counts: dict = {}
+    for ch in token:
+        counts[ch] = counts.get(ch, 0) + 1
+    total = len(token)
+    entropy = -sum((n / total) * math.log2(n / total) for n in counts.values())
+    return entropy >= _BARE_TOKEN_MIN_ENTROPY
+
+
+def redact_prose_bare_secrets(text: str) -> str:
+    """Mask bare high-entropy tokens that sit near secret-indicating words.
+
+    Proximity is the false-positive guard (#133538): a hash, trace ID or
+    base64 blob with no credential word within the window passes through
+    untouched, so ordinary tool output keeps its IDs. Masked with the standard
+    head/tail mask so the summary stays debuggable.
+    """
+    if not text:
+        return text
+
+    def _sub(match: re.Match) -> str:
+        token = match.group(0)
+        if not _is_high_entropy_token(token):
+            return token
+        window_start = max(0, match.start() - _SECRET_CONTEXT_WINDOW)
+        window_end = match.end() + _SECRET_CONTEXT_WINDOW
+        window = text[window_start:window_end]
+        if _SECRET_CONTEXT_RE.search(window):
+            return _mask_token(token)
+        return token
+
+    return _BARE_TOKEN_RE.sub(_sub, text)
 
 
 # Commands whose stdout is an env-var dump: terminal redaction runs the

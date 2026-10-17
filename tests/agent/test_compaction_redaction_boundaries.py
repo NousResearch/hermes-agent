@@ -206,7 +206,7 @@ def test_resumed_handoff_summary_redacted_before_iterative_prompt():
         {"role": "user", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
         {"role": "assistant", "content": "handoff acknowledged after resume"},
         {"role": "user", "content": "new user turn after resume"},
-        {"role": "assistant", "content": "new assistant work after resume"},
+        {"role": "assistant", "content": "new assistant work"},
         {"role": "user", "content": "more new work after resume"},
         {"role": "assistant", "content": "latest tail response"},
         {"role": "user", "content": "final active request stays in tail"},
@@ -221,3 +221,57 @@ def test_resumed_handoff_summary_redacted_before_iterative_prompt():
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
     assert "PREVIOUS SUMMARY:" in prompt
     _assert_clean(prompt)
+
+
+# --- Shape-keyed prose pass (#133538) ---------------------------------------
+#
+# A third-party key pasted in prose has no vendor prefix, assignment or header
+# syntax for the pattern-keyed passes to match, so it used to commit into the
+# summary verbatim and replay to the provider on every later turn.
+
+BARE_KEY = "Xd7kPq2mVb9wRtY4uLz3"  # opaque, prefix-less, high-entropy
+ISOLATED_HASH = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # no credential words near it
+
+
+def test_prose_bare_key_masked_in_compaction_text():
+    result = _redact_compaction_text(f"my Acme API key is {BARE_KEY} for dashboards")
+
+    assert BARE_KEY not in result
+    assert "Xd7kPq...uLz3" in result  # standard head/tail mask keeps it debuggable
+
+
+def test_prose_bare_key_masked_without_nearby_assignment_syntax():
+    """The key survives even when no '=' or ':' sits between the word and it."""
+    result = _redact_compaction_text(f"user shared token {BARE_KEY} in chat")
+
+    assert BARE_KEY not in result
+
+
+def test_isolated_high_entropy_values_pass_through():
+    """A hash/ID with no credential words in the window stays readable (#133538
+    explicitly requires no false positives on hashes, IDs and base64 blobs)."""
+    result = _redact_compaction_text(
+        f"rebased onto commit {ISOLATED_HASH} and the build went green"
+    )
+
+    assert ISOLATED_HASH in result
+
+
+def test_natural_language_near_credential_word_untouched():
+    result = _redact_compaction_text("the key setting is internationalization here")
+
+    assert "internationalization" in result
+
+
+def test_summary_output_redacts_llm_echoed_prose_key():
+    c = _compressor()
+    leaked = f"User shared their Acme key {BARE_KEY} earlier in the session."
+
+    with patch(
+        "agent.context_compressor.call_llm", return_value=_response(leaked)
+    ):
+        summary = c._generate_summary([{"role": "user", "content": "hi"}])
+
+    assert summary is not None
+    assert BARE_KEY not in summary
+    assert BARE_KEY not in c._previous_summary

@@ -57,6 +57,21 @@ def fake_tool(monkeypatch):
 # Happy path
 # ---------------------------------------------------------------------------
 
+
+def test_partial_media_failure_exits_one(fake_tool, capsys):
+    fake_tool.payload = {
+        "error": "Failed to deliver 1 of 1 Telegram media attachments",
+        "partial_success": True,
+        "message_id": "m123",
+    }
+
+    args = _parse(["--to", "telegram:12345", "Daily report"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 1
+    assert "Failed to deliver" in capsys.readouterr().err
+
 @pytest.fixture
 def whatsapp_bridge(monkeypatch):
     """Route ``hermes send --to whatsapp:...`` through the real plugin standalone sender into a fake

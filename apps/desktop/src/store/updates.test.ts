@@ -188,6 +188,260 @@ describe('gateway version refresh', () => {
   })
 })
 
+describe('bounded desktop-version retry', () => {
+  // The startup handshake: the renderer asks for the version once at mount, before
+  // the app's own backend is listening, so the first reply is unresolved. These
+  // cases drive the real poller path (startUpdatePoller -> refresh) with fake
+  // timers and a mocked IPC bridge.
+  const checkMock = vi.fn()
+  const onProgressMock = vi.fn()
+  const getVersionMock = vi.fn()
+  const listeners: Record<string, Function> = {}
+
+  const VALID_VERSION: DesktopVersionInfo = {
+    appVersion: '1.2.3',
+    electronVersion: '40',
+    nodeVersion: '26',
+    platform: 'win32',
+    hermesRoot: ''
+  }
+
+  // The main process answers with an empty appVersion while the backend is not up
+  // yet — an unresolved reply, not a null one.
+  const EMPTY_VERSION: DesktopVersionInfo = { ...VALID_VERSION, appVersion: '' }
+
+  const remoteConnection = (label: string) => ({
+    baseUrl: `http://${label}:9119`,
+    isFullscreen: false,
+    mode: 'remote' as const,
+    nativeOverlayWidth: 0,
+    token: 't',
+    wsUrl: `ws://${label}:9119`,
+    logs: [],
+    windowButtonPosition: null
+  })
+
+  const installWindow = (getVersion: unknown) => {
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: {
+        ...(getVersion === undefined ? {} : { getVersion }),
+        updates: { check: checkMock, onProgress: onProgressMock }
+      },
+      addEventListener: vi.fn((event: string, handler: Function) => {
+        listeners[event] = handler
+      }),
+      removeEventListener: vi.fn()
+    }
+  }
+
+  beforeEach(() => {
+    storage.clear()
+    checkMock.mockReset()
+    checkMock.mockResolvedValue({ supported: true, behind: 0, targetSha: 'sha-a', fetchedAt: 0 })
+    onProgressMock.mockReset()
+    getVersionMock.mockReset()
+    checkHermesUpdateSpy.mockReset()
+    Object.keys(listeners).forEach(k => delete listeners[k])
+    $desktopVersion.set(null)
+    $updateStatus.set(null)
+    installWindow(getVersionMock)
+    vi.useFakeTimers()
+    stopUpdatePoller()
+  })
+
+  afterEach(() => {
+    stopUpdatePoller()
+    setApiRequestConnection(null)
+    setApiRequestProfile(null)
+    delete (globalThis as unknown as { window?: unknown }).window
+    $desktopVersion.set(null)
+    vi.useRealTimers()
+  })
+
+  it('retries once after a null reply, publishes the version, then stops (case A)', async () => {
+    getVersionMock.mockResolvedValueOnce(null).mockResolvedValue(VALID_VERSION)
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+    expect($desktopVersion.get()).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+    expect($desktopVersion.get()?.appVersion).toBe('1.2.3')
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('treats an empty appVersion as unresolved and retries (case B)', async () => {
+    getVersionMock.mockResolvedValueOnce(EMPTY_VERSION).mockResolvedValue(VALID_VERSION)
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+    expect($desktopVersion.get()?.appVersion).toBe('1.2.3')
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries a rejected version call within the bound (case C)', async () => {
+    getVersionMock.mockRejectedValueOnce(new Error('backend not ready')).mockResolvedValue(VALID_VERSION)
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+    expect($desktopVersion.get()).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+    expect($desktopVersion.get()?.appVersion).toBe('1.2.3')
+  })
+
+  it('never schedules a retry when the first reply is already a version (case D)', async () => {
+    getVersionMock.mockResolvedValue(VALID_VERSION)
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+    expect($desktopVersion.get()?.appVersion).toBe('1.2.3')
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('caps the ladder at 1s/2s/4s/8s when the backend never answers (case E)', async () => {
+    getVersionMock.mockResolvedValue(null)
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+
+    // Backoff is honoured, not a tight loop: no retry before the delay elapses.
+    await vi.advanceTimersByTimeAsync(999)
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(getVersionMock).toHaveBeenCalledTimes(3)
+
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(getVersionMock).toHaveBeenCalledTimes(4)
+
+    await vi.advanceTimersByTimeAsync(8000)
+    expect(getVersionMock).toHaveBeenCalledTimes(5)
+
+    // Exhausted ladder: no further attempts, no timers left behind.
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(getVersionMock).toHaveBeenCalledTimes(5)
+    expect($desktopVersion.get()).toBeNull()
+  })
+
+  it('drops a reply that arrives after a connection change and re-arms on the new target (case F)', async () => {
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    let resolveInFlight: (value: DesktopVersionInfo | null) => void = () => {}
+    const inFlight = new Promise<DesktopVersionInfo | null>(resolve => {
+      resolveInFlight = resolve
+    })
+
+    getVersionMock
+      .mockResolvedValueOnce(null)
+      .mockImplementationOnce(() => inFlight)
+      .mockResolvedValue(VALID_VERSION)
+
+    setRemote(true)
+    setApiRequestConnection('profile-a')
+    setConnection(remoteConnection('profile-a'))
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+
+    // The retry's request is in flight against profile A when the window switches
+    // to profile B.
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+
+    setApiRequestConnection('profile-b')
+    setConnection(remoteConnection('profile-b'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    // A's reply lands after the switch: it must not be published.
+    resolveInFlight(VALID_VERSION)
+    await vi.advanceTimersByTimeAsync(0)
+    expect($desktopVersion.get()).toBeNull()
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+
+    // The next rung re-arms against the new target.
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(getVersionMock).toHaveBeenCalledTimes(3)
+    expect(getVersionMock.mock.calls.at(-1)?.[0]).toMatchObject({ connectionId: 'profile-b' })
+    expect($desktopVersion.get()?.appVersion).toBe('1.2.3')
+  })
+
+  it('clears the pending retry timers on stopUpdatePoller (case G)', async () => {
+    getVersionMock.mockResolvedValue(null)
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+    stopUpdatePoller()
+    expect(vi.getTimerCount()).toBe(0)
+
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(getVersionMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves the 24-hour passive check cadence untouched (case H)', async () => {
+    getVersionMock.mockResolvedValue(VALID_VERSION)
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).toHaveBeenCalledTimes(1)
+    checkMock.mockClear()
+
+    await vi.advanceTimersByTimeAsync(BACKGROUND_UPDATE_CHECK_MS)
+    expect(checkMock).toHaveBeenCalledTimes(1)
+
+    // Only the passive check's own refresh — the startup ladder added none.
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(getVersionMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not stack a second retry chain when the bridge is absent (documented limitation)', async () => {
+    installWindow(undefined)
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(vi.getTimerCount()).toBe(1) // only the daily interval
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(getVersionMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {
     storage.clear()

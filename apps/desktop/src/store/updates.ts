@@ -463,12 +463,126 @@ export function requestActiveUpdate(): void {
   openUpdateOverlayFor(target)
 }
 
+/** Backoff ladder for the startup version handshake — ~1s, 2s, 4s, then 8s. */
+const VERSION_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000] as const
+
+/** The single in-flight version request, so concurrent callers share one IPC call. */
+let versionFetchInFlight: Promise<DesktopVersionInfo | null> | null = null
+
+/** The one pending retry timer, plus how many rungs of the ladder it has used. */
+let versionRetryTimer: ReturnType<typeof setTimeout> | null = null
+let versionRetryAttempt = 0
+
+/** A reply only counts once it actually names a version. */
+function isResolvedVersion(info: DesktopVersionInfo | null): boolean {
+  return typeof info?.appVersion === 'string' && info.appVersion.trim() !== ''
+}
+
+function hasVersionBridge(): boolean {
+  return typeof window !== 'undefined' && typeof window.hermesDesktop?.getVersion === 'function'
+}
+
+function clearVersionRetry(): void {
+  if (versionRetryTimer !== null) {
+    clearTimeout(versionRetryTimer)
+    versionRetryTimer = null
+  }
+
+  versionRetryAttempt = 0
+}
+
+function scheduleVersionRetry(): void {
+  // One chain at a time, and only while the ladder still has rungs left.
+  if (versionRetryTimer !== null || versionRetryAttempt >= VERSION_RETRY_DELAYS_MS.length) {
+    return
+  }
+
+  // No getVersion on the bridge at all is a different failure (the preload has not
+  // injected the bridge yet, e.g. at first paint): retrying the same missing method
+  // cannot fix it, and that lifecycle case is deliberately out of scope here.
+  if (!hasVersionBridge()) {
+    return
+  }
+
+  // A version can land from another caller (focus, checkUpdates, About) while the
+  // ladder is waiting — stop instead of asking again.
+  if (isResolvedVersion($desktopVersion.get())) {
+    return
+  }
+
+  const delay = VERSION_RETRY_DELAYS_MS[versionRetryAttempt]
+
+  versionRetryAttempt += 1
+  versionRetryTimer = setTimeout(() => {
+    void runVersionRetry()
+  }, delay)
+}
+
+async function runVersionRetry(): Promise<void> {
+  versionRetryTimer = null
+
+  if (isResolvedVersion($desktopVersion.get())) {
+    versionRetryAttempt = 0
+
+    return
+  }
+
+  const next = await refreshDesktopVersion()
+
+  if (isResolvedVersion(next)) {
+    versionRetryAttempt = 0
+
+    return
+  }
+
+  scheduleVersionRetry()
+}
+
+/**
+ * refreshDesktopVersion() with the bounded retry ladder the startup handshake needs.
+ *
+ * At mount the renderer asks for the version before the app's own backend is
+ * listening (`resolveHermesVersion()` → `GET /api/health`), so the first reply is
+ * unresolved and the status bar falls back to `# <sha>` for minutes. The old
+ * behaviour waited for an unrelated event (window focus, an update check, About)
+ * to ask again; this walks the ladder instead. Only the poller's startup call uses
+ * it — every other caller keeps the plain single-shot semantics.
+ */
+async function refreshDesktopVersionWithRetry(): Promise<DesktopVersionInfo | null> {
+  versionRetryAttempt = 0
+
+  const next = await refreshDesktopVersion()
+
+  if (isResolvedVersion(next)) {
+    return next
+  }
+
+  scheduleVersionRetry()
+
+  return next
+}
+
 /** Refresh the active gateway version and the desktop's build metadata. */
 export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null> {
   if (typeof window === 'undefined') {
     return null
   }
 
+  // One request at a time. The version is asked for from several places at once
+  // (the poller, checkUpdates, the retry ladder, the focus handler) and on a cold
+  // start they all fire in the same tick; every extra round-trip is another full
+  // version resolve in the main process. Concurrent callers share the in-flight
+  // request instead of stacking parallel IPC calls.
+  if (versionFetchInFlight === null) {
+    versionFetchInFlight = fetchDesktopVersion().finally(() => {
+      versionFetchInFlight = null
+    })
+  }
+
+  return versionFetchInFlight
+}
+
+async function fetchDesktopVersion(): Promise<DesktopVersionInfo | null> {
   // Best-effort UI sync: callers (checkUpdates, startUpdatePoller, window
   // focus handler) all kick this off with `void refreshDesktopVersion()`,
   // so any rejection from the IPC bridge (e.g. main process shutting down
@@ -1351,7 +1465,7 @@ export function startUpdatePoller(): void {
 
   pollerStarted = true
   runPassiveChecks()
-  void refreshDesktopVersion()
+  void refreshDesktopVersionWithRetry()
   bridge.onProgress(ingestProgress)
 
   // The poller starts at mount, before the gateway connects — so the first
@@ -1382,6 +1496,9 @@ export function stopUpdatePoller(): void {
     backgroundTimer = null
   }
 
+  // The startup version ladder is poller-owned state: leaving a rung armed would
+  // keep fetching (and rewriting $desktopVersion) after the poller is gone.
+  clearVersionRetry()
   connectionUnsub?.()
   connectionUnsub = null
   lastConnectionKey = undefined

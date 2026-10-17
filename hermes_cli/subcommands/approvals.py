@@ -21,6 +21,7 @@ def build_approvals_parser(subparsers, *, cmd_approvals: Callable) -> None:
 
     suggest_parser = approvals_subparsers.add_parser(
         "suggest", help="Propose command_allowlist entries from past approvals",
+        allow_abbrev=False,
         description="Scan the session database for dangerous-classified commands "
             "that ran with user approval, rank the recurring patterns, and "
             "print a numbered allowlist proposal. Nothing is written unless "

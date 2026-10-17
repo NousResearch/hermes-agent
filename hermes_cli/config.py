@@ -74,84 +74,16 @@ class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
 
 
-_IS_WINDOWS = platform.system() == "Windows"
-_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-# Env var names that influence how the next subprocess executes — never writable through
-# ``save_env_value``: dynamic loader (LD_*/DYLD_*: attacker code loads before main()),
-# interpreter init (PYTHON*, NODE_*: Hermes restarts through them), PATH (fix tool lookup
-# with absolute paths instead), git rewrites (fire on every plugin install/update),
-# implicitly-invoked commands (BROWSER/EDITOR/VISUAL/PAGER = RCE on next $EDITOR), SHELL,
-# and Hermes runtime-location / security-policy flags (config.yaml is the supported surface).
-#
-# ``HERMES_*`` overall is NOT blocked — many integration credentials use that prefix
-# (HERMES_LANGFUSE_PUBLIC_KEY, HERMES_SPOTIFY_CLIENT_ID, ...). The denylist is name-by-name so
-# it cannot break provider setup wizards. Enforced on *write* only: pre-existing/out-of-band
-# ``.env`` values keep working; the dashboard's writable surface just cannot escalate.
-
-# Whole families whose every member steers execution or config injection, matched by prefix
-# because enumeration cannot cover unbounded names (GIT_CONFIG_KEY_17 / GIT_CONFIG_VALUE_17).
-_ENV_VAR_NAME_DENY_PREFIXES: tuple[str, ...] = (
-    "LD_", "DYLD_",
-    # PARAMETERS/COUNT/KEY_*/VALUE_* inject config pairs; GLOBAL/SYSTEM/NOSYSTEM redirect the
-    # config sources _subprocess_compat already nulls for the same reason.
-    "GIT_CONFIG_",
+from hermes_cli.config_policy import (
+    _ENV_VAR_NAME_DENY_PREFIXES,
+    _ENV_VAR_NAME_DENYLIST,
+    _ENV_VAR_NAME_RE,
+    _IS_WINDOWS,
+    _env_var_policy_name,
+    _is_sensitive_config_key,
+    check_policy_write,
+    validate_env_var_name_for_write,
 )
-
-_ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
-    # Loader / linker (the LD_/DYLD_ prefixes cover the family; kept name-by-name for clarity)
-    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
-    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
-    "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
-    # Python / Node — init-time injection beyond the loader paths
-    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
-    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "PYTHONBREAKPOINT", "PYTHONCASEOK",
-    "NODE_OPTIONS", "NODE_PATH",
-    # Other interpreter / toolchain injection (same class as PYTHONPATH / NODE_OPTIONS)
-    "PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB", "CLASSPATH",
-    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
-    "GOFLAGS", "RUSTFLAGS",
-    # General / git — executed helpers, repo/config redirection, and template hooks
-    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER", "MANPAGER",
-    "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_SHELL",
-    "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS", "SUDO_ASKPASS",
-    "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_EXTERNAL_DIFF",
-    "GIT_PROXY_COMMAND", "GIT_TEMPLATE_DIR", "GIT_DIR",
-    # Shell init files / interactive hooks — sourced before or during execution
-    "BASH_ENV", "ENV", "ZDOTDIR", "PROMPT_COMMAND", "VIMINIT", "EXINIT",
-    # Hermes runtime location
-    "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
-    "HERMES_CONFIG_PATH", "HERMES_ENV_PATH",
-    # MCP catalog trust root; package-manager wrappers may still set it in the process env.
-    "HERMES_OPTIONAL_MCPS",
-    # Local ACP subprocess selection (executable/argv authority).
-    "HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS",
-    # Security policy / approval-routing context — set via their dedicated controls only.
-    "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
-    "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
-    "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
-    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
-
-
-def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:
-    """Name used for env policy comparisons: Windows env names are case-insensitive, POSIX not.
-    The override keeps both semantics testable on any host."""
-    windows = _IS_WINDOWS if is_windows is None else is_windows
-    return key.upper() if windows else key
-
-
-def validate_env_var_name_for_write(key: str) -> None:
-    """Validate an env name before a generic persistence write (exposed for batch callers)."""
-    if not _ENV_VAR_NAME_RE.match(key):
-        raise ValueError(f"Invalid environment variable name: {key!r}")
-    policy_name = _env_var_policy_name(key)
-    if policy_name in _ENV_VAR_NAME_DENYLIST or policy_name.startswith(_ENV_VAR_NAME_DENY_PREFIXES):
-        raise ValueError(
-            f"Environment variable {key!r} is on the writer denylist. "
-            "Names that influence subprocess execution (LD_PRELOAD, PYTHONPATH, PATH, EDITOR, ...) "
-            "or Hermes runtime location and security policy (HERMES_HOME, HERMES_YOLO_MODE, ...) "
-            "cannot be persisted via the env writer. If you really need this, edit ~/.hermes/.env "
-            "directly.")
 
 
 # Serializes all config read/write paths and guards the module-level caches below. libyaml's
@@ -3409,7 +3341,18 @@ def set_config_value(key: str, value: str, force: bool = False):
     ``discord.foo`` is known; otherwise refused — any other unknown path under a known section
     is written with a did-you-mean notice), skips the unknown-top-level-key notice AND
     authorizes replacing a mapping section with a scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
-    to ``model.default``."""
+    to ``model.default``.
+
+    Security-policy keys (``approvals.*``, ``security.*``, ``command_allowlist*``, ``hooks.*``,
+    ``hooks_auto_accept``) are refused unless the call is operator-qualified: inside the one-shot
+    operator write scope (stamped only by the sanctioned human-input paths — the gateway
+    ``/approvals`` command behind its enabled-admin check, the interactive ``/approvals`` handler,
+    the TUI RPC funnel behind its live-transport provenance check, or the gateway RPC that serves
+    a slash command's own setting) AND with a sanctioned handler frame on the call stack. Both
+    are checked here, not passed in: an importable authorization token would be
+    forgeable by the same process that can import this writer (#104059 class, #104697 review).
+    ``hooks.*`` is included because ``agent/shell_hooks.py`` runs the configured commands and
+    ``hooks_auto_accept`` is the consent switch, so both are executable policy."""
     if is_managed():
         managed_error("set configuration values")
         return
@@ -3421,6 +3364,7 @@ def set_config_value(key: str, value: str, force: bool = False):
             f"✗ Invalid config key: {key!r} — contains an empty path segment "
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
+    check_policy_write(key, hint="set")
     if _is_env_config_key(key):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
@@ -3599,7 +3543,7 @@ def unset_config_value(key: str):
         managed_error("unset configuration values")
         return
     _exit_if_key_managed(key, "unset")
-
+    check_policy_write(key, hint="unset")
     if _is_env_config_key(key):
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so
         # the provider is fully removed instead of left resurrectable.

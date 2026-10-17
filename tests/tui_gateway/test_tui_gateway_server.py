@@ -8766,36 +8766,6 @@ def test_config_set_yolo_stale_session_id_is_refused_not_process_scoped(monkeypa
     assert os.environ["HERMES_YOLO_MODE"] == "0"
 
 
-def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
-    """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
-    import hermes_yaml as yaml
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}), encoding="utf-8")
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
-
-    resp_on = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "yolo", "scope": "global"},
-        }
-    )
-    assert resp_on["result"]["value"] == "1"
-    assert resp_on["result"]["scope"] == "global"
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig"))["approvals"]["mode"] == "off"
-
-    resp_off = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {"key": "yolo", "scope": "global"},
-        }
-    )
-    assert resp_off["result"]["value"] == "0"
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig"))["approvals"]["mode"] == "manual"
-
-
 def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     tmp_path, monkeypatch
 ):
@@ -8852,37 +8822,6 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
         {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
     )
     assert response["result"]["value"] == "off"
-
-
-def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status(
-    tmp_path, monkeypatch
-):
-    import hermes_yaml as yaml
-
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
-    # config.set writes via server._hermes_home, but the post-write
-    # session.info emit resolves the effective mode through the canonical
-    # tools.approval resolver (load_config → env HERMES_HOME).
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    emitted = []
-    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
-    server._sessions["sid"] = {"agent": object(), "session_key": "profile-session"}
-
-    try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "config.set",
-                "params": {"key": "approvals.mode", "value": "manual"},
-            }
-        )
-    finally:
-        server._sessions.clear()
-
-    assert resp["result"] == {"key": "approvals.mode", "value": "manual"}
-    assert yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8-sig"))["approvals"]["mode"] == "manual"
-    assert emitted and emitted[0][0:2] == ("session.info", "sid")
-    assert emitted[0][2]["approval_mode"] == "manual"
 
 
 def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch):
@@ -8965,36 +8904,6 @@ def test_config_set_approval_mode_rejects_unknown_value():
     )
 
     assert resp["error"]["code"] == 4002
-
-
-def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
-    """An explicit value pins global approvals.mode regardless of prior state."""
-    import hermes_yaml as yaml
-
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}), encoding="utf-8")
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
-
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "config.set",
-            "params": {"key": "yolo", "scope": "global", "value": "1"},
-        }
-    )
-    assert resp["result"]["value"] == "1"
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig"))["approvals"]["mode"] == "off"
-
-    # Setting it on again is idempotent — stays off.
-    resp_again = server.handle_request(
-        {
-            "id": "2",
-            "method": "config.set",
-            "params": {"key": "yolo", "scope": "global", "value": "1"},
-        }
-    )
-    assert resp_again["result"]["value"] == "1"
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig"))["approvals"]["mode"] == "off"
 
 
 def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):

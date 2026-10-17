@@ -178,3 +178,38 @@ def probe_root(tmp_path):
     """
     (tmp_path / "hermes_bootstrap.py").write_text("", encoding="utf-8")
     return tmp_path
+# --- Operator-qualified security-policy write scope (test helper) --------------------
+# The #104697-review boundary removed the importable `approval_override` bool —
+# sensitive-key writes require (operator scope AND human presence), both evaluated
+# inside the writer. Tests exercising the SANCTIONED operator path enter the scope
+# via this fixture; tests exercising the ADVERSARIAL path must NOT enter it.
+
+
+@pytest.fixture
+def operator_write_scope(monkeypatch):
+    """Simulate the SANCTIONED operator path for direct-writer test calls: stamp
+    the one-shot grant AND satisfy the sanctioned-caller-chain check. The writer's
+    frame check requires a _handle_approvals_command frame (gateway or REPL
+    mixin); tests calling set_config_value directly satisfy it via a chain shim
+    on ``hermes_cli.config_policy._policy_write_authorized`` (test-only; the real
+    handlers satisfy the check with their live frames, covered by the
+    handler-chain tests)."""
+    from tools.approval_context import (
+        grant_operator_policy_write,
+        is_operator_policy_write,
+        reset_operator_policy_write,
+    )
+
+    monkeypatch.setattr("tools.approval_context._is_sanctioned_policy_stamp_caller", lambda: True)
+    token = grant_operator_policy_write()
+
+    # Direct-writer tests simulate the handler's grant; the frame check's real
+    # coverage lives in the handler-chain tests (gateway/REPL e2e). Patch in the
+    # module that actually evaluates it — config_policy owns the check since the
+    # #104697 extraction, so patching hermes_cli.config would be a no-op.
+    monkeypatch.setattr(
+        "hermes_cli.config_policy._policy_write_authorized",
+        lambda: is_operator_policy_write(),
+    )
+    yield token
+    reset_operator_policy_write(token)

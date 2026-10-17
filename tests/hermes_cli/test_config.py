@@ -1387,9 +1387,8 @@ class TestEnvWriteDenylist:
     def test_windows_policy_denies_mixed_case_exec_names(self, protected_key, monkeypatch):
         """Windows env names are case-insensitive, so the writer must refuse the mixed-case
         spelling of a denied exec-influence name too."""
-        import hermes_cli.config as config_mod
-
-        monkeypatch.setattr(config_mod, "_IS_WINDOWS", True)
+        # The name policy moved to config_policy; patch the platform switch there.
+        monkeypatch.setattr("hermes_cli.config_policy._IS_WINDOWS", True)
         with pytest.raises(ValueError, match="denylist"):
             save_env_value(protected_key, "1")
 

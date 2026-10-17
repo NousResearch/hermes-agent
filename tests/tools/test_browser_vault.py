@@ -285,6 +285,76 @@ class TestBrowserVaultTools:
         assert out["items"][0]["identifier_type"] == "email"
         assert "s3cret-pw" not in json.dumps(out)
 
+    def test_login_probe_matches_masked_password_inputs(self):
+        """The login tab probe must not hinge on type=password alone: a site that ships its
+        password box as type=text (masked in CSS) must still match, or the correct tab is
+        unmatchable and the any-origin tab search lands on an unrelated site's login page."""
+        from tools import browser_vault_tool
+
+        probe = browser_vault_tool._TAB_PROBES["login"]
+        assert "input[type=password]" in probe
+        assert "input[autocomplete=current-password]" in probe
+        assert "input[autocomplete=new-password]" in probe
+        assert "input[id*=password i]" in probe
+        assert "input[name*=password i]" in probe
+        assert "input[placeholder*=password i]" in probe
+        assert "input[placeholder*=密码]" in probe
+
+    def test_save_login_prefers_the_current_page_login_form(self, store):
+        """With an unrelated site's real login tab also open, the save must bind to the page
+        the session is already on — the any-origin tab search must not hijack the origin."""
+        from tools import browser_vault_tool
+
+        def fake_eval(task_id, expression):
+            # the current page holds a (CSS-masked) password box: the probe matches
+            return {"success": True, "result": True}
+
+        answer = {"identifier": "user@example.com", "password": "s3cret-pw"}
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+             patch("agent.vault_backends.unlock.get_save_login_prompt_callback",
+                   return_value=lambda origin, host: answer), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://masked.example"), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_focus_bound_origin") as focus_mock, \
+             patch.object(browser_vault_tool, "browser_vault_fill",
+                          return_value=json.dumps({"success": True, "filled_fields": 1})):
+            out = json.loads(browser_vault_tool.browser_vault_save_login())
+        assert out["success"] is True
+        assert out["origin"] == "https://masked.example"
+        focus_mock.assert_not_called()
+        # the credential is stored bound to the page the session was actually on
+        assert store.get_meta(out["handle"]).origin == "https://masked.example"
+
+    def test_save_login_searches_tabs_when_no_form_on_current_page(self, store):
+        """No login form on the current page: the any-origin search still runs and the save
+        binds to whichever login tab it finds (the pre-fix behaviour for blank attach tabs)."""
+        from tools import browser_vault_tool
+
+        probes_seen = []
+
+        def fake_eval(task_id, expression):
+            probes_seen.append(expression)
+            return {"success": True, "result": False}  # the current page holds no login form
+
+        answer = {"identifier": "user@example.com", "password": "s3cret-pw"}
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+             patch("agent.vault_backends.unlock.get_save_login_prompt_callback",
+                   return_value=lambda origin, host: answer), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://other.example"), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_focus_bound_origin",
+                          return_value="https://other.example") as focus_mock, \
+             patch.object(browser_vault_tool, "browser_vault_fill",
+                          return_value=json.dumps({"success": True, "filled_fields": 1})):
+            out = json.loads(browser_vault_tool.browser_vault_save_login())
+        assert out["success"] is True
+        assert out["origin"] == "https://other.example"
+        focus_mock.assert_called_once_with("default", "", "login")
+        # the probe ran against the current page BEFORE the tab search decided to jump
+        assert probes_seen[0] == browser_vault_tool._TAB_PROBES["login"]
+
     def test_fill_refused_on_origin_mismatch(self, store):
         from tools import browser_vault_tool
 

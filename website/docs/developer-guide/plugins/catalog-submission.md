@@ -143,8 +143,8 @@ the gallery. There is no separate listing to maintain.
    secrets only through Hermes's routes. Its declared `requires_env` and
    `config_schema` secrets are read with `agent.secret_scope.get_secret(NAME)`,
    which honours the active profile (a bare `os.environ` read can pick up another
-   profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT
-   today) is used only through `credentialed_provider_request` with
+   profile's key under multiplexing). A subscription sign-in (Codex / ChatGPT,
+   xAI Grok) is used only through `credentialed_provider_request` with
    `requires_auth`, so Hermes attaches the token and the plugin never holds it. A
    plugin never reads `.env` files, Hermes's `auth.json`, another tool's login (a
    vendor CLI's token file, a browser profile, a keychain) or any other

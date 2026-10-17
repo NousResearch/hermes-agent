@@ -589,3 +589,79 @@ def test_stable_release_the_checkout_already_contains_is_a_rollback(installation
     assert status.get("targetSha") == shas[release], status
     assert status["updateAvailable"] is True
     assert status["rollback"] is rollback
+
+
+def test_stable_release_off_the_checkout_line_is_a_rollback_too(installation, tmp_path):
+    """A release cut from a divergent line is no forward move either (#140729): the checker must
+    not advertise it as a plain update the updater's downgrade guard would then refuse."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, _linked, home, base, head, responses, _requests, git = installation
+    side = git("commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "release line")
+    git("branch", "release-line", side)
+    bare = tmp_path / "origin.git"
+    git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
+    git("tag", "v1.2.3", side, cwd=bare)
+    git("remote", "set-url", "origin", str(bare))
+    git("checkout", "-q", "--detach", head)
+    api = "/repos/NousResearch/hermes-agent"
+    responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
+    responses[f"{api}/commits/v1.2.3"] = (200, {"sha": side})
+
+    status = check_for_updates(install_root=root, home=home, channel="stable", force=True)
+
+    assert status.get("targetSha") == side, status
+    assert status["updateAvailable"] is True
+    assert status["rollback"] is True
+
+
+def _offline_checkout(tmp_path):
+    from hermes_cli.source_check import _Checkout
+
+    return _Checkout(root=tmp_path, git="git", embedded=None, head="a" * 40, current_branch="main",
+                     origin="https://github.com/fixture/fork.git", repository="fixture/fork", dirty=False)
+
+
+@pytest.mark.parametrize("status,expected",
+                         [("diverged", True), ("behind", True), ("ahead", False), (None, False)])
+def test_release_outside_head_future_settles_unfetched_targets_via_the_compare_api(
+        monkeypatch, tmp_path, status, expected):
+    """A release this clone never fetched cannot be classified locally: the compare API answers,
+    and only "behind"/"diverged" proves the checkout does not trail it (#140729)."""
+    import subprocess
+
+    from hermes_cli import source_check
+
+    def unfetched(*_args, **_kwargs):  # merge-base cannot resolve an object this clone lacks
+        return subprocess.CompletedProcess([], 128)
+
+    monkeypatch.setattr(source_check, "_git_run", unfetched)
+    asked = []
+
+    def compare_api(_head, target, repository=None):
+        asked.append(target)
+        return {"status": status} if status else None
+
+    monkeypatch.setattr(source_check, "_github_compare", compare_api)
+    assert source_check._release_outside_head_future(_offline_checkout(tmp_path), "b" * 40) is expected
+    assert asked == ["b" * 40]
+
+
+def test_release_outside_head_future_trusts_local_proof_without_the_api(monkeypatch, tmp_path):
+    """Full history answering "no" locally settles the verdict; the compare API is not asked."""
+    import subprocess
+
+    from hermes_cli import source_check
+
+    def full_history(args, **_kwargs):
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess([], 1)
+        return subprocess.CompletedProcess([], 0, "false")  # --is-shallow-repository
+
+    monkeypatch.setattr(source_check, "_git_run", full_history)
+
+    def refused(*_args, **_kwargs):
+        raise AssertionError("a full-history no needs no compare call")
+
+    monkeypatch.setattr(source_check, "_github_compare", refused)
+    assert source_check._release_outside_head_future(_offline_checkout(tmp_path), "b" * 40) is True

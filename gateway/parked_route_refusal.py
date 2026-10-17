@@ -3,7 +3,8 @@
 A parked profile comes back on a rescan, so its traffic is temporarily unavailable. Relay frames and
 webhooks are left unacknowledged for the platform to redeliver (``webhook_ingress``). A direct bot
 (Telegram's PTB ``Updater``, Slack Socket Mode, Discord's gateway, Google Chat Pub/Sub) has already
-confirmed the update to its platform before the gateway sees it, so nothing redelivers it. Holding it
+confirmed the update to its platform before the gateway sees it, so the platform never redelivers it
+(Discord's own missed-message backfill, when enabled, can still pick it up after recovery). Holding it
 here would be a second inbound queue outside the one durable queue, kept for a profile whose store is
 the one that cannot be trusted. So the sender is told, in-channel, to resend, and nothing is admitted.
 """
@@ -13,7 +14,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Generic on purpose: the chat is not told which profile the route targets or why it is parked.
-PARKED_ROUTE_NOTICE = 'This assistant is temporarily unavailable; please resend your message in a moment.'
+# Worded as an outage notice Discord's backfill recognises (``_is_down_notice_content``): the reply
+# must not mark the never-admitted message answered, so backfill picks it up once it is served again.
+PARKED_ROUTE_NOTICE = 'The agent is currently unavailable; please resend your message in a moment.'
 
 
 def drop_rejected_route(adapter, source):

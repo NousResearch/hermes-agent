@@ -58,7 +58,7 @@ async def _settle(bot):
 def _assert_refused(bot, homes, event, caplog):
     assert [(chat, reply_to) for chat, _text, reply_to in bot.sent] == [('C', 'm1')], (
         f'the sender of a message routed to a parked profile was not told: {bot.sent}')
-    assert 'temporarily unavailable' in bot.sent[0][1] and 'resend' in bot.sent[0][1], bot.sent
+    assert 'currently unavailable' in bot.sent[0][1] and 'resend' in bot.sent[0][1], bot.sent
     assert 'beta' not in bot.sent[0][1], 'the refusal names the routed profile to the chat'
     assert event._gateway_accepted is False
     assert _admissions(homes[0][1]) == 0 and _admissions(homes[1][1]) == 0

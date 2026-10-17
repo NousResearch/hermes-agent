@@ -9,7 +9,7 @@ import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 
 import type { QueueEditState } from './composer-utils'
-import { cancelQueuedPrompt, discardLostPrompt } from './discard-lost-prompt'
+import { cancelQueuedPrompt, discardLostPrompt, steerQueuedPrompt } from './discard-lost-prompt'
 import { QueuePanel } from './queue-panel'
 
 export interface ComposerQueueSlotInputs {
@@ -132,7 +132,21 @@ export function renderComposerQueueSlot({
         }
       }}
       onSendNow={id => void sendQueuedNow(id)}
-      onSteerNow={id => void steerQueuedNow(id)}
+      onSteerNow={id => {
+        // A server row is steered by its owner, which consumes the admission so it never also runs;
+        // the pending fanout retires the card.
+        if (queuedPrompts.find(entry => entry.id === id)?.serverStatus) {
+          if (gateway) {
+            steerQueuedPrompt(sessionId, activeQueueSessionKey, id, gateway.request.bind(gateway)).catch(
+              (error: unknown) => notifyError(error, t.composer.queueStuckTitle)
+            )
+          }
+
+          return
+        }
+
+        void steerQueuedNow(id)
+      }}
       parked={queueParked}
     />
   ) : null

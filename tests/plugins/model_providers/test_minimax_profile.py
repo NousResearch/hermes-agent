@@ -149,3 +149,22 @@ class TestMinimaxOauthAliases:
         for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
             resolved = providers.get_provider_profile(alias)
             assert resolved is not None and resolved.name == "minimax-oauth", alias
+
+
+class TestMinimaxCuratedFloorContract:
+    """Relationships the minimax curated floor must keep holding (#134659 follow-up).
+
+    These assert contracts between pieces of data instead of pinning the
+    catalog's current head, so a routine catalog bump (the next M3.x) stays
+    green; only a real break — rows drifting apart — turns them red.
+    """
+
+    def test_direct_api_rows_share_one_floor(self):
+        """Both direct-API rows (``minimax``, ``minimax-cn``) are the same vendor
+        endpoint contract, so they must list the same models in the same order."""
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        assert _PROVIDER_MODELS["minimax"] == _PROVIDER_MODELS["minimax-cn"], (
+            "minimax and minimax-cn drifted apart — one row would offer models "
+            "the other cannot serve"
+        )

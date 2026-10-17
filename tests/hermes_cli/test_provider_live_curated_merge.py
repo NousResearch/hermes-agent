@@ -140,3 +140,29 @@ class TestGenericProviderLiveCuratedMerge:
 
         assert "x-preview-f-free" not in result
         assert "kimi-k3" in result
+
+    def test_minimax_curated_only_model_survives_lagging_live_list(self):
+        """#134659 bug class, end-to-end through provider_model_ids with the REAL curated floor:
+        the vendor's GET /v1/models can lag models the endpoint already serves (M3.1 was accepted
+        while unlisted). minimax is a curated-first row, so a curated-only model — whatever the
+        floor currently leads with — must still surface in the merged picker list."""
+        assert "minimax" not in _LIVE_FIRST_PICKER_PROVIDERS
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        curated = _PROVIDER_MODELS["minimax"]
+        newest, older = curated[0], curated[1]
+        live = [older]  # the lagging /v1/models omits the newest curated model
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("minimax")
+
+        assert newest in result, (
+            "a curated-only model the vendor's /v1/models omits was dropped from "
+            "the merged picker — the picker cannot offer it anywhere else"
+        )

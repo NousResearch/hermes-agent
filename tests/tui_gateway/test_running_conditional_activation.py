@@ -36,7 +36,7 @@ def built(monkeypatch, tmp_path):
 
 
 def test_running_turn_keeps_its_execution_and_lease_while_peer_joins(built, monkeypatch):
-    creator, binding, record, agent, db = built
+    creator, binding, record, agent, _db = built
     entered, release = Event(), Event()
     calls = []
     def loop(engine, message, *a, **k):
@@ -75,7 +75,7 @@ def test_running_turn_keeps_its_execution_and_lease_while_peer_joins(built, monk
 
 
 def test_engine_witness_settling_and_revision_races_refuse_without_side_effects(built, monkeypatch):
-    creator, binding, record, agent, db = built
+    _creator, binding, record, agent, db = built
     assert "result" in activate(Peer(), binding)
     entered, release = Event(), Event()
     # A contended lease forces real post-admission reload. Identity must be guarded

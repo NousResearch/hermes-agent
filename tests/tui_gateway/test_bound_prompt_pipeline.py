@@ -31,7 +31,7 @@ def delegated(built):
 
 
 def test_real_prompt_pipeline_admits_once_and_refuses_a_changed_worker_identity(built, delegated, monkeypatch):
-    creator, binding, record, agent, db = built
+    _creator, binding, record, agent, db = built
     peer = Peer()
     assert "result" in activate(peer, binding)
     # Only environment-heavy presentation/config work is stubbed. The actual
@@ -100,7 +100,7 @@ def test_real_prompt_pipeline_admits_once_and_refuses_a_changed_worker_identity(
 def test_bound_interrupt_stops_only_the_original_running_turn(built, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
-    creator, binding, record, agent, db = built
+    _creator, binding, record, agent, _db = built
     peer = Peer()
     entered, release = Event(), Event()
     def loop(*a, **k):

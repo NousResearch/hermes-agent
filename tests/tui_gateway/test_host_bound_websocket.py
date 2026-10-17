@@ -43,7 +43,7 @@ class Socket:
 def test_ticket_owned_host_activation_and_input_survive_pool_hops_without_foreign_authority(hosted, monkeypatch):
     creator, binding, record, supervisor, _done = hosted
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
-    monkeypatch.setattr(server, "resolve_skin", lambda: {})
+    monkeypatch.setattr(server, "resolve_skin", dict)
     monkeypatch.setattr(server, "_live_transports", set())
     _reset_for_tests()
 

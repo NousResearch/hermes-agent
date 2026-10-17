@@ -110,7 +110,7 @@ def test_authenticated_cut_preserves_execution_and_refusals(monkeypatch, tmp_pat
 
 
 def test_compression_and_replacement_share_the_subscription_boundary(monkeypatch, tmp_path):
-    creator, binding, record = setup(monkeypatch, tmp_path)
+    _creator, binding, record = setup(monkeypatch, tmp_path)
     assert "result" in activate(Peer(), binding)
     sid = binding["session_id"]
     entered, release, writer_started = Event(), Event(), Event()

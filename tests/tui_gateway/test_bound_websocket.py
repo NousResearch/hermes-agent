@@ -17,9 +17,9 @@ def built(monkeypatch, tmp_path):
 
 
 def test_ticket_identity_reaches_real_ws_dispatch_and_disconnect_fences_operations(built, monkeypatch):
-    creator, binding, record, agent, db = built
+    creator, binding, record, _agent, _db = built
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
-    monkeypatch.setattr(server, "resolve_skin", lambda: {})
+    monkeypatch.setattr(server, "resolve_skin", dict)
     monkeypatch.setattr(server, "_live_transports", set())
     _reset_for_tests()
     class Socket:

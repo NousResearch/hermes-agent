@@ -130,7 +130,7 @@ def test_operations_and_raw_bypasses_are_fenced_with_request_ownership_and_rotat
 
 @pytest.mark.parametrize("drift", ["none", "worker", "lease", "tip", "lease_abort"])
 def test_prompt_worker_carries_binding_through_lease_admission_without_replay(built, monkeypatch, drift):
-    creator, binding, record, agent, db = built
+    _creator, binding, record, agent, db = built
     peer = Peer()
     assert "result" in activate(peer, binding)
     # Real prompt.submit persistence + worker + facade lease; ancillary UI/turn

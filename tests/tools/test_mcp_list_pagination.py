@@ -46,6 +46,21 @@ class TestPaginateFullList:
         assert calls["n"] == _MCP_LIST_MAX_PAGES
         assert len(items) == _MCP_LIST_MAX_PAGES
 
+    @pytest.mark.parametrize("cursors", [["stuck", "stuck"], ["c1", "c2", "c1"]])
+    def test_repeated_cursor_stops_after_one_replay(self, cursors):
+        """A server that echoes (or cycles back to) a cursor already followed is asked for no further
+        pages: the replayed page is the last call, so the list never balloons to the page cap."""
+        calls = []
+
+        async def echo_list(cursor=None):
+            calls.append(cursor)
+            nxt = cursors[len(calls) - 1] if len(calls) <= len(cursors) else "never-reached"
+            return SimpleNamespace(tools=[_tool(f"t{len(calls)}")], nextCursor=nxt)
+
+        items = asyncio.run(_paginate_full_list(echo_list, "tools", "srv"))
+        assert calls == [None, *cursors[:-1]]
+        assert len(items) == len(cursors)
+
 
 class TestDiscoveryUsesPagination:
     def test_discover_tools_drains_all_pages(self):

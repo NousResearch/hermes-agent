@@ -61,7 +61,8 @@ python scripts/pdf_stamp.py doc.pdf -o out.pdf --image sig.png --x 400 --y 60 --
 python scripts/pdf_page_image.py doc.pdf --pages 1-3 --dpi 150 --out-dir imgs/
 python scripts/pdf_meta.py doc.pdf --set-meta --title "T" --author "A" -o out.pdf
 python scripts/pdf_meta.py doc.pdf --attach data.csv -o out.pdf
-python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments dir/
+python scripts/pdf_meta.py doc.pdf --list-attachments    # list embedded attachment names (JSON)
+python scripts/pdf_meta.py doc.pdf --extract-attachments dir/  # extract all attachments into dir/
 ```
 
 ## Quick Reference

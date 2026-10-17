@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from tests.gateway.test_normal_runtime_boot import control
+from tests.gateway.test_native_http_auth import DASHBOARD_TEST_TOKEN
 
 
 @pytest.mark.platforms("linux")
@@ -34,7 +35,7 @@ def test_secondary_native_ticket_implicit_selectors_touch_only_the_secondary_hom
     root = Path(__file__).resolve().parents[2]
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
-               PYTHONUNBUFFERED='1', HERMES_DASHBOARD_SESSION_TOKEN='normal-http-owner')
+               PYTHONUNBUFFERED='1', HERMES_DASHBOARD_SESSION_TOKEN=DASHBOARD_TEST_TOKEN)
     with (tmp_path / 'gateway.log').open('w+') as log:
         process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)

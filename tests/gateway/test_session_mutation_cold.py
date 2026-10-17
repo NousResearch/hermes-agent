@@ -2,7 +2,7 @@
 import asyncio
 import httpx
 import pytest
-from tests.gateway.test_native_http_auth import daemon, ticket, headers
+from tests.gateway.test_native_http_auth import DASHBOARD_TEST_TOKEN, daemon, ticket, headers
 from tests.gateway.test_session_mutation_retirement import create
 
 
@@ -25,5 +25,5 @@ def test_cold_import_mutation_binds_owner_across_restart(tmp_path):
     with daemon(tmp_path) as (home, descriptor), httpx.Client(base_url=descriptor['api_origin'], trust_env=False) as client:
         assert client.patch('/api/sessions/cold', headers=headers(ticket(home, descriptor)), json=body).json() == edited.json()
         assert client.get('/api/sessions/cold/mutation-snapshot', headers=headers(ticket(home, descriptor))).status_code == 200
-        denied = client.patch('/api/sessions/cold', headers={'Authorization': 'Bearer normal-http-owner'}, json=body | {'request_id': 'foreign'})
+        denied = client.patch('/api/sessions/cold', headers={'Authorization': f'Bearer {DASHBOARD_TEST_TOKEN}'}, json=body | {'request_id': 'foreign'})
         assert denied.status_code == 403, denied.text

@@ -16,6 +16,8 @@ from websockets.exceptions import InvalidStatus
 
 from tests.gateway.test_normal_runtime_boot import control
 
+DASHBOARD_TEST_TOKEN = "native-http-owner-test-token-for-disposable-daemons"
+
 
 @contextmanager
 def daemon(tmp_path):
@@ -37,7 +39,7 @@ def daemon(tmp_path):
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1',
-               HERMES_DASHBOARD_SESSION_TOKEN='normal-http-owner')
+               HERMES_DASHBOARD_SESSION_TOKEN=DASHBOARD_TEST_TOKEN)
     with (tmp_path / 'gateway.log').open('w+') as log:
         process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -54,6 +56,8 @@ def daemon(tmp_path):
                 time.sleep(.1)
             log.seek(0)
             assert descriptor.get('state') == 'ready', (descriptor, log.read())
+            available = httpx.get(descriptor['api_origin'] + '/api/config', trust_env=False)
+            assert available.status_code == 401, available.text
             yield home, descriptor
         finally:
             if process.poll() is None:
@@ -88,7 +92,7 @@ def test_native_http_grants_are_single_use_and_bound_to_daemon(tmp_path):
     with daemon(tmp_path) as (home, descriptor), httpx.Client(
             base_url=descriptor['api_origin'], trust_env=False) as client:
         assert client.get('/api/config').status_code == 401
-        normal = {'Authorization': 'Bearer normal-http-owner'}
+        normal = {'Authorization': f'Bearer {DASHBOARD_TEST_TOKEN}'}
         assert client.get('/api/config', headers=normal).status_code == 200
         assert 'sibling-other' in client.get('/api/config?profile=other', headers=normal).text
         sibling_config = home / 'profiles' / 'other' / 'config.yaml'

@@ -507,7 +507,7 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None
     reset_had_activity: bool = False
     prev_session_id: Optional[str] = None  # feeds the continuity note
-    # Explicit /new or /reset triggers topic/channel skill re-injection on the first turn.
+    # New/reset-session bootstrap stays pending until a successful client turn is persisted.
     is_fresh_reset: bool = False
     # Historical finalization fence; timers no longer write it.
     expiry_finalized: bool = False
@@ -1049,6 +1049,7 @@ class SessionStore(
             chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
+            is_fresh_reset=True,
         )
         with self._lock:
             current = self._entries.get(session_key)

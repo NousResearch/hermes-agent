@@ -100,7 +100,7 @@ async def test_a_refused_local_turn_answers_with_its_refusal(project, monkeypatc
     runner._async_session_store = SimpleNamespace(_store=runner.session_store, load_transcript=lambda _sid: _history())
     runner._hmwa_run_session_hygiene = lambda *args: _history()
     monkeypatch.setattr('gateway.run_turn_prepare.build_session_context', lambda *_args: None)
-    entry = SimpleNamespace(yolo=None, session_id='sid', session_key='key')
+    entry = SimpleNamespace(yolo=None, session_id='sid', session_key='key', is_fresh_reset=False)
     reply, _tokens = await runner._hmwa_prepare_turn(_event(event.text), event.source, entry, 'key', 'key', 1)
     assert isinstance(reply, str) and 'refused' in reply
 

@@ -39,6 +39,16 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def is_session_bootstrap_input(event) -> bool:
+    """Client input may initialize a session; automation must leave it for the next client.
+
+    Canonical API requests set internal=True for authorization, so use their private execution
+    binding to distinguish them from self-injected events. No client metadata can supply it.
+    """
+    from gateway.session_api_turn import api_execution
+    return api_execution.get() is not None or not (event.internal or event.inherit_channel_pin)
+
+
 def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
     """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
     config and launch credential, walking its own fallback chain on an AuthError unless
@@ -394,7 +404,7 @@ class GatewayTurnPrepareMixin:
         return session_entry
 
     async def _hmwa_open_session(self, session_entry, session_key, source):
-        """Consume auto-reset / fresh-reset flags and emit ``session:start`` for new sessions.
+        """Consume one-shot reset cleanup, retaining bootstrap until the first turn commits.
         Returns ``(_was_auto_reset, _is_new_session)``."""
         # Capture and immediately consume was_auto_reset so it does not re-fire on subsequent messages —
         # preventing the cleanup from wiping model/reasoning overrides set between turns (Closes #48031).
@@ -412,17 +422,10 @@ class GatewayTurnPrepareMixin:
 
         _is_fresh_reset = getattr(session_entry, "is_fresh_reset", False)
         _is_new_session = session_entry.created_at == session_entry.updated_at or _was_auto_reset or _is_fresh_reset
-        # Consume is_fresh_reset so it doesn't leak onto later messages in the same session.
-        if _is_fresh_reset:
-            # See #6508.
-            session_entry.is_fresh_reset = False
+        # Latch legacy fresh entries before durable-active-turn bookkeeping advances updated_at.
+        # Preparation, execution and persistence failures must all leave bootstrap retryable.
         if _is_new_session:
-            await self.hooks.emit("session:start", {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "session_id": session_entry.session_id,
-                "session_key": session_key,
-            })
+            session_entry.is_fresh_reset = True
         return _was_auto_reset, _is_new_session
 
     async def _hmwa_deliver_auto_reset_notice(self, session_entry, source, turn_sidecar_notes):
@@ -654,12 +657,9 @@ class GatewayTurnPrepareMixin:
         # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
         title_user_message = event.text or None
 
-        # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
-        _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
-
         await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
+        # Another turn may have committed bootstrap while this one waited for the same session.
+        _is_new_session = session_entry.is_fresh_reset
 
         # A turn becomes durable recovery work only after it owns the per-session lease; marking
         # earlier would falsely recover a message that never began processing.
@@ -677,6 +677,12 @@ class GatewayTurnPrepareMixin:
             from gateway.session_results import record_unexecuted_failure
             return record_unexecuted_failure(t("gateway.errors.history_unavailable")), _session_env_tokens
 
+        # Synthetic turns carry no human channel binding and cannot spend its bootstrap.
+        _auto = getattr(event, "auto_skill", None)
+        _bootstrap_input = is_session_bootstrap_input(event)
+        if _is_new_session and _bootstrap_input and _auto:
+            self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
+
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, internal=event.internal)
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
@@ -692,6 +698,14 @@ class GatewayTurnPrepareMixin:
         if message_text is None:
             # A refused local turn answers with its refusal (session_context_refs.turn_references).
             return getattr(event, "_gateway_turn_refusal", None), _session_env_tokens
+
+        if _is_new_session and _bootstrap_input:
+            await self.hooks.emit("session:start", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_id": session_entry.session_id,
+                "session_key": session_key,
+            })
 
         message_text, persist_user_message, persist_user_timestamp = (
             self._hmwa_apply_message_timestamp(event, message_text)

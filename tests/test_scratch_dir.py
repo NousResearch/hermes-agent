@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.waiting import wait_until
+
 import psutil
 import pytest
 
@@ -561,7 +563,7 @@ def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) 
     assert "could not fully remove" not in log, log
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell orphaning")
+@pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass  # a red run must kill the orphan this test made (reparented to init)
 def test_prune_keeps_entry_a_registered_hermes_process_works_in_but_reaps_orphans(tmp_path, monkeypatch):
     """#132401 live-worker guard: a background process Hermes itself started (tracked in the
@@ -581,11 +583,10 @@ def test_prune_keeps_entry_a_registered_hermes_process_works_in_but_reaps_orphan
     worker = registry.spawn_local(sleeper, cwd=str(owned_dir))
     lane = registry.spawn_local(f"{sleeper} >/dev/null 2>&1 </dev/null & echo $! > {shlex.quote(str(pidfile))}",
                                 cwd=str(orphan_dir))
-    deadline = time.time() + 15
-    while not (lane.exited and pidfile.exists() and pidfile.read_text().strip()) and time.time() < deadline:
+    def _lane_done():
         registry.poll(lane.id)
-        time.sleep(0.1)
-    orphan = int(pidfile.read_text())
+        return lane.exited and pidfile.exists() and pidfile.read_text().strip()
+    orphan = int(wait_until(_lane_done, timeout=15, what="lane shell exits after forking its orphan"))
     ancient = time.time() - 30 * 3600
     for path in (owned_dir, orphan_dir):
         os.utime(path, (ancient, ancient))
@@ -593,14 +594,31 @@ def test_prune_keeps_entry_a_registered_hermes_process_works_in_but_reaps_orphan
         assert prune_scratch_dir(scratch) == 1
         assert owned_dir.exists() and not orphan_dir.exists()
         assert worker.process.poll() is None, "registered Hermes worker was reaped"
-        deadline = time.time() + 10
-        while psutil.pid_exists(orphan) and psutil.Process(orphan).status() != psutil.STATUS_ZOMBIE \
-                and time.time() < deadline:
-            time.sleep(0.1)
-        assert not psutil.pid_exists(orphan) or psutil.Process(orphan).status() == psutil.STATUS_ZOMBIE
+        def _orphan_gone():
+            try:
+                return psutil.Process(orphan).status() == psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                return True
+        wait_until(_orphan_gone, timeout=10, what="orphan reaped")
         log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
         assert f"kept {str(owned_dir)!r} — live Hermes process pid=" in log, log
     finally:
         registry.kill_process(worker.id)
         with contextlib.suppress(psutil.Error):
             psutil.Process(orphan).kill()
+
+
+@pytest.mark.platforms("posix")
+def test_prune_keeps_entry_the_pruning_sessions_own_lineage_works_in(tmp_path, monkeypatch):
+    """#132401 review: a live session inside an idle entry that launches another Hermes
+    command is the pruner's ancestor — never signalled, and its entry must not be deleted
+    from under it either."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    session_dir = scratch / "session-cwd"
+    session_dir.mkdir()
+    ancient = time.time() - 30 * 3600
+    os.utime(session_dir, (ancient, ancient))
+    monkeypatch.chdir(session_dir)
+    assert prune_scratch_dir(scratch) == 0
+    assert session_dir.exists()
+

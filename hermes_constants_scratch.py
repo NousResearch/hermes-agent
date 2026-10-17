@@ -232,9 +232,10 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
     skip = _own_lineage()
     uid = os.getuid() if hasattr(os, "getuid") else None
     victims: list[tuple[psutil.Process, str]] = []
+    # The pruner's own lineage is never signalled, but its cwd still keeps an entry: a live
+    # session that launched this Hermes command may be working inside it.
+    lineage: list[tuple[psutil.Process, str]] = []
     for proc in psutil.process_iter(["pid"]):
-        if proc.pid in skip:
-            continue
         try:
             if uid is not None and proc.uids().real != uid:
                 continue
@@ -248,9 +249,9 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
         if not _under(cwd_path, root):
             continue
         if deleted or not os.path.exists(cwd_path) or any(_under(cwd_path, t) for t in targets):
-            victims.append((proc, cwd_path))
+            (lineage if proc.pid in skip else victims).append((proc, cwd_path))
     registered = _registered_live_pids(Path(root).parent.parent) if victims else set()
-    owned = [(proc, cwd_path) for proc, cwd_path in victims if _owned_by_hermes(proc, registered)]
+    owned = lineage + [(proc, cwd_path) for proc, cwd_path in victims if _owned_by_hermes(proc, registered)]
     for proc, cwd_path in owned:
         for entry in [e for e in doomed if _under(cwd_path, os.path.realpath(str(e)))]:
             doomed.remove(entry)

@@ -2174,6 +2174,7 @@ from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_termin
 
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
+from gateway.open_policy import OWN_POLICY_OPEN_ENV as _OWN_POLICY_OPEN_ENV
 from gateway.session import (
     AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
     profile_from_session_key_namespace)

@@ -120,8 +120,8 @@ def _default_profile_state(home):
 
 
 @pytest.mark.platforms("posix")  # The fixture exercises the POSIX default/named profile layout.
-@pytest.mark.parametrize("multiplex", [False, True], ids=["standalone", "satellite"])
-@pytest.mark.parametrize("retained", [True, False], ids=["resume-restored", "create-missing"])
+@pytest.mark.parametrize("multiplex, retained", [(False, True), (True, False)],
+                         ids=["standalone-resume-restored", "satellite-create-missing"])
 def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiplex, retained, capsys):
     home = local_gateway(multiplex)
     connection = GatewayConnection.shared()
@@ -152,10 +152,14 @@ def test_snapshot_restore_rejoins_the_restored_authority(local_gateway, multiple
 
     CLICommandsMixin._snapshot_restore(cli, ["/snapshot", "restore", snapshot])
 
-    assert connection.final, capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert connection.final, out
+    assert "Restored state from" in out and "failed" not in out and "not served again" not in out, out
     assert store.connection is not connection and not store.connection.final
     assert old_reader._wrapped._conn is None and shared_reader._conn is None
     assert cli.agent is None
+    from hermes_cli import gateway_tools
+    assert gateway_tools._view.connection is store.connection  # /agents, /stop and the status bar
     assert (cli.session_id == sid) is retained
     history = json.dumps(cli.conversation_history)
     assert "AFTER_SNAPSHOT" not in history

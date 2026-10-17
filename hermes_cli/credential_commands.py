@@ -1,10 +1,14 @@
 """CLI handlers for the ``/creds`` slash command.
 
-Subcommands operate on the profile's encrypted credential store
-(``agent/credential_store.py``). ``show`` reveals a plaintext value, so the
-command is registered ``cli_only``: a messaging surface must never echo a
-secret into a chat (and from there back into model context). Values that leave
-the store are registered with the redactor so later output paths scrub them.
+Subcommands operate on the profile's credential store
+(``agent/credential_store.py``) plus its platform backends
+(``agent/credential_backends.py``): a value is written to Bitwarden Secrets
+Manager or 1Password when that integration is available, and the local store
+keeps only an index entry for it — otherwise the local encrypted store is used
+exactly as before. ``show`` reveals a plaintext value, so the command is
+registered ``cli_only``: a messaging surface must never echo a secret into a
+chat (and from there back into model context). Values that leave the store are
+registered with the redactor so later output paths scrub them.
 """
 
 from __future__ import annotations
@@ -12,8 +16,18 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from typing import Callable, Dict, List, Optional
 
+from agent.credential_backends import (
+    LOCAL,
+    AmbiguousBackendError,
+    BackendError,
+    format_statuses,
+    get_backend,
+    remove_credential,
+    save_credential,
+)
 from agent.credential_store import (
     STORE_FILE,
     CredentialStore,
@@ -38,14 +52,19 @@ _FORBIDDEN_ENV_NAMES = frozenset({
 
 _USAGE = """Usage:
   /creds                       List stored credential names
-  /creds list                  List stored credential names
+  /creds list                  List stored credential names (shows where each lives)
   /creds set <name> [value]    Store a credential (masked prompt if value omitted;
-                               --force replaces an existing one)
+                               --force replaces an existing one; --backend <name>
+                               or --local chooses the target instead of the prompt)
   /creds show <name>           Print a credential's value (this terminal only)
-  /creds remove <name>         Delete a credential (alias: delete)
+  /creds remove <name>         Delete a credential, including from its platform
   /creds inject <name> ...     Export credential(s) as env vars for this CLI session
   /creds unset <name> ...      Remove previously injected env vars
-  /creds clear --yes           Delete every stored credential (needs --yes)"""
+  /creds status                Show which secret platforms are available
+  /creds clear --yes           Delete every stored credential (needs --yes)
+
+Backends: local (always), plus bitwarden / onepassword when `hermes secrets`
+has set them up. With more than one available, /creds asks where to store."""
 
 
 def handle_creds_command(args: str) -> str:
@@ -64,6 +83,8 @@ def handle_creds_command(args: str) -> str:
         "clear": lambda: _handle_clear(rest),
         "inject": lambda: _handle_inject(rest),
         "unset": lambda: _handle_unset(rest),
+        "status": _handle_status,
+        "backends": _handle_status,
         "help": lambda: _USAGE,
     }
     handler = handlers.get(subcommand.lower())
@@ -73,6 +94,8 @@ def handle_creds_command(args: str) -> str:
         return handler()
     except CredentialStoreError as exc:
         return _store_error(exc)
+    except BackendError as exc:
+        return str(exc)
 
 
 def _store_error(exc: CredentialStoreError) -> str:
@@ -88,15 +111,26 @@ def _register(value: str) -> None:
     register_secret(value)
 
 
+def _backend_label(name: str) -> str:
+    return "Local encrypted store" if name == LOCAL else get_backend(name).display_name
+
+
 def _handle_list() -> str:
     entries = get_store().list()
     if not entries:
         return "No credentials stored. Use /creds set <name> [value] to store one."
+    width = max(len(entry["name"]) for entry in entries)
     lines = [f"Stored credentials ({len(entries)}):", ""]
-    lines.extend(f"  {entry['name']}" for entry in entries)
+    lines.extend(f"  {entry['name']:<{width}}  [{entry.get('backend', LOCAL)}]"
+                 for entry in entries)
     lines += ["", "Use /creds show <name> to reveal a value, or pass the name in "
                   "execute_code's `credentials` parameter."]
     return "\n".join(lines)
+
+
+def _handle_status() -> str:
+    """Which platforms can take a new credential right now (and why not)."""
+    return format_statuses()
 
 
 def _handle_show(arg: str) -> str:
@@ -130,15 +164,74 @@ def _prompt_value(name: str) -> Optional[str]:
             return None
 
 
-def _handle_set(arg: str) -> str:
-    text = arg.strip()
-    if not text:
-        return "Usage: /creds set <name> [value] [--force]\n  Omit the value for a masked prompt."
+def _extract_flags(text: str) -> tuple[str, bool, Optional[str]]:
+    """Pull ``--force``/``-f``, ``--backend <name>``/``-b <name>`` and ``--local``
+    out of the argument string, leaving name + value untouched (value keeps its
+    internal spacing). Returns ``(rest, force, backend)``."""
     force = False
+    backend: Optional[str] = None
+    match = re.search(r"(?:^|\s)--backend\s+(\S+)", text)
+    if match:
+        backend = match.group(1)
+        text = text[:match.start()] + text[match.end():]
+    if backend is None:
+        match = re.search(r"(?:^|\s)-b\s+(\S+)", text)
+        if match:
+            backend = match.group(1)
+            text = text[:match.start()] + text[match.end():]
+    if re.search(r"(?:^|\s)--local(?:\s|$)", text):
+        backend = LOCAL
+        text = re.sub(r"\s*--local", "", text, count=1)
     for flag in ("--force", "-f"):
-        if re.search(rf"(^|\s){re.escape(flag)}(?=\s|$)", text):
+        if re.search(rf"(?:^|\s){re.escape(flag)}(?=\s|$)", text):
             force = True
             text = re.sub(rf"\s*{re.escape(flag)}", "", text, count=1)
+    return text.strip(), force, backend
+
+
+def _choose_backend(names: list[str]) -> Optional[str]:
+    """Numbered picker over the available platforms plus local.
+
+    Returns None when the terminal cannot answer (piped stdin) or the user
+    cancels — the caller reports that ``--backend`` decides it instead.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+    options = [*names, LOCAL]
+    for index, name in enumerate(options, 1):
+        print(f"  {index}) {_backend_label(name)}")
+    while True:
+        try:
+            answer = input(f"Store where? [1-{len(options)}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if not answer:
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1]
+        print(f"  Enter a number 1-{len(options)}.")
+
+
+def _save(name: str, value: str, *, backend: Optional[str], force: bool) -> dict:
+    """save_credential with the picker wired in for an ambiguous ``auto`` target."""
+    requested = backend or "auto"
+    try:
+        return save_credential(name, value, backend=requested, overwrite=force)
+    except AmbiguousBackendError as exc:
+        chosen = _choose_backend(exc.names)
+        if not chosen:
+            return {"success": False, "error":
+                    f"More than one secret platform is available ({', '.join(exc.names)}).\n"
+                    f"Re-run with --backend <name> (or --local) to choose one."}
+        return save_credential(name, value, backend=chosen, overwrite=force)
+
+
+def _handle_set(arg: str) -> str:
+    text, force, backend = _extract_flags(arg.strip())
+    if not text:
+        return ("Usage: /creds set <name> [value] [--force] [--backend <name>|--local]\n"
+                "  Omit the value for a masked prompt.")
     parts = text.split(None, 1)
     name = parts[0]
     value = parts[1].strip() if len(parts) > 1 else None
@@ -150,26 +243,37 @@ def _handle_set(arg: str) -> str:
         value = _prompt_value(name)
         if not value:
             return "Cancelled — nothing stored."
-    store = get_store()
-    result = store.set(name, value, overwrite=force)
+    result = _save(name, value, backend=backend, force=force)
     if not result.get("success"):
-        if "already exists" in str(result.get("error", "")):
-            return (f"{result['error']}\n"
-                    f"Update it with: /creds set {name} <value> --force")
-        return str(result.get("error") or "Failed to store credential.")
+        error = str(result.get("error") or "Failed to store credential.")
+        if "already exists" in error:
+            return f"{error}\nUpdate it with: /creds set {name} <value> --force"
+        return error
     _register(value)
+    where = _where_phrase(str(result.get("backend", LOCAL)))
     verb = "Updated" if result.get("updated") else "Stored"
-    return f"{verb} '{name}' (encrypted in {store.base_dir / STORE_FILE})."
+    lines = [f"{verb} '{name}' {where}."]
+    lines.extend(f"Note: {warning}" for warning in result.get("warnings", []))
+    return "\n".join(lines)
+
+
+def _where_phrase(backend_name: str) -> str:
+    if backend_name == LOCAL:
+        return f"in the local encrypted store ({get_store().base_dir / STORE_FILE})"
+    return f"in {_backend_label(backend_name)}"
 
 
 def _handle_remove(arg: str) -> str:
     name = arg.strip()
     if not name:
         return "Usage: /creds remove <name>"
-    result = get_store().delete(name)
-    if result.get("success"):
+    result = remove_credential(name)
+    if not result.get("success"):
+        return str(result.get("error") or f"Failed to remove '{name}'.")
+    backend_name = str(result.get("backend") or LOCAL)
+    if backend_name == LOCAL:
         return f"Removed '{name}'."
-    return str(result.get("error") or f"Failed to remove '{name}'.")
+    return f"Removed '{name}' from {_backend_label(backend_name)}."
 
 
 def _handle_clear(arg: str) -> str:
@@ -177,8 +281,16 @@ def _handle_clear(arg: str) -> str:
         count = len(get_store().list())
         return (f"Refusing to delete {count} credential(s) without confirmation.\n"
                 "Run /creds clear --yes to delete them all.")
-    removed = get_store().clear()["removed"]
-    return f"Cleared {removed} credential(s)."
+    removed = 0
+    failures: list[str] = []
+    for entry in get_store().list():
+        result = remove_credential(entry["name"])
+        if result.get("success"):
+            removed += 1
+        else:
+            failures.append(str(result.get("error") or f"Failed to remove {entry['name']}."))
+    lines = [f"Cleared {removed} credential(s).", *failures]
+    return "\n".join(lines)
 
 
 def _child_would_see(name: str) -> bool:

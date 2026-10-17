@@ -839,6 +839,7 @@ def _inject_credentials(code: str, credentials) -> tuple[str, Optional[str]]:
     if unbindable:
         return code, ("credential name(s) must be valid Python identifiers to bind as "
                       f"variables: {', '.join(unbindable)}")
+    from agent.credential_backends import BackendError
     from agent.credential_store import CredentialStoreError, get_store
     from agent.redact import register_secret
 
@@ -846,6 +847,8 @@ def _inject_credentials(code: str, credentials) -> tuple[str, Optional[str]]:
         values = {name: get_store().resolve_value(name) for name in names}
     except CredentialStoreError as exc:
         return code, f"Credential store unavailable: {exc}"
+    except BackendError as exc:
+        return code, f"Credential unavailable: {exc}"
     missing = [name for name, value in values.items() if value is None]
     if missing:
         return code, (f"Credential(s) not stored: {', '.join(missing)}. Store them with "

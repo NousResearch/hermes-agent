@@ -245,20 +245,74 @@ class CredentialStore:
         return {"success": True, "name": name, "created": existing is None, "updated": existing is not None}
 
     def get(self, name: str) -> Optional[str]:
-        """Plaintext value for *name*, or None when absent. Trusted execution paths only."""
+        """Plaintext value for *name*, or None when absent. Trusted execution paths only.
+
+        Platform-backed entries (``backend`` + ``ref``) resolve through their
+        backend — the value never lives locally for those — and the remote read
+        happens outside the lock, since it runs a vendor CLI.
+        """
         with self._locked():
             entries = self._read_all()
             entry = entries.get(name)
-            return str(entry["value"]) if entry and entry.get("value") is not None else None
+        if entry is None:
+            return None
+        backend_name = entry.get("backend")
+        if backend_name:
+            from agent.credential_backends import read_ref
+
+            return read_ref(str(backend_name), str(entry.get("ref") or ""))
+        value = entry.get("value")
+        return str(value) if value is not None else None
+
+    def entry(self, name: str) -> Optional[dict[str, Any]]:
+        """Metadata for one entry (backend/ref/timestamps) — never the local value."""
+        with self._locked():
+            entries = self._read_all()
+            entry = entries.get(name)
+        if entry is None:
+            return None
+        return {key: val for key, val in entry.items() if key != "value"}
 
     def list(self) -> builtins.list[dict[str, Any]]:
-        """Metadata for every credential (names + timestamps, never values)."""
+        """Metadata for every credential (name, backend, timestamps, never values)."""
         with self._locked():
             entries = self._read_all()
         return [
-            {"name": name, "created_at": meta.get("created_at"), "updated_at": meta.get("updated_at")}
+            {"name": name,
+             "backend": str(meta.get("backend") or "local"),
+             "created_at": meta.get("created_at"),
+             "updated_at": meta.get("updated_at")}
             for name, meta in sorted(entries.items())
         ]
+
+    def set_remote(self, name: str, backend: str, ref: str, *,
+                   overwrite: bool = False) -> dict[str, Any]:
+        """Record an index entry for a credential whose value lives in *backend*.
+
+        This is what makes the store platform-only: the entry carries the
+        locator, never the value, so there is no local copy to drift or leak.
+        """
+        validate_name(name)
+        if not backend or not ref:
+            raise ValueError("backend and ref are required for a platform entry.")
+        with self._locked():
+            entries = self._read_all()
+            existing = entries.get(name)
+            if existing and not overwrite:
+                return {
+                    "success": False,
+                    "error": f"Credential '{name}' already exists. Use overwrite to replace it.",
+                }
+            now = time.time()
+            entries[name] = {
+                "backend": backend,
+                "ref": ref,
+                "created_at": existing.get("created_at", now) if existing else now,
+                "updated_at": now,
+            }
+            self._write_all(entries)
+        return {"success": True, "name": name, "backend": backend,
+                "created": existing is None, "updated": existing is not None}
 
     def delete(self, name: str) -> dict[str, Any]:
         """Remove one credential."""

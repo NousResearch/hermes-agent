@@ -89,6 +89,19 @@ CREDENTIAL_SCHEMA = {
                     "reporting it as already stored. Default false."
                 ),
             },
+            "backend": {
+                "type": "string",
+                "enum": ["auto", "local", "bitwarden", "onepassword"],
+                "description": (
+                    "Where to store the value (action='request'). 'auto' (default) uses "
+                    "the secret platform that `hermes secrets` has set up — Bitwarden "
+                    "Secrets Manager or 1Password — and falls back to the local encrypted "
+                    "store when neither is available; if BOTH are available, 'auto' is "
+                    "ambiguous and this call fails asking you to pick one (the user "
+                    "decides which they want). 'local' forces the local store. Values "
+                    "saved to a platform are NOT copied locally — only an index entry is."
+                ),
+            },
         },
         "required": ["action"],
     },
@@ -125,6 +138,7 @@ def _request_credential(
     description: Optional[str] = None,
     instructions: Optional[str] = None,
     overwrite: bool = False,
+    backend: str = "auto",
 ) -> str:
     """Prompt the user for a value on an interactive terminal; refuse otherwise."""
     from agent.credential_store import CredentialStoreError, validate_name
@@ -178,19 +192,52 @@ def _request_credential(
         return _error("User cancelled or provided an empty value.")
 
     try:
-        result = store.set(name, value.strip(), overwrite=overwrite)
+        result = _store_credential(name, value.strip(), backend=backend, overwrite=overwrite)
     except (ValueError, CredentialStoreError) as exc:
         return _error(str(exc))
     if not result.get("success"):
         return _error(str(result.get("error") or "Failed to store credential."))
     _register(value.strip())
+    message = (f"Credential '{name}' stored in {_backend_display(result)}. Pass its name in "
+               f"execute_code's `credentials` parameter to use it.")
+    for warning in result.get("warnings", []):
+        message += f" Note: {warning}"
     return json.dumps({
         "success": True,
         "stored": True,
         "name": name,
-        "message": f"Credential '{name}' stored encrypted. Pass its name in execute_code's "
-                   f"`credentials` parameter to use it.",
+        "backend": result.get("backend", "local"),
+        "message": message,
     }, ensure_ascii=False)
+
+
+def _store_credential(name: str, value: str, *, backend: str, overwrite: bool) -> dict:
+    """save_credential with ambiguity surfaced as an actionable tool error."""
+    from agent.credential_backends import (
+        AmbiguousBackendError,
+        BackendError,
+        get_backend,
+        save_credential,
+    )
+
+    try:
+        return save_credential(name, value, backend=backend, overwrite=overwrite)
+    except AmbiguousBackendError as exc:
+        choices = ", ".join(exc.names)
+        return {"success": False, "error":
+                f"More than one secret platform is available ({choices}). Ask the user which "
+                f"one to use, then retry with backend set to one of them (or 'local')."}
+    except BackendError as exc:  # explicit --backend that cannot be used right now
+        return {"success": False, "error": str(exc)}
+
+
+def _backend_display(result: dict) -> str:
+    from agent.credential_backends import LOCAL, get_backend
+
+    name = str(result.get("backend") or LOCAL)
+    if name == LOCAL:
+        return "the local encrypted store"
+    return get_backend(name).display_name
 
 
 def _register(value: str) -> None:
@@ -248,13 +295,14 @@ def credential_tool(
     description: Optional[str] = None,
     instructions: Optional[str] = None,
     overwrite: bool = False,
+    backend: str = "auto",
 ) -> str:
     """Dispatch credential tool actions."""
     if action == "request":
         if not name:
             return _error("name is required for the request action.")
         return _request_credential(name, description=description, instructions=instructions,
-                                   overwrite=overwrite)
+                                   overwrite=overwrite, backend=backend)
     if action == "list":
         return _list_credentials()
     if action == "status":
@@ -282,6 +330,7 @@ registry.register(
         description=args.get("description"),
         instructions=args.get("instructions"),
         overwrite=bool(args.get("overwrite", False)),
+        backend=str(args.get("backend") or "auto"),
     ),
     check_fn=check_credential_requirements,
     emoji="🔐",

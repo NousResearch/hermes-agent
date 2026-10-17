@@ -125,3 +125,95 @@ def test_corrupt_store_reports_failure_and_changes_nothing(tmp_path):
     out = handle_creds_command("set beta_token_two value2")
     assert "Nothing was changed" in out
     assert store._store_path.read_bytes() == b"\x00broken"
+
+
+# --- platform-aware /creds (backends injected) -----------------------------
+
+def test_set_flag_backend_forces_local_even_when_a_platform_is_available(monkeypatch):
+    import agent.credential_backends as cb
+    from tests.agent.test_credential_backends import FakeBackend
+
+    fake = FakeBackend()
+    monkeypatch.setattr(cb, "all_backends", lambda: [fake])
+
+    out = handle_creds_command("set alpha_token_one value1 --backend local")
+    assert "local encrypted store" in out
+    assert fake.created == []
+    assert cs.get_store().list()[0]["backend"] == "local"
+
+
+def test_set_auto_uses_the_available_platform_and_tags_the_listing(monkeypatch):
+    import agent.credential_backends as cb
+    from tests.agent.test_credential_backends import FakeBackend
+
+    fake = FakeBackend(display_name="Fake Vault")
+    monkeypatch.setattr(cb, "all_backends", lambda: [fake])
+
+    out = handle_creds_command("set alpha_token_one value1")
+    assert "Fake Vault" in out
+    assert "Stored 'alpha_token_one'" in out
+    assert handle_creds_command("list").endswith(
+        "execute_code's `credentials` parameter.")
+    assert "[fakeone]" in handle_creds_command("list")
+    assert cs.get_store().get("alpha_token_one") == "value1"
+
+
+def test_set_auto_with_two_platforms_needs_a_choice_when_cannot_prompt(monkeypatch):
+    import agent.credential_backends as cb
+    from tests.agent.test_credential_backends import FakeBackend
+
+    monkeypatch.setattr(cb, "all_backends",
+                        lambda: [FakeBackend(name="one"), FakeBackend(name="two")])
+    monkeypatch.setattr("hermes_cli.credential_commands.sys.stdin.isatty", lambda: False)
+
+    out = handle_creds_command("set alpha_token_one value1")
+    assert "More than one secret platform" in out and "--backend" in out
+    assert cs.get_store().entry("alpha_token_one") is None
+
+
+def test_set_prompts_for_the_target_when_two_platforms_are_available(monkeypatch):
+    import agent.credential_backends as cb
+    from tests.agent.test_credential_backends import FakeBackend
+
+    one, two = FakeBackend(name="one"), FakeBackend(name="two")
+    monkeypatch.setattr(cb, "all_backends", lambda: [one, two])
+    monkeypatch.setattr("hermes_cli.credential_commands.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("hermes_cli.credential_commands.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "2")
+
+    out = handle_creds_command("set alpha_token_one value1")
+    assert two.created and not one.created
+    assert "Fake One" in out or "two" in out.lower()
+
+
+def test_remove_deletes_the_platform_copy(monkeypatch):
+    import agent.credential_backends as cb
+    from tests.agent.test_credential_backends import FakeBackend
+
+    fake = FakeBackend()
+    monkeypatch.setattr(cb, "all_backends", lambda: [fake])
+    handle_creds_command("set alpha_token_one value1")
+
+    out = handle_creds_command("remove alpha_token_one")
+    assert "from Fake One" in out
+    assert fake.deleted == ["fakeone:alpha_token_one"]
+    assert cs.get_store().entry("alpha_token_one") is None
+
+
+def test_status_reports_every_backend(monkeypatch):
+    import agent.credential_backends as cb
+    from tests.agent.test_credential_backends import FakeBackend
+
+    monkeypatch.setattr(cb, "all_backends",
+                        lambda: [FakeBackend(name="up", display_name="Up Vault"),
+                                 FakeBackend(name="down", display_name="Down Vault",
+                                             available=False, reason="needs setup")])
+    out = handle_creds_command("status")
+    assert "Up Vault" in out and "Down Vault" in out and "needs setup" in out
+    assert handle_creds_command("backends") == out
+
+
+def test_unknown_backend_name_is_reported_not_silently_local(monkeypatch):
+    out = handle_creds_command("set alpha_token_one value1 --backend nope")
+    assert "unknown credential backend" in out
+    assert cs.get_store().entry("alpha_token_one") is None

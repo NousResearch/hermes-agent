@@ -156,7 +156,8 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
     registered as that session's declared key (and stamped into its binding receipt).
 
     ``walked_from`` is the stored session a Responses/Runs chain continued from when the chain moved
-    past it to *session_id* (``continued_api_session``): the fences it passed stay for good."""
+    past it to *session_id* (``continued_api_session``): the fences it passed stay for good. If one
+    aged out since that lookup, the bind refuses with the retryable ``chain_moved``."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
         raise RuntimeStoreError('invalid_params')
@@ -201,8 +202,10 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         from hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
             raise RuntimeStoreError('not_found')
-        if walked_from:
-            keep_passed_fences(conn, partial(api_generation_id, walked_from), session_id)
+        # The walk ran before this write: a sweep marker it passed may have been reclaimed since,
+        # and binding the successor then would split the chain (the next walk stops at the root).
+        if walked_from and not keep_passed_fences(conn, partial(api_generation_id, walked_from), session_id):
+            raise RuntimeStoreError('chain_moved')
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_BINDING_PREFIX + session_id,)).fetchone()
         if saved is not None:

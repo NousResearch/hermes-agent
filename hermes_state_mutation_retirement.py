@@ -58,12 +58,16 @@ def keep_passed_fences(conn, derive, session_id):
     """Make permanent the fences a walk (``derive`` as for :func:`first_generation`) passed on its
     way to *session_id*, inside the write that binds *session_id*: that successor now holds the
     conversation, so a sweep marker aging out would send a later walk back to the passed
-    generation. Stops at *session_id* or at the first generation without a marker."""
+    generation. False when a passed generation has lost its marker since the walk (a sweep's was
+    reclaimed): a walk now stops there, so *session_id* must not be bound as its successor."""
     generation = 0
-    while (sid := derive(generation)) != session_id and conn.execute(
-            "UPDATE state_meta SET value=json_remove(value, '$.expires') WHERE key=? AND json_valid(value)",
-            (RETIRED_PREFIX + sid,)).rowcount:
+    while (sid := derive(generation)) != session_id:
+        if not conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + sid,)).fetchone():
+            return False
+        conn.execute("UPDATE state_meta SET value=json_remove(value, '$.expires') WHERE key=? AND json_valid(value)",
+                     (RETIRED_PREFIX + sid,))
         generation += 1
+    return True
 
 
 def has_mutation_receipt(db, principal_id, session_id, request_id):

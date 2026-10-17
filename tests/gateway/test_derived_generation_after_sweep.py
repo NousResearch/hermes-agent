@@ -141,3 +141,62 @@ async def test_a_chain_resumed_after_a_sweep_never_returns_to_its_swept_root(api
         forked = await client.post(path, json={'input': 'what number?', 'previous_response_id': first}, headers=auth)
         assert forked.status in (200, 202), await forked.text()
     assert owner.db.get_session(root) is None, 'the continuation went back to the swept root'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/v1/responses', '/v1/runs'])
+async def test_a_fence_reclaimed_between_chain_lookup_and_bind_never_splits_the_chain(
+        api, owner, served, path, monkeypatch):
+    """The lookup walks past the swept root to its next generation, then housekeeping reclaims the
+    root's sweep marker before that successor's bind. Binding it would leave the walk unpinned: the
+    next continuation would find the root free and land there (root, successor, root). The bind
+    re-checks the walk in its own write and refuses with a retryable ``chain_moved``; the chain then
+    stays on its root."""
+    from gateway.platforms import api_server_authority_runs as runs
+    from gateway.session_api import api_generation_id
+    app = web.Application()
+    app.router.add_post('/v1/responses', api._handle_responses)
+    app.router.add_post('/v1/runs', api._handle_runs)
+    auth = {'Authorization': 'Bearer ' + chat._API_KEY}
+    store = api._current_response_store()
+    async with TestClient(TestServer(app)) as client:
+        opened = await client.post('/v1/responses', json={'input': 'remember 42'}, headers=auth)
+        assert opened.status == 200, await opened.text()
+        first = (await opened.json())['id']
+        root = store.get(first)['session_id']
+        successor = api_generation_id(root, 1)
+        _sweep(owner, root)
+        lookup = runs.continued_session
+
+        async def reclaimed_after_lookup(*args, **kwargs):
+            found = await lookup(*args, **kwargs)
+            _past_the_horizon(owner)
+            return found
+        monkeypatch.setattr(runs, 'continued_session', reclaimed_after_lookup)
+        raced = await client.post(path, json={'input': 'and then?', 'previous_response_id': first}, headers=auth)
+        assert raced.status == 503, await raced.text()
+        assert (await raced.json())['error']['code'] == 'chain_moved'
+        assert raced.headers.get('Retry-After') == '1'
+        assert owner.db.get_session(successor) is None, 'the successor was bound without pinning its walk'
+        monkeypatch.setattr(runs, 'continued_session', lookup)
+        for turn in ('what number?', 'still there?'):
+            again = await client.post(path, json={'input': turn, 'previous_response_id': first}, headers=auth)
+            assert again.status in (200, 202), await again.text()
+    assert owner.db.get_session(root) is not None, 'the retried continuation left the root'
+    assert owner.db.get_session(successor) is None, 'the chain split across the root and its successor'
+
+
+def test_keep_passed_fences_reports_a_walk_it_could_not_pin(owner):
+    """``keep_passed_fences`` pins every fence a walk passed and says whether the walk still holds:
+    a passed generation without a marker means the walk would now stop there."""
+    import json
+    from functools import partial
+    from gateway.session_api import api_generation_id
+    from hermes_state_mutation_retirement import RETIRED_PREFIX, keep_passed_fences, retire_routes
+    derive = partial(api_generation_id, 'root-x')
+    passed = ['root-x', derive(1)]
+    owner.db._execute_write(lambda conn: retire_routes(conn, passed, expiring=passed))
+    assert owner.db._execute_write(lambda conn: keep_passed_fences(conn, derive, derive(2))) is True
+    assert all('expires' not in json.loads(owner.db.get_meta(RETIRED_PREFIX + sid)) for sid in passed)
+    owner.db._execute_write(lambda conn: conn.execute('DELETE FROM state_meta WHERE key=?', (RETIRED_PREFIX + passed[1],)))
+    assert owner.db._execute_write(lambda conn: keep_passed_fences(conn, derive, derive(2))) is False

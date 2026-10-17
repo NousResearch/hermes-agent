@@ -268,8 +268,9 @@ def _untar_deb_payload(name: str, payload: bytes, staged: Path) -> None:
 
     try:
         extract_tar(io.BytesIO(payload), staged)
-    except tarfile.FilterError as exc:
-        member = exc.tarinfo.name if exc.tarinfo is not None else "?"
+    except tarfile.TarError as exc:
+        tarinfo = getattr(exc, "tarinfo", None)
+        member = tarinfo.name if tarinfo is not None else "?"
         raise InstallError(name, f"unsafe member {member!r}: {exc}") from exc
     real_staged = os.path.realpath(staged)
     # Termux debs carry owner-only modes across the whole tree (700 on

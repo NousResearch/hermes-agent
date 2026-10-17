@@ -291,7 +291,10 @@ def _build_section(home: Path) -> str:
         "a handoff: pick the right teammate from the roster below, message them "
         "with message_agent, and report back naming which agent replied. Message "
         "ONE clearly relevant teammate; don't fan out to several unless the user "
-        "explicitly asked.\n"
+        "explicitly asked. message_agent is only for the teammate roster: never use "
+        "it to contact Hermes, product, or technical support. Product support is "
+        "https://github.com/NousResearch/hermes-agent/issues; direct the user there "
+        "and do not describe a Bot Chat DM as a support report.\n"
         f'When YOU receive a "Message from 🤖 <name> (@<handle>):" message, a '
         "teammate agent is talking to you (not the user): address them, reply "
         "concisely via message_agent to their handle, and if it is a pure FYI "

@@ -92,6 +92,18 @@ def test_emits_for_default_when_any_profile_is_managed(tmp_path):
     assert "message_agent" in section
 
 
+def test_protocol_keeps_product_support_outside_the_teammate_dm_tool(tmp_path):
+    """Product support requests must name a public destination, not a Bot Chat."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+
+    assert "message_agent is only for the teammate roster" in section
+    assert "https://github.com/NousResearch/hermes-agent/issues" in section
+
+
 def test_emits_for_named_profile_with_own_handle(tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

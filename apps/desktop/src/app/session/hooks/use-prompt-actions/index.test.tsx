@@ -5567,6 +5567,25 @@ describe('usePromptActions cancelRun', () => {
     vi.restoreAllMocks()
   })
 
+  it('reports real interrupt RPC failures to a strict one-shot caller', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.interrupt') {
+        throw new Error('interrupt transport failed')
+      }
+
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await expect(handle!.cancelRun({ throwOnFailure: true })).rejects.toThrow('interrupt transport failed')
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+
+    // Ordinary Stop retains its original catch-and-notify contract.
+    await expect(handle!.cancelRun()).resolves.toBeUndefined()
+  })
+
   it('clears a stuck compaction overlay so Stop dismisses "Summarizing thread"', async () => {
     // A hung compaction never emits message.start/complete/error, so the
     // per-session compacting flag (and its overlay) sticks. Stop is the user's

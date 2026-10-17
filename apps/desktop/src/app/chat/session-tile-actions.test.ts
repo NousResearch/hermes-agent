@@ -159,6 +159,23 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 
+  it('reports failed interrupts to one-shot Send now without changing ordinary Stop', async () => {
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      if (method === 'session.interrupt') {
+        throw new Error('interrupt transport failed')
+      }
+
+      return {}
+    })
+    const { result } = renderTileActions()
+
+    await act(async () => {
+      await expect(result.current.cancelRun({ throwOnFailure: true })).rejects.toThrow('interrupt transport failed')
+      await expect(result.current.cancelRun()).resolves.toBeUndefined()
+    })
+    expect(requestGatewayMock).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+  })
+
   it('resumes the stored session and retries once when session.redirect (steer) reports "session not found"', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let redirectAttempts = 0

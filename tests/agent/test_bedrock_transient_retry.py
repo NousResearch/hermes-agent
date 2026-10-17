@@ -88,3 +88,44 @@ def test_bedrock_validation_error_does_not_retry(agent):
     assert result["completed"] is False
     assert result["failed"] is True
     assert "validationException" in result["error"]
+
+
+def _decoder_error(exception_type, message):
+    # Same text the SDK's Bedrock decoder raises: the repr of botocore's ``to_response_dict()``.
+    response_dict = {
+        "status_code": 400,
+        "headers": {
+            ":exception-type": exception_type,
+            ":content-type": "application/json",
+            ":message-type": "exception",
+        },
+        "body": ('{"message":"%s"}' % message).encode(),
+    }
+    return ValueError(f"Bad response code, expected 200: {response_dict}")
+
+
+def test_validation_frame_naming_a_transient_type_in_its_body_does_not_retry(agent):
+    error = _decoder_error(
+        "validationException",
+        "Malformed input. Retry only on internalServerException or throttlingException.",
+    )
+    with (
+        patch.object(agent, "_interruptible_api_call", side_effect=error) as api_call,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+        patch.object(agent, "_dump_api_request_debug"),
+    ):
+        result = agent.run_conversation("hello")
+    assert api_call.call_count == 1
+    assert result["failed"] is True
+
+
+def test_fault_frame_classifier_reads_the_exception_type_header():
+    from agent.api_error_summary import is_provider_stream_fault_frame
+
+    assert is_provider_stream_fault_frame(_decoder_error("internalServerException", "Try again."))
+    assert not is_provider_stream_fault_frame(
+        _decoder_error("validationException", "see internalServerException")
+    )
+    assert not is_provider_stream_fault_frame(ValueError("internalServerException"))

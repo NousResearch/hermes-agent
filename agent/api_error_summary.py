@@ -43,25 +43,29 @@ def is_provider_stream_parse_error(error: BaseException) -> bool:
 # expected 200: {...}")`` when Bedrock sends an exception frame mid-stream. These
 # ``:exception-type`` values are Bedrock's transient faults ("Try your request again"); a
 # ``validationException`` frame is a real client error and stays out of this set (#138580).
+# Only the ``:exception-type`` header value is compared: the message body may itself name a
+# transient type (e.g. a validation error's documentation text), and must not flip the verdict.
 _BEDROCK_STREAM_FAULT_PREFIX = "bad response code, expected 200"
-_BEDROCK_TRANSIENT_STREAM_EXCEPTIONS = (
+_BEDROCK_EXCEPTION_TYPE_RE = re.compile(r"""['"]:exception-type['"]\s*:\s*['"]([^'"]+)['"]""")
+_BEDROCK_TRANSIENT_STREAM_EXCEPTIONS = frozenset({
     "internalserverexception",
     "serviceunavailableexception",
     "throttlingexception",
     "modelstreamerrorexception",
     "modeltimeoutexception",
     "modelnotreadyexception",
-)
+})
 
 
 def is_provider_stream_fault_frame(error: BaseException) -> bool:
     """True for a transient provider exception frame the event-stream decoder surfaced as ``ValueError``."""
     if not isinstance(error, ValueError):
         return False
-    text = str(error).lower()
-    return text.startswith(_BEDROCK_STREAM_FAULT_PREFIX) and any(
-        exc in text for exc in _BEDROCK_TRANSIENT_STREAM_EXCEPTIONS
-    )
+    text = str(error)
+    if not text.lower().startswith(_BEDROCK_STREAM_FAULT_PREFIX):
+        return False
+    match = _BEDROCK_EXCEPTION_TYPE_RE.search(text)
+    return bool(match) and match.group(1).lower() in _BEDROCK_TRANSIENT_STREAM_EXCEPTIONS
 
 
 # Offline DNS failures are wrapped in a generic "Connection error" by SDKs — inspect the chain.

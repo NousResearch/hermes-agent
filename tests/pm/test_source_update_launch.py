@@ -595,3 +595,66 @@ def test_failed_tail_attempt_is_counted_and_success_clears_it(source_launch, tmp
     assert not completion_pending_path(root).exists()
     assert not _completion_attempts_path(root).exists(), "success cleared the attempt record"
 
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("attempt_count", [
+    venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS,
+    venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS,
+])
+def test_skipped_completion_retry_boots_previous_generation_once(source_launch, tmp_path, attempt_count):
+    """a deferred completion must boot old dependencies without a re-exec loop (#132391)."""
+    root, store_python, _ = source_launch
+    repository = Path(__file__).resolve().parents[2]
+    shutil.copy2(repository / "hermes_bootstrap.py", root / "hermes_bootstrap.py")
+    (root / "launch_test_tools.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(1, {str(repository)!r})\n"
+        "from pm import paths\n"
+        f"paths.lockfile_path = lambda: Path({str(tmp_path / 'tool-lock.json')!r})\n",
+        encoding="utf-8",
+    )
+    boots = tmp_path / "launch-count"
+    (root / "launch_probe.py").write_text(
+        "import launch_test_tools\n"
+        "from pathlib import Path\n"
+        f"boots = Path({str(boots)!r})\n"
+        "count = int(boots.read_text(encoding='utf-8')) + 1 if boots.exists() else 1\n"
+        "boots.write_text(str(count), encoding='utf-8')\n"
+        "if count > 2: raise SystemExit('bootstrap repeatedly re-executed')\n"
+        "import hermes_bootstrap\n"
+        "import json, sys, selected_probe\n"
+        "print(json.dumps({'executable': sys.executable, 'value': selected_probe.VALUE}))\n",
+        encoding="utf-8",
+    )
+    pm.sync_venv(["all"], explicit=True, project_root=root)
+    previous = _fact(root)
+    (site_packages(selected_venv(root)) / "selected_probe.py").write_text(
+        "VALUE = 'previous generation'\n", encoding="utf-8",
+    )
+    lock = root / "uv.lock"
+    lock.write_bytes(lock.read_bytes() + b"\n# source update changes the committed lock\n")
+    assert not pm.venv_is_current(project_root=root)
+    pending = venv_sync.arm_completion(root)
+    attempts = venv_sync._completion_attempts_path(root)
+    attempts.write_text(f"{attempt_count}\n", encoding="utf-8")
+    before_receipts = _receipts(tmp_path)
+
+    result = subprocess.run(
+        [str(store_python), "-c", "import launch_probe"], cwd=root,
+        env=dict(os.environ), capture_output=True, text=True, timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "executable": str(store_python), "value": "previous generation",
+    }
+    assert boots.read_text(encoding="utf-8") == "1"
+    assert _fact(root) == previous
+    assert _receipts(tmp_path) == before_receipts
+    assert pending.is_file()
+    assert attempts.read_text(encoding="utf-8") == f"{attempt_count}\n"
+    assert not (tmp_path / "completion-calls").exists()
+    expected_notices = int(attempt_count >= venv_sync.COMPLETION_RETRY_MAX_ATTEMPTS)
+    assert result.stderr.count("could not be finished automatically") == expected_notices
+    assert "source-update completion failed" not in result.stderr

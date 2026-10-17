@@ -36,6 +36,13 @@ _CHROMIUM_MISSING_HINT = f"Chromium browser is missing. Install it with: {_CHROM
 # ``tools.bot_desktop.browser.dock_argv`` — one list, or the human's click dies while the agent's works.
 CHROMIUM_SANDBOX_BYPASS_ARGS = ("--no-sandbox", "--disable-dev-shm-usage")
 
+# ``--remote-debugging-port=0`` is an ephemeral port, and an ephemeral port is exactly what
+# ``content/child/runtime_features.cc`` reads as automation: Blink turns on its ``AutomationControlled``
+# feature, the browser reports ``navigator.webdriver == true``, and the sites the snapshot's own logins
+# are for refuse it (#137774). One list for every launch path that carries the port — the dock's argv and
+# the real-profile snapshot — so the flag string has a single edit point.
+CHROMIUM_ANTI_DETECTION_ARGS = ("--disable-blink-features=AutomationControlled",)
+
 
 def apparmor_restricts_unprivileged_userns() -> bool:
     """Ubuntu 23.10+ default: unprivileged user namespaces are denied, so a Chromium whose

@@ -66,6 +66,16 @@ def test_dock_browser_caps_its_disk_cache():
     assert 0 < int(cap.split("=", 1)[1]) <= 512 * 1024 * 1024
 
 
+def test_dock_browser_is_not_advertised_as_automated():
+    """Chromium reads an *ephemeral* ``--remote-debugging-port`` as automation and turns on Blink's
+    AutomationControlled feature (``content/child/runtime_features.cc``), so the human's takeover browser
+    reports ``navigator.webdriver == true`` and Google / Cloudflare refuse the sign-in the dock exists
+    for. The switch must ride along with the port that causes it."""
+    argv = browser.dock_argv("/opt/chrome", "/p/dir")
+    assert "--remote-debugging-port=0" in argv
+    assert "--disable-blink-features=AutomationControlled" in argv
+
+
 def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
     (user_data_dir / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/abc\n", encoding="utf-8")
     os.symlink(f"host-{pid}", user_data_dir / "SingletonLock")

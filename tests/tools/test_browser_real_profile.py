@@ -224,6 +224,45 @@ class TestRealProfileCdpLaunch:
         assert err and "already being prepared" in err
 
 
+    def test_launch_is_not_advertised_as_automated(self, tmp_path):
+        """The ephemeral ``--remote-debugging-port=0`` is what makes Blink turn ``AutomationControlled``
+        on (``content/child/runtime_features.cc``), so this browser reports ``navigator.webdriver ==
+        true`` and the sites the snapshot's own logins are for refuse it — the same breakage #137774
+        reports for the dock's browser, on the other launch path this repo owns. The switch has to ride
+        on the argv we actually launch, next to the port that causes it."""
+        import tools.browser_tool as bt
+        self._reset()
+        captured = {}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured["chrome_argv"] = argv
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n", encoding="utf-8")
+            return FakeChrome()
+
+        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp",
+                          side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt_session, "_popen_agent_browser",
+                          side_effect=lambda argv, env, socket_dir, tag: Mock(wait=Mock(return_value=0),
+                                                                              returncode=0)), \
+             patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch.object(bt_cloud, "_is_headed_mode", return_value=False):
+            bt_real_profile._real_profile_cdp()
+        argv = captured["chrome_argv"]
+        assert "--remote-debugging-port=0" in argv
+        assert "--disable-blink-features=AutomationControlled" in argv
+        self._reset()
+
+
     def test_launch_is_headless_and_agent_browser_attaches(self, tmp_path):
         """Real-profile browsing runs headless (no focus-stealing window).
 

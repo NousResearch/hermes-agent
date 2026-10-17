@@ -95,10 +95,18 @@ def dock_argv(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = 
     # The same sandbox policy agent-browser starts this binary with (root, Docker, AppArmor userns): the
     # human's Browser is the bot's browser, in the same container; a stricter rule here just made the dock
     # icon die with 'No usable sandbox!' in the official image while the agent's own Chromium ran fine.
-    from tools.browser_tool_session import CHROMIUM_SANDBOX_BYPASS_ARGS, _needs_chromium_sandbox_bypass
+    from tools.browser_tool_session import (CHROMIUM_ANTI_DETECTION_ARGS, CHROMIUM_SANDBOX_BYPASS_ARGS,
+                                            _needs_chromium_sandbox_bypass)
     # The profile is persistent by design (logins survive handoffs); its HTTP cache is not worth a
     # gateway's disk: uncapped it grows for months toward a hosted instance's 6 GB.
-    return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0", "--no-first-run",
+    # The port is ephemeral (0) so Chromium picks a free one, and content/child/runtime_features.cc reads
+    # exactly that as automation: it turns on Blink's AutomationControlled feature, so the human's own
+    # takeover browser reports navigator.webdriver == true and the Google / Cloudflare sign-in they opened
+    # it for is refused ("this browser or app may not be secure"). --test-type below already hides the
+    # unsupported-flag infobar this switch would otherwise put over the takeover view; google_meet passes
+    # the same switch for the same reason.
+    return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0",
+            *CHROMIUM_ANTI_DETECTION_ARGS, "--no-first-run",
             "--no-default-browser-check", "--test-type", f"--disk-cache-size={DISK_CACHE_BYTES}",
             *(CHROMIUM_SANDBOX_BYPASS_ARGS if (_needs_chromium_sandbox_bypass() if sandbox_bypass is None
                                               else sandbox_bypass) else ())]

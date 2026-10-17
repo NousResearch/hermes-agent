@@ -1,4 +1,4 @@
-"""Thread-scoped stdout/stderr silencing for background worker threads.
+﻿"""Thread-scoped stdout/stderr silencing for background worker threads.
 
 ``contextlib.redirect_stdout`` reassigns the *process-global* stream, so a daemon worker
 silencing itself also silences every other thread (gateway event loop included). This
@@ -92,6 +92,23 @@ def _ensure_installed(attr: str, passthrough: TextIO) -> _ThreadRoutingStream:
     with _install_lock:
         proxy = _installed.get(attr)
         current = getattr(sys, attr, None)
+        # Unwrap known proxy wrappers (e.g. _RedactingStdio) so we never
+        # stack a routing proxy on top of another wrapper (#139687).
+        _unwrap_seen = set()
+        while current is not None and id(current) not in _unwrap_seen and not isinstance(current, _ThreadRoutingStream):
+            _unwrap_seen.add(id(current))
+            nxt = None
+            if hasattr(current, "_stream"):
+                cand = getattr(current, "_stream", None)
+                if cand is not None and cand is not current:
+                    nxt = cand
+            if nxt is None and hasattr(current, "_passthrough"):
+                cand = getattr(current, "_passthrough", None)
+                if cand is not None and cand is not current:
+                    nxt = cand
+            if nxt is None:
+                break
+            current = nxt
         if isinstance(current, _ThreadRoutingStream):
             # A redirect context may restore an older proxy; adopt it rather
             # than wrapping it into an unbounded chain.

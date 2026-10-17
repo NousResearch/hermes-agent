@@ -320,6 +320,10 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    # Other bots in the same tenant: with ``require_mention`` off the adapter sees every
+    # message, so one that @-mentions a known bot is addressed to that bot, not to us.
+    # Skip it to keep two bots from answering the same message.
+    other_bot_open_ids: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -341,7 +345,7 @@ class FeishuBatchState:
 
 # --- Admission: policy types ---
 
-RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected"]
+RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected", "dm_policy_rejected", "mentioned_other_bot"]
 
 
 def _is_bot_sender(sender: Any) -> bool:
@@ -1415,6 +1419,7 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=frozenset(_id_set(extra.get("admins", []))),
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
+            other_bot_open_ids=frozenset(_id_set(extra.get("other_bot_open_ids", []) or [])),
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
         )
 
@@ -3055,7 +3060,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if normalized.startswith("image/"):
             return MessageType.PHOTO
         if normalized.startswith("audio/"):
-            return MessageType.AUDIO
+            # 语音/音频文件（用户以文件形式上传的 voice/audio，preferred == "document"）分类为 VOICE，
+            # 让网关按 Discord/Telegram 同样的路径自动转写；AUDIO 会被静默忽略。
+            # 原生语音消息（message_type=audio）已由 _resolve_normalized_message_type 归类为 VOICE，
+            # 这里补的是它没覆盖的音频文件上传分支。
+            return MessageType.VOICE
         if normalized.startswith("video/"):
             return MessageType.VIDEO
         return default
@@ -3412,6 +3421,10 @@ class FeishuAdapter(BasePlatformAdapter):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
             return "group_policy_rejected"
+        # 监听全部模式（require_mention=False）：若消息 @ 了其他已知 bot（如 AI助手/助理），
+        # 那是发给对方的消息，本 bot 跳过，避免两个机器人抢同一消息导致混乱。
+        if not require_mention and self._mentions_other_bot(message):
+            return "mentioned_other_bot"
         return None
 
     # Class default so the first drop after construction is the one that warns.
@@ -3489,6 +3502,26 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _post_mentions_bot(self, mentions: list[FeishuMentionRef]) -> bool:
         return any(m.is_self for m in mentions)
+
+    def _mentions_other_bot(self, message: Any) -> bool:
+        """True when the message @-mentions a configured other bot (not this one).
+
+        Configured via ``platforms.feishu.other_bot_open_ids`` (list of ``ou_…`` ids);
+        empty by default, in which case this never matches.
+        """
+        others = getattr(self, "_other_bot_open_ids", None) or getattr(type(self), "_OTHER_BOT_OPEN_IDS", frozenset())
+        if not others:
+            return False
+        mentions = getattr(message, "mentions", None) or []
+        for m in mentions:
+            mid = getattr(m, "id", None)
+            moid = (getattr(mid, "open_id", None) or "").strip()
+            if moid and moid in others:
+                return True
+        raw = getattr(message, "content", "") or ""
+        if any(oid in raw for oid in others):
+            return True
+        return False
 
     def _bot_identity(self) -> _FeishuBotIdentity:
         return _FeishuBotIdentity(open_id=self._bot_open_id, user_id=self._bot_user_id, name=self._bot_name)
@@ -3748,16 +3781,27 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> Any:
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
+        # The create-message API has no ``thread_id`` receive_id_type: asking for one fails with
+        # 99992402 "field validation failed" and the message is dropped. A topic send with no
+        # explicit reply anchor therefore has to *become* a reply — anchor on the thread's own
+        # last message and reply inside it (doubles as a real check that the topic still exists).
+        # No anchor (or a rejected reply): fall through to a chat-level send so delivery happens
+        # instead of silently failing. Cron jobs whose origin is a topic hit exactly this path.
+        if not effective_reply_to and thread_id:
+            effective_reply_to = await self._fetch_last_message_in_thread(thread_id)
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
-            return await self._run_blocking(self._client.im.v1.message.reply, request)
-        if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
-        elif chat_id.startswith("feishu_user_id:"):
+            response = await self._run_blocking(self._client.im.v1.message.reply, request)
+            if self._response_succeeded(response) or not thread_id:
+                return response
+            logger.warning(
+                "[Feishu] In-thread reply (thread %s, anchor %s) failed: %s — retrying with chat-level send",
+                thread_id, effective_reply_to, getattr(response, "msg", None) or getattr(response, "code", None),
+            )
+        if chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:
             receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"

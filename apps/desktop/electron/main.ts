@@ -402,7 +402,8 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
-import { type LoginAttempt, loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
+import { loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
+import { startOauthLoginWindow } from './oauth-login-window'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
@@ -6176,7 +6177,9 @@ async function waitForRemoteHermes(remote) {
     rememberLog('[cloud] boot: agent session rejected but portal session is live, running silent sign-in')
 
     try {
-      await cloudAgentSilentSignIn(remote.baseUrl)
+      // Boot re-runs on wake and renderer retries, not only on a click: keep
+      // the cascade hidden and let the overlay's Sign in button own any prompt.
+      await cloudAgentSilentSignIn(remote.baseUrl, { background: true })
     } catch (cascadeError) {
       rememberLog(`[cloud] boot: silent sign-in did not complete: ${cascadeError?.message || cascadeError}`)
 
@@ -7293,243 +7296,68 @@ async function clearOauthSession(baseUrl) {
   }
 }
 
-// Open a gateway login window in the OAuth session partition, resolving once
-// the access-token cookie appears (login done) or rejecting if the window is
-// closed first. The window navigates through the IDP and back to
-// /auth/callback, which sets the session cookies on the partition; we poll the
-// cookie jar rather than try to read the HttpOnly value.
-//
-// `silent` selects the URL the window loads:
-//   - silent=false (default): ``/login``, the public provider chooser the
-//     settings UI drives.
-//   - silent=true: the PROTECTED root ``/``. With no session cookie the gate
-//     runs ``_auto_sso_response``: single provider + a live portal session in
-//     this partition → silent 302 through ``/auth/login`` → portal
-//     ``/oauth/authorize`` → ``/auth/callback``, no prompt (decisions.md Q5).
-//
-// `background` (or a withoutInteractiveOauthLogin scope) means nobody asked
-// for this sign-in: the window stays hidden and gives up after 12s. Only a
-// user-driven caller may show a window. oauth-login-flights.ts keeps one flow
-// per cookie jar, so a burst of callers shares one window.
+// Open a gateway login window in the OAuth session partition; window mechanics
+// and the silent/background contract live in oauth-login-window.ts. A refused
+// background request is never a user gesture, so `background` (or a
+// withoutInteractiveOauthLogin scope) keeps the window hidden; only a
+// user-driven caller may show one. oauth-login-flights.ts keeps one flow per
+// cookie jar, so a burst of callers shares one window.
 const oauthLoginFlights = new OauthLoginFlights()
 
-function openOauthLoginWindow(baseUrl, options: OauthLoginWindowOptions = {}) {
-  const { connectionId = '', pendingAuthMode = '', pendingKind = '' } = options
-  const background = Boolean(options.background) || !canShowInteractiveOauthLogin()
-  const partition = resolveOauthPartitionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind })
-  const key = loginFlightKey(partition, baseUrl)
+function openOauthLoginWindow(
+  baseUrl,
+  { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
+) {
+  const identity = { connectionId, pendingAuthMode, pendingKind }
+  const unattended = background || !canShowInteractiveOauthLogin()
+  const partition = resolveOauthPartitionForUrl(baseUrl, identity)
 
-  return oauthLoginFlights.run(key, background ? 'background' : 'foreground', () =>
-    startOauthLoginWindow(baseUrl, { ...options, background })
-  )
-}
-
-interface OauthLoginWindowOptions {
-  silent?: boolean
-  background?: boolean
-  connectionId?: string
-  pendingAuthMode?: string
-  pendingKind?: string
-}
-
-type OauthLoginOutcome = { baseUrl: string; ok: boolean }
-
-function startOauthLoginWindow(baseUrl, options: OauthLoginWindowOptions = {}): LoginAttempt<OauthLoginOutcome> {
-  const { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = options
-
-  let reveal = (): void => {}
-
-  const result = new Promise<OauthLoginOutcome>((resolve, reject) => {
-    // Unattended recovery may silently renew a session, but must never turn
-    // an expired gateway into a visible login window (a user click promotes
-    // it through reveal() below).
-    let hiddenRecovery = background
-
-    if (!app.isReady()) {
-      reject(new Error('Desktop is not ready to start an OAuth login.'))
-
-      return
-    }
-
-    const sess = getOauthSessionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind })
+  return oauthLoginFlights.run(loginFlightKey(partition, baseUrl), unattended ? 'background' : 'foreground', () => {
+    const sess = app.isReady() ? getOauthSessionForUrl(baseUrl, identity) : null
 
     if (!sess) {
-      reject(new Error('OAuth session partition is unavailable.'))
-
-      return
+      throw new Error(
+        app.isReady() ? 'OAuth session partition is unavailable.' : 'Desktop is not ready to start an OAuth login.'
+      )
     }
 
-    let settled = false
-    let win = null
-    let pollTimer = null
-    let revealTimer = null
-    let deadlineTimer = null
+    return startOauthLoginWindow(
+      { baseUrl: normalizeRemoteBaseUrl(baseUrl), session: sess, silent, background: unattended },
+      {
+        createWindow: ({ session: windowSession, show, title }) =>
+          new BrowserWindow({
+            width: 520,
+            height: 720,
+            title,
+            autoHideMenuBar: true,
+            show,
+            webPreferences: {
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: true,
+              session: windowSession,
+              webSecurity: true
+            }
+          }),
+        hasSessionCookie: () => hasOauthSessionCookie(baseUrl, identity),
+        isExpectedNavigationAbort: isExpectedOauthNavigationAbort,
+        loadOptionsFor: loginUrl => {
+          const loginHeaders = headersForRemoteRequest(loginUrl)
+          rememberLog(
+            `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(loginUrl).host}`
+          )
 
-    const finish = err => {
-      if (settled) {
-        return
+          return oauthLoginLoadUrlOptions(loginHeaders)
+        },
+        log: rememberLog,
+        // #61457: mirror the fresh cookies before the jar can drop them again.
+        onLanded: () => void captureRemoteSessionCookiesIntoMirror(sess, partition, baseUrl),
+        // A crashed sign-in renderer never settles the promise; log it (#81290).
+        onWindowCreated: win =>
+          installWindowRendererLifecycle(win as BrowserWindow, { kind: 'oauth', callbacks: { log: rememberLog } })
       }
-
-      settled = true
-
-      if (pollTimer) {
-        clearInterval(pollTimer)
-      }
-
-      if (revealTimer) {
-        clearTimeout(revealTimer)
-      }
-
-      if (deadlineTimer) {
-        clearTimeout(deadlineTimer)
-      }
-
-      try {
-        if (win && !win.isDestroyed()) {
-          win.destroy()
-        }
-      } catch {
-        // window already torn down
-      }
-
-      if (err) {
-        reject(err)
-      } else {
-        // #61457: the jar just got the fresh session cookies — mirror them
-        // into memory immediately, before the jar can drop them again.
-        void captureRemoteSessionCookiesIntoMirror(
-          sess,
-          resolveOauthPartitionForUrl(baseUrl, { connectionId, pendingAuthMode, pendingKind }),
-          baseUrl
-        )
-        resolve({ baseUrl, ok: true })
-      }
-    }
-
-    const checkCookie = async () => {
-      if (settled) {
-        return
-      }
-
-      if (await hasOauthSessionCookie(baseUrl, { connectionId, pendingAuthMode, pendingKind })) {
-        finish(null)
-      }
-    }
-
-    try {
-      win = new BrowserWindow({
-        width: 520,
-        height: 720,
-        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes gateway',
-        autoHideMenuBar: true,
-        // Silent cascade: start HIDDEN. The auto-SSO 302 chain completes in
-        // well under a second, so the window normally never needs to show. We
-        // only reveal it as a fallback if the cascade DOESN'T complete quickly
-        // (e.g. the portal session lapsed and the gate fell through to the
-        // interactive chooser) — see the reveal timer below.
-        show: !silent && !hiddenRecovery,
-        webPreferences: {
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-          session: sess,
-          webSecurity: true
-        }
-      })
-    } catch (error) {
-      finish(error instanceof Error ? error : new Error(String(error)))
-
-      return
-    }
-
-    // Re-check the cookie jar on every successful navigation (the callback
-    // redirect is the moment cookies get set) plus a low-frequency poll as a
-    // belt-and-braces fallback for IDPs that finish via in-page JS.
-    win.webContents.on('did-navigate', () => void checkCookie())
-    win.webContents.on('did-redirect-navigation', () => void checkCookie())
-    win.webContents.on('did-frame-navigate', () => void checkCookie())
-    // Log-only lifecycle diagnostics: a crashed sign-in renderer is invisible
-    // to the window's promise path (it never settles), so without this the
-    // failure leaves no trace in desktop.log (#81290 follow-up).
-    installWindowRendererLifecycle(win, { kind: 'oauth', callbacks: { log: rememberLog } })
-    pollTimer = setInterval(() => void checkCookie(), 750)
-
-    // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
-    // auto-SSO didn't go through silently (no portal session, multi-provider,
-    // loop-guard tripped, etc.) and the window is now showing an interactive
-    // page. Reveal it so the user can complete sign-in manually rather than
-    // staring at nothing. Cleared on finish().
-    if (silent && win && !hiddenRecovery) {
-      revealTimer = setTimeout(() => {
-        try {
-          if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
-            win.show()
-          }
-        } catch {
-          // window torn down
-        }
-      }, 2500)
-    }
-
-    if (hiddenRecovery) {
-      deadlineTimer = setTimeout(() => finish(new Error('Silent sign-in did not complete; sign-in required.')), 12_000)
-    }
-
-    // A user's click joined this flow: show the window it already has (a
-    // second window would replace the gateway's PKCE state cookie) and drop
-    // the unattended deadline so they have time to finish.
-    reveal = () => {
-      if (settled || !win || win.isDestroyed()) {
-        return
-      }
-
-      hiddenRecovery = false
-
-      if (deadlineTimer) {
-        clearTimeout(deadlineTimer)
-        deadlineTimer = null
-      }
-
-      try {
-        win.show()
-        win.focus()
-      } catch {
-        // window torn down
-      }
-    }
-
-    win.on('closed', () => {
-      if (!settled) {
-        finish(new Error('Login window closed before authentication completed.'))
-      }
-    })
-
-    // ``next`` is intentionally omitted: the gateway lands on ``/`` after
-    // login, which is a valid authenticated page that sets the cookies. We
-    // only care that the cookie jar is populated.
-    //
-    // silent=true loads the protected root so the gate auto-SSOs (no chooser);
-    // silent=false loads the public ``/login`` chooser for interactive sign-in.
-    const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
-    const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
-    const loginHeaders = headersForRemoteRequest(loginUrl)
-    rememberLog(
-      `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(normalizedBase).host}`
     )
-    win.loadURL(loginUrl, oauthLoginLoadUrlOptions(loginHeaders)).catch(error => {
-      // Callback navigation can abort the original load after setting cookies.
-      // Keep the bounded hidden recovery alive long enough to observe them.
-      if (hiddenRecovery && isExpectedOauthNavigationAbort(error)) {
-        void checkCookie()
-
-        return
-      }
-
-      finish(error instanceof Error ? error : new Error(String(error)))
-    })
   })
-
-  return { result, reveal: () => reveal() }
 }
 
 // JSON request routed through the OAuth session partition so the HttpOnly
@@ -7661,7 +7489,10 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
       },
       login: async () => {
         try {
-          await openOauthLoginWindow(origin, { silent: true })
+          // A refused request is never a user gesture: try the hidden
+          // auto-SSO, and on failure leave the 401 to the app's own "Sign in"
+          // surface instead of opening a window nobody asked for.
+          await openOauthLoginWindow(origin, { silent: true, background: true })
         } catch (reloginError) {
           rememberLog(
             `Remote session re-login after 401 failed for ${new URL(url).host}: ${reloginError?.message || reloginError}`
@@ -8150,7 +7981,7 @@ function trimCloudAgents(body) {
 // if the portal session were absent it would fall through to an interactive
 // login, which the discovery gate already prevents). Returns once the agent's
 // gateway session cookie is present.
-async function cloudAgentSilentSignIn(dashboardUrl) {
+async function cloudAgentSilentSignIn(dashboardUrl, { background = false } = {}) {
   const baseUrl = normalizeRemoteBaseUrl(dashboardUrl)
 
   // Pre-req: a live portal session must exist, or this would surface an
@@ -8170,7 +8001,7 @@ async function cloudAgentSilentSignIn(dashboardUrl) {
     await renewPortalAccessSilently()
   }
 
-  await openOauthLoginWindow(baseUrl, { silent: true })
+  await openOauthLoginWindow(baseUrl, { silent: true, background })
 
   return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
 }

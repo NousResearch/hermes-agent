@@ -2482,6 +2482,7 @@
     "promptNotices.mcpReloadNotInChat",
     "promptNotices.mcpReloadUnavailable",
     "promptNotices.sessionCommands.busy",
+    "promptNotices.sessionCommands.busyCompressing",
     "promptNotices.sessionCommands.countOne",
     "promptNotices.sessionCommands.countOther",
     "promptNotices.sessionCommands.queueEditKept",

@@ -9,7 +9,13 @@ import { $sessions, resolveComposerSessionKey } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
 import type { SubmissionDestination } from './submission-destination'
-import { type GatewayRequest, isSessionBusyError, isTargetSessionBusy, type SubmitTextOptions } from './utils'
+import {
+  type GatewayRequest,
+  isCompressionBusyError,
+  isSessionBusyError,
+  isTargetSessionBusy,
+  type SubmitTextOptions
+} from './utils'
 
 // Typed /undo, /retry, /steer and /queue: one behaviour per command on every surface, mirroring the
 // Ink TUI on the same shared gateway (ui-tui/src/app/slash/commands/core.ts +
@@ -63,6 +69,14 @@ const copy = () => runtimeTranslations().promptNotices.sessionCommands
 const previewOf = (text: string) => `${text.slice(0, PREVIEW_CHARS)}${text.length > PREVIEW_CHARS ? '…' : ''}`
 
 const errorText = (err: unknown) => `error: ${err instanceof Error ? err.message : String(err)}`
+
+/** A refused rewind: main's busy text (wait for a running /compress, else stop the reply), or the raw error. */
+const rewindErrorText = (err: unknown, command: 'retry' | 'undo') =>
+  isCompressionBusyError(err)
+    ? copy().busyCompressing(command)
+    : isSessionBusyError(err)
+      ? copy().busy(command)
+      : errorText(err)
 
 /** A human-authored user turn (`split_user_originated_turn`): no display-only kind other than a
  *  typed /steer, a durable row id, and not a compaction handoff carrier. */
@@ -227,7 +241,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
 
         out.render(rewound.count === 1 ? copy().undidOne('1') : copy().undidOther(String(rewound.count)))
       } catch (err) {
-        out.render(isSessionBusyError(err) ? copy().busy('undo') : errorText(err))
+        out.render(rewindErrorText(err, 'undo'))
       }
     },
     retry: async (ctx: C) => {
@@ -257,7 +271,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
 
         await submitPromptText(text, { destination, sessionId: out.sessionId, storedSessionId: out.storedSessionId })
       } catch (err) {
-        out.render(isSessionBusyError(err) ? copy().busy('retry') : errorText(err))
+        out.render(rewindErrorText(err, 'retry'))
       }
     },
     steer: async (ctx: C) => {

@@ -8,6 +8,8 @@ export const jaSessionCommands = {
   retryUnsupported: '/retry: メディアや不明なコンテンツを含むターンは再試行できません',
   busy: (command: string) =>
     `セッションが使用中です — Hermes はまだ応答中です。先に現在の応答を停止してから（停止ボタン、またはターミナルでは Ctrl+C）/${command} を実行してください。`,
+  busyCompressing: (command: string) =>
+    `セッションが使用中です — /compress を実行中です。完了したら /${command} を実行してください。`,
   steerUsage: '使い方: /steer <プロンプト>',
   steerQueued: (preview: string) => `誘導を予約しました — 次のツール呼び出しの後に届きます: 「${preview}」`,
   steerNoActiveTurn: (preview: string) => `実行中のターンがありません — 次のターンに追加しました: 「${preview}」`,

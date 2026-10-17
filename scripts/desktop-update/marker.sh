@@ -37,7 +37,7 @@ MY_CT="${MY_CT:-}"
 
 # ── process identity ─────────────────────────────────────────────────────────
 proc_ct() { # pid -> creation time (unix seconds, 3 decimals), or nothing
-  local pid="$1" stat rest start btime hz lstart secs
+  local pid="$1" stat rest start btime hz
   [ "$pid" -gt 0 ] 2>/dev/null || return 0
   if [ -r "/proc/$pid/stat" ]; then
     stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 0
@@ -48,12 +48,53 @@ proc_ct() { # pid -> creation time (unix seconds, 3 decimals), or nothing
     [ -n "$start" ] && [ -n "$btime" ] && [ -n "$hz" ] || return 0
     awk -v b="$btime" -v s="$start" -v h="$hz" 'BEGIN{printf "%.3f\n", b + s / h}'
   elif [ "$(uname)" = "Darwin" ]; then
-    # ps prints lstart in local time: render AND parse it in UTC so a DST
-    # fall-back hour cannot shift the identity by 3600 s.
-    lstart="$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
-    [ -n "$lstart" ] || return 0
-    secs="$(TZ=UTC0 LC_ALL=C date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null)" || return 0
-    [ -n "$secs" ] && printf '%s.000\n' "$secs"
+    # lstart loses fractional seconds and cannot identify the updater's own
+    # delegate under Python's strict incarnation rule. Use the kernel clock,
+    # without the install's Python or site-packages (which may need rescue).
+    # Keep the same stdlib probe as update_lock._darwin_create_time embedded
+    # in the loaded function: custody outlives stash/tree replacement.
+    /usr/bin/python3 -I -S - "$pid" 2>/dev/null <<'PY' || return 0
+from __future__ import annotations
+import sys
+
+def _darwin_create_time(pid: int) -> float | None:
+    """Precise kernel clock; self-contained for the frozen no-site recovery closure."""
+    import ctypes
+
+    class ProcBsdInfo(ctypes.Structure):
+        # sys/proc_info.h: PROC_PIDTBSDINFO, also used by bootstrap marker.rs.
+        _fields_ = [
+            (name, ctypes.c_uint32) for name in (
+                "flags", "status", "xstatus", "pid", "ppid", "uid", "gid",
+                "ruid", "rgid", "svuid", "svgid", "reserved",
+            )
+        ] + [
+            ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
+            ("nfiles", ctypes.c_uint32), ("pgid", ctypes.c_uint32),
+            ("pjobc", ctypes.c_uint32), ("tdev", ctypes.c_uint32),
+            ("tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32),
+            ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64),
+        ]
+
+    if not 0 < pid <= 0x7fffffff:
+        return None
+    try:
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        probe = lib.proc_pidinfo
+        probe.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        probe.restype = ctypes.c_int
+        info = ProcBsdInfo()
+        size = ctypes.sizeof(info)
+        if probe(pid, 3, 0, ctypes.byref(info), size) != size or info.pid != pid:
+            return None
+        return info.start_sec + info.start_usec / 1_000_000
+    except (OSError, AttributeError):
+        return None
+
+created = _darwin_create_time(int(sys.argv[1]))
+if created is not None:
+    print(f"{created:.3f}")
+PY
   fi
 }
 

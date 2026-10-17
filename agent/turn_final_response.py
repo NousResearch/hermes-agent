@@ -165,9 +165,9 @@ def finish_text_response(
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
+        intent_ack_continuation_mode, looks_like_degenerate_final, tool_results_this_turn,
     )
+    from agent.agent_runtime_helpers_stall_intent import announces_unfinished_action
 
     _ack_mode = intent_ack_continuation_mode(agent)
     # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an
@@ -181,10 +181,7 @@ def finish_text_response(
         bool(getattr(agent, "_stall_guards", True))
         and agent.valid_tool_names
         and codex_ack_continuations < 2
-        and (
-            trailing_continue_intent(_stall_text)
-            or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
-        )
+        and announces_unfinished_action(_stall_text, promoted=bool(_promoted), ack_mode=_ack_mode)
     )
     # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a
     # fragment. Same scope knob and the SAME bounded counter as the ack continuation; the nudge

@@ -242,11 +242,13 @@ def build_write_approval_paths(home: str) -> set[str]:
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side) and
+# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
+# credentials/ (the /creds store: master.key + store.enc, same shape) and
 # browser-profile/ (copied cookies / Login Data) hold credential material.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
+_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "credentials",
+                              "browser-profile")
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
@@ -362,6 +364,12 @@ _READ_DENIED_DIRS = (
     ("vault",
      "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault).",
      "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault resolves them server-side)."),
+    # master.key + store.enc: the /creds store has the same shape, and the store module
+    # (agent/credential_store.py) is the only reader — resolve values through the
+    # credentials tool or execute_code's credentials= parameter instead.
+    ("credentials",
+     "is the Hermes credential store directory and cannot be read directly (master.key + ciphertext side by side is plaintext).",
+     "is inside the Hermes credential store and cannot be read directly (use the credentials tool, or pass names via execute_code's credentials= parameter)."),
 )
 
 

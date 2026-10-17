@@ -194,11 +194,17 @@ PM owns the pinned `bws` and `iron-proxy` packages in
 come from `pm/lock.json`. Downloads and publication use the shared tool store,
 not private installers under `$HERMES_HOME/bin`.
 
-For iron-proxy, PM also acquires pinned signature files and checks that the
-release checksums cover the pinned archive. Package staging calls the
-integration's signature checker. The GPG check remains conditional on an
-available executable. Locked provenance files must still be available and
-match their hashes. An explicit signature rejection aborts installation.
+For iron-proxy, PM checks that the release checksums cover the archive and
+verifies every artifact against the SHA-256 hash in `pm/lock.json`. The pinned
+v0.50.0 release does not publish `checksums.txt.asc`: this explicit release
+exception warns and continues with PM-pinned SHA-256 verification. It does not
+provide publisher-signature verification. Other releases still acquire their
+pinned signature assets; a failed download never selects the unsigned policy.
+The GPG check retains its existing best-effort prerequisites: an available
+executable and successful public-key import. When these succeed, an existing
+signature is still verified even for v0.50.0. Locked provenance files must be
+available and match their hashes; an explicit signature rejection aborts
+installation.
 External executables remain outside PM's hash and signature guarantees.
 
 `bws` and iron-proxy honor an executable on `PATH` before checking PM selection.

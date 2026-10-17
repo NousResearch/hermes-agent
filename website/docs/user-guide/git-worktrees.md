@@ -51,7 +51,8 @@ Hermes creates `.worktrees/my-experiment/` inside the repo (branch
 `worktree_sync: false`), and retargets the session's terminal and file tools
 into it — no restart needed. Omit the name to get a random `hermes-<id>`
 tree. `/worktree` alone shows the active tree; `/worktree list` lists all of
-them. On exit the tree is kept only if it has unpushed commits, exactly like
+them. On exit a clean, pushed tree is removed; a tree with uncommitted changes
+or unpushed commits triggers the same keep / archive / remove question as
 `hermes -w`.
 
 ### Manually with git
@@ -180,6 +181,73 @@ hermes -w -z "Fix issue #123"
 ```
 
 For parallel agents, open multiple terminals and run `hermes -w` in each — every invocation gets its own worktree and branch automatically.
+
+### Leaving a session with unfinished work
+
+When an interactive `hermes -w` session (classic CLI or `--tui`) exits and its
+worktree has uncommitted changes or unpushed commits, Hermes asks:
+
+- **Keep the worktree** (default, also what Enter/Esc picks) — nothing changes.
+- **Archive and remove it** — the full working state is archived (see below)
+  and the tree is removed; Hermes prints the `hermes worktree restore` command.
+- **Remove it and discard the changes** — only when you pick it explicitly.
+
+One-shot runs (`-q`, `-z`), cron jobs, gateway sessions and any exit without a
+terminal never ask: the tree is kept and the stale-worktree sweep handles it
+later. A clean tree whose commits are pushed is removed without asking.
+
+## Stale worktree sweep and restore
+
+Every repository Hermes creates a worktree in (`hermes -w`, `/worktree new`,
+subagent worktree isolation, the desktop app's git pane) is recorded in
+`<HERMES_HOME>/worktree_repos.json` for the active profile. At `hermes -w`
+startup and every 6 hours from the cron ticker, Hermes sweeps each of those
+repositories' `.worktrees/`:
+
+| Tree | Decision |
+|---|---|
+| Idle past its tier (`hermes-*`/`subagent-*` 24 h, named trees 72 h), clean and merged or pushed | removed |
+| Idle past its tier with uncommitted changes or unpushed commits | **archived, then removed** |
+| A live hermes lock owner, or any live process whose cwd (Linux: or an open file) is inside | never touched |
+| File, `HEAD` or reflog activity younger than its tier | never touched |
+| Kanban task trees (`t_<hex>`) | never touched (the Kanban GC owns them) |
+
+An archive is a commit stored at `refs/hermes/archive/<tree>` holding the
+tree's `HEAD`, staged changes, unstaged changes and untracked files (files your
+`.gitignore` excludes, such as `node_modules/` or `.venv/`, are not captured).
+It is built with a temporary index, so the tree itself is never modified; if
+the archive cannot be built, the tree is kept. Untracked files larger than
+`worktrees.archive_max_file_mb` are left out and listed in the archive. A
+branch that exists on a remote (an open PR) is kept; otherwise the archive
+holds its commits and the local branch is deleted.
+
+```bash
+hermes worktree list                 # trees plus archives (name, age, branch, reason)
+hermes worktree prune --dry-run      # every archive/remove/skip decision and why; changes nothing
+hermes worktree restore lane-x       # recreate .worktrees/lane-x with its branch, staged and untracked files
+hermes worktree restore lane-x --path ../lane-x-review
+```
+
+Restore puts the branch back when it is missing or still points at the
+archived `HEAD`; otherwise the tree comes back detached at that commit.
+Archives older than `worktrees.archive_retention_days` are deleted by the
+sweep.
+
+```yaml
+worktrees:
+  archive_dirty: true          # false = never remove dirty/unpushed trees (the old behaviour)
+  archive_max_file_mb: 50      # untracked files above this are listed, not archived
+  archive_retention_days: 30   # 0 keeps archives forever
+  max_total_gb: 0              # optional budget for idle trees; oldest are archived + removed first
+```
+
+There is no limit on how many trees may exist: hundreds of parallel subagents
+each keep their tree for as long as they work in it. `max_total_gb` only ever
+evicts idle trees past their tier.
+
+Subagent worktrees (`delegation.worktree_isolation: true`) follow the same
+rule when the child finishes: a clean tree is removed, and a tree with commits
+or edits is archived and removed with its branch kept for the parent to merge.
 
 ## Putting It All Together
 

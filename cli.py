@@ -558,6 +558,9 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
     if not Path(wt_path).exists():
         return
     _active_worktree = None
+    from hermes_cli.worktree_exit import apply_exit_choice
+    if apply_exit_choice(info, _cprint):  # the exit question's Archive / Discard answer
+        return
 
     if _worktree_is_dirty(wt_path, repo_root, timeout=10):
         # Uncommitted work: say so, and don't hint at `remove --force`, which would destroy it.

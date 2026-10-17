@@ -66,16 +66,19 @@ With `hermes --tui -w`, closing the terminal detaches from the gateway-owned
 session. Its worktree is retained even when clean: the turn may still be running
 there, and resuming the session uses the same working directory. Review and prune
 it after the session's work is finished.
-A conservative pruner runs automatically at startup (it only removes clean,
-fully-merged scratch trees past an age threshold), but preserved trees and
-merged local branches still accumulate on busy machines. Reclaim them
-explicitly:
+A sweep runs automatically at `hermes -w` startup and every 6 hours from the
+cron ticker: idle clean+merged trees are removed, and idle trees with
+uncommitted changes or unpushed commits are **archived, then removed**
+(restorable with `hermes worktree restore <name>`; see
+[Stale worktree sweep](./git-worktrees.md#stale-worktree-sweep-and-restore)).
+Reclaim or inspect explicitly:
 
 ```bash
-hermes worktree list              # audit: age, size, verdict, reason per tree
-hermes worktree list --json       # machine-readable audit (trees, external trees, branches)
-hermes worktree prune             # remove safe trees + delete merged branches
-hermes worktree prune --dry-run   # show the plan without changing anything
+hermes worktree list              # audit: age, size, verdict, reason per tree + archives
+hermes worktree list --json       # machine-readable audit (trees, external trees, branches, archives)
+hermes worktree prune             # run the sweep now + delete merged branches
+hermes worktree prune --dry-run   # print every archive/remove/skip decision and why; changes nothing
+hermes worktree restore <name>    # recreate an archived tree (add --path DIR to put it elsewhere)
 hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
@@ -93,8 +96,9 @@ touches the tree the session is running in).
 
 Safety guarantees (all modes, any age):
 
-- Uncommitted **tracked** changes are never deleted.
-- **Unique unpushed commits** are never deleted — commits that were
+- Uncommitted changes and **unique unpushed commits** are never deleted
+  without a restorable archive (`refs/hermes/archive/<tree>`); with
+  `worktrees.archive_dirty: false` they are never deleted at all — commits that were
   rebase/squash-merged upstream are detected via `git cherry`
   patch-equivalence and count as merged, which is what lets the dominant
   "merged PR, tree preserved forever" leak finally reclaim.
@@ -109,7 +113,9 @@ Safety guarantees (all modes, any age):
   removed but its **branch ref is kept**, so the lane is one
   `git worktree add .worktrees/<name> <branch>` away from restored. If the
   remote can't be reached, the tree is preserved.
-- Trees **in use by a running hermes session** are never touched.
+- Trees **in use** are never touched: a running hermes session's lock, or any
+  live process whose working directory (or, on Linux, an open file) is inside
+  the tree.
 - **Untracked-only scratch** (PR body drafts, notes) is archived to
   `~/.hermes/archive/worktree-prune/` before its tree is removed — never
   destroyed.
@@ -117,10 +123,10 @@ Safety guarantees (all modes, any age):
   commits are all on upstream is safe to delete; branches with unique work,
   checked-out branches, and `main`/`master`/`develop` are always kept.
 
-The same conservative pruner also runs from the cron scheduler (at most once
-every 6 hours, in the background), so gateway-only machines — where nobody
-launches `hermes -w` for days — no longer accumulate merged scratch trees
-between CLI sessions.
+The same sweep also runs from the cron scheduler (at most once every 6 hours
+per profile, in the background) over every repository the profile created a
+worktree in, so gateway-only machines — where nobody launches `hermes -w` for
+days — no longer accumulate scratch trees between CLI sessions.
 
 When `.worktrees/` grows past 10 trees or 5 GB, startup prints a one-line
 notice pointing at these commands.

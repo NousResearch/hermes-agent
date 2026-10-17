@@ -744,6 +744,8 @@ def worktree_add(cwd: str, options: dict) -> dict:
         if "already exists" not in (err or "").lower():
             raise RuntimeError(err.strip() or "git worktree add failed")
         _git_ok(root, ["worktree", "add", target, branch])
+    from hermes_cli.worktree_registry import record_worktree_repo
+    record_worktree_repo(root)
     return {"path": target, "branch": branch, "repoRoot": root}
 
 

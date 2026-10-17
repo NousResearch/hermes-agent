@@ -2,8 +2,10 @@
 
 Git-only (outside a repo children share the parent's cwd); local terminal backend only (on
 docker/ssh/modal the host worktree is invisible in the sandbox, so isolation is skipped). One
-worktree per child under ``<repo>/.worktrees/subagent-<id>``, branch ``hermes-subagent/<id>``;
-pruned only on proof (zero commits AND clean, both probes ok), else kept + ``inspection_failed``.
+worktree per child under ``<repo>/.worktrees/subagent-<id>``, branch ``hermes-subagent/<id>``.
+On finish: zero commits AND clean (both probes ok) -> removed; work left behind -> archived to
+``refs/hermes/archive/<tree>`` then removed (``worktrees.archive_dirty``, branch kept so the parent
+can merge it); a failed probe or archive -> kept + flagged.
 """
 
 from __future__ import annotations
@@ -100,6 +102,8 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         logger.warning("subagent worktree: git worktree add failed: %s", result.stderr.strip())
         return None
     logger.info("subagent worktree created: %s (branch %s)", wt_path, branch)
+    from hermes_cli.worktree_registry import record_worktree_repo
+    record_worktree_repo(repo_root)
     return {"path": str(wt_path), "branch": branch, "repo_root": repo_root, "base_commit": base_commit}
 
 
@@ -176,6 +180,8 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
     if failed:
         # Destructive cleanup requires affirmative proof; defaults prove nothing.
         return mark_worktree_payload_unproven(payload, "; ".join(failed), unmeasured="/".join(unmeasured))
+    if prune and (payload["commits"] or payload["dirty"]):
+        return _archive_finished_worktree(info, payload)
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         cwd = info.get("repo_root", "") or path
         try:
@@ -193,6 +199,37 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
     return payload
 
 
+def _archive_finished_worktree(info: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    """A finished child left commits or edits: snapshot them, then remove the tree.
+
+    The branch is kept (the parent reviews and merges it); the archive also covers uncommitted
+    edits. ``worktrees.archive_dirty: false`` or a failed snapshot keeps the tree as before.
+    """
+    from hermes_cli.worktree_archive import ArchiveError
+    from hermes_cli.worktree_sweep import archive_then_remove, live_process_pids, sweep_settings
+    settings = sweep_settings()
+    if not settings["archive_dirty"]:
+        return payload
+    path = info.get("path", "")
+    # A server or watcher the child started may still run in the tree: leave it to the sweep.
+    if live_process_pids([path], exclude=(os.getpid(),)).get(path):
+        logger.info("subagent worktree: a live process works in %s; keeping it", path)
+        return payload
+    try:
+        ref, _kept, removed = archive_then_remove(
+            info.get("repo_root", "") or path, path, reason="subagent finished",
+            max_untracked_mb=settings["archive_max_file_mb"], unlock=False, keep_branch=True)
+    except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
+        logger.warning("subagent worktree: archive failed, keeping %s: %s", path, exc)
+        return payload
+    payload["archive"] = ref
+    payload["pruned"] = removed
+    payload["note"] = (f"Worktree archived to {ref} and removed; branch {info.get('branch')} kept. "
+                       f"Restore the full tree (including uncommitted edits) with "
+                       f"`hermes worktree restore {ref.rsplit('/', 1)[-1]}`.")
+    return payload
+
+
 def build_worktree_context_note(info: dict[str, str]) -> str:
     """Context block telling the child to work inside its isolated worktree."""
     return (
@@ -202,5 +239,6 @@ def build_worktree_context_note(info: dict[str, str]) -> str:
         "All file edits and shell commands must happen inside this worktree directory (your "
         "terminal already starts there). Do NOT cd to the main repository checkout. Commit your "
         "changes to your branch when done; the parent agent will review and merge your branch. If "
-        "you make no commits and leave the tree clean, the worktree is discarded automatically."
+        "you make no commits and leave the tree clean, the worktree is discarded automatically; "
+        "otherwise it is archived (restorable) and removed when you finish."
     )

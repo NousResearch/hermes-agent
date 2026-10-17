@@ -933,6 +933,11 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             tools = _probe_single_server(
                 name, probe_config, connect_timeout=login_connect_timeout(probe_config)
             )
+            if not _oauth_tokens_present(name):
+                provider = get_manager().get_or_build_provider(name, url, probe_config.get("oauth"))
+                if provider is None:
+                    raise RuntimeError("MCP OAuth support is unavailable")
+                asyncio.run(provider.force_authorization())
         # A clean probe is NOT proof of authentication: some servers (e.g. Google Drive) serve
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for
         # providers without RFC 7591) while the probe still lists tools. Verify a token landed.

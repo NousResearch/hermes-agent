@@ -845,6 +845,14 @@ def _output_text_of(item: Any) -> str:
     ).strip()
 
 
+class _MissingTerminalFrame(RuntimeError):
+    """A Responses stream ended without its terminal frame and produced no usable output.
+
+    The connection died before the model emitted anything (or only lifecycle frames): a drop,
+    not a response, and safe to retry because nothing was delivered.
+    """
+
+
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
@@ -1082,7 +1090,7 @@ class _CodexResponseAssembler:
             output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
-            raise RuntimeError("Codex Responses stream did not emit a terminal response")
+            raise _MissingTerminalFrame("Codex Responses stream did not emit a terminal response")
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
@@ -1146,10 +1154,16 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
+    from run_agent import _StreamErrorEvent
     from agent import relay_llm
     transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
-    max_stream_retries, model = 1, api_kwargs.get("model")
+    # Same budget as the chat_completions wire (``_StreamingCall._call``): one physical stream that a
+    # proxy/provider cuts usually succeeds on the next attempt. Retries stay guarded below by what was
+    # already delivered (a re-streamed preamble must not duplicate visible text) and by the classifier
+    # (an auth/format error frame is never replayed).
+    from utils import env_int
+    max_stream_retries, model = max(0, env_int("HERMES_STREAM_RETRIES", 2)), api_kwargs.get("model")
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
     # Retirement token for THIS request (installed by ``interruptible_api_call``). A watchdog that kills the
@@ -1165,6 +1179,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # claims the sink supersedes this token; that only silences OUR live callbacks — consumption continues,
     # because stopping here handed the gateway a "completed" response missing its tail (#69486).
     writer_token = {"value": None, "raw_stream": None, "superseded_logged": False}
+    # A ``function_call`` item announced by this attempt has not executed yet: a re-stream discards it
+    # without duplicating an action, so a drop after its preamble is still safe to retry.
+    tool_call_in_flight = {"value": False}
 
     def _request_is_current() -> bool:
         return request_token is None or getattr(agent, "_active_codex_stream_request_token", None) is request_token
@@ -1217,6 +1234,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if first_progress:
             logger.info("Codex stream first substantive progress at %.3f (attempt=%s/%s, model=%s)",
                 now, attempt + 1, max_stream_retries + 1, model)
+        if not tool_call_in_flight["value"] and _event_field(event, "type") == "response.output_item.added":
+            item = _event_field(event, "item")
+            if "function_call" in str(_event_field(item, "type") or ""):
+                tool_call_in_flight["value"] = True
         agent._touch_activity("receiving stream response")
 
     def _interrupt_or_superseded() -> bool:
@@ -1341,6 +1362,59 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     on_commentary_message = _live(agent._fire_streamed_codex_commentary) if wants_commentary else None
     call_role = ("delegated" if getattr(agent, "is_subagent", False)
                  else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
+
+    def _text_seen() -> bool:
+        """True once this request produced visible text, whether or not a display sink accepted it.
+
+        Uses the same delivered-text buffer the chat wire checks, plus the Codex delta accumulator
+        (a headless consumer-less run still must not re-emit a preamble it already generated).
+        """
+        if (getattr(agent, "_current_streamed_assistant_text", "") or "").strip():
+            return True
+        return any(str(part).strip() for part in (getattr(agent, "_codex_streamed_text_parts", None) or ()))
+
+    def _is_transient_stream_error(exc: Exception) -> bool:
+        """The outer retry loop's own verdict, so a deterministic error frame (auth, malformed
+        request, policy) is never replayed as if it were a dropped connection."""
+        try:
+            from agent.error_classifier import classify_api_error
+
+            classified = classify_api_error(
+                exc, provider=str(getattr(agent, "provider", "") or ""), model=str(getattr(agent, "model", "") or ""))
+            return bool(classified.retryable)
+        except Exception:
+            logger.debug("Codex stream error classification failed", exc_info=True)
+            return False
+
+    def _may_retry(*, mid_tool_call: bool) -> bool:
+        if attempt >= max_stream_retries or getattr(agent, "_interrupt_requested", False):
+            return False
+        # Mirror the chat wire: re-streaming after visible text duplicates the preamble, so only a
+        # tool call that has not executed yet is safe to replay past delivered text.
+        return mid_tool_call or not _text_seen()
+
+    def _retry_after_drop(exc: Exception, *, mid_tool_call: bool) -> None:
+        """Structured drop notice + the chat wire's interruptible reconnect backoff."""
+        try:
+            agent._emit_stream_drop(error=exc, attempt=attempt + 1, max_attempts=max_stream_retries + 1,
+                                    mid_tool_call=mid_tool_call, diag=None)
+        except Exception:
+            logger.debug("Codex stream drop notice failed", exc_info=True)
+        if mid_tool_call and _text_seen():
+            # The re-streamed preamble repeats what is already on screen; say why, and reset the
+            # delivered-text tracker so the duplicated prefix is not treated as a new reply.
+            try:
+                if agent._warning_presentation_enabled():
+                    agent._fire_stream_delta("\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
+                agent._reset_stream_delivery_tracking()
+            except Exception:
+                logger.debug("Codex mid-tool-call reconnect marker failed", exc_info=True)
+        from agent.chat_completion_helpers import _wait_stream_retry_backoff
+        from agent.retry_utils import jittered_backoff
+
+        _wait_stream_retry_backoff(
+            agent, jittered_backoff(attempt + 1, base_delay=1.0, max_delay=4.0, jitter_ratio=0.0))
+
     for attempt in range(max_stream_retries + 1):
         if not _request_is_current():
             raise TimeoutError("Codex Responses stream request retired before retry")
@@ -1358,6 +1432,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         intercepted_events: list = []
         writer_token["value"] = writer_token["raw_stream"] = event_stream = None
         writer_token["superseded_logged"] = False
+        tool_call_in_flight["value"] = False
         try:
             try:
                 event_stream = relay_llm.stream(
@@ -1387,9 +1462,33 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     else "Codex Responses stream transport failed mid-iteration (attempt %s/%s); retrying. %s error=%s",
                     attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc,
                 )
+                _retry_after_drop(exc, mid_tool_call=tool_call_in_flight["value"])
                 if not intercepted_events:  # zero-event attempt: never resend a pathological payload silently
                     api_kwargs = _prune_zero_event_retry_payload(api_kwargs, attempt + 1, max_stream_retries + 1)
                 continue
+            except _StreamErrorEvent as exc:
+                # A ``type=error`` SSE frame is how Responses backends (and relays in front of them)
+                # report a dropped upstream. The chat_completions wire retries exactly this class;
+                # the Codex wire used to fail the turn on the first frame.
+                if _is_transient_stream_error(exc) and _may_retry(mid_tool_call=tool_call_in_flight["value"]):
+                    logger.warning("Codex Responses stream emitted a transient error frame (attempt %s/%s); retrying. %s error=%s",
+                                   attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc)
+                    _retry_after_drop(exc, mid_tool_call=tool_call_in_flight["value"])
+                    continue
+                _log_failure(exc)
+                raise
+            except _MissingTerminalFrame as exc:
+                # A stream that ended without its terminal frame delivered nothing usable: the same
+                # pre-delivery drop the chat wire retries, so a fresh physical request is safe (and,
+                # with nothing parsed, the payload is pruned first like any zero-event retry).
+                if _may_retry(mid_tool_call=False):
+                    logger.warning("Codex Responses stream ended without a terminal response (attempt %s/%s); retrying. %s error=%s",
+                                   attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc)
+                    _retry_after_drop(exc, mid_tool_call=False)
+                    if not intercepted_events:
+                        api_kwargs = _prune_zero_event_retry_payload(api_kwargs, attempt + 1, max_stream_retries + 1)
+                    continue
+                raise
             except RuntimeError:
                 # "No terminal response"; Relay may still hold a finalizer-assembled response.
                 if event_stream is not None and event_stream.final_response is not None:

@@ -72,6 +72,16 @@ async def test_hook_rewrite_authorizes_restart_target(tmp_path, monkeypatch, mod
         assert (tmp_path / '.restart_notify.json').is_file()
 
 
+@pytest.mark.asyncio
+async def test_hook_rewrite_to_unknown_command_keeps_guidance(tmp_path, monkeypatch):
+    monkeypatch.setattr('gateway.hooks.HOOKS_DIR', tmp_path / 'hooks')
+    runner = _runner({'allow_admin_from': ['owner']})
+    _rewrite(runner, tmp_path, 'not-a-real-capability')
+    result = await runner._handle_message(_make_event('/help', _make_source(user_id='reader')))
+    assert 'Unknown command' in result
+    assert '/not-a-real-capability' in result
+
+
 def _plugin(monkeypatch):
     from hermes_cli import plugins
     manager = plugins.PluginManager()

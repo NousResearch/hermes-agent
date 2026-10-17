@@ -829,9 +829,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         if new_command is not None:
             command = new_command
             _cmd_def, canonical = _canon(command)
-            _denied = self._check_slash_access(source, command)
-            if _denied is not None:
-                return True, _denied, command, canonical
         return False, None, command, canonical
 
     async def _hm_confirm_destructive(self, event, command: str, detail: str, handler) -> tuple[bool, Optional[str]]:
@@ -997,6 +994,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             self._gateway_plain_command_handlers().get(canonical)
             or self._gateway_idle_command_handlers().get(canonical)
         )
+        if plain_handler is not None or canonical in self._HM_CANONICAL_COMMANDS:
+            denied = self._check_slash_access(source, canonical)
+            if denied is not None:
+                return True, denied
         if plain_handler is not None:
             async with self._async_profile_scope_for_source(source):
                 return True, await plain_handler(event)

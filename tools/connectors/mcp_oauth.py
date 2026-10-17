@@ -53,6 +53,11 @@ def probe_with_rollback(
 
     try:
         previous_entry = manager.remove(server_name, hermes_home=hermes_home)
+        # Mirror `hermes mcp login`: force the OAuth flow even when the server answers
+        # ``initialize`` with 200 and never challenges (TUI OAuth RPC / card installs,
+        # #89412) — the probe below rebuilds the provider, so the one-shot flag makes
+        # its first response trigger OAuth.
+        manager.set_force_oauth(server_name)
         tools = _probe_single_server(
             server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
         if not _oauth_tokens_present(server_name):

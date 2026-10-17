@@ -976,6 +976,8 @@ def _run_post_update_maintenance(
                 followups.append((name, reason))
 
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
+    from hermes_cli.update_windows_acl import repair_windows_home_acl
+    owed_step("windows_home_acl", repair_windows_home_acl)
     # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
     # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
     # With the post-#73681 identifier-pinned DR, new grants survive rebuilds — but a grant made to a pre-fix

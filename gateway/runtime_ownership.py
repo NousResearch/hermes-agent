@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import stat
 import threading
+from hermes_dir_acl import make_user_dir
 
 
 class OwnershipConflict(RuntimeError):
@@ -158,7 +159,7 @@ class ProfileOwnership:
                 for home in sorted({canonical_home(p) for p in homes}):
                     if home in self._handles:
                         continue
-                    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    make_user_dir(home, mode=0o700, parents=True, exist_ok=True)
                     path = home / 'gateway.lock'
                     fd = _open_lock(path)
                     handle = os.fdopen(fd, 'r+', encoding='utf-8')  # windows-footgun: ok — write-only

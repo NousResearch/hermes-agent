@@ -16,6 +16,7 @@ import re
 import stat
 import tempfile
 import threading
+from hermes_dir_acl import make_user_dir
 
 from hermes_state_runtime import RuntimeStoreError
 from utils import fsync_directory
@@ -60,10 +61,18 @@ def drop_capture_lease(paths=None):
                 del _leases[path]
 
 
-def native_inputs_root():
-    """This profile's content-addressed store of retained native inputs (``<root>/<sha256>/<name>``)."""
+def native_inputs_store():
+    """The store's path as the profile names it, unresolved. The one value ``make_user_dir`` gets:
+    ``resolve()`` erases a link planted below the Hermes home (``cache/documents`` -> elsewhere),
+    and an elevated grant on the resolved path would land outside the home with no home fence."""
     from gateway.platforms.base import get_document_cache_dir
-    return get_document_cache_dir().resolve() / 'native-inputs'
+    return get_document_cache_dir() / 'native-inputs'
+
+
+def native_inputs_root():
+    """This profile's content-addressed store of retained native inputs (``<root>/<sha256>/<name>``),
+    resolved: what the identity checks compare against."""
+    return native_inputs_store().resolve()
 
 
 _media_root = native_inputs_root
@@ -244,7 +253,7 @@ def capture_native_media(paths):
             root = target.parent.parent
             if target.parent.resolve() != target.parent:
                 raise RuntimeStoreError('invalid_params')
-            target.parent.mkdir(mode=0o700, exist_ok=True)
+            make_user_dir(native_inputs_store() / target.parent.name, mode=0o700, exist_ok=True)
             with _lease_lock:
                 scope = _lease_scope.get()
                 if scope is not None:
@@ -273,7 +282,7 @@ def _capture_file(path, limit, total, references, staged):
         root = _media_root()
         if root.resolve() != root:
             raise RuntimeStoreError('invalid_params')
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(native_inputs_store(), mode=0o700, parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix='.capture-', dir=root)
         temporary = Path(name)
         staged.append(temporary)

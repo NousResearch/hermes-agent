@@ -4,6 +4,7 @@ These are behavior contracts, not snapshots — they assert WHERE trust comes
 from and that explicit per-provider settings still beat it.
 """
 
+import platform
 from pathlib import Path
 
 import pytest
@@ -186,3 +187,99 @@ assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
 """], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
+
+
+def test_openssl_bundle_reload_is_memoized_per_context(tmp_path):
+    """#139765: truststore's OpenSSL backend re-runs set_default_verify_paths()
+    on the same inner context for every wrap_socket/wrap_bio, re-parsing the
+    system CA bundle per connection — on the event loop for async clients.
+    After install_truststore(), one context is configured once per bundle
+    generation; a rotated bundle file reloads; contexts are not retained."""
+    import importlib.util
+    import os
+    import subprocess
+    import sys
+
+    if importlib.util.find_spec("truststore") is None:
+        pytest.skip("truststore not installed (3.11-3.13 bridge installs)")
+
+    bundle = tmp_path / "ca-bundle.pem"
+    bundle.write_bytes(b"# initial bundle\n")
+    script = """
+import contextlib, gc, ssl, sys, weakref
+
+import truststore
+from truststore import _api
+
+calls = []
+
+@contextlib.contextmanager
+def openssl_configure(ctx):
+    calls.append(ctx)
+    yield
+
+openssl_configure.__module__ = "truststore._openssl"
+real_configure = _api._configure_context
+_api._configure_context = openssl_configure
+
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+wrapped = _api._configure_context
+assert wrapped is not openssl_configure and wrapped is not real_configure
+
+def connect(context):
+    context.wrap_bio(ssl.MemoryBIO(), ssl.MemoryBIO())
+
+pool_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+for _ in range(3):
+    connect(pool_context)
+assert len(calls) == 1, calls  # one bundle load per context, not per connection
+
+with open(sys.argv[1], "ab") as fh:
+    fh.write(b"# rotated bundle\\n")
+connect(pool_context)
+assert len(calls) == 2, calls  # a changed bundle file reloads
+
+second = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+connect(second)
+assert len(calls) == 3  # a fresh context still configures itself
+
+inner = weakref.ref(calls[0])
+del pool_context
+calls.clear()
+gc.collect()
+assert inner() is None  # the memo never keeps a context alive
+"""
+    env = os.environ.copy()
+    env.pop("SSL_CERT_DIR", None)
+    env["SSL_CERT_FILE"] = str(bundle)
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(bundle)],
+        env=env, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert child.returncode == 0, child.stdout + child.stderr
+
+
+@pytest.mark.skipif(
+    platform.system() == "Linux",
+    reason="the OpenSSL backend is in force on Linux and is memoized there",
+)
+def test_platform_verifier_backends_are_left_alone():
+    """macOS/Windows trust via the platform verifier has no per-connection
+    bundle reload; install_truststore() must not touch those backends."""
+    import importlib.util
+    import subprocess
+    import sys
+
+    if importlib.util.find_spec("truststore") is None:
+        pytest.skip("truststore not installed (3.11-3.13 bridge installs)")
+
+    child = subprocess.run([sys.executable, "-c", """
+from truststore import _api
+original = _api._configure_context
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+assert _api._configure_context is original
+assert getattr(_api._configure_context, "__module__", "") != "truststore._openssl"
+"""], capture_output=True, text=True, timeout=30, check=False)
+    assert child.returncode == 0, child.stdout + child.stderr

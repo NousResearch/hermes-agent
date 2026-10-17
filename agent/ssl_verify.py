@@ -21,12 +21,14 @@ statements about one endpoint, not an ambient guess about the machine.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import ssl
 import threading
+import weakref
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ def install_truststore() -> bool:
         import truststore
 
         truststore.inject_into_ssl()
+        _memoize_openssl_bundle_reload()
         _installed = True
         logger.debug("TLS trust: platform store (truststore)")
     except Exception as exc:
@@ -61,6 +64,70 @@ def install_truststore() -> bool:
             exc,
         )
     return _installed
+
+
+_openssl_bundle_state: weakref.WeakKeyDictionary[ssl.SSLContext, tuple] = weakref.WeakKeyDictionary()
+
+
+def _openssl_trust_signature() -> tuple:
+    """Identity of the CA sources truststore's OpenSSL backend would load.
+
+    ``cafile``/``capath`` come from ``ssl.get_default_verify_paths()`` (env
+    vars or OpenSSL's compiled-in paths); the stat tuple notices a bundle
+    file being replaced behind our back.
+    """
+    defaults = ssl.get_default_verify_paths()
+    parts: list[Any] = [defaults.cafile, defaults.capath]
+    for path in (defaults.cafile, defaults.capath):
+        if path:
+            try:
+                st = os.stat(path)
+            except OSError:
+                parts.append(None)
+            else:
+                parts.append((st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev))
+        else:
+            parts.append(None)
+    return tuple(parts)
+
+
+def _memoize_openssl_bundle_reload() -> None:
+    """Stop truststore's OpenSSL backend re-parsing the system CA bundle per connection.
+
+    On Linux, ``truststore._openssl._configure_context`` runs
+    ``ctx.set_default_verify_paths()`` on the same inner context for every
+    ``wrap_socket``/``wrap_bio``, so each new TLS connection (Telegram
+    heartbeat probes, provider clients, webhooks) pays a full bundle re-read
+    — on the event loop for async clients. Loading is additive and
+    idempotent, so a context configured against an unchanged bundle needs
+    nothing more; only a bundle file actually changing triggers a reload.
+    The platform verifier backends (macOS, Windows) have no such reload and
+    are left alone, as is any truststore layout we don't recognize.
+    """
+    try:
+        from truststore import _api
+
+        original = _api._configure_context
+        if getattr(original, "__module__", None) != "truststore._openssl":
+            return
+
+        @contextlib.contextmanager
+        def _configure_context_once(ctx: ssl.SSLContext) -> Iterator[None]:
+            signature = _openssl_trust_signature()
+            # Unlocked on purpose: a racing first load merely repeats an
+            # additive load; a lock here would serialize connection setup.
+            if _openssl_bundle_state.get(ctx) == signature:
+                yield
+                return
+            with original(ctx):
+                _openssl_bundle_state[ctx] = signature
+                yield
+
+        _api._configure_context = _configure_context_once
+        logger.debug("TLS trust: OpenSSL bundle load memoized per context")
+    except Exception:
+        # Private-API drift: the reload cost returns, correctness never changes.
+        logger.debug("truststore OpenSSL bundle memo not installed", exc_info=True)
 
 
 def _coerce_insecure(ssl_verify: Any) -> bool:

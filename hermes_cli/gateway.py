@@ -3334,6 +3334,11 @@ def systemd_unit_is_current(system: bool = False) -> bool:
 
     installed = unit_path.read_text(encoding="utf-8-sig")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
+    # Systemd runs units without User= as root. Pass that identity explicitly
+    # while comparing legacy units so this read-only path does not invoke the
+    # install-time guard for an implicit root user.
+    if system and expected_user is None:
+        expected_user = "root"
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
     norm = lambda text: _normalize_service_definition(_strip_optional_systemd_directives(text))

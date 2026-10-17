@@ -10,7 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Any
+from typing import Any, Dict, Optional
+
+# Router integration for model override decisions based on tool routing
+try:
+    from agent.router_hook import should_override_model_for_request
+    HAS_ROUTER_HOOK = True
+except (ImportError, ModuleNotFoundError):
+    HAS_ROUTER_HOOK = False
+    should_override_model_for_request = None
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
@@ -122,6 +130,30 @@ def build_api_request(
         api_kwargs = agent._build_api_kwargs(api_messages)
     else:
         api_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=tools_for_api)
+    
+    # ROUTER INTEGRATION: Check if layer routing should override the model for this tool call.
+    # This must happen AFTER api_kwargs is built (which captures the current model) but
+    # BEFORE middleware/hooks observe the payload, so the override is transparent to the API.
+    if HAS_ROUTER_HOOK and should_override_model_for_request is not None:
+        try:
+            override_model = should_override_model_for_request(
+                messages=messages,
+                current_model=agent.model,
+                api_kwargs=api_kwargs
+            )
+            if override_model and override_model != agent.model:
+                # Apply the override to both agent state and api_kwargs
+                original_model = agent.model
+                agent.model = override_model
+                api_kwargs["model"] = override_model
+                logger.info(
+                    f"🔀 Router override applied for request {api_request_id}: "
+                    f"{original_model} → {override_model}"
+                )
+        except Exception as e:
+            logger.debug(f"Router override check failed for {api_request_id}: {e}")
+            # Continue normally if router fails (graceful degradation)
+    
     # Messages were scrubbed above; this walk covers the rest of the payload (tool descriptions,
     # extra_body, kwargs strings) — see sanitize_outbound_kwargs for the #50959 rationale.
     sanitize_outbound_kwargs(agent, api_kwargs)

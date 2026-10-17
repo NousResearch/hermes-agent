@@ -88,8 +88,16 @@ What a key guarantees depends on the execution mode:
 
 **Exact retries and conflicts.** A retry is exact when it repeats the key with the same
 identity fields and the same declared target. Changing an identity field, or sending the
-key to another session, answers HTTP 409 `admission_conflict`. The identity fields
-differ by endpoint:
+key to another session, is a conflict: it is refused with `admission_conflict` and
+nothing runs. How the refusal arrives depends on the request:
+
+- **Responses** (JSON or streaming) and **non-streaming Chat Completions:** HTTP 409
+  with error code `admission_conflict`.
+- **Streaming Chat Completions:** the stream has already opened with HTTP 200, so the
+  refusal is its last chunk, with `finish_reason: "error"` and `error.message`
+  `"admission_conflict"`, followed by `data: [DONE]`. Check that chunk, not the status.
+
+The identity fields differ by endpoint:
 
 - **Responses:** `input`, `instructions`, `previous_response_id`, `conversation`,
   `conversation_history`, `model`, `provider`, `model_options` and `tools`, plus
@@ -98,7 +106,7 @@ differ by endpoint:
   `X-Hermes-Session-Id` is sent, in which case history comes from the session), the
   system prompt, and the turn settings such as the requested model, provider and
   `model_options`. `tools` and `tool_choice` are not part of it: a retry that changes
-  only those replays the original answer instead of answering 409.
+  only those replays the original answer instead of a conflict.
 
 Delivery mode is not part of the identity on either endpoint: a retry may switch
 between JSON and `stream: true` and gets the same answer in the requested form.
@@ -107,14 +115,18 @@ between JSON and `stream: true` and gets the same answer in the requested form.
 answer only while the server still holds the key's request identity together with its
 replay record or a terminal admission the answer can be rebuilt from. Once replay is no
 longer possible, the key still does not run again while its admission evidence remains:
-the retry answers 409 `admission_conflict` and nothing executes.
+the retry is refused as a conflict and nothing executes. A Responses retry can instead
+get HTTP 409 `unknown_execution`: the store holds the key's claim (for example one
+recorded by an older release) but no answer, so whether the first attempt ran is
+unknown. It is not permission to resend the work under a new key; the first attempt may
+already have run.
 
 After a session is deleted (`DELETE /api/sessions/{id}`), its admissions are kept as
 tombstones. Seven days after the delete they become eligible for pruning; they are
 removed only when a prune pass runs, and until then the key behaves as below.
 
 - **Chat Completions:** an exact retry replays the original answer without recreating
-  the session, and the key sent to any other session answers 409 `admission_conflict`.
+  the session, and the key sent to any other session is refused as a conflict.
   Once the tombstones are pruned, the key can name new work on a valid new target.
 - **Responses:** replay also needs the response store to keep the key's identity, so
   it can end before the seven days: settled identities are retained in a bounded
@@ -131,7 +143,7 @@ current default, not a replay guarantee.
 
 An explicit `X-Hermes-Session-Id` is never remapped. The deleted session's id stays
 retired even after pruning. An exact keyed retry whose identity is still retained there
-replays, and a changed one answers 409 `admission_conflict`. A request with no retained
+replays, and a changed one is refused as a conflict. A request with no retained
 identity there, such as a fresh request or a retry whose identity was pruned, is refused
 with `not_found`.
 

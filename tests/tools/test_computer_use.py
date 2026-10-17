@@ -2290,20 +2290,37 @@ class TestBoundsSpaceNote:
         from tools.computer_use.tool import _bounds_space_note
 
         # Live repro: 1455x791 screenshot, element bounds out to x=3840
-        # (native 4K desktop space).
+        # (screen-absolute native px on a 4K @150% desktop). The note must
+        # state the driver's REAL contract: coordinate= is window-local
+        # screenshot px, never the bounds' screen-absolute space.
         elems = [UIElement(index=0, role="Button", label="Close",
                            bounds=(3771, 0, 69, 60), app="")]
         note = _bounds_space_note(elems, 1455, 791)
         assert note is not None
-        assert "native desktop coordinates" in note
+        assert "SCREEN-ABSOLUTE" in note and "window-local" in note
+        assert "coordinate= clicks expect the native" not in note  # the old wrong-contract phrasing
+
+    def test_note_with_frame_states_explicit_transform(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _bounds_hints
+
+        # Second-monitor repro (live session): window at screen (1920,60)
+        # 1920x1014 native, captured as 1456x768 screenshot px.
+        elems = [UIElement(index=0, role="Button", label="Back",
+                           bounds=(1928, 126, 48, 48), app="")]
+        scale, note = _bounds_hints(elems, 1456, 768, (1920, 60, 1920, 1014))
+        assert scale == pytest.approx(1920 / 1456, rel=1e-3)  # screen px per screenshot px
+        assert "bounds_x - 1920" in note and "1.3187" in note
 
     def test_no_note_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
-        from tools.computer_use.tool import _bounds_space_note
+        from tools.computer_use.tool import _bounds_hints, _bounds_space_note
 
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
         assert _bounds_space_note(elems, 1455, 791) is None
+        # A window at the screen origin whose bounds fit the frame: no transform needed.
+        assert _bounds_hints(elems, 1455, 791, (0, 0, 1455, 791)) == (None, None)
 
     def test_no_note_for_empty_or_degenerate(self):
         from tools.computer_use.backend import UIElement
@@ -2436,20 +2453,25 @@ class TestBoundsScaleField:
         from tools.computer_use.backend import CaptureResult, UIElement
         from tools.computer_use.tool import _capture_response
 
-        # Live repro geometry: 1455x791 screenshot, native bounds to 3799.
+        # Live repro geometry: 1455x791 screenshot of a window whose
+        # native frame is 2921x1598 (150% DPI + downscale). The scale comes
+        # from the WINDOW FRAME, never from the largest element bounds.
         elems = [UIElement(index=0, role="Button", label="Close",
                            bounds=(3730, 0, 69, 60), app="")]
         cap = CaptureResult(mode="som", width=1455, height=791, png_b64=None,
                             elements=elems, app="chrome.exe",
-                            window_title="", png_bytes_len=0)
+                            window_title="", png_bytes_len=0,
+                            window_frame=(2890, 0, 2921, 1598))
         out = json.loads(_capture_response(cap))
-        assert out["bounds_scale"] == pytest.approx(3799 / 1455, abs=0.01)
-        assert f"~{out['bounds_scale']}x" in out["summary"]
+        assert out["bounds_scale"] == pytest.approx(2921 / 1455, rel=1e-3)
+        assert f"{out['bounds_scale']}" in out["summary"] or "SCREEN-ABSOLUTE" in out["summary"]
 
-    def test_no_scale_when_spaces_match(self):
+    def test_no_scale_inferred_without_frame_or_when_spaces_match(self):
         from tools.computer_use.backend import UIElement
         from tools.computer_use.tool import _bounds_scale
 
+        # Without a window frame the scale is unknown (None) — bounds-derived
+        # scale guessing is exactly what broke multi-monitor clicks.
         elems = [UIElement(index=0, role="Button", label="OK",
                            bounds=(10, 10, 50, 20), app="")]
         assert _bounds_scale(elems, 1455, 791) is None

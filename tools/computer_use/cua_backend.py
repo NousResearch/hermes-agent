@@ -352,17 +352,36 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     def _clear_active_target(self) -> None:
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
         self._active_pid = self._active_window_id = self._last_app = self._last_target = None
+        self._active_frame = None
         # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot `element_index -> element_token` map
         # populated on capture(). Action tools (click/scroll/set_value/...) attach the matching token
         # alongside `element_index` so cua-driver detects "stale" explicitly instead of silently
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
         self._snapshot_tokens: dict[int, str] = {}
+        self._snapshot_id: Optional[str] = None
+        # Every name this target has been addressed by (caller labels + resolved process name), so the
+        # tool-layer mismatch guard compares identity, not one raw string ('Microsoft Edge' == 'msedge.exe').
+        self._last_app_aliases: set[str] = set()
+        # Last capture's screenshot size (image px), the denominator of the documented coordinate
+        # transform; None when no capture has run or the capture carried no image geometry.
+        self._last_capture_size: Optional[tuple[int, int]] = None
 
     def _set_active_target(self, target: dict[str, Any]) -> None:
+        # Re-targeting the SAME window (e.g. focus_app after a capture) keeps the snapshot's element
+        # addressing alive: the driver's token map is scoped per (pid, window_id) and a focus call does
+        # not supersede the last snapshot. A different window invalidates it — a bare element_index
+        # would then be refused (snapshot_id_required) or re-resolve against the wrong tree.
+        same_window = (target.get("pid"), target.get("window_id")) == (self._active_pid, self._active_window_id)
+        if not same_window:
+            self._snapshot_tokens = {}
+            self._snapshot_id = None
+            self._last_capture_size = None
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
-        self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        # Exact-target discovery contains no bounds. Never reuse a frame across a move/resize
+        # that happened after the last enumerated capture; omit the transform until rediscovery.
+        self._active_frame = target.get("bounds")
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
@@ -409,10 +428,18 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # left only pixel clicks working. The capability check stays so older drivers that shipped the vocabulary keep
         # working; drivers advertising neither (`additionalProperties: false`) must never see the property.
         idx = args.get("element_index")
-        token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
-        if token and (self._session.supports_input_property(name, "element_token")
-                      or self._session.supports_capability("accessibility.element_tokens", tool=name)):
-            args["element_token"] = token
+        if isinstance(idx, int):
+            token = self._snapshot_tokens.get(idx)
+            snap = getattr(self, "_snapshot_id", None)
+            if token and (self._session.supports_input_property(name, "element_token")
+                          or self._session.supports_capability("accessibility.element_tokens", tool=name)):
+                args["element_token"] = token
+            elif snap and self._session.supports_input_property(name, "snapshot_id"):
+                # No per-element token (older driver shape) but the tool wants snapshot provenance —
+                # the latest snapshot id satisfies `snapshot_id_required`.
+                args["snapshot_id"] = snap
+            # Neither handle known: send the bare index. A snapshot-scoped driver refuses it with
+            # `snapshot_id_required` (fail-closed at the driver); we never invent provenance here.
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

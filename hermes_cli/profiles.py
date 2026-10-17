@@ -1453,6 +1453,19 @@ def create_profile(
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         from hermes_cli.profiles_initialization import finish_profile_layout
         finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
+        _run_pre_profile_create_hooks(
+            staging,
+            canon,
+            clone_from=clone_from,
+            clone_config=clone_config,
+            clone_all=clone_all,
+            clone_channels=clone_channels,
+            sync_imports=sync_imports,
+            no_alias=no_alias,
+            no_skills=no_skills,
+            description=description,
+            soul=soul,
+        )
         os.rename(staging, profile_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -1466,6 +1479,22 @@ def create_profile(
     # rescans periodically, so a missed signal only delays serving).
     _notify_multiplexer(canon)
     return profile_dir
+
+
+def _run_pre_profile_create_hooks(staging: Path, name: str, **options: object) -> None:
+    """Let the initiating profile's plugins seed *staging* before atomic publication.
+
+    The normal plugin dispatcher turns callback failures into an ``abort`` directive for this
+    fail-closed hook. Raising here stays inside ``create_profile``'s cleanup boundary, so a
+    multiplexer never observes a partially initialized profile.
+    """
+    from hermes_cli.plugins import invoke_hook
+
+    results = invoke_hook("pre_profile_create", staging_dir=str(staging), name=name, options=options)
+    for result in results:
+        if isinstance(result, dict) and result.get("action") == "abort":
+            message = result.get("message")
+            raise RuntimeError(str(message) if message else "pre_profile_create hook aborted profile creation")
 
 
 def _clone_staging_dir(profile_dir: Path) -> Path:

@@ -199,11 +199,15 @@ VALID_HOOKS: set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # pre_profile_create: after a named profile's layout is complete but before its staging directory
+    # is atomically renamed into profiles/. A plugin may seed the isolated tree; errors abort publish.
+    # Kwargs: staging_dir (str), name (canonical profile id), options (creation options mapping).
+    "pre_profile_create",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification", "pre_profile_create"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

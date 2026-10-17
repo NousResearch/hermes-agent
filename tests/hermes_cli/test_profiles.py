@@ -137,6 +137,58 @@ class TestGetProfileDir:
 class TestCreateProfile:
     """Tests for create_profile()."""
 
+    def test_pre_profile_create_hook_seeds_hidden_staging_directory(self, profile_env):
+        """A profile-creation plugin can populate the tree before its atomic publish."""
+        default_home = profile_env / ".hermes"
+        plugin_dir = default_home / "plugins" / "profile-seed"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: profile-seed\nversion: 0.1.0\nprovides_hooks: [pre_profile_create]\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "from pathlib import Path\n\n"
+            "def seed(staging_dir, name, options):\n"
+            "    staging = Path(staging_dir)\n"
+            "    if (staging.parent / name).exists():\n"
+            "        raise RuntimeError('profile published before hook')\n"
+            "    staging.joinpath('seed.txt').write_text(f'{name}:{options[\"no_skills\"]}', encoding='utf-8')\n\n"
+            "def register(ctx):\n"
+            "    ctx.register_hook('pre_profile_create', seed)\n",
+            encoding="utf-8",
+        )
+        (default_home / "config.yaml").write_text("plugins:\n  enabled: [profile-seed]\n", encoding="utf-8")
+
+        profile_dir = create_profile("seeded", no_alias=True, no_skills=True)
+
+        assert (profile_dir / "seed.txt").read_text(encoding="utf-8") == "seeded:True"
+
+    def test_pre_profile_create_hook_failure_removes_staging_directory(self, profile_env):
+        """A failed setup hook must not publish a profile or leave its staging tree behind."""
+        default_home = profile_env / ".hermes"
+        plugin_dir = default_home / "plugins" / "profile-seed-fail"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: profile-seed-fail\nversion: 0.1.0\nprovides_hooks: [pre_profile_create]\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def fail(**kwargs):\n"
+            "    raise RuntimeError('seed failed')\n\n"
+            "def register(ctx):\n"
+            "    ctx.register_hook('pre_profile_create', fail)\n",
+            encoding="utf-8",
+        )
+        (default_home / "config.yaml").write_text(
+            "plugins:\n  enabled: [profile-seed-fail]\n", encoding="utf-8"
+        )
+
+        with pytest.raises(RuntimeError, match="seed failed"):
+            create_profile("broken", no_alias=True)
+
+        profiles_dir = default_home / "profiles"
+        assert not (profiles_dir / "broken").exists()
+        assert not list(profiles_dir.glob(".broken.staging-*"))
 
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env

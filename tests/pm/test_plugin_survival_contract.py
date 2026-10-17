@@ -376,6 +376,38 @@ def test_update_sync_disables_plugin_excluded_by_requires_python(admission_env):
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_eviction_removes_plugin_from_enabled(tmp_path):
+    """Regression: PluginEviction must remove the evicted plugin from plugins.enabled,
+    not just add it to plugins.disabled. A plugin in both lists is a contradiction
+    that silently disables it (disabled wins on load)."""
+    from pm.plugin_eviction import PluginEviction
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    plugin_dir = home / "plugins" / "bad-plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "pyproject.toml").write_text(
+        '[project]\nname="bad-plugin"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - bad-plugin\n    - good-plugin\n", encoding="utf-8")
+
+    entries = [(home / "plugins", "bad-plugin", plugin_dir)]
+    reasons = {plugin_dir.resolve(): "test reason"}
+    eviction = PluginEviction(entries, reasons)
+    eviction.publish(tmp_path)
+
+    import yaml
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert "bad-plugin" not in cfg["plugins"]["enabled"], \
+        "REGRESSION: evicted plugin still in enabled"
+    assert "bad-plugin" in cfg["plugins"]["disabled"], \
+        "evicted plugin not in disabled"
+    assert "good-plugin" in cfg["plugins"]["enabled"], \
+        "good plugin was wrongly removed from enabled"
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_update_sync_disables_later_plugin_of_unresolvable_union(admission_env):
     """Core moved under two admitted plugins that no longer co-resolve: the update keeps the
     first in config order, disables the one that breaks the build, and completes."""

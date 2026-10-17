@@ -1,7 +1,10 @@
 """Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
 
 import os
+import subprocess
 import struct
+import sys
+import threading
 import time
 import wave
 from pathlib import Path
@@ -673,25 +676,177 @@ class TestCleanupTempRecordings:
 # play_beep
 # ============================================================================
 
+
+class _FakePlaybackStream:
+    """Minimal OutputStream double that records rendered output and cleanup."""
+
+    def __init__(self, callback, finished_callback, *, block_frames=4, start_gate=None,
+                 close_error=None):
+        self._callback = callback
+        self._finished_callback = finished_callback
+        self._block_frames = block_frames
+        self._start_gate = start_gate
+        self._close_error = close_error
+        self.started = threading.Event()
+        self.aborted = threading.Event()
+        self.closed = threading.Event()
+        self.rendered = []
+
+    def start(self):
+        self.started.set()
+        if self._start_gate is not None:
+            self._start_gate.wait()
+            return
+        while True:
+            outdata = _FakeOutputBuffer(self._block_frames)
+            try:
+                self._callback(outdata, self._block_frames, None, None)
+            except _FakeSounddevice.CallbackStop:
+                self.rendered.extend(outdata.values)
+                self._finished_callback()
+                return
+            self.rendered.extend(outdata.values)
+
+    def abort(self):
+        self.aborted.set()
+
+    def close(self):
+        self.closed.set()
+        if self._close_error is not None:
+            raise self._close_error
+
+
+class _FakeSounddevice:
+    class CallbackStop(Exception):
+        pass
+
+    def __init__(self, *, start_gate=None, output_error=None, close_error=None):
+        self.start_gate = start_gate
+        self.output_error = output_error
+        self.close_error = close_error
+        self.streams = []
+
+    def OutputStream(self, *, callback, finished_callback, **_kwargs):
+        if self.output_error is not None:
+            raise self.output_error
+        stream = _FakePlaybackStream(
+            callback, finished_callback, start_gate=self.start_gate, close_error=self.close_error)
+        self.streams.append(stream)
+        return stream
+
+
+class _FakeAudio:
+    """Small 1-D int16-shaped input without depending on the optional NumPy extra."""
+
+    dtype = "int16"
+    ndim = 1
+
+    def __init__(self, values):
+        self._values = values
+
+    def __len__(self):
+        return len(self._values)
+
+    def __getitem__(self, item):
+        return self._values[item]
+
+
+class _FakeOutputBuffer:
+    """Records mono callback output with the 2-D indexing OutputStream provides."""
+
+    def __init__(self, frames):
+        self.values = [0] * frames
+
+    def __setitem__(self, item, value):
+        rows = item[0] if isinstance(item, tuple) else item
+        if isinstance(rows, slice):
+            indices = range(*rows.indices(len(self.values)))
+            if not isinstance(value, (int, float)):
+                for index, sample in zip(indices, value):
+                    self.values[index] = sample
+            else:
+                for index in indices:
+                    self.values[index] = value
+        else:
+            self.values[rows] = value
+
+
 class TestPlayBeep:
-    def test_beep_calls_sounddevice_play(self, mock_sd):
+    def test_playback_stream_drains_all_samples_before_returning(self):
+        """Regression for #109995: short cues must complete through their own stream."""
+        from tools.voice_mode import _sd_play_blocking
+
+        sd = _FakeSounddevice()
+        _sd_play_blocking(sd, _FakeAudio([11, 22, 33]), 16000, timeout=1.0)
+
+        assert len(sd.streams) == 1
+        stream = sd.streams[0]
+        assert stream.rendered[:3] == [11, 22, 33]
+        assert stream.aborted.is_set() is False
+        assert stream.closed.is_set() is True
+
+    def test_timed_out_stream_does_not_start_or_stop_a_later_cue(self):
+        """A blocked native call owns one worker slot and cannot target another stream."""
+        from tools.voice_mode import _sd_play_blocking
+
+        start_gate = threading.Event()
+        first_sd = _FakeSounddevice(start_gate=start_gate)
+        started = time.monotonic()
+        _sd_play_blocking(first_sd, _FakeAudio([1]), 16000, timeout=0.02)
+        assert time.monotonic() - started < 2.0
+        assert first_sd.streams[0].started.wait(timeout=1.0) is True
+
+        later_sd = _FakeSounddevice()
+        _sd_play_blocking(later_sd, _FakeAudio([2]), 16000, timeout=0.02)
+        assert later_sd.streams == []
+
+        start_gate.set()
+        assert first_sd.streams[0].aborted.wait(timeout=1.0) is True
+        assert first_sd.streams[0].closed.wait(timeout=1.0) is True
+
+        from tools import voice_mode as vm
+
+        deadline = time.monotonic() + 1.0
+        while not vm._SD_PLAYBACK_SLOT.acquire(blocking=False):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        vm._SD_PLAYBACK_SLOT.release()
+
+        recovered_sd = _FakeSounddevice()
+        _sd_play_blocking(recovered_sd, _FakeAudio([3]), 16000, timeout=1.0)
+        assert len(recovered_sd.streams) == 1
+
+    def test_stream_setup_or_cleanup_error_releases_slot(self):
+        """A failed stream lifecycle must not strand the one cue worker slot."""
+        from tools.voice_mode import _sd_play_blocking
+
+        with pytest.raises(RuntimeError, match="open failed"):
+            _sd_play_blocking(
+                _FakeSounddevice(output_error=RuntimeError("open failed")),
+                _FakeAudio([1]), 16000, timeout=1.0)
+        with pytest.raises(RuntimeError, match="close failed"):
+            _sd_play_blocking(
+                _FakeSounddevice(close_error=RuntimeError("close failed")),
+                _FakeAudio([1]), 16000, timeout=1.0)
+
+        recovered_sd = _FakeSounddevice()
+        _sd_play_blocking(recovered_sd, _FakeAudio([2]), 16000, timeout=1.0)
+        assert len(recovered_sd.streams) == 1
+
+    def test_beep_renders_through_its_owned_output_stream(self, monkeypatch):
         np = pytest.importorskip("numpy")
 
         from tools.voice_mode import play_beep
 
-        # play_beep uses polling (get_stream) + sd.stop() instead of sd.wait()
-        mock_stream = MagicMock()
-        mock_stream.active = False
-        mock_sd.get_stream.return_value = mock_stream
+        sd = _FakeSounddevice()
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, np))
+        monkeypatch.setattr("tools.voice_mode._sounddevice_output_allowed", lambda: True)
 
         play_beep(frequency=880, duration=0.1, count=1)
 
-        mock_sd.play.assert_called_once()
-        mock_sd.stop.assert_called()
-        # Verify audio data is int16 numpy array
-        audio_arg = mock_sd.play.call_args[0][0]
-        assert audio_arg.dtype == np.int16
-        assert len(audio_arg) > 0
+        assert len(sd.streams) == 1
+        assert any(sd.streams[0].rendered)
+        assert sd.streams[0].closed.is_set() is True
 
 # ============================================================================
 # Silence detection
@@ -895,6 +1050,60 @@ class TestPlaybackInterrupt:
 
         with _playback_lock:
             assert vm._active_playback is None
+
+    def test_stop_playback_cancels_only_the_owned_sounddevice_job(self):
+        from types import SimpleNamespace
+
+        from tools.voice_mode import stop_playback, _playback_lock
+        import tools.voice_mode as vm
+
+        cancelled = threading.Event()
+        with _playback_lock:
+            vm._active_sd_playback = SimpleNamespace(cancelled=cancelled)
+
+        stop_playback()
+
+        assert cancelled.is_set() is True
+
+
+def test_permanently_blocked_sounddevice_start_does_not_hold_process_exit():
+    """A driver stuck in start() must not turn a timeout into an exit hang."""
+    program = """
+import threading
+import time
+from tools.voice_mode import _sd_play_blocking
+
+entered_start = threading.Event()
+
+class Audio:
+    dtype = 'int16'
+    ndim = 1
+    def __len__(self): return 1
+    def __getitem__(self, item): return [1][item]
+
+class Sounddevice:
+    class CallbackStop(Exception): pass
+    class Stream:
+        def start(self):
+            entered_start.set()
+            while True:
+                time.sleep(1)
+        def abort(self): pass
+        def close(self): pass
+    def OutputStream(self, **kwargs): return self.Stream()
+
+_sd_play_blocking(Sounddevice(), Audio(), 16000, timeout=0.02)
+assert entered_start.wait(1.0)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 # ============================================================================
 # Continuous mode flow

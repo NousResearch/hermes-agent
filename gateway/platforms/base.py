@@ -4376,7 +4376,7 @@ class BasePlatformAdapter(ABC):
         if obligation_id is not None:
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         if delivery_adapter is None:
-            result = SendResult(success=False, error="send_path_degraded: receiving bot unavailable")
+            result = SendResult(success=False, error="send_path_degraded")
         else:
             logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                         len(text_content), event.source.chat_id)

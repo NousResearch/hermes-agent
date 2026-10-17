@@ -192,11 +192,26 @@ async def test_refused_final_retains_receiving_profile_in_real_ledger(mux, monke
     result, adapter = await mux.primary.send_final_ledgered(
         event, "agent:main:telegram:dm:999", "answer", {}, reply_to=None)
     assert not result.success and adapter is None
+    assert dl.is_reconnect_only(result.error)
+    assert dl.pending_retries() == []
     mux.primary._send_with_retry.assert_not_awaited()
     with dl._connect() as conn:
         row = conn.execute("SELECT state, content, adapter_profile FROM delivery_obligations").fetchone()
     assert tuple(row) == ("failed", "answer", "team_b")
     mux.runner._redeliver_failed_obligations_for_platform.assert_not_awaited()
+    replacement = _stub(Platform.TELEGRAM, mux.runner, "replacement")
+    replacement.set_owner_profile("team_b")
+    from gateway.platforms.base import SendResult
+    replacement.send = AsyncMock(return_value=SendResult(success=True, message_id="right-bot"))
+    mux.runner._profile_adapters["team_b"][Platform.TELEGRAM] = replacement
+    claimed = dl.sweep_failed_for_runtime("telegram", profile="team_b")
+    assert len(claimed) == 1
+    assert claimed[0]["profile"] == "team_b"
+    assert await mux.runner._redeliver_claimed_obligations(claimed) == 1
+    replacement.send.assert_awaited_once()
+    mux.primary._send_with_retry.assert_not_awaited()
+    with dl._connect() as conn:
+        assert conn.execute("SELECT state FROM delivery_obligations").fetchone()[0] == "delivered"
 
 
 @pytest.mark.parametrize("fault", ["none", "exception", "wrong_platform", "missing"])

@@ -2271,6 +2271,7 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     agent.provider = agent.requested_provider = new_provider
     # Re-read reasoning_echo so the flag reflects the new primary model (see _reasoning_echo_opt_in).
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    agent._strip_finished_reasoning_replay_flag = agent._read_strip_finished_reasoning_replay_from_config()
     # Empty base_url while the provider changes means upstream resolution failed; falling back to
     # the old provider's URL pairs the wrong host and persists via _primary_runtime. Fail loud.
     # Same-provider re-select (credential refresh) may keep the URL.

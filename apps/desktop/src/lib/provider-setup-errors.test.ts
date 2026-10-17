@@ -21,6 +21,15 @@ describe('isProviderSetupErrorMessage', () => {
     ).toBe(true)
   })
 
+  it('matches what provider resolution says on a blank install today', () => {
+    // hermes_cli/auth.py raises it with code no_provider_configured; onboarding only gets the text.
+    expect(
+      isProviderSetupErrorMessage(
+        'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, type `/login` in chat, or add a key with `hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in ~/.hermes/.env.)'
+      )
+    ).toBe(true)
+  })
+
   it('matches an explicit provider that has no credentials', () => {
     // agent/auxiliary_unavailable.py::missing_provider_credentials_message, both shapes.
     expect(

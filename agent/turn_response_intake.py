@@ -12,6 +12,7 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
+from agent.content_tool_calls import _extract_content_tool_calls
 from agent.provider_projection import splice_provider_projection
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import (
@@ -194,4 +195,9 @@ def normalize_model_response(
     if hasattr(agent, "_codex_incomplete_retries"):
         agent._codex_incomplete_retries = 0
         agent._codex_reasoning_only_streak = 0
+    if finish_reason == "stop" and not assistant_message.tool_calls and assistant_message.content:
+        content_tool_calls = _extract_content_tool_calls(agent, assistant_message.content)
+        if content_tool_calls:
+            assistant_message.tool_calls = content_tool_calls
+            assistant_message.content = None
     return _verdict("fallthrough")

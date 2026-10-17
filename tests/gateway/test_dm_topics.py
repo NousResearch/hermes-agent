@@ -467,6 +467,35 @@ def test_group_topic_skill_binding_second_topic():
     assert event.source.chat_topic == "Sales"
 
 
+@pytest.mark.parametrize("lobby_thread_id", [None, 1], ids=["no-thread", "general"])
+def test_recovered_lobby_message_carries_the_topics_prompt_inputs(lobby_thread_id):
+    """A lobby-shaped DM recovered into a topic runs in that topic's session, so it must carry
+    the same prompt inputs as a message sent inside the topic: the session context prompt and
+    the channel prompt would otherwise flip between the root's and the topic's every turn."""
+    import hermes_yaml as yaml
+    from gateway.platforms.event import MessageType
+
+    dm_topics = [{"chat_id": 111, "topics": [{"name": "Research", "skill": "arxiv", "thread_id": 100}]}]
+    # A General-topic lookup misses the cache and hot-reloads config.yaml, so it must hold the topics.
+    with open(Path(os.environ["HERMES_HOME"]) / "config.yaml", "w") as f:
+        yaml.safe_dump({"platforms": {"telegram": {"extra": {"dm_topics": dm_topics}}}}, f)
+    adapter = _make_adapter(dm_topics)
+    adapter.config.extra["channel_prompts"] = {"111": "root prompt", "100": "research prompt"}
+    adapter._dm_topics["111:Research"] = 100
+    adapter.set_topic_recovery_fn(lambda source: "100")
+
+    inside = adapter._build_message_event(_make_mock_message(thread_id=100), MessageType.TEXT)
+    recovered = adapter._build_message_event(
+        _make_mock_message(thread_id=lobby_thread_id, is_topic_message=bool(lobby_thread_id)),
+        MessageType.TEXT)
+    adapter._apply_topic_recovery(recovered)
+
+    def inputs(event):
+        return (event.source.thread_id, event.source.chat_topic, event.auto_skill, event.channel_prompt)
+
+    assert inputs(recovered) == inputs(inside) == ("100", "Research", "arxiv", "research prompt")
+
+
 # ── _build_message_event: from_user=None fallback in DMs ──
 
 

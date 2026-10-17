@@ -12,9 +12,12 @@ import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $backgroundStatusBySession } from '@/store/composer-status'
+import { $sidebarRowMeta } from '@/store/layout'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
+import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 import type * as WindowsStore from '@/store/windows'
 
 import { ReorderableList, useSortableBindings } from './reorderable-list'
@@ -35,6 +38,7 @@ vi.mock('@/i18n', () => ({
           ageMin: 'm',
           ageNow: 'now',
           backgroundRunning: 'Running in background',
+          liveWork: (subagents: number, background: number) => `${subagents} agents · ${background} task`,
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
           continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
@@ -206,6 +210,36 @@ describe('SidebarSessionRow running arc', () => {
 describe('SidebarSessionRow', () => {
   afterEach(() => {
     vi.useRealTimers()
+    $backgroundStatusBySession.set({})
+    $sidebarRowMeta.set(['preview', 'updated'])
+    $subagentsBySession.set({})
+  })
+
+  it('shows an opted-in count for live delegated work on an otherwise idle row', () => {
+    const subagent: SubagentProgress = {
+      id: 'sub-1',
+      parentId: null,
+      goal: 'scan',
+      status: 'running',
+      taskCount: 1,
+      taskIndex: 0,
+      startedAt: 0,
+      updatedAt: 0,
+      filesRead: [],
+      filesWritten: [],
+      stream: []
+    }
+
+    publishSessionState('runtime-1', { ...createClientSessionState('s1'), busy: false })
+    $subagentsBySession.set({ 'runtime-1': [subagent, { ...subagent, id: 'sub-2', status: 'queued' }] })
+    $backgroundStatusBySession.set({
+      'runtime-1': [{ id: 'process-1', state: 'running', title: 'build', type: 'background' }]
+    })
+    $sidebarRowMeta.set(['activity'])
+
+    renderRow(makeSession({ title: 'Delegating' }))
+
+    expect(screen.getByText('2 agents · 1 task')).toBeTruthy()
   })
 
   // Full-title tooltip on hover (#83000-class ask): the label is a tooltip

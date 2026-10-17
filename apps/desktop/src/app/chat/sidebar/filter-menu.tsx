@@ -136,6 +136,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   ]
 
   const ROW_META: Option<SidebarRowMeta>[] = [
+    { icon: 'pulse', id: 'activity', label: f.activity },
     { icon: 'clock', id: 'updated', label: f.updated },
     { icon: 'comment', id: 'preview', label: f.preview },
     { icon: 'symbol-numeric', id: 'tokens', label: f.tokens },

@@ -3231,6 +3231,7 @@ export const en: Translations = {
       cost: 'Cost',
       manual: 'Manual',
       preview: 'Preview',
+      activity: 'Live work',
       pr: 'PR',
       needsInput: 'Needs input',
       working: 'Working',
@@ -3325,6 +3326,13 @@ export const en: Translations = {
       waitingForAnswer: 'Waiting for your answer',
       finishedUnread: 'Finished — unread',
       backgroundRunning: 'Background task running',
+      liveWork: (subagents, background) =>
+        [
+          subagents ? `${subagents} ${subagents === 1 ? 'agent' : 'agents'}` : null,
+          background ? `${background} ${background === 1 ? 'task' : 'tasks'}` : null
+        ]
+          .filter(Boolean)
+          .join(' · '),
       draftSession: 'Draft — nothing sent yet',
       handoffOrigin: platform => `Handed off from ${platform}`,
       continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',

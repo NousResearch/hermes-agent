@@ -31,7 +31,7 @@ import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import { $sessionDotStateById, $sessionLiveWorkById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
@@ -186,10 +186,12 @@ function SidebarSessionRowImpl({
   const openUnfocused = useStoreSelector($openStoredSessionIds, open => !isSelected && open.has(session.id))
   const totalTokens = session.input_tokens + session.output_tokens
   const cost = sessionCostUsd(session)
+  const liveWork = useStoreSelector($sessionLiveWorkById, work => work[session.id])
 
   // Tokens, cost and age share one figure rather than each claiming a column:
   // several switched on read as one number, not as a widening gutter.
   const figures = [
+    rowMeta.includes('activity') && liveWork ? r.liveWork(liveWork.subagents, liveWork.background) : null,
     rowMeta.includes('tokens') && totalTokens > 0 ? compactNumber(totalTokens) : null,
     // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
     // cheap session — below a cent the row says nothing at all.

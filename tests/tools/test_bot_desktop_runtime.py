@@ -1,8 +1,9 @@
-"""Bot Desktop runtime: thumbnail and display-number allocation invariants."""
+"""Bot Desktop runtime: thumbnail, display-number allocation and spawn-environment invariants."""
 
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import threading
 import time
@@ -481,3 +482,61 @@ def test_a_comfortable_start_is_not_logged(tmp_path, monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="tools.bot_desktop.runtime"):
         runtime.start()
     assert not [m for m in (r.getMessage() for r in caplog.records) if "available" in m]
+
+
+def _running_screen(tmp_path, monkeypatch):
+    """A live screen: the launcher's published display env plus this profile's state dir."""
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime, "touch_activity", lambda: None)
+    monkeypatch.setattr(runtime, "published_env", lambda: {
+        "DISPLAY": ":20",
+        "XAUTHORITY": str(tmp_path / "Xauthority"),
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/a-private-bus",
+    })
+    monkeypatch.setattr("tools.bot_desktop.browser.env_for_agent", lambda env: env)
+
+
+def test_a_spawn_never_reaches_the_host_compositor_through_the_runtime_dir(tmp_path, monkeypatch):
+    """Regression for #136677: ``wl_display_connect(NULL)`` falls back to ``$XDG_RUNTIME_DIR/wayland-0``
+    when ``WAYLAND_DISPLAY`` is unset, so on a host whose login session is Wayland every GTK/Qt app
+    spawned for the screen would open on the human's desktop. The spawn env must carry a private,
+    empty runtime dir so that lookup fails closed onto the screen's X11 display."""
+    _running_screen(tmp_path, monkeypatch)
+    host_runtime = tmp_path / "host-runtime"
+    host_runtime.mkdir()
+    (host_runtime / "wayland-0").write_text("", encoding="utf-8")  # the human compositor's socket
+
+    env = runtime.desktop_env({"XDG_RUNTIME_DIR": str(host_runtime), "WAYLAND_DISPLAY": "wayland-0"})
+
+    assert env["XDG_RUNTIME_DIR"] == str(tmp_path / "runtime-dir")
+    assert not (tmp_path / "runtime-dir" / "wayland-0").exists(), "the fallback must fail closed"
+    assert (tmp_path / "runtime-dir").stat().st_mode & 0o777 == 0o700, "the runtime dir must be private"
+    assert env["XDG_SESSION_TYPE"] == "x11", "a leaked host session type flips the Chromium backend"
+    assert env["DISPLAY"] == ":20" and "WAYLAND_DISPLAY" not in env
+
+
+def test_a_deep_session_tmpdir_never_fatals_the_spawned_browser(tmp_path, monkeypatch):
+    """Regression for #136677: Chromium always binds its singleton socket at
+    ``$TMPDIR/org.chromium.Chromium.XXXXXX/SingletonSocket`` and ``sun_path`` holds 107 bytes, so the
+    deep Hermes scratch TMPDIR crashes every spawned browser with 'Socket path too long' before it
+    maps a window. A too-long session TMPDIR is swapped for a socket-safe one; a short one is kept."""
+    from hermes_constants import socket_safe_tmpdir
+
+    _running_screen(tmp_path, monkeypatch)
+    deep = tmp_path / "hermes-agent-bot--u7814-u7a76" / "cache" / "scratch"
+    deep.mkdir(parents=True)
+    assert len(os.fsencode(str(deep))) > 50  # precondition of the case under test
+
+    env = runtime.desktop_env({"TMPDIR": str(deep)})
+
+    assert env["TMPDIR"] == socket_safe_tmpdir()
+    assert len(os.fsencode(env["TMPDIR"] + "/org.chromium.Chromium.zh2Q0j/SingletonSocket")) < 108
+    assert runtime.desktop_env({"TMPDIR": "/tmp"})["TMPDIR"] == "/tmp", "a short TMPDIR is left alone"
+
+
+def test_no_running_screen_leaves_the_host_session_env_alone(tmp_path, monkeypatch):
+    """Without a screen the host keeps its seat: desktop_env() must not retarget the caller's
+    XDG_RUNTIME_DIR/TMPDIR when what runs here may be the real display on this very host."""
+    monkeypatch.setattr(runtime, "published_env", dict)
+    base = {"XDG_RUNTIME_DIR": "/run/user/1000", "TMPDIR": "/tmp", "DISPLAY": ":0"}
+    assert runtime.desktop_env(base) == base

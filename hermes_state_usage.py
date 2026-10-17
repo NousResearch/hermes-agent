@@ -396,9 +396,9 @@ class SessionUsageMixin:
         if not session_id or not task:
             return
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
-        # FK to sessions.id. A missing row is inserted as ``unknown``, and that created_source
-        # never moves. An existing row keeps source and created_source, including a NULL
-        # surface update_token_counts can still fill. The upsert's profile_name backfill
+        # FK to sessions.id. A missing row is inserted as the ``unknown`` placeholder, which
+        # the creator upsert later replaces. An existing row keeps source and created_source,
+        # including a NULL surface update_token_counts can still fill. The upsert's profile_name backfill
         # still runs: a NULL owner is filled without writing ``unknown`` anywhere.
         own_profile = None
         if self._read_one("SELECT 1 FROM sessions WHERE id=?", (session_id,)) is None:

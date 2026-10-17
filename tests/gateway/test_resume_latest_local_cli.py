@@ -78,9 +78,9 @@ async def test_resume_latest_matches_the_owners_local_rows_by_creating_surface(t
 async def test_auxiliary_usage_cannot_replace_the_insert_stamp(tmp_path, monkeypatch):
     """Auxiliary usage creates a missing row as created_source='unknown'.
 
-    The agent's own token accounting passes its surface, so it is not that writer.
-    session.create stamps the surface in the insert; a later record_auxiliary_usage
-    must leave it, and session.resume latest='cli' still finds the row.
+    The creator upsert repairs 'unknown', but session.create's DO NOTHING insert does
+    not, so it stamps the surface itself; a later record_auxiliary_usage must leave it,
+    and session.resume latest='cli' still finds the row.
     """
     store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
     try:

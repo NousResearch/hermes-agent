@@ -56,11 +56,11 @@ def commit_local_session(db, *, epoch, receipt):
         policy, entry = receipt['policy'], receipt['entry']
         from datetime import datetime
         started = datetime.fromisoformat(entry['created_at']).timestamp()
-        # Auxiliary usage inserts created_source='unknown' when it creates the row, and
-        # that value never moves (record_auxiliary_usage carries no surface). The agent's
-        # own accounting passes its surface (turn_usage._agent_session_source) and is not
-        # that writer. Stamp the agent surface in this insert so a later usage write
-        # cannot fill the column. gui's in-process agent is desktop; a managed worker
+        # Auxiliary usage inserts created_source='unknown' when it creates the row
+        # (record_auxiliary_usage carries no surface). The creator upsert repairs
+        # 'unknown', but this DO NOTHING insert does not, so the surface is stamped here.
+        # The agent's own accounting passes its surface (turn_usage._agent_session_source)
+        # and is not that writer. gui's in-process agent is desktop; a managed worker
         # creates with the policy label gui.
         from gateway.session_policy import created_surface
         created = created_surface(policy['source'])

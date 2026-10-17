@@ -179,7 +179,7 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from plugins.platforms.telegram.telegram_entities import expand_link_entities
+from plugins.platforms.telegram.telegram_entities import expand_link_entities, expand_quote_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_network import (
@@ -7039,15 +7039,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     def _reply_context(self, message: Message) -> tuple:
         """``(reply_to_id, reply_to_text)`` for the replied-to message: Telegram's native partial quote
-        first, then text/caption, rich echo, then the sent index."""
+        first, then text/caption (hidden link URLs inlined), rich echo, then the sent index."""
         if not message.reply_to_message:
             return None, None
         reply_to_id = str(message.reply_to_message.message_id)
         quote = getattr(message, "quote", None)
-        quote_text = getattr(quote, "text", None) if quote is not None else None
+        quote_text = expand_quote_link_entities(quote, message.reply_to_message) if quote is not None else None
         if quote_text:
             return reply_to_id, quote_text
-        reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+        reply_to_text = expand_link_entities(message.reply_to_message) or None
         if not reply_to_text:
             reply_to_text = self._extract_rich_reply_text(message.reply_to_message)
         if not reply_to_text:

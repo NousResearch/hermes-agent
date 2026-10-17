@@ -589,12 +589,14 @@ def _redact_approval_command(cmd: str | None) -> str:
 
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
-    allow_session: bool = True, smart_denied: bool = False) -> str:
+    allow_session: bool = True, smart_denied: bool = False, plain: bool = False) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
     steps a surface without buttons needs."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
+    if plain:  # a tool's question, not a command: the question, then yes / no
+        return f"{command}\n\n" + t("gateway.exec_approval.text_plain_reply", prefix=command_prefix)
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")

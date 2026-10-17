@@ -381,6 +381,32 @@ def test_relaunch_runs_zip_launchers_and_preserves_interpreter_options(tmp_path)
     assert json.loads(result.stdout) == [["arg with spaces"], True, 1]
 
 
+def test_relaunch_puts_a_script_own_dir_back_on_sys_path(tmp_path):
+    """A third-party script relaunched through the store interpreter keeps sibling imports (#135012).
+
+    ``python -I -c "runpy.run_path(...)"`` drops the script's own directory from sys.path,
+    which a plain ``python script.py`` always provides — an entry point outside the Hermes
+    checkout (a foreign app sharing the store venv interpreter) then lost ``import sibling``
+    on every relaunch and crash-looped under a supervisor. The script's directory must be
+    re-inserted after the checkout root's insert so it takes sys.path[0], matching the
+    plain-invocation precedence.
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    app = tmp_path / "third_party_app"
+    app.mkdir()
+    script = app / "server.py"
+    script.write_text("import sibling\n")
+    relaunched = venv_sync.relaunch_command(
+        Path(sys.executable), root, [str(script)], [sys.executable, str(script)], None
+    )
+    payload = relaunched[relaunched.index("-c") + 1]
+    script_insert = payload.index(f"sys.path.insert(0, {str(app)!r})")
+    root_insert = payload.index(f"sys.path.insert(0, {str(root)!r})")
+    assert root_insert < script_insert  # the script's own dir wins sys.path[0]
+    assert f"runpy.run_path({str(script)!r}" in payload
+
+
 def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
     import pm
     root = tmp_path / "checkout"

@@ -33,17 +33,12 @@ def implicit_api_session(db, session_id, request_id=None):
     only, so every later turn of that conversation (same opening) lands on the same session. An
     exact retry stays on the generation holding its request id's terminal identity; explicit ids
     never come here."""
-    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    from hermes_state_mutation_retirement import first_generation
     from hermes_state_terminal import identity_key
-    candidate, generation = session_id, 0
-    with db._read_ctx() as conn:
-        while conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + candidate,)).fetchone():
-            if request_id and conn.execute('SELECT 1 FROM state_meta WHERE key=?',
-                                           (identity_key('api', candidate, request_id),)).fetchone():
-                break
-            generation += 1
-            candidate = 'api-' + hashlib.sha256(f'{session_id}\0{generation}'.encode()).hexdigest()[:16]
-    return candidate
+    pinned = None if not request_id else lambda conn, sid: conn.execute(
+        'SELECT 1 FROM state_meta WHERE key=?', (identity_key('api', sid, request_id),)).fetchone() is not None
+    derive = lambda n: session_id if n == 0 else 'api-' + hashlib.sha256(f'{session_id}\0{n}'.encode()).hexdigest()[:16]
+    return first_generation(db, derive, pinned=pinned)[1]
 
 
 def _served_profile(authority):

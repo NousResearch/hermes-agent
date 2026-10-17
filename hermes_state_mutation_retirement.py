@@ -6,10 +6,32 @@ from hermes_state_runtime import RuntimeStoreError, admission_fingerprint, mutat
 RETIRED_PREFIX = 'gateway.retired_session.v1.'
 
 
+def retired_in(conn, session_id):
+    return conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone() is not None
+
+
 def retired_session(db, session_id):
     with db._read_ctx() as conn:
-        return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
-                            (RETIRED_PREFIX + session_id,)).fetchone() is not None
+        return retired_in(conn, session_id)
+
+
+def first_generation(db, derive, *, pinned=None, spent=None):
+    """``(n, derive(n))``: the first generation of a derived session id a NEW request may use. A
+    user-deleted id stays retired for good, so a derived id (header-less chat, Bot Chat, hosted-room
+    member, A2A context) whose session was deleted moves to its next generation, never recreated.
+    ``pinned(conn, sid)`` keeps an exact retry on the retired generation holding its identity;
+    ``spent(conn, sid)`` skips a live one used up another way (a renamed Bot Chat). Read from
+    durable rows only, so a restart and every concurrent caller pick the same id."""
+    generation = 0
+    with db._read_ctx() as conn:
+        while True:
+            sid = derive(generation)
+            if retired_in(conn, sid):
+                if pinned is not None and pinned(conn, sid):
+                    return generation, sid
+            elif spent is None or not spent(conn, sid):
+                return generation, sid
+            generation += 1
 
 
 def has_mutation_receipt(db, principal_id, session_id, request_id):

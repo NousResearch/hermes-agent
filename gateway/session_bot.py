@@ -234,15 +234,16 @@ def _bot_chat_creation_id(authority, actor):
     concurrent deliveries (serialized by the titled-create lock) pick the same identity. An
     existing UNtitled session is the same creation interrupted before its title: it is reused."""
     from gateway.session_local_recovery import local_identity
-    from hermes_state_mutation_retirement import retired_session
-    base, generation = 'bot-chat:' + authority.profile_id, 0
-    while True:
-        request_id = base if generation == 0 else f'{base}:{generation}'
-        sid = local_identity(authority.profile_id, actor.subject, request_id)
-        row = authority.db.get_session(sid)
-        if not retired_session(authority.db, sid) and (row is None or not row.get('title')):
-            return request_id
-        generation += 1
+    from hermes_state_mutation_retirement import first_generation
+    base = 'bot-chat:' + authority.profile_id
+    request_id = lambda generation: base if generation == 0 else f'{base}:{generation}'
+
+    def titled(conn, sid):
+        row = conn.execute('SELECT title FROM sessions WHERE id=?', (sid,)).fetchone()
+        return row is not None and bool(row[0])
+    generation, _sid = first_generation(
+        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), spent=titled)
+    return request_id(generation)
 
 
 def _admission_outcome(authority, admission_id, fallback=None):

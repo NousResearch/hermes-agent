@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -695,9 +696,122 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+# The Grok CLI's own billing surface, not the api.x.ai inference host and not a documented xAI API.
+# Unofficial: the shape was verified against live responses and may change or disappear without notice.
+_XAI_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+_XAI_SETTINGS_URL = "https://cli-chat-proxy.grok.com/v1/settings"
+_XAI_UNAVAILABLE = "SuperGrok weekly pool could not be read. Sign in again with `hermes auth add xai-oauth`."
+_XAI_PRODUCT_NAMES = {"GrokBuild": "Grok Build", "GrokChat": "Grok Chat"}
+
+
+def _xai_product_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if name in _XAI_PRODUCT_NAMES:
+        return _XAI_PRODUCT_NAMES[name]
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name).replace("_", " ").replace("-", " ")
+    return " ".join(part.capitalize() for part in spaced.split()) or "Unknown product"
+
+
+def _xai_money_val(config: dict, key: str) -> Optional[float]:
+    """``{"val": N}`` money field → number, or None when absent/unreadable. Protobuf JSON may send int64 as a string."""
+    raw = (config.get(key) or {}).get("val")
+    if isinstance(raw, str):
+        try:
+            raw = float(raw)
+        except ValueError:
+            return None
+    return float(raw) if _is_finite_num(raw) else None
+
+
+def _xai_billing_snapshot(billing: dict, plan: Optional[str]) -> AccountUsageSnapshot:
+    config = billing.get("config") or {}
+    period = config.get("currentPeriod") or {}
+    start, end = _parse_dt(period.get("start")), _parse_dt(period.get("end"))
+    pool_label = "Weekly pool" if "WEEKLY" in str(period.get("type") or "").upper() else "Usage pool"
+    windows: list[AccountUsageWindow] = []
+    used = config.get("creditUsagePercent")
+    if _is_finite_num(used):
+        windows.append(AccountUsageWindow(label=pool_label, used_percent=float(used), reset_at=end))
+    details: list[str] = []
+    for product in config.get("productUsage") or []:
+        pct = product.get("usagePercent") if isinstance(product, dict) else None
+        if _is_finite_num(pct):
+            details.append(f"{_xai_product_name(product.get('product'))}: {pct:g}% used")
+    if start and end:
+        details.append(f"Window: {safe_strftime(start.astimezone(), '%Y-%m-%d %H:%M %Z')} to "
+                       f"{safe_strftime(end.astimezone(), '%Y-%m-%d %H:%M %Z')}")
+    # Unit of non-zero money values (cents vs dollars) is unknown, so only zero is translated.
+    cap, spent = _xai_money_val(config, "onDemandCap"), _xai_money_val(config, "onDemandUsed")
+    if cap == 0:
+        details.append("Pay-as-you-go: off")
+    elif cap is not None:
+        spent_part = f", used {spent:g} raw units" if spent is not None else ""
+        details.append(f"Pay-as-you-go: on (cap {cap:g} raw units{spent_part})")
+    prepaid = _xai_money_val(config, "prepaidBalance")
+    if prepaid == 0:
+        details.append("Prepaid balance: $0")
+    elif prepaid is not None:
+        details.append(f"Prepaid balance: {prepaid:g} raw units")
+    if not windows and not details:
+        return _snapshot("xai-oauth", "grok_cli_billing", [], [], unavailable_reason=_XAI_UNAVAILABLE)
+    return _snapshot("xai-oauth", "grok_cli_billing", windows, details, plan=plan, raw=billing)
+
+
+def _fetch_xai_oauth_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """SuperGrok weekly pool. No credential → None (``/usage`` still shows session tokens); any billing failure →
+    an unavailable line. Never raises. The live session's own token wins so a pooled login reports its own account.
+    Read-only: a display path never refreshes, rotates, or persists a credential."""
+    token = str(api_key or "").strip()
+    if not token:
+        from hermes_cli.auth import AuthError
+
+        try:
+            from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials
+            token = str(resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False).get("api_key") or "").strip()
+        except AuthError as exc:  # signed out of the singleton; pool-only logins fall through to the peek
+            logger.debug("xai-oauth ▸ /usage no singleton credential (%s)", type(exc).__name__)
+        except Exception as exc:
+            logger.debug("xai-oauth ▸ /usage no credential (%s)", type(exc).__name__)
+            return None
+        if not token:
+            try:
+                from agent.credential_pool import load_pool
+                entry = load_pool("xai-oauth").peek()
+            except Exception as exc:
+                logger.debug("xai-oauth ▸ /usage pool peek failed (%s)", type(exc).__name__)
+                return None
+            token = str(getattr(entry, "access_token", None) or "").strip()
+        if not token:
+            return None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
+               "x-xai-token-auth": "xai-grok-cli", "x-grok-client-mode": "cli"}
+    # ~4 s per call so billing + settings fit inside the CLI's 10 s /usage cap.
+    try:
+        billing = _get_json(_XAI_BILLING_URL, headers, timeout=4.0)
+        if not isinstance(billing, dict):
+            raise ValueError("billing response is not an object")
+    except Exception as exc:
+        # Type/status only: the message may carry the URL but never headers; no response body is logged.
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        logger.debug("xai-oauth ▸ /usage billing fetch failed (%s%s)", type(exc).__name__, f" HTTP {status}" if status else "")
+        return _snapshot("xai-oauth", "grok_cli_billing", [], [], unavailable_reason=_XAI_UNAVAILABLE)
+    plan: Optional[str] = None
+    try:
+        settings = _get_json(_XAI_SETTINGS_URL, headers, timeout=4.0)
+        tier = settings.get("subscription_tier_display") if isinstance(settings, dict) else None
+        plan = (tier.strip() or None) if isinstance(tier, str) else None
+    except Exception as exc:
+        logger.debug("xai-oauth ▸ /usage settings fetch failed (%s); plan omitted", type(exc).__name__)
+    try:
+        return _xai_billing_snapshot(billing, plan)
+    except Exception as exc:
+        logger.debug("xai-oauth ▸ /usage billing parse failed (%s)", type(exc).__name__)
+        return _snapshot("xai-oauth", "grok_cli_billing", [], [], unavailable_reason=_XAI_UNAVAILABLE)
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "xai-oauth": _fetch_xai_oauth_account_usage,
 }
 
 # Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by

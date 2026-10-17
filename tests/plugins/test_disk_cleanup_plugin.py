@@ -317,6 +317,35 @@ class TestProtectedDirsNeverRmtreed:
         assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
         assert dg.load_tracked() == []
 
+    def test_artifact_bundle_test_files_and_dirs_are_never_tracked_or_deleted(self, _isolate_env):
+        """``artifacts/`` holds user deliverables and sealed evidence bundles; a test_* authored
+        there is a deliverable, and an empty run sandbox there may be in live use."""
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        bundle = _isolate_env / "artifacts" / "bundle" / "candidate"
+        bundle.mkdir(parents=True)
+        stale = bundle / "test_old.py"
+        stale.write_text("x")
+        assert dg.guess_category(stale) is None
+        dg.save_tracked([{"path": str(stale), "category": "test",
+                          "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
+        new = bundle / "test_new.py"
+        _run_tool(pi, "write_file", {"path": str(new), "content": "x"},
+                  create=lambda: new.write_text("y"), task_id="t1", session_id="s_art")
+        sandbox = _isolate_env / "artifacts" / "bundle" / "evidence" / "sandbox" / "tmp"
+        sandbox.mkdir(parents=True)
+        scratch = _isolate_env / "test_scratch.py"
+        _run_tool(pi, "write_file", {"path": str(scratch), "content": "x"},
+                  create=lambda: scratch.write_text("x"), task_id="t1", session_id="s_art")
+
+        pi._on_session_end(session_id="s_art", completed=True, interrupted=False)
+
+        assert stale.exists(), "a stale artifacts/ entry is dropped by re-validation, not deleted"
+        assert new.exists(), "test files created under artifacts/ are never tracked or deleted"
+        assert sandbox.is_dir(), "empty dirs under artifacts/ are never swept"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
+        assert dg.load_tracked() == []
+
 
 class TestGitWorktreeFilesNeverCleaned:
     """Regression tests for #115295 — git-owned test_* files (committed regression tests

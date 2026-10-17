@@ -111,7 +111,9 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     # Per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "workspace", "plans", "home",
     # Kanban owns its own lifecycle (workspaces GC'd at terminal state, attachments live with the task).
-    "kanban"})
+    "kanban",
+    # User deliverables and evidence bundles; empty run sandboxes there may be in live use.
+    "artifacts"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
@@ -130,7 +132,9 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     "profiles", "backups", "optional-skills", "workspace", "plans", "home",
     # Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
     # not disposable (#114552).
-    "kanban"})
+    "kanban",
+    # User deliverables and evidence bundles: a test_* authored there is a deliverable.
+    "artifacts"})
 
 
 def _is_protected_dir(p: Path) -> bool:

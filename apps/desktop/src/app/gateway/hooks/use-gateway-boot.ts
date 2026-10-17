@@ -5,6 +5,7 @@ import {
   isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
+  LOCAL_CONNECTION_ID,
   reconnectBackoffDelayMs
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
@@ -307,7 +308,14 @@ export function useGatewayBoot({
     // reset — the same one a Settings apply (softSwitch below) runs. One owner,
     // one reset, so the two doors can't drift apart again (#93937).
     const offSwitchLifecycle = registerGatewaySwitchLifecycle({
-      beforeConnectionSwitch: () => callbacksRef.current.beforeConnectionSwitch(),
+      beforeConnectionSwitch: () => {
+        // Explicit source selection supersedes the old cold boot, including
+        // an eligibility lookup that has not finished resolving yet.
+        lateLocalBootRecoveryArmed = false
+        lateLocalBootRecoveryConsumed = true
+
+        return callbacksRef.current.beforeConnectionSwitch()
+      },
       refreshSessions: shouldPublish => callbacksRef.current.refreshSessions(shouldPublish)
     })
 
@@ -400,8 +408,9 @@ export function useGatewayBoot({
     // the main-process boot, so keep one narrowly-scoped chance to attach when
     // that same local backend later publishes backend.ready (#98124).
     let lateLocalBootRecoveryArmed = false
-    let lateLocalBootRecoveryStarted = false
+    let lateLocalBootRecoveryConsumed = false
     let localPrimaryBoot: boolean | null = null
+    let primaryBootRouteResolved = false
 
     const clearBootRetryTimer = () => {
       if (bootRetryTimer !== null) {
@@ -425,6 +434,11 @@ export function useGatewayBoot({
     }
 
     const primaryBootIsLocal = async (): Promise<boolean> => {
+      // A timed-out route lookup has not established which source is booting.
+      if (!primaryBootRouteResolved) {
+        return false
+      }
+
       if (localPrimaryBoot !== null) {
         return localPrimaryBoot
       }
@@ -763,6 +777,13 @@ export function useGatewayBoot({
           ? await desktop.profile?.getDefault?.()
           : null
 
+      if (startup) {
+        primaryBootRouteResolved = true
+        // A pinned/saved source overrides the legacy global mode. Capture the
+        // same identity used by the actual dial before awaiting its readiness.
+        localPrimaryBoot = route?.connectionId ? route.connectionId === LOCAL_CONNECTION_ID : null
+      }
+
       // Initial registry publication can precede boot. Resolve captured launch
       // intent explicitly rather than through that still-initializing mirror.
       if (route?.connectionId && desktop.getConnectionFor) {
@@ -981,7 +1002,7 @@ export function useGatewayBoot({
         bootCompleted ||
         $gatewaySwitching.get() ||
         !lateLocalBootRecoveryArmed ||
-        lateLocalBootRecoveryStarted ||
+        lateLocalBootRecoveryConsumed ||
         payload.error !== null ||
         payload.phase !== 'backend.ready' ||
         !payload.running
@@ -990,7 +1011,7 @@ export function useGatewayBoot({
       }
 
       lateLocalBootRecoveryArmed = false
-      lateLocalBootRecoveryStarted = true
+      lateLocalBootRecoveryConsumed = true
       // Explicitly clear the timeout overlay before retrying the same local
       // connection. The backend is already healthy; this is an attach retry,
       // not another spawn or an unbounded reconnect loop.
@@ -1001,7 +1022,7 @@ export function useGatewayBoot({
 
     const armLateLocalBootRecovery = () => {
       void primaryBootIsLocal().then(isLocal => {
-        if (cancelled || bootCompleted || lateLocalBootRecoveryStarted || !isLocal) {
+        if (cancelled || bootCompleted || lateLocalBootRecoveryConsumed || !isLocal) {
           return
         }
 
@@ -1693,7 +1714,7 @@ export function useGatewayBoot({
           // renderer's bounded wait above expires. Arm exactly one recovery
           // attach for the case where that same local backend later publishes
           // backend.ready (#98124).
-          if (isTimeoutError(err) && !lateLocalBootRecoveryStarted) {
+          if (isTimeoutError(err) && !lateLocalBootRecoveryConsumed) {
             armLateLocalBootRecovery()
           }
 

@@ -403,12 +403,20 @@ class GatewayStatusCommandsMixin:
         if not model_name and self._session_db:
             row = await _quiet(lambda: self._session_db.get_session(session_entry.session_id))
             model_name = _clean_str(row.get("model", "")) if isinstance(row, dict) else ""
+        invented_window = False
         if not context_length:
             resolved = await self._resolve_route_context(source, model_name)
             if resolved is not None:
                 model_name = model_name or resolved.model
-                context_length = _int_value(resolved.context_length)
-        if not context_length and model_name:
+                # The same guard /status applies: a window the resolver only invented (an unknown
+                # model id → DEFAULT_FALLBACK_CONTEXT, e.g. an MoA preset name labelling a session)
+                # is not this session's limit, so it stays hidden instead of being rendered as one.
+                # The raw-metadata fallback below would re-invent the same number: skip it too.
+                if resolved.context_source == "default":
+                    invented_window = True
+                else:
+                    context_length = _int_value(resolved.context_length)
+        if not context_length and model_name and not invented_window:
             from agent.model_metadata import get_model_context_length
             context_length = _int_value(
                 await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))

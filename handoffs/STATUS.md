@@ -8,3 +8,5 @@ Review: sole tool-selected gpt-6.1-sol CONFIRMED after one fixed P1; review.txt 
 Next: await Teo merge/rollout approval; apply staged Toolaria companion patch only with matching host; verify live Desktop after approved rollout.
 decided: preserve active chats/guards/secrets/profiles/Jev edits/jailbreak; GoodMem unchanged; authorized HA uninstall preserved.
 Open questions: none; report updated at /Users/hteo/.hermes/cache/scratch/connectors-repair-20261016/repair-report.md.
+
+Continuity stop ID: b4b39bae558a4cb7afddab348ff95b38:e585f768b2354bcca8f456ca99a9d988:161410da-a24f-46bd-8a1d-929e60db3080

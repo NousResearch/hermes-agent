@@ -239,8 +239,10 @@ ddgs = ["ddgs==9.16.0"]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
-# ElevenLabs / OpenAI / MiniMax instead).
-edge-tts = ["edge-tts==7.2.7"]
+# ElevenLabs / OpenAI / MiniMax instead). 7.3.0 fixes the Sec-MS-GEC
+# DRM handshake 403 that killed every synthesis after Microsoft's
+# token rotation (see #137944).
+edge-tts = ["edge-tts==7.3.0"]
 # NeuTTS's upstream Python ceiling excludes the managed interpreter.
 # Keep dependency markers and PM gates together: bundles omit them, explicit
 # setup requests report unavailable rather than succeeding with an empty set.
@@ -631,8 +633,16 @@ override-dependencies = [
 # check), never on users' machines: PM installs from this vetted lock and drops the
 # cutoff from what it generates (pm/workspace.py::_trust_core_lock), because many
 # package mirrors publish no upload times and uv rejects a file it cannot date
-# (#135589). Exact pins follow the same 3-day rule; there are no exemptions.
+# (#135589). Exact pins follow the same 3-day rule; the only exemption is the
+# dated per-package entry below, which must be removed once its package ages
+# past the window (uv never prunes it on its own).
 exclude-newer = "3 days"
+# Per-package exception to the 3-day release-age quarantine (#137944):
+# Microsoft rotated the DRM token scheme (Sec-MS-GEC) on 2026-10-12 and
+# every edge-tts synthesis before 7.3.0 (published 2026-10-13) now 403s.
+# The fix is younger than the cutoff, so it needs its own window. REMOVE
+# this entry once 7.3.0 is older than 3 days (from 2026-10-16 15:33 UTC).
+exclude-newer-package = { edge-tts = "2026-10-14T00:00:00Z" }
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the

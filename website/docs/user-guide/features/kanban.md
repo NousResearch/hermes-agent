@@ -78,6 +78,16 @@ login. A login that cannot see the repository is rejected with
 `classification=auth`, naming the profile and repository, instead of a
 retryable infra failure.
 
+When the repository requires no checks — no classic branch protection, and
+rulesets either unreadable (403/404 once the repository itself was readable:
+a private repo without the rulesets API) or readable and empty — there is no
+required-checks list to evaluate. The gate then accepts on the evidence at the
+exact head: every check-run, plus the latest commit status per context
+(`acceptance_rule: "exact_head_all_check_runs"` in the receipt, vs.
+`"repository_required_checks"`). A job skipped by `if:` neither blocks nor
+counts; no evidence at all, a failing check, or one at another SHA still
+cannot complete the card.
+
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
 instructions; `last_failure_error` surfaces the next step. Fix failures, rerun

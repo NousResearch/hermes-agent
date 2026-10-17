@@ -622,3 +622,55 @@ def test_prune_keeps_entry_the_pruning_sessions_own_lineage_works_in(tmp_path, m
     assert prune_scratch_dir(scratch) == 0
     assert session_dir.exists()
 
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # the helper outlives the spawner the test killed
+def test_prune_owner_lookup_survives_symlinked_scratch_and_drops_orphaned_mcp_helpers(tmp_path, monkeypatch):
+    """#132401 review: the owning home comes from the configured scratch path even when it is a
+    symlink onto another disk, and an MCP helper whose recorded spawner died is an orphan again
+    (reaped, entry removed) while a live background worker keeps its entry."""
+    from hermes_cli import process_identity
+    from tools.process_registry import ProcessRegistry
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    elsewhere = tmp_path / "other-disk" / "scratch"
+    elsewhere.mkdir(parents=True)
+    (home / "cache").mkdir()
+    (home / "cache" / "scratch").symlink_to(elsewhere, target_is_directory=True)
+    scratch = home / "cache" / "scratch"
+    owned_dir, helper_dir = scratch / "live-worker", scratch / "orphan-helper"
+    owned_dir.mkdir()
+    helper_dir.mkdir()
+    sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+    registry = ProcessRegistry()
+    worker = registry.spawn_local(" ".join(shlex.quote(a) for a in sleeper), cwd=str(owned_dir))
+    helper = subprocess.Popen(sleeper, cwd=str(helper_dir), stdin=subprocess.DEVNULL)
+    # A real spawner registers the helper the way the MCP client does, then dies.
+    repo = str(Path(__file__).resolve().parents[1])
+    spawner = subprocess.Popen(
+        [sys.executable, "-c",
+         f"import sys; sys.path.insert(0, {repo!r}); from hermes_cli.process_identity import register_child; "
+         f"assert register_child({helper.pid}, 'mcp-helper'); import time; time.sleep(60)"],
+        stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(home)})
+    wait_until(lambda: helper.pid in {e.get("pid") for e in process_identity.ledger_entries(all_installs=True)},
+               timeout=20, what="spawner registered the mcp-helper")
+    spawner.kill()
+    spawner.wait(timeout=10)
+    assert process_identity.spawner_is_dead(next(
+        e for e in process_identity.ledger_entries(all_installs=True) if e.get("pid") == helper.pid)) is True
+    ancient = time.time() - 30 * 3600
+    for path in (owned_dir, helper_dir):
+        os.utime(path, (ancient, ancient))
+    try:
+        assert prune_scratch_dir(scratch) == 1
+        assert owned_dir.exists() and not helper_dir.exists()
+        assert worker.process.poll() is None, "registered worker under a symlinked scratch was reaped"
+        assert helper.wait(timeout=10) is not None, "orphaned mcp-helper was kept"
+    finally:
+        registry.kill_process(worker.id)
+        if helper.poll() is None:
+            helper.kill()
+            helper.wait(timeout=10)
+

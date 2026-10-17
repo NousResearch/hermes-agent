@@ -170,6 +170,7 @@ def _registered_live_pids(home: Path) -> set[int]:
     matches is a reused pid, not ownership."""
     import psutil
 
+    from hermes_cli.process_identity import spawner_is_dead
     from hermes_constants import get_default_hermes_root
 
     root = get_default_hermes_root(home=home)
@@ -184,6 +185,11 @@ def _registered_live_pids(home: Path) -> set[int]:
         for entry in entries if isinstance(entries, list) else []:
             pid, stamp = (entry.get("pid"), entry.get(stamp_key)) if isinstance(entry, dict) else (None, None)
             if not isinstance(pid, int) or pid <= 0 or entry.get("pid_scope", "host") != "host":
+                continue
+            # An MCP helper whose recorded spawner is provably gone is an orphan, not owned: the
+            # rule reap_orphaned_mcp_helpers applies. Long-lived entry points (gateway, serve) that
+            # outlive their launcher stay owned; an unprovable spawner keeps ownership.
+            if entry.get("purpose") == "mcp-helper" and spawner_is_dead(entry) is True:
                 continue
             try:
                 if stamp is None:
@@ -250,7 +256,9 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path], audit: logg
             continue
         if deleted or not os.path.exists(cwd_path) or any(_under(cwd_path, t) for t in targets):
             (lineage if proc.pid in skip else victims).append((proc, cwd_path))
-    registered = _registered_live_pids(Path(root).parent.parent) if victims else set()
+    # The owning home comes from the scratch path as configured, not its resolved target:
+    # a cache/scratch symlinked onto another disk still belongs to <home>.
+    registered = _registered_live_pids(Path(scratch_root).absolute().parent.parent) if victims else set()
     owned = lineage + [(proc, cwd_path) for proc, cwd_path in victims if _owned_by_hermes(proc, registered)]
     for proc, cwd_path in owned:
         for entry in [e for e in doomed if _under(cwd_path, os.path.realpath(str(e)))]:

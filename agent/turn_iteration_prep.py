@@ -163,7 +163,9 @@ def prepare_iteration(
             logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
     # Tool-calling iterations for the skill nudge; resets whenever skill_manage is used.
-    if agent._skill_nudge_interval > 0 and "skill_manage" in agent.valid_tool_names:
+    from agent.tool_executor import session_can_reach_tool
+
+    if agent._skill_nudge_interval > 0 and session_can_reach_tool(agent, "skill_manage"):
         agent._iters_since_skill += 1
 
     # Nous agent keys live ~1 h and a single turn can run for hours: adopt the keepalive's fresh

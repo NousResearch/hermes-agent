@@ -222,6 +222,45 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* ------------------------------------------------------------------ */
+/* Mobile /m — Nous dark palette (matches the MBP desktop app skin).
+   Scoped to [data-mobile-overlay] so the rest of the dashboard keeps
+   whichever theme it's on. Mirrors nousTheme.darkColors in
+   apps/desktop/src/themes/presets.ts: GitHub-dark canvas, Nous-blue
+   accent, dark-blue user bubbles. */
+[data-mobile-overlay="1"] {
+  --background-base: #0d1117;
+  /* midground = PLAIN TEXT color on mobile (Markdown paints body text with
+     it). Desktop body text is off-white; the blue accent lives in
+     --color-primary and explicit accent spots, NOT in body text. */
+  --midground-base: #e6edf3;
+  --midground: color-mix(in srgb, #e6edf3 100%, transparent);
+  --midground-alpha: 1;
+  --foreground: color-mix(in srgb, #e6edf3 100%, transparent);
+  --foreground-base: #e6edf3;
+  --color-foreground: var(--foreground);
+  --color-card: #010409;
+  --color-card-foreground: #e6edf3;
+  --color-primary: #4a84fe;
+  --color-primary-foreground: #161616;
+  --color-secondary: #1d2e4f;
+  --color-secondary-foreground: #e6edf3;
+  --color-muted: #1a1e24;
+  --color-muted-foreground: #7d8590;
+  --color-accent: #17243a;
+  --color-accent-foreground: #e6edf3;
+  --color-border: #30363d;
+  --color-input: #0d1117;
+  --color-ring: #4a84fe;
+  --color-popover: #161b22;
+  --color-popover-foreground: #e6edf3;
+  --color-destructive: #f85149;
+  --color-destructive-foreground: #ffffff;
+  --mobile-user-bubble: color-mix(in srgb, #f0883e 18%, transparent);
+  --mobile-user-bubble-border: color-mix(in srgb, #f0883e 35%, transparent);
+  --mobile-composer-bg: #161b22;
+}
+
 /* System UI-monospace stack — distinct from `font-courier` (Courier
    Prime), used for dense data readouts where the display font would
    break the grid. Routes through the theme's mono stack so themes

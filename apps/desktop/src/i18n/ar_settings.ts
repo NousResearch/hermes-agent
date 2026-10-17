@@ -880,6 +880,7 @@ export const arSettings = {
       noProviderOptions: 'لا تحتوي مجموعة الأدوات هذه على خيارات مزوّد — فعّلها لتعمل مع إعدادك الحالي.',
       noProviders: 'لا يوجد مزوّدون متاحون لمجموعة الأدوات هذه الآن.',
       ready: 'جاهز',
+      browserAxesHint: 'يختار Browser Use مشغّل المتصفح، ويحدد المزوّد مكان تشغيله. يمكن تفعيل كليهما معًا.',
       nousIncluded: 'مُضمّن مع اشتراك Nous — سجّل الدخول إلى Nous Portal للتفعيل.',
       noApiKeyRequired: 'لا يلزم مفتاح API.',
       postSetupHint: step =>

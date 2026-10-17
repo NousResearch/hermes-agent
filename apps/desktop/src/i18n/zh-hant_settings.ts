@@ -1487,6 +1487,7 @@ export const zhHantSettings = {
       needsSignIn: '需要登入',
       needsSetup: '需要安裝',
       activeBackend: '目前後端',
+      browserAxesHint: 'Browser Use 選擇瀏覽器驅動程式；提供者決定瀏覽器的執行位置。兩者可以同時啟用。',
       activeBackendHint: '這是你目前使用的後端',
       useBackend: '使用此後端',
       nousIncluded: '包含在 Nous 訂閱中；登入 Nous Portal 即可啟用。',

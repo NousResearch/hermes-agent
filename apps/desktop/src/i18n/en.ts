@@ -16,6 +16,7 @@ import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
+import { enToolsets } from './en_toolsets'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
@@ -1983,122 +1984,7 @@ export const en: Translations = {
       updateDirFailed: 'Could not update default directory',
       clearDirFailed: 'Could not clear default directory'
     },
-    toolsets: {
-      loadingConfig: 'Loading configuration',
-      savedTitle: 'Credential saved',
-      savedMessage: key => `${key} updated.`,
-      removedTitle: 'Credential removed',
-      removedMessage: key => `${key} removed.`,
-      failedSave: key => `Failed to save ${key}`,
-      failedRemove: key => `Failed to remove ${key}`,
-      failedReveal: key => `Failed to reveal ${key}`,
-      removeConfirm: key => `Remove ${key} from .env?`,
-      set: 'Set',
-      notSet: 'Not set',
-      selectedTitle: 'Provider selected',
-      selectedMessage: provider => `${provider} is now active.`,
-      failedSelect: provider => `Failed to select ${provider}`,
-      failedLoad: 'Tool configuration failed to load',
-      noProviderOptions: 'This toolset has no provider options — enable it and it works with your current setup.',
-      noProviders: 'No providers are available for this toolset right now.',
-      ready: 'Ready',
-      needsSignIn: 'Needs sign-in',
-      needsSetup: 'Setup required',
-      activeBackend: 'Active',
-      activeBackendHint: 'This is your active backend',
-      useBackend: 'Use this backend',
-      nousIncluded: 'Included with a Nous subscription — sign in with your Nous account to activate.',
-      nousAuthNeededTitle: 'Sign in with your Nous account',
-      nousAuthNeededMessage: provider =>
-        `${provider} is saved but will only work once you sign in with your Nous account.`,
-      nousAuthSignIn: 'Sign in',
-      nousAuthDoneTitle: 'Nous account connected',
-      nousAuthDoneMessage: 'Your subscription backends are now active.',
-      nousAuthFailed: 'Nous sign-in did not complete',
-      nousAuthFailedMessage: 'Try again.',
-      nousAuthTryAgain: 'Try again',
-      noApiKeyRequired: 'No API key required.',
-      postSetupHint: step =>
-        `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
-      postSetupInstalledHint: 'Installed. Re-run setup only if something is broken.',
-      postSetupRun: 'Run setup',
-      postSetupRerun: 'Re-run setup',
-      postSetupInstalled: 'Installed',
-      postSetupRunning: 'Installing…',
-      postSetupStarting: 'Starting…',
-      postSetupCompleteTitle: 'Setup complete',
-      postSetupCompleteMessage: step => `${step} installed.`,
-      postSetupErrorTitle: 'Setup finished with errors',
-      postSetupErrorMessage: step =>
-        `Setting up ${step} did not finish. Open the logs to see why, then run setup again.`,
-      postSetupOpenLogs: 'Open logs',
-      postSetupRunAgain: 'Run again',
-      postSetupFailed: step => `Failed to run ${step} setup`,
-      webSearchActive: backend => `Search: ${backend}`,
-      webExtractActive: backend => `Extract: ${backend}`,
-      webCapabilityUnset: 'not set',
-      webUseForSearch: 'Use for Search',
-      webUseForExtract: 'Use for Extract',
-      webUsedForSearch: 'Search backend',
-      webUsedForExtract: 'Extract backend',
-      webCapabilitySelectedMessage: (provider, capability) => `${provider} now handles web ${capability}.`,
-      failedSelectCapability: provider => `Failed to set ${provider}`,
-      loadingModels: 'Loading model catalog...',
-      modelSectionTitle: 'Model',
-      modelCount: count => `${count} model${count === 1 ? '' : 's'}`,
-      modelInUse: 'In use',
-      modelDefault: 'default',
-      modelInactiveHint: 'Select this backend first to change its model.',
-      modelSelectedTitle: 'Model selected',
-      modelSelectedMessage: model => `${model} applies to new sessions.`,
-      failedSelectModel: model => `Failed to select ${model}`,
-      terminalBackend: {
-        sectionTitle: 'Execution backend',
-        loading: 'Checking execution backends…',
-        failedLoad: 'Could not load terminal backends',
-        ready: 'Ready',
-        needsSetup: 'Needs setup',
-        unavailable: 'Unavailable',
-        inUse: 'In use',
-        selectedTitle: 'Backend selected',
-        selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
-        failedSelect: backend => `Failed to select ${backend}`,
-        needsSetupHint:
-          'This backend is currently selected without full setup — commands will fail until setup is complete.',
-        needsSetupConfirmTitle: backend => `Select ${backend} anyway?`,
-        needsSetupConfirmDescription: detail =>
-          `${detail} Sessions that start after this change will have no terminal or file tools until setup is finished.`,
-        needsSetupConfirmDescriptionGeneric:
-          "This backend isn't set up yet. Sessions that start after this change will have no terminal or file tools until setup is finished.",
-        needsSetupConfirmAction: 'Select anyway',
-        unavailableTitle: 'Terminal commands are unavailable',
-        unavailableMessage: backend =>
-          `Hermes can't run shell commands right now: ${backend} isn't ready. Switch to Local, or finish setting up ${backend} and try again.`,
-        openBackendSettings: 'Open terminal settings',
-        useLocal: 'Use Local',
-        switchedToLocal: 'Terminal commands now run locally. Applies to new sessions.'
-      },
-      browserRealProfile: {
-        label: 'Use My Real Browser Profile',
-        description:
-          "Copies your default browser's logins and cookies into a managed snapshot the agent browses with. Your live profile is never opened directly. Applies to new sessions.",
-        enabledTitle: 'Real-profile browsing on',
-        enabledMessage: 'New sessions will browse with a snapshot of your default browser profile.',
-        disabledTitle: 'Real-profile browsing off',
-        disabledMessage: 'The profile snapshot will be deleted; new sessions use a clean browser.',
-        failedSave: 'Could not save the real-profile setting',
-        prompt: {
-          title: 'Stay signed in to your sites',
-          body: 'Let Hermes browse with a snapshot of your default browser profile, so sites open already signed in.',
-          bulletSnapshot: 'Cookies and logins are copied into a managed snapshot.',
-          bulletLiveProfile: 'Your live browser profile is never opened directly.',
-          bulletLocal: 'Nothing leaves this computer.',
-          dontShowAgain: "Don't show again",
-          notNow: 'Not now',
-          enable: 'Use my profile'
-        }
-      }
-    }
+    toolsets: enToolsets,
   },
 
   skillDeepLink: {

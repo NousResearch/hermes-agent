@@ -15,6 +15,7 @@ import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
+import { jaToolsets } from './ja_toolsets'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
@@ -1279,103 +1280,7 @@ export const jaOverrides = {
       updateDirFailed: 'デフォルトディレクトリを更新できませんでした',
       clearDirFailed: 'デフォルトディレクトリをクリアできませんでした'
     },
-    toolsets: {
-      loadingConfig: '設定を読み込み中',
-      savedTitle: '認証情報を保存しました',
-      savedMessage: key => `${key} を更新しました。`,
-      removedTitle: '認証情報を削除しました',
-      removedMessage: key => `${key} を削除しました。`,
-      failedSave: key => `${key} の保存に失敗しました`,
-      failedRemove: key => `${key} の削除に失敗しました`,
-      failedReveal: key => `${key} の表示に失敗しました`,
-      removeConfirm: key => `.env から ${key} を削除しますか？`,
-      set: '設定済み',
-      notSet: '未設定',
-      selectedTitle: 'プロバイダーを選択しました',
-      selectedMessage: provider => `${provider} が有効になりました。`,
-      failedSelect: provider => `${provider} の選択に失敗しました`,
-      failedLoad: 'ツール設定の読み込みに失敗しました',
-      noProviderOptions:
-        'このツールセットにはプロバイダーのオプションがありません。有効にすれば現在の設定で動作します。',
-      noProviders: '現在このツールセットに利用可能なプロバイダーがありません。',
-      ready: '準備完了',
-      needsSignIn: 'サインインが必要',
-      needsSetup: 'セットアップが必要',
-      activeBackend: '使用中',
-      activeBackendHint: 'これが現在アクティブなバックエンドです',
-      useBackend: 'このバックエンドを使う',
-      nousIncluded: 'Nous サブスクリプションに含まれています。有効にするには Nous Portal にサインインしてください。',
-      nousAuthNeededTitle: 'Nous Portal にサインイン',
-      nousAuthNeededMessage: provider =>
-        `${provider} は保存されましたが、Nous Portal にサインインするまで有効になりません。`,
-      nousAuthSignIn: 'サインイン',
-      nousAuthDoneTitle: 'Nous Portal に接続しました',
-      nousAuthDoneMessage: 'サブスクリプションのバックエンドが有効になりました。',
-      nousAuthFailed: 'Nous Portal のサインインが完了しませんでした',
-      noApiKeyRequired: 'API キーは不要です。',
-      postSetupHint: step =>
-        `このバックエンドは一度だけインストールが必要です (${step})。このマシン上で実行され、数分かかる場合があります。`,
-      postSetupInstalledHint: 'インストール済みです。問題がある場合のみセットアップを再実行してください。',
-      postSetupRun: 'セットアップを実行',
-      postSetupRerun: 'セットアップを再実行',
-      postSetupInstalled: 'インストール済み',
-      postSetupRunning: 'インストール中…',
-      postSetupStarting: '開始中…',
-      postSetupCompleteTitle: 'セットアップ完了',
-      postSetupCompleteMessage: step => `${step} をインストールしました。`,
-      postSetupErrorTitle: 'セットアップはエラーで終了しました',
-      postSetupErrorMessage: step => `${step} のログを確認してください。`,
-      postSetupFailed: step => `${step} のセットアップの実行に失敗しました`,
-      webSearchActive: backend => `検索: ${backend}`,
-      webExtractActive: backend => `抽出: ${backend}`,
-      webCapabilityUnset: '未設定',
-      webUseForSearch: '検索に使用',
-      webUseForExtract: '抽出に使用',
-      webUsedForSearch: '検索バックエンド',
-      webUsedForExtract: '抽出バックエンド',
-      webCapabilitySelectedMessage: (provider, capability) =>
-        `${provider} がウェブ${capability === 'search' ? '検索' : '抽出'}を担当します。`,
-      failedSelectCapability: provider => `${provider} の設定に失敗しました`,
-      terminalBackend: {
-        sectionTitle: '実行バックエンド',
-        loading: '実行バックエンドを確認中…',
-        failedLoad: 'ターミナルバックエンドの読み込みに失敗しました',
-        ready: '準備完了',
-        needsSetup: 'セットアップが必要',
-        unavailable: '利用不可',
-        inUse: '使用中',
-        selectedTitle: 'バックエンドを選択しました',
-        selectedMessage: backend => `ターミナルコマンドは ${backend} で実行されます。新しいセッションに適用されます。`,
-        failedSelect: backend => `${backend} の選択に失敗しました`,
-        needsSetupHint: 'このバックエンドは選択されていますが、セットアップが完了するまでコマンドは失敗します。',
-        needsSetupConfirmTitle: backend => `それでも ${backend} を選択しますか？`,
-        needsSetupConfirmDescription: detail =>
-          `${detail} この変更後に開始されるセッションは、セットアップが完了するまでターミナルとファイルツールを使用できません。`,
-        needsSetupConfirmDescriptionGeneric:
-          'このバックエンドはまだセットアップされていません。この変更後に開始されるセッションは、セットアップが完了するまでターミナルとファイルツールを使用できません。',
-        needsSetupConfirmAction: 'それでも選択する'
-      },
-      browserRealProfile: {
-        label: '実際のブラウザプロファイルを使用',
-        description:
-          '既定ブラウザのログイン情報と Cookie を管理されたスナップショットにコピーし、エージェントはそれを使ってブラウジングします。実際のプロファイルが直接開かれることはありません。新しいセッションに適用されます。',
-        enabledTitle: '実プロファイルブラウジング：オン',
-        enabledMessage: '新しいセッションは既定ブラウザプロファイルのスナップショットでブラウジングします。',
-        disabledTitle: '実プロファイルブラウジング：オフ',
-        disabledMessage: 'プロファイルのスナップショットは削除され、新しいセッションはクリーンなブラウザを使用します。',
-        failedSave: '実プロファイル設定を保存できませんでした',
-        prompt: {
-          title: 'サイトにログインしたまま利用',
-          body: 'Hermes が既定ブラウザプロファイルのスナップショットでブラウジングできるようにすると、サイトはログイン済みの状態で開きます。',
-          bulletSnapshot: 'Cookie とログイン情報は管理されたスナップショットにコピーされます。',
-          bulletLiveProfile: '実際のブラウザプロファイルが直接開かれることはありません。',
-          bulletLocal: 'データがこのコンピュータの外に出ることはありません。',
-          dontShowAgain: '今後表示しない',
-          notNow: '今はしない',
-          enable: 'プロファイルを使用'
-        }
-      }
-    }
+    toolsets: jaToolsets,
   },
 
   skillDeepLink: {

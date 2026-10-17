@@ -607,6 +607,35 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
     return candidate
 
 
+def register_cli_turn_workspace(task_id: str) -> None:
+    """Bind a minted *task_id* to this CLI process's workspace cwd (#140665).
+
+    A turn whose task_id the conversation loop minted fresh (the caller passed none)
+    never comes from the gateway — gateway, desktop and kanban turns all hand their
+    session ids through. It is a classic CLI run (``hermes chat -q``/``--query-file``,
+    scripts): a single-session process whose launch cwd, ``--in DIR`` included, IS that
+    run's workspace. Under per-session docker isolation that workspace is exactly the
+    ``cwd_source: "session"`` override a gateway session gets from the gateway's
+    ``_register_session_cwd``; without it the per-session container gets no /workspace
+    bind at all while ``docker_mount_cwd_to_workspace`` is on. Registered only in that
+    mode: shared/persistent containers keep the legacy ``config["host_cwd"]`` mount and
+    other backends never consult cwd overrides. The value still passes the host-side
+    checks in :func:`_resolve_task_host_cwd`, so a container-path or dead ``TERMINAL_CWD``
+    mounts nothing.
+    """
+    try:
+        if not _docker_session_isolation_enabled():
+            return
+        candidate = os.path.abspath(
+            os.path.expanduser(_tenv("TERMINAL_CWD", "") or _safe_getcwd())
+        )
+        register_task_env_overrides(
+            task_id, {"cwd": candidate, "cwd_source": "session"}
+        )
+    except Exception:
+        logger.debug("CLI turn workspace registration skipped", exc_info=True)
+
+
 # One-shot guard for the config-fallback bridge: after the first attempt
 # either TERMINAL_ENV is set or the import failed, so retrying is wasted work.
 _terminal_config_bridge_attempted = False

@@ -583,6 +583,13 @@ def _bind_turn_identity(
     agent._persist_user_message_platform_id = persist_user_platform_id
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
+    if task_id is None:
+        # A minted id never comes from the gateway (its turns pass session ids through);
+        # it is a classic CLI run whose launch cwd is the run's workspace — bind it so
+        # per-session docker isolation can mount it (#140665).
+        from tools.terminal_tool import register_cli_turn_workspace
+
+        register_cli_turn_workspace(effective_task_id)
     agent._current_task_id = effective_task_id
     agent._process_owner_task_ids = {*getattr(agent, "_process_owner_task_ids", ()), effective_task_id}
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "") or (

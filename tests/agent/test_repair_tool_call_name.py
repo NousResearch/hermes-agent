@@ -44,6 +44,74 @@ def repair():
     return AIAgent._repair_tool_call.__get__(stub, AIAgent)
 
 
+# Simulate a dispatcher-spawned kanban worker (issue #94506): the
+# orchestrator-mode tools (kanban_list, kanban_unblock, kanban_show, etc.)
+# are withheld by check_fn, while the worker-facing tools remain available.
+# A gated tool name (or a misspelling of one) must resolve to None, not be
+# fuzzy-remapped onto an available sibling.
+GATED_KANBAN_VALID = VALID | {
+    "kanban_link",
+    "kanban_block",
+    "kanban_comment",
+    "kanban_create",
+}
+
+
+@pytest.fixture
+def repair_gated_kanban():
+    """repair() bound to a stub whose valid_tool_names simulates kanban
+    worker gating (kanban_list / kanban_unblock withheld, siblings present)."""
+    from run_agent import AIAgent
+    stub = SimpleNamespace(valid_tool_names=GATED_KANBAN_VALID)
+    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+
+class TestGatedToolNameNotRemapped:
+    """Regression for #94506 — check_fn-gated tool names must not be
+    fuzzy-remapped onto an available sibling (a read becoming a write, or
+    an operation becoming its own inverse)."""
+
+    def test_gated_exact_name_not_remapped(self, repair_gated_kanban):
+        # kanban_list is withheld; kanban_link is available and similar.
+        # Must fail closed, not silently dispatch a read onto a write.
+        assert repair_gated_kanban("kanban_list") is None
+
+    def test_gated_camelcase_name_not_remapped(self, repair_gated_kanban):
+        assert repair_gated_kanban("KanbanList") is None
+
+    def test_misspelled_gated_name_not_remapped(self, repair_gated_kanban):
+        # Maintainer-confirmed gap (kiminofate): a misspelling of a gated
+        # tool (kanban_unblock) must fail closed even though the *inverse*
+        # operation kanban_block is available and highly similar.
+        assert repair_gated_kanban("kanban_unblok") is None
+
+    def test_misspelled_gated_list_not_remapped(self, repair_gated_kanban):
+        # Another misspelling of the gated kanban_list: must not resolve to
+        # the available kanban_link sibling.
+        assert repair_gated_kanban("kanban_lsit") is None
+
+    def test_typo_of_available_tool_still_repairs(self, repair_gated_kanban):
+        # Control: a misspelling of an AVAILABLE tool must still repair.
+        assert repair_gated_kanban("kanban_blck") == "kanban_block"
+
+
+class TestSessionInjectedToolTypoRepairs:
+    """Regression for #94506 review: context-engine / memory-provider
+    schemas are added directly to valid_tool_names without being registered
+    in tools.registry. A typo of such an injected tool must still repair,
+    since the fuzzy candidate set unions registry + valid names."""
+
+    def test_typo_of_session_injected_tool_repairs(self):
+        # Simulate a session-injected tool (present in valid_tool_names,
+        # absent from the registry).
+        from run_agent import AIAgent
+        from types import SimpleNamespace
+        injected = VALID | {"lcm_grep"}
+        stub = SimpleNamespace(valid_tool_names=injected)
+        repair = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+        assert repair("lcm_grepp") == "lcm_grep"
+
+
 class TestExistingBehaviorStillWorks:
     """Pre-existing repairs must keep working (no regressions)."""
 

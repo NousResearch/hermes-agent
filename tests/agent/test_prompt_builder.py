@@ -3,7 +3,7 @@
 import logging
 import os
 import sys
-import time
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1019,23 +1019,45 @@ class TestContextFileReadTimeout:
         # over: an earlier test re-imports agent.prompt_builder, so the
         # sys.modules entry can be a different module object.
         pb_mod = sys.modules[build_context_files_prompt.__module__]
-        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
+        # The slow read below blocks until released, so it times out at any budget; the budget only has to
+        # let the FAST fallback read finish. 0.05 s timed AGENTS.md out too on a loaded runner (main run
+        # 37872484747: both files "read timed out", no project context at all).
+        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 2.0)
 
         original_read_text = Path.read_text
 
+        read_started = threading.Event()
+        release_read = threading.Event()
+        load_finished = threading.Event()
+        result_holder = {}
+
         def slow_read_text(self, *args, **kwargs):
             if self.name == ".hermes.md":
-                time.sleep(0.6)
+                read_started.set()
+                release_read.wait()
             return original_read_text(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "read_text", slow_read_text)
 
-        start = time.monotonic()
         with caplog.at_level(logging.WARNING, logger=pb_mod.__name__):
-            result = build_context_files_prompt(cwd=str(tmp_path))
-        elapsed = time.monotonic() - start
+            def load_context():
+                result_holder["result"] = build_context_files_prompt(cwd=str(tmp_path))
+                load_finished.set()
 
-        assert elapsed < 0.4, f"context load blocked for {elapsed:.2f}s"
+            worker = threading.Thread(target=load_context, daemon=True)
+            worker.start()
+            try:
+                assert read_started.wait(timeout=10.0), "slow context read did not start"
+                # The read stays blocked until release_read, so ANY completion proves the loader
+                # gave up on it. The bound is generous on purpose: it only has to exclude a hang,
+                # not measure latency, and a tight one flakes under load on a busy Windows host.
+                assert load_finished.wait(timeout=10.0), "context loader waited for the timed-out read"
+            finally:
+                release_read.set()
+                worker.join(timeout=2.0)
+
+        assert not worker.is_alive(), "context loader thread did not terminate"
+        result = result_holder["result"]
         assert "Agent fallback rules" in result
         assert "Hermes project rules" not in result
         assert "timed out" in caplog.text.lower()

@@ -21,6 +21,7 @@ import {
   type QueuedPromptEntry,
   removeQueuedPrompt,
   resolveQueuedPromptTransport,
+  serverOwnsComposerQueue,
   shouldAutoDrain,
   unparkQueuedPrompts,
   updateQueuedPrompt,
@@ -138,6 +139,8 @@ export function useComposerQueue({
 
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
 
+  const currentQueueKeyRef = useRef(activeQueueSessionKey)
+  currentQueueKeyRef.current = activeQueueSessionKey
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
   const drainFailuresRef = useRef(new Map<string, number>())
@@ -153,7 +156,7 @@ export function useComposerQueue({
   const [drainRetryTick, setDrainRetryTick] = useState(0)
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
-    if (!activeQueueSessionKey || queueEdit) {
+    if (!activeQueueSessionKey || queueEdit || entry.serverStatus) {
       return
     }
 
@@ -296,6 +299,34 @@ export function useComposerQueue({
       return false
     }
 
+    // Canonical (gateway-owned) sessions admit busy input straight into the
+    // durable gateway FIFO; the row comes back as a server-owned queue entry.
+    // `fromQueue` submits skip the transport freeze, so send the frozen text.
+    if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
+      return Promise.resolve(
+        onSubmit(frozen.frozenTransport ?? frozen.text, {
+          attachments: cloneAttachments(attachments),
+          ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+          fromQueue: true,
+          sessionId: sessionId ?? null,
+          storedSessionId: activeQueueSessionKey
+        })
+      )
+        .then(accepted => {
+          if (accepted !== true) {
+            return false
+          }
+
+          if (currentQueueKeyRef.current === activeQueueSessionKey && draftRef.current === text) {
+            clearDraft()
+            scope.attachments.removeOccurrences(attachments)
+          }
+
+          return true
+        })
+        .catch(() => false)
+    }
+
     if (
       !enqueueQueuedPrompt(activeQueueSessionKey, {
         text: frozen.text,
@@ -314,7 +345,7 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, t.composer])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, sessionId, t.composer])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the
@@ -337,7 +368,8 @@ export function useComposerQueue({
 
       try {
         return await withQueueDrainClaim(drainQueueSessionKey, async queue => {
-          const entry = pickEntry(queue)
+          // Server-owned rows already sit in the gateway FIFO; never re-send them.
+          const entry = pickEntry(queue.filter(candidate => !candidate.serverStatus))
 
           if (!entry) {
             return null
@@ -362,12 +394,13 @@ export function useComposerQueue({
               ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
               ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
               fromQueue: true,
+              submission_id: entry.id,
               sessionId: drainRuntimeSessionId,
               storedSessionId: drainQueueSessionKey
             })
           )
 
-          if (accepted === false) {
+          if (accepted !== true) {
             return false
           }
 
@@ -399,7 +432,7 @@ export function useComposerQueue({
     (entries: QueuedPromptEntry[]) => {
       const skip = queueEditRef.current?.entryId
 
-      return skip ? entries.find(e => e.id !== skip) : entries[0]
+      return entries.find(e => !e.serverStatus && e.id !== skip)
     },
     [queueEditRef] // reads the edit id off a ref so the lock-holder always sees the latest
   )
@@ -610,17 +643,23 @@ export function useComposerQueue({
   // never churns, so a change there is a real session switch and must NOT
   // migrate; only the runtime-derived key (queueSessionKey falsy → key is
   // sessionId) churns on a backend bounce/resume of the same conversation.
+  // Both sides must be runtime keys: leaving a stored chat for a fresh draft
+  // is a switch too, and must not carry that chat's queue along (#139190).
+  const runtimeKeyed = !queueSessionKey && activeQueueSessionKey === sessionId
+  const prevRuntimeKeyedRef = useRef(runtimeKeyed)
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const prev = prevQueueKeyRef.current
+    const prevRuntimeKeyed = prevRuntimeKeyedRef.current
     prevQueueKeyRef.current = activeQueueSessionKey
+    prevRuntimeKeyedRef.current = runtimeKeyed
 
-    if (queueSessionKey || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
+    if (!prevRuntimeKeyed || !runtimeKeyed || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
       return
     }
 
     migrateQueuedPrompts(prev, activeQueueSessionKey)
-  }, [activeQueueSessionKey, queueSessionKey])
+  }, [activeQueueSessionKey, runtimeKeyed])
 
   // Queued turns flow whenever the session is idle — on the busy→false settle
   // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't

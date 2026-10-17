@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (次のターンのみ — 1 回応答した後に元へ戻ります)"
     switch_cancelled: "🟡 モデルの切り替えをキャンセルしました。現在のモデルは変わりません ({model})。"
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_テキスト代替: 切り替えるには `{prefix}approve`、現在のモデルを維持するには `{prefix}cancel` と返信してください。_"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **アクティブなエージェントとタスク**"
     active_agents: "**アクティブなエージェント:** {count}"
@@ -1966,6 +1968,7 @@ cli:
     desc_switch_anyway: "現在の Hermes セッションでこのモデルを使用します。"
     choice_cancel: "キャンセル"
     desc_keep_current_model: "現在のモデルを維持します。"
+    confirm_choice_prompt: "選択 [1/2]: "
     switch_cancelled: "モデルの切り替えをキャンセルしました。"
     selection_failed: "✗ モデルの選択に失敗しました: {error}"
     switch_failed: "⚠ {model} への切り替えに失敗しました（{error}）。{old_model} を引き続き使用します。"

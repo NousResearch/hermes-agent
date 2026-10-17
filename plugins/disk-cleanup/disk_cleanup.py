@@ -12,14 +12,26 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import shutil
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+fcntl = None
+msvcrt = None
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - platform dependent
+    try:
+        import msvcrt
+    except ImportError:
+        pass
 
 _LARGE_FILE_BYTES = 500 * 1024 * 1024
 
@@ -88,15 +100,48 @@ def load_tracked() -> list[dict[str, Any]]:
         return []
 
 
+@contextlib.contextmanager
+def tracked_state_lock() -> Iterator[None]:
+    """Lock the registry across load and save.
+
+    Use a separate lock file so tracked.json can be replaced while locked.
+    Callers must not nest this lock.
+    """
+    posix_lock, win_lock = fcntl, msvcrt
+    if posix_lock is None and win_lock is None:
+        _log("WARN: no advisory locking available, tracked.json writes are atomic but unsynchronised")
+        yield
+        return
+
+    def _flock(unlock: bool) -> None:
+        if posix_lock is not None:
+            posix_lock.flock(fd, posix_lock.LOCK_UN if unlock else posix_lock.LOCK_EX)
+        elif win_lock is not None:
+            os.lseek(fd, 0, os.SEEK_SET)
+            win_lock.locking(fd, win_lock.LK_UNLCK if unlock else win_lock.LK_LOCK, 1)
+
+    lock_path = _state_file("tracked.json.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        _flock(False)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            _flock(True)
+        os.close(fd)
+
+
 def save_tracked(tracked: list[dict[str, Any]]) -> None:
-    """Atomic write: ``.tmp`` → backup old → rename."""
+    """Save with a backup. The caller must hold tracked_state_lock()."""
     tf = _state_file("tracked.json")
     tf.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tf.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
     if tf.exists():
         shutil.copy2(tf, tf.with_suffix(".json.bak"))
-    tmp.replace(tf)
+    atomic_json_write(tf, tracked)
 
 
 ALLOWED_CATEGORIES = {
@@ -186,12 +231,13 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"REJECT: {path} (outside HERMES_HOME)")
         return False
     size = path.stat().st_size if path.is_file() else 0
-    tracked = load_tracked()
-    if any(item["path"] == str(path) for item in tracked):
-        return False
-    tracked.append({"path": str(path), "timestamp": datetime.now(UTC).isoformat(),
-                    "category": category, "size": size})
-    save_tracked(tracked)
+    with tracked_state_lock():
+        tracked = load_tracked()
+        if any(item["path"] == str(path) for item in tracked):
+            return False
+        tracked.append({"path": str(path), "timestamp": datetime.now(UTC).isoformat(),
+                        "category": category, "size": size})
+        save_tracked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")
     if not silent:
         print(f"Tracked: {path} ({category}, {fmt_size(size)})")
@@ -201,11 +247,13 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
 def forget(path_str: str) -> int:
     """Remove a path from tracking without deleting the file."""
     p = Path(path_str).resolve()
-    tracked = load_tracked()
-    kept = [i for i in tracked if Path(i["path"]).resolve() != p]
-    removed = len(tracked) - len(kept)
+    with tracked_state_lock():
+        tracked = load_tracked()
+        kept = [i for i in tracked if Path(i["path"]).resolve() != p]
+        removed = len(tracked) - len(kept)
+        if removed:
+            save_tracked(kept)
     if removed:
-        save_tracked(kept)
         _log(f"FORGOT: {p} ({removed} entries)")
     return removed
 
@@ -269,12 +317,17 @@ def dry_run() -> tuple[list[dict], list[dict]]:
     return auto, prompt
 
 
+def _record_key(item: dict[str, Any]) -> str:
+    return json.dumps(item, sort_keys=True)
+
+
 def quick() -> dict[str, Any]:
     """Safe deterministic cleanup — no prompts. Returns ``{deleted, empty_dirs, freed, errors}``."""
     deleted = freed = 0
     new_tracked: list[dict] = []
     errors: list[str] = []
-    for item, p, age in _live_items(load_tracked(), datetime.now(UTC), log_stale=True):
+    loaded = load_tracked()
+    for item, p, age in _live_items(loaded, datetime.now(UTC), log_stale=True):
         cat = item["category"]
         if cat in _STALE_SKIP_NOTE and (re_cat := guess_category(p)) != cat:
             # Misclassified stale entry — drop it rather than delete the file.
@@ -298,7 +351,11 @@ def quick() -> dict[str, Any]:
             errors.append(err)
             new_tracked.append(item)
     empty_removed = _sweep_empty_dirs(get_hermes_home())
-    save_tracked(new_tracked)
+    # Scan outside the lock, then merge deletions so concurrent updates survive.
+    kept = {_record_key(item) for item in new_tracked}
+    dropped = {key for key in map(_record_key, loaded) if key not in kept}
+    with tracked_state_lock():
+        save_tracked([item for item in load_tracked() if _record_key(item) not in dropped])
     _log(f"QUICK_SUMMARY: {deleted} files, {empty_removed} dirs, {fmt_size(freed)}")
     return {"deleted": deleted, "empty_dirs": empty_removed, "freed": freed, "errors": errors}
 

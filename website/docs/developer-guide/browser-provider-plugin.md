@@ -52,12 +52,16 @@ provides_browser_providers:
 `__init__.py`:
 
 ```python
-from plugins.browser.my_backend.provider import MyBackendProvider
+from .provider import MyBackendProvider
 
 
 def register(ctx) -> None:
     ctx.register_browser_provider(MyBackendProvider())
 ```
+
+:::note
+Import relatively. A plugin in `~/.hermes/plugins/` is not part of the bundled `plugins` package, so `from plugins.browser.my_backend...` fails to load and the provider is never registered.
+:::
 
 ## The BrowserProvider ABC
 

@@ -115,7 +115,7 @@ class MyBackendWebSearchProvider(WebSearchProvider):
 
 ```python
 # plugins/web/my-backend/__init__.py
-from plugins.web.my_backend.provider import MyBackendWebSearchProvider
+from .provider import MyBackendWebSearchProvider
 
 
 def register(ctx) -> None:

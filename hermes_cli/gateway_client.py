@@ -20,6 +20,9 @@ DEFAULT_RPC_TIMEOUT = 30
 # request, ``compression.context_total_ceiling_seconds`` to 600 s). Same budget as Desktop's
 # ``SESSION_COMPRESS_TIMEOUT_MS`` so every surface gives up at the same point.
 COMPRESS_RPC_TIMEOUT = 660
+# A full event queue parks the socket reader; a consumer that takes no event for this long has
+# stalled and is failed. Same bound as the owner's own send deadline (``tui_gateway/ws.py``).
+EVENT_STALL_TIMEOUT = 30
 
 
 def gateway_ws_target(endpoint, ticket):
@@ -119,8 +122,15 @@ class GatewayClient:
                     else:
                         future.set_result(frame.get("result", {}))
                 elif "method" in frame:
-                    self.events.put_nowait(frame)
-        except (ConnectionClosed, OSError, ValueError, asyncio.QueueFull):
+                    try:
+                        self.events.put_nowait(frame)
+                    except asyncio.QueueFull:
+                        # Frames the socket already buffered (a CLI resumed from Ctrl-Z) are read
+                        # without yielding, so the consumer has not had a turn yet: wait for room.
+                        # Not wait_for: on 3.11 it swallows a close that lands as the put completes.
+                        async with asyncio.timeout(EVENT_STALL_TIMEOUT):
+                            await self.events.put(frame)
+        except (ConnectionClosed, OSError, ValueError, TimeoutError):
             pass
         finally:
             error = GatewayClientError("Gateway disconnected; turn outcome is unknown. "

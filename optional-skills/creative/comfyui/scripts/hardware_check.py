@@ -117,8 +117,9 @@ def detect_nvidia() -> dict | None:
         })
     if not gpus:
         return None
-    # Pick GPU with most VRAM
-    best = max(gpus, key=lambda g: g["vram_gb"])
+    # Pick GPU with most VRAM. Return a copy so `all_gpus` cannot contain
+    # the selected report object itself.
+    best = dict(max(gpus, key=lambda g: g["vram_gb"]))
     if len(gpus) > 1:
         best["all_gpus"] = gpus
     return best
@@ -150,7 +151,9 @@ def detect_rocm() -> dict | None:
                     "driver": "rocm",
                 })
             if cards:
-                best = max(cards, key=lambda c: c["vram_gb"])
+                # Return a copy so `all_gpus` cannot contain the selected
+                # report object itself.
+                best = dict(max(cards, key=lambda c: c["vram_gb"]))
                 if len(cards) > 1:
                     best["all_gpus"] = cards
                 return best

@@ -1,7 +1,7 @@
 """MCP catalog — curated, Nous-approved MCP servers shipped with the repo.
 
 Entries are added only by merging a PR into hermes-agent; presence in ``optional-mcps/`` = Nous
-approval (no community tier, no other trust signals). Manifests pin transport details.
+approval (no community tier). Manifests pin transport details and may declare a server-call trust tier.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ from hermes_cli.config import load_config, save_config, get_env_value, save_env_
 from hermes_cli.cli_output import prompt as _prompt_input
 from utils import rmtree_readonly
 
-_MANIFEST_VERSION = 1
+_MANIFEST_VERSION = 2
+_SUPPORTED_MANIFEST_VERSIONS = frozenset({1, _MANIFEST_VERSION})
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
@@ -113,6 +114,8 @@ class CatalogEntry:
     transport: TransportSpec
     auth: AuthSpec
     connector_slug: Optional[str] = None
+    # Optional MCP call-approval tier; None preserves the server's config default.
+    trust: Optional[str] = None
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
@@ -319,11 +322,18 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         raise CatalogError(f"{path}: manifest must be a mapping")
 
     mv = data.get("manifest_version")
-    if mv != _MANIFEST_VERSION:
+    if (not isinstance(mv, int) or isinstance(mv, bool)
+            or mv not in _SUPPORTED_MANIFEST_VERSIONS):
         raise CatalogError(
             f"{path}: manifest_version {mv!r} unsupported "
-            f"(this Hermes understands version {_MANIFEST_VERSION})"
+            f"(this Hermes understands manifest versions 1 and {_MANIFEST_VERSION})"
         )
+    trust = data.get("trust")
+    if "trust" in data:
+        if mv < 2:
+            raise CatalogError(f"{path}: 'trust' requires manifest_version 2")
+        if not isinstance(trust, str) or trust not in ("full", "untrusted"):
+            raise CatalogError(f"{path}: trust must be 'full' or 'untrusted'")
     name = data.get("name") or ""
     if not name or not re.match(r"^[A-Za-z0-9_-]+$", name):
         raise CatalogError(f"{path}: invalid or missing 'name'")
@@ -340,7 +350,8 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     install = _parse_install(path, data.get("install"))
     return CatalogEntry(
         name=name, description=description, source=str(data.get("source") or "").strip(),
-        transport=transport, auth=auth, connector_slug=connector_slug, tools=tools, install=install,
+        transport=transport, auth=auth, connector_slug=connector_slug, trust=trust,
+        tools=tools, install=install,
         post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
     )
 
@@ -539,6 +550,8 @@ def _inline_non_secret_value(obj: Any, name: str, value: str) -> Any:
 def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> dict:
     """Translate a manifest into the ``mcp_servers.<name>`` block format used by hermes_cli/mcp_config.py."""
     cfg: dict = {}
+    if entry.trust is not None:
+        cfg["trust"] = entry.trust
     t = entry.transport
     if t.type == "stdio":
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)

@@ -4,6 +4,8 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
+import { NousModelPrice } from '@/components/nous-model-price'
+import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
@@ -11,6 +13,8 @@ import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
+import { useNousPricingRefresh } from '@/lib/use-nous-pricing-refresh'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   type LocalModelsOwner,
@@ -85,6 +89,11 @@ export function ModelPickerDialog({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
+    enabled: open
+  })
+
+  useNousPricingRefresh({
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
     enabled: open
   })
 
@@ -383,9 +392,12 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
-                    <HighlightMatches foldSeparators query={search} text={model} />
-                  </span>
+                  <div className="min-w-0 flex-1">
+                    <span className={cn('block truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
+                      <HighlightMatches foldSeparators query={search} text={model} />
+                    </span>
+                    {provider.slug === 'nous' && !provider.free_tier_row && <NousModelPrice price={price} selected={isCurrent} />}
+                  </div>
                   {loadProgress && (
                     <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
                       <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
@@ -410,7 +422,7 @@ function ModelResults({
                       {t.shell.modelMenu.modelResets(resetLabel)}
                     </Badge>
                   )}
-                  <ModelPrice isCurrent={isCurrent} price={price} />
+                  {(provider.slug !== 'nous' || provider.free_tier_row) && <ModelPrice isCurrent={isCurrent} price={price} />}
                 </CommandItem>
               )
             })}
@@ -620,6 +632,9 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
       </span>
       {tierBadge}
+      {provider.slug === 'nous' && !provider.free_tier_row && (
+        <span className="ml-auto font-normal normal-case tracking-normal">{t.shell.modelMenu.priceUnit}</span>
+      )}
       <ProviderStatusChip provider={provider} />
     </span>
   )

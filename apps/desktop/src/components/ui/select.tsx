@@ -96,9 +96,17 @@ function SelectLabel({ className, ...props }: React.ComponentProps<typeof Select
   return <SelectPrimitive.Label className={cn(menuLabelClass, className)} data-slot="select-label" {...props} />
 }
 
-function SelectItem({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Item>) {
+function SelectItem({
+  className,
+  children,
+  description,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Item> & { description?: React.ReactNode }) {
+  const descriptionId = React.useId()
+
   return (
     <SelectPrimitive.Item
+      aria-describedby={description ? descriptionId : undefined}
       className={cn(
         menuItemClass,
         menuItemFocusClass,
@@ -113,7 +121,16 @@ function SelectItem({ className, children, ...props }: React.ComponentProps<type
           <Codicon name="check" size="0.75rem" />
         </SelectPrimitive.ItemIndicator>
       </span>
-      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      {description ? (
+        <div className="min-w-0 max-w-[min(24rem,calc(100vw-4rem))] flex-1">
+          <span className="block truncate">
+            <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+          </span>
+          <div id={descriptionId}>{description}</div>
+        </div>
+      ) : (
+        <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      )}
     </SelectPrimitive.Item>
   )
 }

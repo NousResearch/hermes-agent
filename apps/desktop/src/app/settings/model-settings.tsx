@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 
+import { ModelSelectItem } from '@/components/model-select-item'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -284,6 +285,8 @@ function StaleAuxWarning({ applying, onDismiss, onReset, slots, taskLabel }: Sta
   )
 }
 
+const NO_MODEL_PROVIDERS: ModelOptionProvider[] = []
+
 interface ModelSettingsProps {
   /** Visibility only: changing pages must not reset drafts or cancel autosave. */
   subpage?: string
@@ -367,7 +370,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         // config-file reads — behind a single all-or-nothing Promise.all.
         const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
           getGlobalModelInfo(scopeProfile),
-          getGlobalModelOptions(undefined, scopeProfile),
+          refetchCatalog({ cancelRefetch: false, throwOnError: true }),
           getAuxiliaryModels(scopeProfile),
           getMoaModels(scopeProfile)
         ])
@@ -437,7 +440,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         }
       }
     },
-    [m.loadFailed, scopeProfile, setCaughtError]
+    [m.loadFailed, scopeProfile, setCaughtError, refetchCatalog]
   )
 
   useEffect(() => {
@@ -448,6 +451,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // new profile (bumping the epoch first so any in-flight A request is discarded).
   useOnProfileSwitch(() => {
     profileEpoch.current += 1
+    void queryClient.cancelQueries({ queryKey: catalogKey, exact: true })
     // The panel stays mounted across profile switches, so clear the previous
     // profile's draft selection before loading the new profile's source of
     // truth. Ordinary same-profile refreshes still preserve in-progress edits.
@@ -754,7 +758,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         nextModel = ''
       }
 
-      const options = await getGlobalModelOptions(undefined, scopeProfile)
+      const { data: options } = await refetchCatalog({ cancelRefetch: false, throwOnError: true })
 
       if (profileEpoch.current !== epoch) {
         return
@@ -769,7 +773,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     } finally {
       setActivating(false)
     }
-  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError])
+  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError, refetchCatalog])
 
   // OAuth / external providers can't be activated with a pasted key — hand off
   // to the shared onboarding flow scoped to this provider's real sign-in. The

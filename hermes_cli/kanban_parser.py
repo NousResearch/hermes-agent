@@ -425,11 +425,24 @@ _SPECS = [
          help="List known profiles + per-profile task counts (union of ~/.hermes/profiles/ and current assignees on the board)"),
     _cmd("context", [_TASK_ID],
          help="Print the full context a worker sees for a task (title + body + parent results + comments)."),
-    _cmd("specify", _triage_sweep_args("specify", "Specify", "specifier"),
+    _cmd("specify", _triage_sweep_args("specify", "Specify", "specifier") + (
+        _arg("--force", action="store_true",
+             help="Specify even when the body exceeds the prompt body limit "
+                  "(4000 chars): the specifier sees the truncated prompt and "
+                  "the unseen body tail is appended verbatim to the result. "
+                  "Without this, an over-long body is refused and the card is "
+                  "left unchanged."),),
          help="Flesh out a triage-column task into a concrete spec (title + "
               "body) and promote it to todo. Uses the auxiliary LLM "
               "configured under auxiliary.triage_specifier."),
-    _cmd("decompose", _triage_sweep_args("decompose", "Decompose", "decomposer"),
+    _cmd("decompose", _triage_sweep_args("decompose", "Decompose", "decomposer") + (
+        _arg("--force", action="store_true",
+             help="Decompose even when the body exceeds the prompt body limit "
+                  "(4000 chars): the decomposer sees only the first 4000 chars. "
+                  "The unseen body tail is re-attached verbatim only on the "
+                  "single-task (no-fanout) path; a fan-out reply is refused and "
+                  "the card is left unchanged. Without this, an over-long body "
+                  "is refused and the card is left unchanged."),),
          help="Decompose a triage-column task into a graph of child tasks "
               "routed to specialist profiles by description. Falls back "
               "to specify-style single-task promotion when the task "

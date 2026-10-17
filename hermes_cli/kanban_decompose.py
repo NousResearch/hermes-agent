@@ -28,6 +28,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
+    _body_over_bound, _with_unseen_tail, PROMPT_BODY_LIMIT,
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
 
@@ -119,6 +120,12 @@ class DecomposeOutcome:
     fanout: bool = False
     child_ids: list[str] | None = None
     new_title: Optional[str] = None
+    # True only when the stored body carries an appended verbatim tail because
+    # the decomposer prompt only saw the first ``PROMPT_BODY_LIMIT`` chars.
+    body_truncated: bool = False
+    # Real length of the task body as read (0 when unknown / never loaded).
+    body_length: int = 0
+    prompt_body_limit: int = PROMPT_BODY_LIMIT
 
 
 def _profile_author() -> str:
@@ -218,9 +225,17 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     )
 
 
-def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str, *,
+                  tail_append: bool = False) -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
+    body_len = len(task.body or "")
     title_val, body_val = _title_body(parsed)
+    body_truncated = False
+    if tail_append and body_val is not None:
+        # Forced over-bound path: the decomposer prompt only saw the first
+        # ``PROMPT_BODY_LIMIT`` chars, so re-attach the unseen tail verbatim.
+        body_val = _with_unseen_tail(body_val, task.body or "", actor="decomposer")
+        body_truncated = True
     assignee_val = None
     if not task.assignee:
         assignee_val = _normalize_assignee_choice(
@@ -234,7 +249,10 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
         )
     if not ok:
         return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
-    return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
+    return DecomposeOutcome(
+        task.id, True, "single task (no fanout)", fanout=False, new_title=title_val,
+        body_truncated=body_truncated, body_length=body_len, prompt_body_limit=PROMPT_BODY_LIMIT,
+    )
 
 
 def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], str]:
@@ -305,13 +323,32 @@ def decompose_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    force: bool = False,
 ) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks. Expected failures
     (not in triage, no aux client, API error, malformed/empty reply) surface
-    as ``ok=False``."""
+    as ``ok=False``.
+
+    A body longer than ``PROMPT_BODY_LIMIT`` is refused without any DB write
+    unless ``force`` is set — the decomposer prompt only ever sees the first
+    ``PROMPT_BODY_LIMIT`` characters, so silently replacing the body would drop
+    the unseen tail. ``force`` proceeds only where the unseen tail can be
+    preserved: the single-task (``fanout=false``) path re-attaches it verbatim,
+    while a fan-out reply is refused (its child bodies are new, so the root
+    tail cannot be carried).
+    """
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+
+    body_len, over = _body_over_bound(task.body)
+    if over and not force:
+        return DecomposeOutcome(
+            task_id, False,
+            f"task body is {body_len} chars, over PROMPT_BODY_LIMIT={PROMPT_BODY_LIMIT} "
+            f"(the decomposer would only see the first {PROMPT_BODY_LIMIT} chars); pass "
+            f"--force to decompose anyway (only where the unseen tail can be preserved)",
+            body_length=body_len, prompt_body_limit=PROMPT_BODY_LIMIT)
 
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
@@ -330,9 +367,18 @@ def decompose_task(
     if parsed is None:
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
 
+    if over and parsed.get("fanout"):
+        # Forced over-bound fan-out: the child bodies are new, so the unseen
+        # root tail cannot be preserved. Refuse with no DB write, no children.
+        return DecomposeOutcome(
+            task_id, False,
+            f"decomposer chose fanout after seeing only the first {PROMPT_BODY_LIMIT} of {body_len} chars; "
+            f"shorten the body or split the card manually",
+            body_length=body_len, prompt_body_limit=PROMPT_BODY_LIMIT)
+
     audit_author = author or _profile_author()
     if not parsed.get("fanout"):
-        return _apply_single(task, parsed, routing, audit_author)
+        return _apply_single(task, parsed, routing, audit_author, tail_append=(over and force))
     return _apply_fanout(task_id, parsed, routing, audit_author)
 
 

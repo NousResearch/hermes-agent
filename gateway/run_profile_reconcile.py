@@ -227,8 +227,6 @@ class GatewayProfileReconcileMixin:
             if name in added:
                 logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                 result["added"].append(name)
-                from gateway.run_runtime import recover_served_profile_native
-                await recover_served_profile_native(self, current[name])
             else:
                 logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
                 result["rescanned"].append(name)
@@ -254,6 +252,8 @@ class GatewayProfileReconcileMixin:
             if isinstance(configs, dict):
                 configs.pop(name, None)
         if added:
+            from gateway.run_runtime import recover_served_native_rows
+            await recover_served_native_rows(self)
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
         return result

@@ -1,12 +1,17 @@
 """A message a direct platform bot routes to a parked profile is refused out loud, never dropped.
 
-A parked profile comes back on a rescan, so its traffic is temporarily unavailable. Relay frames and
-webhooks are left unacknowledged for the platform to redeliver (``webhook_ingress``). A direct bot
-(Telegram's PTB ``Updater``, Slack Socket Mode, Discord's gateway, Google Chat Pub/Sub) has already
-confirmed the update to its platform before the gateway sees it, so the platform never redelivers it
-(Discord's own missed-message backfill, when enabled, can still pick it up after recovery). Holding it
-here would be a second inbound queue outside the one durable queue, kept for a profile whose store is
-the one that cannot be trusted. So the sender is told, in-channel, to resend, and nothing is admitted.
+A parked profile comes back on a rescan, so its traffic is temporarily unavailable. Webhooks are
+answered 503 for the provider to redeliver (``webhook_ingress``). A direct bot (Telegram's PTB
+``Updater``, Slack Socket Mode, Discord's gateway, Google Chat Pub/Sub) has already confirmed the
+update to its platform before the gateway sees it, so the platform never redelivers it (Discord's own
+missed-message backfill, when enabled, can still pick it up after recovery). Holding it here would be
+a second inbound queue outside the one durable queue, kept for a profile whose store is the one that
+cannot be trusted. So the sender is told, in-channel, to resend, and nothing is admitted.
+
+A relay frame is refused the same way (:class:`ParkedProfileRefusal`), and acknowledged: the park
+lasts until a rescan or a restart, and the connector drains its per-instance buffer in order,
+ack-gated, so a withheld frame would hold back every later frame for every profile on that instance;
+a live frame has no redelivery at all. Only transient refusals (a busy store, a drain) withhold it.
 
 A transport that answers only after an awaited dispatch (Google Chat HTTP events) has not acknowledged
 the delivery yet: it runs that dispatch in :func:`retryable_ingress` and answers the named, retryable
@@ -17,6 +22,8 @@ import contextvars
 import logging
 from contextlib import contextmanager
 
+from hermes_state_runtime import RuntimeStoreError
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +33,16 @@ class ParkedRouteRefused(Exception):
 
     def __init__(self):
         super().__init__('The routed profile is not being served right now; retry this delivery')
+
+
+class ParkedProfileRefusal(RuntimeStoreError):
+    """Producer admission refused because the delivery routes to the parked *profile*: retryable
+    (``runtime_draining``), but for as long as the park lasts, so an ordered transport acknowledges it
+    and refuses it to the sender (:func:`refuse_parked_route`) instead of redelivering it."""
+
+    def __init__(self, profile):
+        super().__init__('runtime_draining', field='profile', detail='the routed profile is parked')
+        self.profile = profile
 
 
 class _RetryableIngress:
@@ -66,6 +83,15 @@ def drop_rejected_route(adapter, source):
         logger.warning(
             '[%s] Dropping inbound event for %s: explicit profile route targets an unserved profile', name, chat_id)
         return
+    refuse_parked_route(adapter, source, profile)
+
+
+def refuse_parked_route(adapter, source, profile, reply_to=None):
+    """Refuse an event routed to the parked *profile*, nothing admitted: answered retryably inside
+    :func:`retryable_ingress`, else told to the sender in-channel, in reply to *reply_to* (default:
+    the source's message), off the caller, which may be the transport reader a relay send waits on."""
+    name = getattr(adapter, 'name', None) or getattr(getattr(source, 'platform', None), 'value', '?')
+    chat_id = getattr(source, 'chat_id', '?')
     platform = getattr(getattr(source, 'platform', None), 'value', None) or '?'
     scope = _retryable_ingress.get()
     if scope is not None and scope.open:
@@ -78,7 +104,8 @@ def drop_rejected_route(adapter, source):
         '[%s] Refusing inbound event for %s: routed profile %r on %s is parked (reason=profile_parked); '
         'nothing was admitted, a resend notice to the sender is scheduled', name, chat_id, profile, platform)
     try:
-        task = asyncio.get_running_loop().create_task(_send_refusal(adapter, source))
+        task = asyncio.get_running_loop().create_task(
+            _send_refusal(adapter, source, reply_to or getattr(source, 'message_id', None)))
     except RuntimeError:
         logger.warning('[%s] Could not refuse the parked-profile event for %s: no running loop', name, chat_id)
         return
@@ -88,12 +115,14 @@ def drop_rejected_route(adapter, source):
         task.add_done_callback(tasks.discard)
 
 
-async def _send_refusal(adapter, source):
-    """Reply in the sender's chat and thread, as the runner's own notices do."""
+async def _send_refusal(adapter, source, reply_to):
+    """Reply in the sender's chat and thread, as the runner's own notices do. Marked interim: it is no
+    turn's answer, so it never seals another turn's open stream (relay Slack) or fills a pending
+    answer slot (LINE's postback cache)."""
+    from gateway.run import _interim_metadata
     try:
-        metadata = adapter.gateway_runner._thread_metadata_for_source(source)
-        result = await adapter.send(source.chat_id, PARKED_ROUTE_NOTICE, reply_to=getattr(source, 'message_id', None),
-                                    metadata=metadata)
+        metadata = _interim_metadata(adapter.gateway_runner._thread_metadata_for_source(source))
+        result = await adapter.send(source.chat_id, PARKED_ROUTE_NOTICE, reply_to=reply_to, metadata=metadata)
         if getattr(result, 'success', True) is False:
             # Safe fields only: the raw ``error`` can echo tokens or message content.
             logger.warning('[%s] The parked-profile refusal to %s was not delivered (error_kind=%s, retryable=%s)',

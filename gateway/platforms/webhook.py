@@ -659,7 +659,7 @@ class WebhookAdapter(BasePlatformAdapter):
             raw_body, error_response = await self._read_authenticated_body(request, route_name, route_config)
         if error_response is None:  # a parked profile is retried, before any delivery id is recorded
             from gateway.platforms.webhook_ingress import parked_profile_refusal
-            error_response = parked_profile_refusal(self.gateway_runner, profile)
+            error_response = parked_profile_refusal(self.gateway_runner, profile, route_name, route_config)
         if error_response is not None:
             return error_response
         # Rate limiting (after auth)

@@ -126,6 +126,11 @@ async def dispatch_profile_ingress(
     from aiohttp import web
     from aiohttp.web_urldispatcher import MatchInfoError
     candidates = shared_ingress_apps(runner, profile)
+    from gateway.run_runtime import profile_parked
+    if not candidates and profile_parked(runner, profile):
+        # Its adapters come back with it (a rescan or restart): the platform retries a 503.
+        raise web.HTTPServiceUnavailable(text="Profile temporarily unavailable; retry",
+                                         headers={"Retry-After": "30"})
     if not profile or not candidates:
         raise web.HTTPNotFound(text="Unknown or unconfigured profile")
     rel_url = request.rel_url.with_path("/" + tail.lstrip("/"), keep_query=True, keep_fragment=True)

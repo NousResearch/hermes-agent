@@ -7,9 +7,9 @@ import feedContract from '../../update-feed.cjs'
 import type { ChannelTarget } from './channel'
 import { verifyChannelDownload } from './channel-native'
 import { channelPublicBase } from './channel-protocol'
-import { MacStrategy, type MacStrategyDeps, prepareMacInstall } from './mac'
+import { MacStrategy, type MacStrategyDeps, prepareMacInstall, squirrelZipLimit } from './mac'
 
-export interface MacClientDeps extends Omit<MacStrategyDeps, 'updater' | 'prepareInstall'> {
+export interface MacClientDeps extends Omit<MacStrategyDeps, 'updater' | 'prepareInstall' | 'zipLimitBytes'> {
   light: boolean
   feedBaseUrl: string
   /** Exact per-build metadata, not a moving channel directory. */
@@ -73,5 +73,10 @@ export function createMacStrategy(deps: MacClientDeps): MacStrategy {
     updater.setFeedURL({ provider: 'generic', url: `${base}/${legacy.directory}/`, channel })
   }
 
-  return new MacStrategy({ ...deps, updater, prepareInstall: () => prepareMacInstall(nativeUpdater) })
+  return new MacStrategy({
+    ...deps,
+    updater,
+    prepareInstall: () => prepareMacInstall(nativeUpdater),
+    zipLimitBytes: squirrelZipLimit(process.versions.electron)
+  })
 }

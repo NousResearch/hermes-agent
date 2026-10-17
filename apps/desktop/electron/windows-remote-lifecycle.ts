@@ -266,7 +266,12 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
       throw cause
     }
 
-    const kind = cause?.kind
+    // An untyped probe failure is a probe failure — a shell that could not
+    // run the probe at all (broken PATH, missing PowerShell, cmd.exe limit)
+    // says nothing about the platform. Only a probe that ran and answered
+    // neither POSIX nor Windows shape is a platform verdict (#127320:
+    // cmd.exe's "command line too long" surfaced as "unsupported OS").
+    const kind = cause?.kind || 'unknown'
 
     // detail is remote-controlled output headed for the UI: redact + strip control chars.
     const detail = redactSecrets(String(cause?.message || cause || ''))
@@ -274,11 +279,9 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
       .replace(/[\x00-\x1f\x7f]/g, ' ')
       .trim()
 
-    const error: any = new Error(
-      `${kind ? 'The Windows remote probe failed.' : 'The remote operating system is not supported by Desktop SSH.'}${detail ? ` (probe: ${detail.slice(0, 300)})` : ''}`
-    )
+    const error: any = new Error(`The Windows remote probe failed.${detail ? ` (probe: ${detail.slice(0, 300)})` : ''}`)
 
-    error.kind = kind || 'unsupported-platform'
+    error.kind = kind
     error.cause = cause
     throw error
   }

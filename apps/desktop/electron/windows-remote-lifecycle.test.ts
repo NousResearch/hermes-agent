@@ -649,8 +649,11 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
     ),
     (err: any) => err.kind === 'timeout'
   )
-  // Probe genuinely failing on a reachable host still classifies unsupported,
-  // and carries the probe detail for diagnosis.
+  // Probe genuinely failing on a reachable host is a probe error (#127320):
+  // a shell that could not run the probe — cmd.exe's command-line limit, a
+  // broken PATH, a probe script that threw — says nothing about the platform.
+  // The verdict carries the probe detail for diagnosis instead of claiming
+  // "unsupported OS".
   await assert.rejects(
     detectRemotePlatform(
       sshWith(async command => {
@@ -661,7 +664,11 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
         throw new Error('Hermes is not installed on the remote Windows host.')
       })
     ),
-    (err: any) => err.kind === 'unsupported-platform' && /Hermes is not installed/.test(err.message)
+    (err: any) =>
+      err.kind === 'unknown' &&
+      /Windows remote probe failed/.test(err.message) &&
+      /Hermes is not installed/.test(err.message) &&
+      !/operating system is not supported/.test(err.message)
   )
 })
 

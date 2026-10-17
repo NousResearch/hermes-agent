@@ -775,6 +775,26 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     if selected_session_id:
         selected_session_id = await _resolve_live_session_id(self, str(selected_session_id))
     session_id = selected_session_id or run_id
+    # /api/sessions/{id}/chat honors a session's persisted model lock (state.db
+    # sessions.model_config -> browser_model_lock), but this channel resolved provider/model from
+    # the request body alone: a run started against a locked session without an explicit body
+    # provider fell back to the gateway's default provider, sending the same model alias to the
+    # wrong upstream. Mirror _effective_session_runtime_request — when the body carries no
+    # provider/model of its own, the session's confirmed lock routes the run.
+    if selected_session_id:
+        lock_db = await self._ensure_session_db_async()
+        lock_session = await asyncio.to_thread(lock_db.get_session, str(selected_session_id)) if lock_db else None
+        lock_request = self._effective_session_runtime_request(session=lock_session, body=body)
+        if lock_request.get("require_model_lock"):
+            lock_requested = lock_request.get("requested") or {}
+            lock_route = lock_request.get("route")
+            if lock_route is not None:
+                route = lock_route
+            for src_key, dst_key in (("model", "requested_model"), ("provider", "requested_provider")):
+                if lock_requested.get(src_key):
+                    agent_overrides[dst_key] = lock_requested[src_key]
+            if lock_request.get("model_options"):
+                agent_overrides["model_options"] = lock_request["model_options"]
     # History loads for the session the request actually selected — including one resolved from
     # a declared X-Hermes-Session-Key, whose persisted delivery rows must reach the next
     # same-key run's context (#98619).  previous_response_id continuations keep their

@@ -172,10 +172,10 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       {onClose && !vertical && (
         // Mask the content beneath the close button instead of painting over it.
         // Geometry stays fixed; the same fade works on solid and glass surfaces.
-        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity group-hover/tab:pointer-events-auto group-hover/tab:opacity-100">
+        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity [-webkit-app-region:no-drag] group-hover/tab:pointer-events-auto group-hover/tab:opacity-100">
           <button
             aria-label={translateNow('common.close')}
-            className="grid w-(--pane-tab-close-width) cursor-pointer place-items-center bg-transparent text-(--ui-text-tertiary) outline-none hover:text-foreground"
+            className="grid w-(--pane-tab-close-width) cursor-pointer place-items-center bg-transparent text-(--ui-text-tertiary) outline-none [-webkit-app-region:no-drag] hover:text-foreground"
             onClick={event => {
               event.preventDefault()
               event.stopPropagation()

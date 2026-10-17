@@ -161,13 +161,13 @@ def multiplexed():
     reset_multiplex_context(token)
 
 
-@pytest.mark.parametrize("dispatch", [_sequential, _concurrent])
-def test_call_from_another_profiles_scope_is_refused(homes, dispatch, caplog):
+def test_call_from_another_profiles_scope_is_refused(homes, caplog):
     alpha_home, beta_home = homes
     alpha = _agent(alpha_home, "agent:alpha:api_server:dm:1")
-    with _Scope(beta_home):  # the turn's scope names a profile this manager never served
-        result = json.loads(dispatch(alpha, "stray"))
-    _assert_generic_refusal(result, caplog, alpha_home, beta_home)
+    for dispatch in (_sequential, _concurrent):
+        with _Scope(beta_home):  # the turn's scope names a profile this manager never served
+            result = json.loads(dispatch(alpha, "stray"))
+        _assert_generic_refusal(result, caplog, alpha_home, beta_home)
     assert _ProcessWideProvider.stores == {}
 
 
@@ -180,20 +180,20 @@ def test_multiplexed_call_with_no_known_profile_is_refused(homes, multiplexed, c
     assert _ProcessWideProvider.stores == {}
 
 
-@pytest.mark.parametrize("dispatch", [_sequential, _concurrent])
 def test_multiplexed_call_without_a_caller_scope_is_refused_even_for_the_process_profile(
-        homes, dispatch, multiplexed, monkeypatch, caplog):
+        homes, multiplexed, monkeypatch, caplog):
     # The manager serves the process's own (launch) profile, but on a multiplexed process a call that
     # names no profile is not proof it came from that profile's turn.
     alpha_home, _ = homes
     monkeypatch.setenv("HERMES_HOME", str(alpha_home))
     alpha = _agent(alpha_home, "agent:alpha:api_server:dm:1")
-    token = set_hermes_home_override(None)
-    try:
-        result = json.loads(dispatch(alpha, "unscoped"))
-    finally:
-        reset_hermes_home_override(token)
-    _assert_generic_refusal(result, caplog, alpha_home)
+    for dispatch in (_sequential, _concurrent):
+        token = set_hermes_home_override(None)
+        try:
+            result = json.loads(dispatch(alpha, "unscoped"))
+        finally:
+            reset_hermes_home_override(token)
+        _assert_generic_refusal(result, caplog, alpha_home)
     assert _ProcessWideProvider.stores == {}
 
 
@@ -313,24 +313,31 @@ _HOOKS = {
 }
 
 
-@pytest.mark.parametrize("hook", sorted(_HOOKS))
-def test_lifecycle_hook_from_another_profiles_scope_is_refused(homes, hook, caplog):
+def _refused_hooks(caplog) -> set:
+    return {r.args[0].removeprefix("hook ") for r in caplog.records
+            if r.name == "agent.memory_caller_scope" and _REFUSAL_CODE in r.getMessage()}
+
+
+def test_lifecycle_hooks_from_another_profiles_scope_are_refused(homes, caplog):
+    # Every hook has its own guard: each one is driven, and each must log its own refusal.
     alpha_home, beta_home = homes
     alpha = _manager(alpha_home)
     with _Scope(beta_home):
-        _HOOKS[hook](alpha)
+        for hook in _HOOKS.values():
+            hook(alpha)
     assert _InstanceScopedProvider.events == []
-    logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
-    assert _REFUSAL_CODE in logged and str(beta_home) in logged, logged
+    assert _refused_hooks(caplog) == set(_HOOKS)
+    assert all(str(beta_home) in r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
 
 
-@pytest.mark.parametrize("hook", sorted(_HOOKS))
-def test_multiplexed_lifecycle_hook_without_a_caller_scope_is_refused(homes, hook, multiplexed, monkeypatch):
+def test_multiplexed_lifecycle_hooks_without_a_caller_scope_are_refused(homes, multiplexed, monkeypatch, caplog):
     alpha_home, _ = homes
     monkeypatch.setenv("HERMES_HOME", str(alpha_home))
     alpha = _manager(alpha_home)
-    _HOOKS[hook](alpha)
+    for hook in _HOOKS.values():
+        hook(alpha)
     assert _InstanceScopedProvider.events == []
+    assert _refused_hooks(caplog) == set(_HOOKS)
 
 
 def test_tool_calls_reuse_what_initialize_bound(homes, monkeypatch):

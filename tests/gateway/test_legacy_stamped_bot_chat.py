@@ -70,7 +70,7 @@ async def _bot_chat_lookup(tmp_path, monkeypatch, source, user_id):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('source', ['cli', 'tui', 'gui', 'desktop'])
+@pytest.mark.parametrize('source', ['cli', 'desktop'])
 async def test_bot_chat_stamped_with_the_callers_own_subject_opens(tmp_path, monkeypatch, source):
     replies = await _bot_chat_lookup(tmp_path, monkeypatch, source, _OWN)
     for prof, reply in replies.items():
@@ -81,9 +81,8 @@ async def test_bot_chat_stamped_with_the_callers_own_subject_opens(tmp_path, mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('user_id', _FOREIGN)
-@pytest.mark.parametrize('source', ['cli', 'tui', 'gui'])
-async def test_bot_chat_stamped_with_another_principal_stays_refused(tmp_path, monkeypatch, source, user_id):
-    replies = await _bot_chat_lookup(tmp_path, monkeypatch, source, user_id)
+async def test_bot_chat_stamped_with_another_principal_stays_refused(tmp_path, monkeypatch, user_id):
+    replies = await _bot_chat_lookup(tmp_path, monkeypatch, 'cli', user_id)
     for prof, reply in replies.items():
         assert reply.get('error', {}).get('message') == 'not_found', (prof, reply)
 

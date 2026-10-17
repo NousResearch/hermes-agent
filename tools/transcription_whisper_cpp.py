@@ -27,7 +27,9 @@ _MODEL_FILES = (
 
 
 def _model_dir() -> Path:
-    return get_hermes_home() / "cache" / "whisper.cpp"
+    from hermes_cache import managed_cache_dir
+
+    return managed_cache_dir("cache/whisper.cpp", home=get_hermes_home())
 
 
 def _file_signature(path: Path, digest: str) -> tuple | None:

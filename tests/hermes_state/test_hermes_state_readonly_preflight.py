@@ -142,6 +142,47 @@ class TestRefusalOutsideScope:
             os.chmod(wal, 0o644)
 
 
+class TestSymlinkedDbJudgedAtTarget:
+    def test_readonly_symlink_dir_passes_when_target_is_writable(
+        self, hermes_home, tmp_path
+    ):
+        """A link under a read-only dir whose WAL sidecars live next to a writable target must
+        pass: SQLite follows the link and writes next to the target, not next to the link (#135113)."""
+        real_dir = hermes_home / "kanban" / "default"
+        real_dir.mkdir(parents=True)
+        _make_wal_db(real_dir / "kanban.db")
+        link_dir = tmp_path / "read-only"
+        link_dir.mkdir()
+        link = link_dir / "kanban.db"
+        link.symlink_to(real_dir / "kanban.db")
+        os.chmod(link_dir, 0o555)
+        try:
+            preflight_db_writability(link, db_label="kanban.db")
+        finally:
+            os.chmod(link_dir, 0o755)
+
+    def test_symlink_with_readonly_target_is_refused_by_target_path(
+        self, hermes_home, tmp_path
+    ):
+        """The check relocates to the target: a read-only target dir outside the home tree is
+        still refused (and never chmod'd) — the repair scope follows the resolved target, not
+        where the link sits."""
+        target_dir = tmp_path / "elsewhere"
+        target_dir.mkdir()
+        _make_db(target_dir / "custom.db")
+        link_dir = hermes_home / "links"
+        link_dir.mkdir()
+        link = link_dir / "custom.db"
+        link.symlink_to(target_dir / "custom.db")
+        os.chmod(target_dir, 0o555)
+        try:
+            with pytest.raises(sqlite3.OperationalError) as exc_info:
+                preflight_db_writability(link, db_label="custom.db")
+            assert str(target_dir) in str(exc_info.value)
+        finally:
+            os.chmod(target_dir, 0o755)
+
+
 class TestSkips:
 
 

@@ -19,6 +19,9 @@ from typing import Any, Callable, Dict, List, Optional
 from agent.redact import redact_for_egress
 
 from agent.memory_caller_scope import caller_scope, claim_instance, in_owner_home, refused_tool_message
+# Moved to agent.memory_context; still importable here because agent.memory_manager is a public
+# module for plugins (hermes_cli/plugin_validate_private_imports.py).
+from agent.memory_context import StreamingContextScrubber, build_memory_context_block, sanitize_context
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized

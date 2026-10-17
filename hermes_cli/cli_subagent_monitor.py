@@ -61,6 +61,7 @@ class SubagentMonitor:
         self.plugin_rows = []
         self._plugin_dirty = False
         self._plugin_poller = None
+        self.plugin_pending = set()  # (item key, row key) of plugin actions still running
         # ``cli_footer_tips.FooterTips`` while display.cli_footer_tips is on (install_dock).
         self.tips = None
 

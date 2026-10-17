@@ -355,3 +355,227 @@ def test_action_results_are_validated_before_they_touch_the_terminal_or_browser(
     assert ran == [] and "in_process" in monitor.notice
     cli_plugin_footer.apply_result(cli, monitor, item, {"run_in_terminal": lambda: ran.append("local")})
     assert ran == [] and "interactive terminal" in monitor.notice  # no running app here
+
+
+def _plugin_row(*actions, key="r1"):
+    return {"kind": "plugin", "key": f"plugin:p:item:{key}", "item": "p:item", "plugin": "p", "row_key": key,
+            "label": f"row {key}", "detail": "", "tone": "ok",
+            "actions": [{"id": ident, "label": ident, "key": letter, "confirm": confirm}
+                        for ident, letter, confirm in actions]}
+
+
+def test_a_terminal_callable_writes_to_the_terminal_while_it_runs_under_patch_stdout(monkeypatch):
+    """The CLI runs inside ``patch_stdout()``: a viewer or prompt printed by a ``run_in_terminal``
+    callable must reach the terminal while the callable runs, not after it returns."""
+    import io
+    import time
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.application.current import get_app_session
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.layout import Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.output.vt100 import Vt100_Output
+    from prompt_toolkit.patch_stdout import patch_stdout
+    from hermes_cli import cli_plugin_footer
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from tests.waiting import async_wait_until
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    terminal = Terminal()
+    output = Vt100_Output(terminal, lambda: Size(rows=24, columns=80), term="xterm")
+    monkeypatch.setattr(get_app_session(), "_output", output)  # the session the real CLI runs in
+    seen = []
+
+    def body():
+        print("viewer frame 1", flush=True)
+        deadline = time.monotonic() + 3
+        while "viewer frame 1" not in terminal.getvalue() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        seen.append("viewer frame 1" in terminal.getvalue())
+        return "viewer closed"
+
+    cli = _cli()
+    monitor = SubagentMonitor(cli)
+
+    async def run():
+        with create_pipe_input() as pipe, patch_stdout():
+            app = Application(layout=Layout(Window(FormattedTextControl("composer"))), input=pipe, output=output)
+            cli._app = app
+            painted = asyncio.Event()
+            app.after_render += lambda _: painted.set()
+            task = asyncio.create_task(app.run_async())
+            await asyncio.wait_for(painted.wait(), 3)
+            try:
+                cli_plugin_footer.run_in_terminal(cli, monitor, {"key": "p:item", "plugin": "p"}, body)
+                await async_wait_until(lambda: monitor.notice == "viewer closed", what="body finished")
+                print("chat line after the viewer", flush=True)
+                await async_wait_until(lambda: "chat line after the viewer" in terminal.getvalue(),
+                                       what="chat output still reaches the terminal afterwards")
+            finally:
+                app.exit()
+                await task
+    asyncio.run(run())
+    assert seen == [True]
+
+
+def test_a_pending_action_ignores_repeats_until_it_finishes(monkeypatch):
+    """Holding an action key while the backend blocks runs one action per row, not a thread per
+    key press; once it finishes the key works again."""
+    from hermes_cli import cli_plugin_footer, plugins
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from tests.waiting import wait_until
+
+    release, calls = threading.Event(), []
+
+    def on_action(action_id, session, row_key):
+        calls.append((action_id, row_key))
+        release.wait(10)
+        return f"done {row_key}"
+
+    item = {"key": "p:item", "plugin": "p", "on_action": on_action}
+    monkeypatch.setattr(plugins, "get_plugin_footer_items", lambda: [item])
+    cli = _cli()
+    monitor = SubagentMonitor(cli)
+    row, other = _plugin_row(("go", "g", False)), _plugin_row(("go", "g", False), key="r2")
+    action = row["actions"][0]
+    first = cli_plugin_footer.run_action(cli, monitor, row, action)
+    wait_until(lambda: calls, what="first action running")
+    assert [cli_plugin_footer.run_action(cli, monitor, row, action) for _ in range(5)] == [None] * 5
+    assert "still running" in monitor.notice
+    second = cli_plugin_footer.run_action(cli, monitor, other, action)  # another row is independent
+    wait_until(lambda: len(calls) == 2, what="other row's action running")
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert calls == [("go", "r1"), ("go", "r2")]
+    again = cli_plugin_footer.run_action(cli, monitor, row, action)
+    assert again is not None
+    again.join(5)
+    assert calls[-1] == ("go", "r1")
+
+
+def test_a_click_on_a_plugin_row_shows_its_confirmation_before_running_it(monkeypatch):
+    from prompt_toolkit.data_structures import Point
+    from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
+    from hermes_cli import cli_dock_footer as footer
+    from hermes_cli import cli_plugin_footer
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+
+    ran = []
+    monkeypatch.setattr(cli_plugin_footer, "run_action", lambda cli, monitor, row, action: ran.append(action["id"]))
+    cli = _cli()
+    monitor = cli._subagent_monitor = SubagentMonitor(cli)
+    monitor.plugin_rows = [_plugin_row(("stop", "enter", True))]
+    monitor.plugin_items = [{"key": "p:item", "plugin": "p", "label": "", "tone": "ok", "badge": ""}]
+    monitor._last_poll = float("inf")
+    key = monitor.plugin_rows[0]["key"]
+    click = MouseEvent(Point(0, 0), MouseEventType.MOUSE_UP, MouseButton.LEFT, frozenset())
+    footer.click_actions(cli)["row"](click, key)
+    assert ran == []
+    # The clicked row is selected, so the footer paints the confirmation the next click answers.
+    assert monitor.footer_active and monitor.selected_id == key
+    assert t("cli.subagents.plugin_confirm", action="stop", letter="enter") in monitor.dock_text(
+        columns=120, rows=30, selecting=True)
+    footer.click_actions(cli)["row"](click, key)
+    assert ran == ["stop"]
+
+
+def test_a_replaced_registration_gets_its_own_snapshot_and_drops_the_old_result():
+    from hermes_cli.cli_plugin_footer import FooterItemPoller
+
+    release = threading.Event()
+
+    def stale(session):
+        release.wait(10)
+        return {"label": "old plugin", "tone": "ok"}
+
+    poller = FooterItemPoller()
+    session = {"session_id": "s"}
+    old = {"key": "p:item", "plugin": "p", "snapshot": stale}
+    new = {"key": "p:item", "plugin": "p", "snapshot": lambda s: {"label": "new plugin", "tone": "ok"}}
+    assert poller.poll(session, items=[old]) == []  # the old snapshot hangs in its worker
+    assert [i["label"] for i in poller.poll(session, items=[new], wait=5)] == ["new plugin"]
+    release.set()
+    for _ in range(50):
+        labels = [i["label"] for i in poller.poll(session, items=[new], wait=0.05)]
+        assert labels == ["new plugin"]
+
+
+def test_task_keys_never_act_on_a_plugin_row_that_does_not_advertise_them():
+    """``s`` (steer) and ``x`` (stop) belong to task rows; on a plugin row without those actions
+    they are ordinary typing, like any other unadvertised letter."""
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.widgets import TextArea
+    from hermes_cli.cli_subagent_monitor import install_dock
+    from tests.hermes_cli.test_dock_footer import _footer_app
+    from tests.waiting import async_wait_until
+
+    cli = _cli()
+    install_dock(cli)
+    monitor = cli._subagent_monitor
+    monitor.plugin_rows = [_plugin_row(("open", "enter", False))]
+    monitor._last_poll = float("inf")
+    editor = TextArea(height=1, multiline=False)
+    output = DummyOutput()
+    output.get_size = lambda: Size(rows=30, columns=120)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            app = _footer_app(cli, editor, pipe, output)
+            painted = asyncio.Event()
+            app.after_render += lambda _: painted.set()
+            task = asyncio.create_task(app.run_async())
+            await asyncio.wait_for(painted.wait(), 3)
+            try:
+                for letter in "sx":
+                    editor.text = ""
+                    pipe.send_text("\x1b[B")
+                    await async_wait_until(lambda: monitor.footer_active, what="plugin row selected")
+                    pipe.send_text(letter)
+                    await async_wait_until(lambda: editor.text == letter, what=f"{letter} typed")
+                    assert monitor.steer_target is None and monitor.confirm_key is None
+            finally:
+                app.exit()
+                await task
+    asyncio.run(run())
+
+
+def test_plugin_text_is_one_line_wherever_the_footer_paints_it(monkeypatch):
+    from hermes_cli import cli_dock_footer as footer
+    from hermes_cli import cli_plugin_footer
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+
+    item = cli_plugin_footer.normalize({
+        "label": "◈ two\nlines\x1b[31m", "tone": "ok",
+        "rows": [{"key": "r1", "label": "row\none", "detail": "a\r\nb"}],
+        "actions": [{"id": "open", "label": "op\nen", "key": "enter"}]})
+    cli = _cli()
+    monitor = cli._subagent_monitor = SubagentMonitor(cli)
+    monitor.plugin_items = [{**item, "key": "p:item", "plugin": "p"}]
+    monitor.plugin_rows = cli_plugin_footer.footer_rows(monitor.plugin_items)
+    monitor._last_poll = float("inf")
+    monitor.footer_active, monitor.selected_id = True, monitor.plugin_rows[0]["key"]
+
+    def painted():
+        lines = footer.dock_lines(monitor, columns=120, rows=30, selecting=True)
+        return [text for line in lines for _style, text, *_ in line]
+    texts = painted()
+    assert all(text.isprintable() for text in texts), texts
+    assert any(text.startswith("◈ two lines") for text in texts) and any("op en" in text for text in texts)
+    cli_plugin_footer.apply_result(cli, monitor, monitor.plugin_items[0], "closed\nviewer\x07")
+    assert monitor.notice == "closed viewer" and all(text.isprintable() for text in painted())
+
+
+def test_row_keys_reach_on_action_exactly_or_the_row_is_skipped():
+    from hermes_cli.cli_plugin_footer import MAX_ROW_KEY, normalize
+
+    exact = "k" * MAX_ROW_KEY
+    rows = normalize({"label": "x", "rows": [{"key": exact + "a"}, {"key": exact + "b"}, {"key": exact},
+                                             {"key": "short"}]})["rows"]
+    assert [row["key"] for row in rows] == [exact, "short"]

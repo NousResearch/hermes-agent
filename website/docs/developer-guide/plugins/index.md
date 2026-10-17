@@ -1627,8 +1627,10 @@ def register(ctx):
   for the CLI conversation the footer belongs to. Scope what you show to it.
 - `snapshot(session)` returns JSON-only data or `None`/`{}` to hide the item:
   `label` (pill text), `tone` (`ok` | `warn` | `bad` | `dim`), `rows` (`key`, `label`, `detail`;
-  at most 8) and `actions` (`id`, `label`, `key` = `"enter"` or one lowercase letter, optional
-  `confirm: true` to require pressing the key twice).
+  at most 8; a `key` longer than 128 characters skips its row, since it reaches `on_action` exactly
+  as given) and `actions` (`id`, `label`, `key` = `"enter"` or one lowercase letter, optional
+  `confirm: true` to require pressing the key twice). Text is painted as one line: newlines and
+  other whitespace runs become a space, control characters are dropped.
 - Optional `badge`: a short string (e.g. `"◈ 2 live"`) the classic CLI status bar shows as one
   read-only segment, in the item's tone, while the item is visible. It is sanitised like labels
   and clipped to 12 columns, shown in the medium and wide tiers (dropped below 52 columns like the
@@ -1640,11 +1642,13 @@ def register(ctx):
 - Rows follow the agent and process rows. `Down` on an empty composer selects them; on a plugin
   row `Enter` (or a click with `display.cli_mouse`) runs the `enter` action — or the first action —
   and the listed letter keys run the others. The hint line shows the row's keys.
-- `on_action(action_id, session, row_key)` runs off the UI thread and may return `None`, a string
+- `on_action(action_id, session, row_key)` runs off the UI thread, one at a time per row (a repeat
+  while one is still running only shows a notice), and may return `None`, a string
   (shown as the footer notice), or a dict with any of `notice`, `open_url` (an `http(s)` URL opened
   in the user's browser, or shown when none is available) and `run_in_terminal` (a blocking callable
-  that gets the real terminal while the prompt UI is suspended — a full-screen viewer, say — and may
-  return a string notice; the chat returns when it does). An exception becomes a short notice.
+  that gets the real terminal while the prompt UI is suspended — a full-screen viewer, say; what it
+  prints reaches the terminal as it runs — and may return a string notice; the chat returns when it
+  does). An exception becomes a short notice.
 - Lower `order` paints first. The registration is removed when the plugin unloads.
 
 ### Dispatch tools from slash commands

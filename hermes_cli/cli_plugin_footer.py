@@ -28,6 +28,8 @@ SLOW_SNAPSHOT_SECONDS = 2.0
 # At most one snapshot per item per interval, however often the footer refreshes.
 SNAPSHOT_INTERVAL = 1.0
 _MAX_ROWS = 8
+# A row ``key`` reaches ``on_action`` exactly as given, so a longer one is skipped, never cut.
+MAX_ROW_KEY = 128
 # A status-bar badge (``snapshot()['badge']``) is clipped to this many cells.
 BADGE_COLUMNS = 12
 _MAX_ACTIONS = 8
@@ -51,7 +53,11 @@ def session_info(cli) -> dict:
 
 
 def _text(value, limit) -> str:
-    return value[:limit] if isinstance(value, str) else ""
+    """One display line: whitespace runs (newlines included) become one space, control characters
+    are dropped, then the result is cut to ``limit`` characters."""
+    if not isinstance(value, str):
+        return ""
+    return "".join(c for c in " ".join(value.split()) if c.isprintable())[:limit]
 
 
 def normalize(raw) -> Optional[dict]:
@@ -66,8 +72,11 @@ def normalize(raw) -> Optional[dict]:
         key = row.get("key") if isinstance(row, dict) else None
         if not isinstance(key, str) or not key or key in row_keys:
             continue
+        if len(key) > MAX_ROW_KEY:
+            logger.debug("Footer row key of %d characters skipped (limit %d)", len(key), MAX_ROW_KEY)
+            continue
         row_keys.add(key)
-        rows.append({"key": key[:128], "label": _text(row.get("label"), 200) or key,
+        rows.append({"key": key, "label": _text(row.get("label"), 200) or key,
                      "detail": _text(row.get("detail"), 120)})
     actions, action_keys = [], set()
     for action in (raw.get("actions") or [])[:_MAX_ACTIONS]:
@@ -89,9 +98,10 @@ def normalize(raw) -> Optional[dict]:
 
 
 class _Slot:
-    __slots__ = ("done", "session", "slow_reported", "started", "value")
+    __slots__ = ("done", "registration", "session", "slow_reported", "started", "value")
 
-    def __init__(self):
+    def __init__(self, registration=None):
+        self.registration = registration  # the registry entry: a replacement gets a fresh slot
         self.done: Optional[threading.Event] = None  # set while a snapshot is in flight
         self.started = 0.0
         self.session: Optional[dict] = None
@@ -123,7 +133,11 @@ class FooterItemPoller:
             for key in [key for key in self._slots if key not in live]:
                 del self._slots[key]
             for item in items:
-                slot = self._slots.setdefault(item["key"], _Slot())
+                slot = self._slots.get(item["key"])
+                if slot is None or slot.registration is not item:
+                    # A new or replaced registration (reload, re-register) never waits on, or
+                    # shows, the previous one's snapshot.
+                    slot = self._slots[item["key"]] = _Slot(item)
                 if slot.session != session:
                     # A switched session (/new, /resume) never shows the previous one's value.
                     slot.session, slot.value, slot.started = dict(session), None, 0.0
@@ -153,9 +167,10 @@ class FooterItemPoller:
         except Exception as exc:  # health: allow BLE001 -- plugin callback boundary; _report logs the traceback
             value, failure = None, exc
         with self._lock:
-            # A failure keeps the last good value; a result for a session that is no longer current
-            # is dropped.
-            if failure is None and slot.session == session:
+            # A failure keeps the last good value; a result for a session that is no longer current,
+            # or from a registration that has been replaced or removed, is dropped.
+            current = self._slots.get(item["key"]) is slot
+            if failure is None and current and slot.session == session:
                 changed, slot.value = value != slot.value, value
             done, slot.done = slot.done, None
         if done is not None:
@@ -218,12 +233,24 @@ def _repaint(cli, monitor) -> None:
         logger.debug("footer repaint failed", exc_info=True)
 
 
+_pending_lock = threading.Lock()
+
+
 def run_action(cli, monitor, row: dict, action: dict) -> Optional[threading.Thread]:
-    """Run ``on_action(action_id, session, row_key)`` on a worker thread and apply its result."""
+    """Run ``on_action(action_id, session, row_key)`` on a worker thread and apply its result.
+    One action per row at a time: a repeat while it is pending (a held key, a blocked backend)
+    only says so, so workers never pile up or repeat a backend operation."""
     from hermes_cli.plugins import get_plugin_footer_items
     item = next((i for i in get_plugin_footer_items() if i["key"] == row["item"]), None)
     if item is None or item["on_action"] is None:
         return None
+    slot = (item["key"], row["row_key"])
+    with _pending_lock:
+        pending = monitor.plugin_pending
+        if slot in pending:
+            monitor.notice = f"{action['label']} is still running"
+            return None
+        pending.add(slot)
     session = session_info(cli)
 
     def work():
@@ -234,6 +261,9 @@ def run_action(cli, monitor, row: dict, action: dict) -> Optional[threading.Thre
         except Exception as exc:
             logger.warning("Footer item %s action %s failed: %s", item["key"], action["id"], exc, exc_info=exc)
             monitor.notice = f"⚠ {item['plugin']}: {_short(exc)}"
+        finally:
+            with _pending_lock:
+                pending.discard(slot)
         _repaint(cli, monitor)
 
     thread = threading.Thread(target=contextvars.copy_context().run, args=(work,),
@@ -247,13 +277,13 @@ def apply_result(cli, monitor, item: dict, result: Any) -> None:
     if result is None:
         return
     if isinstance(result, str):
-        monitor.notice = result
+        monitor.notice = _text(result, 200)
         return
     if not isinstance(result, dict):
         logger.debug("Footer item %s action returned %s; ignored", item["key"], type(result).__name__)
         return
     if isinstance(result.get("notice"), str):
-        monitor.notice = result["notice"]
+        monitor.notice = _text(result["notice"], 200)
     url = result.get("open_url")
     if url is not None:
         if not isinstance(url, str) or urlsplit(url).scheme not in ("http", "https"):
@@ -284,6 +314,48 @@ def open_url(url: str) -> bool:
     return _can_open_graphical_browser() and bool(webbrowser.open(url))
 
 
+class _TerminalRoute:
+    """``sys.stdout`` / ``sys.stderr`` while a terminal callable runs under ``patch_stdout``: the
+    callable's own thread writes straight to the terminal (the proxy would hold its viewer or
+    prompt until it returns); every other thread keeps the proxy, so chat output printed meanwhile
+    still waits for the prompt to come back instead of drawing over the viewer."""
+
+    def __init__(self, proxy, terminal, owner: int):
+        self._proxy, self._terminal, self._owner = proxy, terminal, owner
+
+    def _target(self):
+        return self._terminal if threading.get_ident() == self._owner else self._proxy
+
+    def write(self, data):
+        return self._target().write(data)
+
+    def flush(self):
+        return self._target().flush()
+
+    def __getattr__(self, name):
+        return getattr(self._target(), name)
+
+
+def _with_terminal_streams(body):
+    """``body()`` with its prints reaching the terminal while it runs (see ``_TerminalRoute``)."""
+    from prompt_toolkit.patch_stdout import StdoutProxy
+    proxies = {name: getattr(sys, name) for name in ("stdout", "stderr")}
+    terminals = {"stdout": None, "stderr": sys.__stderr__}
+    routes = {}
+    for name, proxy in proxies.items():
+        if isinstance(proxy, StdoutProxy):
+            terminal = terminals[name] or proxy.original_stdout
+            if terminal is not None:
+                routes[name] = _TerminalRoute(proxy, terminal, threading.get_ident())
+                setattr(sys, name, routes[name])
+    try:
+        return body()
+    finally:
+        for name, route in routes.items():
+            if getattr(sys, name) is route:
+                setattr(sys, name, proxies[name])
+
+
 def run_in_terminal(cli, monitor, item: dict, body) -> None:
     """Run the blocking ``body()`` with the real terminal while the prompt UI is suspended
     (``in_terminal``, as the full-screen monitor does), then return to the chat."""
@@ -301,9 +373,10 @@ def run_in_terminal(cli, monitor, item: dict, body) -> None:
         monitor.opening = True
         try:
             async with in_terminal():
-                result = await asyncio.get_running_loop().run_in_executor(None, context.run, body)
+                result = await asyncio.get_running_loop().run_in_executor(
+                    None, context.run, _with_terminal_streams, body)
             if isinstance(result, str) and result:
-                monitor.notice = result
+                monitor.notice = _text(result, 200)
         except Exception as exc:
             logger.warning("Footer item %s terminal view failed: %s", item["key"], exc, exc_info=exc)
             monitor.notice = f"⚠ {item['plugin']}: {_short(exc)}"

@@ -32,8 +32,13 @@ def is_monitor(row) -> bool:
     return row.get("kind") == "process" and bool(row.get("watching"))
 
 
+def one_line(value) -> str:
+    """``value`` as one display line: whitespace runs become a space, control characters go."""
+    return "".join(c for c in " ".join(str(value or "").split()) if c.isprintable())
+
+
 def clip(value, width):
-    text = "".join(c for c in " ".join(str(value or "").split()) if c.isprintable())
+    text = one_line(value)
     if get_cwidth(text) <= width:
         return text
     out = ""
@@ -143,10 +148,11 @@ def pill_fragments(monitor, columns, *, selecting=False, on_click=None, on_badge
     """``on_click(event)`` handles the pill; ``on_badge(event, kind)`` a row-kind badge."""
     sep = ("class:live-dock.dim", " · ", None)
     body = []
-    for part in _count_parts(monitor):
-        body += [sep, part] if body else [part]
+    # Plugin labels, action labels and notices are measured as the single line they paint as.
+    for style, text, kind in _count_parts(monitor):
+        body += [sep, (style, one_line(text), kind)] if body else [(style, one_line(text), kind)]
     used = 2 + sum(get_cwidth(text) for _, text, _ in body)
-    for hint in _hints(monitor, selecting):
+    for hint in map(one_line, _hints(monitor, selecting)):
         if used + 3 + get_cwidth(hint) <= columns:
             body += [("class:live-dock.dim", "   ", None), ("class:live-dock.hint", hint, None)]
             used += 3 + get_cwidth(hint)
@@ -488,11 +494,8 @@ def stop_selected(cli):
     read once, so a refresh that moves the selection meanwhile can never redirect the stop."""
     monitor = _monitor(cli)
     key = monitor.selected_id
-    if key is None:
-        return
-    if _is_plugin(monitor.selected):
-        run_plugin_action(cli, "x", key)
-        return
+    if key is None or _is_plugin(monitor.selected):
+        return  # a plugin row's own ``x`` action is one of its letter keys
     if monitor.confirm_key != key:
         monitor.confirm_key = key
         return
@@ -523,6 +526,12 @@ def click_actions(cli):
     def row(event, key):
         if event.event_type != MouseEventType.MOUSE_UP:
             return NotImplemented
+        monitor = _monitor(cli)
+        clicked = next((r for r in monitor.roster if monitor._key(r) == key), None) if monitor else None
+        if _is_plugin(clicked) and not (monitor.footer_active and monitor.selected_id == key):
+            # Select the clicked row first, so a confirm-required action's question is painted on
+            # it and only a second click on that same row answers it.
+            enter(cli, key)
         open_selected(cli, key)
         return None
 
@@ -589,13 +598,15 @@ def bind_keys(cli, kb):
     kb.add("tab", filter=active, eager=True)(lambda event: next_kind(cli, 1))
     kb.add("s-tab", filter=active, eager=True)(lambda event: next_kind(cli, -1))
     kb.add("enter", filter=active, eager=True)(lambda event: open_selected(cli))
-    kb.add("x", filter=active, eager=True)(lambda event: stop_selected(cli))
-    kb.add("s", filter=active & ~Condition(lambda: plugin_key(cli, "s")), eager=True)(
-        lambda event: start_steer(cli))  # a plugin row's own "s" action wins on its rows
+    # Stop and steer act on task rows only; on a plugin row a letter is captured only when the row
+    # advertises it (below), so an unadvertised one reaches the composer like any other letter.
+    task_row = Condition(lambda: not _is_plugin(_monitor(cli).selected))
+    kb.add("x", filter=active & task_row, eager=True)(lambda event: stop_selected(cli))
+    kb.add("s", filter=active & task_row, eager=True)(lambda event: start_steer(cli))
     kb.add("escape", filter=active, eager=True)(lambda event: leave(cli))
     _bind_steer_keys(cli, kb, typing)
-    # Plugin rows: their own letter keys while selected (``x`` already routes through stop_selected).
-    for letter in "abcdefghijklmnopqrstuvwyz":
+    # Plugin rows: their own letter keys while selected.
+    for letter in "abcdefghijklmnopqrstuvwxyz":
         kb.add(letter, filter=active & Condition(lambda letter=letter: plugin_key(cli, letter)), eager=True)(
             lambda event, letter=letter: run_plugin_action(cli, letter))
     # Only reached when display.cli_mouse asked the terminal for mouse reports.

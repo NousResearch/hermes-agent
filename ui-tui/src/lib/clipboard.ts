@@ -15,6 +15,10 @@ const POWERSHELL_READ_ARGS = [
 
 type ClipboardRun = typeof execFileAsync
 
+// pbcopy/pbpaste use the locale's charset: under LANG unset, LC_ALL=C or a non-UTF-8 LANG they turn
+// CJK/emoji into MacRoman mojibake (copy) or '?' (paste). LC_ALL outranks every other locale var.
+const macosUtf8Env = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ ...env, LC_ALL: 'en_US.UTF-8' })
+
 export function isUsableClipboardText(text: null | string): text is string {
   if (!text || !/[^\s]/.test(text)) {
     return false
@@ -41,9 +45,9 @@ export function isUsableClipboardText(text: null | string): text is string {
 function readClipboardCommands(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv
-): Array<{ args: readonly string[]; cmd: string; base64?: boolean }> {
+): Array<{ args: readonly string[]; cmd: string; base64?: boolean; env?: NodeJS.ProcessEnv }> {
   if (platform === 'darwin') {
-    return [{ cmd: 'pbpaste', args: [] }]
+    return [{ cmd: 'pbpaste', args: [], env: macosUtf8Env(env) }]
   }
 
   if (platform === 'win32') {
@@ -83,6 +87,7 @@ export async function readClipboardText(
   for (const attempt of readClipboardCommands(platform, env)) {
     try {
       const result = await run(attempt.cmd, [...attempt.args], {
+        env: attempt.env,
         encoding: 'utf8',
         maxBuffer: CLIPBOARD_MAX_BUFFER,
         windowsHide: true
@@ -108,8 +113,8 @@ export async function readClipboardText(
 // instead base64-encode the UTF-8 bytes and pass them as a -Command argument,
 // decoding with UTF8.GetString — this removes the stdin-encoding variable
 // entirely (also immune to BOM injection on redirect). PowerShell entries set
-// stdin=false; every other backend reads UTF-8 stdin natively.
-type WriteCmd = { args: readonly string[]; cmd: string; stdin: boolean }
+// stdin=false; every other backend reads UTF-8 stdin natively (pbcopy once its locale says so).
+type WriteCmd = { args: readonly string[]; cmd: string; env?: NodeJS.ProcessEnv; stdin: boolean }
 
 function _powershellWriteScript(b64: string): string {
   return `Set-Clipboard -Value ([System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${b64}')))`
@@ -117,7 +122,7 @@ function _powershellWriteScript(b64: string): string {
 
 function writeClipboardCommands(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): WriteCmd[] {
   if (platform === 'darwin') {
-    return [{ cmd: 'pbcopy', args: [], stdin: true }]
+    return [{ cmd: 'pbcopy', args: [], env: macosUtf8Env(env), stdin: true }]
   }
 
   if (platform === 'win32') {
@@ -167,6 +172,7 @@ export async function writeClipboardText(
       const ok = await new Promise<boolean>(resolve => {
         if (cmdEntry.stdin) {
           const child = start(cmdEntry.cmd, [...cmdEntry.args], {
+            env: cmdEntry.env,
             stdio: ['pipe', 'ignore', 'ignore'],
             windowsHide: true
           })

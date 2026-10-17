@@ -79,6 +79,23 @@ def _file_stat_signature(identity: str) -> Optional[tuple]:
     return (st.st_mtime_ns, st.st_size)
 
 
+# Failed ``write_file`` / ``patch`` results whose text is a call-shape complaint: the tool never
+# reached disk, so the overclaim footer would be noise (#70719). One list so the recorder and its
+# tests agree on what counts as a formation error.
+_ARGS_MISSING_MARKERS = (
+    "path required",
+    "old_string and new_string required",
+    "patch content required",
+    "content required",
+)
+
+
+def _file_mutation_error_kind(preview: str) -> str:
+    """``args_missing`` for a call that never reached disk (bad call shape), else ``apply_failed``."""
+    lowered = (preview or "").strip().lower()
+    return "args_missing" if any(m in lowered for m in _ARGS_MISSING_MARKERS) else "apply_failed"
+
+
 def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: str) -> bool:
     """``display.<config_key>`` (default True), cached per agent on ``cache_attr``.
 
@@ -117,10 +134,13 @@ class TurnExplainersMixin:
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        Failures store ``{path: {error_preview, tool, identity, stat}}`` keyed by the model's
-        spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
-        failure time. A later success on the same identity (any spelling) removes the entry.
-        No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
+        Failures store ``{path: {error_preview, tool, kind, identity, stat}}`` keyed by the model's
+        spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at failure
+        time. ``kind`` is ``args_missing`` when the call never reached disk (bad call shape) or
+        ``apply_failed`` after a real attempt; a real attempt replaces an ``args_missing`` entry for
+        the same target and takes a fresh ``stat``. A later success on the same identity (any
+        spelling) removes the entry. No-op when the per-turn state dict is not initialised (tool
+        dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
@@ -146,12 +166,34 @@ class TurnExplainersMixin:
                         with suppress(Exception):
                             mgr.record_agent_write(_p)
         if is_error and not landed:
-            # Keep the FIRST error per path unless a later success replaces it.
+            # Keep the FIRST error per path unless a later success replaces it. A call-shape
+            # error is recorded too, so a later real apply failure can replace it and the footer
+            # names the real error instead of the missing-argument complaint (#70719).
             preview = _extract_error_preview(result)
+            kind = _file_mutation_error_kind(preview)
             for path in targets:
                 identity = _file_mutation_identity(path, task_id)
+                if kind == "apply_failed":
+                    # Promote on the on-disk target, the same identity the success path clears by,
+                    # so a real failure replaces the shape error even under another spelling.
+                    promoted = next(
+                        (key for key, info in state.items()
+                         if info.get("kind") == "args_missing"
+                         and info.get("identity", _file_mutation_identity(key, task_id)) == identity),
+                        None,
+                    )
+                    if promoted is not None:
+                        # Re-record from the real attempt: the fresh ``stat`` is what
+                        # ``_file_mutations_still_failed`` re-checks at turn end, and the shape
+                        # error's stale one would hide the real failure whenever anything else
+                        # wrote the file between the two calls.
+                        state[promoted] = {
+                            "tool": tool_name, "error_preview": preview, "kind": kind,
+                            "identity": identity, "stat": _file_stat_signature(identity),
+                        }
+                        continue
                 state.setdefault(path, {
-                    "tool": tool_name, "error_preview": preview,
+                    "tool": tool_name, "error_preview": preview, "kind": kind,
                     "identity": identity, "stat": _file_stat_signature(identity),
                 })
         else:
@@ -211,10 +253,18 @@ class TurnExplainersMixin:
     def _format_file_mutation_failure_footer(cls, failed: dict[str, dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
 
-        Up to 10 paths with their first error preview, then an overflow count; "" when nothing failed.
+        ``args_missing`` entries (a call-shape error, no write attempted) are dropped first. Up to
+        10 paths with their first error preview, then an overflow count; "" when nothing failed.
         Every path is backtick-wrapped via ``_neutralize_footer_paths`` so protected files cannot be
         auto-delivered.
         """
+        # Call-shape errors never attempted a write. Keep the tool error for the model; reserve the
+        # overclaim footer for real apply failures (#70719). An absent ``kind`` (hand-built dicts)
+        # keeps the pre-classification behavior.
+        failed = {
+            path: info for path, info in failed.items()
+            if info.get("kind", "apply_failed") != "args_missing"
+        }
         if not failed:
             return ""
         lines = [t("explainer.file_mutation.header", count=len(failed))]

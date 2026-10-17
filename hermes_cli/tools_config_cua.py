@@ -102,6 +102,15 @@ def _cua_driver_install_ready() -> bool:
             or not _cua_autostart_opt_in())
 
 
+def _invalidate_tool_availability_caches() -> None:
+    """Make a PM-prepared cua-driver visible to later sessions in this process."""
+    from model_tools import _clear_tool_defs_cache
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+
 def install_cua_driver(upgrade: bool = False, show_installer_progress: bool = True) -> bool:
     """Prepare the PM pin and host setup for an explicit install/upgrade command.
 
@@ -161,6 +170,8 @@ def install_cua_driver(upgrade: bool = False, show_installer_progress: bool = Tr
         _print_success(f"    cua-driver ready: {contract.get('version') or 'unknown version'}.")
         _print_cua_platform_notes(sys.platform == "win32", sys.platform == "linux",
                                   fresh_install=fresh_install)
+    if not override:
+        _invalidate_tool_availability_caches()
     return True
 
 

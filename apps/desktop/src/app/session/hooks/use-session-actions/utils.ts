@@ -34,15 +34,15 @@ import {
   setCronSessions,
   setCurrentBranch,
   setCurrentCwdTransient,
-  setCurrentFastMode,
+  setCurrentFastModeTransient,
   setCurrentModel,
   setCurrentModelTransient,
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentProviderTransient,
-  setCurrentReasoningEffort,
+  setCurrentReasoningEffortTransient,
   setCurrentReasoningEffortWire,
-  setCurrentServiceTier,
+  setCurrentServiceTierTransient,
   setCurrentUsage,
   setMessagingSessions,
   setSessionOwnerHint,
@@ -2404,20 +2404,17 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
     setCurrentPersonality(state.personality)
   }
 
-  if (state.reasoningEffort !== undefined) {
-    setCurrentReasoningEffort(state.reasoningEffort)
-  }
-
+  // reasoningEffort / reasoningEffortWire / serviceTier / fast are slice-only
+  // here: the caller writes the returned patch into the per-session state the
+  // pills render, and the composer atoms must keep the user's sticky picks.
+  // The persisting setters replaced the pick in localStorage with whatever
+  // the created/resumed/activated session happened to run — an older
+  // session's effort, a per-model default, a value the backend silently
+  // dropped — and session.create then shipped that as an explicit override for
+  // every later new chat (#87036). Only an explicit menu/keybind pick is
+  // 'manual' and ships.
   if (state.reasoningEffortWire !== undefined) {
     setCurrentReasoningEffortWire(state.reasoningEffortWire)
-  }
-
-  if (state.serviceTier !== undefined) {
-    setCurrentServiceTier(state.serviceTier)
-  }
-
-  if (state.fast !== undefined) {
-    setCurrentFastMode(state.fast)
   }
 
   if (state.yolo !== undefined) {
@@ -2548,9 +2545,12 @@ export function applyStoredSessionPreviewRuntimeInfo(
   // the coherence gate (#125336).
   setCurrentModelTransient(stored?.model || '')
   setCurrentProviderTransient('')
-  setCurrentReasoningEffort('')
-  setCurrentServiceTier('')
-  setCurrentFastMode(false)
+  // Transient for effort/tier/fast too: this preview paints while
+  // `session.resume` is still in flight, and the persisting setters wiped the
+  // user's sticky picks from localStorage on every cold-resume glance (#87036).
+  setCurrentReasoningEffortTransient('')
+  setCurrentServiceTierTransient('')
+  setCurrentFastModeTransient(false)
   setYoloActive(false)
   setCurrentPersonality('')
 

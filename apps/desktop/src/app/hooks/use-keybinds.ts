@@ -68,12 +68,15 @@ import {
   $currentReasoningEffort,
   $defaultReasoningEffort,
   $selectedStoredSessionId,
+  getCurrentReasoningEffortSource,
+  markComposerEffortManual,
   markComposerSelectionManual,
   setCurrentReasoningEffort,
+  setCurrentReasoningEffortSource,
   setModelPickerOpen
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
-import { reopenLastClosedTile } from '@/store/session-states'
+import { $sessionStates, reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -239,7 +242,11 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // No live session: the draft's pick still steps (it ships on the next
     // session.create); no `config.set` — without a session the RPC falls
     // back to the persistent profile config and would rewrite the default.
-    const rollback = $currentReasoningEffort.get()
+    // With one, the step base is the session's LIVE effort (the slice), not
+    // the composer pick — session.info no longer mirrors the runtime value
+    // into the composer atom, so the pick would step the wrong level (#87036).
+    const sliceEffort = sessionId ? $sessionStates.get()[sessionId]?.reasoningEffort : undefined
+    const rollback = sliceEffort ?? $currentReasoningEffort.get()
     const fallback = $defaultReasoningEffort.get() || undefined
     const next = stepReasoningEffort(rollback, direction, fallback)
 
@@ -248,7 +255,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
 
     markComposerSelectionManual()
+    markComposerEffortManual()
     setCurrentReasoningEffort(next)
+
+    // A failed write rolls the pick back to what was shown before the step; a
+    // rollback to a never-picked runtime level must not stay 'manual' (#87036).
+    const prevEffortSource = getCurrentReasoningEffortSource()
 
     if (!sessionId) {
       return
@@ -266,6 +278,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       })
       .catch(error => {
         if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffortSource(prevEffortSource)
           setCurrentReasoningEffort(rollback)
           notifyError(error, translateNow('shell.modelOptions.updateFailed'))
         }

@@ -1012,6 +1012,19 @@ export interface Translations extends NoticeTranslations {
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
       showOptions: string
+      delegationInherit: string
+      delegationModelOnly: string
+      delegationProviderSelectLabel: string
+      delegationModelSelectLabel: string
+      delegationDirect: string
+      delegationCustomProvider: string
+      delegationCustomProviderLabel: string
+      delegationParentModel: string
+      delegationParentModelWarning: string
+      delegationDirectActive: string
+      delegationDirectClear: string
+      delegationCatalogFailed: string
+      delegationDraftHint: string
     }
     hudModifier: {
       title: string

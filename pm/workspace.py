@@ -150,11 +150,28 @@ def _without_release_age(text: str) -> str:
     The lock already holds checked versions; on the user's machine the cutoff only gates the
     build tools uv fetches for source builds (setuptools for Hermes itself), and a mirror that
     serves no upload times rejects all of them (#135589). Text-level so the pre-3.11 bootstrap
-    python, which has no tomllib, can run it.
+    python, which has no tomllib, can run it. Pair with ``_without_release_age_lock`` when
+    seeding or replaying ``uv.lock`` (#138131).
     """
     import re
 
     return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
+
+
+def _without_release_age_lock(text: str) -> str:
+    """Drop release-age options from a generated root's ``uv.lock`` text.
+
+    ``exclude-newer`` / ``exclude-newer-span`` in ``[options]`` survive a frozen sync even
+    after the pyproject cutoff is stripped, and uv still applies them when resolving
+    ``build-system.requires`` (e.g. setuptools for Hermes itself). That reintroduces the
+    #135589 failure on mirrors without upload times during ``hermes update``'s dependencies
+    sync (#138131). Strip them wherever a lock is copied onto a user-side generation.
+    """
+    import re
+
+    text = re.sub(r"(?m)^exclude-newer(?:-span|-package)?\s*=.*\n", "", text)
+    # Leave no empty ``[options]`` section behind.
+    return re.sub(r"(?m)^\[options\]\n(?=\n|\[|\Z)", "", text)
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:
@@ -367,7 +384,11 @@ def lock_and_sync(
     if replay is None:
         _generate_pyproject(plugin_dirs, root, source=source)
         if seed_lock is not None:
-            (root / "uv.lock").write_bytes(seed_lock.read_bytes())
+            # Drop lock-level exclude-newer* so a frozen sync cannot re-apply the cutoff (#138131).
+            (root / "uv.lock").write_text(
+                _without_release_age_lock(seed_lock.read_text(encoding="utf-8-sig")),
+                encoding="utf-8",
+            )
     else:
         if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")
@@ -375,9 +396,15 @@ def lock_and_sync(
         # snapshotted members and their exact lock travel with the workspace.
         # Use the snapshot's exclusions: build/ may hold an in-tree backend.
         shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
-        # A generation recorded before the cutoff left the user's machine still carries it.
+        # A generation recorded before the cutoff left the user's machine still carries it
+        # in pyproject and/or the seeded lock's [options] (#135589, #138131).
         manifest = root / "pyproject.toml"
         manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")
+        lock_path = root / "uv.lock"
+        lock_path.write_text(
+            _without_release_age_lock(lock_path.read_text(encoding="utf-8-sig")),
+            encoding="utf-8",
+        )
         frozen = True
 
     environment.sync(root, extras=extras, frozen=frozen)

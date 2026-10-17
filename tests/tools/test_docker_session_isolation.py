@@ -267,6 +267,75 @@ class TestSessionScopedMountResolution:
         assert terminal_tool._resolve_task_host_cwd(cfg, "t") is None
 
 
+class TestWindowsWorkspaceWithoutMountFlag:
+    """#135257: docker + a Windows TERMINAL_CWD workspace with the
+    cwd-to-/workspace flag off must not hand the raw drive path to
+    ``docker run -w`` (exit 125).
+
+    On POSIX hosts a literal ``C:\\...`` string is a creatable relative
+    directory name, so config resolution walks the real Windows branch
+    without needing a Windows host.
+    """
+
+    WIN_WS = "C:\\Users\\hermes\\kanban\\workspaces\\t_436c966c"
+
+    def _docker_env(self, monkeypatch, tmp_path, persistent="true"):
+        monkeypatch.chdir(tmp_path)
+        os.makedirs(self.WIN_WS, exist_ok=True)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", self.WIN_WS)
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", persistent)
+
+    def test_windows_bind_is_the_task_mount_without_flag(self, monkeypatch, tmp_path):
+        """The config-side Windows bind (kept while the flag is off) is the
+        task mount for the single-session parent, so the plan can remap the
+        cwd onto it instead of leaking the drive path into -w."""
+        self._docker_env(monkeypatch, tmp_path)
+        cfg = terminal_tool._get_env_config()
+        assert cfg["host_cwd"] == self.WIN_WS
+        assert terminal_tool._resolve_task_host_cwd(cfg, None) == self.WIN_WS
+
+    def test_windows_bind_flag_off_isolated_session_stays_unmounted(
+        self, monkeypatch, tmp_path
+    ):
+        """Flag off keeps session overrides unmounted (opt-out honored); only
+        the legacy Windows config bind crosses the gate."""
+        self._docker_env(monkeypatch, tmp_path, persistent="false")
+        cfg = terminal_tool._get_env_config()
+        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") is None
+
+    def test_plan_remaps_windows_cwd_to_workspace(self, monkeypatch, tmp_path):
+        """Kanban-worker repro: the planned cwd is /workspace (the bind target),
+        never the raw drive path that fails `docker run` with exit 125."""
+        self._docker_env(monkeypatch, tmp_path)
+        plan = terminal_tool._plan_execution(
+            "pwd",
+            task_id=None,
+            timeout=None,
+            background=False,
+            _host_local=False,
+        )
+        assert plan.host_cwd == self.WIN_WS
+        assert plan.cwd == "/workspace"
+
+    def test_plan_falls_back_to_backend_default_for_isolated_session(
+        self, monkeypatch, tmp_path
+    ):
+        """Without any mount (isolated session, flag off) the unsanitized
+        config cwd falls back to the backend default instead of exit 125."""
+        self._docker_env(monkeypatch, tmp_path, persistent="false")
+        plan = terminal_tool._plan_execution(
+            "pwd",
+            task_id="tui:sess-new",
+            timeout=None,
+            background=False,
+            _host_local=False,
+        )
+        assert plan.host_cwd is None
+        assert plan.cwd == "/root"
+
+
 class TestRecordedHostCwdDiscardedOnContainers:
     """_resolve_command_cwd must not cd to a recorded HOST path in a sandbox.
 

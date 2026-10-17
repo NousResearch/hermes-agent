@@ -81,3 +81,21 @@ def test_prepare_spoken_text_closes_colon_on_single_line():
     assert prepare_spoken_text("Here is the list:") == "Here is the list."
     # ...but a digit-preceded colon is a ratio and must stay intact.
     assert prepare_spoken_text("Final score 3:2") == "Final score 3:2"
+
+
+def test_prepare_spoken_text_expands_month_abbreviations():
+    # "Nov." is read phonetically ("nov") by TTS engines — abbreviations must
+    # expand to full month names. Both with and without the trailing period.
+    spoken = prepare_spoken_text("Reminder set for Nov. 3, review Nov 15, ship Sept. 5")
+    assert "November 3" in spoken
+    assert "November 15" in spoken
+    assert "September 5" in spoken
+
+
+def test_prepare_spoken_text_month_abbreviations_leave_other_text_intact():
+    # Full month names, ISO dates and dense identifiers must pass through.
+    spoken = prepare_spoken_text("March was warm; renewal 2027-02-04; TCP/IP and N/A intact")
+    assert "March was warm" in spoken
+    assert "2027-02-04" in spoken
+    assert "TCP/IP" in spoken
+    assert "N/A" in spoken

@@ -559,12 +559,26 @@ def _user_approved(session_key: str, description: str) -> dict:
     return {"approved": True, "message": None, "user_approved": True, "description": description}
 
 
+_MAX_APPROVAL_PURPOSE_CHARS = 280
+
+
+def sanitize_approval_purpose(purpose: object) -> str:
+    """Normalize an optional model-supplied purpose for approval surfaces."""
+    if not isinstance(purpose, str):
+        return ""
+    return " ".join(purpose.split())[:_MAX_APPROVAL_PURPOSE_CHARS]
+
+
+def _purpose_payload(purpose: str) -> dict:
+    return {"purpose": purpose} if purpose else {}
+
+
 def _gateway_notify_cb(session_key: str):
     with _lock:
         return _gateway_notify_cbs.get(session_key)
 
 
-def _pending_result(spec, session_key: str, *, command: str, description: str,
+def _pending_result(spec, session_key: str, *, command: str, description: str, purpose: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
                     smart_denied: bool) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
@@ -574,6 +588,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
     pending["description"] = description
+    if purpose:
+        pending["purpose"] = purpose
     if smart_denied:
         pending.update(smart_denied=True, allow_permanent=False)
     submit_pending(session_key, pending)
@@ -793,7 +809,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     }, True
 
 
-def _human_decision(spec: _GateSpec, *, command: str, description: str,
+def _human_decision(spec: _GateSpec, *, command: str, description: str, purpose: str = "",
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
                     is_ask: bool, smart: bool = False, pending_body=None) -> dict:
@@ -854,6 +870,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         # command still executes after approval and persistence keys off pattern_key.
         display_command = redact_sensitive_text(command)
         display_description = redact_sensitive_text(description)
+        display_purpose = redact_sensitive_text(purpose)[:_MAX_APPROVAL_PURPOSE_CHARS]
         notify_cb = _gateway_notify_cb(session_key)
         if notify_cb is not None:
             # Smart DENY overrides are one-operation decisions, so the UI must not offer a
@@ -863,6 +880,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "pattern_keys": pattern_keys, "description": display_description,
                 "allow_permanent": not smart_denied,
                 "allow_session": not smart_denied,
+                **_purpose_payload(display_purpose),
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -899,19 +917,22 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             if not spec.pending_keys:
                 display_command, display_description = command, description
             return _pending_result(
-                spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
+                spec, session_key, command=display_command, description=display_description, purpose=display_purpose,
+                pattern_key=pattern_key,
                 pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
-    prompt_command, prompt_description = command, description
+    prompt_command, prompt_description, prompt_purpose = command, description, purpose
     if spec.redact_cli:
         prompt_command = redact_sensitive_text(command)
         prompt_description = redact_sensitive_text(description)
+        prompt_purpose = redact_sensitive_text(purpose)[:_MAX_APPROVAL_PURPOSE_CHARS]
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
-    choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
+    choice = prompt_dangerous_approval(prompt_command, prompt_description, purpose=prompt_purpose,
+                                       allow_permanent=allow_permanent,
                                        smart_denied=smart_denied, approval_callback=approval_callback)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
@@ -1150,7 +1171,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False, *, purpose: object = "") -> dict:
     """Run all pre-exec security checks and return a single approval decision. Plugins that
     want to veto or escalate a command do it from ``pre_tool_call``.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
@@ -1187,7 +1208,7 @@ def check_all_command_guards(command: str, env_type: str,
     if not is_dangerous or is_approved(session_key, pattern_key):
         return _approved()
     return _human_decision(
-        _COMMAND_GATE, command=command, description=description,
+        _COMMAND_GATE, command=command, description=description, purpose=sanitize_approval_purpose(purpose),
         pattern_key=pattern_key, pattern_keys=[pattern_key],
         session_key=session_key, approval_callback=approval_callback,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",

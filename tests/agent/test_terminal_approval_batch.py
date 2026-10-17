@@ -18,7 +18,7 @@ from tools.thread_context import propagate_context_to_thread
 
 def _call(call_id, command):
     return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(
-        name="terminal", arguments=json.dumps({"command": command})))
+        name="terminal", arguments=json.dumps({"command": command, "purpose": f"Purpose for {call_id}"})))
 
 
 def _agent():
@@ -121,6 +121,7 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
             first = published.get(timeout=10)
             second = published.get(timeout=5)
             assert [first["command"], second["command"]] == list(commands.values())
+            assert [first["purpose"], second["purpose"]] == ["Purpose for first", "Purpose for second"]
             assert policy == list(commands)
             assert executed == []
             assert approval.ack_gateway_approval(key, second["request_id"])

@@ -235,6 +235,22 @@ interface ApprovalCardProps {
   stack: CardStackAction
 }
 
+interface ApprovalContextProps {
+  request: ApprovalRequest
+  showsDescription: boolean
+}
+
+const ApprovalContext: FC<ApprovalContextProps> = ({ request, showsDescription }) => (
+  <>
+    {request.purpose && (
+      <p className="m-0 px-2.5 pt-2 text-sm text-(--ui-text-primary)">Purpose: {request.purpose}</p>
+    )}
+    {!showsDescription && (
+      <p className="m-0 px-2.5 pt-1 text-xs text-(--ui-text-secondary)">Flagged: {request.description}</p>
+    )}
+  </>
+)
+
 const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
@@ -343,6 +359,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           </span>
         )}
       </div>
+      <ApprovalContext request={request} showsDescription={showsDescription} />
       {details.length > 0 && (
         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
           {details}

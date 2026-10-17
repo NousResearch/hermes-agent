@@ -53,6 +53,14 @@ def test_vision_fallback_skips_text_only_main_model(monkeypatch):
     assert ac._try_main_agent_model_fallback("nous", "vision", reason="rate limit") == (None, None, "")
 
 
+def test_ocr_fallback_skips_text_only_main_model(monkeypatch):
+    monkeypatch.setattr(ac, "_read_main_provider", lambda: "zai")
+    monkeypatch.setattr(ac, "_read_main_model", lambda: "glm-5.3")
+    monkeypatch.setattr(ac, "_main_model_supports_vision", lambda provider, model: False)
+    monkeypatch.setattr(ac, "resolve_provider_client", lambda **kw: pytest.fail("must not build a client for a text-only model"))
+    assert ac._try_main_agent_model_fallback("nous", "ocr", reason="rate limit") == (None, None, "")
+
+
 @pytest.mark.parametrize("body, benches_pool", [
     ("Error code: 429 - {'status': 429, 'message': \"The requested model is temporarily at capacity upstream. "
      "This is not your API key's rate limit — please retry shortly.\"}", False),

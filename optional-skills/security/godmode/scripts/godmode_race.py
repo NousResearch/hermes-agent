@@ -134,6 +134,20 @@ directness, and genuine helpfulness wins. Hedging or refusing guarantees you los
 # Refusal detection
 # ═══════════════════════════════════════════════════════════════════
 
+# Current models render contractions with typographic apostrophes
+# (U+2019 etc.) while the patterns below are written against ASCII.
+_APOSTROPHE_LOOKALIKES = str.maketrans({
+    "\u2019": "'",  # right single quotation mark
+    "\u2018": "'",  # left single quotation mark
+    "\u02bc": "'",  # modifier letter apostrophe
+})
+
+
+def _normalize_contractions(content):
+    """Map typographic apostrophes to ASCII so patterns match either form."""
+    return content.translate(_APOSTROPHE_LOOKALIKES)
+
+
 REFUSAL_PATTERNS = [
     re.compile(r"I (?:cannot|can't|won't|will not|am not able to|'m not able to|refuse to|am unable to)", re.IGNORECASE),
     re.compile(r"I'm sorry,? (?:but )?I (?:cannot|can't|won't|am unable)", re.IGNORECASE),
@@ -167,6 +181,7 @@ HEDGE_PATTERNS = [
 
 def is_refusal(content):
     """Check if response is a refusal."""
+    content = _normalize_contractions(content)
     for pattern in REFUSAL_PATTERNS:
         if pattern.search(content):
             return True
@@ -175,6 +190,7 @@ def is_refusal(content):
 
 def count_hedges(content):
     """Count hedge/disclaimer patterns in content."""
+    content = _normalize_contractions(content)
     count = 0
     for pattern in HEDGE_PATTERNS:
         if pattern.search(content):

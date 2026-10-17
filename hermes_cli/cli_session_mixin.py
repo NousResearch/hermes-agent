@@ -728,7 +728,7 @@ class CLISessionMixin:
 
         from agent.context_compressor import (
             history_before_user_originated_turn, retryable_user_text)
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
 
         warm_history = list(self.conversation_history)
         user_indices = _user_turn_indices(warm_history)

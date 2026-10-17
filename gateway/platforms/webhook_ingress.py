@@ -27,16 +27,40 @@ async def producer_scope(adapter, event):
     else:
         runtime_home = runner._admit_primary_source(source, home)
         if runtime_home is None:
+            _refuse_parked(runner, getattr(source, '_rejected_route_profile', None))
             source.profile_route_rejected = True
             runtime_home = home
     source._authorization_profile_home = home
     # The routed profile's own ledger admits the delivery; an unserved route is refused.
     authority = authority_for_home(runner, runtime_home)
     if authority is None:
+        _refuse_parked(runner, getattr(source, 'profile', None) or profile)
         raise RuntimeStoreError('profile_mismatch')
     with native_callback(runner, event, home, profile):
         async with _async_profile_runtime_scope(runtime_home):
             yield authority
+
+
+def _refuse_parked(runner, profile):
+    """A delivery routed to a parked profile is retried, never refused for good: a rescan serves the
+    profile again, so it is ``runtime_draining`` (no relay ACK; the connector redelivers), not the
+    permanent ``profile_mismatch`` of a route to a profile this gateway does not serve."""
+    from gateway.run_runtime import profile_parked
+    if profile_parked(runner, profile):
+        raise RuntimeStoreError('runtime_draining')
+
+
+def parked_profile_refusal(runner, profile):
+    """A retryable 503 for a webhook to a parked ``/p/<profile>/``, else None. Answered before the
+    delivery id is recorded: coalesced, ``deliver_only`` and ``cron_job`` routes act before (or
+    without) an admission, so the in-memory id is their only replay guard, and a recorded id would
+    answer the provider's retry as a duplicate once the profile is served again."""
+    from gateway.run_runtime import profile_parked
+    if not profile_parked(runner, profile):
+        return None
+    from aiohttp import web
+    return web.json_response({'error': f'Profile {profile} is not being served; retry this delivery'},
+                             status=503, headers={'Retry-After': '30'})
 
 
 async def admit_producer(adapter, event):

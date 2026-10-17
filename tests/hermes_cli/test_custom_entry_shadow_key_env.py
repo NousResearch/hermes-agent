@@ -17,12 +17,11 @@ ENTRY_KEY = "entry-key-A-0123456789"
 BUILTIN_KEY = "builtin-key-B-0123456789"
 MANUAL_KEY = "manual-pool-key-0123456789"
 
-# (entry key == built-in pool id, the built-in's api-key env var)
+# (entry key == built-in pool id, the built-in's api-key env var): one OpenAI-shaped built-in and
+# one that is not.
 SHADOWED_BUILTINS = [
     ("deepseek", "DEEPSEEK_API_KEY"),
-    ("openrouter", "OPENROUTER_API_KEY"),
     ("anthropic", "ANTHROPIC_API_KEY"),
-    ("xai", "XAI_API_KEY"),
 ]
 
 

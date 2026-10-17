@@ -31,10 +31,17 @@ import {
   normalizeProfileKey,
   openGatewayAgent,
   refreshActiveProfile,
-  requestFreshSession
+  requestFreshSession,
+  wasJustProfileSwitched
 } from '@/store/profile'
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
+
+/** #132185: true when a live connection exists and has an identity to restore. */
+function currentConnectionActive(): boolean {
+  const active = $connection.get()
+  return Boolean(active?.connectionId)
+}
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
@@ -276,6 +283,19 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   // route is already resolved by main's ensureBackend(profile), including any
   // per-profile remote override; the registry must not reinterpret it as local.
   const defaultRoute = $defaultProfileRoute.get()
+
+  // #132185: this reload IS the second half of an explicit profile switch —
+  // not a cold boot. The user already picked their connection before switching
+  // profiles; the boot-time restore must not override that choice with the
+  // launch preference (on a VPS-primary desktop that would yank them back to
+  // the remote primary right after they selected the local gateway).
+  if (wasJustProfileSwitched()) {
+    if (currentConnectionActive()) {
+      await rememberConnection(String($connection.get()?.connectionId))
+    }
+
+    return $connectionsRegistry.get() ?? registry
+  }
 
   if (defaultRoute) {
     if ($activeSessionId.get() || $selectedStoredSessionId.get()) {

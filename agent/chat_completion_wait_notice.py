@@ -50,7 +50,9 @@ def codex_watchdog_deadline(*, stale_timeout: float, ttfb_enabled: bool, ttfb_ti
     none applies (disabled/infinite, or its deadline already passed)."""
     deadlines: list[tuple[str, float]] = []
     if math.isfinite(stale_timeout):
-        deadlines.append(("wall-clock stale", stale_timeout))
+        # Mirrors the kill loop: anchored to the latest model progress, else call start.
+        progress_offset = max(0.0, last_progress_ts - call_start) if last_progress_ts is not None else 0.0
+        deadlines.append(("stale", progress_offset + stale_timeout))
     attempt_offset = max(0.0, retry_started_ts - call_start) if retry_started_ts is not None else 0.0
     if last_event_ts is None:
         if ttfb_enabled and math.isfinite(ttfb_timeout):

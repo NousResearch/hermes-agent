@@ -410,6 +410,17 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # working; drivers advertising neither (`additionalProperties: false`) must never see the property.
         idx = args.get("element_index")
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
+        # cua-driver 0.32+ (trycua/cua#3873) makes the snapshot-bound token the ONLY element target and refuses
+        # `element_index` as an unknown argument. When the live schema advertises the token but not the index,
+        # send the current snapshot's token alone; with no token for that index refuse here — never a bare
+        # index, never a pixel fallback.
+        if (isinstance(idx, int) and self._session.supports_input_property(name, "element_token")
+                and not self._session.supports_input_property(name, "element_index")):
+            if not token:
+                return ActionResult(ok=False, action=name, code="element_token_unavailable",
+                                    message=f"No element_token for element {idx} in the current snapshot. "
+                                            "Call capture again and use an element index from that capture.")
+            del args["element_index"]
         if token and (self._session.supports_input_property(name, "element_token")
                       or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token

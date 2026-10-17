@@ -354,22 +354,23 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
-def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
+def _source_match_clause(sources, local_created_sources=None, *, source_sql: str = "s.source") -> tuple[str, list]:
     """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
     matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``
-    is not a surface and stays unmatched until an upsert stamps the real creator."""
+    is not a surface and stays unmatched until an upsert stamps the real creator.
+    ``source_sql`` can select the live compression tip's source before pagination."""
     labels = list(sources or [])
     if not labels:
         return "", []
     surfaces = list(local_created_sources or ())
     if not surfaces:
-        return f"s.source IN ({_placeholders(labels)})", labels
+        return f"{source_sql} IN ({_placeholders(labels)})", labels
     non_local = [item for item in labels if item != "local"]
-    local_sql = f"(s.source = 'local' AND s.created_source IN ({_placeholders(surfaces)}))"
+    local_sql = f"({source_sql} = 'local' AND s.created_source IN ({_placeholders(surfaces)}))"
     if not non_local:
         return local_sql, list(surfaces)
     return (
-        f"(s.source IN ({_placeholders(non_local)}) OR {local_sql})",
+        f"({source_sql} IN ({_placeholders(non_local)}) OR {local_sql})",
         [*non_local, *surfaces],
     )
 

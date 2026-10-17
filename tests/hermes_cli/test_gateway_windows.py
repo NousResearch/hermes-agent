@@ -367,47 +367,62 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
-@pytest.mark.windows_only
-def test_generated_vbs_launchers_carry_utf16_bom(monkeypatch, tmp_path):
-    """Generated .vbs launchers must be utf-16 with BOM, not UTF-8.
+@pytest.mark.parametrize("legacy", [False, True])
+def test_generated_unicode_vbs_round_trips_service_identity(monkeypatch, tmp_path, legacy):
+    """The launcher's reader and WSH must see the same Unicode identity (#140682)."""
+    import sys
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
 
-    wscript/cscript decode .vbs as ANSI (cp1252 on Western locales) unless a
-    UTF-16 BOM is present. With a non-ASCII HERMES_HOME the embedded path
-    literal mojibakes under the old utf-8-no-BOM writer, so the startup
-    launcher's own FileExists guard quits silently at every logon. Verified
-    with a live cscript probe: utf-8-noBOM -> QUIT-MISS, utf-16 -> FOUND.
-    """
-    project = tmp_path / "project"
-    scripts = project / "venv" / "Scripts"
-    base = tmp_path / "uv" / "py"
-    scripts.mkdir(parents=True)
-    base.mkdir(parents=True)
-    venv_python = scripts / "python.exe"
-    venv_python.write_text("", encoding="utf-8")
-    (project / "venv" / "pyvenv.cfg").write_text(f"home = {base}\n", encoding="utf-8")
-
-    home = tmp_path / "hömè-höme"
+    home = tmp_path / "个人程序-hömè"
     home.mkdir()
-    monkeypatch.setattr(gateway, "PROJECT_ROOT", project)
-    monkeypatch.setattr(gateway, "get_python_path", lambda: str(venv_python))
-    monkeypatch.setattr(gateway, "_profile_arg", lambda hermes_home: "")
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(home))
-    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
-    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(gateway_windows, "_resolve_detached_python",
+                        lambda exe: (sys.executable, Path(sys.prefix), []))
+    script = home / "Hermes_Gateway.vbs"
+    content = gateway_windows._build_gateway_vbs_script(sys.executable, str(home), str(home), "")
+    if legacy:
+        script.write_text(content, encoding="utf-8", newline="")
+    else:
+        gateway_windows._atomic_write(script, content, script.with_suffix(".tmp"))
+        assert script.read_bytes().decode("utf-16") == content
+    xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", script, "DOMAIN\\owner")
+    verify_windows_task(xml, home, "DOMAIN\\owner", "S-1-5-21-123")
 
-    script = gateway_windows._write_task_script()
-    task_raw = script.with_suffix(".vbs").read_bytes()
-    assert task_raw.startswith(b"\xff\xfe"), "task .vbs must carry a UTF-16 BOM"
-    task_text = task_raw.decode("utf-16")
-    assert str(script.with_suffix(".vbs")) in gateway_windows._build_startup_launcher(script)
+    startup = home / "Startup.vbs"
+    startup_content = gateway_windows._build_startup_launcher(script.with_suffix(".cmd"))
+    gateway_windows._atomic_write(startup, startup_content, startup.with_suffix(".tmp"))
+    assert startup.read_bytes().decode("utf-16") == startup_content
+    assert str(home) in startup_content
 
-    entry = gateway_windows._install_startup_entry(script)
-    entry_raw = entry.read_bytes()
-    assert entry_raw.startswith(b"\xff\xfe"), "startup .vbs must carry a UTF-16 BOM"
-    entry_text = entry_raw.decode("utf-16")
-    assert 'target = "' in entry_text
-    assert str(script.with_suffix(".vbs")) in entry_text
-    assert task_text  # decoded cleanly
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("suffix", [".vbs", ".cmd"])
+def test_native_unicode_launcher_runs_in_requested_home(monkeypatch, tmp_path, suffix):
+    """Execute generated launchers without starting or registering a real gateway."""
+    import shutil
+    import sys
+    from tests.waiting import wait_until
+
+    if suffix == ".vbs" and not shutil.which("cscript.exe"):
+        pytest.skip("Windows Script Host is not installed")
+    home = tmp_path / "个人程序-hömè"
+    home.mkdir()
+    marker = home / "started.txt"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(gateway_windows, "_resolve_detached_python",
+                        lambda exe: (sys.executable, Path(sys.prefix), []))
+    monkeypatch.setattr(gateway_windows, "_gateway_run_argv", lambda *args: [
+        sys.executable, "-c",
+        "import os; from pathlib import Path; Path('started.txt').write_text(os.environ['HERMES_HOME'], encoding='utf-8')",
+    ])
+    build = gateway_windows._build_gateway_vbs_script if suffix == ".vbs" else gateway_windows._build_gateway_cmd_script
+    script = tmp_path / ("launcher" + suffix)
+    gateway_windows._atomic_write(script, build(sys.executable, str(home), str(home), ""), script.with_suffix(".tmp"))
+    command = ["cscript.exe", "//B", "//Nologo", str(script)] if suffix == ".vbs" else ["cmd.exe", "/d", "/c", str(script)]
+    result = subprocess.run(command, capture_output=True, timeout=15, check=False)
+    assert result.returncode == 0, result.stderr
+    assert wait_until(marker.exists, timeout=10)
+    assert marker.read_text(encoding="utf-8") == str(home)
 
 
 def test_gateway_vbs_script_is_console_less(monkeypatch):

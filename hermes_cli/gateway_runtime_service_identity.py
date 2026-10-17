@@ -5,6 +5,7 @@ programs. Manager-loaded values take precedence over filenames and disk copies.
 """
 from __future__ import annotations
 
+import codecs
 import json
 import os
 from pathlib import Path
@@ -379,6 +380,9 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) ->
     script = _absolute(match[1])
     if script.suffix.lower() != '.vbs':
         _unverified()
-    configured, argv = _vbs_identity(read_definition(script).decode("utf-8"))
+    raw = read_definition(script)
+    # New launchers use WSH's Unicode format; installed pre-fix UTF-8 scripts still need recognition.
+    encoding = "utf-16" if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) else "utf-8-sig"
+    configured, argv = _vbs_identity(raw.decode(encoding))
     verify_home(home, configured)
     verify_gateway_argv(argv, home)

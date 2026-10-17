@@ -218,6 +218,33 @@ def test_startup_route_keeps_vendor_prefix_on_pinned_custom_provider(monkeypatch
     ) == model_switch.StartupModelRoute("foo-model", "custom:synthetic", "")
 
 
+@pytest.mark.parametrize("pin", ["synthetic", "Synthetic", "custom:synthetic"])
+def test_startup_route_pin_matches_every_accepted_spelling(monkeypatch, pin):
+    """``model.provider`` is stored verbatim, so the bare ``synthetic`` spelling the CLI also
+    accepts for ``providers.synthetic`` must keep the pin just like ``custom:synthetic`` (#125578)."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    providers = {"synthetic": {"base_url": "https://api.synthetic.new/openai/v1"}}
+    assert model_switch.resolve_startup_model_route(
+        "hf:zai-org/GLM-5.3-Flash", current_provider=pin, user_providers=providers) is None
+
+
+def test_startup_route_pin_matches_legacy_custom_providers_entry(monkeypatch):
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    legacy = [{"name": "Synthetic", "base_url": "https://api.synthetic.new/openai/v1"}]
+    assert model_switch.resolve_startup_model_route(
+        "hf:zai-org/GLM-5.3-Flash", current_provider="synthetic", custom_providers=legacy) is None
+
+
+def test_startup_route_prefix_naming_the_pinned_provider_still_decodes(monkeypatch):
+    """A ``providers.huggingface`` override pinned as ``huggingface`` is not a passthrough case:
+    ``hf:`` names the pinned provider itself, so the prefix is still consumed."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    providers = {"huggingface": {"base_url": "https://router.huggingface.co/v1"}}
+    assert model_switch.resolve_startup_model_route(
+        "hf:zai-org/GLM-5.3-Flash", current_provider="huggingface", user_providers=providers,
+    ) == model_switch.StartupModelRoute("zai-org/GLM-5.3-Flash", "huggingface", "")
+
+
 def test_oneshot_and_tui_qualified_model_never_reaches_default_provider(tmp_path, monkeypatch):
     """``hermes -z -m custom:<name>:<model>`` and ``hermes --tui -m …`` route through the same
     startup owner, so provider auto-detection never hands the qualified string to the configured

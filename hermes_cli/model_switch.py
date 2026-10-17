@@ -393,7 +393,7 @@ def resolve_startup_model_route(
     # the model name and the whole prompt goes to its endpoint before it 404s (#73943). The
     # configured ids come from the caller's config, the same source the ``/`` branch below uses.
     from hermes_cli.models import parse_model_input
-    from hermes_cli.providers import custom_provider_slug, normalize_provider
+    from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, normalize_provider
     custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
                   for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
@@ -405,8 +405,19 @@ def resolve_startup_model_route(
         # passthrough tag that endpoint requires, not a provider selector — so it must not outrank
         # the pin. Leave the model string (prefix intact) for the config pin + runtime resolver,
         # which already routes ``custom:<name>`` + ``hf:<model>`` correctly. See #125578.
-        if current_provider and normalize_provider(current_provider) in custom_ids \
-                and not normalize_provider(qualified_provider).startswith("custom"):
+        # ``model.provider`` is stored verbatim, so the pin may be spelled ``custom:<name>`` or the
+        # bare ``<name>``; match it against every identity the entry accepts, not only the slug.
+        current = _clean(current_provider).lower()
+        pinned_aliases: set[str] = set()
+        for key, entry in (user_providers or {}).items():
+            if isinstance(entry, dict):
+                pinned_aliases |= custom_provider_aliases(str(entry.get("name") or key), str(key))
+        for entry in custom_providers or []:
+            if isinstance(entry, dict) and _clean(entry.get("name")):
+                pinned_aliases |= custom_provider_aliases(str(entry.get("name")), str(entry.get("provider_key") or ""))
+        qualified = normalize_provider(qualified_provider)
+        if current and current in pinned_aliases and not qualified.startswith("custom") \
+                and qualified != normalize_provider(current):
             return None
         return StartupModelRoute(model=qualified_model, provider=qualified_provider)
     if "/" not in raw:

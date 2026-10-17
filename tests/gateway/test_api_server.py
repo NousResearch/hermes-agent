@@ -999,6 +999,18 @@ class TestSkillsEndpoint:
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
 
+    @pytest.mark.asyncio
+    async def test_skills_uses_real_find_all_skills_signature(self, adapter):
+        # Unmocked on purpose: the sibling test patches _find_all_skills with a MagicMock,
+        # which accepts any keyword, so a caller/callee signature mismatch (500) stayed green.
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/skills")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "list"
+            assert isinstance(data["data"], list)
+
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio

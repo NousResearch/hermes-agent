@@ -482,6 +482,7 @@ async def settle_gateway_runtime(runner, budget=None):
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
     wait = TURN_SETTLE_SECONDS if budget is None else max(0.0, min(TURN_SETTLE_SECONDS,
                                                                    budget - STOP_TAIL_RESERVE_SECONDS))
+    deadline = asyncio.get_running_loop().time() + wait
     if tasks:
         done, pending = await asyncio.wait(tasks, timeout=wait) if wait > 0 else (set(), set(tasks))
         for task in done:
@@ -493,7 +494,7 @@ async def settle_gateway_runtime(runner, budget=None):
     from gateway.session_runtime_workers import join_authority_work
     for authority in authorities:
         try:
-            await join_authority_work(authority, 0)
+            await join_authority_work(authority, max(0.0, deadline - asyncio.get_running_loop().time()))
         except TimeoutError:
             logger.warning('Profile %s still has live writers at shutdown; its admissions stay for recovery',
                            getattr(authority, 'profile_id', '?'))

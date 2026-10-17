@@ -78,6 +78,8 @@ async def test_retained_bytes_are_released_after_cancel_and_settlement(tmp_path,
         settled = next(r for r in list_session_admissions(db, session_id='s', pending_only=False)
                        if r['admission_id'] == second.admission_id)
         assert settled['status'] == 'terminal' and settled['outcome'] == 'completed'
+        from gateway.session_runtime_workers import join_authority_work
+        await join_authority_work(authority, timeout=5)
         assert not Path(retained).exists()
         assert not Path(retained).parent.exists()
         assert list(_media_root().iterdir()) == []

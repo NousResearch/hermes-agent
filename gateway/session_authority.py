@@ -693,24 +693,20 @@ class SessionAuthority:
 
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
         self.pending_results.pop(admission_id, None)
-        if prepared is not None and row['owner_epoch'] == self.epoch:
-            # The captured result committed: viewers told the turn is unknown get its completion,
-            # unless the drain still owns the claim (resolution raced its recovery stamp) and
-            # publishes the committed result itself.
-            from gateway.session_settlement_recovery import _publish_completion
-            live = self.sessions[ref.session_id]
-            with live.event_stream.lock:
-                if live.event_stream.execution.get('admission_id') != admission_id:
-                    _publish_completion(self, live, ref, row, row,
-                                        captured['result'].get('final_response') or '', captured)
-        # Its own write txn + unlink, so it runs after the resolution commits; a discarded image
-        # would otherwise stay on disk forever (the drain releases only settled turns).
-        from gateway.session_ingress_media import release_admission_media
-        await asyncio.to_thread(release_admission_media, self.db, admission_id)
-        # Before the successor can run: a committed captured answer reaches the chat it was
-        # owed to (a turn fenced unknown already released its delivery waiter), exactly once.
-        from gateway.session_ingress import deliver_resolved
-        await deliver_resolved(self, admission_id, owed=prepared is not None and row['owner_epoch'] == self.epoch)
+        # A resolution racing recovery leaves publication, delivery and collection to the drain.
+        live = self.sessions[ref.session_id]
+        drain_owns = live.event_stream.execution.get('admission_id') == admission_id
+        if not drain_owns:
+            from gateway.session_ingress import deliver_resolved
+            from gateway.session_settlement_recovery import _publish_completion, release_media_after_delivery
+            try:
+                if prepared is not None and row['owner_epoch'] == self.epoch:
+                    with live.event_stream.lock:
+                        _publish_completion(self, live, ref, row, row,
+                                            captured['result'].get('final_response') or '', captured)
+                await deliver_resolved(self, admission_id, owed=prepared is not None and row['owner_epoch'] == self.epoch)
+            finally:
+                release_media_after_delivery(self, row)
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)
@@ -1040,86 +1036,22 @@ class SessionAuthority:
                 if live.rescan:
                     continue
                 return
-            admission_id = row['admission_id']
             try:
                 response, outcome = await self._execute_claimed(ref, live, row)
             except ManagedExecutionUnknown:
                 return
-            settled = None
-            settlement = {}
+            from gateway.session_runtime_workers import track_mutation
+            from gateway.session_settlement_recovery import settle_and_deliver
+            delivery = track_mutation(self, settle_and_deliver(self, live, ref, row, response, outcome))
             try:
-                # Redaction, encoding and the SQLite write run off-loop: one turn's settlement must
-                # not stall every other session. Commit and completion share one stream-lock hold
-                # there; a tracked writer outlives a cancelled drain like the recovery stamp does.
-                from gateway.session_settlement_recovery import settle_with_retry
-                captured = self.pending_results.get(admission_id)
-                try:
-                    await settle_with_retry(self, live, ref, row, response, outcome, captured, settlement)
-                finally:
-                    if 'settled' in settlement:
-                        settled, response = settlement['settled'], settlement['response']
-                        self.pending_results.pop(admission_id, None)
-                # Idle follows the completion; its bot receipt wakeups are loop tasks. A delete
-                # that committed while the write yielded already retired this live entry.
-                if self.sessions.get(ref.session_id) is live:
-                    self._publish_pending(ref)
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception(
-                    'Settlement or publication of admission %s failed', admission_id)
-                if settled is None:
-                    self.pending_results.setdefault(admission_id, {
-                        'result': {'final_response': response, 'failed': outcome == 'failed'}, 'usage': {}})
-                    from gateway.session_settlement_recovery import recover_failed_settlement
-                    try:
-                        status = await recover_failed_settlement(self, row)
-                    except RuntimeStoreError:
-                        # Ownership moved; this owner may only release its process-local observers.
-                        self._pause(ref, 'unknown_execution')
-                        return
-                    # Discard can race the off-loop recovery stamp; its terminal decision wins.
-                    current = get_session_admission(self.db, admission_id=admission_id)
-                    status = current['status']
-                    if status == 'unknown':
-                        from gateway.session_ingress import retain_unsettled_delivery
-                        retain_unsettled_delivery(self, admission_id)
-                        self._publish_pending(ref)
-                        self._pause(ref, 'unknown_execution')
-                        return
-                    # A write can commit before reporting failure. Re-read its exact result,
-                    # then publish the terminal outcome rather than inventing uncertainty.
-                    from gateway.session_results import admission_result
-                    from gateway.session_settlement_recovery import publish_terminal
-                    with live.event_stream.lock:
-                        captured = admission_result(self.db, admission_id)
-                        self.pending_results.pop(admission_id, None)
-                        if captured is None:
-                            # An operator discarded uncertainty while recovery yielded. There is
-                            # no committed answer to replay; its queued successor may now run.
-                            waiter = self.waiters.pop(admission_id, None)
-                            if waiter is not None and not waiter.done():
-                                waiter.set_exception(RuntimeStoreError('unknown_execution'))
-                            continue
-                        settled = current
-                        response = captured['result'].get('final_response') or ''
-                        publish_terminal(self, ref, row, settled, response, captured)
-            finally:
-                # The stamp names a claimed, unsettled execution. Left in place, idle
-                # mutations (session.updated) would carry a terminal generation and
-                # a versioned viewer fence would discard them as late frames.
-                with live.event_stream.lock:
-                    live.event_stream.execution = {}
-                self.pending_stops.pop(ref.session_id, None)
-                self.pending_steers.pop(ref.session_id, None)
-                self.adopted.pop(ref.session_id, None)
-                if settled is None:
-                    # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
-                    self.pending_deliveries.pop(admission_id, None)
-                from gateway.session_ingress import waiter_replies
-                waiter_replies(self).pop(admission_id, None)
-            from gateway.session_ingress import deliver_settled
-            await deliver_settled(self, admission_id)
-            await self._resolve_settled_waiter(admission_id, response)
+                advance = await asyncio.shield(delivery)
+            except asyncio.CancelledError:
+                # Keep this FIFO's drain live until the committed reply has been handed off.
+                # Cleanup itself is separately tracked and must not delay the next turn.
+                await asyncio.shield(delivery)
+                raise
+            if not advance:
+                return
 
     async def _resolve_settled_waiter(self, admission_id, response):
         """Hand the settled reply to its waiter. The adapter sending it adopted the turn's crash marker

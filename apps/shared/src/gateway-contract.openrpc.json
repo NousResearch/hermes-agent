@@ -28825,6 +28825,18 @@
             "default": false,
             "title": "Has Avatar",
             "type": "boolean"
+          },
+          "avatar_rev": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Avatar Rev"
           }
         },
         "required": [

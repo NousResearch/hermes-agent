@@ -230,4 +230,53 @@ describe('roster avatar sync (#102978)', () => {
     // The raster is a notice-only copy of the live face, never parked on the roster.
     expect($botMeta.get()['local::secretary']?.image).toBeUndefined()
   })
+
+  it('re-fetches a cached avatar when the server avatar_rev changes', async () => {
+    const { pullServerAvatars } = await import('./profile-ops')
+    hostMock.request.mockResolvedValue({ data: 'data:image/png;base64,NEW1', found: true })
+    $botMeta.set({ 'local::scribe': { image: 'data:image/png;base64,OLD' } })
+
+    const row = {
+      avatar_rev: 1,
+      connectionId: 'local',
+      has_avatar: true,
+      name: 'scribe',
+      route: { connectionId: 'local', mode: 'local', profile: 'scribe', targetProfile: 'scribe' },
+      sourceScoped: true
+    } as RosterRow
+
+    // First sight of a revision with a local image: fetch once, then the memo holds.
+    pullServerAvatars([row])
+    await vi.waitFor(() => expect($botMeta.get()['local::scribe']?.image).toBe('data:image/png;base64,NEW1'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    pullServerAvatars([row])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(hostMock.request).toHaveBeenCalledTimes(1)
+
+    // Avatar replaced elsewhere: a new revision is fetched even though an image is cached.
+    hostMock.request.mockResolvedValue({ data: 'data:image/png;base64,NEW2', found: true })
+    pullServerAvatars([{ ...row, avatar_rev: 2 }])
+    await vi.waitFor(() => expect($botMeta.get()['local::scribe']?.image).toBe('data:image/png;base64,NEW2'))
+    expect(hostMock.request).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the cached image when the gateway sends no avatar_rev (older backend)', async () => {
+    const { pullServerAvatars } = await import('./profile-ops')
+    hostMock.request.mockResolvedValue({ data: 'data:image/png;base64,NEW', found: true })
+    $botMeta.set({ 'local::legacy': { image: 'data:image/png;base64,OLD' } })
+
+    pullServerAvatars([
+      {
+        connectionId: 'local',
+        has_avatar: true,
+        name: 'legacy',
+        route: { connectionId: 'local', mode: 'local', profile: 'legacy', targetProfile: 'legacy' },
+        sourceScoped: true
+      } as RosterRow
+    ])
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(hostMock.request).not.toHaveBeenCalled()
+    expect($botMeta.get()['local::legacy']?.image).toBe('data:image/png;base64,OLD')
+  })
 })

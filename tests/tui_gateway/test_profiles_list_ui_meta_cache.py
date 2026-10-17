@@ -63,3 +63,25 @@ def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     (assets / "avatar.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     assert _row()["has_avatar"] is True
+
+
+def test_avatar_rev_tracks_the_avatar_file_and_is_live(home):
+    """``avatar_rev`` (mtime ms) lets a client holding a cached image notice a replaced avatar.
+
+    Like ``has_avatar`` it is computed outside the ui_meta memo, so replacing the file without
+    touching profile.yaml still changes it on the very next listing.
+    """
+    import os
+
+    assert _row()["avatar_rev"] is None
+
+    assets = home / "profiles" / "bob" / "assets"
+    assets.mkdir(parents=True)
+    avatar = assets / "avatar.png"
+    avatar.write_bytes(b"\x89PNG\r\n\x1a\n")
+    os.utime(avatar, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    first = _row()["avatar_rev"]
+    assert first == 1_700_000_000_000
+
+    os.utime(avatar, ns=(1_700_000_005_000_000_000, 1_700_000_005_000_000_000))
+    assert _row()["avatar_rev"] == 1_700_000_005_000

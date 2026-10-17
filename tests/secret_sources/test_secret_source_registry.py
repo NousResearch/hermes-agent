@@ -163,6 +163,55 @@ class TestApplyAll:
         assert report.provenance["API_KEY"].shape == "mapped"
         assert report.provenance["API_KEY"].overrode_env is False
 
+    def _bootstrap_source(self, seen, seen_name="BWS_ACCESS_TOKEN"):
+        """A source declaring a vault bootstrap credential (token_env_key), whose fetch records
+        the per-fetch environment it ran under — what `op`/`bws` children would authenticate with."""
+        from agent.secret_sources.base import get_source_environment
+
+        def _fetch(cfg, home):
+            seen["value"] = get_source_environment().get(seen_name)
+            return FetchResult(secrets={"VAULT_KEY": "v"})
+
+        src = _make_source(name="vaulty", fetch_fn=_fetch)
+        src.token_env_key = "access_token_env"
+        src.default_token_env = "BWS_ACCESS_TOKEN"
+        return src
+
+    def test_bootstrap_token_seeded_from_process_env(self, tmp_path, monkeypatch):
+        # The deployment injects the token via shell/systemd/compose; a filtered per-profile
+        # environ must not drop it (#137458). Values are generated, never literals.
+        import secrets as _secrets
+        deploy_value = "test-" + _secrets.token_hex(8)
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", deploy_value)
+        seen: dict = {}
+        reg.register_source(self._bootstrap_source(seen))
+        reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ={})
+        assert seen["value"] == deploy_value
+
+    def test_bootstrap_token_caller_value_wins(self, tmp_path, monkeypatch):
+        # A value the caller's environ already holds (the profile's own .env / .op.env) beats
+        # the process-env one.
+        import secrets as _secrets
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-" + _secrets.token_hex(8))
+        profile_value = "test-" + _secrets.token_hex(8)
+        seen: dict = {}
+        reg.register_source(self._bootstrap_source(seen))
+        env = {"BWS_ACCESS_TOKEN": profile_value}
+        reg.apply_all({"vaulty": {"enabled": True}}, tmp_path, environ=env)
+        assert seen["value"] == profile_value
+
+    def test_bootstrap_token_custom_env_name(self, tmp_path, monkeypatch):
+        import secrets as _secrets
+        custom_value = "test-" + _secrets.token_hex(8)
+        monkeypatch.setenv("MY_VAULT_TOKEN", custom_value)
+        seen: dict = {}
+        reg.register_source(self._bootstrap_source(seen, seen_name="MY_VAULT_TOKEN"))
+        reg.apply_all(
+            {"vaulty": {"enabled": True, "access_token_env": "MY_VAULT_TOKEN"}},
+            tmp_path, environ={},
+        )
+        assert seen["value"] == custom_value
+
 
 
 

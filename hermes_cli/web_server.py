@@ -1037,6 +1037,23 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     return config, uvicorn.Server(config)
 
 
+def _install_serve_drain_reporting(server):
+    """Install this serve's stop-drain reporter (#140411), or ``None``.
+
+    Must be called INSIDE ``server.capture_signals()``: the reporter chains uvicorn's own
+    ``handle_exit``, and the handlers captured before that block only run *after* a graceful
+    shutdown — far too late to describe the drain that is the thing worth reporting. Diagnostics
+    only, so every failure (import included) is a debug line and never a failed stop.
+    """
+    try:
+        from hermes_cli.serve_drain_report import report_serve_drain
+
+        return report_serve_drain(server, loop=asyncio.get_running_loop())
+    except Exception as exc:  # health: allow BLE001 -- diagnostics must never break a stop
+        _log.debug("serve drain reporting not installed: %s", exc)
+        return None
+
+
 def _best_effort(what: str, fn) -> None:
     """Run a best-effort startup step; any failure (import included) is a debug line."""
     try:
@@ -1447,6 +1464,10 @@ def start_server(
             config.load()
         server.lifespan = config.lifespan_class(config)
         with server.capture_signals():
+            # #140411: a stop that outlives uvicorn's 3 s graceful window is reported from here —
+            # the ASGI tasks still pending, the loop's stuck tasks, and (past a threshold) every
+            # thread's stack, so a drain that ends in systemd's SIGKILL names its blocker.
+            _install_serve_drain_reporting(server)
             await server.startup()
             if server.should_exit:
                 return

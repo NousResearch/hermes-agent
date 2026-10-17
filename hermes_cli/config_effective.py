@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from hermes_cli import config as _config
+from hermes_cli import config_d
 from hermes_cli import managed_scope
 from hermes_cli.config_read_errors import _warn_config_parse_failure
 from utils import fast_safe_load
@@ -73,9 +74,11 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
-                return copy.deepcopy(cached[8])
+        if cached is not None and cache_sig is not None:
+            n = len(cache_sig)
+            if cached[:n] == cache_sig and all(
+                _config._env_ref_lookup(k) == v for k, v in cached[n + 1].items()):
+                return copy.deepcopy(cached[n])
 
         raw: dict[str, Any] = {}
         recovered = False
@@ -102,6 +105,10 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                     from hermes_cli.config_backups import backup_config
                     backup_config(config_path, "good")
 
+        # Drop-ins overlay BEFORE the env snapshot so a drop-in's ${VAR} ref is tracked for
+        # cache invalidation. Recovery returns FILE-ONLY raw, so current drop-ins re-apply on
+        # top: a drop-in edited while config.yaml was broken still wins.
+        raw = config_d.apply_config_d_overlay(raw, config_path=config_path)
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()
         if managed:

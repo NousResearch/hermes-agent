@@ -96,9 +96,13 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict
 
     blocks: dict[str, dict] = {}
     try:
-        # load_config() targets the ACTIVE profile's home; read the probed profile's file raw.
+        # load_config() targets the ACTIVE profile's home; read the probed profile's file raw,
+        # then apply THAT profile's config.d drop-ins. The raw read otherwise: env refs in a
+        # foreign profile must NOT expand against this process's env — documented behavior.
         from hermes_cli.config import read_user_config_raw
+        from hermes_cli import config_d
         cfg = read_user_config_raw(profile_home / "config.yaml")
+        cfg = config_d.apply_config_d_overlay(cfg, config_path=profile_home / "config.yaml")
         gateway_cfg = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
         for src in ((gateway_cfg or {}).get("platforms"), cfg.get("platforms")):
             if not isinstance(src, dict):

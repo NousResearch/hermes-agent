@@ -449,6 +449,8 @@ class SessionAuthority:
     def _admitted(self, ref, event, row):
         if event is not None:
             event._gateway_accepted = True
+            if row['status'] == 'queued' and (committed := getattr(event, '_on_commit', None)) is not None:
+                committed()  # a queued slash command's ack follows its commit (``_queue_command_turn``)
         self._publish_pending(ref)
         return self._receipt(row)
 

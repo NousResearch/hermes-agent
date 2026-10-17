@@ -539,12 +539,59 @@ def _profile_install(args):
         _die(f"Error: {e}")
 
 
+def _printable(text) -> str:
+    """Strip control/escape characters from author-supplied text before it
+    reaches the terminal. Changelog files and manifest strings ship inside a
+    distribution (possibly third-party); a raw ESC or other control char printed
+    here would be an escape sequence the distribution gets the terminal to run.
+    Newlines are handled by the caller (it prints line by line), so this drops
+    them too — only printable glyphs survive."""
+    return "".join(ch if ch.isprintable() else " " for ch in str(text))
+
+
+def _env_change_detail(old, new) -> str:
+    """One-line reason an env var's requirement changed (required/default/description)."""
+    bits = []
+    if old.required != new.required:
+        bits.append("now " + ("required" if new.required else "optional"))
+    if old.default != new.default:
+        bits.append(f"default {old.default!r} → {new.default!r}")   # repr escapes control chars
+    return "; ".join(bits) or "description updated"
+
+
+def _print_update_changes(profile_dir, old, new) -> None:
+    """Tell the user what changed on update: per-version changelog notes shipped
+    in the distribution's changelogs/ dir, plus which env vars to add, remove, or
+    review in their .env. All distribution-supplied text is run through
+    `_printable` first — its contents are never executed, only shown."""
+    from hermes_cli.profile_distribution import diff_env_requirements, load_changelogs
+
+    for version, text in load_changelogs(profile_dir, old.version, new.version):
+        print(f"\n  What's new in v{_printable(version)}:")
+        for line in text.splitlines():
+            print(f"    {_printable(line)}")
+
+    diff = diff_env_requirements(old.env_requires, new.env_requires)
+    if not any(diff.values()):
+        return
+    print("\n  Environment variables changed — review your .env:")
+    for e in diff["added"]:
+        desc = f" — {_printable(e.description)}" if e.description else ""
+        print(f"    + {_printable(e.name)}  (new, {'required' if e.required else 'optional'}){desc}")
+    for e in diff["removed"]:
+        print(f"    - {_printable(e.name)}  (no longer used — safe to remove)")
+    for old_env, new_env in diff["changed"]:
+        print(f"    ~ {_printable(new_env.name)}  ({_env_change_detail(old_env, new_env)})")
+    print("    The regenerated .env.EXAMPLE has the full template.")
+
+
 def _profile_update(args):
     from hermes_cli.profile_distribution import DistributionError, read_manifest, update_distribution
     from hermes_cli.profiles import get_profile_dir, normalize_profile_name
     try:
         canon = normalize_profile_name(args.profile_name)
-        current = read_manifest(get_profile_dir(canon))
+        profile_dir = get_profile_dir(canon)
+        current = read_manifest(profile_dir)
         if current is None:
             _die(
                 f"Error: Profile '{canon}' is not a distribution (no distribution.yaml). "
@@ -563,9 +610,13 @@ def _profile_update(args):
                 print("Update cancelled.")
                 return
         plan = update_distribution(canon, force_config=force_config)
-        print(f"\n✓ Updated '{plan.manifest.name}' → v{plan.manifest.version}")
+        new = plan.manifest
+        version_note = (f"v{current.version} → v{new.version}"
+                        if current.version != new.version else f"v{new.version} (no version change)")
+        print(f"\n✓ Updated '{new.name}'  {version_note}")
+        _print_update_changes(profile_dir, current, new)
         if plan.has_cron:
-            print(f"  Cron files were refreshed.  Review with:  hermes -p {plan.manifest.name} cron list")
+            print(f"  Cron files were refreshed.  Review with:  hermes -p {new.name} cron list")
     except (DistributionError, ValueError) as e:
         _die(f"Error: {e}")
 

@@ -1368,8 +1368,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                         _unavailable_reason = _mp.unavailable_reason()
                     _warn_memory_provider_unavailable(
                         _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)
-                if agent._memory_manager.providers:
-                    agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
+                if agent._memory_manager.providers and agent._memory_manager.initialize_for_agent(
+                        say=agent._emit_startup_warning, **_memory_provider_init_kwargs(agent, platform)):
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)

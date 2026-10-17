@@ -421,6 +421,31 @@ def test_one_provider_instance_is_never_served_to_a_second_profile(homes, multip
     assert "memory_provider_instance_shared" in logged and str(beta_home) in logged, logged
 
 
+def test_agent_whose_provider_instance_is_refused_is_told_and_runs_without_it(homes, multiplexed, monkeypatch, caplog):
+    # The real agent-build path: the refused provider is dropped, the user sees a startup warning, and
+    # nothing claims the provider "activated".
+    import logging
+
+    from agent import agent_init
+    from tests.agent.test_memory_migration_notifications import StartupAgent
+    alpha_home, beta_home = homes
+    shared = _InstanceScopedProvider()
+    _manager(alpha_home, shared)
+    monkeypatch.setattr("plugins.memory.load_memory_provider", lambda name: shared)
+    monkeypatch.setattr(agent_init, "_memory_provider_init_kwargs", lambda agent, platform: {
+        "session_id": "s-beta", "platform": platform, "hermes_home": str(beta_home)})
+    agent = StartupAgent("api_server")
+    with _Scope(beta_home), caplog.at_level(logging.DEBUG):
+        agent_init._init_memory(agent, {"memory": {"provider": "instancescoped"}}, False, "api_server")
+    assert agent._memory_manager is None
+    assert not any("activated" in r.getMessage() for r in caplog.records)
+    notices = []
+    agent.notice_callback = notices.append
+    agent._replay_startup_warnings()
+    assert len(notices) == 1 and notices[0].level == "warn" and "instancescoped" in notices[0].text, notices
+    assert str(alpha_home) not in notices[0].text and str(beta_home) not in notices[0].text
+
+
 class _UnhashableProvider(_InstanceScopedProvider):
     __hash__ = None
 

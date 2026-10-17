@@ -852,6 +852,19 @@ class MemoryManager:
             _SYNC_DRAIN_TIMEOUT_S, abandoned_writes, abandoned_prefetches, active_tasks,
         )
 
+    def initialize_for_agent(self, say: Optional[Callable[[str], None]] = None, **kwargs) -> bool:
+        """``initialize_all`` for an agent build; True while an external provider is still served. One
+        refused as another profile's shared instance is dropped, and ``say`` (the agent's startup
+        warning sink) tells the user this profile now runs without it."""
+        before = [p for p in self._providers if p.name != "builtin"]
+        self.initialize_all(**kwargs)
+        for provider in (p for p in before if not any(p is kept for kept in self._providers)):
+            message = (f"⚠ Memory provider {provider.name!r} is disabled for this profile: it handed out the "
+                       "provider instance another profile already uses. Built-in memory still works; the "
+                       "operator can see why with `hermes logs errors`.")
+            (say or logger.warning)(message)
+        return self._has_external
+
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers, injecting ``hermes_home`` so they resolve profile-scoped paths."""
         if "hermes_home" not in kwargs:

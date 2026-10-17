@@ -1029,6 +1029,9 @@ class _ChildRun:
             "status": entry["status"],
             "duration_seconds": duration,
             "summary": summary[:500] if summary else entry.get("error", ""),
+            # Keep the terminal cause separate from potentially useful work output.
+            # Even an empty cause must not fall back to the child's success prose.
+            "error": entry.get("error"),
             "input_tokens": _num(getattr(child, "session_prompt_tokens", 0)),
             "output_tokens": _num(getattr(child, "session_completion_tokens", 0)),
             "reasoning_tokens": _num(getattr(child, "session_reasoning_tokens", 0)),

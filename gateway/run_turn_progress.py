@@ -206,7 +206,7 @@ class GatewayTurnProgressMixin:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
             if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
                 line = format_subagent_failure_line(
-                    kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
+                    kwargs.get("goal"), status, error=kwargs.get("error", kwargs.get("summary") or preview),
                     duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )
                 render_notification(

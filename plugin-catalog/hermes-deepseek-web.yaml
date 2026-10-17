@@ -1,0 +1,18 @@
+name: hermes-deepseek-web
+repo: https://github.com/Adolanium/hermes-deepseek-web
+sha: 454f542dacf5b259561c69b4f30e8d8600e46511
+description: DeepSeek web backend for web_search (DeepSeek Search) and web_extract (DeepSeek Fetch),
+  both on api.deepseek.com with DEEPSEEK_API_KEY, billed to the DeepSeek balance. Unofficial; not affiliated with DeepSeek.
+maintainer: Adolanium
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Adolanium/hermes-deepseek-web#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-deepseek-web/454f542dacf5b259561c69b4f30e8d8600e46511/assets/catalog-banner.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEEPSEEK_API_KEY

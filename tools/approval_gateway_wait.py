@@ -93,6 +93,9 @@ def _finish(payload: dict, resolved: bool, choice: str | None, reason, **extra) 
     a None choice both mean the user never answered; ``cancelled`` carries the
     cause when the prompt was withdrawn rather than answered."""
     _ctx._fire_approval_hook("post_approval_response", **payload, choice=_hook_choice(resolved, choice, extra), **extra)
+    from tools.command_permissions import record_command_permission
+    if resolved and not extra.get("cancelled"):
+        record_command_permission(payload["command"], choice)
     return {"resolved": resolved, "choice": choice, "reason": reason, **extra}
 
 

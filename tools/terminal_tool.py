@@ -1011,6 +1011,17 @@ class _ApprovalVerdict:
 
 
 def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
+    from tools.command_permissions import command_permission_scope
+
+    with command_permission_scope(command) as authorize:
+        verdict = _run_local_approval_guards(command, env_type, config, force=force)
+        if not authorize():
+            raise _Rejected(_error_json("The ACP client did not approve this command. The command was NOT run.",
+                                        status="blocked"))
+        return verdict
+
+
+def _run_local_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
     """Run the command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""

@@ -206,3 +206,16 @@ ACP temporarily installs an approval callback on the terminal tool during prompt
 - `toolsets.py` — `hermes-acp` toolset definition
 - `hermes_cli/main.py` — `hermes acp` CLI subcommand
 - `pyproject.toml` — `[acp]` optional dependency + `hermes-acp` script
+
+### Execution-owned terminal consent
+
+ACP execution uses `gateway/session_policy.py` and
+`gateway/session_local_editor.py`, including managed workers. Commands accepted
+by local terminal guards still require a one-use decision through the canonical
+pending-control queue. Safe commands and local bypasses are included. A dangerous
+command's decision is reused only within the same execution, through
+`tools/command_permissions.py`; CLI sessions retain their local policy.
+
+The ACP process is a viewer: disconnecting it does not synthesize a decision.
+The owner keeps the waiter available to another authorized viewer, with the
+existing approval timeout. This is terminal-tool consent, not OS isolation.

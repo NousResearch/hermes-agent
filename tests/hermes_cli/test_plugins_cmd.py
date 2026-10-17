@@ -931,6 +931,38 @@ def test_autostash_dirty_tree_promotes_intent_to_add_entries(tmp_path):
     assert git("status", "--porcelain").stdout == ""
 
 
+def test_porcelain_path_readers_keep_both_sides_of_a_rename(tmp_path):
+    """Rename records must never yield a mangled path.
+
+    `R  new\\0old` (staged) and ` R new\\0old` (an i-t-a move) carry a prefix-less second field;
+    slicing ``[3:]`` off it turned ``lib/orig.py`` into ``/orig.py`` — an absolute path that the
+    plugin backup and the update tree gate then joined onto the checkout root.
+    """
+    import subprocess
+
+    from hermes_cli.plugins_cmd_catalog import _local_changes
+    from hermes_cli.update_pause_record import tracked_changes
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", check=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "lib").mkdir()
+    for name in ("staged.py", "orig.py"):
+        (tmp_path / "lib" / name).write_text(f"{name}\nb\nc\nd\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    git("mv", "lib/staged.py", "lib/renamed.py")
+    (tmp_path / "lib" / "orig.py").rename(tmp_path / "lib" / "moved.py")
+    git("add", "-N", "lib/moved.py")
+
+    expected = ["lib/moved.py", "lib/orig.py", "lib/renamed.py", "lib/staged.py"]
+    assert sorted(_local_changes(tmp_path)[1]) == expected
+    assert tracked_changes(tmp_path) == expected
+
+
 def test_toggle_plugin_toolset_rewrites_a_list_literal_string_platform_entry(tmp_path, monkeypatch):
     """``hermes plugins enable`` must reach a platform whose ``platform_toolsets`` entry is the
     list-literal string an older ``hermes config set`` stored, and re-save it as a real list —

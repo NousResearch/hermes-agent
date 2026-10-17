@@ -339,7 +339,7 @@ def _local_changes(target: Path) -> tuple[Optional[list[str]], list[str]]:
         raise PluginOperationError(
             f"Could not inspect local changes for '{target.name}': git executable is unavailable."
         )
-    status = _run_plugin_git(git_exe, target, "status", "--porcelain", "--ignored", "-z", "--untracked-files=all",
+    status = _run_plugin_git(git_exe, target, "status", "--porcelain", "--ignored", "-z", "--no-renames", "--untracked-files=all",
                              "--ignored=matching", timeout=30)
     if status.returncode != 0:
         detail = (status.stderr or status.stdout or "git status failed").strip()

@@ -186,21 +186,10 @@ def head_sha(root: Path) -> str | None:
 
 def tracked_changes(root: Path) -> list[str] | None:
     """Tracked paths that differ from HEAD (index or worktree); ``None`` when git cannot say."""
-    result = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=no")
+    result = _git(root, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=no")
     if result is None or result.returncode != 0:
         return None
-    paths = set()
-    entries = result.stdout.split("\0")
-    index = 0
-    while index < len(entries):
-        entry = entries[index]
-        index += 1
-        if len(entry) < 4:
-            continue
-        paths.add(entry[3:])
-        if entry[0] in "RC":  # rename/copy: the source path follows as its own entry
-            index += 1
-    return sorted(paths)
+    return sorted({entry[3:] for entry in result.stdout.split("\0") if len(entry) > 3})
 
 
 def stamp_tree(token: dict, root: Path | None = None) -> dict:

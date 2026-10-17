@@ -52,8 +52,9 @@ def _intent_to_add_paths(porcelain_z: str) -> tuple[str, ...]:
     ``git stash push`` rejects the whole stash with ``Entry 'X' not uptodate. Cannot merge.`` - a dead
     end for the user, because that is the state an editor leaves behind when it shows a new file in
     diffs. Porcelain marks it ``" A"`` (in the worktree, absent from the index); a real staged add is
-    ``"A "`` and an untracked file ``"??"``. Rename records carry a second, prefix-less field, which
-    the leading ``" A"`` test cannot match.
+    ``"A "`` and an untracked file ``"??"``. Callers must pass ``--no-renames``: with rename detection
+    on, an i-t-a path whose bytes match a deleted file is reported as `` R new\0old`` and never as
+    ``" A"``, so it escapes promotion and the stash still fails.
     """
     return tuple(
         record[3:] for record in porcelain_z.split("\0")
@@ -91,7 +92,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path, *, checkout_mo
     global _pending_autostash
     from hermes_cli.update_cmd_git import _git_run, _no_move
     _pending_autostash = None
-    status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
+    status = _git_run(git_cmd, ["status", "--porcelain", "-z", "--no-renames"], cwd, check=True)
     if not status.stdout.strip():
         return None
     # Unmerged index entries (interrupted merge/rebase) make `git stash` fail with

@@ -297,7 +297,7 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[str, str]:
     """Stash local edits before a pull. Returns ``(stash_sha, error)``; *stash_sha* is empty when
     the tree was clean, and a non-empty error means the tree is dirty but nothing was saved, so
     the pull must not run."""
-    status = _pc()._run_plugin_git(git_exe, target, "status", "--porcelain", "-z")
+    status = _pc()._run_plugin_git(git_exe, target, "status", "--porcelain", "-z", "--no-renames")
     if status.returncode != 0 or not status.stdout.strip():
         return "", ""
     # `git add -N` entries make `git stash push` fail outright (see update_cmd_stash), so promote them

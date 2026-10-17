@@ -523,6 +523,40 @@ def test_autostash_survives_intent_to_add_entries(tmp_path):
     assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "v2 local\n"
 
 
+def test_autostash_survives_an_intent_to_add_entry_git_reports_as_a_rename(tmp_path):
+    """A `git add -N` path whose bytes match a deleted tracked file must still be promoted.
+
+    With rename detection on, porcelain reports that pair as `` R new\\0old`` and never as
+    ``" A"``, so the intent-to-add scan missed it and `git stash push` failed with "not uptodate"
+    (an editor's move-file is the ordinary cause). Both autostashes read status with renames off.
+    """
+    import subprocess
+
+    from hermes_cli.plugins_cmd_git import _autostash_dirty_tree
+
+    def git(*args, cwd):
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=True)
+
+    for name in ("update", "plugin"):
+        repo = tmp_path / name
+        (repo / "lib").mkdir(parents=True)
+        git("init", "-q", "-b", "main", cwd=repo)
+        git("config", "user.email", "t@example.com", cwd=repo)
+        git("config", "user.name", "t", cwd=repo)
+        (repo / "lib" / "orig.py").write_text("a\nb\nc\nd\n", encoding="utf-8")
+        git("add", "-A", cwd=repo)
+        git("commit", "-qm", "init", cwd=repo)
+        (repo / "lib" / "orig.py").rename(repo / "lib" / "moved.py")
+        git("add", "-N", "lib/moved.py", cwd=repo)
+        assert git("status", "--porcelain", cwd=repo).stdout.startswith(" R ")  # the rename shape
+
+        if name == "update":
+            assert hermes_main._stash_local_changes_if_needed(["git"], repo)
+        else:
+            assert _autostash_dirty_tree("git", repo)[1] == ""
+        assert git("status", "--porcelain", cwd=repo).stdout == ""
+
+
 class _ReceiptProbe:
     """Minimal stand-in for the active update receipt: records steps.
 

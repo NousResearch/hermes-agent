@@ -1729,16 +1729,24 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
-    _windows_gateway_resume=None) -> None:
-    """"Already up to date" path: restore stash, repair the checkout, catch up the fleet.
+    keep_stash: bool = False, discard_local_changes: bool = False, _windows_gateway_resume=None) -> None:
+    """"Already up to date" path: settle the autostash with the same dispositions ``_pull_updates``
+    uses (discard / keep-stash / restore), repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     # A parked branch the update switched off stays on the target: re-parking on the stale branch
     # recreates the incident. No other checkout left current_branch (in-place and release updates
     # never switch), so there is nothing to switch back to.
     if _plan.auto_stash_ref is not None:
-        _m()._restore_stashed_changes(
-            git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
-            input_fn=gw_input_fn, checkout_move=_moves_for(_windows_gateway_resume))
+        if discard_local_changes:
+            _m()._discard_stashed_changes(git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref)
+        elif keep_stash:
+            # --keep-stash promises the parked edits are never re-applied, on a no-op run too: the
+            # restore prompt's default Yes would reapply exactly what the flag parks (#140165).
+            _m()._park_stashed_changes(_plan.auto_stash_ref)
+        else:
+            _m()._restore_stashed_changes(
+                git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
+                input_fn=gw_input_fn, checkout_move=_moves_for(_windows_gateway_resume))
     if _plan.parked_branch_switched:
         if _plan.switch_block_reason.startswith("unmerged:"):
             _count = _plan.switch_block_reason.split(":", 1)[1]
@@ -1934,7 +1942,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if commit_count == 0:
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
-                completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume)
+                completion_request=completion_request, keep_stash=opts.keep_stash,
+                discard_local_changes=opts.discard_local_changes,
+                _windows_gateway_resume=_windows_gateway_resume)
             return
 
         if release_sha:

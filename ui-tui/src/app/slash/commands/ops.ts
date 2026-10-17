@@ -306,11 +306,20 @@ export const opsCommands: SlashCommand[] = [
       }
 
       const hash = first
-      const filePath = rest.join(' ').trim()
+      // Main's --all/--force: a whole-tree restore also reverts hand-edits. A flag, never a path.
+      const isAll = (arg: string) => ['--all', '--force'].includes(arg.toLowerCase())
+
+      const filePath = rest
+        .filter(arg => !isAll(arg))
+        .join(' ')
+        .trim()
+
+      const all = !filePath && rest.some(isAll)
 
       return ctx.gateway
         .rpc<RollbackRestoreResponse>('rollback.restore', {
           ...(filePath ? { file_path: filePath } : {}),
+          ...(all ? { all } : {}),
           hash,
           session_id: ctx.sid
         })
@@ -325,6 +334,20 @@ export const opsCommands: SlashCommand[] = [
             const target = filePath || t('slashCmd.ops.rollback.workspaceTarget')
             const detail = r.reason || r.message || r.restored_to || t('slashCmd.ops.rollback.restoredDetail')
             ctx.transcript.sys(t('slashCmd.ops.rollback.restored', target, detail))
+
+            // What a safe whole-tree restore left alone, as main's CLI lists it: the first five paths.
+            const summarize = (paths: string[]) =>
+              paths.slice(0, 5).join(', ') + (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
+
+            for (const [key, paths] of [
+              ['keptUserEdits', r.skipped_user_edits],
+              ['keptOversize', r.skipped_oversize],
+              ['failedDeletes', r.failed_deletes]
+            ] as const) {
+              if (paths?.length) {
+                ctx.transcript.sys(t(`slashCmd.ops.rollback.${key}`, summarize(paths)))
+              }
+            }
 
             if ((r.history_removed ?? 0) > 0) {
               ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))

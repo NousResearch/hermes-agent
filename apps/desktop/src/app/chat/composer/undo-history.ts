@@ -29,6 +29,22 @@ const COALESCE_WINDOW_MS = 600
 
 const DEFAULT_LIMIT = 200
 
+/** True for ordinary typing / deleting `beforeinput` types that should share one
+ *  undo entry. Paste, drop, and history stay discrete. */
+export function isCoalescableTypingInput(inputType: string): boolean {
+  if (
+    inputType === 'insertFromPaste' ||
+    inputType === 'insertFromDrop' ||
+    inputType === 'insertFromYank' ||
+    inputType === 'historyUndo' ||
+    inputType === 'historyRedo'
+  ) {
+    return false
+  }
+
+  return inputType.startsWith('insert') || inputType.startsWith('delete')
+}
+
 export interface ComposerUndoHistory {
   /** Drop all history and start over from `snapshot`'s state (session swap). */
   reset: () => void

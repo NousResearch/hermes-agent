@@ -823,3 +823,45 @@ def test_a_background_review_summary_during_a_turn_is_printed_like_mains(make_ag
     agent._print_fn = printed.append
     agent.run_conversation("hi")
     assert printed == ["  💾 Self-improvement review: Memory updated"]
+
+
+def test_another_viewer_completing_the_clarify_batch_releases_mains_panel(make_agent, monkeypatch):
+    """Another viewer (Desktop/Ink) locks every answer of the batch the classic CLI is showing: the
+    gateway settles it and withdraws the request (``request.cancel`` reason ``resolved``). main's real
+    batch panel (``CLIModalMixin._clarify_callback``) blocks the agent thread, so the withdrawal must
+    close it from the connection thread; the pump then reads the turn's completion instead of sitting
+    in the modal until clarify_timeout."""
+    import cli
+    from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
+    monkeypatch.setattr(cli, "CLI_CONFIG", {"agent": {"clarify_timeout": 60}})
+    panel = _make_cli_stub()
+    panel._ring_bell = lambda **kw: None
+    request = {"jsonrpc": "2.0", "id": "srq-clr", "method": "clarify", "params": {"session_id": SID, "questions": [
+        {"qid": "q0", "question": "colour?", "choices": ["red", "blue"]},
+        {"qid": "q1", "question": "size?", "choices": ["s", "l"]}]}}
+    withdrawn = frame("request.cancel", {"id": "srq-clr", "method": "clarify", "reason": "resolved"}, admission=None)
+    agent, _client = make_agent(
+        [request, "wait", withdrawn, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        clarify_callback=panel._clarify_callback, modal_withdraw_callback=panel._withdraw_gateway_modal)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    out = {}
+    worker = threading.Thread(target=lambda: out.update(agent.run_conversation("ask")), daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the CLI stayed blocked in its clarify panel"
+    assert panel._clarify_state is None
+    assert out["completed"] is True or out.get("final_response") is not None
+    # Its late reply is a cancel the gateway drops (the request is already settled).
+    assert replies == [("srq-clr", {"answers": {}, "outcome": "cancelled"})]
+
+
+def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):
+    agent, _client = make_agent([])
+    closed = []
+    agent.modal_withdraw_callback = closed.append
+    agent._open_request = ("srq-mine", "clarify")
+    agent._on_request_withdrawn({"id": "srq-other", "method": "clarify", "reason": "resolved"})
+    assert closed == []
+    agent._on_request_withdrawn({"id": "srq-mine", "method": "clarify", "reason": "resolved"})
+    assert closed == ["clarify"]

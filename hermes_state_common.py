@@ -281,7 +281,12 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 31
+# v32 (#140315): no data migration. #106742 added runtime_epoch, session_admissions, worker_executions,
+# worker_receipts and three columns to SCHEMA_SQL under v31. Drift is detected by the schema read probe
+# (schema_read_probe_statements), never by this number, and its catch-up is the declarative
+# executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
+# idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
+SCHEMA_VERSION = 32
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA

@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
@@ -1424,27 +1424,34 @@ def _primary_quota_reopened_early(agent, primary_provider, primary_model, matche
         return False
 
 
-def restore_primary_runtime(agent) -> bool:
-    """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
-    (long-lived CLI agents and the gateway's cached agents)."""
-    if not agent._fallback_activated:
-        # Reset the index even without activation: a failed _try_activate_fallback() can strand
-        # _fallback_index past the chain end and silently block future fallbacks (#20465).
-        agent._fallback_index = 0
-        _revert_credential_rotation(agent)
-        return False
-    rt = agent._primary_runtime
+class _RestoreGateVerdict(NamedTuple):
+    """The shared restore-gate ladder verdict (see ``_primary_restore_gates_armed``):
+    ``blocked`` plus everything ``restore_primary_runtime`` needs to proceed when it is not."""
+    blocked: bool
+    primary_provider: str
+    primary_model: str
+    matches_primary: Any
+    load_primary_pool: Any
+    prefetched_pool: Any
+    prefetched: bool
+
+
+def _primary_restore_gates_armed(agent, rt, *, mutate: bool) -> _RestoreGateVerdict:
+    """The one restore-gate ladder shared by ``restore_primary_runtime`` (``mutate=True``)
+    and the background-review probe ``primary_runtime_restore_blocked`` (``mutate=False``)
+    (#138979): entitlement / known-non-chat rejection, the 429 cooldown
+    (``_rate_limited_until``), and the pool reset gate. One ladder, so the review probe can
+    never drift from what restore will actually do next turn.
+
+    ``mutate=True`` additionally runs the Codex early-reopen probe (it mutates cooldown
+    state); the review probe skips it, so an armed-but-stale cooldown reads as blocked for
+    one more turn there. Otherwise side-effect free apart from the one-shot restore-wait
+    diagnostic throttle the reset gate consumes. Fails open (not blocked) on any error so a
+    broken pool/probe never changes the caller's behavior.
+    """
+    prefetched_pool, prefetched = None, False
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
-    from agent.fallback_cooldown import _is_entitlement_rejected
-    from hermes_cli.chat_catalog import is_known_non_chat_model
-    if primary_model and (
-        _is_entitlement_rejected(agent, primary_provider, primary_model)
-        or is_known_non_chat_model(primary_model)
-    ):
-        # Unentitled (#106475) or already known non-chat: restoring would announce a recovery
-        # that was never verified and re-fail every turn. Stay on the fallback.
-        return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 
     def _matches_primary(candidate) -> bool:
@@ -1456,14 +1463,50 @@ def restore_primary_runtime(agent) -> bool:
         key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
         loaded = load_pool(key) if key else None
         return loaded if loaded is not None and _matches_primary(loaded) else None
-    if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
-        agent._rate_limited_until = 0
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
-    blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
-        agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
-    )
-    if blocked:
+
+    def _verdict(blocked: bool) -> _RestoreGateVerdict:
+        return _RestoreGateVerdict(
+            blocked, primary_provider, primary_model, _matches_primary, _load_primary_pool,
+            prefetched_pool, prefetched,
+        )
+
+    try:
+        if primary_model:
+            from agent.fallback_cooldown import _is_entitlement_rejected
+            from hermes_cli.chat_catalog import is_known_non_chat_model
+            if (
+                _is_entitlement_rejected(agent, primary_provider, primary_model)
+                or is_known_non_chat_model(primary_model)
+            ):
+                # Unentitled (#106475) or already known non-chat: restoring would announce a
+                # recovery that was never verified and re-fail every turn. Stay on the fallback.
+                return _verdict(True)
+        if mutate and _primary_quota_reopened_early(
+            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool
+        ):
+            agent._rate_limited_until = 0
+        if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+            return _verdict(True)  # primary still in rate-limit cooldown, stay on fallback
+        blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
+            agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
+        )
+        return _verdict(bool(blocked))
+    except Exception:
+        return _verdict(False)
+
+
+def restore_primary_runtime(agent) -> bool:
+    """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
+    (long-lived CLI agents and the gateway's cached agents)."""
+    if not agent._fallback_activated:
+        # Reset the index even without activation: a failed _try_activate_fallback() can strand
+        # _fallback_index past the chain end and silently block future fallbacks (#20465).
+        agent._fallback_index = 0
+        _revert_credential_rotation(agent)
+        return False
+    rt = agent._primary_runtime
+    gates = _primary_restore_gates_armed(agent, rt, mutate=True)
+    if gates.blocked:
         return False
     agent._restore_wait_logged = False
     fallback_route = getattr(agent, "_provider_fallback_route", None)
@@ -1474,7 +1517,8 @@ def restore_primary_runtime(agent) -> bool:
     try:
         from agent.route_binding import reinstall_primary_runtime
         reinstall_primary_runtime(
-            agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
+            agent, rt, gates.primary_provider, gates.primary_model, gates.matches_primary,
+            gates.load_primary_pool, gates.prefetched_pool, gates.prefetched,
         )
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
@@ -1489,6 +1533,30 @@ def restore_primary_runtime(agent) -> bool:
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
+        return False
+
+
+def primary_runtime_restore_blocked(agent) -> bool:
+    """Answer to "would restore_primary_runtime() restore the primary snapshot on the next
+    turn?" — True when any gate of the shared ladder (``_primary_restore_gates_armed``) is
+    armed: entitlement / known-non-chat rejection, the 429 cooldown
+    (``_rate_limited_until``), or the pool reset gate.
+
+    Background-review fork resolution (#138979) targets the pending primary runtime and must
+    hold off while a gate is armed — otherwise the fork aims at a primary the very next turn
+    refuses to restore and fails every review of the fallback window.
+
+    No side effects beyond the one-shot restore-wait diagnostic throttle the reset gate
+    consumes: the Codex early-reopen probe is NOT run here (``mutate=False`` — it mutates
+    cooldown state), so an armed-but-stale cooldown reads as blocked for one more turn.
+    Fails open (False) on any error so a broken pool/probe never changes the caller's behavior.
+    """
+    try:
+        rt = getattr(agent, "_primary_runtime", None)
+        if not isinstance(rt, dict):
+            return False
+        return bool(_primary_restore_gates_armed(agent, rt, mutate=False).blocked)
+    except Exception:
         return False
 
 

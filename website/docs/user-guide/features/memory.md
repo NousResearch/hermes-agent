@@ -416,6 +416,12 @@ identical and skill capture near-identical to the main-model review.
 Leave it at `auto` (or set it to your main model) and nothing changes — the
 review keeps running on the main model with the full warm-cache replay.
 
+While a provider fallback is active (the main model is temporarily on its
+fallback), an unrouted review runs on the **primary** runtime the next turn
+restores to, so a one-off failover doesn't bill the fallback for the whole
+review. An explicit `provider`/`model` pin always wins over this rule, and
+`/btw` side questions are unaffected.
+
 ### Same-model review reasoning
 
 A review using the same model as the parent **always inherits the parent's reasoning effort**. Setting `auxiliary.background_review.reasoning_effort` does not override it, whether the route is `auto` or explicitly selects the parent provider/model.

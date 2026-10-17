@@ -8,6 +8,8 @@ Covers the two behaviors this change adds:
 
 Pure-function / config-driven; no live model calls.
 """
+import time
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -109,6 +111,196 @@ def test_routing_resolution_failure_falls_back_to_parent():
         rt = br._resolve_review_runtime(agent)
     assert rt["routed"] is False
     assert rt["provider"] == "openai-codex"
+
+
+def test_unrouted_fork_uses_pending_primary_snapshot_when_fallback_active():
+    """#138979: a fork spawned while a fallback is active must run on the primary
+    runtime the next turn restores to — not keep billing the fallback provider for
+    the whole review."""
+    agent = _FakeAgent(provider="anthropic", model="claude-haiku-4.5")  # live = fallback
+    agent._current_main_runtime = lambda: {  # live runtime is the one-off fallback
+        "provider": "anthropic", "model": "claude-haiku-4.5",
+        "api_key": "fallback-key", "base_url": "https://api.anthropic.com",
+        "api_mode": "messages",
+    }
+    agent._fallback_activated = True
+    agent._primary_runtime = {
+        "provider": "openai-codex", "model": "gpt-5.5",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "primary-key", "api_mode": "codex_app_server",
+    }
+    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is False
+    assert rt["provider"] == "openai-codex"
+    assert rt["model"] == "gpt-5.5"
+    assert rt["api_key"] == "primary-key"
+    assert rt["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert rt["api_mode"] == "codex_responses"  # snapshot api_mode, downgrade still applied
+
+
+def test_unrouted_fork_with_unusable_snapshot_keeps_live_runtime_fail_open():
+    """Fail-open: fallback active but no usable primary snapshot → keep the live
+    runtime exactly as before; never skip or block the review."""
+    agent = _FakeAgent(provider="anthropic", model="claude-haiku-4.5")
+    agent._fallback_activated = True
+    agent._primary_runtime = {}  # unusable snapshot
+    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is False
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "parent-key"
+
+
+# ---------------------------------------------------------------------------
+# #138979 follow-ups — gates, pin precedence, all-or-nothing shaping, /btw scope
+# ---------------------------------------------------------------------------
+
+def _fallback_agent() -> _FakeAgent:
+    """Live runtime is the one-off fallback; the primary snapshot is complete and
+    carries its own request shaping."""
+    agent = _FakeAgent(provider="anthropic", model="claude-haiku-4.5")
+    agent.platform = "cli"
+    agent.session_id = "test-session"
+    agent._current_main_runtime = lambda: {
+        "provider": "anthropic", "model": "claude-haiku-4.5",
+        "api_key": "fallback-key", "base_url": "https://api.anthropic.com",
+        "api_mode": "messages",
+    }
+    agent._fallback_activated = True
+    agent._primary_runtime = {
+        "provider": "openai-codex", "model": "gpt-5.5",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "primary-key", "api_mode": "codex_app_server",
+        "request_overrides": {"extra_body": {"store": False}},
+        "reasoning_config": {"effort": "low"},
+    }
+    return agent
+
+
+class _FakePool:
+    """Minimal provider-scoped pool stand-in for the pending-primary rebind tests."""
+
+    def __init__(self, provider: str, entry: Any):
+        self.provider = provider
+        self._entry = entry
+
+    def select(self, *, model=None):
+        return self._entry
+
+
+def _resolve(agent, cfg=None, reset_gate=(False, None, False), **kwargs):
+    cfg = cfg or {}
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+         patch("agent.agent_runtime_helpers._primary_reset_gate_blocks", return_value=reset_gate), \
+         patch("agent.credential_pool.load_pool", return_value=None):  # hermetic: no real auth.json read
+        return br._resolve_review_runtime(agent, **kwargs)
+
+
+def test_pending_primary_skipped_while_primary_in_429_cooldown():
+    """#138979: a snapshot the next turn would NOT restore (primary still in 429
+    cooldown) is not the pending primary. The fork keeps the live fallback runtime
+    (fail-open: the review still runs) instead of aiming at a known-unavailable
+    primary and failing every turn of the fallback window."""
+    agent = _fallback_agent()
+    agent._rate_limited_until = time.monotonic() + 3600
+    rt = _resolve(agent)
+    assert rt["routed"] is False
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "fallback-key"
+
+
+def test_pending_primary_skipped_when_primary_entitlement_rejected():
+    """Same gate discipline as restore_primary_runtime: an entitlement-rejected
+    (or known non-chat) primary is not restored next turn, so the fork stays live."""
+    agent = _fallback_agent()
+    agent._entitlement_rejected_models = {("openai-codex", "gpt-5.5")}
+    rt = _resolve(agent)
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+
+
+def test_pending_primary_skipped_when_reset_gate_blocks():
+    """The pool reset gate (primary benched until a future resets_at) also vetoes
+    the snapshot, mirroring restore_primary_runtime."""
+    agent = _fallback_agent()
+    rt = _resolve(agent, reset_gate=(True, None, False))
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+
+
+def test_partial_snapshot_never_splices_two_runtimes():
+    """All-or-nothing: a snapshot missing transport fields must not overlay at all —
+    otherwise the fork sends the primary's model name to the fallback's endpoint
+    with the fallback's key."""
+    agent = _fallback_agent()
+    agent._primary_runtime = {"provider": "openai-codex", "model": "gpt-5.5",
+                              "base_url": "", "api_key": "", "api_mode": ""}
+    rt = _resolve(agent)
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "fallback-key"
+    assert rt["base_url"] == "https://api.anthropic.com"
+    assert rt["api_mode"] == "messages"
+
+
+def test_snapshot_overlay_carries_snapshot_request_shaping():
+    """Identity and request shaping travel together: the fallback's credential pool,
+    request_overrides and reasoning vocabulary never cross onto the primary provider."""
+    agent = _fallback_agent()
+    agent._credential_pool = "FALLBACK-POOL"
+    agent.request_overrides = {"extra_body": {"anthropic_beta": ["context-1m-2025-08-07"]}}
+    agent.reasoning_config = {"type": "enabled", "budget_tokens": 8000}
+    rt = _resolve(agent)
+    assert rt["provider"] == "openai-codex"
+    assert rt["credential_pool"] is None  # the live pool is the fallback's
+    assert rt["request_overrides"] == {"extra_body": {"store": False}}
+    kwargs = br._fork_init_kwargs(agent, rt, bool(rt.get("routed")), 5)
+    assert kwargs["reasoning_config"] == {"effort": "low"}
+
+
+def test_snapshot_overlay_re_resolves_primary_pool_after_rotation():
+    """#138979: the snapshot api_key may be stale after a mid-window key rotation. The fork
+    re-resolves the primary's pool by the snapshot provider/base_url (mirroring restore's
+    rebind) and prefers a fresh pool entry key — a pool-backed primary + rotation must not
+    leave the fork holding a dead key with nothing to rotate through (that review 401s)."""
+    agent = _fallback_agent()
+    entry = SimpleNamespace(id="e1", label="fresh", runtime_api_key="fresh-pool-key", access_token="")
+    pool = _FakePool("openai-codex", entry)
+    with patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.config.load_config_readonly", return_value={}), \
+         patch("agent.agent_runtime_helpers._primary_reset_gate_blocks", return_value=(False, None, False)), \
+         patch("agent.credential_pool.load_pool", return_value=pool) as mock_load:
+        rt = br._resolve_review_runtime(agent)
+    mock_load.assert_called_once_with("openai-codex")
+    assert rt["credential_pool"] is pool  # the primary's pool, not the fallback's live one
+    assert rt["api_key"] == "fresh-pool-key"  # fresh entry key wins over the stale snapshot key
+
+
+def test_explicit_pin_to_live_fallback_model_wins_over_pending_primary():
+    """An explicit auxiliary.background_review pin is a cost control (run the review
+    on a cheaper model). During a fallback window the pin must stay pinned — the
+    pending-primary overlay must never rewrite it onto the main model."""
+    agent = _fallback_agent()
+    cfg = {"auxiliary": {"background_review": {"provider": "anthropic", "model": "claude-haiku-4.5"}}}
+    rt = _resolve(agent, cfg)
+    assert rt["routed"] is False
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "fallback-key"
+
+
+def test_side_question_path_keeps_live_runtime_during_fallback():
+    """/btw is user-initiated mid-turn: the pending-primary overlay is scoped to the
+    background-review path (write_origin) and does not rewrite the side-question fork."""
+    agent = _fallback_agent()
+    rt = _resolve(agent, write_origin="side_question")
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "fallback-key"
 
 
 # ---------------------------------------------------------------------------

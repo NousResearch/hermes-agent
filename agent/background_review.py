@@ -250,45 +250,162 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
         return True, {}
 
 
-def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
-    parent): the parent's live runtime with ``routed=False`` (codex_app_server -> codex_responses
-    downgrade applied). When ``auxiliary.background_review.{provider,model}`` names a different
-    concrete model, resolve that runtime and set ``routed=True``."""
-    parent_runtime = agent._current_main_runtime()
-    parent_api_mode = parent_runtime.get("api_mode") or None
-    parent = {
-        "provider": agent.provider, "model": agent.model,
-        "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
+def _pending_primary_runtime(agent: Any) -> Optional[dict[str, Any]]:
+    """The primary runtime snapshot the next turn restores to, when a fallback is active.
+
+    A review fork spawned mid-fallback would otherwise inherit the fallback provider for
+    its whole run — a one-off failover becomes a string of paid calls the user never sees
+    (#138979). Fail-open: no fallback / no usable snapshot / any error → None, and the
+    caller keeps the live runtime exactly as before.
+
+    The snapshot is only "pending" when restore_primary_runtime would actually take it next
+    turn: its gates (entitlement / known-non-chat rejection, 429 cooldown, pool reset gate)
+    are checked via agent_runtime_helpers.primary_runtime_restore_blocked. When a gate is
+    armed the fork keeps the live fallback runtime — the review still runs (fail-open), on
+    the runtime the turn is already paying for, instead of failing against a primary the
+    next turn refuses to restore.
+    """
+    try:
+        if not getattr(agent, "_fallback_activated", False):
+            return None
+        rt = getattr(agent, "_primary_runtime", None)
+        if not isinstance(rt, dict):
+            return None
+        # All-or-nothing: a snapshot missing any identity/transport field would splice the
+        # primary's model name onto the fallback's endpoint/credentials — keep live instead.
+        if not all(str(rt.get(key) or "").strip() for key in ("provider", "model", "base_url", "api_key", "api_mode")):
+            return None
+        from agent.agent_runtime_helpers import primary_runtime_restore_blocked
+        if primary_runtime_restore_blocked(agent):
+            return None
+        return rt
+    except Exception:
+        return None
+
+
+def _primary_pool_for_snapshot(snapshot: dict[str, Any]) -> Any:
+    """The primary provider's credential pool for a pending-primary fork (#138979).
+
+    The snapshot's api_key may be stale after a mid-window key rotation; without the
+    primary's pool the fork would hold that one key with nothing to rotate through and 401
+    the review. Mirrors restore's rebind (agent_runtime_helpers._rebind_primary_credential_pool):
+    resolve the pool by the snapshot provider/base_url and keep it only when it matches the
+    primary provider. Fail-open → None (the snapshot key carries, as before).
+    """
+    try:
+        from agent.credential_pool import (
+            credential_pool_matches_provider,
+            load_pool,
+            resolve_runtime_pool_key,
+        )
+        provider = str(snapshot.get("provider") or "").strip().lower()
+        base_url = str(snapshot.get("base_url") or "")
+        key = resolve_runtime_pool_key(provider, base_url)
+        pool = load_pool(key) if key else None
+        if pool is not None and credential_pool_matches_provider(pool, provider, base_url=base_url):
+            return pool
+    except Exception:
+        pass
+    return None
+
+
+def _snapshot_parent_runtime(agent: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Fork runtime taken from a pending-primary snapshot (#138979): identity AND request
+    shaping travel together — the snapshot is complete (all-or-nothing is enforced by
+    _pending_primary_runtime), so nothing is spliced from the live fallback. The live
+    credential pool is the fallback's and is dropped; the fork re-resolves the primary's
+    pool from the snapshot provider/base_url (mirroring restore's rebind) and prefers a
+    fresh pool entry key over the snapshot api_key, which may be stale after rotation —
+    without it a pool-backed primary + mid-window rotation 401s the review.
+    ``max_tokens`` is turn state that restore_primary_runtime itself never touches, so the
+    live value carries; ``reasoning_config`` comes from the snapshot (or None) so the
+    fallback's reasoning vocabulary never crosses providers (codex_responses forwards
+    effort vocabularies unmapped; see _same_model_parity_kwargs).
+    """
+    api_mode = snapshot.get("api_mode") or None
+    pool = _primary_pool_for_snapshot(snapshot)
+    api_key = snapshot["api_key"]
+    if pool is not None:
+        try:
+            entry = pool.select(model=snapshot.get("model") or None)
+        except Exception:
+            entry = None
+        fresh_key = (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")) if entry else ""
+        if fresh_key:
+            api_key = fresh_key
+    return {
+        "provider": snapshot["provider"], "model": snapshot["model"],
+        "api_key": api_key, "base_url": snapshot["base_url"],
+        "api_mode": "codex_responses" if api_mode == "codex_app_server" else api_mode,
+        "credential_pool": pool,
+        "request_overrides": dict(snapshot.get("request_overrides") or {}),
+        "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
+        "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
+        "reasoning_config": dict(snapshot["reasoning_config"]) if isinstance(snapshot.get("reasoning_config"), dict) else None,
+    }
+
+
+def _live_parent_runtime(agent: Any, live_runtime: dict[str, Any]) -> dict[str, Any]:
+    """The unrouted fork runtime = the parent's LIVE runtime (the pre-#138979 behavior)."""
+    parent_api_mode = live_runtime.get("api_mode") or None
+    return {
+        "provider": live_runtime.get("provider") or agent.provider,
+        "model": live_runtime.get("model") or agent.model,
+        "api_key": live_runtime.get("api_key") or None, "base_url": live_runtime.get("base_url") or None,
         "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
         "credential_pool": getattr(agent, "_credential_pool", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
         "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
     }
+
+
+def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = None, *,
+                            write_origin: str = "background_review") -> dict[str, Any]:
+    """Resolve provider/model/credentials for the fork. Default (auto / unset): the parent's
+    live runtime with ``routed=False`` (codex_app_server -> codex_responses downgrade
+    applied) — except on the background-review path while a fallback is active, where the
+    unrouted fork resolves to the pending primary runtime the next turn restores to
+    (#138979). An explicit ``auxiliary.<task>.{provider,model}`` pin always wins and is
+    matched against the LIVE runtime, never rewritten by the pending-primary overlay; a pin
+    naming a different concrete model resolves via the routed path (``routed=True``).
+    ``/btw`` passes write_origin="side_question": user-initiated mid-turn, it keeps the
+    live runtime."""
+    parent = _live_parent_runtime(agent, agent._current_main_runtime())
     task = _background_review_task_config(task_cfg)
     task_provider, task_model, task_base_url, task_api_key = (
         str(task.get(key, "")).strip() or None for key in ("provider", "model", "base_url", "api_key")
     )
-    if not (task_provider and task_provider != "auto" and task_model) or (
+    explicit_pin = bool(task_provider and task_provider != "auto" and task_model)
+    if explicit_pin and not (
         task_provider == (agent.provider or "") and task_model == (agent.model or "")  # same as parent
     ):
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            rp = resolve_runtime_provider(
+                requested=task_provider, target_model=task_model,
+                explicit_api_key=task_api_key, explicit_base_url=task_base_url,
+            )
+            return {
+                "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
+                **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
+                "request_overrides": dict(rp.get("request_overrides") or {}),
+                "args": list(rp.get("args") or []), "routed": True,
+            }
+        except Exception as e:
+            _warn_review_routing_fallback(agent, task_provider, task_model, e)
+            return parent
+    if explicit_pin:
+        # An explicit pin naming the live runtime is a cost control (e.g. a cheaper review
+        # model): honored verbatim, never rewritten by the pending-primary overlay.
         return parent
-    try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        rp = resolve_runtime_provider(
-            requested=task_provider, target_model=task_model,
-            explicit_api_key=task_api_key, explicit_base_url=task_base_url,
-        )
-        return {
-            "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
-            **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
-            "request_overrides": dict(rp.get("request_overrides") or {}),
-            "args": list(rp.get("args") or []), "routed": True,
-        }
-    except Exception as e:
-        _warn_review_routing_fallback(agent, task_provider, task_model, e)
-        return parent
+    if write_origin == "background_review":
+        snapshot = _pending_primary_runtime(agent)
+        if snapshot is not None:
+            # The live runtime is the one-off fallback; the fork should run on the primary
+            # the next turn restores to, not bill the fallback for the whole review.
+            return _snapshot_parent_runtime(agent, snapshot)
+    return parent
 
 
 def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: str, error: Exception) -> None:
@@ -940,6 +1057,11 @@ def _fork_init_kwargs(agent: Any, rt: dict[str, Any], routed: bool, max_iteratio
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
+        if "reasoning_config" in rt:
+            # Pending-primary snapshot runtime (#138979): the LIVE reasoning config is the
+            # fallback's — forwarding it would splice the fallback's reasoning vocabulary
+            # onto the primary provider. The snapshot's own config (or none) applies.
+            kwargs["reasoning_config"] = rt["reasoning_config"]
     elif (routed_cfg := _routed_reasoning_config(task_cfg)) is not None:
         kwargs["reasoning_config"] = routed_cfg
     return kwargs
@@ -976,7 +1098,7 @@ def build_cache_parity_fork(
     from run_agent import AIAgent  # local: avoids a circular import at load
     # Inherit the parent's live runtime: AIAgent.__init__'s env auto-resolution fails for
     # OAuth-only providers, session-scoped creds and credential pools.
-    _rt = _resolve_review_runtime(agent, task_cfg)
+    _rt = _resolve_review_runtime(agent, task_cfg, write_origin=write_origin)
     _routed = bool(_rt.get("routed"))
     # A configured effort is dropped on the same-model path (cache parity) — say so once, visible,
     # instead of leaving the set-but-ignored key invisible (#104116). Routed forks honor it

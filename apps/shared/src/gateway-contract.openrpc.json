@@ -34698,6 +34698,18 @@
             "default": null,
             "title": "Count"
           },
+          "through_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Through Message Id"
+          },
           "idempotency_key": {
             "anyOf": [
               {

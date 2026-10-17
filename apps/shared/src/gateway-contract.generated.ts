@@ -3384,6 +3384,7 @@ export interface SessionBranchParams {
   profile?: string | null
   name?: string | null
   count?: number | null
+  through_message_id?: number | null
   idempotency_key?: string | null
 }
 export interface SessionBranchResult {

@@ -51,13 +51,13 @@ const PARENT_ATTACH_REQUIRED = new Set(['session.branch_stored', 'session.branch
 
 // Canonical-only identity keys. The legacy `hermes serve` contract refuses an unknown key as
 // version skew (4000), so they are stripped on a non-canonical dial. `prompt.submit` keeps its
-// `submission_id` on purpose: the submit path retries identityless on that exact refusal and
-// records the send as legacy-attempted, which a silent strip here would hide. A message-level
-// `session.branch` keeps its legacy `count` prefix; only the canonical row boundary is dropped.
+// `submission_id` (the submit path retries identityless on that exact refusal) and a message-level
+// `session.branch` keeps its `through_message_id` (this class retries it count-only, below): a
+// silent strip would hide the refusal, and the branch miscut a legacy serve then makes is the
+// #139939 bug the boundary upgrades — never worse than "Branch from here" failing outright.
 const LEGACY_STRIP: Record<string, string[]> = {
   'session.create': ['request_id'],
-  'session.branch_stored': ['request_id'],
-  'session.branch': ['through_message_id']
+  'session.branch_stored': ['request_id']
 }
 
 function legacyParams(method: string, params: Record<string, unknown>): Record<string, unknown> {
@@ -66,6 +66,16 @@ function legacyParams(method: string, params: Record<string, unknown>): Record<s
   if (!strip || !strip.some(key => key in params)) { return params }
 
   return Object.fromEntries(Object.entries(params).filter(([key]) => !strip.includes(key)))
+}
+
+/** A version-skew refusal (4000) naming exactly this unknown key: the legacy closed contract
+ *  rejected the request before any handler ran, so a reshaped retry cannot duplicate the write. */
+function isVersionSkewRefusal(error: unknown, key: string): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) { return false }
+
+  const { code, message } = error as { code?: unknown; message?: unknown }
+
+  return code === 4000 && typeof message === 'string' && message.includes(key)
 }
 
 function remainingRequestBudget(deadline: number, signal?: AbortSignal): number {
@@ -364,7 +374,26 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
-    if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
+    if (!this.canonical) {
+      const legacy = legacyParams(method, params)
+
+      // A message-level `session.branch` keeps its row boundary on the wire: a serve that
+      // knows it (#139939) cuts the prefix exactly at the clicked bubble's terminal row, an
+      // older one 4000s the unknown key pre-admission and the count-only shape is retried
+      // once — the miscut that legacy prefix risks is the bug the boundary upgrades, never
+      // worse than "Branch from here" failing outright.
+      if (method === 'session.branch' && 'through_message_id' in legacy) {
+        return super.request<T>(method, legacy, timeoutMs, signal).catch((error: unknown) => {
+          if (!isVersionSkewRefusal(error, 'through_message_id')) { throw error }
+
+          const { through_message_id: _boundary, ...countOnly } = legacy
+
+          return super.request<T>(method, countOnly, timeoutMs, signal)
+        })
+      }
+
+      return super.request<T>(method, legacy, timeoutMs, signal)
+    }
     const generation = this.connectionGeneration
     const deadline = Date.now() + (timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.

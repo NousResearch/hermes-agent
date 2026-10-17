@@ -10,11 +10,15 @@ lazily at call time so ``patch("tools.x.y")`` in tests keeps working.
 from __future__ import annotations
 
 import json
+import logging
+import uuid
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from tools.arg_coercion import coerce_tool_args
+
+logger = logging.getLogger(__name__)
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
@@ -318,12 +322,51 @@ INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
 INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES = frozenset({"todo_list", "session_search", "memory"})
 
 
+def is_client_tool(agent, function_name: str) -> bool:
+    """True when ``function_name`` is a split-runtime tool supplied by the API caller."""
+    client_tool_names = getattr(agent, "_client_tool_names", None)
+    return bool(client_tool_names) and function_name in client_tool_names
+
+
+def relay_client_tool(agent: Any, function_name: str, function_args: dict,
+                      tool_call_id: Optional[str] = None) -> str:
+    """Split-runtime: suspend the agent thread and relay a client/shell-supplied
+    tool call to the caller, blocking until it POSTs the result (or timeout).
+
+    Returns the tool-result string handed back to the model.  Shared by both
+    the sequential and concurrent tool-execution paths (client tools are never
+    parallel-safe, so in practice this fires from the sequential path).
+    """
+    from tools import client_tool_gateway as _ctg
+
+    session_key = getattr(agent, "_client_tool_session_key", None) or ""
+    call_id = tool_call_id or f"clt_{uuid.uuid4().hex}"
+    _args = function_args if isinstance(function_args, dict) else {}
+    entry = _ctg.register(call_id, session_key, function_name, _args)
+    notify = _ctg.get_notify(session_key)
+    if notify is not None:
+        try:
+            notify(entry)
+        except Exception:
+            logger.debug("client tool notify error", exc_info=True)
+    relayed = _ctg.wait_for_result(session_key, call_id, _ctg.get_client_tool_timeout())
+    if relayed is None:
+        return json.dumps(
+            {"error": f"client tool '{function_name}' timed out (no result from shell)"},
+            ensure_ascii=False,
+        )
+    return relayed
+
+
 def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineToolExecutor]:
     """Inline executor for ``invoke_tool`` (concurrent path), or None for registry dispatch.
 
-    Precedence: todo_list/session_search/memory, then memory-manager tools, then the
+    Precedence: split-runtime client tools (relayed to the caller, never dispatched on
+    the host), todo_list/session_search/memory, then memory-manager tools, then the
     remaining inline tools (``message_agent`` excluded).
     """
+    if is_client_tool(agent, function_name):
+        return lambda agent, args, ctx: relay_client_tool(agent, function_name, args, ctx.tool_call_id)
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
     memory_manager = agent._memory_manager

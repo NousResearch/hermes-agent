@@ -17,7 +17,9 @@ api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=Non
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 # Request-owned sinks an API observer may register for its admission's execution.
 _OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
-                  'reasoning_callback', 'status_callback', 'interim_assistant_callback')
+                  'reasoning_callback', 'status_callback', 'interim_assistant_callback',
+                  # Split-runtime /v1/runs: the caller's tools, relayed back to it (api_server_client_tools).
+                  'client_tools', 'client_tool_session_key', 'memory_tool_names_callback')
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
@@ -521,6 +523,8 @@ def wire_api_observers(agent, owner, want_interim):
     agent.status_callback = status_callback
     if want_interim:
         agent.interim_assistant_callback = interim_assistant_callback
+    from gateway.platforms.api_server_client_tools import wire_turn_observers
+    wire_turn_observers(agent, _api_observers(authority, session_id))
 
 
 def publish_api_event(authority, session_id, event_type, payload):

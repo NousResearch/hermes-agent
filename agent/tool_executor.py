@@ -41,6 +41,8 @@ from agent.inline_tool_executors import (
     InlineToolContext,
     apply_transform_tool_result,
     emit_terminal_post_tool_call,
+    is_client_tool,
+    relay_client_tool,
     tool_hook_ids,
 )
 from agent.tool_dispatch_helpers import (
@@ -1671,11 +1673,21 @@ class _SequentialDispatch:
 
 def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _SequentialDispatch:
     """Pick the execute callable for one sequential call and start its spinner. Precedence:
-    inline agent-level tools, delegate_task, context-engine tools, memory-provider tools,
-    then the registry."""
+    split-runtime client tools, inline agent-level tools, delegate_task, context-engine tools,
+    memory-provider tools, then the registry."""
     function_name, function_args, effective_task_id, tool_call_id, middleware_trace = (
         ref.name, ref.args, ref.task_id, ref.call_id, ref.trace,
     )
+    if is_client_tool(agent, function_name):
+        # Split-runtime: relayed to the caller (tool_call.request → POST
+        # /v1/runs/{id}/tool_result), never dispatched on the host. Ahead of every other
+        # branch so it has the same locality as resolve_invoke_tool_executor.
+        return _SequentialDispatch(
+            execute=lambda next_args: relay_client_tool(agent, function_name, next_args, tool_call_id or ""),
+            spinner=_start_quiet_tool_spinner(agent, function_name, function_args),
+            error_result=lambda e: json.dumps({"error": f"client tool '{function_name}' relay failed: {e}"}, ensure_ascii=False),
+            error_log="relay_client_tool raised for %s: %s",
+        )
     if function_name != "delegate_task" and function_name in INLINE_TOOL_EXECUTORS:
         # Agent-level tools that need live AIAgent state; table shared with invoke_tool.
         inline_executor = INLINE_TOOL_EXECUTORS[function_name]

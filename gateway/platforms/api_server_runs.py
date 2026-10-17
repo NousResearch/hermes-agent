@@ -24,6 +24,7 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
+from gateway.platforms import api_server_client_tools as _client_tools
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
@@ -236,6 +237,12 @@ def _initialize_run_state(self, *, store_factory) -> None:
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
     ) = ({} for _ in range(7))
+    # split_runtime: a run may carry a ``tools`` array relayed to the client for execution
+    # (resolved via POST /v1/runs/{run_id}/tool_result). Off by default.
+    self._split_runtime: bool = _client_tools.adapter_split_runtime(getattr(self.config, "extra", None) or {})
+    # run_id -> its agent's memory-provider tool names, reported by a canonical turn's wiring:
+    # those runs never hold the agent, and the ``tool.started`` "memory" tag needs the names.
+    self._run_memory_tool_names: dict[str, frozenset[str]] = {}
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
@@ -243,6 +250,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
+        ("POST", "/v1/runs/{run_id}/tool_result", self._handle_run_tool_result),
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
@@ -342,6 +350,12 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
             if event_type == "tool.completed":
                 event_fields["preview"] = _tool_completed_preview(
                     kwargs.get("result"), redact_sensitive_text)
+            elif event_type == "tool.started":
+                # Optional provenance tag ("mcp"/"memory") for split-runtime shells; omitted
+                # for plain server tools.
+                kind = _client_tools.classify_server_tool_kind(self, run_id, tool_name)
+                if kind:
+                    event_fields["kind"] = kind
             _push(_run_event(run_id, event_type, **event_fields))
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = _run_event(run_id, event_type)
@@ -481,6 +495,18 @@ def _resolve_conversation_history(
     return conversation_history, instructions, stored_session_id, None
 
 
+def _resolve_run_inputs(self, body: dict, raw_input: Any, *, _openai_error):
+    """``_resolve_conversation_history`` plus the run's split-runtime client tools (empty unless
+    the flag is on AND the body carries ``tools``): ``(history, instructions, stored_session_id,
+    client_tools, error)``; the first validation error wins."""
+    client_tools, err = _client_tools.parse_client_tools(self, body, _openai_error=_openai_error)
+    if err is not None:
+        return [], None, None, [], err
+    history, instructions, stored_session_id, err = _resolve_conversation_history(
+        self, body, raw_input, _openai_error=_openai_error)
+    return history, instructions, stored_session_id, client_tools, err
+
+
 def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool) -> web.Response:
     """202 admission response; replays are flagged via ``Idempotency-Replayed``."""
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
@@ -524,6 +550,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    client_tools: Optional[list[dict[str, Any]]] = None  # split-runtime: relayed to the caller
     admission: Any = None
 
     @property
@@ -547,7 +574,7 @@ def _forget_run(self, run_id: str, *tables) -> None:
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids, self._shutdown_interrupted_run_ids)
+                self._stopping_run_ids, self._shutdown_interrupted_run_ids, self._run_memory_tool_names)
 
 
 def _drop_run_transport(self, run_id: str) -> None:
@@ -734,8 +761,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:
         return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
-    conversation_history, instructions, stored_session_id, history_err = (
-        _resolve_conversation_history(self, body, raw_input, _openai_error=_openai_error))
+    conversation_history, instructions, stored_session_id, client_tools, history_err = (
+        _resolve_run_inputs(self, body, raw_input, _openai_error=_openai_error))
     if history_err is not None:
         return history_err
     previous_response_id = body.get("previous_response_id")
@@ -812,7 +839,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, client_tools=client_tools or None)
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
@@ -943,6 +970,41 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[di
     return _approval_notify
 
 
+def _make_client_tool_notify(self, run: _RunLaunch) -> Callable[[Any], None]:
+    """Split-runtime bridge: the model called a client-supplied tool. Park the run status and
+    enqueue a ``tool_call.request`` so the caller executes it and POSTs the result back to
+    ``/v1/runs/{run_id}/tool_result``. Mirrors ``_make_approval_notify``."""
+    run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
+
+    def _client_tool_notify(entry: Any) -> None:
+        # ``name`` is _run_event's own event-name parameter, so the tool's fields are merged in.
+        event = {
+            **_run_event(run_id, "tool_call.request"), "call_id": getattr(entry, "call_id", None),
+            "name": getattr(entry, "name", None), "arguments": dict(getattr(entry, "arguments", None) or {})}
+        self._set_run_status(run_id, "waiting_for_tool", last_event="tool_call.request")
+        with suppress(Exception):
+            loop.call_soon_threadsafe(q.put_nowait, event)
+
+    return _client_tool_notify
+
+
+def _cancel_client_tool_calls(session_key: Optional[str], *, drop_notify: bool) -> int:
+    """Best-effort: cancel a run's pending client-tool relays so an agent thread parked on one
+    unwinds now instead of at the relay timeout; ``drop_notify`` also retires the run's notify
+    hook (run end). Returns the number of calls cancelled."""
+    if not session_key:
+        return 0
+    try:
+        from tools import client_tool_gateway
+        cancelled = client_tool_gateway.clear_session(session_key)
+        if drop_notify:
+            client_tool_gateway.unregister_notify(session_key)
+        return cancelled
+    except Exception:
+        logger.debug("[api_server] client-tool cleanup failed", exc_info=True)
+        return 0
+
+
 async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: dict[str, Any], *, _api_server) -> None:
     """Drive a run whose turn a live Bot Chat owner is executing, from that owner's mailbox receipt.
 
@@ -1039,6 +1101,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
+        if run.client_tools:
+            from tools import client_tool_gateway
+            client_tool_gateway.register_notify(run.approval_session_key, _make_client_tool_notify(self, run))
         if run.admission is not None:
             from gateway.session_api_turn import observe_api_controls, observe_api_turn
             tool_cb = self._make_run_event_callback(run_id, loop)
@@ -1061,7 +1126,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
                     run.admission, stream_delta_callback=_text_cb,
-                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
+                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete,
+                    **_client_tools.run_observer(self, run_id, run.client_tools, run.approval_session_key))
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (
@@ -1072,6 +1138,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                     stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)
             self._active_run_agents[run_id] = agent
+            _client_tools.apply_client_tools(agent, run.client_tools, run.approval_session_key)
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
             result, usage, served_runtime = await _submit_api_worker(
                 loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
@@ -1117,6 +1184,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         # On cancellation (/stop) the executor thread may still block on an approval
         # Event; unregistering releases it. Idempotent on normal completion.
         _unregister_approval_notify(run.approval_session_key)
+        if run.client_tools:
+            _cancel_client_tool_calls(run.approval_session_key, drop_notify=True)  # same for a relay
         with suppress(Exception):
             loop.call_soon(run.put_event, None)  # close after the queued events
         _retire_live_run(self, run_id)
@@ -1343,6 +1412,39 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
         "resolved": resolved})
 
 
+async def _handle_run_tool_result(self, request: web.Request, *, _api_server) -> web.Response:
+    """POST /v1/runs/{run_id}/tool_result — resolve a pending client tool call.
+
+    Split-runtime: the caller executed a tool relayed via a ``tool_call.request`` event and
+    returns its result here, unblocking the agent thread waiting in ``tools.client_tool_gateway``.
+    """
+    _openai_error = _api_server._openai_error
+    run_id, _, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission=None, active_fallback=False)
+    if err is not None:
+        return err
+    body, err = await self._read_json_body(request)
+    if err:
+        return err
+    call_id = body.get("call_id") or body.get("tool_call_id")
+    if not call_id or not isinstance(call_id, str):
+        return _json_error(_openai_error, "'call_id' is required", code="missing_call_id", status=400)
+    result_text = _client_tools.tool_result_text(body, _coerce_request_bool=_api_server._coerce_request_bool)
+    try:
+        from tools import client_tool_gateway
+        resolved = client_tool_gateway.resolve_client_tool(run_id, call_id, result_text)
+    except Exception as exc:
+        logger.exception("[api_server] tool_result resolution failed for run %s", run_id)
+        return _json_error(_openai_error, str(exc), status=500)
+    if not resolved:
+        return _json_error(
+            _openai_error, f"Run has no pending client tool call: {call_id}",
+            code="tool_call_not_pending", status=409)
+    _mark_run_event(self, run_id, "tool_call.responded", call_id=call_id)
+    return web.json_response({
+        "object": "hermes.run.tool_result_response", "run_id": run_id, "call_id": call_id, "resolved": True})
+
+
 async def _respond_authority_run(self, run_id, body, *, kind, _api_server):
     from gateway.platforms.api_server_authority_runs import respond_run, store_error_response
     from hermes_state_runtime import RuntimeStoreError
@@ -1431,6 +1533,12 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
+    # Split-runtime: a worker suspended on a client tool is parked on a threading.Event the
+    # interrupt cannot reach; cancel the run's pending relays so the thread unwinds now
+    # (both the session-authority stop and the in-process cancel below).
+    cancelled = _cancel_client_tool_calls(run_id, drop_notify=False)
+    if cancelled:
+        logger.info("[api_server] stop cancelled %d pending client tool call(s) for run %s", cancelled, run_id)
     # A run whose turn a live Bot Chat owns (``_execute_run_via_live_owner``) is not an API
     # admission: its stop is the legacy in-process task cancel below, never ``stop_run``.
     if (getattr(self.gateway_runner, 'session_authority', None) is not None

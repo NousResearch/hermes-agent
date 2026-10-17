@@ -666,6 +666,96 @@ Answer a canonical clarification with `request_id`, `execution_generation`, and
 resolve the same waiting tool; answering does not submit another inference turn.
 MCP trust-gate consent — a write-capable tool on a server configured `trust: untrusted` — surfaces the same way: the run emits an `approval.request` event and parks in `waiting_for_approval` until this endpoint resolves it (`once` runs the tool, `deny` blocks it).
 
+## Split-runtime (client-executed tools)
+
+By default every tool a run invokes executes on the API-server host. **Split-runtime** lets a client — a phone app, a desktop shell, a device agent — supply its *own* tools and execute them locally, while the model and all server-side tools keep running on the Hermes host.
+
+Use it when the tool can only run where the client is: setting a timer on the handset, opening an app, reading a sensor, driving a local UI.
+
+### Enabling it
+
+Off by default. Turn it on per profile alongside the other api_server knobs:
+
+```yaml
+api_server:
+  split_runtime: true
+```
+
+It is also read from the adapter's platform config and from the environment, in this order of precedence:
+
+1. `platforms.api_server.extra.split_runtime`
+2. `API_SERVER_SPLIT_RUNTIME=true`
+3. the top-level `api_server: split_runtime:` block shown above
+
+`/v1/capabilities` reports the resolved value under `runtime.split_runtime`, so a client can feature-detect before offering device tools — check there rather than inferring from your own config.
+
+Enabling the flag alone changes nothing: the relay only engages when a run **also** carries a non-empty `tools` array.
+
+### The round trip
+
+1. **Client submits the run with its tools.** `POST /v1/runs` accepts an OpenAI-shaped `tools` array. Those names are merged into the agent's tool list but are not dispatched on the host.
+
+   ```json
+   {
+     "input": "set a timer for 5 minutes",
+     "tools": [
+       {
+         "type": "function",
+         "function": {
+           "name": "set_timer",
+           "description": "Set a timer on the client device.",
+           "parameters": {
+             "type": "object",
+             "properties": {"minutes": {"type": "integer"}}
+           }
+         }
+       }
+     ]
+   }
+   ```
+
+2. **The model calls one.** The agent thread suspends and the run's SSE stream emits a `tool_call.request` event. The run status becomes `waiting_for_tool`.
+
+   ```json
+   {"event": "tool_call.request", "run_id": "run_abc123", "call_id": "call_1", "name": "set_timer", "arguments": {"minutes": 5}}
+   ```
+
+   Events are framed as `data: {json}` with no `event:` line — the type is the `event` field inside the payload.
+
+3. **The client executes it locally** (including its own confirmation gate) and returns the result.
+
+### POST /v1/runs/\{run_id\}/tool_result
+
+Resolve one pending client-tool call. The agent thread resumes with the supplied output as the tool result; to the model this is indistinguishable from a locally-executed tool.
+
+```json
+{
+  "call_id": "call_1",
+  "output": "timer set for 5 minutes"
+}
+```
+
+`output` may be a string, object, or array (objects and arrays are JSON-encoded). `result` and `content` are accepted as aliases. Set `"error": true` to hand the model an error observation instead of a result.
+
+Responses:
+
+| Status | Meaning |
+|---|---|
+| `200` | Resolved; the run resumes and emits `tool_call.responded`. |
+| `400` | Missing or non-string `call_id`. |
+| `404` | Unknown `run_id`. |
+| `409` | No pending call with that `call_id` **in this run** — already resolved, expired, or never existed. |
+
+Pending calls are scoped to `(run_id, call_id)`. A `call_id` is only unique within its own run, so a result posted to a different run's endpoint never resolves this one — it returns `409` even when the id is valid elsewhere.
+
+### Timeouts and cleanup
+
+A suspended call is bounded by `api_server.gateway_timeout` (default 300s); on expiry the model receives a timeout error rather than the agent thread hanging. Ending the run — completion, `POST /v1/runs/{run_id}/stop`, or gateway shutdown — cancels every pending client-tool call for that run so no worker is left blocked.
+
+### Reserved names
+
+A client tool cannot take the name of a host tool that owns its own dispatch. Parallel-safe tools, path-scoped file tools, and the agent-level tools (`todo_list`, `session_search`, `memory`, `clarify`, `read_terminal`, `delegate_task`, and the like) are rejected at submission with `400`, since a same-named client tool could not be intercepted consistently across execution paths. Pick a distinct name for the device tool.
+
 ## Jobs API (background scheduled work)
 
 The server exposes a lightweight jobs CRUD surface for managing scheduled / background agent runs from a remote client. All endpoints are gated behind the same bearer auth.

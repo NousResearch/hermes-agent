@@ -84,6 +84,7 @@ _CAPABILITY_ENDPOINTS = (
     ("run_status", ("GET", "/v1/runs/{run_id}")),
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
+    ("run_tool_result", ("POST", "/v1/runs/{run_id}/tool_result")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
     ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown", "run_unknown_resolution")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
@@ -138,6 +139,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
+from gateway.platforms import api_server_client_tools as _client_tools
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
@@ -2452,12 +2454,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_require_auth
     async def _handle_capabilities(self, request: web.Request) -> web.Response:
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
+        _sr = self._split_runtime_enabled()
         runner = getattr(self, "gateway_runner", None)
         features = {
             "chat_completions": True, "chat_completions_streaming": True,
             "responses_api": True, "responses_streaming": True, "run_submission": True,
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
-            **_STATIC_FEATURE_FLAGS,
+            **_STATIC_FEATURE_FLAGS, "client_tool_execution": _sr,
             "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
             "cors": bool(self._cors_origins),
             # Always advertised for feature-detection; enabled follows config.
@@ -2483,12 +2486,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
             "auth": {"type": "bearer", "required": bool(self._api_key)},
-            "runtime": {
-                "mode": "server_agent", "tool_execution": "server", "split_runtime": False,
-                "description": (
-                    "The API server creates a server-side Hermes AIAgent; "
-                    "tools execute on the API-server host unless a future "
-                    "explicit split-runtime mode is enabled.")},
+            "runtime": _client_tools.runtime_capabilities(_sr),
             "features": features,
             "endpoints": {
                 name: {"method": entry[0], "path": entry[1]}
@@ -4391,6 +4389,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_get_run = _run_route_delegate("_handle_get_run")
     _handle_run_events = _run_route_delegate("_handle_run_events")
     _handle_run_approval = _run_route_delegate("_handle_run_approval")
+    _handle_run_tool_result = _run_route_delegate("_handle_run_tool_result")
+    _split_runtime_enabled = _client_tools.split_runtime_enabled
     _handle_run_clarify = _run_route_delegate("_handle_run_clarify")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
     _handle_resolve_unknown_run = _run_route_delegate("_handle_resolve_unknown_run")

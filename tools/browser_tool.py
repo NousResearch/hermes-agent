@@ -1228,6 +1228,11 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
         result = _lp._annotate_lightpanda_fallback(
             {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
     else:
+        # Hidden tab (document.visibilityState === 'hidden') gets no compositor frame, so
+        # Page.captureScreenshot would block until the command timeout (#103280). Bring the
+        # active tab to the foreground first (Page.bringToFront); best-effort — on failure the
+        # screenshot below still runs and reports its own error.
+        _session._ensure_tab_foreground(effective_task_id)
         # In the sandbox the CLI writes to ITS filesystem; the file is fetched back below.
         remote_path = _session.sandbox_screenshot_path(screenshot_path)
         screenshot_args = (["--annotate"] if annotate else []) + ["--full", remote_path or str(screenshot_path)]

@@ -35,4 +35,5 @@ def test_register_shape_and_core_wiring_removed():
     assert Platform.YUANBAO not in _BUILTIN_ADAPTERS
     assert all(p["key"] != "yuanbao" for p in _PLATFORMS)
     assert "yuanbao" not in smt._CHUNKED_ROUTES
-    assert "yuanbao" in smt._PLUGIN_STANDALONE_MEDIA
+    # Media sends bypass the live adapter for the standalone sender (was a _PLUGIN_STANDALONE_MEDIA row).
+    assert kw["standalone_send"].media is True

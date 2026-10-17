@@ -20,6 +20,7 @@ Three hardening changes under test:
 from __future__ import annotations
 
 import asyncio
+import random
 
 import pytest
 
@@ -396,3 +397,100 @@ async def test_redial_hold_expires_so_a_lost_suspend_cannot_strand_us(monkeypatc
     finally:
         t._closing = True
         supervisor.cancel()
+
+
+# ── reconnect backoff across short-lived connections ─────────────────────────
+
+
+class _FlappingConnector:
+    """Real websockets server that accepts every upgrade, answers the hello with a
+    descriptor, then drops the socket right away — a connector in a crash loop."""
+
+    DESCRIPTOR = {
+        "contract_version": 1, "platform": "discord", "label": "Discord", "max_message_length": 2000,
+        "supports_draft_streaming": False, "supports_edit": True, "supports_threads": True,
+        "markdown_dialect": "discord", "len_unit": "chars",
+    }
+
+    def __init__(self):
+        self.dials = 0
+        self._server = None
+        self.url = ""
+
+    async def start(self):
+        import websockets
+
+        self._server = await websockets.serve(self._handle, "127.0.0.1", 0)
+        self.url = f"ws://127.0.0.1:{next(iter(self._server.sockets)).getsockname()[1]}"
+
+    async def stop(self):
+        self._server.close()
+        await self._server.wait_closed()
+
+    async def _handle(self, ws):
+        import json
+
+        self.dials += 1
+        async for raw in ws:
+            if json.loads(str(raw).split("\n")[0]).get("type") == "hello":
+                await ws.send(json.dumps({"type": "descriptor", "descriptor": self.DESCRIPTOR}) + "\n")
+                await asyncio.sleep(0.01)
+                await ws.close(code=1011, reason="overloaded")
+                return
+
+
+@pytest.mark.asyncio
+async def test_short_lived_connections_keep_climbing_the_backoff_ladder(monkeypatch):
+    """A connector that drops the socket right after every handshake must not be
+    re-dialed at the base delay forever: each short-lived connection counts as a
+    failed attempt, so the supervisor's wait climbs toward the cap."""
+    waits: list[float] = []
+    real_asyncio = ws_transport_mod.asyncio
+
+    class _AsyncioProxy:
+        """Records the transport module's own sleeps (not websockets' keepalive sleeps)."""
+
+        def __getattr__(self, name):
+            return getattr(real_asyncio, name)
+
+        @staticmethod
+        async def sleep(delay, *args, **kwargs):
+            if delay > 0:
+                waits.append(delay)
+            await real_asyncio.sleep(0, *args, **kwargs)
+
+    monkeypatch.setattr(ws_transport_mod, "asyncio", _AsyncioProxy())
+    monkeypatch.setattr(random, "uniform", lambda lo, hi: hi)  # deterministic jitter ceiling
+    srv = _FlappingConnector()
+    await srv.start()
+    t = WebSocketRelayTransport(
+        srv.url, "discord", "bot", reconnect=True, reconnect_backoff_s=1.0, reconnect_max_backoff_s=30.0
+    )
+    try:
+        await t.connect()
+        await t.handshake()
+        for _ in range(300):
+            if srv.dials >= 5:
+                break
+            await real_asyncio.sleep(0.01)
+        assert srv.dials >= 5
+        assert waits[:4] == [1.0, 2.0, 4.0, 8.0], waits
+    finally:
+        await t.disconnect(budget_s=0)
+        await srv.stop()
+
+
+@pytest.mark.asyncio
+async def test_stable_connection_resets_the_backoff_ladder(monkeypatch):
+    """Once a connection has stayed up for the stability window, the next drop
+    starts over at the base delay instead of inheriting the old ladder position."""
+    monkeypatch.setattr(ws_transport_mod, "_STABLE_CONNECTION_S", 0.0)
+    fake = _DroppingWS()
+    t = WebSocketRelayTransport("ws://unused", "discord", "bot", reconnect=False, reconnect_backoff_s=1.0)
+    t._reconnect_attempt = 7  # ladder position left over from an earlier outage
+    t._ws = fake
+    await t._on_descriptor({"descriptor": _FlappingConnector.DESCRIPTOR})
+    reader = asyncio.create_task(t._read_loop())
+    fake.drop.set()
+    await asyncio.wait_for(reader, timeout=2.0)
+    assert t._reconnect_attempt == 0

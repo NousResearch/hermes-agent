@@ -3243,7 +3243,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
-        include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
+        # Default True: display transcript keeps compaction-archived turns.
+        # Model working-set callers pass include_compacted=false.
+        include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=True)
         # Compression lineage: return root→tip messages, matching the REST router (#51058).
         messages = await asyncio.to_thread(
             db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,

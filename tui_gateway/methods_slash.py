@@ -162,12 +162,17 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
 def _live_session_messages(session: dict) -> Optional[list]:
     """Session-scoped transcript read; None when no db/key or the read fails. Uses
     ``_session_db`` (not ``_get_db()``): a profile session's rows live in its own
-    profile's state.db, and through the launch handle this read comes back empty."""
+    profile's state.db, and through the launch handle this read comes back empty.
+
+    include_compacted: /history is user-visible display, same contract as session.history
+    / REST — without it a compacted session prints only summary + tail.
+    """
     with _session_db(session) as db:
         if db is not None and session.get("session_key"):
             with contextlib.suppress(Exception):
                 return db.get_messages_as_conversation(
-                    session["session_key"], include_ancestors=True, include_row_ids=True)
+                    session["session_key"], include_ancestors=True, include_row_ids=True,
+                    include_compacted=True)
     return None
 
 

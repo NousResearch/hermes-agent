@@ -100,8 +100,17 @@ describe('useMessageStream compaction lifecycle', () => {
 
     stream = renderMessageStream(SID, { hydrateFromStoredSession, states })
 
+    emit('status.update', { kind: 'compacting' })
     emit('status.update', { kind: 'compacted' })
 
+    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
+    // Flag must survive the compacted edge so message.complete can skip
+    // post-turn hydrate and keep live scrollback (auto-compaction).
+    expect($compactingSessions.get()[SID]).toBeUndefined()
+    // compactedTurnRef is internal; prove the settle path still sees the turn
+    // as compacted by checking resume events still clear the compacting phase
+    // without an idle hydrate having wiped the transcript.
+    emit('message.delta', { text: 'resumed after compress' })
     expect(hydrateFromStoredSession).not.toHaveBeenCalled()
   })
 

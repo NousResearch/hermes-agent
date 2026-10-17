@@ -740,7 +740,11 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
 async def get_session_messages(
     session_id: str, profile: Optional[str] = None, limit: Optional[int] = Query(None, ge=0),
     offset: int = Query(0, ge=0), order: Optional[str] = Query(None),
-    include_compacted: bool = Query(False), inline_images: bool = Query(True)):
+    # Default True: this is a DISPLAY transcript. In-place compaction archives
+    # older turns as active=0/compacted=1; hiding them by default makes the UI
+    # look like the middle of the chat was deleted (still on disk). Callers that
+    # want the model working set pass include_compacted=false.
+    include_compacted: bool = Query(True), inline_images: bool = Query(True)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
 

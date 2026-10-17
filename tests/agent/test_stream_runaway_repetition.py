@@ -51,6 +51,8 @@ class _FakeEndpoint:
     def __init__(self, channel: str, text: str, *, endless: bool, prefix: str = "") -> None:
         self.channel, self.text, self.endless, self.prefix = channel, text, endless, prefix
         self.requests = 0
+        self.bodies: list[bytes] = []
+        self.recover_with: str | None = None  # plain answer served from the 2nd request on
         self._stop = threading.Event()
         endpoint = self
 
@@ -67,7 +69,7 @@ class _FakeEndpoint:
                 self.wfile.write(body)
 
             def do_POST(self):
-                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                endpoint.bodies.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
                 endpoint.requests += 1
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -112,6 +114,11 @@ class _FakeEndpoint:
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
             }) + "\n\n"
 
+        if self.recover_with is not None and self.requests > 1:
+            yield chunk({"content": self.recover_with})
+            yield chunk({}, "stop")
+            yield "data: [DONE]\n\n"
+            return
         for n, piece in enumerate(self._pieces()):
             if self.channel == _LOOP_BEHIND_DETAILS:
                 yield chunk({"reasoning_content": piece, "reasoning_details": [
@@ -208,8 +215,26 @@ def test_looping_stream_is_cut_without_a_stream_callback(endpoint, api_mode, cha
 
     assert (result["completed"], result["failure_reason"]) == (False, "truncated")
     assert "Repetition Detected" in result["final_response"]
-    assert server.requests == 1  # cut once; never continued or retried into the same loop
+    # Content loops are cut once and never continued. A reasoning loop gets exactly one retry with a
+    # wrap-up nudge; looping again ends the turn.
+    assert server.requests == (1 if channel == "content" else 2)
     unit = loop.strip()[:40]
+    assert not any(unit in json.dumps(m, ensure_ascii=False) for m in result["messages"])
+
+
+def test_reasoning_loop_retries_once_with_wrap_up_nudge_and_recovers(endpoint):
+    server = endpoint("reasoning", _CYCLE_125650, endless=True)
+    server.recover_with = "Backlog: 3 open items."
+
+    result = _run_turn(server, "chat_completions")
+
+    assert server.requests == 2
+    assert result["completed"] is True
+    assert result["final_response"] == "Backlog: 3 open items."
+    # The retry request carried the wrap-up nudge (the repair pass may fold it into the user row).
+    assert "Stop deliberating; act now" in server.bodies[1].decode()
+    assert "Stop deliberating; act now" not in server.bodies[0].decode()
+    unit = _CYCLE_125650.strip()[:40]
     assert not any(unit in json.dumps(m, ensure_ascii=False) for m in result["messages"])
 
 

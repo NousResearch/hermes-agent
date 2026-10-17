@@ -748,6 +748,8 @@ function Start-DesktopRelaunch {
     # finally block downgrades the on-screen/on-disk outcome when it didn't
     # — the sibling truth contract to posix.sh's launch acceptance.
     if (-not $RelaunchExe) { return $false }
+    # The relaunched app must not inherit the hand-off's update env (posix.sh: env -u).
+    Remove-Item Env:HERMES_UPDATE_HANDOFF_PID -ErrorAction SilentlyContinue
     # electron-builder replaces win-unpacked in place. After a successful
     # update it can remove the old Hermes.exe before writing the replacement,
     # so a one-shot existence check races the rebuild and strands the user.
@@ -1499,6 +1501,15 @@ try {
         exit 0
     }
     Start-MarkerCustodian
+    # `hermes update` runs under OUR marker claim (contract C1 rule 4/6), but line 1 now names
+    # the custodian: a sibling of the update child, never its ancestor, so
+    # update_lock._is_partner can only match it through this variable. Without it the line-4
+    # delegate is the child's only way in, and the child drops that line itself when its launch
+    # preparation (venv_sync.prepare_launch: stale dependencies after a hand merge or an
+    # interrupted pull, or an owed tail) releases its pre-flight claim -- the relaunched update
+    # then refused its own claim with exit 2. Same export as posix.sh (013e94b38a, #134268):
+    # the custodian once it is named, and our own pid when it is not.
+    $env:HERMES_UPDATE_HANDOFF_PID = if ($script:MarkerOwner) { [string]$script:MarkerOwner.Pid } else { [string]$PID }
 
     # StartAssigned passes a null CreateProcess currentDirectory, so children
     # inherit the hand-off process directory rather than PowerShell's $PWD.

@@ -21,7 +21,9 @@ from agent.message_sanitization import (
 )
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
-from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
+from agent.prompt_builder import (
+    STEER_DISPLAY_KIND, format_kanban_comment_marker, steer_user_row,
+)
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
@@ -3796,6 +3798,28 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
+def apply_pending_kanban_note_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
+    """Append a pending Kanban comment to the last tool result in this batch."""
+    if num_tool_msgs <= 0 or not messages:
+        return
+    note_text = getattr(agent, "_drain_pending_kanban_note", lambda: None)()
+    if not note_text:
+        return
+    tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
+    target = next((messages[j] for j in tail if isinstance(messages[j], dict) and messages[j].get("role") == "tool"), None)
+    if target is None:
+        with getattr(agent, "_pending_kanban_note_lock"):
+            existing = getattr(agent, "_pending_kanban_note", None)
+            agent._pending_kanban_note = (existing + "\n" + note_text) if existing else note_text
+        return
+    marker = format_kanban_comment_marker(note_text)
+    content = target.get("content", "")
+    if isinstance(content, str):
+        target["content"] = content + marker
+    else:
+        target["content"] = [*(content or ()), {"type": "text", "text": marker.lstrip()}]
+
+
 def _shutdown_socket(sock: Any) -> None:
     """``shutdown(SHUT_RDWR)`` WITHOUT closing the FD. ``close()`` from a non-owner thread is
     unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a flushed TLS record lands
@@ -3829,6 +3853,7 @@ def force_close_tcp_sockets(client: Any) -> int:
 __all__ = [
     "_iter_pool_sockets",
     "anthropic_prompt_cache_policy",
+    "apply_pending_kanban_note_to_tool_results",
     "apply_pending_steer_to_tool_results",
     "blank_cache_policy_stub",
     "convert_to_trajectory_format",

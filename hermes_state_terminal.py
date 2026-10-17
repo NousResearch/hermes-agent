@@ -55,6 +55,15 @@ def identity_key(principal_id, session_id, request_id):
         payload={'principal': principal_id, 'request': request_id})
 
 
+def terminal_api_admissions(conn, request_id):
+    """Retired API admissions that carried *request_id*: a deleted session's tombstones, kept for
+    the exact-retry horizon, still spend its Idempotency-Key for every other target."""
+    return [json.loads(row[0]) for row in conn.execute(
+        "SELECT value FROM state_meta WHERE key GLOB ? "
+        "AND json_extract(value, '$.principal_id')='api' AND json_extract(value, '$.request_id')=?",
+        (ADMISSION_PREFIX + '*', request_id))]
+
+
 def terminal_admission(conn, admission_id):
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                          (ADMISSION_PREFIX + admission_id,)).fetchone()

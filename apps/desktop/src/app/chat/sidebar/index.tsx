@@ -39,6 +39,7 @@ import {
   $dismissedAutoProjectIds,
   $panesFlipped,
   $pinnedSessionIds,
+  $pinnedSortKey,
   $sidebarCardRows,
   $sidebarCronOpen,
   $sidebarFiltersActive,
@@ -136,7 +137,7 @@ import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
 import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
-import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
+import { $sidebarSessionRankIds, sortPinnedSessions } from '@/store/sidebar-sort'
 
 import {
   type AppView,
@@ -156,6 +157,7 @@ import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { PinnedSortMenu } from './pinned-sort-menu'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -700,6 +702,17 @@ export function ChatSidebar({
         unconfirmedPinWrites
       ),
     [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
+  )
+
+  // What the Pinned section actually renders. Pinned is exempt from the
+  // sidebar-wide sort (a pin list is hand-built, see resolvePinnedSessions), so
+  // its own header control drives this list — and `manual` leaves the pin order
+  // exactly as resolved above.
+  const pinnedSortKey = useStore($pinnedSortKey)
+
+  const pinnedRows = useMemo(
+    () => sortPinnedSessions(pinnedSessions, pinnedSortKey, dotStates),
+    [dotStates, pinnedSessions, pinnedSortKey]
   )
 
   // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
@@ -1769,6 +1782,11 @@ export function ChatSidebar({
                 contentClassName="flex flex-col gap-px rounded-lg pb-2 pt-1"
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
+                // One control, in the header: the pinned order is this
+                // section's own (nothing else sorts it), so its sort lives
+                // here rather than in the sidebar-wide filter menu. Hidden
+                // when there is nothing to order.
+                headerAction={pinnedRows.length > 1 ? <PinnedSortMenu /> : undefined}
                 label={s.pinned}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
@@ -1781,9 +1799,12 @@ export function ChatSidebar({
                 open={pinsOpen}
                 pinned
                 rootClassName="shrink-0 p-0 pb-1"
-                sessions={pinnedSessions}
+                sessions={pinnedRows}
                 showProfileTags={showAllProfiles}
-                sortable={pinnedSessions.length > 1}
+                // Dragging IS the manual order: while a sort key is in charge
+                // the rows are not the user's sequence, so the drag would
+                // fight it. Picking "Manual" in the menu hands it back.
+                sortable={pinnedSortKey === 'manual' && pinnedRows.length > 1}
               />
             )}
 

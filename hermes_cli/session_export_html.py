@@ -654,7 +654,7 @@ def _escape_html(text: Any) -> str:
 
 def _format_timestamp(ts: Any) -> str:
     # A corrupt cell renders as N/A; never raw text (a TEXT timestamp would otherwise reach an HTML sink).
-    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts and (ts := coerce_epoch(ts)) else "N/A"
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if (ts := coerce_epoch(ts)) is not None else "N/A"
 
 
 _ROLE_ICONS = {"user": ICON_USER, "assistant": ICON_BOT, "system": ICON_SHIELD}
@@ -707,7 +707,7 @@ def _generate_messages_html(messages: list[dict[str, Any]]) -> str:
             f'<div class="message message-{role_class} active"{delay_style}>'
             f'  <div class="message-header">'
             f'    <div class="role-badge">{_CHEVRON_HTML} {_ROLE_ICONS.get(role, ICON_TERMINAL)} {_escape_html(role)}</div>'
-            f'    <div class="timestamp">{_format_timestamp(msg.get("timestamp", 0))}</div>'
+            f'    <div class="timestamp">{_format_timestamp(msg.get("timestamp"))}</div>'
             '  </div>'
             '  <div class="message-body">'
         )
@@ -737,7 +737,7 @@ def _sidebar_item_html(s: dict[str, Any]) -> str:
                 <div class="session-item-title">{_escape_html(title)}</div>
                 <div class="session-item-meta">
                     <span>{_escape_html(sid[:8])}</span>
-                    <span>{_format_timestamp(s.get("started_at", 0)).split(" ")[0]}</span>
+                    <span>{_format_timestamp(s.get("started_at")).split(" ")[0]}</span>
                 </div>
             </a>
             """
@@ -776,7 +776,7 @@ def _session_view_html(s: dict[str, Any], is_multi: bool) -> str:
                 <div class="meta">
                     <div class="meta-item"><strong>ID:</strong> {escaped_sid}</div>
                     <div class="meta-item"><strong>Model:</strong> {_escape_html(s.get("model") or "Unknown")}</div>
-                    <div class="meta-item"><strong>Started:</strong> {_format_timestamp(s.get("started_at", 0))}</div>
+                    <div class="meta-item"><strong>Started:</strong> {_format_timestamp(s.get("started_at"))}</div>
                 </div>
                 {system_html}
             </header>

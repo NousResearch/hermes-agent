@@ -30,6 +30,11 @@ def _iso_timestamp(value: Any) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
+def _timestamp_or(value: Any, fallback: Any) -> Any:
+    """Use the legacy time field only when the preferred field is unset, preserving epoch zero."""
+    return fallback if value is None or value == "" else value
+
+
 def _frontmatter_line(key: str, value: Any) -> str:
     if value is None or isinstance(value, bool):
         shown = {None: "null", True: "true", False: "false"}[value]
@@ -46,7 +51,7 @@ def _message_heading(message: dict[str, Any]) -> str:
     role = str(message.get("role") or "message")
     name = message.get("name") or message.get("tool_name")
     label = f"Tool — {name}" if role == "tool" and name else role.capitalize()
-    timestamp = _iso_timestamp(message.get("created_at") or message.get("timestamp"))
+    timestamp = _iso_timestamp(_timestamp_or(message.get("created_at"), message.get("timestamp")))
     return f"### {label}{' — ' + timestamp if timestamp else ''}"
 
 
@@ -91,8 +96,8 @@ def _export_body_without_hash(session: dict[str, Any], *, fmt: str, exported_at:
         ("session_id", session_id),
         ("title", session.get("title")),
         ("source", session.get("source")),
-        ("created_at", _iso_timestamp(session.get("started_at") or session.get("created_at"))),
-        ("updated_at", _iso_timestamp(session.get("last_active") or session.get("updated_at"))),
+        ("created_at", _iso_timestamp(_timestamp_or(session.get("started_at"), session.get("created_at")))),
+        ("updated_at", _iso_timestamp(_timestamp_or(session.get("last_active"), session.get("updated_at")))),
         ("ended_at", _iso_timestamp(session.get("ended_at"))),
         ("model", session.get("model")),
         ("provider", session.get("billing_provider") or session.get("provider")),

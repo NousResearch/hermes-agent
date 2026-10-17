@@ -12,8 +12,11 @@ DevTools endpoint, so the dock exposes a debugging port and the agent ATTACHES t
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -34,7 +37,7 @@ def profile_dir() -> Path:
     return runtime.state_dir() / "browser-profile"
 
 
-def executable() -> Optional[str]:
+def executable(*, profile: Optional[Path] = None) -> Optional[str]:
     """The Chromium agent-browser launches: an explicit ``AGENT_BROWSER_EXECUTABLE_PATH``, else the newest
     Playwright Chromium it bundles, else a system Chrome/Chromium. ``None`` when there is none.
 
@@ -42,14 +45,57 @@ def executable() -> Optional[str]:
     Playwright's bundle has no setuid ``chrome_sandbox`` and dies 'FATAL: No usable sandbox!' there, while
     a distro chromium ships the helper. The bundle stays the answer when it is the only browser — a dock
     icon that fails loudly beats a non-root ``--no-sandbox``.
+
+    A ``profile`` (its persistent user-data-dir) floors the selection: Chromium refuses to open a
+    user-data-dir written by a newer build — it SIGTRAPs right after opening the DevTools endpoint,
+    which the browser tool reports as 'CDP response channel closed'. So when the explicit pin is older
+    than the profile's ``Last Version``, a bundled/system build that can still open it is preferred;
+    when none exists, the explicit pin stands (every choice crashes the same way, and the user chose it).
     """
     explicit = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
-    if explicit and os.access(explicit, os.X_OK) and not _is_headless_shell(explicit):
+    explicit_ok = bool(explicit) and os.access(explicit, os.X_OK) and not _is_headless_shell(explicit)
+    if explicit_ok and _opens_profile(explicit, profile):
         return explicit
     finders = [_managed_executable, _system_executable]
     if not _is_root() and _userns_restricted():
         finders.reverse()
-    return next((exe for find in finders if (exe := find())), None)
+    for find in finders:
+        exe = find()
+        if exe and _opens_profile(exe, profile):
+            return exe
+    return explicit if explicit_ok else None
+
+
+@lru_cache(maxsize=8)
+def _chromium_major(exe: str) -> Optional[int]:
+    """Major version a Chromium binary reports, or ``None`` when it will not say."""
+    try:
+        probe = subprocess.run([exe, "--version"], shell=False, capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"(\d+)\.", probe.stdout)
+    return int(match.group(1)) if match else None
+
+
+def _profile_chromium_major(profile: Optional[Path]) -> Optional[int]:
+    """Major version of the build that last wrote ``profile`` (Chromium's ``Last Version`` file)."""
+    if profile is None:
+        return None
+    try:
+        first = (profile / "Last Version").read_text(encoding="utf-8-sig").split(".")[0].strip()
+    except OSError:
+        return None
+    return int(first) if first.isdigit() else None
+
+
+def _opens_profile(exe: str, profile: Optional[Path]) -> bool:
+    """Whether ``exe`` can open ``profile``: an unknown version on either side never blocks a launch."""
+    last = _profile_chromium_major(profile)
+    if last is None:
+        return True
+    major = _chromium_major(exe)
+    return major is None or major >= last
 
 
 def _managed_executable() -> Optional[str]:
@@ -82,8 +128,9 @@ def _userns_restricted() -> bool:
 
 def dock_launch() -> Optional[tuple[str, str]]:
     """``(executable, user_data_dir)`` for the dock's Browser icon, or ``None`` when no Chromium exists."""
-    exe = executable()
-    return (exe, str(profile_dir())) if exe else None
+    user_data_dir = profile_dir()
+    exe = executable(profile=user_data_dir)
+    return (exe, str(user_data_dir)) if exe else None
 
 
 def dock_argv(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = None) -> list[str]:
@@ -176,7 +223,7 @@ def env_for_agent(env: dict) -> dict:
     screen is up (:func:`runtime.desktop_env`), so the heavier build is pinned just when it is the point.
     """
     env.setdefault("AGENT_BROWSER_PROFILE", str(profile_dir()))
-    exe = executable()
+    exe = executable(profile=profile_dir())
     if exe:
         pinned = env.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
         if not pinned or _is_headless_shell(pinned):

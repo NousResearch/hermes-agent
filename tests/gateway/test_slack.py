@@ -4594,6 +4594,79 @@ class TestThreadImageContext:
         assert msg_event.message_type == MessageType.TEXT
         assert "[image: chart.png]" in msg_event.channel_context
 
+    @pytest.mark.asyncio
+    async def test_cold_start_delivers_reply_image(
+        self, adapter_with_session_store
+    ):
+        """Images posted in prior thread REPLIES are delivered on the cold-start
+        turn too, not just the root's (#134486): a text root with a screenshot
+        reply must reach the agent as media, while the text marker still shows
+        where the file sat in the thread."""
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file = AsyncMock(return_value="/tmp/hermes-cached-reply.png")
+        a._app.client.conversations_replies = self._replies(
+            mid_files=[
+                {
+                    "id": "F2",
+                    "name": "screenshot.png",
+                    "mimetype": "image/png",
+                    "url_private_download": "https://files.slack.com/T1-F2/screenshot.png",
+                }
+            ]
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        a.handle_message.assert_awaited_once()
+        msg_event = a.handle_message.call_args[0][0]
+        assert msg_event.media_urls == ["/tmp/hermes-cached-reply.png"]
+        assert msg_event.media_types == ["image/png"]
+        assert msg_event.message_type == MessageType.PHOTO
+        assert "[image: screenshot.png]" in msg_event.channel_context
+
+    @pytest.mark.asyncio
+    async def test_thread_images_root_first_and_capped(
+        self, adapter_with_session_store
+    ):
+        """The root's images lead and the shared cap still bounds downloads:
+        root 2 + replies 3 → exactly _THREAD_IMAGE_MAX delivered, root's two
+        first, reply files beyond the cap stay text markers."""
+        a = self._prep(adapter_with_session_store)
+
+        def _dl(url, ext, team_id=None):
+            return f"/tmp/hermes-cached-{url.rsplit('/', 1)[-1]}"
+
+        a._download_slack_file = AsyncMock(side_effect=_dl)
+
+        def _img(fid: str, name: str) -> dict:
+            return {
+                "id": fid,
+                "name": name,
+                "mimetype": "image/png",
+                "url_private_download": f"https://files.slack.com/T1-{fid}/{name}",
+            }
+
+        a._app.client.conversations_replies = self._replies(
+            root_files=[_img("F1", "chart.png"), _img("F2", "diagram.png")],
+            mid_files=[_img("F3", "a.png"), _img("F4", "b.png"), _img("F5", "c.png")],
+        )
+
+        await a._handle_slack_message(self._thread_event())
+
+        a.handle_message.assert_awaited_once()
+        msg_event = a.handle_message.call_args[0][0]
+        from plugins.platforms.slack.adapter import _THREAD_IMAGE_MAX
+
+        assert a._download_slack_file.await_count == _THREAD_IMAGE_MAX
+        assert msg_event.media_urls == [
+            "/tmp/hermes-cached-chart.png",
+            "/tmp/hermes-cached-diagram.png",
+            "/tmp/hermes-cached-a.png",
+            "/tmp/hermes-cached-b.png",
+        ]
+        # The capped-out reply file still appears as a text marker.
+        assert "[image: c.png]" in msg_event.channel_context
+
 
 # =========================================================================
 # Markdown table preprocessing (Slack mrkdwn does not render GFM tables)

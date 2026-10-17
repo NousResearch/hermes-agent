@@ -153,3 +153,43 @@ class TestExplicitEmptySelection:
         assert result is not None
         assert "memory" in result
         assert "terminal" not in result
+
+
+class TestConfigLoadFailure:
+    """A config/resolver failure is a zero-tool state too: [] (with a notice), never None.
+
+    None means 'no restriction' (every toolset), so the old ``except`` fallback turned a
+    restriction that could not be read into the widest grant. ``platform_toolsets: oops``
+    (a scalar where a mapping belongs) is a real trigger: the resolver raises on ``.get``.
+    Same shape as the cron fix for #111380.
+    """
+
+    @staticmethod
+    def _config(no_desktop_env, load_config, posture=None):
+        import agent.coding_context as cc
+        import hermes_cli.config as config_mod
+
+        no_desktop_env.setattr(cc, "coding_selection", lambda **_: posture)
+        no_desktop_env.setattr(config_mod, "load_config", load_config)
+
+    def test_malformed_platform_toolsets_yields_no_toolsets(self, no_desktop_env, capsys):
+        self._config(no_desktop_env, lambda: {"platform_toolsets": "oops"})
+
+        assert server._load_enabled_toolsets("tui") == []
+        # No client-surface fold-in either: the zero state is returned bare.
+        assert server._load_enabled_toolsets("desktop") == []
+        assert "starting with no tools" in capsys.readouterr().err
+
+    def test_load_config_error_yields_no_toolsets(self, no_desktop_env, capsys):
+        def unreadable():
+            raise OSError("config.yaml is unreadable")
+
+        self._config(no_desktop_env, unreadable)
+
+        assert server._load_enabled_toolsets("tui") == []
+        assert "config.yaml is unreadable" in capsys.readouterr().err
+
+    def test_coding_posture_with_config_error_yields_no_toolsets(self, no_desktop_env):
+        self._config(no_desktop_env, lambda: {"platform_toolsets": "oops"}, posture=["coding"])
+
+        assert server._load_enabled_toolsets("tui") == []

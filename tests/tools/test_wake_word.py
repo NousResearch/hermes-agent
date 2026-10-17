@@ -972,3 +972,74 @@ def test_feed_audio_rejects_wrong_owner(monkeypatch, tmp_path):
     ww.start_listening(lambda: None, owner=owner, config={}, external_audio=True)
     assert ww.feed_audio(owner=object(), pcm_int16=b"\x00\x00") is False
     assert ww.stop_listening(owner=owner) is True
+
+
+def test_client_capture_quantized_floor_never_flags_silent(monkeypatch, tmp_path):
+    """Regression (#132267): the desktop's floatToInt16LE truncation lands a live
+    noise-suppressed mic's ~-90 dBFS floor on exact int16 zeros, so the backend's
+    int16 _SILENCE_PEAK judge must not run on client-fed frames — a quiet-but-live
+    mic may never set audio_silent (false 'Audio: silent' status plus an
+    inapplicable wake_word.input_device hint). Only a starved feed queue may."""
+    monkeypatch.setattr(ww, "_SILENCE_ALERT_SECONDS", 0.001)  # trip on the first frame
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=False))
+    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
+    monkeypatch.setattr(ww, "_import_audio",
+                        lambda: (_ for _ in ()).throw(OSError("no local mic")))
+    owner = object()
+    det = ww.start_listening(lambda: None, owner=owner, config={}, external_audio=True)
+    fl = int(det.engine.frame_length)
+    stop_feeding = threading.Event()
+    try:
+        # A live quiet mic feeds continuously. On base, four consecutive quiet
+        # frames (peak 0 <= _SILENCE_PEAK) flag it silent; with the fix, every
+        # frame keeps the capture healthy no matter how quiet it quantizes.
+        stop_feeding = threading.Event()
+
+        def _feed(values):
+            while not stop_feeding.is_set():
+                det._audio_q.put(_Frame(values))
+                time.sleep(0.02)
+
+        feeder = threading.Thread(target=_feed, args=([0] * fl,), daemon=True)
+        feeder.start()
+        time.sleep(0.8)  # >> the 4-frame trip budget at this alert setting
+        assert det.audio_silent is False, \
+            "quantized quiet live frames must never flag a client capture silent"
+        stop_feeding.set()
+        feeder.join(1.0)
+
+        monkeypatch.setattr(ww, "_detector", det)
+        assert ww.audio_is_silent() is False
+        assert "wake_word.input_device" not in ww.silent_audio_hint(det.input_device_details)
+
+        # Starvation (no wake.feed at all) still flags — that is the one
+        # client-side shape the backend can see for itself.
+        deadline = time.monotonic() + 3.0
+        while not det.audio_silent and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert det.audio_silent is True, "a starved feed queue must still flag silence"
+
+        # Frames flowing again (loud or quiet) clears it.
+        feeder = threading.Thread(target=_feed, args=([500] * fl,), daemon=True)
+        stop_feeding.clear()
+        feeder.start()
+        deadline = time.monotonic() + 3.0
+        while det.audio_silent and time.monotonic() < deadline:
+            time.sleep(0.02)
+        stop_feeding.set()
+        feeder.join(1.0)
+        assert det.audio_silent is False, "frames flowing again must clear the flag"
+    finally:
+        stop_feeding.set()
+        monkeypatch.setattr(ww, "_detector", None)
+        ww.stop_listening(owner=owner)
+
+
+def test_local_capture_still_flags_int16_silence():
+    """The int16 level judge stays in force for backend-captured (local) audio:
+    a dead local mic delivering int16 zeros must still set audio_silent."""
+    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
+    det._note_silence(_Frame([0, 0, 0, 0]), 1)
+    assert det.audio_silent is True
+    det._note_silence(_Frame([500, 500, 500, 500]), 1)
+    assert det.audio_silent is False

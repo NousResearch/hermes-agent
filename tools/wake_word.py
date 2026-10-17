@@ -53,6 +53,10 @@ _DEFAULT_CONFIRMATION_FRAMES = 3
 # Dead-mic detection: an int16 stream whose peak stays at/below _SILENCE_PEAK for
 # this many consecutive seconds is flagged silent (desktop push-to-talk and the
 # backend listener capture differently, so one can work while the other is all zeros).
+# Client-captured chains (wake.feed) skip the level judge entirely: the desktop's
+# floatToInt16LE truncation lands a live noise-suppressed mic's ~-90 dBFS floor on
+# exact int16 zeros (#132267), so ANY int16 floor false-flags those mics — only a
+# starved feed queue (no wake.feed at all) may flag a client chain silent.
 _SILENCE_PEAK = 10
 _SILENCE_ALERT_SECONDS = 10
 
@@ -276,6 +280,13 @@ def _resample_audio_frame(np, frame, output_length: int):
 
 def silent_audio_hint(details: dict[str, Any]) -> str:
     """Platform-specific remediation for an armed stream delivering silence."""
+    # Client capture: the backend's PortAudio selector is irrelevant — the PCM
+    # comes from the desktop's getUserMedia, and input_device_details is a
+    # synthetic {"selector": "client"} with no device to reselect (#132267).
+    if str(details.get("selector")) == "client":
+        return ("Client wake capture delivers no audio. Check the desktop's "
+                "OS microphone permission for Hermes (the capture runs in the "
+                "app, not the backend), then re-toggle the wake word.")
     if sys.platform == "darwin":
         return ("Microphone delivers only silence. Grant the Hermes backend "
                 "microphone access in System Settings > Privacy & Security > "
@@ -646,7 +657,27 @@ class WakeWordDetector:
 
     def _note_silence(self, frame, silent_alert_frames: int) -> None:
         """Track consecutive near-zero frames; flag/unflag ``audio_silent``. ``frame`` is None when
-        no client frame arrived (counts as silence for status, but is never logged as a dead mic)."""
+        no client frame arrived (counts as silence for status, but is never logged as a dead mic).
+
+        Client-captured audio skips the int16 level judge: the desktop quantizes
+        float samples by truncation, so a live noise-suppressed mic's -90 dBFS
+        floor arrives as exact zeros and no int16 floor can tell it from a dead
+        chain. The client-side watchdog (pre-quantization floats) owns dead-chain
+        detection there; here only a starved feed queue may flag silence."""
+        if self.external_audio:
+            if frame is not None:
+                if self._silent_frames:
+                    if self.audio_silent:
+                        logger.info("wake word: client wake frames flowing again — feed healthy")
+                    self._silent_frames, self.audio_silent = 0, False
+                return
+            self._silent_frames += 1
+            if self._silent_frames == silent_alert_frames:
+                self.audio_silent = True
+                logger.warning("wake word: no wake.feed frames for %ds; %s",
+                               _SILENCE_ALERT_SECONDS,
+                               silent_audio_hint(self.input_device_details))
+            return
         try:
             peak = 0 if frame is None or not len(frame) else int(abs(frame).max())
         except Exception:

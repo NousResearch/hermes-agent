@@ -204,6 +204,15 @@ def _native_slash_commands() -> tuple:
     return tuple(out)
 
 
+# Slash kickoffs whose session outlives the interaction: the autonomy loop (/goal, /loop,
+# /heartbeat) and the review/refine turns that keep reporting into the same session. A plain
+# message in an auto-threaded channel opens a thread, but these commands enter through the
+# slash path, which has no auto-thread gate — the loop then posted every continuation into
+# the shared channel for its whole life (#140720).
+_SLASH_KICKOFF_COMMANDS: frozenset[str] = frozenset(
+    {"goal", "subgoal", "loop", "heartbeat", "refine", "review"}
+)
+
 _DISCORD_SELECT_FIELD_LIMIT = 100
 # Select placeholders cap at 150 chars.
 _DISCORD_SELECT_PLACEHOLDER_LIMIT = 150
@@ -4515,7 +4524,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             "[Discord] slash %s: interaction expired before defer. "
             "Executing command anyway, skipping interaction followup.", command_text,
         )
-        event = self._build_slash_event(interaction, command_text)
+        event = self._build_slash_event(
+            interaction, command_text,
+            thread=await self._maybe_auto_thread_for_slash(interaction, command_text),
+        )
         await self.handle_message(event)
         if not deferred_response:
             return
@@ -4795,12 +4807,26 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             guild_id = getattr(guild, "id", None)
         return str(guild_id) if guild_id else None
 
-    def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
-        """Build a MessageEvent from a Discord slash command interaction."""
+    def _build_slash_event(
+        self, interaction: discord.Interaction, text: str, *, thread: Any = None,
+    ) -> MessageEvent:
+        """Build a MessageEvent from a Discord slash command interaction.
+
+        *thread* is a thread this adapter opened for the kickoff (``_maybe_auto_thread_for_slash``):
+        the event then carries the thread's source, exactly as a plain message auto-threaded by
+        ``on_message`` does. Without it the source follows ``interaction.channel`` as before.
+        """
         is_dm = isinstance(interaction.channel, discord.DMChannel)
         is_thread = isinstance(interaction.channel, discord.Thread)
+        # The thread wins over the interaction's channel: the session — and every loop
+        # continuation that reuses this source — lives there.
+        effective_channel = thread if thread is not None else interaction.channel
         thread_id = None
-        if is_dm:
+        if thread is not None:
+            chat_type = "thread"
+            thread_id = str(thread.id)
+            is_thread = True
+        elif is_dm:
             chat_type = "dm"
         elif is_thread:
             chat_type = "thread"
@@ -4809,37 +4835,91 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             chat_type = "group"
         # Named as a message here is: the pinned session-context prompt renders and keys on it.
         chat_name = ""
-        if is_dm:
+        if chat_type == "dm":
             chat_name = interaction.user.name
         elif is_thread:
-            chat_name = self._format_thread_chat_name(interaction.channel)
-        elif hasattr(interaction.channel, "name"):
-            chat_name = interaction.channel.name
-            if hasattr(interaction.channel, "guild") and interaction.channel.guild:
-                chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
+            chat_name = self._format_thread_chat_name(effective_channel)
+        elif hasattr(effective_channel, "name"):
+            chat_name = effective_channel.name
+            if hasattr(effective_channel, "guild") and effective_channel.guild:
+                chat_name = f"{effective_channel.guild.name} / #{chat_name}"
         # Forum threads inherit the parent forum's topic.
-        chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
+        chat_topic = self._get_effective_topic(effective_channel, is_thread=is_thread)
         # guild_id/parent_chat_id feed profile_routes matching, as on_message does.
         # guild_id/parent_chat_id feed profile_routes matching in build_source, exactly as on_message passes
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
-        parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
+        parent_id = (self._get_parent_channel_id(effective_channel) if is_thread else None) or ""
         # Without the role grant the gateway refuses a role-only member the slash gate admitted.
         source = self.build_source(
-            chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
+            chat_id=str(effective_channel.id) if thread is not None else str(interaction.channel_id),
+            chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
             role_authorized=self._slash_role_grant(interaction),
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
-        channel_id = str(interaction.channel_id)
+        channel_id = str(thread.id) if thread is not None else str(interaction.channel_id)
         return MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
             # Bound skills load only when a session starts, and "/skill x" or "/queue" can start one.
             auto_skill=self._resolve_channel_skills(channel_id, parent_id or None),
         )
+
+    async def _maybe_auto_thread_for_slash(
+        self, interaction: discord.Interaction, command_text: str,
+    ) -> Optional[Any]:
+        """Open the auto-thread a plain channel message would get, for a kickoff slash.
+
+        The message path isolates each channel message in its own thread so the session's turns
+        land there; a native slash never passes through that gate, so ``/goal`` or ``/loop`` run
+        from a channel kept a channel-scoped source and posted every continuation into the shared
+        channel (#140720). Same gate and exclusions as ``on_message``; returns the thread, or
+        ``None`` when threading is off, the channel opts out, this is not a kickoff command, or
+        creation fails — the command then runs channel-scoped, exactly as before.
+        """
+        parts = command_text.lstrip("/").split(None, 1)
+        command = parts[0].lower() if parts else ""
+        if command not in _SLASH_KICKOFF_COMMANDS:
+            return None
+        channel = await self._resolve_interaction_channel(interaction)
+        # DMs and threads have no parent thread to open; a kickoff inside a thread already scopes.
+        if channel is None or isinstance(channel, (discord.DMChannel, discord.Thread)):
+            return None
+        channel_id = str(getattr(channel, "id", None) or getattr(interaction, "channel_id", "") or "")
+        if not channel_id:
+            return None
+        channel_keys = {channel_id}
+        if channel_keys & self._get_no_thread_channels():
+            return None
+        voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
+        # Voice-linked text channels are transcribed inline: the message path never threads them.
+        if channel_id in voice_linked_ids:
+            return None
+        free_channels = self._discord_free_response_channels()
+        is_free_channel = "*" in free_channels or bool(channel_keys & free_channels)
+        if is_free_channel and not self._discord_free_response_auto_thread():
+            return None
+        if not self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True):
+            return None
+        thread_name = self._derive_auto_thread_name(parts[1] if len(parts) > 1 else command)
+        result = await self._create_thread(interaction, name=thread_name, auto_archive_duration=1440)
+        if not result.get("success"):
+            # Unlike a plain message there is no natural place for the visible "could not open a
+            # thread" notice on a deferred interaction, and the kickoff itself is still valid:
+            # keep the channel scope and leave a log line instead of dropping the command.
+            logger.warning(
+                "[%s] Auto-thread for the %s kickoff failed (%s); running it channel-scoped",
+                self.name, command_text.split(None, 1)[0], result.get("error"),
+            )
+            return None
+        thread = result["thread"]
+        self._stamp_auto_thread_name(thread, thread_name)
+        # Follow-ups in the thread must not require an @mention, as for a message auto-thread.
+        await self._threads.mark_async(str(thread.id))
+        return thread
 
     # --- Thread creation helpers ---
 

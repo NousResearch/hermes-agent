@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v10"
+SCANNER_VERSION = "skills-guard-v11"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -501,6 +501,19 @@ THREAT_PATTERNS = [
     (r'(?-i:AKIA[0-9A-Z]{16})', "aws_access_key_leaked", "critical", "credential_exposure", "AWS access key ID in skill content"),
     (r'(?-i:glpat-[A-Za-z0-9_\-]{20,})',
      "gitlab_token_leaked", "critical", "credential_exposure", "GitLab personal access token in skill content"),
+    # Other provider token formats: vendor prefix AND full expected shape.
+    # The scanner compiles IGNORECASE globally; scoped (?-i:...) prevents
+    # false critical matches on case-folded prose / generated assets.
+    # Keep thresholds strict: a token-like example or env variable reference
+    # should not block installation of an otherwise safe community skill.
+    (r'(?-i:\bxoxb-(?:[0-9]{10,15}-){2}[A-Za-z0-9]{16,}(?![A-Za-z0-9]))',
+     "slack_bot_token_leaked", "critical", "credential_exposure", "possible Slack bot token in skill content"),
+    (r'(?-i:\bnpm_[A-Za-z0-9]{36}(?![A-Za-z0-9]))',
+     "npm_token_leaked", "critical", "credential_exposure", "possible npm access token in skill content"),
+    (r'(?-i:\bAIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-]))',
+     "google_api_key_leaked", "critical", "credential_exposure", "possible Google API key in skill content"),
+    (r'(?-i:\bsk_live_[A-Za-z0-9]{24,}(?![A-Za-z0-9]))',
+     "stripe_live_key_leaked", "critical", "credential_exposure", "possible Stripe live secret key in skill content"),
     # ── Additional prompt injection: jailbreak patterns ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now', "jailbreak_dan", "critical", "injection", "DAN (Do Anything Now) jailbreak attempt"),
     (r'\bdeveloper\s+mode\b.*\benabled?\b', "jailbreak_dev_mode", "critical", "injection", "developer mode jailbreak attempt"),

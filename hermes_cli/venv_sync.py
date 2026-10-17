@@ -626,7 +626,12 @@ def relaunch_command(
         # distlib .exe launchers are executable zip files with __main__, not
         # importable modules named '__main__'. run_path handles both shapes.
         body = f"runpy.run_path({str(Path(argv[0]).absolute())!r}, run_name='__main__')"
-    return [str(python), *options, "-I", "-c", prefix + body]
+    # The source assigns sys.argv itself, so the trailing copy below is inert to Python. It keeps the
+    # application argv visible in /proc/<pid>/cmdline and ``ps``: process-identity readers outside
+    # this source (the Desktop's SSH ownership proof looks for ``serve --isolated --ssh-owner-nonce``
+    # as separate argv elements) otherwise see only ``python -I -c <source>`` after a re-entry. That
+    # made every reconnect treat its own backend as foreign and spawn a second one beside it.
+    return [str(python), *options, "-I", "-c", prefix + body, *argv[1:]]
 
 
 def main(argv: list | None = None) -> int:

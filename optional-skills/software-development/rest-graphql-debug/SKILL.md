@@ -481,8 +481,7 @@ For each verb (POST, GET, PATCH, DELETE):
   - log a repro curl for any failure (redact tokens)
 
 Output: pass/fail per endpoint + correlation IDs for failures.
-""",
-    toolsets=["terminal", "file"],
+"""
 )
 ```
 

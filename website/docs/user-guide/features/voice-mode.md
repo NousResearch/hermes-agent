@@ -227,19 +227,41 @@ Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, an
 
 The chained loop above is one of two voice chat modes in the desktop app. The other replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
 
+:::tip Already have a ChatGPT subscription?
+If your signed-in ChatGPT/Codex account includes voice access, Hermes can use that existing subscription for natural, full-duplex desktop voice — **no separate OpenAI API key or metered GPT-Live setup required**. Sign in once with `hermes auth`, then choose the explicit `subscription` configuration below. Your normal Hermes model, tools, memory, and approvals still power the delegated work.
+:::
+
 ```yaml
 voice:
   voice_chat_mode: gpt-live     # chained (default) | gpt-live
   gpt_live:
+    auth: api                   # api (default) | subscription; never switches automatically
     voice: marin                # marin, cedar, quartz, ripple, vesper, willow, stone, gleam, meridian, …
     instructions: ""            # optional extra persona sentences (tone, pace, language)
 ```
 
 Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Hermes turn is billed on its own provider as always. The mode is also in Settings → Voice → *Voice Chat Mode*.
 
-How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
+To use an existing **ChatGPT/Codex subscription**, first sign in to OpenAI Codex with `hermes auth` on the Hermes host. Then explicitly select subscription mode in that profile's `config.yaml`:
 
-Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
+```yaml
+voice:
+  voice_chat_mode: gpt-live
+  gpt_live:
+    auth: subscription
+    subscription_model: gpt-live-1-codex
+    subscription_voice: cove
+```
+
+The subscription route uses Hermes's existing Codex OAuth credentials and their account identity, both kept on the host. It uses the Codex voice service, so access depends on the signed-in account's voice entitlement and quota. The readiness indicator checks credentials; the service verifies access when you start the call. An authentication, quota, or connection failure stops startup: **it never switches to API billing or chained STT/TTS**. API `model`, `voice`, `api_key`, and `base_url` settings are separate from `subscription_model` and `subscription_voice`. Set `auth: api` explicitly to return to API billing. The Hermes agent turn still uses your selected model/provider independently of voice billing.
+
+In Desktop, open **Settings → Voice → Conversation** to choose the active route's GPT-Live voice. Subscription mode offers `cove`, `arbor`, `breeze`, `ember`, `juniper`, `maple`, `sol`, `spruce`, and `vale`; API mode keeps its separate API voice list. A new selection applies to the next live session.
+
+How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each client delegation becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. In API mode, if no key resolves, the button retains its existing chained-mode fallback with a notice. Subscription mode has no fallback.
+
+Not supported in this mode: the Nous-managed audio proxy, the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
+
+The subscription transport follows the [public Codex WebRTC implementation](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/codex-api/src/endpoint/realtime_call.rs) and its [frameless context protocol](https://github.com/openai/codex/blob/c4017a87aacc7558002b7cb510025e967c1d765e/codex-rs/codex-api/src/endpoint/realtime_websocket/methods_frameless_bidi.rs). Hermes maps actual provider delegation IDs and captured transcript fragments into its existing conversation path. Subscription replies use the protocol's 500-byte UTF-8 context appends; credentials and provider error bodies are never sent to the desktop.
 
 ### Voice chat model
 

@@ -14,7 +14,8 @@ import {
   providerGroup,
   sectionFieldEntries,
   setNested,
-  stripToolsetLabel
+  stripToolsetLabel,
+  voiceFieldVisible
 } from './helpers'
 
 describe('settings helpers', () => {
@@ -105,6 +106,24 @@ describe('settings helpers', () => {
     expect(getNested(config, 'display.theme')).toBe('mono')
   })
 
+  it('shows only the GPT-Live voice picker for the selected auth route', () => {
+    const subscription = { voice: { gpt_live: { auth: 'subscription' } } }
+    const api = { voice: { gpt_live: { auth: 'api' } } }
+
+    expect(voiceFieldVisible('voice.gpt_live.subscription_voice', subscription)).toBe(true)
+    expect(voiceFieldVisible('voice.gpt_live.voice', subscription)).toBe(false)
+    expect(voiceFieldVisible('voice.gpt_live.subscription_voice', api)).toBe(false)
+    expect(voiceFieldVisible('voice.gpt_live.voice', api)).toBe(true)
+  })
+
+  it('includes the subscription voice in the curated Voice settings surface', () => {
+    const config = { voice: { gpt_live: { subscription_voice: 'cove' } } }
+    const schema = { 'voice.gpt_live.subscription_voice': { type: 'string' as const } }
+    const voiceKeys = (sectionFieldEntries(schema, config).get('voice') ?? []).map(([key]) => key)
+
+    expect(voiceKeys).toContain('voice.gpt_live.subscription_voice')
+  })
+
   it('rejects prototype-polluting config paths', () => {
     const config: HermesConfigRecord = {}
 
@@ -147,6 +166,20 @@ describe('settings helpers', () => {
 
   describe('enumOptionsFor — backend selector dropdowns', () => {
     const config: HermesConfigRecord = {}
+
+    it('offers every supported Codex subscription voice', () => {
+      expect(enumOptionsFor('voice.gpt_live.subscription_voice', 'cove', config)).toEqual([
+        'cove',
+        'arbor',
+        'breeze',
+        'ember',
+        'juniper',
+        'maple',
+        'sol',
+        'spruce',
+        'vale'
+      ])
+    })
 
     it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
       // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.

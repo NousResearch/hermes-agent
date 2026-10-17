@@ -57,7 +57,10 @@ vi.mock('@/lib/tts-lease', () => ({
   syncTtsLease: vi.fn(async () => undefined)
 }))
 vi.mock('@/lib/wake-indicator', () => ({ clearWakeIndicator: vi.fn(), syncWakeIndicatorWithVoice: vi.fn() }))
-vi.mock('@/lib/voice-live', () => ({ toLiveHistory: vi.fn(() => []) }))
+vi.mock('@/lib/voice-live', () => ({
+  resolveVoiceConversationStart: vi.fn(async () => ({ auth: null, fallbackReason: null, mode: 'chained' })),
+  toLiveHistory: vi.fn(() => [])
+}))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/voice-live', async () => {
   const { atom } = await import('nanostores')

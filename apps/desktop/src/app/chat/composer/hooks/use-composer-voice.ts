@@ -12,14 +12,14 @@ import {
   resolveSpokenReply
 } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
-import { toLiveHistory } from '@/lib/voice-live'
+import { resolveVoiceConversationStart, toLiveHistory, type VoiceLiveAuth } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
+import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
@@ -73,7 +73,7 @@ export function useComposerVoice({
 }: UseComposerVoiceArgs) {
   const { t } = useI18n()
   // A tile's composer speaks ITS transcript, not the primary chat's.
-  const { $messages } = useComposerScope()
+  const { $messages, connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
 
   // Wake the voice loop once when a pending reply first becomes speakable,
   // without re-rendering the composer for every streamed token. The live
@@ -95,6 +95,7 @@ export function useComposerVoice({
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
   const [liveEngineActive, setLiveEngineActive] = useState(false)
+  const [liveExpectedAuth, setLiveExpectedAuth] = useState<null | VoiceLiveAuth>(null)
   // Barge-in can retain a submit callback from a render where the interrupted
   // turn was still busy. Read the current gate when its transcript arrives so
   // that stale closure does not silently drop the next voice turn.
@@ -243,6 +244,7 @@ export function useComposerVoice({
     busy,
     consumePendingResponse,
     enabled: voiceConversationActive && liveEngineActive,
+    expectedAuth: liveExpectedAuth,
     onFatalError: () => setVoiceConversationActive(false),
     onInterrupt,
     onStopWord: () => setVoiceConversationActive(false),
@@ -256,27 +258,31 @@ export function useComposerVoice({
   /** Turn the conversation on with the engine `voice.voice_chat_mode` selects,
    *  decided in the same state batch so the other engine never sees a frame of
    *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
-   *  gateway) falls back to chained with a notice rather than a dead button. */
-  const activateConversation = useCallback(() => {
-    const status = $voiceLiveStatus.get()
-    let live = false
+   *  gateway) falls back to chained with a notice only for API mode. Explicit
+   *  subscription mode refuses to activate a different billed engine. */
+  const activateConversation = useCallback(async () => {
+    try {
+      const { auth, mode, fallbackReason } = await resolveVoiceConversationStart({
+        connectionId: ownerConnectionId,
+        profile: ownerProfile
+      })
 
-    if (selectedVoiceChatMode(status) === 'gpt-live') {
-      if (status?.available) {
-        live = true
-      } else {
+      if (fallbackReason) {
         notify({
           id: 'voice-live-unavailable',
           kind: 'warning',
-          message: t.notifications.voice.liveUnavailable(status?.reason ?? 'not configured')
+          message: t.notifications.voice.liveUnavailable(fallbackReason)
         })
       }
-    }
 
-    setLiveEngineActive(live)
-    setVoiceConversationActive(true)
-    recordFeatureUse('voice_conversation')
-  }, [t])
+      setLiveEngineActive(mode === 'gpt-live')
+      setLiveExpectedAuth(mode === 'gpt-live' ? auth : null)
+      setVoiceConversationActive(true)
+      recordFeatureUse('voice_conversation')
+    } catch (error) {
+      notifyError(error, t.notifications.voice.couldNotStartSession)
+    }
+  }, [ownerConnectionId, ownerProfile, t])
 
   useEffect(() => {
     if (!voiceConversationActive) {

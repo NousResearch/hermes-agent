@@ -197,6 +197,32 @@ it.each(['redirectPrompt', 'injectHiddenPrompt'] as const)(
   }
 )
 
+it('keeps explicit composer steering visible on its owner without sealing the live stream', async () => {
+  vi.mocked(requestGatewayForAgent).mockResolvedValue({ status: 'queued' })
+  seed()
+  act(() => {
+    handle.cache.updateSessionState('rt-B', state => ({ ...state, streamId: 'live-steer-stream' }), 'stored-B')
+  })
+  const before = handle.cache.sessionStateByRuntimeIdRef.current.get('rt-B')!
+  const other = handle.cache.sessionStateByRuntimeIdRef.current.get('rt-A')
+
+  await act(async () => {
+    expect(await handle.actions.redirectPrompt('  steer safely  ', 'steer')).toBe(true)
+  })
+
+  expect(requestGatewayForAgent).toHaveBeenCalledExactlyOnceWith('connection-B', 'default', 'session.steer', {
+    session_id: 'rt-B',
+    text: 'steer safely'
+  })
+  const after = handle.cache.sessionStateByRuntimeIdRef.current.get('rt-B')!
+  expect(after.messages).toEqual([
+    ...before.messages,
+    expect.objectContaining({ role: 'user', parts: [{ type: 'text', text: 'steer safely' }] })
+  ])
+  expect(after.streamId).toBe('live-steer-stream')
+  expect(handle.cache.sessionStateByRuntimeIdRef.current.get('rt-A')).toBe(other)
+})
+
 const steeringActions = [
   { action: 'redirectPrompt' as const, method: 'session.redirect', status: 'redirected' },
   { action: 'redirectPrompt' as const, method: 'session.redirect', status: 'queued' },

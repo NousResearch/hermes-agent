@@ -22,7 +22,7 @@ import time
 from cron.env_settings import cron_env_setting
 from cron.jobs import _ensure_cron_dir
 from pathlib import Path
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Mapping, Optional, TYPE_CHECKING
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -432,6 +432,7 @@ def _script_argv(
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, interpreter: Optional[str] = None,
+    identity: Optional[Mapping[str, str]] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -442,7 +443,9 @@ def _run_job_script(
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
-    ``.py`` scripts (#8714).
+    ``.py`` scripts (#8714). identity: the fire's occurrence identity
+    (``cron.execution_identity.cron_execution_env``), overlaid LAST so the sanitizer inside
+    ``build_subprocess_env`` cannot strip the Hermes-owned names it carries.
     """
     path, err = _resolve_script_path(script_path)
     if path is None:
@@ -480,6 +483,11 @@ def _run_job_script(
         # env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+        # The occurrence identity goes on LAST: the sanitizer inside build_subprocess_env
+        # strips Hermes-owned names (HERMES_CRON_*), so an overlay applied before it would
+        # vanish — the same reason env_overlay is applied here. ``identity`` is None for a
+        # caller with no fire (cron/monitor.py), which is not an error.
+        env.update(identity or {})
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
@@ -556,11 +564,18 @@ def _run_job_script_with_claim_heartbeat(
 ) -> tuple[bool, str]:
     """Run a cron script while heartbeating its owned one-shot claim. A long script can outlive
     the stale-claim TTL; without a heartbeat another scheduler would re-dispatch the one-shot.
-    Recurring/unclaimed runs have no durable claim → no thread. The owner is captured from the
-    dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
+    Recurring/unclaimed runs have no durable claim → no thread. The owner is captured from
+    the dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
+    from cron.execution_identity import cron_execution_env
+
+    # Built once, from the dispatched job's own snapshot: the script must learn WHICH
+    # occurrence it is from the harness, not from the wall clock (child processes cannot
+    # identify their ledger row — see cron/execution_identity.py).
+    identity = cron_execution_env(job)
+
     def run() -> tuple[bool, str]:
         return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
-                               interpreter=job.get("interpreter"))
+                               interpreter=job.get("interpreter"), identity=identity)
 
     schedule = job.get("schedule")
     claim = job.get("run_claim")

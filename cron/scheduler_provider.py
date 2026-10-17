@@ -223,6 +223,9 @@ class CronScheduler(ABC):
             finish_execution(execution["id"], success=False, error="Fire claim was not acquired")
             return None
         claimed_job["execution_id"] = execution["id"]
+        # The execution's own source, on the fire snapshot: the child-env identity contract
+        # (cron.execution_identity.cron_execution_env) names where the fire came from.
+        claimed_job["source"] = execution.get("source")
         return claimed_job
 
     def fire_claimed(

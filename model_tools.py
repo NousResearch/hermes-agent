@@ -700,7 +700,8 @@ def _emit_post_tool_call_hook(
 
 def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
                           enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]],
-                          ids: Optional[_CallIds] = None):
+                          ids: Optional[_CallIds] = None,
+                          extra_tool_defs: Optional[list[dict[str, Any]]] = None):
     """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
 
     None when *function_name* is not a bridge tool; ``(result, None)`` for a
@@ -720,6 +721,8 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
                                             quiet_mode=True, skip_tool_search_assembly=True) or []
     except Exception:
         current_defs = []
+    if function_name in {ts.TOOL_SEARCH_NAME, ts.TOOL_DESCRIBE_NAME}:
+        current_defs.extend(list(extra_tool_defs or []))
     args = function_args or {}
     from tools.managed_gateway_identity import CallRef
     call = CallRef(turn_id=ids.turn_id, tool_call_id=ids.tool_call_id) if ids else None
@@ -877,6 +880,7 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
     enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None,
+    extra_tool_defs: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
@@ -903,7 +907,8 @@ def handle_function_call(
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
     # approval, guardrails) sees the real tool name, never the bridge.
-    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets, ids)
+    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets, ids,
+                                    extra_tool_defs=extra_tool_defs)
     if bridged is not None:
         result, underlying = bridged
         if underlying is None:

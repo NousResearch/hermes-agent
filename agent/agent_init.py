@@ -588,6 +588,7 @@ _TURN_STATE: dict[str, Any] = {
     # Registry generation of the tool snapshot (set in _load_tools): a late refresh rejects
     # a stale rebuild instead of clobbering a newer one.
     "_tool_snapshot_generation": 0,
+    "_deferred_post_build_tools": list,
     "_rate_limit_state": None,  # from x-ratelimit-* headers; read by /usage
     # Credits tracking (dev-only, HERMES_DEV_CREDITS) from x-nous-credits-* headers; session
     # start is latched on the first header so cumulative spend can be reported.
@@ -2162,6 +2163,18 @@ def _inject_context_engine_tools(agent):
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
 
+def _defer_post_build_tools(agent):
+    from tools.tool_search import defer_post_build_tools, post_build_tool_sources
+    tools, deferred = defer_post_build_tools(
+        agent.tools or [], enabled_toolsets=agent.enabled_toolsets,
+        disabled_toolsets=agent.disabled_toolsets,
+        sources=post_build_tool_sources(agent, agent._context_engine_tool_names))
+    if deferred:
+        agent.tools = tools
+        agent.valid_tool_names = {tool["function"]["name"] for tool in tools}
+    agent._deferred_post_build_tools = deferred
+
+
 def _emit_compression_summary(agent, cs):
     # Codex autoraise notice: once per profile/config state (persisted marker; the gateway
     # rebuilds the agent per message). The display gate hides the banner, not the autoraise.
@@ -2415,6 +2428,7 @@ def init_agent(
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
+    _defer_post_build_tools(agent)
     _init_usage_state(agent)
     _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)

@@ -332,6 +332,7 @@ class FeishuGroupRule:
     allowlist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
     require_mention: Optional[bool] = None  # None = inherit global
+    ignore_at_all: bool = False  # Ignore @all without disabling the chat
 
 
 @dataclass
@@ -343,7 +344,14 @@ class FeishuBatchState:
 
 # --- Admission: policy types ---
 
-RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected"]
+RejectReason = Literal[
+    "self_echo",
+    "self_ids_unknown",
+    "bots_disabled",
+    "bot_not_mentioned",
+    "group_policy_rejected",
+    "group_at_all_ignored",
+]
 
 
 def _is_bot_sender(sender: Any) -> bool:
@@ -1373,6 +1381,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     blacklist=_id_set(rule_cfg.get("blacklist", [])),
                     # Only override when explicitly set — missing vs false must not collapse.
                     require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
+                    ignore_at_all=_to_boolean(rule_cfg["ignore_at_all"]) if "ignore_at_all" in rule_cfg else False,
                 )
 
         # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
@@ -3385,6 +3394,9 @@ class FeishuAdapter(BasePlatformAdapter):
         is_bot = _is_bot_sender(sender)
         is_group = getattr(message, "chat_type", "p2p") != "p2p"
         chat_id = getattr(message, "chat_id", "") or ""
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if is_group and rule and rule.ignore_at_all and self._contains_at_all(message):
+            return "group_at_all_ignored"
         require_mention = is_group and self._require_mention_for(chat_id)
         # Defensive only — Feishu doesn't echo our outbound back as inbound,
         # and open_id is always populated on both sides.
@@ -3472,6 +3484,15 @@ class FeishuAdapter(BasePlatformAdapter):
             return True
         normalized = self._normalize(getattr(message, "message_type", "") or "", raw_content, getattr(message, "mentions", None))
         return self._post_mentions_bot(normalized.mentions)
+
+    @staticmethod
+    def _contains_at_all(message: Any) -> bool:
+        """Return whether a Feishu message addresses the whole group."""
+        raw_content = getattr(message, "content", "") or ""
+        if "@_all" in raw_content:
+            return True
+        mentions = getattr(message, "mentions", None) or []
+        return any(getattr(mention, "key", "") == "@_all" for mention in mentions)
 
     def _message_mentions_bot(self, mentions: list[Any]) -> bool:
         # Same precedence as _FeishuBotIdentity.matches (open_id > user_id > name); a non-empty

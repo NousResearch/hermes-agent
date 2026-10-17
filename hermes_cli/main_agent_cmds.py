@@ -21,6 +21,7 @@ def _cmd_memory_off():
 
 def _cmd_memory_reset(args):
     from hermes_constants import get_hermes_home, display_hermes_home
+    from tools.memory_tool_store import MemoryStore
     mem_dir = get_hermes_home() / "memories"
     target = getattr(args, "target", "all")
     files_to_reset = []
@@ -50,8 +51,8 @@ def _cmd_memory_reset(args):
             return
 
     for f, desc in existing:
-        (mem_dir / f).unlink()
-        print(f"  ✓ Deleted {f} ({desc})")
+        if MemoryStore.reset_file(mem_dir / f):
+            print(f"  ✓ Deleted {f} ({desc})")
 
     print("\n  Memory reset complete. New sessions will start with a blank slate.")
     print(f"  Files were in: {display_hermes_home()}/memories/\n")

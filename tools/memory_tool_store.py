@@ -300,6 +300,62 @@ class MemoryStore:
         from tools import memory_tool  # get_memory_dir is monkeypatched there
         return memory_tool.get_memory_dir() / ("USER.md" if target == "user" else "MEMORY.md")
 
+    @classmethod
+    def reset_file(cls, path: Path) -> bool:
+        """Delete one store file under its mutation lock.
+
+        A reset must participate in the same lock as a normal memory write: otherwise a
+        writer which read before the unlink can publish that old snapshot afterwards.
+        Returns whether this call removed a file (a concurrent reset may win first).
+        """
+        with cls._file_lock(path):
+            if not path.exists():
+                return False
+            path.unlink()
+            return True
+
+    @classmethod
+    def merge_file(cls, path: Path, incoming: list[str], limit: int, normalize,
+                   before_write=None) -> dict[str, int]:
+        """Merge imported entries from a locked, current on-disk snapshot.
+
+        Importers prepare *incoming* outside the critical section, then this method
+        re-reads the destination while holding the store lock before publishing.  This
+        prevents an import from replacing a memory mutation committed after its preview.
+        """
+        with cls._file_lock(path):
+            raw, read_ok = cls._read_raw_checked(path)
+            if not read_ok:
+                raise RuntimeError(f"Could not read memory file: {path}")
+            existing = cls._parse_entries(raw)
+            merged = list(existing)
+            seen = {normalize(entry) for entry in existing if entry.strip()}
+            stats = {"existing": len(existing), "added": 0, "duplicates": 0, "overflowed": 0}
+            current_len = len(ENTRY_DELIMITER.join(merged))
+            for entry in incoming:
+                normalized = normalize(entry)
+                if not normalized:
+                    continue
+                if normalized in seen:
+                    stats["duplicates"] += 1
+                    continue
+                candidate_len = len(entry) if not merged else current_len + len(ENTRY_DELIMITER) + len(entry)
+                if candidate_len > limit:
+                    stats["overflowed"] += 1
+                    continue
+                merged.append(entry)
+                seen.add(normalized)
+                current_len = candidate_len
+                stats["added"] += 1
+            if stats["added"]:
+                from hermes_constants import mkdir_under_hermes_home
+
+                mkdir_under_hermes_home(path.parent)
+                if before_write is not None:
+                    before_write()
+                cls._write_file(path, merged)
+            return stats
+
     def _entries_for(self, target: str) -> list[str]:
         return self.user_entries if target == "user" else self.memory_entries
 

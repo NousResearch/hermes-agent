@@ -4,6 +4,7 @@ import uuid
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import validate_local_lineage
+from hermes_state_write_guards import REVIEW_LEASE_IGNORE
 from hermes_state_mutation_guards import require_idle
 from hermes_state_runtime import RuntimeStoreError, _json
 from hermes_state_titles import lineage_title_on_conn
@@ -53,7 +54,8 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
         raise RuntimeStoreError('runtime_coordination_required')
     saved = json.loads(row[0])
     target = validate_local_lineage(conn, saved)
-    require_idle(db, conn, list({session_id, target}))
+    # A copy cannot invalidate a background review's snapshot: the branch lands beside it.
+    require_idle(db, conn, list({session_id, target}), review_lease_policy=REVIEW_LEASE_IGNORE)
     # Late: the routing entry/key are gateway types (the gateway imports this store at module level).
     from gateway.session import SessionEntry, SessionSource
     from gateway.config import Platform

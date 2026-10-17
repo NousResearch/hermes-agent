@@ -1701,7 +1701,8 @@ class SessionSessionsMixin:
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
         transcript drift. Both checks run inside the same write transaction as deletion.
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
-        is protected by an active turn lease or compression lock.
+        is protected by an active turn lease or compression lock; a background review's lease is
+        asked to yield instead (the delete removes its replay basis), as a rewind does.
 
         With ``include_compression_chain=True`` the whole compression chain the session belongs to
         is deleted with it (root and every continuation) — the dashboard delete endpoints use this
@@ -1719,6 +1720,7 @@ class SessionSessionsMixin:
             ) > 0
         removed_ids: list[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
+        from hermes_state_write_guards import REVIEW_LEASE_YIELD
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
@@ -1730,7 +1732,10 @@ class SessionSessionsMixin:
                 [*scope, *_collect_delegate_child_ids(conn, scope)]
                 if exclude_active_write_guards or expected_ids is not None else None
             )
-            if exclude_active_write_guards and self._guarded_ids(conn, target_ids):
+            # A background review's lease is asked to yield (the delete removes its replay basis);
+            # any other guard refuses, and that rollback lifts the stamp with the refusal.
+            if exclude_active_write_guards and self._guarded_ids(
+                    conn, target_ids, review_lease_policy=REVIEW_LEASE_YIELD):
                 # Delegate children cascade with the root, so a guard on any of them refuses too.
                 raise SessionActiveWriteGuardError(
                     f"session '{session_id}' (or a delegate child) has an active turn lease or compression lock"
@@ -1839,6 +1844,7 @@ class SessionSessionsMixin:
         if not unique_ids:
             return 0
         removed_ids: list[str] = []
+        from hermes_state_write_guards import REVIEW_LEASE_IGNORE, REVIEW_LEASE_YIELD
         def _do(conn):
             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
@@ -1862,20 +1868,24 @@ class SessionSessionsMixin:
                 # expansion is on, a guard on ANY lineage member keeps its selected root: deleting
                 # a torn chain would re-surface it (the root re-projects onto a surviving link).
                 # One batched check first; per-root attribution only when something is guarded.
+                # A background review's lease keeps nothing: attribution sees through it, and the
+                # rows that go ask their reviews to yield below (the delete removes the fork's replay
+                # basis), so a kept root's review is never asked to yield for a delete that did not happen.
+                live = {"review_lease_policy": REVIEW_LEASE_IGNORE}
                 active_ids: set = set()
-                if self._guarded_ids(conn, guard_pool):
+                if self._guarded_ids(conn, guard_pool, **live):
                     if include_compression_chain:
                         for sid in existing:
                             member_lineage = set(self._expand_compression_lineage(conn, [sid]))
                             member_lineage.add(sid)
                             if self._guarded_ids(conn, [*member_lineage,
-                                    *_collect_delegate_child_ids(conn, list(member_lineage))]):
+                                    *_collect_delegate_child_ids(conn, list(member_lineage))], **live):
                                 active_ids.add(sid)
                     else:
                         active_ids = {
                             sid for sid in existing
                             if self._guarded_ids(conn, [*(members := expand([sid])),
-                                                        *_collect_delegate_child_ids(conn, members)])
+                                                        *_collect_delegate_child_ids(conn, members)], **live)
                         }
                 existing = [sid for sid in existing if sid not in active_ids]
                 if skipped_ids is not None:
@@ -1883,6 +1893,8 @@ class SessionSessionsMixin:
                 if not existing:
                     return 0
                 expanded = expand(existing)
+                self._guarded_ids(conn, [*expanded, *_collect_delegate_child_ids(conn, expanded)],
+                                  review_lease_policy=REVIEW_LEASE_YIELD)
             from hermes_state_mutation_retirement import retire_sessions
             retire_sessions(conn, expanded)
             removed_ids.extend(_delete_delegate_children(conn, expanded))
@@ -1947,48 +1959,3 @@ class SessionSessionsMixin:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
-
-    def archive_sessions(
-        self, older_than_days: Optional[float] = None, source: str | None = None, **filters,
-    ) -> int:
-        """Bulk soft-hide with prune_sessions' filter surface, via set_session_archived so each lineage
-        flips as a unit; idempotent. Returns matches. A lineage is matched through its TIP only: an
-        old compression ancestor never qualifies on its own age, or the fan-out would hide an open,
-        recently active continuation (#115489)."""
-        filters.setdefault("archived", False)
-        filters["lineage_tips_only"] = True
-        rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
-        for row in rows:
-            self.set_session_archived(row["id"], True)
-        return len(rows)
-
-    def maybe_auto_archive(
-        self, idle_days: float = 3, min_interval_hours: int = 24, exclude_pinned: bool = True,
-    ) -> dict[str, Any]:
-        """Idempotent, non-destructive auto-archive of sessions idle for ``idle_days``; state_meta
-        ``last_auto_archive`` gates runs within ``min_interval_hours``. Never raises."""
-        result: dict[str, Any] = {"skipped": False, "archived": 0}
-        try:
-            now = time.time()
-            try:
-                last = float(self.get_meta("last_auto_archive") or 0.0)
-            except (TypeError, ValueError):
-                last = 0.0  # corrupt meta; treat as no prior run
-            if last and now - last < min_interval_hours * 3600:
-                result["skipped"] = True
-                return result
-            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
-            # which the watchdog's CPU fallback misreads as a parked deadlock.
-            # No-op when the watchdog is not armed; never raises.
-            report_startup_progress(900.0, phase="state_db_auto_archive")
-            archived = result["archived"] = self.archive_stale_sessions(idle_days, exclude_pinned=exclude_pinned)
-            # Record even a zero-archive run so we don't re-sweep every call.
-            self.set_meta("last_auto_archive", str(now))
-            if archived > 0:
-                logger.info(
-                    "state.db auto-archive: archived %d session(s) idle >= %s days", archived, idle_days,
-                )
-        except Exception as exc:
-            logger.warning("state.db auto-archive failed: %s", exc)
-            result["error"] = str(exc)
-        return result

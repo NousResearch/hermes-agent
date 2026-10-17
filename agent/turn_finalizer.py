@@ -101,6 +101,32 @@ def _clone_background_review_messages(messages):
     return [_clone_message_for_send(message) for message in messages]
 
 
+def _hand_off_background_review(agent, messages, *, review_memory: bool, review_skills: bool) -> None:
+    """Give the delivered turn's review candidate to whoever owns the session's foreground: the
+    gateway's admission completes it with the delivery (``gateway/run_turn_review.py``); a turn holding
+    the durable session row stages it for the facade to start once every foreground owner is
+    released (``agent/turn_facade_review.py``); a bare turn spawns it here."""
+    gateway_admission = getattr(agent, "_gateway_review_admission", None)
+    if gateway_admission is not None:
+        gateway_admission.capture_candidate(
+            agent, messages, review_memory=review_memory, review_skills=review_skills,
+        )
+    elif getattr(agent, "_active_session_turn_lease_holder", None):
+        agent._post_turn_background_review_candidate = {
+            "messages_snapshot": _clone_background_review_messages(messages),
+            "review_memory": review_memory,
+            "review_skills": review_skills,
+            "_spawning_turn_token": getattr(agent, "_active_turn_token", None),
+            "_review_profile_key": getattr(agent, "_active_turn_profile_key", None),
+            "_review_session_id": str(getattr(agent, "session_id", None) or ""),
+        }
+    else:
+        agent._spawn_background_review(
+            messages_snapshot=_clone_background_review_messages(messages),
+            review_memory=review_memory, review_skills=review_skills,
+        )
+
+
 def _invoke_hook_safely(name: str, logger: logging.Logger, **kwargs) -> list:
     """Fire a lifecycle plugin hook; a failing hook is logged, never fatal."""
     try:
@@ -785,9 +811,8 @@ def finalize_turn(
         and (_should_review_memory or _should_review_skills)
     ):
         with suppress(Exception):
-            agent._spawn_background_review(
-                messages_snapshot=list(messages), review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
+            _hand_off_background_review(
+                agent, messages, review_memory=_should_review_memory, review_skills=_should_review_skills,
             )
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:

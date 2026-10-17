@@ -32,14 +32,6 @@ class TurnFacadeMixin:
         prelude: Optional[Generator]=None,
     ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
-        # A review shares this session_id for cache parity: fence review startup or interrupt
-        # an admitted request and await its exit before opening live-turn instrumentation.
-        # Foreground priority is retained if the review does not acknowledge within the bounded deadline
-        # (#84423).
-        from agent.background_review import cancel_background_review_for_live_turn
-
-        cancel_background_review_for_live_turn(self)
-
         from agent import relay_runtime
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
         from agent.auxiliary_client import scoped_runtime_main
@@ -50,10 +42,10 @@ class TurnFacadeMixin:
         )
         from agent.prompt_cache_scope import declared_conversation_scope_safe
         from agent.relay_cwd import resolve_relay_scope_cwds
-        from agent.review_idle_queue import QUEUE as _review_queue
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
         from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
+        from agent.turn_facade_review import ForegroundReviewOwnership
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -76,10 +68,13 @@ class TurnFacadeMixin:
         token = affinity_token = acct_token = None
         task_started = task_finished = False
         relay_outcome = "failed"
+        # A review shares this session_id for cache parity: the turn registers with review
+        # admission and cancels the review before taking the durable lease (turn_facade_review).
+        review_ownership = ForegroundReviewOwnership(self, session_id)
 
         try:
-            # First statement of the try so the finally's note_turn_finished balances every exit.
-            _review_queue.note_turn_started()
+            # First statement of the try so the finally's release_admission balances every exit.
+            review_ownership.open()
             admission = admit_durable_turn_lease(
                 self, session_id=session_id, relay_turn_id=relay_turn_id, task_context=task_context,
                 conversation_history=conversation_history,
@@ -188,6 +183,9 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            # Release admission before any fallible cleanup. A leaked token would block every
+            # later review on this session, including when attribute assignment itself raised.
+            review_ownership.release_admission()
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)
@@ -213,9 +211,9 @@ class TurnFacadeMixin:
                         reset_conversation_context(token)
                     if affinity_token is not None:
                         reset_affinity_scope(affinity_token)
-                    # Balance note_turn_started so the idle queue's live-turn count cannot leak.
-                    with suppress(Exception):
-                        _review_queue.note_turn_finished()
+                    # Every foreground owner above is released: balance the idle queue and start
+                    # the review candidate the finalizer staged.
+                    review_ownership.finish()
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""

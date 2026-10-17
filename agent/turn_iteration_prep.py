@@ -394,7 +394,7 @@ def begin_iteration(
         if not agent.quiet_mode:
             agent._safe_print(
                 f"\n⏹️  Review input budget exhausted "
-                f"({int(agent.session_input_tokens):,} tokens) — stopping "
+                f"({int(agent.session_prompt_tokens):,} tokens) — stopping "
                 f"the review tool loop before the next provider call.", diagnostic=True,
             )
         return _verdict("break")
@@ -463,6 +463,11 @@ def apply_retry_restarts(
             _preflight_compression_blocked=_preflight_compression_blocked,
             _turn_exit_reason=_turn_exit_reason,
         )
+
+    # The retry loop refused this request against a detached review's aggregate input budget
+    # (``_run_api_retry_loop`` sets the reason): no response was produced and nothing restarts.
+    if _turn_exit_reason == "review_input_budget_exhausted":
+        return _verdict("break")
 
     if _retry.restart_with_redirected_messages:
         restart_count += 1

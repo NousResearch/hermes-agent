@@ -24,25 +24,33 @@ def require_not_executing(conn, session_ids):
             raise RuntimeStoreError('session_busy')
 
 
-def _require_transcript_unleased(db, conn, sid):
+def _require_transcript_unleased(db, conn, sid, *, review_lease_policy=None):
     # A logical owner closed by compression is an ancestor, not a transcript
     # target; its live successor (also in session_ids) carries the lease/lock.
     if _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (sid,)).fetchone()):
         return
+    # ``review_lease_policy`` (``hermes_state_write_guards.REVIEW_LEASE_*``) is what a live
+    # BACKGROUND-REVIEW holder means to this mutation; a foreground holder always refuses.
+    from hermes_state_write_guards import REVIEW_LEASE_REFUSE
     db._check_transcript_write_guards(conn, sid, None,
-        reject_active_turn_lease=True, reject_active_compression_lock=True)
+        reject_active_turn_lease=True, reject_active_compression_lock=True,
+        review_lease_policy=review_lease_policy or REVIEW_LEASE_REFUSE)
 
 
-def require_target_advanceable(db, conn, session_ids):
+def require_target_advanceable(db, conn, session_ids, *, review_lease_policy=None):
     """Fence for writes that publish a new physical target (reset, compress, model):
     refuse executing/unknown work and live transcript leases, never a queued follower,
-    which waits on the logical owner and runs against whatever target is published."""
+    which waits on the logical owner and runs against whatever target is published.
+    A background-review lease is answered per ``review_lease_policy`` (default: refuse)."""
     require_not_executing(conn, session_ids)
     for sid in session_ids:
-        _require_transcript_unleased(db, conn, sid)
+        _require_transcript_unleased(db, conn, sid, review_lease_policy=review_lease_policy)
 
 
-def require_idle(db, conn, session_ids):
+def require_idle(db, conn, session_ids, *, review_lease_policy=None):
+    """Refuse queued/executing/unknown work and live transcript leases on every id. A
+    background-review lease is answered per ``review_lease_policy`` (default: refuse, the
+    maintenance precedent: spare the row, ask nothing)."""
     for sid in session_ids:
         admissions = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown')", (sid,)).fetchall()
         workers = conn.execute("SELECT status FROM worker_executions WHERE session_id=? AND status IN ('registered','running','unknown')", (sid,)).fetchall()
@@ -51,7 +59,7 @@ def require_idle(db, conn, session_ids):
             raise RuntimeStoreError('unknown_execution')
         if states:
             raise RuntimeStoreError('session_busy')
-        _require_transcript_unleased(db, conn, sid)
+        _require_transcript_unleased(db, conn, sid, review_lease_policy=review_lease_policy)
 
 
 def _continuation_edges(conn, sid):

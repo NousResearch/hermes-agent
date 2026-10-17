@@ -31,7 +31,22 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
+from agent.background_review import _BackgroundReviewRun
 from tui_gateway.server import _finalize_session
+
+
+class _UnpublishedExit(threading.Event):
+    """The fork's request exit, never published: the fork is parked in a non-interruptible
+    tool call. Every wait is recorded and returns at once so a regression shows up as a
+    recorded wait instead of a hung test."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits: list = []
+
+    def wait(self, timeout=None):  # Event.wait's shape
+        self.waits.append(timeout)
+        return False
 
 
 def _make_session(agent, session_key="test_key_bg_review"):
@@ -75,7 +90,48 @@ def _agent_with_live_review_fork():
     return agent, review_fork
 
 
+def _agent_with_admitted_review_run():
+    """A parent whose review fork was admitted through the run handshake (the shape
+    ``_run_review_in_thread`` installs) and has not published its request exit."""
+    agent, review_fork = _agent_with_live_review_fork()
+    agent._background_review_agent = None
+    run = _BackgroundReviewRun()
+    assert run.begin_request(review_fork) is True
+    run.request_done = _UnpublishedExit()
+    agent._background_review_run = run
+    return agent, review_fork, run
+
+
 class TestFinalizeSessionCancelsBackgroundReview:
+    def test_finalize_does_not_wait_for_the_forks_request_exit(self):
+        """Teardown is not a live turn: nothing overlaps the fork once the session is gone,
+        and the next turn on the same session performs its own cancel + wait (facade
+        registry, gateway prework, durable lease). So finalize passes the cancel through
+        WITHOUT the live-turn acknowledgement wait: that wait escalates for 20s and then
+        never returns for a fork parked in a non-interruptible tool call, stalling the
+        reaper/Timer/atexit thread that called finalize — one wedged fork would hold an
+        idle-reap sweep or the SIGTERM settle budget. Upstream's #102895 call site was
+        written against a bounded warn-and-proceed wait."""
+        agent, review_fork, run = _agent_with_admitted_review_run()
+        session = _make_session(agent)
+
+        _finalize_session(session, end_reason="idle_timeout")
+
+        assert run.request_done.waits == [], (
+            "finalize parked on the review fork's request exit"
+        )
+        assert run.cancel_requested.is_set(), "the cancel fence must still land"
+
+        for _ in range(50):
+            if review_fork.hard_interrupt.called:
+                break
+            threading.Event().wait(0.05)
+
+        assert review_fork.hard_interrupt.called
+        args, kwargs = review_fork.hard_interrupt.call_args
+        assert args and "idle_timeout" in args[0]
+        assert kwargs.get("tool_reason") == "session ended"
+
     def test_finalize_interrupts_live_review_fork(self):
         """_finalize_session must hard-interrupt a running review fork."""
         agent, review_fork = _agent_with_live_review_fork()

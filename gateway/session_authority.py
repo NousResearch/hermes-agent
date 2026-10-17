@@ -229,6 +229,14 @@ class SessionAuthority:
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
         return lookup(live.route)
 
+    def queued_followup_on_route(self, route):
+        """Body-free: whether a logical owner living on ``route`` holds a queued (unclaimed)
+        admission, i.e. a follow-up the drain runs after the current turn. Read from any thread
+        (the background-review probe runs on the agent thread): statuses only, never a payload."""
+        from hermes_state_runtime import has_queued_session_admission
+        return any(has_queued_session_admission(self.db, session_id=sid)
+                   for sid, live in list(self.sessions.items()) if live.route == route)
+
     def _pending_rows(self, ref):
         """Pending admissions as the event stream presents them: a settlement committed but not yet
         published (``LiveSession.settling``) still reads as its started claim. Callers that pair the
@@ -370,11 +378,14 @@ class SessionAuthority:
         ``session_busy`` is transient (a registered worker finishes and wakes the FIFO), so only
         the messaging delivery waiters are released for it; an API/webhook/Bot observer keeps
         waiting for the answer instead of reporting accepted work as a conflict."""
+        from gateway.session_ingress_review import drop_review_waiter_mark
         for row in list_session_admissions(self.db, session_id=ref.session_id):
             admission_id = row['admission_id']
             if reason == 'session_busy' and admission_id not in self.native_waiters:
                 continue
             self.native_waiters.discard(admission_id)
+            # No handover follows for the waiter released here: a row this FIFO runs later has none.
+            drop_review_waiter_mark(self, admission_id)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
@@ -654,6 +665,8 @@ class SessionAuthority:
         # Published once: a later exact retry re-collects media but never repeats the completion.
         self.cancel_obligations.discard(admission_id)
         self.native_waiters.discard(admission_id)
+        from gateway.session_ingress_review import drop_review_waiter_mark
+        drop_review_waiter_mark(self, admission_id)  # the row never runs: no handover to honour it
         waiter = self.waiters.pop(admission_id, None)
         if waiter is not None and not waiter.done():
             waiter.set_result(None)
@@ -1115,6 +1128,8 @@ class SessionAuthority:
                 if settled is None:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)
+                    from gateway.session_ingress_review import release_unsettled_review
+                    release_unsettled_review(self, admission_id)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
             from gateway.session_ingress import deliver_settled

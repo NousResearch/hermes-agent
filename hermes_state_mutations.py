@@ -117,11 +117,14 @@ def _delete(db, conn, session_id, payload):
 
 
 def _rewind(db, conn, session_id, payload):
+    from hermes_state_write_guards import REVIEW_LEASE_YIELD
     from hermes_state_mutation_guards import require_idle
     from hermes_state_mutation_transcript import rewind_in_transaction
     from hermes_state_local_lineage import local_physical_target
     physical = local_physical_target(conn, session_id)
-    require_idle(db, conn, list({session_id, physical}))
+    # A background review of this transcript is asked to yield, never refused: the rewrite
+    # invalidates its replay basis (``rewind_in_transaction`` stamps it the same way).
+    require_idle(db, conn, list({session_id, physical}), review_lease_policy=REVIEW_LEASE_YIELD)
     # A composite compaction carrier (summary + the next ask in one row) keeps its handoff, as
     # main's rewind does; the receipt reports the live ask, so /retry resubmits it, not the summary.
     live = _carrier_live_view(db, conn, physical, payload['target_message_id'])

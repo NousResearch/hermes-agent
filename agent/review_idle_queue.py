@@ -19,7 +19,9 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Hashable, Optional
+
+from agent.review_admission import REASON_DEFERRED, REASON_DISABLED_WHILE_QUEUED, owner_tag
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +64,17 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[dict[str, Any]])
 @dataclass(slots=True)
 class _PendingReview:
     agent: Any
-    session_key: str
+    session_key: Hashable
     kwargs: dict[str, Any]
     enqueued_at: float
     context: contextvars.Context
+
+
+def _owner_log_tag(session_key: Hashable) -> str:
+    """Deterministic redacted label for a profile/session queue owner."""
+    if isinstance(session_key, tuple) and len(session_key) >= 2:
+        return owner_tag(session_key[0], session_key[1])
+    return owner_tag("", session_key)
 
 
 class ReviewIdleQueue:
@@ -73,7 +82,7 @@ class ReviewIdleQueue:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._pending: dict[str, _PendingReview] = {}
+        self._pending: dict[Hashable, _PendingReview] = {}
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._live_turns = 0
@@ -94,17 +103,34 @@ class ReviewIdleQueue:
                 self._quiet_since = self._now()
         self._wake.set()
 
-    def enqueue(self, agent: Any, session_key: str, kwargs: dict[str, Any]) -> None:
+    def enqueue(
+        self,
+        agent: Any,
+        session_key: Hashable,
+        kwargs: dict[str, Any],
+        *,
+        replace_existing: bool = True,
+        reason: str = REASON_DEFERRED,
+    ) -> None:
         """Add (or replace — newest snapshot wins) a session's pending review, keeping the ORIGINAL
-        enqueue time on coalesce so a busy session cannot push its age-out forever."""
+        enqueue time on coalesce so a busy session cannot push its age-out forever. A retry uses
+        ``replace_existing=False`` so it cannot overwrite a newer snapshot queued while dispatching,
+        and names its own ``reason`` so the line does not read as a fresh deferral."""
+        dispatch_context = contextvars.copy_context()
         with self._lock:
             existing = self._pending.get(session_key)
+            if existing is not None and not replace_existing:
+                return
             enqueued_at = existing.enqueued_at if existing is not None else self._now()
             self._pending[session_key] = _PendingReview(
-                agent, session_key, kwargs, enqueued_at, contextvars.copy_context())
+                agent, session_key, kwargs, enqueued_at, dispatch_context
+            )
         self._ensure_thread()
         self._wake.set()
-        logger.info("Background review deferred (session=%s, queued=%d)", session_key[-12:], len(self._pending))
+        logger.info(
+            "Background review deferred (owner=%s, reason=%s, queued=%d)",
+            _owner_log_tag(session_key), reason, len(self._pending),
+        )
 
     def pending_count(self) -> int:
         with self._lock:
@@ -152,24 +178,31 @@ class ReviewIdleQueue:
             try:
                 item = self._pop_dispatchable()
                 if item is not None:
-                    # The shared dispatcher has no caller profile. Enter the item's context
-                    # before reading config AND spawning the context-propagating review worker.
-                    item.context.run(self._dispatch, item)
+                    self._dispatch_item(item)
             except Exception:
                 logger.warning("Deferred review dispatch failed", exc_info=True)
             if item is None:
                 time.sleep(_POLL_INTERVAL_S)
 
-    def _dispatch(self, item: _PendingReview) -> None:
+    def _dispatch_item(self, item: _PendingReview) -> None:
+        """Dispatch one popped item; separated so aged/preempted interleavings are deterministic."""
+        item.context.run(self._dispatch_item_in_context, item)
+
+    def _dispatch_item_in_context(self, item: _PendingReview) -> None:
+        """Re-check policy and spawn inside the profile Context captured at enqueue time."""
         if not self._still_enabled(item):
             logger.info(
-                "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
-                item.session_key[-12:])
+                "Deferred background review dropped (owner=%s, reason=%s)",
+                _owner_log_tag(item.session_key), REASON_DISABLED_WHILE_QUEUED,
+            )
             return
         logger.info(
-            "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",
-            item.session_key[-12:], self._now() - item.enqueued_at, self.pending_count())
-        item.agent._spawn_background_review_now(**item.kwargs)
+            "Dispatching deferred background review (owner=%s, waited=%.0fs, queued=%d)",
+            _owner_log_tag(item.session_key), self._now() - item.enqueued_at, self.pending_count(),
+        )
+        dispatch_kwargs = dict(item.kwargs)
+        dispatch_kwargs["_idle_queue_origin"] = True
+        item.agent._spawn_background_review_now(**dispatch_kwargs)
 
     @staticmethod
     def _still_enabled(item: _PendingReview) -> bool:

@@ -138,14 +138,19 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
 
-    def _guarded_ids(self, conn, ids: Iterable[str]) -> set:
+    def _guarded_ids(self, conn, ids: Iterable[str], **guard_kwargs) -> set:
         """Ids in *ids* protected by a live turn lease / compression lock. Idle compression-ended
-        parents are closed, not live, so they are not guarded (prune and delete share this)."""
-        return {sid for sid in ids if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
+        parents are closed, not live, so they are not guarded (prune and delete share this).
+        ``review_lease_policy`` is what a live background-review lease means to the caller: a
+        maintenance probe spares the row (the default), a user delete asks the review to yield."""
+        return {sid for sid in ids if self._write_guards_reject(
+            conn, sid, allow_closed_compression_parent=True, **guard_kwargs)}
 
     def _write_guards_reject(self, conn, sid: str, **kwargs) -> bool:
-        """True when a live turn lease / compression lock protects ``sid``; expired or
-        dead-holder guards are reclaimed and fenced as a side effect."""
+        """True when a live turn lease / compression lock protects ``sid`` (a background-review
+        lease included unless ``review_lease_policy`` says otherwise: a probe is not a transcript
+        edit, so by default the review is never asked to yield); expired or dead-holder guards
+        are reclaimed and fenced as a side effect."""
         from hermes_state import SessionCompressionInProgressError
         from hermes_state_errors import SessionTurnLeaseLostError
         try:
@@ -328,6 +333,51 @@ class SessionMaintenanceMixin:
             # Sweep provenance: a later compression/resume of this lineage un-hides it (#117713).
             self._auto_archive_lineage(row[0])
         return len(rows)
+
+    def archive_sessions(
+        self, older_than_days: Optional[float] = None, source: str | None = None, **filters,
+    ) -> int:
+        """Bulk soft-hide with prune_sessions' filter surface, via set_session_archived so each lineage
+        flips as a unit; idempotent. Returns matches. A lineage is matched through its TIP only: an
+        old compression ancestor never qualifies on its own age, or the fan-out would hide an open,
+        recently active continuation (#115489)."""
+        filters.setdefault("archived", False)
+        filters["lineage_tips_only"] = True
+        rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
+        for row in rows:
+            self.set_session_archived(row["id"], True)
+        return len(rows)
+
+    def maybe_auto_archive(
+        self, idle_days: float = 3, min_interval_hours: int = 24, exclude_pinned: bool = True,
+    ) -> dict[str, Any]:
+        """Idempotent, non-destructive auto-archive of sessions idle for ``idle_days``; state_meta
+        ``last_auto_archive`` gates runs within ``min_interval_hours``. Never raises."""
+        result: dict[str, Any] = {"skipped": False, "archived": 0}
+        try:
+            now = time.time()
+            try:
+                last = float(self.get_meta("last_auto_archive") or 0.0)
+            except (TypeError, ValueError):
+                last = 0.0  # corrupt meta; treat as no prior run
+            if last and now - last < min_interval_hours * 3600:
+                result["skipped"] = True
+                return result
+            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
+            # which the watchdog's CPU fallback misreads as a parked deadlock.
+            # No-op when the watchdog is not armed; never raises.
+            report_startup_progress(900.0, phase="state_db_auto_archive")
+            archived = result["archived"] = self.archive_stale_sessions(idle_days, exclude_pinned=exclude_pinned)
+            # Record even a zero-archive run so we don't re-sweep every call.
+            self.set_meta("last_auto_archive", str(now))
+            if archived > 0:
+                logger.info(
+                    "state.db auto-archive: archived %d session(s) idle >= %s days", archived, idle_days,
+                )
+        except Exception as exc:
+            logger.warning("state.db auto-archive failed: %s", exc)
+            result["error"] = str(exc)
+        return result
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str | None = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,

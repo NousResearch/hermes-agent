@@ -112,6 +112,27 @@ def _strip_resume_name(parts: list[str]) -> str:
     return name
 
 
+def rehome_review_delivery_completion(nested_event: MessageEvent, carrier: MessageEvent) -> None:
+    """Move the completion a nested turn parked on its own synthetic event onto ``carrier``.
+
+    ``gateway.run_turn_review.begin_gateway_review_admission`` parks a direct-call ingress's
+    review-ownership completion on the event it was dispatched with
+    (``_gateway_review_completes_on_event``); a handler that nests a turn through an event it
+    built itself (``/retry``) dispatches it that way, and no delivery path reads that event, so
+    the token would stay live for the process lifetime. ``carrier`` is the event the handler
+    was dispatched with, which both the inline dispatch and a background task read once the
+    handler returns (``_take_review_delivery_callback``) and complete with the send that
+    delivers the reply; a command event never carries a completion of its own, so nothing is
+    overwritten.
+    """
+    completion = getattr(nested_event, "_gateway_review_delivery_complete", None)
+    if nested_event is carrier or not callable(completion):
+        return
+    with contextlib.suppress(Exception):
+        delattr(nested_event, "_gateway_review_delivery_complete")
+    carrier._gateway_review_delivery_complete = completion
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
@@ -452,7 +473,17 @@ class GatewaySessionCommandsMixin:
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
             raw_message=event.raw_message, channel_prompt=event.channel_prompt)
         carry_callback(event, turn)
-        return await self._handle_message(turn)
+        # A direct-call ingress of this handler: the retried turn's review-ownership completion
+        # rides this event, never the session guard. The inline dispatch read the guard before
+        # this handler ran, and before the nested turn reaches its carrier lookup the outgoing
+        # task's unwind can release that guard and a drain task install its own -- whose
+        # handler returns at once (this turn holds the runner's sentinel) and would complete a
+        # completion parked there, unconfirmed, while the retried turn still runs.
+        turn._gateway_review_completes_on_event = True
+        try:
+            return await self._handle_message(turn)
+        finally:
+            rehome_review_delivery_completion(turn, event)
 
     def _retry_owned_store(self, session_id: str):
         """The SessionDB that holds both *session_id*'s transcript and its authority's admission

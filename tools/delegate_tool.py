@@ -421,27 +421,69 @@ def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
+    per_call_model: Optional[str] = None, per_call_provider: Optional[str] = None,
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = _credential_overrides(creds, routing_cfg)
+    # Orphan guard: resolve per-task credentials for EVERY task before any
+    # child agent is constructed. A task whose model/provider cannot be
+    # resolved fails the whole call here, while building nothing - the
+    # mid-batch failure mode (children 0..k-1 constructed, then task k+1
+    # errors and they leak) cannot happen.
+    task_creds_list: list[Any] = []
+    for i, t in enumerate(task_list):
+        # Per-task model/provider beat the top-level per-call values (which
+        # already beat delegation config). Only re-resolve when the task
+        # actually overrides; otherwise reuse the top-level bundle.
+        task_model = t.get("model") or per_call_model
+        task_provider = t.get("provider") or per_call_provider
+        if task_model != per_call_model or task_provider != per_call_provider:
+            try:
+                task_creds_list.append(
+                    _resolve_delegation_credentials(
+                        routing_cfg, parent_agent, model=task_model, provider=task_provider,
+                    )
+                )
+            except ValueError as exc:
+                return [], f"task[{i}] {exc}"
+        else:
+            task_creds_list.append(creds)
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        # Credentials were fully pre-resolved above (orphan guard); this
+        # loop can no longer fail on credential resolution.
+        task_creds = task_creds_list[i]
+        overrides = _credential_overrides(task_creds, routing_cfg)
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=task_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
-            return [], str(exc)
+            # Construction-time preflight failure (e.g. pinned
+            # delegation.command missing from PATH, #80450). Dispose of the
+            # children already built for earlier tasks so nothing leaks,
+            # then refuse the whole spawn.
+            for done in children:
+                done_child = done[2] if isinstance(done, tuple) else done
+                try:
+                    close = getattr(done_child, "close", None)
+                    if callable(close):
+                        close()
+                except Exception:
+                    logger.debug(
+                        "orphan-guard: cleanup of child %s failed",
+                        getattr(done_child, "session_id", "?"), exc_info=True,
+                    )
+            return [], f"task[{i}] {exc}"
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
@@ -489,13 +531,18 @@ def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[list[dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
-    subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
+    subagent_id: Optional[str] = None, message: Optional[str] = None,
+    model: Optional[str] = None, provider: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
     (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
-    dispatch handle when running in the background."""
+    dispatch handle when running in the background.
+
+    Per-call ``model``/``provider`` override the delegation config for this call only (skills use this to force a
+    stronger model for heavy work); ``tasks[]`` items may also carry their own, which beat the top-level values for
+    that task."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
@@ -539,8 +586,14 @@ def delegate_task(
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
     routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
+    # Per-call model/provider beat the delegation config for this call only; an
+    # internal caller owning the route via credentials_cfg is never overridden.
+    per_call_model = model if credentials_cfg is None else None
+    per_call_provider = provider if credentials_cfg is None else None
     try:
-        creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
+        creds = _resolve_delegation_credentials(
+            routing_cfg, parent_agent, model=per_call_model, provider=per_call_provider,
+        )
     except ValueError as exc:
         # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
         # spawn loudly (#80450).
@@ -583,6 +636,7 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        per_call_model=per_call_model, per_call_provider=per_call_provider,
     )
     if err:
         return tool_error(err)
@@ -652,7 +706,8 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
-    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
+    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml, "
+    "or per-call model/provider."
 )
 
 def _build_tasks_param_description() -> str:
@@ -725,6 +780,16 @@ DELEGATE_TASK_SCHEMA = {
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
                         ),
+                        "model": _p(
+                            "string",
+                            "Optional per-task model override (beats the top-level model). Skills use this to "
+                            "force a stronger model for one heavy task without touching global config.",
+                        ),
+                        "provider": _p(
+                            "string",
+                            "Optional per-task provider override (beats the top-level provider). Resolves full "
+                            "credentials via the runtime provider system.",
+                        ),
                         "output_schema": _p(
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
@@ -752,6 +817,16 @@ DELEGATE_TASK_SCHEMA = {
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "model": _p(
+                "string",
+                "Optional model override for ALL children in this call. Beats delegation config for this call only; "
+                "skills use it to force a stronger model for heavy work. Omit to inherit the parent model.",
+            ),
+            "provider": _p(
+                "string",
+                "Optional provider override for ALL children in this call. Beats delegation config for this call "
+                "only; resolves full credentials via the runtime provider system. Omit to inherit the parent provider.",
+            ),
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
@@ -805,6 +880,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        model=args.get("model"), provider=args.get("provider"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

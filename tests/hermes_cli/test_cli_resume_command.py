@@ -239,3 +239,48 @@ class TestResumeFlushesBeforeEndSession:
             conversation_history=[{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}],
         )
         cli_obj._session_db.end_session.assert_called_once()
+
+
+class TestResumeSubscribesTheTarget:
+    """The gateway refuses ``prompt.submit`` for a session this connection never resumed, so a
+    /resume typed before the first turn (no agent, so no setter attach) must subscribe the target
+    itself, and a refusal of that subscription must keep the current session."""
+
+    def _resume(self, attach_error=None):
+        cli_obj = _make_cli()
+        cli_obj._session_db.get_session.return_value = {"id": "target", "title": "T"}
+        cli_obj._session_db.get_resume_conversations.return_value = ([], [])
+        cli_obj._session_db.resolve_resume_session_id.return_value = "target"
+        cli_obj._session_db.attach.side_effect = attach_error
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target"),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            cli_obj._handle_resume_command("/resume target")
+        return cli_obj, " ".join(str(call) for call in mock_cprint.call_args_list)
+
+    def test_resume_before_the_first_turn_subscribes_the_target(self):
+        cli_obj, _ = self._resume()
+
+        assert cli_obj.session_id == "target"
+        cli_obj._session_db.attach.assert_called_once_with("target")
+
+    def test_a_refused_subscription_keeps_the_current_session(self):
+        from agent.i18n import t
+        from hermes_cli.gateway_client import GatewayRPCError
+
+        cli_obj, printed = self._resume(GatewayRPCError("permission_denied"))
+
+        assert cli_obj.session_id == "current_session"
+        cli_obj._session_db.end_session.assert_not_called()
+        assert t("gateway.resume.switch_failed") in printed
+        assert "permission_denied" in printed
+
+    def test_an_unknown_target_keeps_the_current_session(self):
+        from hermes_cli.gateway_client import GatewayRPCError
+
+        cli_obj, printed = self._resume(GatewayRPCError("not_found"))
+
+        assert cli_obj.session_id == "current_session"
+        cli_obj._session_db.end_session.assert_not_called()
+        assert "not_found" in printed

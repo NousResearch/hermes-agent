@@ -10,6 +10,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_cli.gateway_connection import RESUME_REFUSALS
 
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
@@ -147,7 +148,7 @@ async def _resume_latest(client, args):
         try:
             return await _resume(client, args, session_id=crumb)
         except GatewayClientError as exc:
-            if str(exc) not in {"not_found", "permission_denied"}:
+            if str(exc) not in RESUME_REFUSALS:
                 raise
     workspace = await asyncio.to_thread(_workspace_key, _caller_cwd(args))
     try:

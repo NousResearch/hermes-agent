@@ -24,8 +24,12 @@ DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the print
                 "whether it completed or was interrupted; do not resend the work.")
 # A request refused before it reached any socket: nothing is in doubt, so never the copy above.
 NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
-# Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls).
-_GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
+# ``session.resume`` refusals that mean "this viewer may not open that session": the caller keeps the
+# session it is on instead of adopting the target (startup resume).
+RESUME_REFUSALS = frozenset({"not_found", "permission_denied"})
+# Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls): the
+# above plus profile_mismatch, raised for another profile's session (reconnect, /resume switch).
+RESUME_GONE = RESUME_REFUSALS | {"profile_mismatch"}
 
 
 class CallStopped(GatewayClientError):
@@ -239,7 +243,7 @@ class GatewayConnection:
             try:
                 state.adopt_snapshot(await client.rpc("session.resume", session_id=session_id))
             except GatewayClientError as exc:
-                if str(exc) not in _GONE:
+                if str(exc) not in RESUME_GONE:
                     raise
                 logger.debug("session.resume %s after reconnect: %s", session_id, exc)
                 state.subscription_id = None

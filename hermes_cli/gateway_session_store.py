@@ -23,7 +23,7 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class GatewaySessionStore:
             try:
                 snapshot = self.attach(cli.session_id)
             except GatewayClientError as exc:
-                if str(exc) in {"not_found", "permission_denied"}:
+                if str(exc) in RESUME_REFUSALS:
                     return None
                 raise
             # The CLI sends a coding-posture toolset pick and an env-folded ignore_rules too; only a typed

@@ -525,7 +525,8 @@ The image uses Debian 13.4 and includes:
 - The curated extras `all`, `messaging`, `otlp`, `anthropic`, `bedrock`,
   `azure-identity`, and `matrix`. This is not `--all-extras`.
 - Node.js 26 and npm from the digest-pinned Node source image.
-- PM-pinned uv, full Chromium, FFmpeg, and ripgrep in `/opt/hermes/tools`.
+- PM-pinned uv, full Chromium, the `agent-browser` CLI, FFmpeg, and ripgrep in
+  `/opt/hermes/tools`.
 - System Git, OpenSSH, Docker CLI, and Chromium shared libraries.
 - Prebuilt TUI/dashboard assets and baked Photon sidecar dependencies.
 - s6-overlay for supervision and zombie-process cleanup.

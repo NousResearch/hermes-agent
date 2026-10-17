@@ -332,16 +332,18 @@ Also available in chat as [`/export`](./slash-commands.md), and in the desktop a
 | Argument / Option | Description |
 |-------------------|-------------|
 | `<name>` | Profile to export. |
-| `-o`, `--output <path>` | Output file path (default: `<name>.tar.gz`). |
+| `-o`, `--output <path>` | Output file path. If omitted, saves a timestamped archive in a managed directory and prints its path. |
 
 **Example:**
 
 ```bash
 hermes profile export work
-# Creates work.tar.gz in the current directory
+# Prints the saved path, normally <default Hermes home>/profile-exports/work-<timestamp>.tar.gz
 
 hermes profile export work -o ./work-2026-03-29.tar.gz
 ```
+
+Without `-o`, the export destination does not default to the current directory. Use the printed path when importing or copying the archive; a custom Hermes home inside a Git checkout requires a fallback directory outside the checkout.
 
 See [Export and import a profile file](../user-guide/profile-distributions.md#export-and-import-a-profile-file) for exactly what lands in the archive and what to check before sending one to someone else.
 

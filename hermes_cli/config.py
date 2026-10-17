@@ -2140,9 +2140,10 @@ def _terminal_env_value(value: Any) -> str:
     return json.dumps(value) if isinstance(value, (list, dict)) else str(value)
 
 
-def _terminal_config_value_is_bridgeable(key: str, value: Any) -> bool:
+def _terminal_config_value_is_bridgeable(key: str, value: Any, backend: str = "", process_global: bool = False) -> bool:
     """Return whether a terminal config value owns its mirrored env var."""
-    return not (key == "cwd" and str(value or "").strip() in {".", "auto", "cwd"})
+    from agent.runtime_cwd import config_owns_terminal_cwd
+    return key != "cwd" or config_owns_terminal_cwd(value, backend, process_global=process_global)
 
 
 def terminal_config_owned_env_vars(terminal_config: Any) -> set[str]:
@@ -2174,7 +2175,7 @@ def apply_terminal_config_to_env(
     ``tools.terminal_tool`` is environment-driven because it also runs in child processes (TUI,
     dashboard PTY, gateway workers); this gives those launch paths the same bridge as the CLI
     without importing ``cli.py``. Explicit keys in the user's raw ``terminal`` section override
-    matching env values; merged defaults only backfill missing env vars."""
+    matching env values (not a local CLI's own cwd); merged defaults only backfill missing env vars."""
     target = os.environ if env is None else env
 
     raw_terminal_cfg = read_raw_config().get("terminal")
@@ -2207,11 +2208,10 @@ def apply_terminal_config_to_env(
         if cfg_key not in terminal_cfg:
             continue
         value = terminal_cfg[cfg_key]
-        if not _terminal_config_value_is_bridgeable(cfg_key, value):
+        if not _terminal_config_value_is_bridgeable(cfg_key, value, terminal_backend, env is None):
             continue
         if cfg_key == "cwd":
-            raw_cwd = str(value or "").strip()
-            if isinstance(value, str) and not _is_ssh_remote_tilde_cwd(terminal_backend, raw_cwd):
+            if isinstance(value, str) and not _is_ssh_remote_tilde_cwd(terminal_backend, value.strip()):
                 value = os.path.expanduser(value)
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)

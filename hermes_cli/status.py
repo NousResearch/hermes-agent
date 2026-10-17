@@ -99,8 +99,15 @@ def _estop_status_line():
     state = get_state()
     if state is None:
         return None
-    reason = state.get("reason")
-    return f"⏸️  PAUSED (global emergency stop{f' — reason: {reason}' if reason else ''}; `hermes resume` to lift)"
+    detail = f" — reason: {state['reason']}" if state.get("reason") else ""
+    if state.get("expires_at"):
+        detail += f"; auto-resumes {state['expires_at']} (deadman TTL)"
+    allow = state.get("allow") or {}
+    who = list(allow.get("user_ids") or []) + [
+        f"profile:{name}" for name in (allow.get("profiles") or [])]
+    if who:
+        detail += f"; allowed through: {', '.join(who)}"
+    return f"⏸️  PAUSED (global emergency stop{detail}; `hermes resume` to lift)"
 
 
 # --- Data tables driving the per-section renderers -------------------------

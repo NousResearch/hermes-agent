@@ -6234,6 +6234,10 @@ def _resolve_task_provider_model(
         # base_url without api_key: keep the provider so it can resolve credentials from env
         # vars instead of locking into "custom".
         return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
+    if cfg_base_url:
+        # A task-scoped endpoint is a complete override even when it needs no key.
+        # Do not fall through to the main provider's automatic route.
+        return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     if cfg_provider and cfg_provider != "auto":
         return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     return "auto", resolved_model, None, None, resolved_api_mode

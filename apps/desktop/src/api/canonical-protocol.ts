@@ -9,6 +9,17 @@ export const canonicalProfile = (profile: unknown): string =>
 export const canonicalSessionKey = (sessionId: unknown, profile?: unknown): string =>
   JSON.stringify([canonicalProfile(profile), sessionId])
 
+/** Live events and retained snapshots must describe the same answerable card. */
+export function canonicalPromptParams(kind: unknown, sessionId: string, prompt: Record<string, unknown>): Record<string, unknown> {
+  const choices = Array.isArray(prompt.choices) ? prompt.choices : []
+
+  return kind === 'clarify'
+    ? { session_id: sessionId, answers: prompt.answers,
+        questions: Array.isArray(prompt.questions) ? prompt.questions : [{ qid: prompt.prompt_id, question: prompt.question, choices, multi_select: prompt.multi_select }] }
+    : { session_id: sessionId, request_id: prompt.prompt_id, command: prompt.command, description: prompt.description, choices,
+        allow_permanent: choices.includes('always'), edit: prompt.edit }
+}
+
 // Only the authenticated adapter can establish this renderer-side provenance;
 // a JSON-RPC payload's ordinary `profile` property cannot impersonate it.
 const canonicalOwners = new WeakMap<object, string>()
@@ -651,7 +662,11 @@ export class CanonicalDesktopProtocol {
       return projected
     })
 
-    return { ...value, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, replay_epoch: value.replay_epoch, last_sequence: value.last_sequence, execution_generation: value.execution_generation, running: value.running } }
+    const open_requests = prompts.map((prompt: Record<string, unknown>) => ({
+      id: prompt.prompt_id, method: prompt.kind, params: canonicalPromptParams(prompt.kind, sid, prompt)
+    }))
+
+    return { ...value, open_requests, pending_approval: prompts.find((p: any) => p.kind === 'approval'), pending_clarify: prompts.find((p: any) => p.kind === 'clarify'), info: { ...value.info, stored_session_id: value.stored_session_id, pending_submissions: value.pending_submissions, replay_epoch: value.replay_epoch, last_sequence: value.last_sequence, execution_generation: value.execution_generation, running: value.running } }
   }
 
   // The canonical compress receipt carries counts, not the retained transcript;

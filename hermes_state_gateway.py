@@ -403,6 +403,27 @@ class SessionGatewayMixin:
         self._write_sql("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed, many=True)
         return len(doomed)
 
+    def retire_gateway_routes(self, session_ids) -> None:
+        """Publish deletion fences for *session_ids* in THIS (routing) database and drop the
+        routes naming them, in one transaction. Routing saves skip any entry whose session id
+        carries a marker here, so a whole-index snapshot taken before a delete in another
+        profile's store cannot restore the route when it is saved after it."""
+        ids = sorted({str(sid) for sid in session_ids if sid})
+        if not ids:
+            return
+
+        def _do(conn):
+            from hermes_state_mutation_retirement import RETIRED_PREFIX, entry_session_id
+            retired = json.dumps({"retired_at": time.time()})
+            conn.executemany("INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)",
+                             [(RETIRED_PREFIX + sid, retired) for sid in ids])
+            targets = set(ids)
+            doomed = [(row[0], row[1]) for row in conn.execute(
+                "SELECT scope, session_key, entry_json FROM gateway_routing").fetchall()
+                if entry_session_id(row[2]) in targets]
+            conn.executemany("DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?", doomed)
+        self._execute_write(_do)
+
     def prune_never_active_keyed_sessions(
         self, *, older_than_days: float, sessions_dir: Optional[Path] = None,
         deleted_ids: Optional[list] = None) -> tuple[int, int, int]:

@@ -54,6 +54,8 @@ async def close_viewer_session(authority, session_id, reason):
     live = authority.sessions[session_id]
     if live.subscribers:
         return  # a viewer attached while the detach was off the loop: nothing closes or ends
+    if live.superseded:
+        return  # a read-only historic mount: its route's delegations and agent are the newer session's
     from tools.async_delegation import interrupt_for_session, refuse_for_session
     route = live.route
     parents = tuple(dict.fromkeys((session_id, _physical_target(authority, session_id))))

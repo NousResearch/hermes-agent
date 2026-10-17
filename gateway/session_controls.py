@@ -107,6 +107,12 @@ class AuthorityConnection:
         self._identity, self._operator, self._siblings = identity, operator, {}
         authority.events[self.actor.transport_id] = transport
 
+    @property
+    def host_scoped(self):
+        """A host-scoped grant (the Desktop's shared-primary socket, the dashboard gate) acts for
+        every profile this process serves; any other grant is bound to its own profile."""
+        return self._identity.get('profile_scope') == 'host'
+
     def _sibling_for(self, profile):
         """Connection bound to the sibling authority a ``profile`` param names, or None for our own
         home. Only a host-scoped grant (the Desktop's shared-primary socket, the dashboard gate)
@@ -115,7 +121,7 @@ class AuthorityConnection:
         from hermes_cli.profiles import profile_matches_home
         if profile_matches_home(profile, Path(self.authority.profile_id)):
             return None
-        if self._identity.get('profile_scope') != 'host':
+        if not self.host_scoped:
             raise RuntimeStoreError('profile_mismatch')
         registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
         for sibling in (registry or ()):
@@ -508,9 +514,17 @@ class AuthorityConnection:
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
             await refresh_settled(self.authority, ref.session_id)
             row = self.authority.db.get_session(ref.session_id)
-            if row and row['source'] in LEGACY_LOCAL_SOURCES:
+            # Canonical LOCAL compression/reset segments keep the receipt on their logical
+            # owner, not on the physical transcript ID the history picker / Desktop supplies
+            # after list_sessions projects the tip (#139306).
+            if row and row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
                 ref = resolve_local_target(self.authority, self.actor,
                     self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
+            elif row:
+                # A messaging compression continuation attaches to its lineage root, the session
+                # its lane's turns stream to; the reply names that root.
+                from gateway.session_route_recovery import messaging_owner_ref
+                ref = messaging_owner_ref(self.authority, ref)
         if params.get('editor') is not None:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp

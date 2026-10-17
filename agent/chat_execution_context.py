@@ -80,6 +80,20 @@ def concurrent_tool_resource_for_submit(resource_id: str, kind="concurrent_tool_
     return handle
 
 
+def start_reserved_tool_resource(handle: ConcurrentToolResource | None) -> bool:
+    """Start with the caller's authority, without claiming thread or process settlement."""
+    if handle is None:
+        return True
+    from gateway.chat_execution_recovery import DETACHED_RESOURCE_KINDS, ChatExecutionStore
+    under = _detached_under(handle.home, handle.session_key, handle.generation)
+    if _DETACHED_RESOURCE.get() is not None and under is None:
+        return False
+    if handle.kind in DETACHED_RESOURCE_KINDS and not _claim_detached_owner(handle):
+        return False
+    return ChatExecutionStore(handle.home).start_concurrent_tool_resource(
+        handle.session_key, handle.generation, handle.resource_id, handle.session_id, handle.kind, under)
+
+
 @contextmanager
 def bind_concurrent_tool_resource(handle: ConcurrentToolResource | None) -> Iterator[bool]:
     if handle is None:
@@ -87,14 +101,7 @@ def bind_concurrent_tool_resource(handle: ConcurrentToolResource | None) -> Iter
         return
     from gateway.chat_execution_recovery import DETACHED_RESOURCE_KINDS, ChatExecutionStore
     store = ChatExecutionStore(handle.home)
-    under = _detached_under(handle.home, handle.session_key, handle.generation)
-    if _DETACHED_RESOURCE.get() is not None and under is None:
-        yield False
-        return
-    if handle.kind in DETACHED_RESOURCE_KINDS and not _claim_detached_owner(handle):
-        yield False
-        return
-    if not store.start_concurrent_tool_resource(handle.session_key, handle.generation, handle.resource_id, handle.session_id, handle.kind, under):
+    if not start_reserved_tool_resource(handle):
         yield False
         return
     token = _CONCURRENT_RESOURCE.set(handle)

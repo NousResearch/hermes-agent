@@ -11,9 +11,8 @@ def reserve_local_process():
 def start_local_process(handle):
     if handle is None:
         return
-    from gateway.chat_execution_recovery import ChatExecutionStore
-    if not ChatExecutionStore(handle.home).start_concurrent_tool_resource(
-            handle.session_key, handle.generation, handle.resource_id, handle.session_id, handle.kind):
+    from agent.chat_execution_context import start_reserved_tool_resource
+    if not start_reserved_tool_resource(handle):
         raise RuntimeError("Durable terminal process start refused")
 
 

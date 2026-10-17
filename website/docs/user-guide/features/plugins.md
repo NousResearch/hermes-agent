@@ -124,6 +124,18 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Call an MCP tool (capability-gated) | `ctx.call_mcp(server, tool, arguments, timeout=30)` — see [Calling MCP servers from plugins](#calling-mcp-servers-from-plugins) |
 | Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](../../developer-guide/model-provider-plugin.md) (uses a separate discovery system) |
 
+:::note Slash command handlers run in the gateway
+A `/command` registered with `ctx.register_command()` runs in the gateway process that owns the session, beside the plugin's hooks, tools and MCP servers. That includes commands typed in the classic `hermes chat` CLI. So a handler should:
+
+- **Return its text** instead of calling `print()`. Printed output goes to the gateway's stdout, not to the user's chat.
+- **Read the session's working directory with `agent.runtime_cwd.resolve_agent_cwd()`**, not `os.getcwd()`, which is the gateway's own directory. The gateway pins the session's directory while the handler runs.
+- **Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")`** (and the other `HERMES_SESSION_*` names, such as `HERMES_SESSION_ID` and `HERMES_SESSION_KEY`), not `os.environ`. These values are bound per session around the handler, so a background job the handler starts records the session as its parent.
+
+The classic CLI waits for the reply for as long as the handler runs. Ctrl+C stops the wait, not the handler: the handler finishes in the gateway and its reply is not shown. The command runs over its own connection to the gateway, so the session's prompts, interrupts and other commands are not held up while it runs.
+
+See [Register slash commands](../../developer-guide/plugins/index.md#register-slash-commands).
+:::
+
 ## Plugin discovery
 
 | Source | Path | Use case |
@@ -822,6 +834,18 @@ Plugins do not change. They receive the same `ctx` and register tools, hooks, sl
 provider objects (image/video generation, web search, browser, TTS/STT, memory, context engines,
 model-provider profiles) exactly as before; Hermes registers matching entries on its side that call into
 the host. Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
+In-process dashboard API handlers share the gateway's event loop, so they must not block it (see
+[Don't block the event loop](extending-the-dashboard.md#dont-block-the-event-loop)).
+
+On a gateway serving several profiles, every profile other than the one the gateway started with runs
+its own dashboard plugins (installed under its own `plugins/` folder or the root `~/.hermes/plugins/`,
+the profile's own copy winning a same-name conflict, and enabled in its own config) in its own plugin
+host, whatever its `plugins.isolation` says: another profile's plugin code never runs inside the
+gateway. The host does not carry websockets yet, so such a plugin's websocket routes are refused
+(HTTP 501) for that profile; its HTTP routes work. A slow hosted handler holds only its own profile's
+plugin requests, and a request the host has not answered after 60 s gets HTTP 504. Such a host starts
+on the profile's first dashboard plugin request and runs until the gateway exits: one extra Python
+process for each profile that has used a dashboard plugin.
 
 What changes in `host` mode:
 
@@ -832,8 +856,8 @@ What changes in `host` mode:
   flight returns a tool error and Hermes restarts the host and reloads its plugins (bounded retries).
 - **A few surfaces need in-process code** and fail that plugin with a clear reason instead of loading:
   gateway platform adapters (`register_platform`), approval transports, Telegram/platform handlers,
-  model-provider profiles that build their own SDK client (`create_client`), streaming dashboard
-  endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
+  model-provider profiles that build their own SDK client (`create_client`), streaming and websocket
+  dashboard endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
 
 **Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can
 edit a profile's `config.yaml` can turn it off. When the profiles belong to people you are isolating from
@@ -906,7 +930,7 @@ In a running session, `/plugins` shows which plugins are currently loaded.
 Plugins can inject messages into a CLI conversation, a known gateway session, or a new gateway session in a given chat using `ctx.inject_message()`:
 
 ```python
-# Active CLI conversation
+# The chat the plugin is working for (see "Without a session key" below; prefer passing session_key)
 ctx.inject_message("New data arrived from the webhook", role="user")
 
 # Existing gateway conversation
@@ -932,17 +956,24 @@ ctx.inject_message(
 
 **Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None) -> bool`
 
-In CLI mode:
+When the classic CLI runs plugins in its own process (no gateway session):
 
 - If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
 - If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
 - For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
 - Returns `True` if the message was queued successfully.
 
-In gateway mode:
+Without a session key (`session_key` and `origin` both omitted), when the plugin runs in the gateway (or its plugin host) — which is where plugins run for classic CLI, TUI and Desktop sessions — the gateway picks the chat:
 
-- `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
-- Exception: a hook or tool running for a classic CLI session (`hermes chat`, whose turns run in the gateway) may omit both `session_key` and `origin`, as it could in the CLI. The text is committed to that session's queue and runs as its next turn; it no longer interrupts a running one. The turn and its reply are in the session's transcript, but the attached classic CLI does not display them. `allow_gateway_injection` is still required.
+1. If the plugin is handling a local session's own call (its slash command, a hook fired for that session, or a tool or hook in its turn), the message goes to that session. This never guesses, however many sessions are open.
+2. With no session in the calling context (a timer, a background thread — a thread the plugin starts does not inherit the call's context), it goes to the one local session of the plugin's profile that was started by the classic CLI (`hermes chat`) and has a viewer attached. TUI and Desktop sessions, messaging chats and other profiles' sessions are never picked this way.
+3. Otherwise (no such session, or several) it is refused: `False`, nothing is injected anywhere, and the gateway log names the plugin and says to pass a session key.
+
+The chosen session receives the text as a queued input, the same way as a keyed injection; it needs the `allow_gateway_injection` permission below. When that is a classic CLI session, the turn and its reply are in the session's transcript, but the attached classic CLI does not display them. A call made for a messaging chat without a key is refused, as before. Prefer passing `session_key`: a key-less call can be refused when the chat is ambiguous, and key-less injection may be retired later.
+
+In gateway mode with a key:
+
+- `session_key` must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
 - Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot change that route through `session_key`.
 - The session must belong to the plugin's own profile: the key of another profile's chat or local session gets `False` right away, with the reason in the gateway log.
 - Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
@@ -951,7 +982,7 @@ In gateway mode:
 - The route and conversation are pinned while dispatch is pending. Hermes drops the request if topic recovery changes the route or the session rotates before handling starts.
 - The request enters the platform adapter's normal message path. Active sessions use the existing busy-session queue rather than starting a competing turn.
 - Returns `True` when the live gateway accepts the request for asynchronous dispatch. This does not confirm that the agent turn or platform delivery has completed.
-- Returns `False` when neither `session_key` nor `origin` is given (or both are), the permission is not granted, or no live host can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
+- Returns `False` when both `session_key` and `origin` are given, neither is given and no chat is chosen (above), the permission is not granted, or no live host can accept the request. Unknown or unroutable session keys discovered after asynchronous acceptance are written to the gateway log.
 
 Starting a session with `origin` (gateway mode only):
 

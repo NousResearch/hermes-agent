@@ -1143,6 +1143,38 @@ class TurnRunner(SessionTitleCallbacks, GatewayTurnProgressMixin, GatewaySession
                 )
             return result
 
+    def _run_with_local_viewer_sinks(self, agent, reused_cached_agent):
+        """Run the prepared turn and restore its per-turn viewer sinks on every exit."""
+        ctx = self._ctx
+        from gateway.run_turn_progress import local_viewer_turn
+        local_sinks = None
+        if local_viewer_turn(self) and not ctx.mute_notification_reply:
+            # Per turn on the shared cached agent: installed here, restored when the run returns.
+            from gateway import local_viewer_events
+            local_sinks = local_viewer_events.wire(self, agent)
+            from gateway.session_usage import TURN_BASE_ATTR
+            setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
+        try:
+            agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
+            persist_msg, persist_ts = self._prepare_turn_message(agent_history)
+            compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
+            from gateway.session_cli_turn import run_classic_cli_turn
+            from gateway.session_secret_prompt import secret_prompt_scope
+            from gateway.session_sudo_prompt import sudo_prompt_scope
+            with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent):
+                result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
+                    agent, agent_history, observed_group_context, persist_msg, persist_ts))
+        finally:
+            if local_sinks is not None:
+                from gateway import local_viewer_events
+                local_viewer_events.restore(agent, local_sinks)
+                from gateway.session_usage import publish_usage
+                publish_usage(self, agent, record=True)  # turn end: the final API call's counters
+                from gateway.session_local_inventory import publish_settled_info
+                publish_settled_info(self, agent)
+        persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
+        return result, agent_history, history_media_paths, persisted_turn, local_sinks
+
     def _run_sync_scoped(self):
         """Executor-thread body of the turn; returns the gateway result dict.
 
@@ -1263,33 +1295,8 @@ class TurnRunner(SessionTitleCallbacks, GatewayTurnProgressMixin, GatewaySession
         if not self._await_execution_launch(execution_id):
             return {"final_response": "", "messages": [], "api_calls": 0,
                     "tools": [], "completed": True, "interrupted": True}
-        from gateway.run_turn_progress import local_viewer_turn
-        local_sinks = None
-        if local_viewer_turn(self) and not ctx.mute_notification_reply:
-            # Per turn on the shared cached agent: installed here, restored when the run returns.
-            from gateway import local_viewer_events
-            local_sinks = local_viewer_events.wire(self, agent)
-            from gateway.session_usage import TURN_BASE_ATTR
-            setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
-        try:
-            agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
-            persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-            compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
-            from gateway.session_cli_turn import run_classic_cli_turn
-            from gateway.session_secret_prompt import secret_prompt_scope
-            from gateway.session_sudo_prompt import sudo_prompt_scope
-            with sudo_prompt_scope(self, agent), secret_prompt_scope(self, agent):
-                result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
-                    agent, agent_history, observed_group_context, persist_msg, persist_ts))
-        finally:
-            if local_sinks is not None:
-                from gateway import local_viewer_events
-                local_viewer_events.restore(agent, local_sinks)
-                from gateway.session_usage import publish_usage
-                publish_usage(self, agent, record=True)  # turn end: the final API call's counters
-                from gateway.session_local_inventory import publish_settled_info
-                publish_settled_info(self, agent)
-        persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
+        result, agent_history, history_media_paths, persisted_turn, local_sinks = (
+            self._run_with_local_viewer_sinks(agent, reused_cached_agent))
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:
             # The classic `chat -q` process exit bounded the codex app-server child; a finite turn

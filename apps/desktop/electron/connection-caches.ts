@@ -19,10 +19,14 @@ export const sshRosterCache = new Map<string, string[]>()
 export const sshInventoryAttemptedAt = new Map<string, number>()
 
 /**
- * Stable backend identity per connection (the `install_id` its /api/status reports; absent on
- * older backends). TTL-cached because enumeration runs on the ~5s Bot Mode roster poll.
+ * Stable backend facts per connection, both read off the same /api/status probe: the `install_id`
+ * it reports, and its `runtime_kind` (container vs native). Both are absent on backends older than
+ * their field. TTL-cached because enumeration runs on the ~5s Bot Mode roster poll.
  */
-export const connectionInstallIds = new Map<string, { id?: string; ts: number }>()
+export const connectionInstallIds = new Map<
+  string,
+  { id?: string; runtimeKind?: 'container' | 'native'; ts: number }
+>()
 
 /** Last logged roster failure per connection, so repeat polls do not spam the log. */
 export const rosterSourceErrors = new Map<string, string>()

@@ -1,0 +1,5 @@
+kanban.db (kanban.db): linked SQLite 3.50.4 (interpreter /home/hermes/hermes-agent-source/.venv/bin/python) is vulnerable to the WAL-reset corruption bug (https://sqlite.org/wal.html#walresetbug) — is already in WAL mode — leaving WAL in place (no live downgrade under concurrent openers). Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); Hermes-managed installs can repair the embedded runtime with `hermes update`. See `hermes doctor`. This warning fires once per process per database.
+{"missing_artifact": {"status": "running", "ok": false, "failure_codes": ["missing_artifact"]}}
+{"required_artifact": {"status": "done"}}
+
+exit_code=0

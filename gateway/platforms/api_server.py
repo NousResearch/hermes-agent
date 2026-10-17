@@ -4473,9 +4473,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
-            # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a
-            # secondary profile's inbound-port platform (Twilio, LINE, Teams, ...) served on this listener.
-            self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
             # After native routes: Relay bootstrap shims feature-detect on this key and must
             # no-op rather than shadow the native session-control handlers.
             self._app["api_server_adapter"] = self
@@ -4501,6 +4498,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
             # Plugin-registered native handlers, wired before AppRunner.setup() freezes the router.
             self._wire_plugin_handlers(self._app)
+            # Registered after plugin handlers so custom profile-prefixed routes can claim their
+            # paths. Native mirrors above still win; otherwise this routes secondary-profile
+            # platform ingress (Twilio, LINE, Teams, ...) through the shared listener.
+            self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
 # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the

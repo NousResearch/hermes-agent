@@ -9,6 +9,8 @@ import json
 
 import pytest
 
+from hermes_cli.config_defaults import DEFAULT_CONFIG
+from hermes_cli.web_server_config import CONFIG_SCHEMA
 from tools.delegate_tool import DELEGATE_TASK_SCHEMA, _strip_model_hidden_task_fields
 from tools.registry import registry
 
@@ -25,8 +27,10 @@ def _definition(monkeypatch, config):
 def test_switch_is_off_by_default(monkeypatch):
     from tools import delegate_tool_config
 
-    monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: {})
+    monkeypatch.setattr(delegate_tool_config, "_cfg", dict)
     assert delegate_tool_config._get_allow_model_selection() is False
+    assert DEFAULT_CONFIG["delegation"]["allow_model_selection"] is False
+    assert CONFIG_SCHEMA["delegation.allow_model_selection"]["type"] == "boolean"
     task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
     assert not set(task_props) & ROUTE_FIELDS
 

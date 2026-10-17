@@ -5,6 +5,7 @@ import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deDelegationFieldLabels } from './de_delegation_fields'
 import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
@@ -1340,14 +1341,7 @@ export const deOverrides = {
           timeout: 'Timeout des Komprimierungsmodells (s)'
         }
       },
-      delegation: {
-        model: 'Subagent-Modell',
-        provider: 'Subagent-Anbieter',
-        maxIterations: 'Subagent-Rundenlimit',
-        maxConcurrentChildren: 'Parallele Subagenten',
-        childTimeoutSeconds: 'Subagent-Timeout',
-        reasoningEffort: 'Subagent-Denkanstrengung'
-      },
+      delegation: deDelegationFieldLabels,
       updates: {
         nonInteractiveLocalChanges: 'Lokale Änderungen bei In-App-Update'
       }

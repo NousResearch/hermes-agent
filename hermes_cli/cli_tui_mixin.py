@@ -1300,8 +1300,7 @@ class CLITuiMixin:
 
     def _tui_make_approval_number_handler(self, idx):
         def handler(event):
-            if self._approval_state and idx < len(self._approval_state["choices"]):
-                self._approval_state["selected"] = idx
+            if self._approval_pick(idx):
                 self._handle_approval_selection()
                 event.app.invalidate()
         return handler

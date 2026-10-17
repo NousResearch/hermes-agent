@@ -269,6 +269,8 @@ The four options:
 - **always** — add to permanent allowlist (saved to `config.yaml`)
 - **deny** (default) — block the command
 
+For the first half second after the prompt appears in the CLI or TUI, Enter and number keys that would allow the command are ignored, so a keystroke meant for the input line (sending a message just as the prompt pops up) cannot approve it. Deny and Esc work right away.
+
 ### Approval Flow (Gateway/Messaging)
 
 On messaging platforms, the agent sends the dangerous command details to the chat and waits for the user to reply:

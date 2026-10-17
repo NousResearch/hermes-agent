@@ -19,6 +19,8 @@ from hermes_cli.callbacks import prompt_for_secret
 from typing import Optional
 
 _TIMED_OUT = object()  # sentinel returned by _poll_modal_queue when the deadline passes
+# Approving keys are ignored this long after an approval panel paints (see _approval_key_too_early).
+_APPROVAL_KEY_GRACE_S = 0.5
 
 # Typed answers accepted by the slash-confirm modal, mapped onto the canonical choice values.
 _CONFIRM_ALIASES = {
@@ -1102,7 +1104,8 @@ class CLIModalMixin:
                     allow_session=allow_session,
                     smart_denied=smart_denied),
                 "selected": 0,
-                "response_queue": response_queue}
+                "response_queue": response_queue,
+                "shown_at": _time.monotonic()}
             self._approval_deadline = _time.monotonic() + timeout
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)
             self._paint_now()
@@ -1135,6 +1138,32 @@ class CLIModalMixin:
             choices.append("view")
         return choices
 
+    @staticmethod
+    def _approval_key_too_early(state: dict, choice: str) -> bool:
+        """True when a key would APPROVE a prompt that appeared under the user's fingers.
+
+        An Enter or digit typed for the composer (sending a steer, finishing a line) can land in the
+        approval panel the instant it paints, and the default selection is "once". For the first
+        ``_APPROVAL_KEY_GRACE_S`` only deny and view act; approving keys are swallowed and the user
+        presses again once they have seen the command. Inspired by Muse Code 1.4.4 ("a prompt that
+        just appeared ignores Enter, y, p, and number keys for a moment").
+        """
+        if choice in ("deny", "view"):
+            return False
+        return _time.monotonic() - state.get("shown_at", 0.0) < _APPROVAL_KEY_GRACE_S
+
+    def _approval_pick(self, idx: int) -> bool:
+        """Move the approval highlight to a digit's choice; False when out of range or too early.
+
+        A swallowed early digit must not move the highlight either: a later deliberate Enter would
+        otherwise commit the stray choice.
+        """
+        state = self._approval_state
+        if not state or idx >= len(state["choices"]) or self._approval_key_too_early(state, state["choices"][idx]):
+            return False
+        state["selected"] = idx
+        return True
+
     def _handle_approval_selection(self) -> None:
         """Process the currently selected dangerous-command approval choice."""
         state = self._approval_state
@@ -1147,6 +1176,8 @@ class CLIModalMixin:
         if not (0 <= selected < len(choices)):
             return
         chosen = choices[selected]
+        if self._approval_key_too_early(state, chosen):
+            return
         if chosen == "view":
             state["show_full"] = True
             state["choices"] = [choice for choice in choices if choice != "view"]

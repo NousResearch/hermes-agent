@@ -18,7 +18,7 @@ class TestAutoVoiceReplyFormat:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "platform",
-        [Platform.MATRIX, Platform.FEISHU, Platform.WHATSAPP, Platform.SIGNAL],
+        [Platform.MATRIX, Platform.FEISHU, Platform.WHATSAPP, Platform.SIGNAL, Platform.DISCORD],
     )
     async def test_opus_platform_auto_voice_reply_requests_ogg(self, platform):
         """Every OPUS_VOICE_PLATFORMS member gets an explicit .ogg output path.
@@ -26,7 +26,8 @@ class TestAutoVoiceReplyFormat:
         Regression for #14841 (Matrix) / #45557 (Feishu): _send_voice_reply
         hardcoded .ogg for Telegram only, so Matrix/Feishu voice replies were
         synthesized as MP3 and delivered as plain attachments instead of
-        native voice bubbles.
+        native voice bubbles. Discord joined the set with #123680 (its voice
+        upload labels the file voice-message.ogg without transcoding).
         """
         runner = _make_runner()
         adapter = _make_adapter(platform)

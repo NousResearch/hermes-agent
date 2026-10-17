@@ -98,7 +98,9 @@ _GATE_HANDLERS = {"add": _gate_add, "remove": _gate_remove, "rm": _gate_remove, 
 _EXACT_HANDLERS = {
     "": _status, "status": _status, "show": _show, "pause": _pause,
     "resume": _resume, "continue": _resume, "unpause": _resume,
-    "clear": _clear, "stop": _clear, "done": _clear, "unwait": _unwait,
+    # "cancel" was missing, so `/goal cancel` REPLACED the goal with the objective "cancel" and
+    # kicked off work on it (Muse Code 1.4.7 added the same alias for the same reason).
+    "clear": _clear, "stop": _clear, "done": _clear, "cancel": _clear, "unwait": _unwait,
 }
 # Non-destructive control verbs: with trailing words the verb still wins, so
 # `/goal resume last goal` resumes instead of silently replacing the goal text.

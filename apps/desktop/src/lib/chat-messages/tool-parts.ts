@@ -843,7 +843,13 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       continue
     }
 
-    messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
+    const rowId = toolMessage.row_id ?? (typeof toolMessage.id === 'number' ? toolMessage.id : undefined)
+    messages[i] = {
+      ...message,
+      parts,
+      serverRowSpan: (message.serverRowSpan ?? 1) + 1,
+      sourceRowIds: [...(message.sourceRowIds ?? []), ...(rowId === undefined ? [] : [rowId])]
+    }
 
     return true
   }
@@ -882,6 +888,7 @@ export function applyStoredToolResultToParts(
   next[partIndex] = {
     ...existing,
     completedAt: toolMessage.timestamp,
+    resultRowId: toolMessage.row_id ?? (typeof toolMessage.id === 'number' ? toolMessage.id : undefined),
     storedResultToolName: toolName,
     result: parseStoredToolResult(content),
     toolResultMetadata: storedToolResultMetadata(toolMessage),
@@ -907,6 +914,8 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
     toolCallId: toolMessage.tool_call_id || `stored-tool-message-${fallbackIndex}`,
     toolName: name,
     unpairedStoredToolResult: true,
+    sourceRowId: toolMessage.row_id ?? (typeof toolMessage.id === 'number' ? toolMessage.id : undefined),
+    resultRowId: toolMessage.row_id ?? (typeof toolMessage.id === 'number' ? toolMessage.id : undefined),
     args: args as never,
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
     timestamp: toolMessage.timestamp,

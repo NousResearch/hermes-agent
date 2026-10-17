@@ -33,6 +33,34 @@ logger = logging.getLogger(__name__)
 _installed: bool | None = None
 
 
+def _restore_ca_introspection(truststore: Any) -> None:
+    """Give truststore's context the ``cert_store_stats``/``get_ca_certs`` it lacks.
+
+    truststore 0.10.x raises an empty ``NotImplementedError`` from both, which
+    breaks callers that probe a default context before choosing how to load CAs.
+    Only that case is shimmed (delegating to the inner context it configures);
+    any other failure restores the original methods and propagates.
+    """
+    cls = truststore.SSLContext
+    shims = {
+        "cert_store_stats": lambda self: self._ctx.cert_store_stats(),
+        "get_ca_certs": lambda self, binary_form=False: self._ctx.get_ca_certs(binary_form),
+    }
+    originals = {name: getattr(cls, name) for name in shims}
+    try:
+        probe = cls(ssl.PROTOCOL_TLS_CLIENT)
+        for name, shim in shims.items():
+            try:
+                getattr(probe, name)()
+            except NotImplementedError:
+                setattr(cls, name, shim)
+                getattr(probe, name)()
+    except Exception:
+        for name, original in originals.items():
+            setattr(cls, name, original)
+        raise
+
+
 def install_truststore() -> bool:
     """Point every default SSLContext at the OS trust store. Idempotent.
 
@@ -49,6 +77,7 @@ def install_truststore() -> bool:
     try:
         import truststore
 
+        _restore_ca_introspection(truststore)
         truststore.inject_into_ssl()
         _installed = True
         logger.debug("TLS trust: platform store (truststore)")

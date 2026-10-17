@@ -165,9 +165,9 @@ def finish_text_response(
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
+        intent_ack_continuation_mode, looks_like_degenerate_final, tool_results_this_turn,
     )
+    from agent.agent_runtime_helpers_stall_tail import promoted_reasoning_announces_action, trailing_continue_intent
 
     _ack_mode = intent_ack_continuation_mode(agent)
     # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an

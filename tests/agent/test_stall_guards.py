@@ -15,7 +15,7 @@ Two guards, both notice/re-prompt-only:
 These assert behavior contracts, not message snapshots.
 """
 
-from agent.agent_runtime_helpers import trailing_continue_intent
+from agent.agent_runtime_helpers_stall_tail import trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
     STALL_GUARD_IDENTICAL_CALL_THRESHOLD,
@@ -370,36 +370,6 @@ def test_ignores_plain_final_answers():
     assert not trailing_continue_intent(None)
 
 
-def test_detects_bare_forms_without_now():
-    """The bare forms are what models actually write. Measured across 73 agent runs, the
-    "now"-only alternation fired 0 times on 32 transcripts that ended on an announced-but-
-    unperformed action; every one of these shapes appeared in that set."""
-    assert trailing_continue_intent("Let me search for the registry file.")
-    assert trailing_continue_intent("Now I need to check the Prisma schema to understand the phase fields.")
-    assert trailing_continue_intent("I need to read the file first to see its current content.")
-    assert trailing_continue_intent("The file is named `registry` without extension. Let me read it.")
-    assert trailing_continue_intent("Let's run the test suite")
-    assert trailing_continue_intent("I'm going to update the handler")
-
-
-def test_bare_forms_still_require_the_tail_anchor():
-    # Same phrases, but the model kept going afterwards — nothing is dangling.
-    assert not trailing_continue_intent(
-        "Let me explain the design. The registry is keyed by entity name, and each entry "
-        "carries the model, a description, and the field list used by the validator."
-    )
-    assert not trailing_continue_intent(
-        "I need to be clear about the tradeoff here: caching keeps the prefix stable, which "
-        "is why the system prompt is never rebuilt mid-conversation."
-    )
-
-
-def test_let_me_know_is_a_handoff_not_a_stall():
-    # Stopping to ask is correct behavior; re-prompting would talk over the user.
-    assert not trailing_continue_intent("I've pushed the branch. Let me know if you want the CI run too.")
-    assert not trailing_continue_intent("That's the full diff — let me know how you'd like to proceed.")
-
-
 def test_ignores_conversational_future_offers():
     # "I will" without the immediate-action shape must not trip the guard.
     assert not trailing_continue_intent(
@@ -461,9 +431,10 @@ def test_cycle_guard_stays_silent_for_progressing_and_poller_cycles():
 
 
 def test_promoted_reasoning_detector_catches_first_person_plan_tails():
-    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+    from agent.agent_runtime_helpers_stall_tail import promoted_reasoning_announces_action
 
-    # Verbatim tails from the #111761 thread — none match the narrow visible-content detector.
+    # Verbatim tails from the #111761 thread. Visible content is judged by the verb-gated
+    # ``trailing_continue_intent`` (tests/agent/test_stall_guard_continue_intent.py).
     for tail in (
         "Let me batch the terminal calls and run them in parallel.",
         "...Let me load the doctrine skill first, then run checks.",
@@ -471,14 +442,13 @@ def test_promoted_reasoning_detector_catches_first_person_plan_tails():
         "I'm going to run the tests now",
         "嗯，长度合适。Let me check the file first.",
     ):
-        assert not trailing_continue_intent(tail), tail
         assert promoted_reasoning_announces_action(tail), tail
     # Long monologue: only the tail decides (no 400-char cap on this path).
     assert promoted_reasoning_announces_action(("Thinking about the task. " * 60) + "Let me read the file.")
 
 
 def test_promoted_reasoning_detector_ignores_stated_answers():
-    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+    from agent.agent_runtime_helpers_stall_tail import promoted_reasoning_announces_action
 
     for text in (
         "The answer is 42.",
@@ -492,7 +462,7 @@ def test_promoted_reasoning_detector_ignores_stated_answers():
 
 
 def test_promoted_reasoning_detector_catches_thai_plan_tails():
-    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+    from agent.agent_runtime_helpers_stall_tail import promoted_reasoning_announces_action
 
     # Thai is unsegmented (no spaces between words), so the tail-boundary check falls back to
     # sentence punctuation, an em/en dash, or a run of ellipsis dots (#116495).
@@ -507,7 +477,7 @@ def test_promoted_reasoning_detector_catches_thai_plan_tails():
 
 
 def test_promoted_reasoning_detector_ignores_thai_stated_answers():
-    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+    from agent.agent_runtime_helpers_stall_tail import promoted_reasoning_announces_action
 
     for text in (
         "คำตอบคือ 42 ครับ",  # "the answer is 42"

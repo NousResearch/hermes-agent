@@ -549,7 +549,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return finite_clarify_reply()
         from gateway.session_cli_turn import clarify_batch_turn
         if clarify_batch_turn(self):
-            # Main's classic CLI shows every question at once in its batch panel: one request.
+            # Main's batch panel (classic CLI, Ink TUI) shows every question at once: one request.
             from gateway.session_clarify_batch import ask_clarify_batch
             return ask_clarify_batch(self, questions)
         answers: dict[str, Any] = {}

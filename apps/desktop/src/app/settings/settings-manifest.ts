@@ -74,7 +74,7 @@ export const SETTINGS_MANIFEST = {
     chatFont: appearanceSetting('typography', ['font', 'typeface', 'family', 'text'], 'chatFont'),
     terminalFont: appearanceSetting(
       'typography',
-      ['font', 'monospace', 'nerd font', 'glyphs', 'shell'],
+      ['font', 'size', 'monospace', 'nerd font', 'glyphs', 'shell'],
       'terminalFont'
     ),
     interfaceMode: {

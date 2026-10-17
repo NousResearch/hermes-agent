@@ -15,8 +15,8 @@ import time
 
 
 class DiscoveryError(ValueError):
-    def __init__(self, reason: str):
-        super().__init__(reason)
+    def __init__(self, reason: str, detail: str | None = None):
+        super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
 
 
@@ -63,8 +63,18 @@ def home_mode_unsafe(node: os.stat_result, path: Path) -> bool:
 def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_result:
     node = path.lstat()
     predicates = {"socket": stat.S_ISSOCK, "file": stat.S_ISREG, "directory": stat.S_ISDIR}
-    if not predicates[kind](node.st_mode) or node.st_uid != os.getuid():  # windows-footgun: ok — POSIX socket path only
-        raise DiscoveryError("unsafe_control_path")
+    if not predicates[kind](node.st_mode):
+        raise DiscoveryError(
+            "unsafe_control_path",
+            f"{path} is {stat.filemode(node.st_mode)}, expected {kind}",
+        )
+    expected_uid = os.getuid()
+    if node.st_uid != expected_uid:  # windows-footgun: ok — POSIX socket path only
+        raise DiscoveryError(
+            "unsafe_control_path",
+            f"{path} is owned by uid {node.st_uid}, expected uid {expected_uid} (gateway user); "
+            "chown it to the gateway user",
+        )
     if home_mode_unsafe(node, path) if home else stat.S_IMODE(node.st_mode) & 0o077:
         raise DiscoveryError("unsafe_control_permissions")
     return node

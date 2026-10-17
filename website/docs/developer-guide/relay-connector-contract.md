@@ -176,6 +176,18 @@ same way, or the two lanes name one user differently. `bufferId` is
 present when the forward was buffered (Phase 5 §5.3 buffered-only flip) and the
 gateway acks it after durable handoff.
 
+Forwarded Discord interactions carry a separate `MessageEvent.delivery_id`: the
+provider interaction ID, scoped to the relay bot, profile and guild; `bufferId`
+is the fallback when the provider ID is absent. This ID is never a message or
+reply target. Passthrough uses the same inbound path as messages: the bounded
+receiver fence drops duplicate commands and legacy turns, while native
+non-command admission persists the delivery ID as its request ID. Native
+replays, including after a restart or session reset, resolve to the original
+receipt before another session is reserved or dispatch hooks run. Arrival time
+is normalized before admission so a redelivery has the same fingerprint.
+Commands retain the existing process-local fence; they do not enter the native
+FIFO. With neither provider ID nor `bufferId`, delivery remains fail-open.
+
 
 
 ### SessionSource fields (the wire surface)

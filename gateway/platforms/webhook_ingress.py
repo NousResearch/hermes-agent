@@ -53,7 +53,7 @@ async def admit_producer(adapter, event):
         from hermes_cli.lifecycle import has_hook
         webhook = adapter.platform == Platform.WEBHOOK
         hooks = [name for name in ('pre_gateway_dispatch', POST_ADMISSION_HOOK) if has_hook(name)]
-        if not (webhook or hooks):
+        if not (webhook or hooks or event.delivery_id):
             return await authority.admit_native(event)
         from gateway.session_authority import native_write_started
         payload, principal = await _prepared(authority, event)
@@ -61,8 +61,9 @@ async def admit_producer(adapter, event):
         try:
             # An identical delivery (provider retry, relay re-send) overlapping this one waits here, then
             # rechecks the ledger: the retry check, the hooks and the commit run once per delivery.
-            async with _delivery_turn((authority.profile_id, principal, event.message_id)):
-                committed = payload, _committed(authority, principal, event.message_id)
+            delivery_id = event.delivery_id or event.message_id
+            async with _delivery_turn((authority.profile_id, principal, delivery_id)):
+                committed = payload, await asyncio.to_thread(_committed, authority, principal, delivery_id)
                 return await _admit_once(authority, event, webhook, hooks, committed)
         except (Exception, asyncio.CancelledError) as exc:
             # Refused after preparing (a command-shaped rewrite, a drain during the hooks, a conflict),
@@ -77,8 +78,8 @@ async def admit_producer(adapter, event):
 
 async def _admit_once(authority, event, webhook, hooks, committed):
     from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
-    if webhook:
-        prior = await _webhook_retry(authority, event, *committed)
+    if webhook or event.delivery_id:
+        prior = await _producer_retry(authority, event, *committed, webhook=webhook)
         if prior is not None:
             return prior
     admitted = event
@@ -151,20 +152,20 @@ def _committed(authority, principal, request_id):
     return authority.db._read_all('SELECT admission_id FROM session_admissions '
         'WHERE principal_id=? AND request_id=?', (principal, request_id))
 
-async def _webhook_retry(authority, event, payload, rows):
-    # One-shot finalization ends the route. Resolve an existing provider receipt
-    # before SessionStore would rotate it into a new physical session.
+async def _producer_retry(authority, event, payload, rows, *, webhook):
+    # /new, auto-reset or one-shot finalization may have rotated the route. A provider delivery
+    # still belongs to its original receipt, not the session now serving the same chat.
     from gateway.session_ingress_media import ingress_fingerprint
     from hermes_state_runtime import get_session_admission
     if not rows:
         return None
-    row = get_session_admission(authority.db, admission_id=rows[0]['admission_id'])
+    row = await asyncio.to_thread(get_session_admission, authority.db, admission_id=rows[0]['admission_id'])
     retained = row['payload']['native_text_v1']
     if 'ingress_sha256' in retained:
         # Committed rewritten: the provider resends the delivery as received.
         same = retained['ingress_sha256'] == ingress_fingerprint(payload, event.raw_message)
     else:
-        if 'webhook_delivery' not in retained and 'webhook_route' not in retained:
+        if webhook and 'webhook_delivery' not in retained and 'webhook_route' not in retained:
             # A pre-destination receipt is still a receipt, not permission to infer
             # again. Do not retrofit today's destination into its queued execution.
             payload['native_text_v1'].pop('webhook_delivery')
@@ -174,9 +175,12 @@ async def _webhook_retry(authority, event, payload, rows):
         same = row['payload'] == payload
     if len(rows) != 1 or not same:
         raise RuntimeStoreError('admission_conflict')
-    event._webhook_duplicate = True
     receipt = authority._receipt(row)
-    finalize_webhook(authority, receipt)
+    if webhook:
+        event._webhook_duplicate = True
+        finalize_webhook(authority, receipt)
+    else:
+        event._gateway_accepted = True
     return receipt
 
 

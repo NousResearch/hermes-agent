@@ -373,7 +373,8 @@ class SessionAuthority:
         ref = self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                                source.thread_id, source.user_id], separators=(',', ':'))
-        request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
+        delivery = payload['native_text_v1']['event']
+        request_id = str(delivery.get('delivery_id') or delivery['message_id'] or uuid.uuid4().hex)
         committed = [ref]  # the row's target: the write may retarget a rotated-away reservation
 
         def admitted(row):

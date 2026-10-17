@@ -23,7 +23,7 @@ _EVENT_FIELDS = (
     'reply_to_message_id', 'reply_to_text', 'reply_to_author_id',
     'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control',
 )
-_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected')
+_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected', 'delivery_id')
 # Closed metadata contract: only the keys the Baileys adapter stamps on ordinary inbound
 # (``WhatsAppAdapter._build_message_event``) cross native admission; any other key refuses.
 _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'whatsapp_from_owner'})
@@ -138,7 +138,7 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
             source.platform, "authorization_is_upstream", runner._adapter_profile_for_source(source))
     if not runner._is_user_authorized_for_source(source, allow_adapter_delegation=delegated):
         _refuse(event, 'permission_denied', 'user_not_authorized')
-    for name in ('channel_prompt', 'channel_context'):
+    for name in ('channel_prompt', 'channel_context', 'delivery_id'):
         if getattr(event, name) is not None and not isinstance(getattr(event, name), str):
             _refuse(event, 'invalid_params', name)
     if event.reply_expected is not None and type(event.reply_expected) is not bool:

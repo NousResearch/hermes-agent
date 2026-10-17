@@ -869,19 +869,36 @@ _SPECIAL_MODEL_LISTS = {
 
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
-    """Model list for an API-key provider: models.dev registry (cached, agentic/tool-capable filter)
+    """Authoritative live catalogs lead for ``_LIVE_FIRST_PICKER_PROVIDERS``, as in ``/model``.
+    Other API-key providers use models.dev registry (cached, agentic/tool-capable filter)
     → curated static list (offline insurance) → provider-owned catalog (``ProviderProfile.fetch_models``
     merged with ``fallback_models`` exactly like the ``/model`` picker's
     ``models._profile_live_catalog``; generic /models probe for unregistered providers).
     Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, probe_profile_catalog
+    from hermes_cli.models import (
+        _LIVE_FIRST_PICKER_PROVIDERS, _PROVIDER_MODELS, _static_catalog,
+        fetch_api_models, probe_profile_catalog,
+    )
+    from providers import get_provider_profile
     curated = _PROVIDER_MODELS.get(provider_id, [])
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
     special = _SPECIAL_MODEL_LISTS.get(provider_id)
     if special is not None:
         return special(pconfig, curated, api_key_for_probe, effective_base)
+    if provider_id in _LIVE_FIRST_PICKER_PROVIDERS:
+        profile = get_provider_profile(provider_id)
+        if profile is not None:
+            # Setup's selected key and endpoint may not be saved yet. Probe them directly,
+            # using the same merge and offline fallback as the in-session picker.
+            model_list = probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base)
+            if model_list:
+                _report_live_models(model_list, f"{pconfig.name} catalog")
+                return model_list
+            model_list = _static_catalog(provider_id, None)
+            _show_curated(model_list)
+            return model_list
     # models.dev first (tool-capable, noise-filtered), merged with curated so newly added
     # models still appear.
     model_list = _models_dev_merged(provider_id, curated)
@@ -892,7 +909,6 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         # Substantial curated list — use it directly, skip live probe
         _show_curated(curated)
         return curated
-    from providers import get_provider_profile
     profile = get_provider_profile(provider_id)
     if profile is not None:
         # The profile owns endpoint (models_url), headers and response shape. Same probe as the

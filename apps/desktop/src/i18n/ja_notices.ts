@@ -20,6 +20,10 @@ export const jaNotices = {
   promptNotices: {
     legacySendUnconfirmed:
       'このサーバーはこのメッセージの前回の送信を確認できなかったため、すでに実行された可能性があります。再送信する前に会話を確認してください。',
+    mcpReloadDeferred:
+      'このチャットは処理中です。MCP の変更は現在のターンが終わって MCP を再読み込みしたとき、またはチャットを開き直したときに反映されます',
+    mcpReloadNotInChat: server => `${server} はこのチャットでは有効になっていません`,
+    mcpReloadUnavailable: servers => `接続できませんでした: ${servers}`,
     sessionCommands: jaSessionCommands
   },
   keepAwakeOffer: {

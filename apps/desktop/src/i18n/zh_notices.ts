@@ -18,6 +18,9 @@ export const zhNotices = {
   },
   promptNotices: {
     legacySendUnconfirmed: '此服务器无法确认这条消息之前的发送，它可能已经运行过。再次发送前请先查看对话。',
+    mcpReloadDeferred: '此对话正忙：MCP 更改将在当前轮次结束并再次重新加载 MCP 后生效，或在重新打开对话时生效',
+    mcpReloadNotInChat: server => `此对话未启用 ${server}`,
+    mcpReloadUnavailable: servers => `未能连接：${servers}`,
     sessionCommands: zhSessionCommands
   },
   keepAwakeOffer: {

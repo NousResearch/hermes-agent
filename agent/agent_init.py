@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from collections import deque
+from copy import deepcopy
 from contextlib import suppress
 from datetime import datetime
 from types import SimpleNamespace
@@ -25,6 +26,12 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
+from agent.agent_init_extra_body import (  # noqa: F401 — re-export: historical agent_init import path
+    _custom_provider_extra_body_for_agent,
+    _custom_provider_model_matches,
+    _merge_custom_provider_extra_body,
+    _record_constructor_extra_body,
+)
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -251,75 +258,6 @@ def _record_codex_gpt55_autoraise_notice(autoraise: dict[str, Any]) -> None:
         marker.write_text(_codex_gpt55_autoraise_notice_state(autoraise), encoding="utf-8")
 
 
-def _normalized_custom_base_url(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    return value.strip().rstrip("/")
-
-
-def _custom_provider_model_matches(agent_model: str, entry: dict[str, Any]) -> bool:
-    agent_model_norm = str(agent_model or "").strip().lower()
-    # Multi-model entries (`providers.<name>.models` mapping / legacy `models:` list):
-    # matching ANY catalog entry counts, else a provider whose `model` differs from the
-    # session model drops its extra_body (e.g. OpenAI service_tier) → wrong billing tier.
-    models = entry.get("models")
-    catalog = [str(m).strip().lower() for m in models] if isinstance(models, (dict, list, tuple)) else []
-    if catalog and agent_model_norm in catalog:
-        return True
-    provider_model = str(entry.get("model", "") or "").strip().lower()
-    return (not provider_model and not catalog) or provider_model == agent_model_norm
-
-
-def _custom_provider_extra_body_for_agent(
-    *, provider: str, model: str, base_url: str, custom_providers: list[dict[str, Any]]
-) -> Optional[dict[str, Any]]:
-    provider_norm = (provider or "").strip().lower()
-    if provider_norm != "custom" and not provider_norm.startswith("custom:"):
-        return None
-    provider_key_filter = provider_norm.partition(":")[2].strip()
-    target_url = _normalized_custom_base_url(base_url)
-    if not target_url:
-        return None
-
-    fallback: Optional[dict[str, Any]] = None
-    for entry in custom_providers or []:
-        if not isinstance(entry, dict):
-            continue
-        entry_keys = {
-            str(entry.get("provider_key", "") or "").strip().lower(),
-            str(entry.get("name", "") or "").strip().lower(),
-        }
-        if provider_key_filter and provider_key_filter not in entry_keys:
-            continue
-        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
-            continue
-        extra_body = entry.get("extra_body")
-        if not isinstance(extra_body, dict) or not extra_body:
-            continue
-        if str(entry.get("model", "") or "").strip():
-            if _custom_provider_model_matches(model, entry):
-                return dict(extra_body)
-        elif fallback is None:
-            fallback = dict(extra_body)
-    return fallback
-
-
-def _merge_custom_provider_extra_body(agent, custom_providers: list[dict[str, Any]]) -> None:
-    extra_body = _custom_provider_extra_body_for_agent(
-        provider=agent.provider, model=agent.model, base_url=agent.base_url,
-        custom_providers=custom_providers,
-    )
-    if not extra_body:
-        return
-    overrides = dict(getattr(agent, "request_overrides", {}) or {})
-    merged_extra_body = dict(extra_body)
-    existing_extra_body = overrides.get("extra_body")
-    if isinstance(existing_extra_body, dict):
-        merged_extra_body.update(existing_extra_body)
-    overrides["extra_body"] = merged_extra_body
-    agent.request_overrides = overrides
-
-
 def _normalize_run_budget_seconds(value) -> Optional[float]:
     """Positive float or None (feature off). ``bool`` rejected: YAML ``true`` → 1s budget."""
     if value is None or isinstance(value, bool):
@@ -329,7 +267,6 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return seconds if seconds > 0 else None  # NaN compares False → None
-
 
 
 def _refuse_checkpoint_required_on_codex_app_server(
@@ -1869,6 +1806,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 
     # Reused by _check_compression_model_feasibility (aux compression model detection).
     agent._custom_providers = _custom_providers
+    _record_constructor_extra_body(agent, _agent_cfg)
     _merge_custom_provider_extra_body(agent, _custom_providers)
 
     if _config_context_length is None and _custom_providers:
@@ -2217,7 +2155,8 @@ def _snapshot_primary_runtime(agent):
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "request_overrides": deepcopy(getattr(agent, "request_overrides", {}) or {}),
+        "custom_provider_injected_extra_body": deepcopy(getattr(agent, "_custom_provider_injected_extra_body", None)),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

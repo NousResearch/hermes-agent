@@ -2018,27 +2018,25 @@ def _reresolve_fallback_reasoning_config(agent) -> None:
 
 
 def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
-    """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
-    provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
-    config injected — a caller override of the same key won at init and differs, so it survives;
-    keys the new provider redefines are re-added by the merge."""
+    """Drop the OLD route's config-owned extra_body, then merge the fallback provider's own. Fails
+    closed: a value crosses only when positively caller-owned, i.e. neither recorded in the agent's
+    ownership ledger (constructor body while config defines extra_body, custom_providers merges,
+    /model switch, gateway turn routes) nor equal to what the old route's entry sets (upstream's
+    KEY-SCOPED rule). A nested or list value that is only partly config-owned goes too, and so does
+    the whole body of an agent without a ledger (unknown provenance)."""
     try:
-        from agent.agent_init import _custom_provider_extra_body_for_agent, _merge_custom_provider_extra_body
+        from agent.agent_init_extra_body import (
+            _custom_provider_extra_body_for_agent, _drop_config_owned_extra_body, _merge_custom_provider_extra_body,
+        )
         custom_providers = getattr(agent, "_custom_providers", None) or []
         old_provider_eb = _custom_provider_extra_body_for_agent(provider=old_provider, model=old_model, base_url=old_base_url, custom_providers=custom_providers) or {}
-        overrides = dict(getattr(agent, "request_overrides", {}) or {})
-        existing_eb = overrides.get("extra_body")
-        if isinstance(existing_eb, dict) and old_provider_eb:
-            scrubbed = {k: v for k, v in existing_eb.items() if not (k in old_provider_eb and v == old_provider_eb[k])}
-            if scrubbed:
-                overrides["extra_body"] = scrubbed
-            else:
-                overrides.pop("extra_body", None)
-            agent.request_overrides = overrides
+        _drop_config_owned_extra_body(agent, old_provider_eb)
         _merge_custom_provider_extra_body(agent, custom_providers)
         logger.info("Fallback %s: extra_body resolved: %s", agent.model, (getattr(agent, "request_overrides", {}) or {}).get("extra_body"))
     except Exception as _eb_err:
-        logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)
+        # Unknown provenance never reaches the fallback provider.
+        agent.request_overrides = {k: v for k, v in (getattr(agent, "request_overrides", {}) or {}).items() if k != "extra_body"}
+        logger.debug("Failed to resolve extra_body for fallback %s; dropped it: %s", agent.model, _eb_err)
 
 
 def _buffer_fallback_notice(agent, notice: str) -> None:

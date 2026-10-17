@@ -34,6 +34,7 @@ from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_messag
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from agent.agent_runtime_helpers_switch_overrides import _apply_switched_provider_request_overrides
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -1146,7 +1147,14 @@ def _apply_primary_runtime_fields(agent, rt: dict[str, Any]) -> None:
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
-    agent.request_overrides = dict(rt.get("request_overrides") or {})
+    # Request values and their config ownership are one runtime binding. Independent copies
+    # keep mutations on a restored agent from changing either the snapshot or its provenance.
+    agent.request_overrides = copy.deepcopy(rt.get("request_overrides") or {})
+    # A snapshot without a ledger has unknown provenance, so its whole body is config-owned.
+    owned = rt.get("custom_provider_injected_extra_body")
+    if not isinstance(owned, dict):
+        owned = agent.request_overrides.get("extra_body")
+    agent._custom_provider_injected_extra_body = copy.deepcopy(owned) if isinstance(owned, dict) else {}
     agent._client_kwargs = dict(rt["client_kwargs"])
 
 
@@ -2096,31 +2104,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def _apply_switched_provider_request_overrides(agent, new_provider):
-    """Re-derive the switched-to provider's ``request_overrides`` (custom_providers ``extra_body``).
-    Matches by provider key, base_url AND model (same rule as
-    ``agent_init._merge_custom_provider_extra_body``) so a different model at the same endpoint
-    never inherits another's ``extra_body``. Stale ``extra_body`` cleared; ``service_tier``/``speed`` kept."""
-    from agent.agent_init import _custom_provider_extra_body_for_agent
-    # Prefer the init-time cache (agent._custom_providers); reload only if absent.
-    custom_providers = getattr(agent, "_custom_providers", None)
-    if custom_providers is None:
-        try:
-            from hermes_cli.config import load_config, get_compatible_custom_providers
-            custom_providers = get_compatible_custom_providers(load_config())
-        except Exception:
-            custom_providers = []
-    new_extra_body = _custom_provider_extra_body_for_agent(
-        provider=new_provider, model=getattr(agent, "model", "") or "",
-        base_url=getattr(agent, "base_url", "") or "", custom_providers=custom_providers or [],
-    )
-    overrides = dict(getattr(agent, "request_overrides", {}) or {})
-    overrides.pop("extra_body", None)  # always drop the previous provider's extra_body
-    if new_extra_body:
-        overrides["extra_body"] = dict(new_extra_body)
-    agent.request_overrides = overrides
-
-
 # Pool reload is part of the switch and must be reversible on rollback, hence the pool fields.
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
@@ -2402,7 +2385,9 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         # Overrides must travel with the switched-to identity or a later recovery/restore resurrects
         # PRE-switch overrides from the stale init snapshot.
         # See #75091.
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "request_overrides": copy.deepcopy(getattr(agent, "request_overrides", {}) or {}),
+        # None when the agent has no ledger: unknown provenance, which a restore treats as config-owned.
+        "custom_provider_injected_extra_body": copy.deepcopy(getattr(agent, "_custom_provider_injected_extra_body", None)),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(cc, "model", agent.model),
         "compressor_base_url": getattr(cc, "base_url", agent.base_url),
@@ -2443,6 +2428,9 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
         _apply_switched_provider_request_overrides(agent, new_provider)
     except Exception:
         logger.debug("switch_model: request_overrides re-derivation failed", exc_info=True)
+        # Fail closed: the previous route's extra_body never reaches the new provider.
+        agent.request_overrides = {
+            key: value for key, value in (getattr(agent, "request_overrides", {}) or {}).items() if key != "extra_body"}
 
 
 def _persist_switch_billing_route(agent) -> None:
@@ -2470,6 +2458,12 @@ def switch_model(
     snapshot and re-raises (callers catch)."""
     old_model = agent.model
     old_provider = agent.provider
+    from agent.agent_init_extra_body import _caller_owned_extra_body, _custom_provider_extra_body_for_agent
+    # Taken before the switch rescopes extra_body: the only part of the old body a later restore
+    # may bring back (upstream's pre-switch snapshot brought back the old route's config too).
+    caller_extra_body = _caller_owned_extra_body(agent, _custom_provider_extra_body_for_agent(
+        provider=old_provider, model=old_model, base_url=agent.base_url,
+        custom_providers=getattr(agent, "_custom_providers", None) or []))
     # ── Reload credential pool for the new provider (issue #52727) ── Without this,
     # ``recover_with_credential_pool`` sees a ``pool.provider != agent.provider`` mismatch and
     # short-circuits, leaving the new provider with no rotation/recovery on 401/429 and burning the original
@@ -2519,8 +2513,13 @@ def switch_model(
     # short-circuiting the freshly selected healthy provider.
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
-    agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
     _finish_switch(agent, new_provider, old_norm, new_norm)
+    # Capture only after the destination's request values and ownership have been rescoped.
+    agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
+    if caller_extra_body:
+        # Restores reinstate pre-switch caller values like upstream's snapshot did; they win, as at init.
+        restored = agent._primary_runtime["request_overrides"]
+        restored["extra_body"] = {**(restored.get("extra_body") or {}), **caller_extra_body}
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,

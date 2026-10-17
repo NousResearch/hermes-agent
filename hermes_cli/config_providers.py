@@ -112,8 +112,8 @@ _CAMEL_ALIASES: dict[str, str] = {
 
 
 _KNOWN_PROVIDER_KEYS = {
-    # ``provider`` duplicates the ``providers.<name>`` mapping key and is unused here, but Hermes'
-    # own config writer has historically emitted it. Accept it so self-written configs don't warn.
+    # ``provider`` usually duplicates the mapping key; explicit LMStudio registrations also
+    # scope model-specific extra_body settings consumed by the agent.
     "provider",
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
@@ -235,6 +235,9 @@ def _normalize_custom_provider_entry(
             normalized[field] = value
 
     _put("api_key", _stripped("api_key"))
+    # Retain only the explicit local-provider marker needed for model-scoped sampling.
+    if _stripped("provider").lower() == "lmstudio":
+        normalized["provider"] = "lmstudio"
     _put("key_cmd", _stripped("key_cmd"))
     key_env = _stripped("key_env", "api_key_env")
     _put("key_env", key_env)
@@ -291,7 +294,7 @@ def _custom_provider_entry_to_provider_config(
 
     provider_entry: dict[str, Any] = {"api": normalized["base_url"]}
     for field in (
-        "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
+        "name", "provider", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
         "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
         if field in normalized:

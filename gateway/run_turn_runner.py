@@ -413,6 +413,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         overrides.update(turn_overrides)
         agent.request_overrides = overrides
         agent._gateway_turn_request_overrides = turn_overrides
+        # The turn's extra_body is runtime-resolved config: record it so a fallback this turn can't
+        # take a value reloaded since the agent was built for a caller override.
+        from agent.agent_init_extra_body import _record_custom_provider_extra_body
+        _record_custom_provider_extra_body(agent, turn_overrides.get("extra_body"))
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
                                    stream_delta_cb, interim_assistant_cb, want_interim_messages):

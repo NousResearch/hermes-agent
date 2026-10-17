@@ -228,8 +228,8 @@ _AUTH_COPY: dict[str, str] = {
 }
 
 CONTENT_POLICY_NEXT_STEPS = (
-    "Try rewording your message or removing sensitive attachments, or switch to another "
-    "model with /model."
+    "The blocked pattern often sits in an earlier tool result and is re-sent every turn — "
+    "start a new session with /new, or switch to another model with /model."
 )
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------

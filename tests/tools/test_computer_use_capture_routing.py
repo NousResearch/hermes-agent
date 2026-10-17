@@ -165,11 +165,9 @@ class TestCaptureResponseRoutedToAuxVision:
         assert body["app"] == "Safari"
         assert "Sign in" in body["vision_analysis"]
         assert body["vision_analysis_routed_via"] == "auxiliary.vision"
-        # The original AX-only metadata (window title, element index, app)
-        # is preserved alongside the new vision analysis so the agent loses
-        # no context vs the multimodal path.
+        # The original AX-only metadata is preserved alongside the new vision analysis.
         assert body["window_title"] == "GitHub – Issue #24015"
-        assert len(body["elements"]) == 2
+        assert "elements" not in body
 
         assert captured_calls.get("called") is True
         # vision_analyze_tool was invoked with a path under the patched cache

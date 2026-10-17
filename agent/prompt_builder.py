@@ -234,6 +234,12 @@ def build_memory_guidance(
 MEMORY_GUIDANCE = build_memory_guidance(True, True)
 USER_PROFILE_GUIDANCE = build_memory_guidance(False, True)
 
+TOOL_SEARCH_GUIDANCE = (
+    "Additional MCP and plugin tools may be deferred and available via tool_search. "
+    "If you expect a tool that is not listed, use tool_search to discover it before concluding "
+    "the capability is missing or the server is disconnected."
+)
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect relevant cross-session "
     "context exists, use session_search to recall it before asking them to repeat themselves."

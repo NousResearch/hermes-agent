@@ -11,6 +11,7 @@ the delegation call and the summary result, never the child's intermediate
 tool calls or reasoning.
 """
 
+import json
 import logging
 import time
 import weakref
@@ -55,6 +56,7 @@ from tools.delegate_tool_tasks import (
 from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
+from tools.delegate_tool_routes import TaskRouteCatalog, resolve_task_model
 from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
@@ -436,21 +438,31 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
     }
 
 
+def _route_catalog(routing_cfg: dict[str, Any], parent_agent) -> TaskRouteCatalog:
+    """Provider catalog for model pins; the inherited provider (config route, else the parent's) comes first."""
+    return TaskRouteCatalog((str(routing_cfg.get("provider") or "").strip(), str(getattr(parent_agent, "provider", "") or "")))
+
+
 def _resolve_task_credentials(
     task: dict[str, Any], creds: Optional[dict[str, Any]], routing_cfg: dict[str, Any], parent_agent,
+    route_catalog: Optional[TaskRouteCatalog] = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Batch creds, or a per-task overlay when ``provider``/``model`` is a non-empty string."""
+    """Batch creds, or a per-task overlay when ``provider``/``model`` is a non-empty string. Pins are matched against
+    the model picker's listing first (``resolve_task_model``); any rewrite rides along as ``route_note``."""
     pin_provider = _task_route_pin(task.get("provider"))
     pin_model = _task_route_pin(task.get("model"))
     if not pin_provider and not pin_model:
         return creds or _resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg
+    pin_provider, pin_model, note = resolve_task_model(
+        pin_provider, pin_model, route_catalog or _route_catalog(routing_cfg, parent_agent))
     overlay = dict(routing_cfg)
     if pin_provider:
         overlay["provider"] = pin_provider
         overlay["base_url"] = ""
     if pin_model:
         overlay["model"] = pin_model
-    return _resolve_delegation_credentials(overlay, parent_agent), overlay
+    resolved = _resolve_delegation_credentials(overlay, parent_agent)
+    return ({**resolved, "route_note": note} if note else resolved), overlay
 
 
 def _task_has_route_pin(task: dict[str, Any]) -> bool:
@@ -534,9 +546,10 @@ def _apply_task_tuning(task: dict[str, Any], creds: dict[str, Any], parent_agent
 
 def _resolve_task_routes(task_list, creds, routing_cfg, parent_agent) -> tuple[list, Optional[str]]:
     resolved_routes = []
+    route_catalog = _route_catalog(routing_cfg, parent_agent)
     for task in task_list:
         try:
-            creds_i, routing_i = _resolve_task_credentials(task, creds, routing_cfg, parent_agent)
+            creds_i, routing_i = _resolve_task_credentials(task, creds, routing_cfg, parent_agent, route_catalog)
             resolved_routes.append((_apply_task_tuning(task, creds_i, parent_agent), routing_i))
         except ValueError as exc:
             return [], str(exc)
@@ -741,7 +754,22 @@ def delegate_task(
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
         live_home=_live_home,
     )
-    return _run_batch(batch, background)
+    return _with_route_notes(_run_batch(batch, background), resolved_routes)
+
+
+def _with_route_notes(result: str, resolved_routes: list) -> str:
+    """Add ``route_notes`` (chosen providers, corrected model ids) to the spawn result so no reroute is silent."""
+    notes = [f"Task {i}: {c['route_note']}" for i, (c, _) in enumerate(resolved_routes) if c.get("route_note")]
+    if not notes:
+        return result
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(payload, dict):
+        return result
+    payload["route_notes"] = notes
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ── OpenAI function-calling schema ──────────────────────────────────────────
@@ -908,7 +936,10 @@ DELEGATE_TASK_SCHEMA = {
                         ),
                         "model": _p(
                             "string",
-                            "Optional model pin for THIS child only. Omit or leave blank to inherit the batch/parent model.",
+                            "Optional model pin for THIS child only. Omit or leave blank to inherit the batch/parent model. "
+                            "Without a provider, the child runs on the first logged-in provider listing the model "
+                            "(provider plugins, then first-party, then aggregators). A clear typo of a catalog id is "
+                            "corrected; the spawn result's route_notes report any chosen provider or correction.",
                         ),
                         "reasoning_effort": _p(
                             "string",

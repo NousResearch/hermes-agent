@@ -106,6 +106,20 @@ def _clean_revisions(raw: dict) -> dict:
     return {str(k): max(0, int(v)) for k, v in raw.items() if isinstance(v, int) and not isinstance(v, bool)}
 
 
+def _effective_ui_meta_revisions(ui_meta, raw_revisions) -> dict:
+    """Give pre-CAS metadata keys a non-zero compare-and-swap baseline.
+
+    An existing key without a revision is shared state imported from before
+    revisions existed. It must not look like the absent-key revision zero,
+    because a client could otherwise replace it as a fresh value.
+    """
+    revisions = _clean_revisions(raw_revisions) if isinstance(raw_revisions, dict) else {}
+    if isinstance(ui_meta, dict):
+        for key in ui_meta:
+            revisions.setdefault(str(key), 1)
+    return revisions
+
+
 def _latest_message_preview(db, session_id):
     """≤80-char excerpt of the NEWEST active user/assistant message, or "" (roster semantics).
     Same query shape as ``SessionDB.latest_message_row_id``; keep them in step."""
@@ -261,8 +275,7 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
         raw_meta = _read_profile_yaml(profile_dir)
         ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
         # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
-        fields = {"ui_meta_revisions":
-                  _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}}
+        fields = {"ui_meta_revisions": _effective_ui_meta_revisions(ui_meta, revisions)}
         if isinstance(ui_meta, dict) and ui_meta:
             # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
             # coerce YAML-only scalars to their ISO string at the boundary (#92506).
@@ -617,7 +630,9 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
         with _profile_ui_meta_lock:
             existing = _read_profile_yaml(profile_dir)
             raw_revisions = existing.get("_ui_meta_revisions")
-            revisions = _clean_revisions(raw_revisions if isinstance(raw_revisions, dict) else {})
+            current = existing.get("ui_meta")
+            current = current if isinstance(current, dict) else {}
+            revisions = _effective_ui_meta_revisions(current, raw_revisions)
             conflicts = {}
             for key in incoming if isinstance(expected, dict) else ():
                 wanted, actual = expected.get(key), revisions.get(key, 0)
@@ -627,8 +642,6 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
                 applied["ui_meta_conflicts"] = conflicts
                 applied["ui_meta_revisions"] = {key: revisions.get(key, 0) for key in incoming}
                 return
-            current = existing.get("ui_meta")
-            current = current if isinstance(current, dict) else {}
             old_title = _bots_title(current)
             for key, value in incoming.items():
                 if value is None:

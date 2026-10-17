@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture
 def deepinfra_profile():
-    import model_tools  # noqa: F401  (plugin discovery registers the profile)
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("deepinfra")

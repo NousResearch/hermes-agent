@@ -73,6 +73,7 @@ A rewind / edit / regenerate is a `prompt.submit` that drops part of the stored 
 | `truncate_before_row_id` | Integer SQLite row ID (`messages.id` / `row_id`) of the target user turn to cut at. Preferred durable address. When both ordinal and row ID are provided, gateway verifies they match (returning `4030` on mismatch). An unknown/stale row ID is refused with `4018` — it does **not** fall back to the ordinal. |
 | `confirm_truncate` | Required whenever an ordinal, message ID, or row ID is sent. Declares that this submit really is a rewind, not an ordinary send that happens to carry leftover parameters. Sending it without a target is refused with code `4004`. |
 | `confirm_empty_truncate` | Additionally required when the cut would leave the transcript empty (ordinal `0`). |
+| `confirm_deep_truncate` | Send it when the cut would archive more than one user turn (anything deeper than regenerating or editing the last turn), after asking the user. This release logs an unconfirmed deep cut and still runs it, so older clients keep working. The next release will refuse it with code `4033` (`error.data` carries `archived_messages` and `archived_user_turns`, and nothing is written). |
 
 A truncation parameter without `confirm_truncate` is refused with code `4004` or `4029` and nothing is written. Hosts that implement rewind must set the flag at the moment the user asks for it, and must never keep truncation parameters in state across ordinary submits. Prefer `truncate_before_row_id` (from resume `row_id` / `_row_id`) over ordinals; keep the ordinal as a back-compat / optimistic-row path only when no durable id is available yet.
 
@@ -93,7 +94,7 @@ Approvals, clarify questions, sudo/secret prompts, vault unlock, MCP setup and t
 → {"jsonrpc":"2.0","id":"srq-7","result":{"choice":"once"}}
 ```
 
-Methods: `approval` → `{choice}`; `clarify` → `{answer}` (single) or `{answers}` / `{}` cancel (batch, with `clarify.lock` to lock one answer early); `sudo`, `secret`, `vault.code`, `vault.unlock_prompt` → `{value}`; `connection` → `{settled_by, targets}` (the `manage_connections` card: one outcome per target); `terminal.read`, `window.read`, `preview.act`, `tour` → `{value}` (JSON text). Respond with a JSON-RPC error (`-32601`) for a method your host does not implement so the agent fails fast instead of waiting out the timeout.
+Methods: `approval` → `{choice}`; `clarify` → `{answers}` keyed by question id, or `{}` to cancel (`clarify.lock` locks one answer early; `null` skips that question); `sudo`, `secret`, `vault.code`, `vault.unlock_prompt` → `{value}`; `connection` → `{settled_by, targets}` (the `manage_connections` card: one outcome per target); `terminal.read`, `window.read`, `preview.act`, `tour` → `{value}` (JSON text). Respond with a JSON-RPC error (`-32601`) for a method your host does not implement so the agent fails fast instead of waiting out the timeout.
 
 **Advertise that you answer them (breaking for existing WebSocket integrations).** Once per connection, after `gateway.ready`, call `client.capabilities` with `{"server_requests": true}`; the result lists the request methods this backend may send. A WebSocket client that never does is treated as a build that predates server→client requests: the gateway fails every such request for it immediately (the agent sees the same "no answer" an error response produces; an approval is withdrawn, not denied) instead of stalling for the full deadline. There is no grace path — a third-party WebSocket client that answered `clarify`/`approval`/`sudo`/… before this change but never sends `client.capabilities` now has every such request refused until it adds the one call. A session with no client attached is not affected — its open questions wait in `open_requests` for the reconnect replay. The stdio TUI, the desktop app and the dashboard advertise through the shared `JsonRpcRequestChannel`.
 
@@ -137,6 +138,7 @@ GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
+POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
 POST /v1/browser-control/register Register a browser controller
@@ -196,6 +198,27 @@ The terminal status of a run is derived from how the agent's turn actually ended
 | Ended without finishing (iteration budget, truncated or partial reply) | `failed` | `run.failed` | `completed: false`, `partial` when applicable, `turn_exit_reason` (e.g. `max_iterations_reached(60/60)`), `output` with any fallback text |
 
 A run is never reported as `completed` with `completed: false` or `partial: true` in the same payload. The same rule applies to `/api/sessions/{id}/chat/stream`, whose `assistant.completed` payload carries the real `completed` / `partial` / `interrupted` flags and whose terminal event is `run.completed`, `run.failed`, or `run.cancelled`.
+
+`POST /v1/runs/{id}/resolve-unknown` is a canonical-authority recovery
+operation, not a generic status mutation. Send exactly the `admission_id` and
+integer `execution_generation` projected by the run status. The server binds the
+authenticated owner, selected profile, path run, API principal, target session,
+admission, and generation before the authority performs its compare-and-set.
+Resolution settles the lost head as interrupted and releases the next FIFO item;
+it never requeues the head. Feature-detect
+`features.run_unknown_resolution` because legacy execution mode does not
+advertise this endpoint.
+
+New canonical API admissions retain an opaque owner scope in the admission row,
+so keyed and non-keyed runs can be authorized after an adapter restart for as
+long as that canonical admission remains available. This does not change
+non-keyed request semantics: identical submissions still create distinct runs.
+Pre-upgrade non-keyed admissions contain no owner scope and remain deliberately
+unresolvable after restart; there is no safe credential ownership to backfill.
+Existing keyed records retain their replay-ledger recovery path. Explicit
+session retirement removes the canonical payload and therefore ends this owner
+recovery path. Replay reservation and canonical admission still use separate
+databases, so this endpoint does not provide a global exactly-once guarantee.
 
 ---
 

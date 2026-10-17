@@ -256,7 +256,6 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # credential-derived strings (keeps cli.py taint-free for CodeQL).
     photon_auth.print_credential_summary(print)
     node_bin = find_node_executable("node")
-    sidecar_installed = sidecar_deps_installed()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_deps_installed() else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
@@ -313,8 +312,8 @@ def _install_sidecar() -> int:
     def _run(verb: str) -> subprocess.CompletedProcess:
         # stdout streams to the terminal; stderr is captured so the failure reason can be
         # persisted for check_requirements() to surface later.
-        proc = subprocess.run(  # noqa: S603
-            [npm, verb], cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
+        proc = subprocess.run(
+            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
         if proc.stderr:
             print(proc.stderr, end="", file=sys.stderr)
         return proc
@@ -354,26 +353,3 @@ def _prompt(prompt: str, *, secret: bool = False) -> str:
     except (KeyboardInterrupt, EOFError):
         print()
         return ""
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'resolve_sidecar_dir': ('plugins.platforms.photon.sidecar_paths', 'resolve_sidecar_dir'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

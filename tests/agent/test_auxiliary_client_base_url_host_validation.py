@@ -122,19 +122,6 @@ class TestTryAnthropicBaseUrlHostValidation:
             f"Non-Anthropic host must not be applied. Got: {actual!r}"
         )
 
-    def test_empty_base_url_falls_back_to_default(self, tmp_path, monkeypatch):
-        """Empty model.base_url must not crash and must fall back to default."""
-        import hermes_yaml as yaml
-        from agent.auxiliary_client import _try_anthropic
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
-            "model": {
-                "provider": "anthropic",
-                "model": "claude-haiku-4-5-20251001",
-                "base_url": "",
-            }
-        }))
-
 
     def test_anthropic_suffix_gateway_base_url_is_applied(self, tmp_path, monkeypatch):
         """A gateway exposing the Messages protocol under a ``/anthropic`` suffix

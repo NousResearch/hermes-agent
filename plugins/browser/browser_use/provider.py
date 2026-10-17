@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Managed-mode create idempotency keys: the gateway answers retried POSTs with 409 "already in
 # progress", so the original key is forwarded; cleared on success or terminal failure.
-_pending_create_keys: Dict[str, str] = {}
+_pending_create_keys: dict[str, str] = {}
 _pending_create_keys_lock = threading.Lock()
 
 _BASE_URL = "https://api.browser-use.com/api/v3"
@@ -71,12 +71,12 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
     def is_available(self) -> bool:
         return self._get_config_or_none(refresh_token=False) is not None
 
-    def _get_config_or_none(self, *, refresh_token: bool = True) -> Optional[Dict[str, Any]]:
+    def _get_config_or_none(self, *, refresh_token: bool = True) -> Optional[dict[str, Any]]:
         # Lazy: managed_tool_gateway pulls in the Nous auth stack direct-key users never need.
         from tools.managed_tool_gateway import peek_nous_access_token, resolve_managed_tool_gateway
         from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
 
-        def _managed_config() -> Optional[Dict[str, Any]]:
+        def _managed_config() -> Optional[dict[str, Any]]:
             # Keep availability scans off the synchronous OAuth refresh path.
             managed = resolve_managed_tool_gateway(
                 "browser-use", token_reader=None if refresh_token else peek_nous_access_token)
@@ -100,7 +100,7 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
             return direct if api_key else None
         return direct if api_key else _managed_config()
 
-    def _get_config(self) -> Dict[str, Any]:
+    def _get_config(self) -> dict[str, Any]:
         from tools.tool_backend_helpers import (
             NOUS_MANAGED_PROVIDER, managed_nous_tools_enabled, read_selection, selection_error)
 
@@ -120,13 +120,13 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
                 "credential or a managed Browser Use gateway configuration.")
         raise ValueError("Browser Use requires a direct BROWSER_USE_API_KEY credential.")
 
-    def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+    def _headers(self, config: dict[str, Any]) -> dict[str, str]:
         return {"Content-Type": "application/json", "X-Browser-Use-API-Key": config["api_key"]}
 
-    def _release_body(self, config: Dict[str, Any]) -> Dict[str, object]:
+    def _release_body(self, config: dict[str, Any]) -> dict[str, object]:
         return {"action": "stop"}
 
-    def create_session(self, task_id: str) -> Dict[str, object]:
+    def create_session(self, task_id: str) -> dict[str, object]:
         config = self._get_config()
         managed_mode = bool(config.get("managed_mode"))
 
@@ -158,26 +158,3 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
             "features": {"browser_use": True},
             "external_call_id": response.headers.get("x-external-call-id") if managed_mode else None,
         }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'BrowserProvider': ('agent.browser_provider', 'BrowserProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

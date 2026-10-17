@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
 
-from pm.filesystem import is_junction
+from pm.filesystem import is_junction, long_root, retry_held
 
 
 
@@ -210,13 +210,10 @@ def _tar_filter(member, dest: str):
         return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
     return tarfile.data_filter(member, dest)
 
-def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False) -> None:
+def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
     with the one containment policy every PM tar consumer shares. Unsafe
     members raise tarfile.FilterError.
-
-    MSYS Git ships dev/fd links and etc/mtab into /proc; those aren't usable
-    on Windows. Skip only those known links, never a filter error or failed file write.
     """
     import tarfile
 
@@ -224,15 +221,7 @@ def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        if git_msys:
-            members = (m for m in tf if not (m.issym() and (
-                (m.name.lstrip("./").startswith("dev/") and m.linkname.startswith("/proc/"))
-                or (m.name == "etc/mtab" and m.linkname == "/proc/mounts")
-            )))
-            for member in members:
-                tf.extract(member, dest, filter=lambda item, path: _tar_filter(item, real_dest))
-        else:
-            tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
 
 
 def extract(archive: Path, dest: Path) -> None:
@@ -283,7 +272,8 @@ def _zip_symlink(member: str, target: str, dest: Path) -> None:
 
 def flatten_single_dir(dest: Path) -> None:
     """Hoist a lone top-level dir's contents unless it IS the layout
-    (bin/, cmd/, lib/...). Refuses on name collisions."""
+    (bin/, cmd/, lib/...). Refuses on name collisions. The tree was extracted
+    seconds ago, when a Windows scanner still holds it (#131884)."""
     keep = {"bin", "cmd", "lib", "libexec", "share", "etc", "usr"}
     entries = list(dest.iterdir())
     if len(entries) != 1 or not entries[0].is_dir() or entries[0].name in keep:
@@ -293,8 +283,8 @@ def flatten_single_dir(dest: Path) -> None:
         target = dest / item.name
         if target.exists():
             return
-        item.rename(target)
-    inner.rmdir()
+        retry_held(lambda: item.rename(target))
+    retry_held(inner.rmdir)
 
 
 def merge_tree(src: Path, dst: Path) -> None:
@@ -309,7 +299,7 @@ def merge_tree(src: Path, dst: Path) -> None:
         if target.exists():
             raise FileExistsError(f"archives disagree about {rel}")
         target.parent.mkdir(parents=True, exist_ok=True)
-        item.replace(target)
+        retry_held(lambda: item.replace(target))
 
 
 def tree_digest(root: Path) -> str:
@@ -358,7 +348,7 @@ class Store:
     Hash-keyed archives survive failed installs. Publication releases them."""
 
     def __init__(self, root: Path):
-        self.root = root
+        self.root = long_root(root)
 
     def entry(self, name: str) -> Path:
         return self.root / name
@@ -397,7 +387,8 @@ class Store:
                 destination = scratch / entry_name / url.rsplit("/", 1)[-1]
             sources.append(pinned_source(url, destination, digest))
 
-        urls = {str(source.dest): source.url for source in sources}
+        # Progress keeps the lockfile URL even when the transport is a mirror (#123132).
+        urls = {str(source.dest): artifact["url"] for source, artifact in zip(sources, artifacts)}
 
         def tick(done, total, ranges):
             if progress is not None:

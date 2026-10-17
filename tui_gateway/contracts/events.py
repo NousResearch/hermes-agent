@@ -19,7 +19,7 @@ from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
 from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
-from .config_free_tier_control import SessionControlSnapshot
+from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
 
@@ -55,6 +55,9 @@ class GatewayReadyPayload(Payload):
     change_events: bool
     replay_epoch: str
     heartbeat: bool | None = None  # WebSocket transport only
+    # WebSocket transport bound to a session authority: session verbs speak the canonical wire
+    # (``runtime.describe`` / ``session.create source=…``), so an explicit attach must negotiate it.
+    session_authority: bool | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,
@@ -68,7 +71,8 @@ class SetupReadyPayload(OpenPayload):
 
     provider_configured: bool
     inference_provider: str
-    free_tier: bool
+    free_tier_account: bool
+    free_tier_route: bool
     has_identity: bool
     other_providers: bool
     error: str = ""
@@ -79,8 +83,32 @@ class SetupReadyPayload(OpenPayload):
     finished_at: float
 
 
+class OnboardingOutcome(WireEnum):
+    done = "done"
+    skipped = "skipped"
+    replaced = "replaced"
+    deleted = "deleted"
+
+
+class OnboardingEndedPayload(Payload):
+    """``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress.
+    ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered;
+    ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted."""
+
+    run_id: str
+    stored_session_id: str
+    outcome: OnboardingOutcome
+
+
+event("onboarding.ended", OnboardingEndedPayload,
+      doc="A first-run onboarding run ended; sent to every connected window.")
 event("setup.ready", SetupReadyPayload,
       doc="The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record.")
+
+
+event("free_tier.challenge", FreeTierChallengePayload,
+      doc="The account service wants a browser challenge cleared before the free-tier token exchange "
+          "(broadcast); the desktop loads ``url`` in a hidden window.")
 
 
 class ErrorPayload(Payload):
@@ -104,7 +132,20 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
-event("message.start", None, doc="A turn began streaming; no payload.")
+class MessageStartPayload(Payload):
+    """``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;
+    ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card
+    (``session_automation.admission_display``: a background-process completion) and its model
+    text, so a viewer that did not submit the turn paints the same header the submitter would."""
+
+    display_kind: str | None = None
+    display_text: str | None = None
+    notification_category: str | None = None
+    text: str | None = None
+
+
+event("message.start", MessageStartPayload,
+      doc="A turn began streaming; an automation turn carries its async-result card.")
 
 
 class StreamDeltaPayload(Payload):
@@ -117,7 +158,15 @@ class StreamDeltaPayload(Payload):
     verbose: bool | None = None
 
 
-event("message.delta", StreamDeltaPayload, doc="One streamed chunk of the assistant reply.")
+class MessageDeltaPayload(StreamDeltaPayload):
+    """``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the
+    reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that
+    closes the classic CLI's reply box. Every other viewer ignores an empty chunk."""
+
+    text: str | None
+
+
+event("message.delta", MessageDeltaPayload, doc="One streamed chunk of the assistant reply (null text: segment boundary).")
 event("reasoning.delta", StreamDeltaPayload, doc="One streamed chunk of the model's reasoning.")
 event("reasoning.available", StreamDeltaPayload, doc="A completed reasoning block (non-streaming providers).")
 event("thinking.delta", StreamDeltaPayload, doc="Legacy thinking-text chunk (thinking_callback).")
@@ -178,6 +227,11 @@ class PersistedTurn(Payload):
     complete: bool
     user_row_id: int | None = None
     final_assistant_row_id: int | None = None
+    #: Every rendered user row of the turn in order (prompt, then steer/redirect rows); absent
+    #: unless all of them committed. Binds optimistic bubbles a submit receipt could not name.
+    user_row_ids: list[int] | None = None
+    #: The client submission the turn ran (session authority only; its ack precedes the user row).
+    submission_id: str | None = None
 
 
 class MessageCompletePayload(Payload):
@@ -191,6 +245,8 @@ class MessageCompletePayload(Payload):
     reasoning: str | None = None
     warning: str | None = None
     response_previewed: bool | None = None
+    #: ``text`` is a response this turn already delivered (streamed and/or sealed) — it adds no text.
+    response_reused: bool | None = None
     response_transformed: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None
@@ -216,9 +272,34 @@ event("status.update", StatusUpdatePayload, doc="Transient status line (kind: st
 
 
 class SessionUsagePayload(Payload):
-    """``server._start_usage_ticker``."""
+    """``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative
+    counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level:
+    published after every API call and at turn end, what main's classic CLI read off its agent."""
 
-    usage: Usage
+    usage: Usage | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    api_calls: int | None = None
+    last_prompt_tokens: int | None = None
+    context_tokens: int | None = None
+    context_length: int | None = None
+    config_context_length: int | None = None
+    context_source: str | None = None
+    compression_count: int | None = None
+    avg_latency_s: float | None = None
+    tokens_per_s: float | None = None
+    last_turn_tokens: int | None = None
+    rate_limit: dict[str, JsonValue] | None = None
+    active_subagents: int | None = None
+    model: str | None = None
+    provider: str | None = None
+    fallback_model: str | None = None
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")
@@ -250,6 +331,17 @@ class ReviewSummaryPayload(Payload):
 
 
 event("review.summary", ReviewSummaryPayload, doc="Background review of the last turn finished.")
+
+
+class AgentPrintPayload(Payload):
+    """A session-authority local-viewer turn: one line the agent printed through ``_print_fn``
+    (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered
+    through ``_agent_status_print``."""
+
+    text: str
+
+
+event("agent.print", AgentPrintPayload, doc="A status line the agent printed during a local viewer's turn.")
 
 
 # ── tools ─────────────────────────────────────────────────────────────────────────────────────
@@ -328,7 +420,9 @@ event("todo.updated", TodoUpdatedPayload, doc="Full todo snapshot after a todo t
 
 class NotificationShowPayload(Payload):
     """``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s
-    slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent."""
+    slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.
+    ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows
+    it in the toast's expandable body, the Ink TUI prints it into the transcript."""
 
     text: str
     level: str
@@ -336,6 +430,7 @@ class NotificationShowPayload(Payload):
     ttl_ms: int | None = None
     key: str | None = None
     id: str | None = None
+    detail: str | None = None
 
 
 class NotificationClearPayload(Payload):
@@ -394,6 +489,26 @@ class SessionReclaimedPayload(Payload):
 
 
 event("session.reclaimed", SessionReclaimedPayload, doc="The backend reclaimed a live session out from under its clients.")
+
+
+class ApprovalCancelledPayload(Payload):
+    """``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).
+
+    One frame for every pending approval dropped by an interrupt / reap / teardown (#106678) — the
+    deny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.
+    ``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the
+    two can disagree when an entry has no request_id.
+    """
+
+    session_id: str
+    stored_session_id: str
+    reason: str  # interrupt | ws_orphan_reap | idle_timeout | lru_evict | tui_close | ...
+    cancelled_count: int
+    request_ids: list[str]
+
+
+event("approval.cancelled", ApprovalCancelledPayload,
+      doc="Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal).")
 
 
 class SessionControlUpdatePayload(Payload):
@@ -548,19 +663,12 @@ event("preview.open", PreviewOpenPayload, doc="Open a URL / file in the desktop 
 event("preview.close", PreviewClosePayload, doc="Close the preview pane or one tab.")
 
 
-class LayoutApplyPayload(OpenPayload):
-    """``tools/apply_layout_tool.py``."""
-
-    preset: str
-
-
 class PaneRevealPayload(OpenPayload):
     """``tools/focus_pane_tool.py``."""
 
     pane: str
 
 
-event("layout.apply", LayoutApplyPayload, doc="Apply a named desktop layout preset.")
 event("pane.reveal", PaneRevealPayload, doc="Focus / reveal a named desktop pane.")
 
 
@@ -637,6 +745,12 @@ class VoiceStatusPayload(Payload):
     state: str
 
 
+class VoicePartialPayload(Payload):
+    """``methods_voice`` voice.record ``on_partial`` — live STT text so far (``stt.streaming``)."""
+
+    text: str
+
+
 class VoiceTranscriptPayload(Payload):
     """``methods_voice._vr_transcript`` / ``_deliver_fd_transcript`` / typed stop phrase in methods_prompt."""
 
@@ -655,6 +769,7 @@ class WakeDetectedPayload(Payload):
 
 
 event("voice.status", VoiceStatusPayload, doc="Voice recorder state changed.")
+event("voice.partial", VoicePartialPayload, doc="Live STT text so far while the user is still speaking.")
 event("voice.transcript", VoiceTranscriptPayload, doc="A voice capture produced text (or a stop phrase / silence limit).")
 event("wake.detected", WakeDetectedPayload, doc="A wake phrase fired.")
 
@@ -667,9 +782,9 @@ class PetChangedPayload(OpenPayload):
 
     enabled: bool
     slug: str | None = None
-    displayName: str | None = None  # noqa: N815 - wire key
+    displayName: str | None = None
     scale: float | None = None
-    spritesheetRevision: str | None = None  # noqa: N815 - wire key
+    spritesheetRevision: str | None = None
 
 
 class PetGenerateProgressPayload(OpenPayload):
@@ -678,7 +793,7 @@ class PetGenerateProgressPayload(OpenPayload):
     token: str
     count: int
     index: int | None = None
-    dataUri: str | None = None  # noqa: N815 - wire key
+    dataUri: str | None = None
 
 
 class PetHatchProgressPayload(OpenPayload):
@@ -714,8 +829,8 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 __all__ = [
     "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
     "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "GatewayReadyPayload", "LayoutApplyPayload", "MessageCompletePayload",
-    "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
+    "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
+    "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",
     "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload", "PreviewClosePayload",
@@ -726,6 +841,6 @@ __all__ = [
     "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
     "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolStartPayload",
-    "TurnStatus", "VoiceStatusPayload",
+    "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

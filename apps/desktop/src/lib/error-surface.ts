@@ -50,6 +50,9 @@ export const ERROR_CODE_KEYS = [
   'loop_error',
   'SESSION_NOT_OWNED',
   'disk_full',
+  // Raised by the desktop, never by the backend: the backend reported a turn
+  // over after its events stopped, and no reply reached this window.
+  'no_reply',
   // The Nous free tier refused or could not serve the turn (agent/error_surface.py
   // `free_tier_<kind>`). The backend's sentence rides in `message` and is the card body.
   'free_tier_disabled',

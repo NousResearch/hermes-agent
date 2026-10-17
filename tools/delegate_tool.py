@@ -219,6 +219,8 @@ def _build_child_agent(
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
     routing_cfg: Optional[dict[str, Any]] = None,
+    # Per-child reasoning effort from a pre_subagent_route plugin hook (beats delegation.reasoning_effort).
+    override_reasoning_effort: Any = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -264,7 +266,7 @@ def _build_child_agent(
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
-        routing_cfg=routing_cfg,
+        routing_cfg=routing_cfg, reasoning_effort_override=override_reasoning_effort,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -417,13 +419,62 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
     }
 
 
+# Endpoint/transport keys of a routing config that belong to its provider; a plugin route that switches
+# provider drops them so the new provider resolves its own endpoint, key, wire and transport.
+_ROUTE_ENDPOINT_KEYS = ("base_url", "api_key", "api_mode", "command", "args")
+
+
+def _plugin_route(
+    parent_agent, task: dict[str, Any], task_index: int, task_count: int, creds: dict[str, Any],
+    routing_cfg: dict[str, Any], role: str,
+) -> Optional[tuple[Optional[str], dict[str, Any]]]:
+    """``(model, overrides)`` for one child from ``pre_subagent_route`` plugin hooks, or ``None`` to keep the
+    batch route. Fail-open: a hook error or an unresolvable provider keeps the batch route with a warning."""
+    try:
+        from hermes_cli.plugins_subagent_route import get_plugin_subagent_route
+        route = get_plugin_subagent_route(
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            parent_subagent_id=getattr(parent_agent, "_subagent_id", None),
+            task_index=task_index, task_count=task_count, child_goal=task.get("goal") or "",
+            child_context=task.get("context"), child_role=role,
+            default_provider=creds.get("provider") or getattr(parent_agent, "provider", None),
+            default_model=creds.get("model") or getattr(parent_agent, "model", None),
+            default_reasoning_effort=(routing_cfg or {}).get("reasoning_effort"),
+        )
+    except Exception:  # health: allow BLE001 -- fail-open plugin boundary; traceback logged
+        logger.warning("pre_subagent_route hook failed; keeping the batch route", exc_info=True)
+        return None
+    if not route:
+        return None
+    route_cfg, child_creds = routing_cfg, creds
+    if route.get("provider"):
+        route_cfg = {k: v for k, v in (routing_cfg or {}).items() if k not in _ROUTE_ENDPOINT_KEYS}
+        route_cfg.update(provider=route["provider"], model=route["model"])
+        try:
+            child_creds = _resolve_delegation_credentials(route_cfg, parent_agent)
+        except Exception:  # health: allow BLE001 -- fail-open plugin route; traceback logged
+            logger.warning("pre_subagent_route: provider %r could not be resolved; keeping the batch route",
+                           route["provider"], exc_info=True)
+            return None
+    elif route.get("model"):
+        child_creds = {**creds, "model": route["model"]}
+    overrides = _credential_overrides(child_creds, route_cfg)
+    overrides["override_reasoning_effort"] = route.get("reasoning_effort")
+    logger.info("pre_subagent_route: task %d -> provider=%s model=%s reasoning_effort=%s", task_index,
+                child_creds.get("provider") or "(inherit)", child_creds.get("model") or "(inherit)",
+                route.get("reasoning_effort", "(default)"))
+    return child_creds.get("model"), overrides
+
+
 def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
+    plugin_routes: bool = True,
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
-    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
+    ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure. ``plugin_routes=False`` skips
+    ``pre_subagent_route`` hooks (a caller-pinned route such as /review's ``auxiliary.review``)."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
     overrides = _credential_overrides(creds, routing_cfg)
@@ -433,12 +484,16 @@ def _build_children(
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        _role = _normalize_role(t.get("role") or top_role)
+        _model, _overrides = (plugin_routes and _plugin_route(
+            parent_agent, t, i, len(task_list), creds, routing_cfg, _role,
+        )) or (creds["model"], overrides)
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=_model, max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_role, **_overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -583,6 +638,8 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        # A caller-pinned route (credentials_cfg, e.g. /review → auxiliary.review) is not overridden by plugins.
+        plugin_routes=credentials_cfg is None,
     )
     if err:
         return tool_error(err)

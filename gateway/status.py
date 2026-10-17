@@ -552,6 +552,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         raw_tokens = command.split()
     # Strip surrounding quotes, normalize slashes + case per token.
     cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    return _gateway_command_subcommand_tokens(cased_tokens)
+
+
+def _gateway_command_subcommand_tokens(cased_tokens: list[str]) -> str | None:
+    """Match an already tokenized, case-preserving command line."""
     tokens = [t.lower() for t in cased_tokens]
     if not tokens:
         return None
@@ -619,8 +624,8 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``
     behind exactly that wrapper. ``tests/_fixtures/live_system_guard.py`` is the canonical caller.
 
-    Still no substring matching: the wrapper is peeled token-wise and each remaining suffix is
-    handed to the same canonical matcher.
+    Still no substring matching: the wrapper is peeled token-wise, then its remaining argv is
+    handed once to the same canonical matcher.
     """
     direct = _gateway_command_subcommand(command)
     if direct is not None or not command:
@@ -633,14 +638,12 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     flag_index = inline_source_flag_index(cased_tokens)
     if flag_index is None:
         return None
-    # Skip the interpreter, its options, ``-c`` and the source literal; then try every suffix —
-    # the embedded argv starts at an unknown offset (the watcher prefixes it with the old PID).
+    # Skip the interpreter, its options, ``-c`` and the source literal. The embedded argv starts
+    # at an unknown offset because the watcher prefixes it with the old PID, but the canonical
+    # matcher already searches that argv token-wise. Matching the tail once avoids rebuilding and
+    # re-tokenizing every suffix when an ordinary inline script contains many words.
     start = flag_index + 2
-    for i in range(start, len(cased_tokens)):
-        nested = _gateway_command_subcommand(" ".join(raw_tokens[i:]))
-        if nested is not None:
-            return nested
-    return None
+    return _gateway_command_subcommand_tokens(cased_tokens[start:])
 
 
 def looks_like_gateway_command_line(command: str | None) -> bool:

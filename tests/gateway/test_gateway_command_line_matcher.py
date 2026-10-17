@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from gateway import status
 from gateway.status import (
     gateway_spawn_intent_subcommand as spawn_intent,
     looks_like_gateway_command_line as matches,
@@ -149,6 +150,24 @@ def test_spawn_intent_keeps_read_only_subcommands_spawnable():
 
 def test_spawn_intent_ignores_inline_source_without_a_gateway_argv():
     assert spawn_intent('python -c "import time; time.sleep(1)" 14980') is None
+
+
+def test_spawn_intent_tokenizes_large_inline_source_only_twice(monkeypatch):
+    """Regression for #137023: suffix matching must reuse the original tokenization."""
+    split = status.shlex.split
+    calls = 0
+
+    def count_split(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return split(*args, **kwargs)
+
+    monkeypatch.setattr(status.shlex, "split", count_split)
+
+    command = "python -c " + " ".join(f"token_{index}" for index in range(800))
+
+    assert spawn_intent(command) is None
+    assert calls == 2
 
 
 # Atomic Hermes' bundled desktop runner (regression for #22418): it shares

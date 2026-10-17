@@ -340,6 +340,26 @@ def finish_execution(
     return record
 
 
+def discard_unstarted_execution(execution_id: str) -> bool:
+    """Remove a locally-owned claim that provably never reached execution.
+
+    This is intentionally narrower than a terminal transition: a competing
+    scheduler may lose ``claim_job_for_fire`` after the restart-safe ledger row
+    was created but before any worker effect starts.  Keeping that row as a
+    failed run turns harmless contention into a failure storm.  Only the
+    creating process may delete its still-claimed, non-handoff row; every
+    ambiguous or running attempt remains immutable audit evidence.
+    """
+    with _transaction() as conn:
+        cur = conn.execute(
+            """DELETE FROM executions
+               WHERE id=? AND status='claimed' AND handoff_pending=0
+                 AND process_id=? AND pid=?""",
+            (execution_id, _PROCESS_ID, os.getpid()),
+        )
+        return cur.rowcount == 1
+
+
 def recover_receipted_execution(execution_id, job_id, *, success, error=None, delivery_outcome=None):
     """Settle a verified canonical receipt after owner loss, including its unknown audit row.
 

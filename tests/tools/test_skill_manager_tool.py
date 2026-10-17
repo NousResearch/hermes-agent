@@ -366,6 +366,23 @@ class TestEditSkill:
         assert found is not None
         assert found["path"] == claimed
 
+    def test_find_skill_directory_name_does_not_read_frontmatter(self, tmp_path):
+        """A directory match precedes the frontmatter fallback without parsing headers (#139846)."""
+        earlier = tmp_path / "earlier-skill"
+        earlier.mkdir()
+        (earlier / "SKILL.md").write_text(MISMATCHED_NAME_CONTENT)
+        target = tmp_path / "target-skill"
+        target.mkdir()
+        (target / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._iter_skill_dirs", return_value=[earlier, target]), \
+             patch("tools.skill_manager_tool._read_frontmatter_name") as read_frontmatter:
+            found = _find_skill("target-skill")
+
+        assert found == {"path": target}
+        read_frontmatter.assert_not_called()
+
     def test_find_skill_ambiguous_display_name_refuses_to_guess(self, tmp_path):
         """Two distinct skills sharing a frontmatter display name (#61172).
 

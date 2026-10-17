@@ -116,9 +116,9 @@ def build_profile_terminal_scope(
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
 
     Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- *env_overlay*
-    <- profile ``config.yaml`` ``terminal:``. Total by construction, so a bound scope never
-    widens back to ambient authority. Raises :class:`TerminalPolicyUnavailable` if a present
-    file is unreadable.
+    <- profile ``config.yaml`` ``terminal:`` <- Managed Scope. Total by construction, so a bound
+    scope never widens back to ambient authority. Raises :class:`TerminalPolicyUnavailable` if a
+    present file is unreadable.
 
     *env_overlay* is a TRUSTED ``TERMINAL_*`` mapping captured from the launch process before
     multiplexing began (``tui_gateway/launch_profile_policy.py``): the launch profile's
@@ -174,6 +174,25 @@ def build_profile_terminal_scope(
         if isinstance(raw_terminal, dict):
             _apply_terminal_mapping(scope, raw_terminal)
             image_pinned = image_pinned or "docker_image" in raw_terminal
+    # Managed Scope is the top tier for every surface (managed-scope.md, "Precedence"), but the
+    # projection above reads the profile's own files only: a managed `terminal.backend: docker`
+    # was replaced by the built-in default `local`, so the sandbox was silently skipped on the
+    # messaging gateway, cron and secondary TUI sessions and commands ran on the host (#138044).
+    # Applied last, `.env` before `config.yaml`, mirroring the standalone bridge, where an
+    # explicit YAML key wins over the env value it shadows.
+    from hermes_cli import managed_scope
+
+    managed_env = managed_scope.load_managed_env()
+    if managed_env:
+        scope.update((k, str(v)) for k, v in managed_env.items()
+                     if k.startswith("TERMINAL_") and k != "TERMINAL_DOCKER_IMAGE_PINNED")
+        # An image written in the managed .env is the administrator's choice, never the shipped
+        # default: it pins, so a persisted container is recreated on mismatch instead of kept.
+        image_pinned = image_pinned or "TERMINAL_DOCKER_IMAGE" in managed_env
+    managed_terminal = managed_scope.load_managed_config().get("terminal")
+    if isinstance(managed_terminal, dict):
+        _apply(managed_terminal)
+        image_pinned = image_pinned or "docker_image" in managed_terminal
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
     _resolve_scope_cwd_placeholder(scope)
     return scope

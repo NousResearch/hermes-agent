@@ -735,6 +735,109 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     assert entries[0]["priority"] == 0
 
 
+def _pool_placeholder_token(tag: str) -> str:
+    """Derive a fake, non-secret pool token value (kept out of inline literals)."""
+    return "-".join(("placeholder", "token", tag))
+
+
+def _alias_pool_store() -> dict:
+    """Two stored pools: canonical ``bar`` (working manual key) and alias-named ``foo``
+    (a stale env-seeded row), mirroring the store shape from #139655."""
+    return {
+        "version": 1,
+        "credential_pool": {
+            "bar": [{
+                "id": "bar-1",
+                "label": "working",
+                "auth_type": "api_key",
+                "priority": 0,
+                "source": "manual",
+                "access_token": _pool_placeholder_token("working"),
+            }],
+            "foo": [{
+                "id": "foo-1",
+                "label": "FOO_API_KEY",
+                "auth_type": "api_key",
+                "priority": 0,
+                "source": "env:FOO_API_KEY",
+                "access_token": _pool_placeholder_token("stale"),
+            }],
+        },
+    }
+
+
+def _isolate_pool_seeding(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "FOO_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+
+
+def test_auth_remove_alias_named_stored_pool_targets_displayed_pool(tmp_path, monkeypatch):
+    """`hermes auth remove foo 1` must remove the displayed ``foo`` pool entry, not the
+    canonical ``bar`` credential it alias-normalizes to. Regression for #139655."""
+    _isolate_pool_seeding(monkeypatch, tmp_path)
+    _write_auth_store(tmp_path, _alias_pool_store())
+    # A model-provider plugin registers provider "bar" with alias "foo".
+    monkeypatch.setattr("hermes_cli.auth._plugin_aliases", lambda: {"foo": "bar"})
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+    auth_remove_command(SimpleNamespace(provider="foo", target="1"))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["credential_pool"]["foo"] == []
+    # The working credential in the canonical pool is untouched.
+    assert payload["credential_pool"]["bar"][0]["access_token"] == _pool_placeholder_token("working")
+
+
+def test_auth_remove_alias_input_without_stored_pool_still_normalizes(tmp_path, monkeypatch):
+    """An alias with no stored pool of its own keeps resolving to the canonical provider."""
+    _isolate_pool_seeding(monkeypatch, tmp_path)
+    store = _alias_pool_store()
+    del store["credential_pool"]["foo"]
+    _write_auth_store(tmp_path, store)
+    monkeypatch.setattr("hermes_cli.auth._plugin_aliases", lambda: {"foo": "bar"})
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+    auth_remove_command(SimpleNamespace(provider="foo", target="1"))
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["credential_pool"]["bar"] == []
+    assert "foo" not in payload["credential_pool"]
+
+
+def test_interactive_remove_alias_named_pool_targets_displayed_pool(tmp_path, monkeypatch, capsys):
+    """The interactive Remove flow must resolve the typed name against stored pool keys too,
+    not pre-normalize it through the plugin-alias map (#139655 interactive path)."""
+    _isolate_pool_seeding(monkeypatch, tmp_path)
+    _write_auth_store(tmp_path, _alias_pool_store())
+    monkeypatch.setattr("hermes_cli.auth._plugin_aliases", lambda: {"foo": "bar"})
+
+    from hermes_cli import auth_commands
+
+    def fake_ask(prompt, _reader):
+        if prompt.startswith("Provider to remove"):
+            return "foo"
+        if prompt.startswith("Remove #"):
+            return "1"
+        raise AssertionError(f"unexpected prompt: {prompt}")
+
+    monkeypatch.setattr(auth_commands, "_ask", fake_ask)
+
+    auth_commands._interactive_remove()
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["credential_pool"]["foo"] == []
+    assert payload["credential_pool"]["bar"][0]["access_token"] == _pool_placeholder_token("working")
+    out = capsys.readouterr().out
+    assert "Removed foo credential #1" in out
+
+
 def test_auth_remove_codex_migrates_legacy_dict_suppression(tmp_path, monkeypatch):
     """Removing a Codex credential must tolerate legacy dict suppression data."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

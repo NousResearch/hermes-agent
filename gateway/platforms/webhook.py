@@ -196,6 +196,17 @@ def _validate_svix_signature(body: bytes, secret: str, msg_id: str, timestamp: s
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
+    # A webhook delivery is one-shot: the ``delivery_id`` is baked into the session key and
+    # ``finalize_webhook`` ends the session (``end_reason='webhook_complete'``) once the turn settles,
+    # so the parent never gets a second turn in which to consume a late background-delegation result.
+    # The completion then either fails closed (#55578; result only in the delegation records) or,
+    # because ``webhook_complete`` is not a user boundary, is retargeted to the route's current
+    # session — a fresh session without the original prompt/history, so the parent's instructions
+    # (e.g. how to publish the result) are lost (#69145). Declaring the channel stateless makes
+    # ``delegate_task`` background=True run inline so the original turn consumes the result before
+    # it closes — as #66617 did for ``hermes -z`` and cron, and as the API server adapter does.
+    supports_async_delivery: bool = False
+
     # Event-triggered, no human present: startup auto-resume must FINISH the interrupted work, not ask "what next?".
     # The startup auto-resume turn must instruct the model to FINISH the interrupted work instead of
     # emitting an interactive acknowledgement that abandons the task (#57056).

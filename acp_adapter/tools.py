@@ -443,7 +443,8 @@ def _format_session_search_result(tool_name: str, data: Args, args: Args) -> Opt
         if not isinstance(item, dict):
             continue
         title = str(_first(item, "title", "when", default="Untitled session")).strip()
-        when = str(_first(item, "last_active", "started_at", "when")).strip()
+        # `when` is the hit's own time; `started_at` is the session's creation time, last.
+        when = str(_first(item, "when", "last_active", "started_at")).strip()
         count = item.get("message_count")
         meta = ", ".join(str(x) for x in [when, str(item.get("source") or "").strip(), f"{count} msgs" if count is not None else ""] if x)
         lines.append(f"- **{title}** (`{item.get('session_id') or '?'}`)" + (f" — {meta}" if meta else ""))

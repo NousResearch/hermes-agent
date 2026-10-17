@@ -72,7 +72,9 @@ plugins:
 model:
   # Default model to use (can be overridden with --model flag)
   # Both "default" and "model" work as the key name here.
-  default: "anthropic/claude-opus-4.6"
+  # Left empty so a fresh install shows "(not set)" and `hermes setup` / `hermes model`
+  # asks for one, matching DEFAULT_CONFIG. Example: default: "anthropic/claude-opus-4.8"
+  default: ""
   
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)

@@ -607,8 +607,12 @@ export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: 
   }
 
   const next: QueueState = { ...live }
+  const target = live[to] ?? []
+  // An entry re-mirrored under the old key after an earlier migration keeps
+  // its one row on the target: same id, same submission (#138934).
+  const onTarget = new Set(target.map(entry => entry.id))
   delete next[from]
-  next[to] = [...(live[to] ?? []), ...pending]
+  next[to] = [...target, ...pending.filter(entry => !onTarget.has(entry.id))]
 
   $queuedPromptsBySession.set(next)
   save(next)

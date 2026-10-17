@@ -25,6 +25,13 @@ def _retry_history_signature(history):
     return hashlib.sha256(json.dumps(projected, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def _retry_context_is_durable(history):
+    """Replayed screenshots depend on external bytes/config, beyond the durable row signature."""
+    return not any(row.get("role") == "user" and isinstance(row.get(key), str)
+                   and "[screenshot" in row[key]
+                   for row in history for key in ("content", "api_content"))
+
+
 def _retry_tools_complete(history):
     """Only observed, paired outcomes can prove work completed; repair is never evidence."""
     pending = set()
@@ -55,7 +62,8 @@ def _record_retry_checkpoint(session, st, surface):
         return None
     history = _load_durable_truncation_history(session, repair_alternation=False)
     live = st.result.get("messages") or []
-    if not history or not live or _retry_history_signature(history) != _retry_history_signature(live):
+    if (not history or not live or not _retry_context_is_durable(history)
+            or _retry_history_signature(history) != _retry_history_signature(live)):
         return None
     user_idx = next((i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)
     if user_idx is None or not _retry_tools_complete(history[user_idx + 1:]):

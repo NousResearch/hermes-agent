@@ -47,6 +47,9 @@ class CanonicalCreateParams(ProfileParams):
     run_budget: float | None = None
     # The classic CLI's `-v`: the session agent's status lines are not quieted.
     verbose: bool = False
+    # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
+    # applied to this session only; never echoed in ``launch_request``.
+    client_env: dict[str, str] | None = None
 
 
 class CanonicalResumeParams(ProfileParams):
@@ -116,6 +119,8 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     api_mode: str | None = None
     tool_count: int | None = None
     credential_hint: str | None = None
+    # ``session.info``'s session-start notice: ``session.create`` returns the same projection.
+    config_warning: str | None = None
 
 
 class CanonicalSnapshot(Result):

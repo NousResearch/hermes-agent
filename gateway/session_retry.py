@@ -11,7 +11,7 @@ from functools import partial
 from uuid import uuid4
 
 from hermes_state_runtime import RuntimeStoreError, admit_session_input
-from tui_gateway.methods_prompt_retry import _retry_history_signature, _retry_tools_complete
+from tui_gateway.methods_prompt_retry import _retry_context_is_durable, _retry_history_signature, _retry_tools_complete
 
 continuation = ContextVar('retry_continuation', default=None)
 
@@ -38,7 +38,8 @@ def prepare_checkpoint(authority, live, ref, row, settled, captured):
         return None
     target, history = _history(authority, ref)
     messages = result.get('messages') or []
-    if not history or _retry_history_signature(history) != _retry_history_signature(messages):
+    if (not history or not _retry_context_is_durable(history)
+            or _retry_history_signature(history) != _retry_history_signature(messages)):
         return None
     index = next((i for i in range(len(history) - 1, -1, -1) if history[i].get('role') == 'user'), None)
     if index is None or not _retry_tools_complete(history[index + 1:]):

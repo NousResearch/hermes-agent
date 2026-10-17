@@ -860,3 +860,11 @@ def test_wizard_install_service_asks_once_and_never_starts_after_windows_install
 
     assert installs == [{"force": False, "start_now": True, "start_on_login": True}]
     assert starts == []
+
+
+def test_decode_schtasks_output_honours_a_utf16_bom():
+    """A genuine UTF-16 write (BOM) decodes as UTF-16, never as a code page; a malformed one falls
+    back like any other bytes instead of raising past callers that catch only timeout/OS errors."""
+    text = "Herm\u00e9s"
+    assert gateway_windows._decode_schtasks_output(text.encode("utf-16")) == text
+    assert gateway_windows._decode_schtasks_output(b"\xff\xfe<\x00?")

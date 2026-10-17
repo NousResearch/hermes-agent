@@ -24,30 +24,20 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return self
 
     def profile_homes(self):
-        from gateway.run import _load_gateway_config
-        from gateway.hosted_rooms_common import IDENTIFIER_RE
-        from gateway.session_authorities import served_profile_name
-        home = Path(self.authority.profile_id)
-        own = served_profile_name(home)
-        # The coordinator's own threads do not inherit the caller's ContextVars.
-        with owner_scope(self.authority):
-            configured = _load_gateway_config().get('hosted_rooms', {}).get('profiles', {})
-        result = {own: home}
-        if not isinstance(configured, dict):
-            raise RuntimeStoreError('invalid_params')
-        for name, value in configured.items():
-            if not isinstance(name, str) or not isinstance(value, str):
-                raise RuntimeStoreError('invalid_params')
-            target = Path(value)
-            if not IDENTIFIER_RE.fullmatch(name) or not target.is_absolute() or target != target.resolve():
-                raise RuntimeStoreError('invalid_params')
-            if name == own and target != home:
-                raise RuntimeStoreError('permission_denied')
-            result[name] = target
-        return result
+        from gateway.session_hosted_members import member_roster
+        return member_roster(self.authority)[0]
 
     def local_profiles(self):
         return tuple(self.profile_homes())
+
+    def room_profiles(self, room):
+        """A saved room keeps every local member it seated: unserving one bot must not stop the
+        others. That member's own turns still fail (``_resolve_member_transport`` and ``attest``
+        need a live home), and a new group cannot seat it (``local_profiles``)."""
+        seated = {m.get('profile') for m in room.get('members') or ()
+                  if isinstance(m, dict) and isinstance(m.get('profile'), str)
+                  and (m.get('target') or {}).get('kind', 'local') == 'local'}
+        return tuple(sorted(set(self.local_profiles()) | seated))
 
     def attest(self, selector, operation, params):
         from dataclasses import asdict

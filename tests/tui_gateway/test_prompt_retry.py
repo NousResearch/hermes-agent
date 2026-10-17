@@ -107,3 +107,17 @@ def test_compute_host_isolation_is_never_bypassed(checkpoint, monkeypatch):
         assert session["running"] is False
     finally:
         server._sessions.pop("isolated-retry", None)
+
+
+@pytest.mark.parametrize("field", ["content", "api_content"])
+def test_earlier_replayed_image_context_has_no_continuation(checkpoint, field):
+    db, session, state, _ = checkpoint
+    rows = [{"role": "user", "content": "Earlier image", field: "[Image attached at: missing.png]\n[screenshot]"},
+            {"role": "assistant", "content": "Earlier image context"}, *state.result["messages"]]
+    db.replace_messages("retry-db", rows)
+    history = db.get_messages_as_conversation("retry-db", include_row_ids=True, repair_alternation=False)
+    state.result["messages"] = history
+    before = db.get_messages("retry-db")
+    assert server._record_retry_checkpoint(session, state, {"layer": "provider", "code": "rate_limit"}) is None
+    assert db.get_messages("retry-db") == before
+    assert not session["running"]

@@ -1,6 +1,7 @@
 """Canonical Desktop Retry preserves the failed provider request and completed effects (#137277)."""
 import asyncio
 import os
+from functools import wraps
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, ToolCall, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['retry', 'regenerate', 'operator', 'changed', 'restart', 'storage', 'queued', 'follower'])
+@pytest.mark.parametrize('mode', ['retry', 'regenerate', 'operator', 'changed', 'restart', 'storage', 'queued', 'follower', 'image-replay'])
 async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypatch, mode):
     import model_tools
     from gateway.run import GatewayRunner
@@ -42,6 +43,16 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
             return Error(429, 'rate limit exceeded')
         return Text('finished using count=1')
 
+    original_run = AIAgent.run_conversation
+
+    @wraps(original_run)
+    def run(agent, *args, **kwargs):
+        if getattr(agent, "_resume_user_row_id", None) is not None:
+            from tools.approval_context import is_viewer_turn_with_approver
+            assert is_viewer_turn_with_approver(), "Retry lost its attached viewer approval scope"
+        return original_run(agent, *args, **kwargs)
+
+    monkeypatch.setattr(AIAgent, "run_conversation", run)
     original_init = AIAgent.__init__
 
     def init(agent, *args, **kwargs):
@@ -86,6 +97,11 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
             assert 'result' in created, created
             sid = created['result']['session_id']
             ref = SessionRef(authority.profile_id, sid)
+            if mode == 'image-replay':
+                authority.db.append_messages_batch(authority.physical_target(ref), [
+                    {'role': 'user', 'content': '[Image attached at: missing.png]\n[screenshot]'},
+                    {'role': 'assistant', 'content': 'Earlier image context'},
+                ])
             submitted = await rpc('prompt.submit', session_id=sid, input_id='first', text='count once then finish')
             assert 'result' in submitted, submitted
             await asyncio.wait_for(authority.sessions[sid].task, 30)
@@ -93,8 +109,13 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
             terminal = [f['params']['payload'] for f in transport.frames
                         if f.get('params', {}).get('type') == 'message.complete']
             assert terminal[-1]['status'] == 'error', terminal
-            if mode == 'storage':
+            if mode in {'storage', 'image-replay'}:
                 assert not terminal[-1].get('retry_token'), terminal
+                requests_before = len(provider.main_requests())
+                refused = await rpc('prompt.retry', session_id=sid, retry_token='unavailable')
+                assert 'error' in refused, refused
+                assert effects == [1]
+                assert len(provider.main_requests()) == requests_before
                 return
             assert terminal[-1].get('retry_token'), terminal
             token = terminal[-1]['retry_token']
@@ -152,7 +173,7 @@ async def test_canonical_retry_keeps_completed_tool_and_consumes_token(monkeypat
             assert 'error' in duplicate, duplicate
             await asyncio.wait_for(authority.sessions[sid].task, 30)
             assert effects == [1] * (2 if mode == 'regenerate' else 1)
-            assert ingress_effects == [1] * (2 if mode in {'regenerate', 'follower'} else 1)
+            assert ingress_effects == []  # admitted viewer input never repeats the ingress hook
             terminal = [f['params']['payload'] for f in transport.frames
                         if f.get('params', {}).get('type') == 'message.complete']
             assert terminal[-1]['status'] == 'complete', terminal

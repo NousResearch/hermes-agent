@@ -5,7 +5,11 @@ answered -32601. Each action is the typed slash command the button stands for, r
 ``execute_command`` (the gateway's own /goal /loop /heartbeat /subgoal handlers, with their
 capability, local-source, admission and busy rules), answered with the owner's control snapshot.
 """
+import logging
+
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 _ACTION_COMMANDS = {
     'goal.pause': ('goal', 'pause'), 'goal.resume': ('goal', 'resume'),
@@ -63,6 +67,28 @@ async def _add_subgoal(connection, ref, params, text):
     return {'type': 'exec', 'output': err or t('gateway.subgoal.added', index=index, text=added)}
 
 
+def publish(authority, session_id, *, only_if_present=False):
+    """Push one live session's control snapshot to every viewer as ``session.control.update``.
+
+    Desktop and Ink paint the goal/loop/heartbeat cards from this event and run the loop countdown off
+    its ``next_due_at``, so every place that moves that state on the owner publishes: the slash
+    commands, a fired or settled loop wakeup, a judged turn. ``only_if_present`` skips a session with
+    no automation state (a plain turn's event stream stays unchanged).
+    """
+    live = authority.sessions.get(session_id) if authority is not None else None
+    if live is None:
+        return
+    from gateway.session_ancillary import control_snapshot
+    from gateway.session_contract import SessionRef
+    try:
+        snapshot = control_snapshot(authority, SessionRef(authority.profile_id, session_id))
+    except RuntimeStoreError:  # unreadable row: the change itself already landed; the next publish repaints
+        logger.debug('session.control.update skipped for %s', session_id, exc_info=True)
+        return
+    if not only_if_present or snapshot['revision']:
+        live.event_stream.publish(session_id, {'control': snapshot}, event_type='session.control.update')
+
+
 async def control(connection, ref, params):
     if set(params) - {'session_id', 'profile', 'action', 'args'} or not ref.session_id:
         raise RuntimeStoreError('invalid_params')
@@ -74,14 +100,14 @@ async def control(connection, ref, params):
     if ref.session_id not in connection.authority.sessions:
         raise RuntimeStoreError('not_found')
     scope = {key: params[key] for key in ('session_id', 'profile') if key in params}
+    # Other viewers (another Desktop window, Ink) repaint their cards from session.control.update, not the
+    # reply: execute_command publishes it for the automation commands, the subgoal add here.
     if arg is None:
         result = await _add_subgoal(connection, ref, scope, args['text'].strip())
+        publish(connection.authority, ref.session_id)
     else:
         from gateway.session_commands import execute_command
         result = await execute_command(connection, ref, {**scope, 'name': name, 'arg': arg}, dispatch=True)
     from gateway.session_ancillary import read
     snapshot = await read(connection, ref, scope, kind='control')
-    # Other viewers (another Desktop window, Ink) repaint their cards from this event, not the reply.
-    connection.authority.sessions[ref.session_id].event_stream.publish(
-        ref.session_id, snapshot, event_type='session.control.update')
     return {**snapshot, 'dispatch': {key: result.get(key) for key in _ENVELOPE}}

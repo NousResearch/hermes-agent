@@ -369,7 +369,9 @@ class Machine:
         cwd.mkdir(parents=True, exist_ok=True)
         run = self._run_logged(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-NonInteractive"],
-            "install", timeout=INSTALL_TIMEOUT, cwd=cwd)
+            "install", timeout=INSTALL_TIMEOUT, cwd=cwd,
+            # serve.git carries this checkout's release tags; install main, not the latest release.
+            env_extra={"HERMES_INSTALL_CHANNEL": "main"})
         if run.returncode == 0 and self.hermes_exe.is_file():
             # advance() lands NEXT on main and publishes no release: follow main, not the stable
             # default an official-origin checkout gets (channel resolution has its own suites).

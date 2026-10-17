@@ -7,10 +7,22 @@ public submission parameters cannot supply it.
 """
 from hermes_state_runtime import RuntimeStoreError
 
+# Fields ``SessionAuthority.submit`` commits for a local session's input; producers commit their own envelope.
+LOCAL_INPUT_FIELDS = frozenset({'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1',
+                                'cli_turn_v1'})
+
+
+def is_viewer_input(row):
+    """A row a session viewer submitted through ``session.submit`` (a client's own prompt), not a producer
+    admission: ``local_automation_v1`` (plugin injection, delegation completions, process and watch notices,
+    /loop, heartbeat), a hosted-room task (``hosted:`` request id) or any other envelope."""
+    return (not str(row['request_id']).startswith('hosted:')
+            and {'text'} <= set(row['payload']) <= LOCAL_INPUT_FIELDS | {'local_operator_v1', 'retry_continuation_v1'})
+
 
 def check_local_input(authority, ref, row, *, source=None):
     payload = row['payload']
-    allowed = {'text', 'attachments_v1', 'finite', 'unattended', 'surface_v1', 'display_v1', 'cli_turn_v1'}
+    allowed = set(LOCAL_INPUT_FIELDS)
     if 'local_operator_v1' in payload:
         allowed.add('local_operator_v1')
         if payload['local_operator_v1'] != {

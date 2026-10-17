@@ -266,7 +266,13 @@ class CLITuiRuntimeMixin:
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
 
-        self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        from hermes_cli.gateway_client import GatewayClientError
+        try:
+            self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        except GatewayClientError as exc:
+            # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
         self.show_banner()
         self._show_security_advisories()
         self._show_startup_browser_notice()
@@ -287,6 +293,13 @@ class CLITuiRuntimeMixin:
                 offer_interactive(cprint=_cprint)
             except Exception:
                 logger.debug("sandbox image switch offer failed", exc_info=True)
+            # Low disk + auto-prune never decided: ask once (either answer ends it for good).
+            try:
+                from hermes_cli.prune_advisor import offer_interactive as _offer_auto_prune
+                from cli import _cprint
+                _offer_auto_prune(cprint=_cprint)
+            except Exception:
+                logger.debug("auto-prune offer failed", exc_info=True)
 
         if self._resumed and self._preload_resumed_session():
             self._display_resumed_history()
@@ -520,8 +533,10 @@ class CLITuiRuntimeMixin:
                         _cprint(f"  {_DIM}{t('cli.tui.session_delete_missing', session_id=_escape(_sid))}{_RST}")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not delete session on exit: %s", e)
-        # run_conversation() fires on_session_end on normal completion; only fire here mid-turn.
-        if self.agent and self._agent_running:
+        # run_conversation() fires on_session_end on normal completion; only fire here mid-turn. A gateway
+        # turn fires it in the gateway when the interrupted turn finalizes.
+        from hermes_cli.cli_shutdown import _gateway_owns_session_end
+        if self.agent and self._agent_running and not _gateway_owns_session_end(self.agent):
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
         _run_cleanup()
         self._print_exit_summary()

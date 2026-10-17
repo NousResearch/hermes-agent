@@ -127,6 +127,19 @@ export type GatewayEventPayload = {
   install_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
+  // Canonical session.usage ticks carry cumulative counters at the payload top level; older ticker frames nest the desktop Usage shape above.
+  api_calls?: number | null
+  cache_read_tokens?: number | null
+  completion_tokens?: number | null
+  compression_count?: number | null
+  context_length?: number | null
+  context_source?: string | null
+  input_tokens?: number | null
+  last_prompt_tokens?: number | null
+  output_tokens?: number | null
+  prompt_tokens?: number | null
+  tokens_per_s?: number | null
+  total_tokens?: number | null
   // agent.terminal.output — live chunk for a read-only agent terminal tab
   process_id?: string
   chunk?: string

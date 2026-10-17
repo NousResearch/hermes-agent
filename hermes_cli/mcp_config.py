@@ -1100,11 +1100,20 @@ def cmd_mcp_configure(args):
     exclude_mode = bool(exclude) and include is None
 
     if len(chosen) == total and not exclude_mode:
-        server_entry.pop("tools", None)  # all selected → register all
+        # Keep an explicit allowlist: selecting every tool known today must not
+        # auto-enable tools the server adds later, and must retain utility flags.
+        tools_block = server_entry.setdefault("tools", {})
+        tools_block["include"] = list(tool_names)
+        tools_block.pop("exclude", None)
     elif exclude_mode:
         new_exclude = _rebuild_exclude_list(name, exclude, tool_names, chosen, matches_name_filter)
         if not new_exclude:
-            server_entry.pop("tools", None)
+            tools_block = server_entry.get("tools")
+            if isinstance(tools_block, dict):
+                tools_block.pop("exclude", None)
+                tools_block.pop("include", None)
+                if not tools_block:
+                    server_entry.pop("tools", None)
         else:
             server_entry.setdefault("tools", {})
             server_entry["tools"]["exclude"] = new_exclude

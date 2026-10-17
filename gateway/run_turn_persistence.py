@@ -183,8 +183,12 @@ class GatewayTurnPersistenceMixin:
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
-        (display.runtime_footer.enabled=false)."""
+        (display.runtime_footer.enabled=false). Never on a finite (`-z`, `chat -q`) turn: its reply is
+        the printed answer itself."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
+        from gateway.session_finite import finite_turn_required
+        if finite_turn_required() is True:
+            return ""
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
             return _bfl(

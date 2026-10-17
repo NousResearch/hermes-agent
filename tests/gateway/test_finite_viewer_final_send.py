@@ -57,3 +57,18 @@ def test_finite_turn_keeps_the_terminal_reply():
 def test_nonfinite_turn_still_suppresses():
     response = _mark_streamed_delivery()
     assert response.get("already_sent") is True
+
+
+
+def test_finite_turn_reply_carries_no_messaging_footer(monkeypatch):
+    """``-z`` prints the completion text as the answer: with ``display.runtime_footer`` on, the
+    messaging footer must not become part of it (a finite turn is never ``already_sent`` now, so the
+    footer would be appended to the reply itself). A chat turn keeps its footer."""
+    from gateway import runtime_footer
+    from gateway.config import Platform
+    monkeypatch.setattr(runtime_footer, "build_footer_line", lambda **kwargs: "FOOTER-139666")
+    source = SimpleNamespace(platform=Platform.LOCAL)
+    with finite_turn_scope(True):
+        finite = _Harness()._hmwa_runtime_footer_line({"model": "m"}, source, 1.0)
+    assert finite == ""
+    assert _Harness()._hmwa_runtime_footer_line({"model": "m"}, source, 1.0) == "FOOTER-139666"

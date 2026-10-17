@@ -14,10 +14,9 @@ export function branchThroughRowId(messages: readonly BranchMessage[]): number |
     return undefined
   }
 
-  const ids = [
-    source.rowId,
-    ...source.parts.map(part => (part.type === 'text' ? part.sourceRowId : undefined))
-  ].filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0)
+  const ids = [source.rowId, ...source.parts.map(part => (part.type === 'text' ? part.sourceRowId : undefined))].filter(
+    (id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0
+  )
 
   return ids.length ? Math.max(...ids) : undefined
 }

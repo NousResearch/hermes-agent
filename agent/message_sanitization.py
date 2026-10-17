@@ -911,7 +911,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
 _UNKNOWN_FIELD_PHRASES = (
     "extra inputs are not permitted", "is unsupported", "no such field", "unknown field",
     "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
-    "additional propert", "unknown key",
+    "additional propert", "unknown key", "not supported",
 )
 _NAMED_FIELD_RES = {
     RC: re.compile(r"(?<![\w])reasoning_content(?![\w])"),

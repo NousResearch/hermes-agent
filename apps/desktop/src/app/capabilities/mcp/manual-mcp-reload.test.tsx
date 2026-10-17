@@ -23,12 +23,15 @@ const sessionFor = (profile: string): SessionInfo => ({ id: 'session-1', profile
 function setup({
   activeSessionId = 'session-1',
   profile = 'default',
-  request = vi.fn().mockResolvedValue({ failed: [], status: 'reloaded' })
+  request = vi.fn().mockResolvedValue({ session: 'applied', status: 'reloaded' }),
+  sessionProfile = profile
 }: {
   activeSessionId?: null | string
   profile?: string
   request?: ReturnType<typeof vi.fn>
+  sessionProfile?: string
 } = {}) {
+  $sessions.set(activeSessionId ? [sessionFor(sessionProfile)] : [])
   $activeSessionId.set(activeSessionId)
 
   render(<ManualMcpReload gateway={{ request } as unknown as HermesGateway} profile={profile} />)
@@ -61,7 +64,6 @@ describe('ManualMcpReload', () => {
   })
 
   it('reloads the pane profile once confirmed and reports success', async () => {
-    $sessions.set([sessionFor('default')])
     const request = setup()
 
     await openAndConfirm()
@@ -77,14 +79,27 @@ describe('ManualMcpReload', () => {
     await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' })))
   })
 
-  it('omits session_id when the active session belongs to another profile', async () => {
-    $sessions.set([sessionFor('other')])
-    const request = setup()
+  it('reports an already-current chat without calling the reload a failure', async () => {
+    setup({ request: vi.fn().mockResolvedValue({ session: 'unchanged', status: 'reloaded' }) })
 
     await openAndConfirm()
 
     await waitFor(() =>
-      expect(request).toHaveBeenCalledWith('reload.mcp', { confirm: true, profile: 'default' }, expect.any(Number))
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'MCP servers already up to date' }))
+    )
+  })
+
+  it('omits session_id when the active session belongs to another profile', async () => {
+    const request = setup({ sessionProfile: 'other' })
+
+    await openAndConfirm()
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        'reload.mcp',
+        { confirm: true, profile: 'default', session_id: undefined },
+        expect.any(Number)
+      )
     )
   })
 
@@ -94,13 +109,17 @@ describe('ManualMcpReload', () => {
     await openAndConfirm()
 
     await waitFor(() =>
-      expect(request).toHaveBeenCalledWith('reload.mcp', { confirm: true, profile: 'default' }, expect.any(Number))
+      expect(request).toHaveBeenCalledWith(
+        'reload.mcp',
+        { confirm: true, profile: 'default', session_id: undefined },
+        expect.any(Number)
+      )
     )
   })
 
   it('names the servers that did not connect', async () => {
     const request = setup({
-      request: vi.fn().mockResolvedValue({ failed: ['broken', 'flaky'], status: 'reloaded' })
+      request: vi.fn().mockResolvedValue({ session: 'applied', status: 'reloaded', unavailable: ['broken', 'flaky'] })
     })
 
     await openAndConfirm()
@@ -113,6 +132,19 @@ describe('ManualMcpReload', () => {
     expect(request).toHaveBeenCalledTimes(1)
   })
 
+  it('says a busy chat defers the change instead of claiming it applied', async () => {
+    setup({ request: vi.fn().mockResolvedValue({ session: 'busy', status: 'reloaded' }) })
+
+    await openAndConfirm()
+
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'info', message: expect.stringMatching(/turn/i) })
+      )
+    )
+    expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
+  })
+
   it('keeps the dialog open with the backend message when confirmation is still required', async () => {
     setup({ request: vi.fn().mockResolvedValue({ message: 'needs explicit approval', status: 'confirm_required' }) })
 
@@ -122,12 +154,12 @@ describe('ManualMcpReload', () => {
     expect(notify).not.toHaveBeenCalled()
   })
 
-  it('surfaces a busy turn error inline', async () => {
-    setup({ request: vi.fn().mockRejectedValue(new Error('session busy — a turn is running in session-1')) })
+  it('surfaces a refused reload inline', async () => {
+    setup({ request: vi.fn().mockRejectedValue(new Error('mcp_servers_unavailable')) })
 
     await openAndConfirm()
 
-    expect(await screen.findByText(/session busy/)).toBeTruthy()
+    expect(await screen.findByText(/mcp_servers_unavailable/)).toBeTruthy()
     expect(screen.getByRole('dialog')).toBeTruthy()
   })
 })

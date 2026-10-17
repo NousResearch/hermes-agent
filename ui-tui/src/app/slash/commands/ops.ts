@@ -102,13 +102,7 @@ export const opsCommands: SlashCommand[] = [
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
-      // A canonical session's MCP servers are frozen with its launch policy; the shared owner's
-      // pool is every chat's, so there is no per-session reload verb yet.
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reload-mcp'))
-      }
-
-      // Parse arg: `now` / `always` skip the confirmation gate.
+      // `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()
 
@@ -135,11 +129,18 @@ export const opsCommands: SlashCommand[] = [
 
             if (r.status === 'reloaded') {
               ctx.transcript.sys(
-                params.always ? t('slashCmd.ops.reloadMcp.reloadedAlways') : t('slashCmd.ops.reloadMcp.reloaded')
+                r.session === 'busy'
+                  ? t('slashCmd.ops.reloadMcp.deferred')
+                  : params.always
+                    ? t('slashCmd.ops.reloadMcp.reloadedAlways')
+                    : t('slashCmd.ops.reloadMcp.reloaded')
               )
 
-              if (r.failed?.length) {
-                ctx.transcript.sys(t('slashCmd.ops.reloadMcp.notConnected', r.failed.join(', ')))
+              // `unavailable` is the unified gateway's field; `failed` is what an older one answered.
+              const unavailable = r.unavailable ?? r.failed
+
+              if (unavailable?.length) {
+                ctx.transcript.sys(t('slashCmd.ops.reloadMcp.notConnected', unavailable.join(', ')))
               }
 
               return

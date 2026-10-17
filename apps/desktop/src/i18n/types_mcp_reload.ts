@@ -5,6 +5,8 @@ export interface McpReloadCopy {
   description: string
   confirm: string
   success: string
+  deferred: string
+  unchanged: string
   failed: (servers: string) => string
   error: string
   confirmRequired: string
@@ -12,5 +14,6 @@ export interface McpReloadCopy {
   notConnected: (servers: string) => string
   completionNow: string
   completionAlways: string
+  skillsRemote: string
   skillsFailed: string
 }

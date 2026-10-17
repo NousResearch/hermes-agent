@@ -120,6 +120,21 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "\"findings\": [...]}. Surfaced to downstream "
                 "workers alongside ``summary``."
         )),
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"kind": _prop("string", "Receipt category."),
+                               "detail": _prop("string", "Receipt text or reference.")},
+                "required": ["kind", "detail"],
+            },
+            "description": (
+                "Structured completion receipts. An evidence-required card needs at least one "
+                "non-empty {kind, detail} item, preserved with the closing run. This gate "
+                "checks structure only; it does not independently verify test execution, "
+                "artifact existence, or the truth of receipt text."
+            ),
+        },
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "
                 "task.result). Use ``summary`` instead when "

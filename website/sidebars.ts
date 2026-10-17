@@ -296,6 +296,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-codebase-inspection',
                     'user-guide/skills/bundled/software-development/software-development-dogfood',
                     'user-guide/skills/bundled/software-development/software-development-github',
+                    'user-guide/skills/bundled/software-development/software-development-godfile-kill-campaigns',
                     'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
                     'user-guide/skills/bundled/software-development/software-development-inspecting-hermes-desktop-dom',
                     'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',

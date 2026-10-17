@@ -273,16 +273,19 @@ _SAME_KEY_NAMESPACE_SQL = (
 
 
 # Upsert tail of _insert_session_row: every routing/metadata column keeps the value an
-# earlier writer set (whitespace is part of the SQL text).
+# earlier writer set, except that a lazy writer's ``unknown`` provenance is a repairable
+# placeholder (whitespace is part of the SQL text).
 _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
     f"                       {col} = COALESCE(sessions.{col}, excluded.{col})" for col in (
         "session_key", "chat_id", "chat_type", "thread_id", "parent_session_id", "cwd", "profile_name",
         "transport_profile", "git_repo_root", "origin_json", "display_name",
-        # Immutable provenance (#56439): stamped once at first creation, never overwritten by later
-        # upserts — unlike ``source``, which stays live routing state.
-        "created_source",
     )
-)
+) + """,
+                       created_source = CASE
+                           WHEN sessions.created_source = 'unknown'
+                           THEN COALESCE(excluded.created_source, 'unknown')
+                           ELSE COALESCE(sessions.created_source, excluded.created_source)
+                       END"""
 
 
 def _inherit_col_sql(col: str, extra: str = "") -> str:

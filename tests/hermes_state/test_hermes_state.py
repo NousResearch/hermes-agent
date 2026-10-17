@@ -2717,6 +2717,15 @@ class TestListSessionsRich:
         )
         assert db.get_session("slack-sess")["created_source"] == "slack"
 
+    def test_creator_replaces_unknown_created_source_placeholder(self, db):
+        """A lazy accounting insert must not hide the later CLI-created local session (#139049)."""
+        db.ensure_session("local-sess", "unknown")
+        db.create_session("local-sess", "cli")
+
+        row = db.get_session("local-sess")
+        assert row["source"] == "cli"
+        assert row["created_source"] == "cli"
+
 
 
 

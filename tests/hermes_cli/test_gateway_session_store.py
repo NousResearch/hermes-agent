@@ -349,12 +349,16 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
 
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):
     """Bare ``-c`` (main.py ``_resolve_last_session``) reads main's labels too: a gateway row labelled
-    ``local`` that the CLI created is CLI history."""
+    ``local`` that the CLI created is CLI history, even after a lazy writer made its initial row."""
     import sqlite3
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_state import SessionDB
     writer = SessionDB(db_path=tmp_path / "state.db")
-    writer.create_session("local-cli", source="local")
+    writer.ensure_session("local-cli", source="unknown")
+    writer.create_session("local-cli", source="cli")
+    writer.record_gateway_session_peer(
+        "local-cli", source="local", session_key="agent:main:local:dm:cli", chat_id="local-cli"
+    )
     writer.append_message("local-cli", "user", "hi")
     writer.create_session("local-tui", source="local")
     writer.append_message("local-tui", "user", "later")

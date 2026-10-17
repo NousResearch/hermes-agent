@@ -364,7 +364,8 @@ def _resolve_chat_argv(
     passes as the explicit ``cwd`` of ``session.create`` when attached to the
     in-memory gateway, whose own cwd is the dashboard's launch dir).
     """
-    from hermes_cli.web_server_profiles import _config_profile_scope, _resolve_profile_dir
+    from hermes_cli.web_server_profiles import (
+        _config_profile_scope, _resolve_profile_dir, require_current_profile_access)
     from hermes_cli.web_server_sessions import _open_session_db_for_profile, _session_latest_descendant
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_tui_launch import _apply_tui_python_env, _make_tui_argv
@@ -373,6 +374,8 @@ def _resolve_chat_argv(
     requested = (profile or "").strip()
     if requested and requested.lower() != "current":
         profile_dir = _resolve_profile_dir(requested)
+    else:
+        require_current_profile_access()
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     # Secrets kept — the spawned agent needs provider creds.  An explicit profile

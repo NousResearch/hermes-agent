@@ -588,8 +588,13 @@ class ProfileUnavailableError(FileNotFoundError):
 
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
+    from hermes_cli.dashboard_auth import profile_access
     if not (name := _canonical_profile_request((profile or "").strip())):
+        if not profile_access.is_allowed(_launch_profile_name()):
+            raise ProfileUnavailableError("This profile is not available to you.")
         return None
+    if not profile_access.is_allowed(name):
+        raise ProfileUnavailableError(f"Profile '{name}' is not available to you.")
     from hermes_cli import profiles as profiles_mod
     try:
         home = Path(profiles_mod.get_profile_dir(name))
@@ -608,6 +613,11 @@ def _profile_home(profile: str | None) -> Path | None:
         activate_multi_profile_hosting()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
+
+
+def _launch_profile_name() -> str:
+    from hermes_cli.web_server_profiles import serving_profile_name
+    return serving_profile_name() or "default"
 
 
 # Profile homes served besides the launch home — the only extra stores the sessions watcher

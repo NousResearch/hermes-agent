@@ -411,6 +411,8 @@ def _session_db_path_for_profile(profile: Optional[str]) -> Path:
     if profile:
         _name, home = _cron_profile_home(profile)
         return Path(home) / "state.db"
+    from hermes_cli.web_server_profiles import require_current_profile_access
+    require_current_profile_access()
     return Path(_default_db_path())
 
 

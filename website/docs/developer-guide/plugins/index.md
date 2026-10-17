@@ -28,6 +28,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **computer-use driver** (desktop control behind the `computer_use` tool) | [Computer-use backend plugins](#computer-use-backend-plugins) — `ctx.register_computer_use_provider()` |
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
+| **Per-user profile access** on a shared dashboard | [Web Dashboard: per-user profile access](../../user-guide/features/web-dashboard.md#per-user-profile-access), `ctx.register_dashboard_profile_access()` |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) — config-driven, no Python needed |
 | An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](../../user-guide/features/tts.md#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to an argv-tokenized template |
 | **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](../../user-guide/features/mcp.md) — declare `mcp_servers.<name>` in `config.yaml` |

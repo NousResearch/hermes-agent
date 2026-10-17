@@ -772,6 +772,21 @@ class PluginContext:
         return handle
 
     @_serialized_replacement
+    def register_dashboard_profile_access(self, checker: Callable) -> Optional[PluginRegistration]:
+        """Register ``checker(identity, profile) -> True | False | None`` deciding which profiles a
+        dashboard caller may see and drive (``hermes_cli.dashboard_auth.profile_access``). Any
+        ``False`` denies; ``None`` abstains. Process-global and persistent like auth providers."""
+        from hermes_cli.dashboard_auth import profile_access
+        if not callable(checker):
+            logger.warning("Plugin '%s' registered a non-callable dashboard profile access checker",
+                           self.manifest.name)
+            return None
+        profile_access.register_checker(checker)
+        logger.info("Plugin '%s' registered a dashboard profile access checker", self.manifest.name)
+        return self._track("dashboard_profile_access", getattr(checker, "__qualname__", repr(checker)),
+                           lambda: profile_access.unregister_checker(checker), persistent=True)
+
+    @_serialized_replacement
     def register_platform(
         self, name: str, label: str, adapter_factory: Callable, check_fn: Callable,
         validate_config: Callable | None = None, required_env: list | None = None,

@@ -1123,6 +1123,25 @@ The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/dr
 
 Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
 
+### Per-user profile access
+
+A login provider says who is calling. On a dashboard shared by a team, a plugin can also decide which profiles each signed-in user may see and drive, by registering a checker:
+
+```python
+def may_use(identity, profile):
+    """identity: hermes_cli.dashboard_auth.profile_access.Identity, or None when the request carries no login session."""
+    if identity is None:
+        return None  # abstain
+    return profile in profiles_shared_with(identity.email)
+
+def register(ctx):
+    ctx.register_dashboard_profile_access(may_use)
+```
+
+A checker returns `True` to allow, `False` to deny or `None` to abstain. Any `False` denies, and a checker that raises denies too. With no checker registered, or every checker abstaining, every profile stays available, as before.
+
+The login gate and the WebSocket gates bind the caller's identity for the whole request. Profile resolution (`?profile=`), the profile list, session databases, cron, the PTY chat and the TUI gateway (`session.create`, `session.resume`, profile switching) all consult the checkers, so a denied profile answers 403 and is left out of listings. On a WebSocket upgrade the identity carries only `user_id` and `provider`, because tickets hold nothing more.
+
 ### Verifying the gate is on
 
 ```bash

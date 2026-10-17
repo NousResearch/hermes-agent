@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
+from hermes_cli.dashboard_auth import profile_access
 from hermes_cli.web_models import MCPServerCreate
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
 from hermes_cli.web_server_mcp import _normalize_mcp_server_create
@@ -196,7 +197,13 @@ def _resolve_profile_dir(name: str) -> Path:
         raise HTTPException(status_code=400, detail=str(e))
     if not profiles_mod.profile_exists(name):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
+    profile_access.require(name)
     return profiles_mod.get_profile_dir(name)
+
+
+def require_current_profile_access() -> None:
+    """The unnamed scope serves this process's own profile: it is checked under that name."""
+    profile_access.require(serving_profile_name() or "default")
 
 
 def _write_profile_mcp_servers(profile_dir: Path, servers: list[MCPServerCreate]) -> int:
@@ -301,6 +308,7 @@ def _config_profile_scope(profile: Optional[str]):
 
     process_home = get_process_hermes_home()
     if _is_current_profile(profile):
+        require_current_profile_access()
         profile_dir = get_hermes_home() if get_hermes_home_override() else None
     else:
         profile_dir = _resolve_profile_dir(profile.strip())

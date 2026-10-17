@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
+from hermes_cli.dashboard_auth import profile_access
 from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_registry_snapshot
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
@@ -33,6 +34,7 @@ _active_session_file_for_channel = late("_active_session_file_for_channel", "her
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _resolve_chat_argv_async = late("_resolve_chat_argv_async", "hermes_cli.web_server_chat")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
+_require_current_profile_access = late("require_current_profile_access", "hermes_cli.web_server_profiles")
 _ws_auth_reason = late("_ws_auth_reason", "hermes_cli.web_server_chat")
 _ws_client_reason = late("_ws_client_reason", "hermes_cli.web_server_chat")
 _ws_host_origin_reason = late("_ws_host_origin_reason", "hermes_cli.web_server_chat")
@@ -155,6 +157,7 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
         _log.warning("%s refused: %s", kind, client_reason)
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
         return None
+    # The handler task lives as long as the socket, so the binding needs no reset.
     return peer, mode, cred
 
 
@@ -313,6 +316,8 @@ async def console_ws(ws: WebSocket) -> None:
         engine = HermesConsoleEngine(output_limit=_CONSOLE_OUTPUT_LIMIT)
         if profile and profile.lower() != "current":
             _resolve_profile_dir(profile)
+        else:
+            _require_current_profile_access()
     except HTTPException as exc:
         await out.error(str(exc.detail), prompt="")
         await ws.close(code=4400, reason=_ws_close_reason(str(exc.detail)))
@@ -710,9 +715,13 @@ async def gateway_ws(ws: WebSocket) -> None:
     # otherwise). Off-loop: the first act is a config read + the ~350 ms `mcp` SDK import.
     await asyncio.to_thread(start_deferred_mcp_discovery_now)
 
+    # Plugin profile access checks see the authenticated caller for the whole socket.
+    profile_access.bind_identity(profile_access.identity_from_ws_stamp(getattr(ws, "_hermes_auth_identity", None)))
+
     # The authenticated identity (ticket / internal credential) stamped by
     # _ws_auth_reason becomes the identity authority for privileged RPCs
     # (browser.controller.register). None on the legacy token path.
+    profile_access.bind_identity(profile_access.identity_from_ws_stamp(getattr(ws, "_hermes_auth_identity", None)))
     identity = getattr(ws, "_hermes_auth_identity", None)
     authority = getattr(ws.app.state, "session_authority", None)
     if authority is not None and identity is None:

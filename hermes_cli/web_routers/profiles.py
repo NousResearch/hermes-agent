@@ -31,6 +31,7 @@ from fastapi import APIRouter, HTTPException, Query
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
+from hermes_cli.dashboard_auth import profile_access
 from hermes_cli.profiles import ProfileIdentitySettlementPending
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection,
@@ -229,7 +230,7 @@ def _profile_targets(log_label: str) -> list[tuple[str, Path]]:
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
-    return targets
+    return [(name, home) for name, home in targets if profile_access.is_allowed(name)]
 
 
 def _scoped_profile_targets(log_label: str, profile: Optional[str]) -> list[tuple[str, Path]]:
@@ -799,7 +800,9 @@ def _read_profiles():
 
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
-    return await _read_profiles()
+    # The read is coalesced across callers, so it is filtered per caller after it lands.
+    listing = await _read_profiles()
+    return {**listing, "profiles": [p for p in listing["profiles"] if profile_access.is_allowed(p["name"])]}
 
 
 @router.post("/api/profiles")

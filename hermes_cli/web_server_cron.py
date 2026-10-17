@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.config import cfg_get
+from hermes_cli.dashboard_auth import profile_access
 from hermes_cli.web_models import CronJobCreate
 
 # Same logger the code used before extraction (record parity).
@@ -121,6 +122,7 @@ def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
         raise HTTPException(status_code=400, detail=str(e))
     if not profiles_mod.profile_exists(canon):
         raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+    profile_access.require(canon)
     return canon, profiles_mod.get_profile_dir(canon)
 
 

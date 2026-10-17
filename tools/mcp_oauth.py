@@ -1224,10 +1224,10 @@ def humanize_oauth_registration_error(
             "404 (typical for Google's hosted Gmail/Drive MCP servers and other providers without RFC 7591 dynamic "
             "client registration). Create an OAuth client for this provider and add it under config.yaml as "
             f"`oauth: {{client_id: ..., client_secret: ...}}`, then re-run:\n  hermes mcp login {server_name}")
-    looks_like_registration = ("403" in msg or "forbidden" in lowered) and (
-        any(k in lowered for k in ("regist", "dcr", "dynamic client"))
-        or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}
-        or ("403" in msg and "forbidden" in lowered))
+    registration_error = _is_oauth_registration_error(exc) or (
+        isinstance(exc, str) and "registration failed" in lowered
+    )
+    looks_like_registration = registration_error and ("403" in msg or "forbidden" in lowered)
     if not looks_like_registration:
         return None
     if _is_figma_remote_mcp(server_name, server_url):
@@ -1241,6 +1241,38 @@ def humanize_oauth_registration_error(
         "browser flow can start. Options: set oauth.client_name to a name the provider allowlists, add a "
         "pre-registered client (oauth: {client_id: ..., client_secret: ...}), or use the provider's stdio / "
         "API-key / local server instead.")
+
+
+def _is_oauth_registration_error(exc: BaseException | str) -> bool:
+    """True only when the OAuth SDK identified a failed client registration.
+
+    Resource requests run after registration and token exchange; their 403s must
+    not be described as a registration refusal. Preserve the SDK type through
+    exception groups and wrappers when checking that boundary.
+    """
+    if isinstance(exc, str):
+        return False
+    try:
+        from mcp.client.auth import OAuthRegistrationError
+    except ImportError:
+        return False
+
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, OAuthRegistrationError):
+            return True
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+    return False
 
 
 def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | None = None) -> "OAuthClientProvider | None":

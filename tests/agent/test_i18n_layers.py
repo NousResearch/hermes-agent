@@ -121,6 +121,7 @@ def test_manifest_only_pack_registers_language_and_display_language_resolves(hom
     _write_pack_plugin(home, core={"approval": {"denied": "Zatwierdzenie"}},
                        tui={"status": {"ready": "Gotowy"}}, desktop={"settings": {"title": "Ustawienia"}})
     assert "pl" not in i18n.supported_languages()
+    active_before = i18n.get_language()  # whatever the host picks: registration must not move it
 
     manager = _load(home)
     loaded = manager._plugins["hermes-lang-pl"]
@@ -136,7 +137,7 @@ def test_manifest_only_pack_registers_language_and_display_language_resolves(hom
     assert i18n.surface_catalog("pl", "desktop") == {"settings.title": "Ustawienia"}
     assert i18n.surface_catalog("pl", "core") == {"approval.denied": "Zatwierdzenie"}
     # Registration never touches display.language; setting it makes the pack the active language.
-    assert i18n.get_language() == "en"
+    assert i18n.get_language() == active_before
     (home / "config.yaml").write_text(
         yaml.safe_dump({"plugins": {"enabled": ["hermes-lang-pl"]}, "display": {"language": "pl"}}), encoding="utf-8")
     i18n.reset_language_cache()

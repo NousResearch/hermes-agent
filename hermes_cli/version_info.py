@@ -243,14 +243,25 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         for tag in (tags or "").splitlines()
         if STABLE_TAG_RE.fullmatch(tag)
     ]
-    base_version = (
-        max(releases, key=lambda value: tuple(int(part) for part in value.split(".")))
-        if releases else "unknown"
-    )
-    distance = _parse_nonnegative(
-        _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
-    ) if releases else None
-    if not releases:
+    # A HEAD sitting exactly on a release tag is that release (`git checkout
+    # v0.22.2`). Read it from the tags pointing at HEAD itself: the --merged
+    # walk above can fail outright on slow or cold checkouts (the 3 s probe
+    # timeout), and the CalVer fallback then reported a much older base —
+    # 0.21.5+12940.g<sha> for an exact v0.22.2 checkout (#140329).
+    head_releases = [
+        tag[1:]
+        for tag in (_run_git(repo_dir, "tag", "--points-at", "HEAD") or "").splitlines()
+        if STABLE_TAG_RE.fullmatch(tag)
+    ]
+    if head_releases:
+        base_version = max(head_releases, key=lambda value: tuple(int(part) for part in value.split(".")))
+        distance = 0
+    elif releases:
+        base_version = max(releases, key=lambda value: tuple(int(part) for part in value.split(".")))
+        distance = _parse_nonnegative(
+            _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
+        )
+    else:
         base_version, distance = _calver_release_version(repo_dir) or ("unknown", None)
     short_commit = _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
     if base_version == "unknown" and short_commit:

@@ -1,0 +1,145 @@
+{
+  "rows": [
+    {
+      "id": 30,
+      "role": "assistant",
+      "content": "",
+      "reasoning": "Inspect first",
+      "timestamp": 30,
+      "tool_calls": [
+        {
+          "id": "first",
+          "function": {
+            "name": "read_file",
+            "arguments": "{\"path\":\"abc\"}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "role": "tool",
+      "tool_call_id": "first",
+      "content": "result",
+      "timestamp": 90
+    },
+    {
+      "id": 150,
+      "role": "assistant",
+      "content": "",
+      "reasoning": "Inspect first",
+      "timestamp": 150,
+      "tool_calls": [
+        {
+          "id": "second",
+          "function": {
+            "name": "read_file",
+            "arguments": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 210,
+      "role": "tool",
+      "tool_call_id": "second",
+      "content": "second result",
+      "timestamp": 210
+    },
+    {
+      "id": 400,
+      "role": "assistant",
+      "content": "Done",
+      "timestamp": 400
+    }
+  ],
+  "full": [
+    {
+      "id": "30-0-assistant",
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "reasoning",
+          "text": "Inspect first",
+          "timestamp": 30
+        },
+        {
+          "type": "tool-call",
+          "toolCallId": "first",
+          "toolName": "read_file",
+          "args": {
+            "path": "abc"
+          },
+          "argsText": "{\"path\":\"abc\"}",
+          "timestamp": 30,
+          "completedAt": 90,
+          "storedResultToolName": "tool",
+          "result": "result",
+          "isError": false
+        },
+        {
+          "type": "reasoning",
+          "text": "Inspect first",
+          "timestamp": 150
+        },
+        {
+          "type": "tool-call",
+          "toolCallId": "second",
+          "toolName": "read_file",
+          "args": {},
+          "argsText": "",
+          "timestamp": 150,
+          "completedAt": 210,
+          "storedResultToolName": "tool",
+          "result": "second result",
+          "isError": false
+        },
+        {
+          "type": "text",
+          "text": "Done",
+          "timestamp": 400,
+          "sourceRowId": 400
+        }
+      ],
+      "durableComplete": true,
+      "timestamp": 30,
+      "rowId": 30,
+      "serverRowSpan": 5
+    }
+  ],
+  "partial": [
+    {
+      "id": "150-0-assistant",
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "reasoning",
+          "text": "Inspect first",
+          "timestamp": 150
+        },
+        {
+          "type": "tool-call",
+          "toolCallId": "second",
+          "toolName": "read_file",
+          "args": {},
+          "argsText": "",
+          "timestamp": 150,
+          "completedAt": 210,
+          "storedResultToolName": "tool",
+          "result": "second result",
+          "isError": false
+        },
+        {
+          "type": "text",
+          "text": "Done",
+          "timestamp": 400,
+          "sourceRowId": 400
+        }
+      ],
+      "durableComplete": true,
+      "timestamp": 150,
+      "rowId": 150,
+      "serverRowSpan": 3
+    }
+  ]
+}

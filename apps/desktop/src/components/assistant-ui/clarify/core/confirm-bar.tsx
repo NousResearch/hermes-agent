@@ -19,10 +19,9 @@ export function ClarifyConfirmBar({
   const copy = t.assistant.clarify
 
   return (
-    <div className="flex items-center justify-end gap-1">
-      <Button disabled={disabled} onClick={onSkip} size="xs" type="button" variant="text">
-        {copy.skip}
-      </Button>
+    // Confirm first in the DOM so the native Tab walk reaches it before Skip;
+    // row-reverse keeps the Skip button on the left visually.
+    <div className="flex flex-row-reverse items-center justify-start gap-1">
       <Button disabled={disabled || !canConfirm} size="xs" type="submit">
         {submitting ? (
           <Loader2 className="animate-spin" />
@@ -34,6 +33,9 @@ export function ClarifyConfirmBar({
             </span>
           </>
         )}
+      </Button>
+      <Button disabled={disabled} onClick={onSkip} size="xs" type="button" variant="text">
+        {copy.skip}
       </Button>
     </div>
   )

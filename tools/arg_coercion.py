@@ -8,6 +8,7 @@ conservative: originals are kept whenever a repair is not unambiguous.
 
 import json
 import logging
+import re
 from typing import Any, Dict
 
 from tools.registry import registry
@@ -176,12 +177,39 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
         return None
 
     if isinstance(expected_type, list):
+        # A string the fragment already accepts needs no repair — else the next member always won
+        # ("00123" -> 123, "1.10" -> 1.1, "false" -> False). One its enum/const/pattern/length
+        # rejects still tries the other members ("1" -> 1 for enum [1, 2]).
+        if "string" in expected_type and _string_meets_constraints(value, schema):
+            return value
         return next((r for t in expected_type if (r := _coerce_value(value, t, schema=schema)) is not value), value)
 
     coercer = _SCALAR_COERCERS.get(expected_type)
     if coercer is not None:
         return coercer(value)
     return None if expected_type == "null" and value.strip().lower() == "null" else value
+
+
+def _string_meets_constraints(value: str, schema: dict | None) -> bool:
+    """True when string *value* passes the fragment's string-applicable keywords (enum, const,
+    pattern, minLength, maxLength). A pattern Python cannot compile cannot justify a repair: it passes."""
+    if not isinstance(schema, dict):
+        return True
+    if isinstance(schema.get("enum"), list) and value not in schema["enum"]:
+        return False
+    if "const" in schema and schema["const"] != value:
+        return False
+    if isinstance(schema.get("minLength"), int) and len(value) < schema["minLength"]:
+        return False
+    if isinstance(schema.get("maxLength"), int) and len(value) > schema["maxLength"]:
+        return False
+    pattern = schema.get("pattern")
+    if isinstance(pattern, str):
+        try:
+            return re.search(pattern, value) is not None
+        except re.error:
+            return True
+    return True
 
 
 def _schema_allows_null(schema: dict | None) -> bool:

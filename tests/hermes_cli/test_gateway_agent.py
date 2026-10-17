@@ -732,10 +732,10 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
 
 
 def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
-    """/model, /model --once and /new's reset to the config default call main's
-    ``agent.switch_model`` (#134889 M1). The gateway commits the target as a generation-fenced
-    ``session.mutate model`` (no key or endpoint leaves the CLI), and the agent main rebuilds for the
-    next turn reads the committed model from the session, not the old one."""
+    """A session-scoped ``/model`` calls ``agent.switch_model`` (#134889 M1). The gateway commits
+    the target as a generation-fenced ``session.mutate model`` (no key or endpoint leaves the CLI),
+    and the agent main rebuilds for the next turn reads the committed model from the session.
+    ``/model --once`` is not this path: that pick is one admission's ``model_override``."""
     agent, client = make_agent([], model="old-model", provider="openrouter")
     agent.switch_model(new_model="new-model", new_provider="anthropic", api_key="sk-local",
                        base_url="https://example.invalid", api_mode="anthropic_messages", capabilities=None)

@@ -1362,6 +1362,112 @@ def _split_env_string(payload: str) -> list[str] | None:
     return args
 
 
+_ENV_SPLIT_EXPANSION_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+# A bare expansion that can expand to no word: $NAME (zsh also $=NAME, $~NAME, $^NAME), a
+# positional parameter, $@, $* or $!. $?, $$, $#, $- and $0 always expand to something.
+_VANISHING_EXPANSION_RE = re.compile(r"\$(?:[=~^]*[A-Za-z_][A-Za-z0-9_]*|[1-9@*!])")
+_BRACE_DEFAULT_RE = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*!]):?[-=](?P<default>.*)", re.DOTALL)
+
+
+def _scan_dollar_brace_end(word: str, start: int) -> int | None:
+    """Return the offset after a ``${...}`` expansion, counting nested ``${``."""
+    depth = 1
+    for kind, i, _, quote in _scan_shell(word, start + 2):
+        if kind == "char" and quote != "'":
+            depth += word.startswith("${", i) - (word[i] == "}")
+            if depth == 0:
+                return i + 1
+    return None
+
+
+def _brace_expansion_may_vanish(body: str) -> bool:
+    if body.startswith("#"):
+        return False  # ${#NAME} is a length: never empty
+    default = _BRACE_DEFAULT_RE.fullmatch(body)
+    if default is None:
+        return True
+    text = "".join(default.group("default").split())
+    # A literal or quoted default always leaves a word behind (`${X:-tool}`, `${X:-""}`).
+    return not text or "$" in text or "`" in text
+
+
+def _command_word_may_vanish(word: str) -> bool:
+    """True when *word* is made only of unquoted expansions that can expand to nothing.
+
+    Such a command word disappears and the shell runs its argument tail instead:
+    ``$TOOL cmd``, ``${TOOL} cmd``, ``$(true) cmd`` and the backtick form all run
+    ``cmd`` in bash, sh and zsh. A quoted, escaped or literal-prefixed word leaves a
+    (possibly empty) command name behind and its tail stays an argument list.
+    ``$((...))`` counts as a substitution: the shells fall back to one when the text
+    is not arithmetic (``$((true);(true)) cmd`` runs ``cmd``).
+    """
+    index = 0
+    while index < len(word):
+        if word[index] == "`":
+            end = _scan_backtick_end(word, index)
+        elif word.startswith("$(", index):
+            end = _scan_dollar_paren_end(word, index)
+        elif word.startswith("${", index):
+            end = _scan_dollar_brace_end(word, index)
+            if end is not None and not _brace_expansion_may_vanish(word[index + 2:end - 1]):
+                end = None
+        else:
+            bare = _VANISHING_EXPANSION_RE.match(word, index)
+            end = bare.end() if bare else None
+        if end is None:
+            return False
+        index = end
+    return bool(word)
+
+
+def _split_env_string_unresolved(payload: str) -> list[str] | None:
+    """Split an env -S string that holds ${NAME} expansions, as an argv.
+
+    Keep expansions in argument fields as data. In the executable field, also
+    consider empty expansions: a literal suffix or surrounding letters can
+    name the command. An all-expansion field disappears only when unquoted.
+    Anything env rejects (a bare ``$``, an unclosed quote) yields None.
+    """
+    out, names, removable = [], [], set()
+    quote, index = None, 0
+    while index < len(payload):
+        char = payload[index]
+        if char == "\\":
+            out.append(payload[index:index + 2])
+            index += 2
+            continue
+        if char in ("'", '"') and quote in (None, char):
+            quote = None if quote else char
+        elif char == "$" and quote != "'":
+            match = _ENV_SPLIT_EXPANSION_RE.match(payload, index)
+            if not match:
+                return None
+            if quote is None:
+                removable.add(len(names))
+            out.append(f"\0{len(names)}\0")
+            names.append(match.group())
+            index = match.end()
+            continue
+        out.append(char)
+        index += 1
+    args = _split_env_string("".join(out))
+    if args is None:
+        return None
+    marker = re.compile("\0(\\d+)\0")
+    while args:
+        matches = list(marker.finditer(args[0]))
+        if not matches:
+            break
+        literal = marker.sub("", args[0])
+        if literal:
+            args[0] = literal
+            break
+        if not all(int(found.group(1)) in removable for found in matches):
+            break
+        args.pop(0)
+    return [marker.sub(lambda found: names[int(found.group(1))], arg) for arg in args]
+
+
 def _env_split_payload(tokens: list[str]) -> str | None:
     index = 1
     while index < len(tokens):
@@ -1376,11 +1482,29 @@ def _env_split_payload(tokens: list[str]) -> str | None:
             payload = (value if option == "--split-string" else token[2:]) if attached else (
                 tokens[index] if index < len(tokens) else "")
             args = _split_env_string(payload)
+            if args is None:
+                # A ${NAME} expansion cannot be resolved here. env still splits an
+                # argv (separators stay data), including the executable that
+                # remains when its unresolved expansions are empty.
+                args = _split_env_string_unresolved(payload)
+                if args is None:
+                    return None
+                argv = args + tokens[index + 1:]
+                return shlex.join(argv) if argv else None
             # Protect literal separators when reusing command-position detection;
             # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
+            return shlex.join(args + tokens[index + 1:])
         index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
     return None
+
+
+def _eval_payload(args: list[str]) -> str | None:
+    """Return the shell code eval would run: its arguments joined by spaces."""
+    # eval takes no options: only an explicit ``--`` is consumed. A first word such
+    # as ``-x`` is code (zsh reports it missing and runs the rest of the list).
+    if args and args[0] == "--":
+        args = args[1:]
+    return " ".join(args) or None
 
 
 def _deny_command_variants(command: str):
@@ -1416,10 +1540,18 @@ def _deny_command_variants(command: str):
                 # Apply the existing text matching semantics only AFTER locating
                 # executable positions; never parse its rewritten quotes again.
                 yield _normalize_command_for_detection(candidate)
-            if os.path.basename(executable) == "env":
+            carrier = os.path.basename(executable)
+            if tail.strip() and _command_word_may_vanish(word):
+                # A command word that is only an unquoted expansion or command
+                # substitution may expand to nothing and run its argument tail
+                # (`$SUDO rm ...`, `$(true) rm ...`): project the tail. A quoted,
+                # escaped or literal-prefixed word cannot vanish.
+                pending.append(tail.strip())
+            if carrier in ("env", "eval"):
                 tokens = _shell_segment_tokens(segment, 0)
                 if tokens:
-                    payload = _env_split_payload(tokens)
+                    # eval parses its joined arguments as shell code, like `sh -c`.
+                    payload = _env_split_payload(tokens) if carrier == "env" else _eval_payload(tokens[1:])
                     if payload:
                         pending.append(payload)
         for _, payload in _execution_flag_findings(source):

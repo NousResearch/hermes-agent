@@ -162,7 +162,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `BRAVE_SEARCH_API_KEY` | Brave Search API subscription token for web search (free tier available) ([brave.com/search/api](https://brave.com/search/api/)) |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
-| `BROWSER_USE_API_KEY` | Browser Use cloud browser API key ([browser-use.com](https://browser-use.com/)) |
+| `BROWSER_USE_API_KEY` | Browser Use cloud browser API key ([browser-use.com](https://cloud.browser-use.com/signup?utm_source=hermes&utm_medium=integration&after_auth_return_to=%2Fsettings%3Ftab%3Dapi-keys%26new%3D1)) |
 | `FIRECRAWL_BROWSER_TTL` | Firecrawl browser session TTL in seconds (default: 300) |
 | `BROWSER_CDP_URL` | Chrome DevTools Protocol URL for local browser (set via `/browser connect`, e.g. `ws://localhost:9222`) |
 | `CAMOFOX_URL` | Camofox local anti-detection browser server address (default: `http://localhost:9377`). Address only — it does not select Camofox as the backend; pick Camofox in `hermes tools` (`browser.cloud_provider: camofox`) |

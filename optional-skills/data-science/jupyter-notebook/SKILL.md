@@ -136,7 +136,9 @@ uv run "$SCRIPT" restart-run-all --path <notebook.ipynb> --save-outputs --compac
 ## Practical Tips from Experience
 
 1. **First execution after server start may timeout** — the kernel needs a moment
-   to initialize. If you get a timeout, just retry.
+   to initialize. A timeout does not say whether the code ran: read the session
+   state (`execution_state`, `execution_count`) or the variables before you send
+   the same cell again.
 
 2. **The kernel Python is JupyterLab's Python** — packages must be installed in
    that environment. If you need additional packages, install them into the
@@ -158,7 +160,11 @@ uv run "$SCRIPT" restart-run-all --path <notebook.ipynb> --save-outputs --compac
    fields to understand what went wrong.
 
 8. **Occasional websocket timeouts** — some operations may timeout on first try,
-   especially after a kernel restart. Retry once before escalating.
+   especially after a kernel restart. Treat the timeout as an ambiguous delivery
+   rather than a failure: the code may already have reached the kernel, so
+   re-running the same cell blindly can execute it twice (double writes, double
+   side effects). Check the state first; retry only when you can tell it did not
+   run, and escalate by fixing the channel instead of repeating the execution.
 
 9. **If websocket consistently times out on this host**, force zmq transport:
    `uv run "$SCRIPT" execute --transport zmq ...`. Symptom: every execute returns

@@ -648,13 +648,15 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[dict[s
     return None
 
 
-def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[str]:
+def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False, model: Optional[str] = None) -> Optional[str]:
     """First available Anthropic OAuth token from credential_pool, read-only: enumerates with ``clear_expired=False,
     refresh=False`` (never ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
-    auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
+    auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery.
+    With *model*, only cooldowns on that model exclude an entry."""
     try:
         from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
-        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
+        scope = {"model": model} if model else {}
+        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False, **scope)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None
@@ -705,9 +707,14 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        return _available_anthropic_token(
+        resolved = _available_anthropic_token(
             _prefer_refreshable_claude_code_token(token, _read_creds()) or token, model,
         )
+        if resolved or not model:
+            return resolved
+        # The env account is benched for this model (e.g. a weekly cap); another pooled
+        # account may still serve it, so try those before the caller falls back to another provider.
+        return _available_anthropic_token(_resolve_anthropic_pool_token(skip_borrowed=True, model=model), model)
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
         return _available_anthropic_token(api_key, model)

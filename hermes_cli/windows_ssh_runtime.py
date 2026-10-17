@@ -305,6 +305,11 @@ def remove_artifact(path: Path) -> bool:
     return True
 
 
+# CPython options that may precede `-c`/`-m` in a launcher's runtime command.
+_PY_SINGLE_FLAGS = frozenset({"-I", "-E", "-s", "-S", "-B", "-u", "-P", "-O", "-OO", "-q", "-b", "-bb"})
+_PY_VALUE_FLAGS = frozenset({"-X", "-W"})
+
+
 def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce: str) -> dict[str, Any]:
     import psutil
     _nonce(spawn_nonce)
@@ -327,9 +332,23 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
     # layout — so match "a python running our module" (`-c` bootstrap or plain `-m`). Identity
     # is anchored by the unforgeable creation-time + secret owner-nonce below.
     is_python = os.path.basename(arg0).startswith("python")
+    # Skip interpreter options (`-I`, `-E`, `-X utf8`, `-W ignore`, ...) the launcher's runtime
+    # command may put before `-c`/`-m`; otherwise a `python -I -c <bootstrap>` serve is never
+    # "owned". `-X`/`-W` take a value, either as the next token or attached (`-Xutf8`).
+    rest = list(argv[1:])
+    while rest:
+        flag = rest[0]
+        if flag in _PY_SINGLE_FLAGS:
+            rest.pop(0)
+        elif flag in _PY_VALUE_FLAGS:
+            del rest[0:2]
+        elif flag[:2] in _PY_VALUE_FLAGS and len(flag) > 2:
+            rest.pop(0)
+        else:
+            break
     launches_module = (
-        argv[1:3] == ["-m", "hermes_cli.main"]
-        or (len(argv) > 2 and argv[1] == "-c" and "hermes_cli.main" in argv[2]))
+        rest[0:2] == ["-m", "hermes_cli.main"]
+        or (len(rest) > 1 and rest[0] == "-c" and "hermes_cli.main" in rest[1]))
     executable_match = arg0 == expected or (is_python and launches_module)
     try:
         serve = argv.index("serve")

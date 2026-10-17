@@ -1,0 +1,37 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: agent-toolkit
+description: Search, parse documents, work with visual tasks, and run cloud tools through Baizhi Cloud.
+source: https://baizhi.cloud/landing/agent-toolkit
+
+# Baizhi Cloud hosts this Streamable HTTP MCP endpoint. Hermes connects to it
+# directly; this entry does not install or launch a local vendor process.
+transport:
+  type: http
+  url: https://agent-toolkit.app.baizhi.cloud/mcp
+
+# The catalog installer prompts for this secret and stores it in the active
+# profile's .env. The generated config retains only the ${...} reference.
+auth:
+  type: api_key
+  env:
+    - name: MCP_AGENT_TOOLKIT_API_KEY
+      prompt: Baizhi Cloud API key
+      required: true
+      secret: true
+
+suggest:
+  keywords:
+    - agent toolkit
+    - baizhi cloud
+  hosts:
+    - baizhi.cloud
+
+post_install: |
+  Hermes saves your API key in the active profile's .env and configures a
+  Bearer header for Agent Toolkit. Choose the tools to expose when prompted,
+  then start a new Hermes session so the selected tools are loaded.
+
+  Manage API-key permissions and usage credits in the Baizhi Cloud console.

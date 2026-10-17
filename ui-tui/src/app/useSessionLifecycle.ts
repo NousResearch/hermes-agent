@@ -322,7 +322,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const discardStaleAttachment = useCallback(
-    (result?: null | { session_id: string; subscription_id?: string }) => {
+    (result?: null | { session_id: string; subscription_id?: string }, createdSession = false) => {
+      // Only a new sidecar create owns a runtime; other attaches own a subscription.
+      if (createdSession && !gw.isCanonical && result && getUiState().sid !== result.session_id) {
+        void closeSession(result.session_id)
+      }
+
       if (result?.subscription_id) {
         staleAttachments.current.set(JSON.stringify([result.session_id, result.subscription_id]), {
           session_id: result.session_id,
@@ -332,7 +337,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       disposeStaleAttachments()
     },
-    [disposeStaleAttachments]
+    [closeSession, disposeStaleAttachments, gw.isCanonical]
   )
 
   const adoptAttachment = useCallback(
@@ -440,7 +445,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         )
 
         if (flight !== attachmentFlight.current) {
-          discardStaleAttachment(r)
+          discardStaleAttachment(r, true)
 
           return null
         }

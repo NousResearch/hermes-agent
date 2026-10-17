@@ -1565,7 +1565,7 @@ def _(rid, params: dict) -> dict:
     from agent.pet.render import PetRenderer
     pet_cfg = _pet_display_cfg()
     pet = None
-    if is_truthy_value(pet_cfg.get("enabled"), default=False):
+    if is_truthy_value(pet_cfg.get("enabled"), default=False) and str(pet_cfg.get("render_mode", "") or "").lower() != "off":
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
     if pet is None or not pet.exists:
         return _ok(rid, {"enabled": False})

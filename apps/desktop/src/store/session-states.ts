@@ -86,6 +86,7 @@ import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
+import { $removedSessionIds, sessionRemovalArmed } from './session-removal'
 import {
   isSessionOwnerRoute,
   requestForSessionProfile,
@@ -1121,7 +1122,12 @@ export const $attentionSessionIds = computed(
 // binding its runtime and loading its transcript, and calling that a draft
 // would flash the wrong mark on a conversation with years of history in it.
 let draftIds: readonly string[] = []
-export const $draftSessionIds = computed([$sessionStates, $sessions], (states, sessions) => {
+// $removedSessionIds is a declared dependency even though the predicate reads
+// the lifecycle edges (not membership): arming/releasing a tombstone does not
+// touch $sessionStates or $sessions, so without it a recompute triggered by
+// the archive's dropListedSession would cache the claim taken BEFORE the
+// tombstone armed, and the projection would keep the ghost draft (#137768).
+export const $draftSessionIds = computed([$sessionStates, $sessions, $removedSessionIds], (states, sessions) => {
   const unsent = (state: ClientSessionState) => {
     if (state.busy || state.messages.length > 0) {
       return false
@@ -1137,6 +1143,18 @@ export const $draftSessionIds = computed([$sessionStates, $sessions], (states, s
     }
 
     const row = sessions.find(session => sessionMatchesStoredId(session, storedId))
+
+    // `!row` alone cannot tell "no backend row yet" from "the user archived
+    // this session and the row left the list": the removal lifecycle's last
+    // edge can (armed = archived/deleted with no release since), and that
+    // answer survives the tombstone prune once the server snapshot catches
+    // up. Without it, every archived-but-still-open session re-enters the
+    // draft bucket on the next recomputation (#137768); a failed archive or
+    // an unarchive releases the edge and re-admits the row, so a genuinely
+    // unlisted session still drafts.
+    if (!row && sessionRemovalArmed(storedId)) {
+      return false
+    }
 
     return !row || row.message_count === 0
   }

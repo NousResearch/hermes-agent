@@ -154,6 +154,9 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
             return None, _error_response(f'Previous response not found: {previous}', 404)
         history = list(stored.get('conversation_history', []))
         stored_session_id = await asyncio.to_thread(_stored_owner, adapter, stored.get('session_id'))
+        from gateway.session_api import continued_api_session
+        stored_session_id = await asyncio.to_thread(
+            continued_api_session, adapter.gateway_runner, stored_session_id, request_id)
         if instructions is None:
             instructions = stored.get('instructions')
     history.extend(messages[:-1])

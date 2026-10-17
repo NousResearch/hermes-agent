@@ -739,6 +739,9 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     if history_err is not None:
         return history_err
     previous_response_id = body.get("previous_response_id")
+    if stored_session_id and not body.get("session_id"):  # a deleted chain moves to its next generation
+        from gateway.session_api import continued_api_session
+        stored_session_id = await asyncio.to_thread(continued_api_session, self.gateway_runner, stored_session_id)
     session_id = body.get("session_id") or stored_session_id
     route = self._resolve_route(body.get("model"))
     agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)

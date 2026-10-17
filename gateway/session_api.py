@@ -41,6 +41,15 @@ def implicit_api_session(db, session_id, request_id=None):
     return first_generation(db, derive, pinned=pinned)[1]
 
 
+def continued_api_session(runner, session_id, request_id=None):
+    """The session a new turn on a retained chain (``previous_response_id``, a named conversation)
+    lands on: its stored id, or that id's next generation once the user deleted it (the history
+    comes from the response store). An exact retry stays on the generation holding its identity."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner) if session_id else None
+    return implicit_api_session(authority.db, session_id, request_id) if authority is not None else session_id
+
+
 def room_session_id(identity, generation=0):
     """``room_<digest>`` of a hosted room member's identity (home install, room, member, target
     profile); a later generation folds its number into the digest."""

@@ -2286,34 +2286,16 @@ def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
         return {
             "Editor-Version": COPILOT_EDITOR_VERSION,
             "User-Agent": "HermesAgent/1.0",
+            # Copilot-backend version; a SEPARATE namespace from GitHub REST dates —
+            # see copilot_auth._COPILOT_API_VERSION. Keep in sync with that constant.
+            "X-GitHub-Api-Version": "2026-08-01",
             "Openai-Intent": "conversation-edits",
             "x-initiator": "agent" if is_agent_turn else "user"}
 
 
-_COPILOT_CHAT_ENDPOINTS = {"/chat/completions", "/responses", "/v1/messages"}
-
-
-def _copilot_catalog_item_is_text_model(
-    item: dict[str, Any], *, ignore_picker_flag: bool = False) -> bool:
-    if not str(item.get("id") or "").strip():
-        return False
-    if not ignore_picker_flag and item.get("model_picker_enabled") is False:
-        return False
-    capabilities = item.get("capabilities")
-    if isinstance(capabilities, dict):
-        model_type = str(capabilities.get("type") or "").strip().lower()
-        if model_type and model_type != "chat":
-            return False
-    supported_endpoints = item.get("supported_endpoints")
-    if isinstance(supported_endpoints, list):
-        endpoints = {e for endpoint in supported_endpoints if (e := str(endpoint).strip())}
-        if endpoints and not endpoints & _COPILOT_CHAT_ENDPOINTS:
-            return False
-    return True
-
-
 def _copilot_text_models(items: list[dict[str, Any]], *, ignore_picker_flag: bool = False) -> list[dict[str, Any]]:
     """Chat-capable catalog rows, deduped by id, in catalog order."""
+    from hermes_cli.models_copilot import _copilot_catalog_item_is_text_model
     models: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for item in items:

@@ -34,6 +34,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |
 | `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
 | `COPILOT_API_BASE_URL` | Override the Copilot API base URL (`copilot` provider) |
+| `HERMES_COPILOT_API_VERSION` | Override the pinned `X-GitHub-Api-Version` date sent on Copilot API requests (default: `2026-08-01`). Escape hatch in case GitHub retires or advances the API version — no release needed; empty value is ignored |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |
 | `Z_AI_API_KEY` | Alias for `GLM_API_KEY` |

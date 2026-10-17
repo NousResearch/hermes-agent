@@ -89,6 +89,7 @@ class RemotePluginContext:
     def __init__(self, runtime: HostRuntime, plugin_key: str, info: dict[str, Any]):
         self._runtime, self._plugin_key = runtime, plugin_key
         self._methods = set(info.get("ctx_methods") or ())
+        self._worker_scope_lock = threading.RLock()
         self._facades: dict[str, RemoteFacade] = {}
         self.manifest = types.SimpleNamespace(**(info.get("manifest") or {}))
         self.plugin_id = info.get("plugin_id") or plugin_key
@@ -120,6 +121,14 @@ class RemotePluginContext:
         if not callable(callback):
             raise TypeError("on_unload() callback must be callable")
         self._runtime.unload_callbacks.setdefault(self._plugin_key, []).append(callback)
+
+    def worker_scope(self, *, timeout: float = 5.0):
+        """Keep thread handles in their execution process, never serialize them over RPC."""
+        if "worker_scope" not in self._methods:
+            raise AttributeError("host does not support worker_scope")
+        from hermes_constants import get_hermes_home
+        from hermes_cli.plugin_workers import context_worker_scope
+        return context_worker_scope(self, get_hermes_home(), timeout=timeout)
 
     def spawn_task(self, coro: Any, *, name: Optional[str] = None) -> Any:
         return self._runtime.spawn(coro, name=name)

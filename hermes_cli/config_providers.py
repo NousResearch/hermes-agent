@@ -7,6 +7,7 @@ so tests patching that module still intercept the call.
 """
 
 import logging
+import os
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -537,6 +538,13 @@ def get_custom_provider_context_length(
 
     Before this helper existed, the lookup was duplicated in ``run_agent.py``'s startup path only; every
     other path (notably ``/model`` switch) fell back to the 128K default. See #15779.
+
+    With no configured pin, the window the endpoint itself advertises on ``/v1/models`` answers
+    (#135603): the startup pin and the gateway re-derivation fed by this resolver fell through to
+    hardcoded catalog defaults even when the endpoint published the real window. Only routes with a
+    matching custom-provider entry are probed, via the shared cached metadata probe — and a
+    configured ``context_length`` key still outranks it, since that key exists to override wrong
+    auto-detection.
     """
     from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
     if not model or not base_url:
@@ -570,7 +578,58 @@ def get_custom_provider_context_length(
         ctx = _positive_int(entry.get("context_length"))
         if ctx is not None:
             return ctx
-    return None
+    return _advertised_context_length(model, base_url, custom_providers, config)
+
+
+def _probe_api_key_for_route(entries: list[Any]) -> str:
+    """Credential for the route's own metadata probe: first entry's literal ``api_key`` or
+    ``key_env`` lookup. ``key_cmd`` is deliberately not run here — a context probe must never
+    execute a user command as a side effect."""
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("api_key")
+        if isinstance(key, str) and key.strip():
+            return key.strip()
+        env_name = entry.get("key_env")
+        if isinstance(env_name, str) and env_name.strip():
+            value = os.environ.get(env_name.strip(), "")
+            if value.strip():
+                return value.strip()
+    return ""
+
+
+def _advertised_context_length(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[list[dict[str, Any]]],
+    config: Optional[dict[str, Any]]) -> Optional[int]:
+    """Window advertised for *model* on the route's own ``/models`` listing, or ``None``.
+
+    Gated on a configured custom-provider entry so unknown hosts are never probed. Reuses
+    ``agent.model_metadata.fetch_endpoint_model_metadata`` (bounded timeouts, per-base-URL
+    memory + disk cache, blackhole detection) instead of adding a second HTTP path; the
+    id matching mirrors that module's ``_resolve_endpoint_context_length`` so both
+    resolvers agree on what the endpoint serves. Any failure degrades to ``None`` —
+    callers keep their existing catalog/default behavior.
+    """
+    entries = [entry for entry in _entries_for_route(base_url, custom_providers, config) if isinstance(entry, dict)]
+    if not entries:
+        return None
+    try:
+        from agent.model_metadata import fetch_endpoint_model_metadata
+        metadata = fetch_endpoint_model_metadata(base_url, api_key=_probe_api_key_for_route(entries))
+    except Exception:
+        return None
+    if not isinstance(metadata, dict) or not metadata:
+        return None
+    matched = metadata.get(model)
+    if not matched and len(metadata) == 1:
+        matched = next(iter(metadata.values()))
+    elif not matched and model:
+        matched = next((entry for key, entry in metadata.items() if model in key or key in model), None)
+    ctx = matched.get("context_length") if isinstance(matched, dict) else None
+    return ctx if isinstance(ctx, int) and ctx > 0 else None
 
 
 def get_custom_provider_model_capability(

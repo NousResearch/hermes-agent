@@ -413,7 +413,10 @@ mcp_servers:
       client_metadata_url: "https://example.com/my-cimd.json"  # self-hosted document
       cimd: false                                              # force DCR
       user_agent: "My-MCP-Client/1.0"                          # token-request User-Agent
+      trust_prm_resource: true                                 # accept a PRM whose resource is not this URL
 ```
+
+`trust_prm_resource` (default `false`) is for multi-tenant servers that serve each tenant from a tenant-specific URL (`https://<tenant>.example/mcp`) but publish protected-resource metadata naming a canonical application resource (`https://app.example/mcp`). Such a server is otherwise unreachable: Hermes refuses the metadata because its `resource` is not the configured URL, while the authorization server rejects the canonical URL as the RFC 8707 `resource` parameter (`invalid_target`) and demands the tenant one. With the flag, Hermes accepts the discovered metadata and its authorization-server list, and keeps sending the *configured* server URL as the `resource` parameter — the token audience does not follow the advertised canonical resource. Only enable it on servers you trust: it waives the check that the published metadata actually describes the URL you configured.
 
 `client_metadata_url` must be an HTTPS URL with a path (no bare origin, no fragment, no userinfo, no `.`/`..` segments) that returns `200` and `Content-Type: application/json` with **no redirect** — authorization servers are forbidden from following redirects when fetching it. Hermes still pins its callback to the same `27890`–`27894` range, so a self-hosted document must declare all ten loopback URIs (`http://127.0.0.1:<port>/callback` and `http://localhost:<port>/callback` for each port), and its `client_id` must be its own URL.
 

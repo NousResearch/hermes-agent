@@ -1711,28 +1711,28 @@ DEFAULT_CONFIG = {
     # Plugin system. `enabled`/`disabled` lists are written by `hermes plugins enable|disable` and
     # deliberately omitted here so an empty default never clobbers a user allow-list.
     "plugins": {
+        # Install/update-time security scan of the fetched plugin tree (safe → proceed, caution →
+        # confirm, dangerous → blocked); false skips it — only for sources you already trust.
+        "scan_on_install": True,
         # Deadline (seconds) for one plugin Git clone, fetch or checkout. Slow repositories may
         # need more time; each network operation is capped at one hour.
         "clone_timeout_seconds": 300,
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
         # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.
         "hook_callback_timeout": 30,
-        # Deadline (seconds) for one plugin's import + register() at load. A plugin that overruns it is
-        # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
-        # abandoned. 0 = no deadline (load inline). Max 600.
+        # Deadline (seconds) for one plugin's import + register() at load; an overrunning plugin is
+        # skipped as "load timed out" (0 = no deadline, load inline). Max 600.
         "load_timeout_seconds": 10,
         # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
-        # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
-        # scan-gated by that same pipeline).
+        # explicit: `hermes plugins update <name>`, or auto_apply below (scan-gated either way).
         "auto_update_check_hours": 24,
         # Opt-in unattended apply for the cadence check. Git-row plugins ONLY; every apply runs the
         # same security scan / consent pipeline as the manual update command.
         "auto_apply": False,
         # Where third-party Python plugins run. in_process: imported into Hermes (default).
-        # host: one plugin-host process per profile runs them and they reach Hermes only through
-        # ctx (a crashing or hanging plugin takes down its host, which restarts; Hermes keeps
-        # running). Bundled plugins stay in-process; `hermes plugins validate` says whether a
-        # plugin can run in the host.
+        # host: one plugin-host process per profile; plugins reach Hermes only through ctx, and a
+        # crashing or hanging plugin takes down its host (which restarts), not Hermes. Bundled
+        # plugins stay in-process; `hermes plugins validate` checks host eligibility.
         "isolation": "in_process",
         "host": {
             # argv prefix the plugin host runs under, e.g. a sandbox runner. [] = plain subprocess.

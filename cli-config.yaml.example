@@ -61,6 +61,10 @@ attachments:
 # Plugin Installation
 # =============================================================================
 plugins:
+  # Install/update-time security scan of the fetched plugin tree: safe verdicts proceed,
+  # caution asks, dangerous blocks. Default: true. Set to false only for sources you
+  # already trust.
+  # scan_on_install: true
   # Deadline for each Git clone, fetch or checkout during plugin install. Default: 300
   # seconds. Subdirectory installs download only that folder.
   # Raise this for large repositories or slow connections. Maximum: 3600.

@@ -28,6 +28,7 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
 1. **`description` ≤ 60 chars, one sentence, ends with a period.** Long descriptions bloat listings
    and dilute attention when many skills load. State the capability, not the implementation; no
    marketing words ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name.
+   Name the operation that invokes the skill — a mention of the topic is not an invocation.
    Check: `len(re.search(r'^description: (.*)$', text, re.M).group(1)) <= 60`.
 2. **Prose references native Hermes tools or the MCP servers the skill expects, in backticks**
    (`terminal`, `web_extract`, `read_file`, `patch`, `search_files`, `vision_analyze`,

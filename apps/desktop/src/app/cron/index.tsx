@@ -635,7 +635,14 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         refreshError,
         stale
       } = await mutateAndRefreshCronJobs(profile, () =>
-        updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
+        updateCronJob(
+          editor.job.id,
+          cronEditorUpdates(values, {
+            initialModel: editor.job.model,
+            initialProvider: editor.job.provider,
+            scriptOnlyJob
+          })
+        )
       )
 
       if (stale || !updated) {

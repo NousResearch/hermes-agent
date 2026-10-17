@@ -166,9 +166,7 @@ def _socket_path(home: Path) -> Path:
     # process-local temporary-root preference.
     if target.name != "control.sock" or target.parent.name != f"hermes-gw-{_home_hash(home)}":
         raise DiscoveryError("invalid_control_pointer")
-    directory = _private_node(target.parent, kind="directory")
-    if directory.st_mode & 0o077:
-        raise _open_mode(target.parent, stat.S_IMODE(directory.st_mode), 0o700)
+    _private_node(target.parent, kind="directory")
     _private_node(target, kind="socket")
     return target
 

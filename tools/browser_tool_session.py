@@ -188,6 +188,13 @@ def _agent_browser_command_env(socket_dir: str) -> dict[str, str]:
     if executable:
         env["AGENT_BROWSER_EXECUTABLE_PATH"] = executable
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
+    if "AGENT_BROWSER_PROFILE" not in env:
+        # Host installs never pinned a user-data-dir, so agent-browser fell back to the human's
+        # everyday Chrome profile (#132755). The dock and sandbox paths already pin theirs;
+        # ``profile_dir()`` keeps a user-set AGENT_BROWSER_PROFILE authoritative.
+        from tools.bot_desktop.browser import profile_dir
+
+        env["AGENT_BROWSER_PROFILE"] = str(profile_dir())
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
         env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_daemon_idle_timeout_seconds() * 1000)
     return env

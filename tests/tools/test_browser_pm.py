@@ -193,6 +193,27 @@ def test_external_chromium_override_survives_pm_composition(browser_store, monke
     assert session._agent_browser_command_env(str(tmp_path))["AGENT_BROWSER_EXECUTABLE_PATH"] == str(override)
 
 
+def test_host_command_env_pins_isolated_profile_dir(
+    browser_store, monkeypatch, tmp_path
+):
+    """Regression for #132755: the host (non-sandbox) path never set AGENT_BROWSER_PROFILE, so
+    agent-browser fell back to the human's everyday Chrome profile instead of this profile's
+    isolated jar — the dock (bot_desktop/browser.py) and sandbox paths already pinned theirs."""
+    monkeypatch.delenv("AGENT_BROWSER_PROFILE", raising=False)
+    env = session._agent_browser_command_env(str(tmp_path / "session"))
+    assert env["AGENT_BROWSER_PROFILE"] == str(
+        Path(os.environ["HERMES_HOME"]) / "bot-desktop" / "browser-profile"
+    )
+
+
+def test_host_command_env_keeps_user_pinned_profile(
+    browser_store, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("AGENT_BROWSER_PROFILE", str(tmp_path / "mine"))
+    env = session._agent_browser_command_env(str(tmp_path / "session"))
+    assert env["AGENT_BROWSER_PROFILE"] == str(tmp_path / "mine")
+
+
 def test_restricted_path_discovers_external_browser_without_execution(browser_store, monkeypatch, tmp_path):
     _, store, _ = browser_store
     external_bin = tmp_path / "external-homebrew" / "bin"

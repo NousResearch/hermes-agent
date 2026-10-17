@@ -161,15 +161,14 @@ import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
+  EnteredMainSessionButton,
   excludeProjectSessions,
   orderProjectsByIds,
-  overlayLiveLanes,
   overlayLivePreviews,
   PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
-  reconcileEnteredProjectSessions,
   sessionBucketId,
   sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
@@ -177,7 +176,6 @@ import {
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
-  useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import {
@@ -190,7 +188,7 @@ import {
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
-import { useEnteredProjectSessions } from './use-entered-project-sessions'
+import { useEnteredProjectView } from './use-entered-project-view'
 import { useServerSessionSearch } from './use-server-session-search'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
@@ -1042,80 +1040,32 @@ export function ChatSidebar({
   // Grouped, single-profile view is a project switcher: ALL_PROJECTS shows the
   // overview (a list you click into); a concrete scope means you've "entered" a
   // project, so the Sessions list shows ONLY that project's worktrees/sessions.
-  const projectsActive = Boolean(agentProjectTree?.length)
-
-  // The overview node for the entered project (structure + counts, empty lanes).
-  const overviewEnteredProject =
-    projectsActive && projectScope !== ALL_PROJECTS
-      ? agentProjectTree?.find(node => node.id === projectScope)
-      : undefined
-
-  const inProject = Boolean(overviewEnteredProject)
-  const enteredProjectId = overviewEnteredProject?.id
-
-  // Entering a project lazily hydrates its full lanes (repo -> lane -> sessions)
-  // from the backend — same grouping/ids as the overview, just with rows.
+  // The drill-in state (lazy hydration, overview fallback, live overlay, and
+  // the visual git-worktree map) lives in its topical sibling hook.
   const {
-    project: enteredProjectTree,
-    failed: projectLoadFailed,
-    loading: projectLoading,
-    retry: retryProject
-  } = useEnteredProjectSessions(enteredProjectId, gatewayReady, projectTree, `${activeConnectionId}:${profileScope}`)
-
-  // Prefer the hydrated tree; fall back to the overview node (empty lanes) while
-  // the drill-in fetch is in flight, so the header/structure render immediately.
-  const enteredProject = useMemo<SidebarProjectTree | undefined>(() => {
-    if (!overviewEnteredProject) {
-      return undefined
-    }
-
-    const hydrated =
-      enteredProjectTree && enteredProjectTree.id === overviewEnteredProject.id
-        ? enteredProjectTree
-        : overviewEnteredProject
-
-    // The live-session overlay (creates/evictions) is applied per-repo in
-    // RepoFlatSection, AFTER the visual git-worktree lanes are merged in (so
-    // out-of-tree worktrees can be placed). Here we just order the snapshot and
-    // drop pinned rows — the hydrated lanes come straight from the backend, so
-    // they haven't been through projectModel's filter.
-    // The label comes from the overview node either way — that's the model's
-    // presentation copy (Home is translated there), not the raw payload's.
-    return excludeProjectSessions(
-      { ...hydrated, label: overviewEnteredProject.label, repos: orderRepos(hydrated.repos) },
-      isHiddenFromProjects
-    )
-  }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
-
-  const enteredProjectOverlaySessions = useMemo(
-    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
-    [agentSessions, overviewEnteredProject?.previewSessions]
-  )
-
-  // Overlay live `$sessions` onto the entered project so a just-created session
-  // (which the backend snapshot hasn't folded in yet) counts as content and
-  // renders immediately. Also carry over the overview's current preview rows:
-  // its project tree and the separately hydrated drill-in can resolve at
-  // different times, but a row visible in the overview must not disappear on
-  // entry. The backend seeds each project folder as an (empty) repo, so the
-  // overlay always has a lane to place a missing in-project session into.
-  const enteredProjectContent = useMemo(
-    () =>
-      enteredProject
-        ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners)
-        : undefined,
-    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners]
-  )
-
-  const scopedRepoPaths = useMemo(
-    () =>
-      enteredProject ? enteredProject.repos.map(repo => repo.path).filter((path): path is string => Boolean(path)) : [],
-    [enteredProject]
-  )
-
-  // git worktree list is a VISUAL-only enhancer (empty lanes); never membership.
-  const inEnteredProject = Boolean(enteredProject && !showAllProfiles)
-  const [scopedRepoWorktrees] = useRepoWorktreeMap(scopedRepoPaths, inEnteredProject)
+    inProject,
+    projectsActive,
+    enteredProjectId,
+    enteredProject,
+    enteredProjectContent,
+    enteredProjectOverlaySessions,
+    projectLoadFailed,
+    projectLoading,
+    retryProject,
+    scopedRepoWorktrees
+  } = useEnteredProjectView({
+    agentProjectTree,
+    projectScope,
+    agentSessions,
+    removedSessionIds,
+    projectOwners,
+    orderRepos,
+    isHiddenFromProjects,
+    showAllProfiles,
+    gatewayReady,
+    projectTree,
+    scopeKey: `${activeConnectionId}:${profileScope}`
+  })
 
   // Re-probe worktree lanes on out-of-band git changes the renderer can't see.
   // A turn can `git worktree add/remove` in the terminal (e.g. you ask Hermes to
@@ -1131,7 +1081,7 @@ export function ChatSidebar({
   // markup. The rows subscribe to their own status, so nothing above them needs
   // to re-render for one of them to change color.
   useEffect(() => {
-    if (!inEnteredProject) {
+    if (!inProject) {
       return
     }
 
@@ -1147,10 +1097,10 @@ export function ChatSidebar({
         refreshWorktrees()
       }
     })
-  }, [inEnteredProject])
+  }, [inProject])
 
   useEffect(() => {
-    if (!inEnteredProject) {
+    if (!inProject) {
       return
     }
 
@@ -1158,7 +1108,7 @@ export function ChatSidebar({
     window.addEventListener('focus', onFocus)
 
     return () => window.removeEventListener('focus', onFocus)
-  }, [inEnteredProject])
+  }, [inProject])
 
   const lastProjectCwdSyncRef = useRef<null | string>(null)
 
@@ -1877,6 +1827,11 @@ export function ChatSidebar({
                     )}
                     {inProject && enteredProject ? (
                       <div className="group/workspace flex shrink-0 items-center gap-0.5">
+                        <EnteredMainSessionButton
+                          onNewSession={onNewSessionInWorkspace}
+                          project={enteredProjectContent ?? enteredProject}
+                          repoWorktrees={scopedRepoWorktrees}
+                        />
                         {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
                         {/* Home has no folder and no record to rename, theme, or delete. */}
                         {!enteredProject.isNoProject && (

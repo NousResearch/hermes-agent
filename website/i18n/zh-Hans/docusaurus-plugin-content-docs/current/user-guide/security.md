@@ -512,14 +512,14 @@ SSRF 防护对面向互联网的使用始终有效，DNS 失败被视为阻止�
 
 #### 有意允许私有 URL
 
-某些场景确实需要访问私有/内部 URL——将 `home.arpa` 解析到 RFC 1918 空间的家庭网络、仅限局域网的 Ollama/llama.cpp 端点、内部 wiki、云元数据调试等。对于这些情况，提供了一个全局选项：
+某些场景确实需要访问私有/内部 URL——将 `home.arpa` 解析到 RFC 1918 空间的家庭网络、仅限局域网的 Ollama/llama.cpp 端点、内部 wiki 等。对于这些情况，提供了一个全局选项：
 
 ```yaml
 security:
   allow_private_urls: true   # 默认：false
 ```
 
-开启后，Web 工具、浏览器、视觉 URL 获取和 gateway 媒体下载不再拒绝 RFC 1918 / 回环 / 链路本地 / CGNAT / 云元数据目标。**这是一个有意为之的信任边界**——仅在 Agent 针对本地网络执行任意 prompt 注入 URL 属于可接受风险的机器上启用。面向公众的 gateway 应保持关闭。
+开启后，Web 工具、浏览器、视觉 URL 获取和 gateway 媒体下载不再拒绝 RFC 1918 / 回环 / 链路本地 / CGNAT 目标。云元数据端点（`169.254.169.254`、`metadata.google.internal` 等）即使开启此项也仍被阻止。**这是一个有意为之的信任边界**——仅在 Agent 针对本地网络执行任意 prompt 注入 URL 属于可接受风险的机器上启用。面向公众的 gateway 应保持关闭。
 
 主机子字符串防护（即使底层 IP 是公共的，也能阻止 Unicode 同形字域名欺骗）无论此设置如何均保持开启。
 

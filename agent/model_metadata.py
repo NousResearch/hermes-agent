@@ -13,13 +13,13 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import hermes_yaml as yaml
 
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
-from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_llamacpp import _apply_llamacpp_props, _llamaswap_context, llamacpp_context
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -977,38 +977,6 @@ def _lmstudio_native_models(normalized: str, headers: dict[str, str]) -> dict[st
     return cache
 
 
-def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: str, headers: dict[str, str], verify) -> None:
-    """Overwrite ``context_length`` with llama.cpp's allocated ``n_ctx`` from /props (``/v1/props``, then
-    ``/props`` for older builds). In router mode the bare endpoint 400s, so each LOADED child is read
-    via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
-    base = request_candidate.rstrip("/").replace("/v1", "")
-    def _props(params=None):
-        resp = model_metadata_http.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
-        if resp.is_error:
-            resp = model_metadata_http.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
-        return resp
-    def _n_ctx(props: dict[str, Any]) -> Any:
-        return (props.get("default_generation_settings") or {}).get("n_ctx")
-    props_resp = _props()
-    if not props_resp.is_error:
-        props = props_resp.json()
-        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
-        if n_ctx and model_alias and model_alias in cache:
-            cache[model_alias]["context_length"] = n_ctx
-        return
-    native = model_metadata_http.get(base + "/models", headers=headers, timeout=5, verify=verify)
-    if native.is_error:
-        return
-    for child in (native.json() or {}).get("data", [])[:16]:
-        child_id = child.get("id") if isinstance(child, dict) else None
-        if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
-            continue
-        pr = _props({"model": child_id, "autoload": "false"})  # it may have unloaded since /models
-        child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
-        if child_ctx:
-            cache[child_id]["context_length"] = child_ctx
-
-
 def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
     from agent.credential_persistence import fingerprint_secret_value
     # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
@@ -1569,41 +1537,6 @@ def _lmstudio_context(client, lmstudio_url: str, model: str) -> Optional[int]:
         if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
             return next((ctx for ctx in (_positive_int(inst.get("config", {}).get("context_length")) for inst in m.get("loaded_instances", [])) if ctx is not None), None)
     return None
-
-
-def _props_reported_n_ctx(payload: Any) -> Optional[int]:
-    """The runtime ``n_ctx`` from a llama.cpp ``/props`` payload: ``default_generation_settings.n_ctx`` is the
-    context the server actually allocated, authoritative over ``n_ctx_train`` and over /v1/models metadata."""
-    if not isinstance(payload, dict):
-        return None
-    gen_settings = payload.get("default_generation_settings")
-    if not isinstance(gen_settings, dict):
-        return None
-    return _coerce_reasonable_int(gen_settings.get("n_ctx"))
-
-
-def _llamaswap_context(client, server_url: str, model: str) -> Optional[int]:
-    """llama-swap /props per model, resident-gated. Any model-scoped route STARTS a non-resident model, and a
-    metadata probe must never load a model: consult /running first and query /props only for resident ids.
-    A non-resident model yields None; callers keep the cached or default value until a real request starts it."""
-    resp = client.get(f"{server_url}/running")
-    if resp.status_code != 200:
-        return None
-    try:
-        entries = resp.json().get("running") or []
-    except (ValueError, AttributeError):  # not JSON, or not an object
-        entries = []
-    resident = {str(entry.get("model")) for entry in entries if isinstance(entry, dict) and entry.get("model")}
-    if model not in resident:
-        return None
-    resp = client.get(f"{server_url}/props?model={quote(model, safe='')}")
-    if resp.status_code != 200:
-        return None
-    try:
-        payload = resp.json()
-    except ValueError:
-        return None
-    return _props_reported_n_ctx(payload)
 
 
 def _openai_models_list_context(client, server_url: str, model: str) -> Optional[int]:

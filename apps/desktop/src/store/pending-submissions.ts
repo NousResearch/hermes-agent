@@ -274,7 +274,9 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
         ...previous,
         id: raw.admission_id,
         text: raw.user ?? previous?.text ?? '',
-        status: raw.status,
+        // A steer in transfer reads `started` but can still go back to its queue place: it never
+        // raises the admission's rank, so the owner's later `queued` listing repaints its card.
+        status: raw.steering === true ? (previous?.status ?? 'queued') : raw.status,
         ...(fence && !predates(fence, previous?.seen) ? { seen: fence } : {})
       }
     }

@@ -9137,6 +9137,18 @@
             ],
             "default": null,
             "title": "Controls"
+          },
+          "steering": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Steering"
           }
         },
         "required": [
@@ -47263,7 +47275,7 @@
     },
     {
       "name": "prompt.steer_queued",
-      "summary": "Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn and never runs on its own; it settles terminal 'steered' when the turn completes, else 'interrupted'. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found.",
+      "summary": "Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found.",
       "params": [
         {
           "name": "params",

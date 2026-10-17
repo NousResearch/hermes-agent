@@ -261,6 +261,7 @@ class SessionAuthority:
         self.authorize(actor, ref, 'session:read')
         live = self.sessions[ref.session_id]
         from gateway.session_local_recovery import local_history
+        from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
@@ -278,7 +279,7 @@ class SessionAuthority:
             epoch, sequence = live.event_stream.watermark()
             snapshot = SubscriptionSnapshot(subscription, handle, epoch,
                                         sequence, tuple(local_history(self, ref)),
-                                        tuple(self._pending_receipt(r) for r in self._pending_rows(ref)), prompts)
+                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
         from gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach
@@ -333,13 +334,14 @@ class SessionAuthority:
             text = payload.get('native_text_v1', {}).get('event', {}).get('text', '')
         from gateway.session_queued_controls import queued_controls
         return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
-                                controls=queued_controls(self, row))
+                                controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
 
     def _publish_pending(self, ref):
         live = self.sessions[ref.session_id]
+        from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
             handle = self._handle(ref)
-            pending = [asdict(self._pending_receipt(row)) for row in self._pending_rows(ref)]
+            pending = [asdict(self._pending_receipt(row)) for row in pending_rows(self, ref)]
             # Turns bump runtime_revision without any session.updated event, so
             # this is the only place a viewer learns the CAS revision a later
             # prepared mutation must present.

@@ -130,6 +130,33 @@ async def test_a_steer_settles_steered_only_when_a_drain_of_the_turn_took_it(tmp
 
 
 @pytest.mark.asyncio
+async def test_a_transfer_stays_listed_as_steering_until_its_claim_settles(tmp_path, monkeypatch):
+    """Reviewer repro (returned prompt stays hidden): a pending snapshot taken while a steer is in
+    transfer still lists it, marked ``steering``, so no client retires an admission that may go back to
+    the queue. Once it settles ``steered`` it leaves the pending set."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    turn, frames = Turn(monkeypatch), []
+    authority.sessions['s'].event_stream.observers.add(frames.append)
+
+    def listed(admission_id):
+        pending = [f['params']['payload']['pending'] for f in frames if f['params']['type'] == 'session.info'][-1]
+        return [(row['status'], row.get('steering'), row['controls']) for row in pending
+                if row['admission_id'] == admission_id]
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(turn.claimed.wait(), 30)
+        queued = await _submit(authority, 'follow-up')
+        reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
+        assert 'error' not in reply, reply
+        assert listed(queued.admission_id) == [('started', True, [])]
+        turn.release.set()
+        await _drained(authority)
+    assert listed(queued.admission_id) == []
+    assert _ledger(db)[-1] == ('follow-up', 'terminal', 'steered')
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('retry', [False, True])
 async def test_a_steer_write_that_committed_but_reported_failure_is_still_settled_by_its_claim(
         tmp_path, monkeypatch, retry):

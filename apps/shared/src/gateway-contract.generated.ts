@@ -4942,6 +4942,7 @@ export interface CanonicalPendingAdmission {
   input_id: string
   text: string
   controls?: ('steer' | 'replace')[] | null
+  steering?: boolean | null
 }
 export interface CanonicalPendingPrompt {
   kind: 'approval' | 'clarify'
@@ -6743,7 +6744,7 @@ export interface CanonicalRpcMethods {
   'prompt.replace_queued': { params: CanonicalReplaceQueuedParams; result: AdmissionStatus }
   /** Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input. */
   'prompt.resolve_unknown': { params: PromptResolveUnknownParams; result: AdmissionStatus }
-  /** Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn and never runs on its own; it settles terminal 'steered' when the turn completes, else 'interrupted'. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found. */
+  /** Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found. */
   'prompt.steer_queued': { params: CanonicalSteerQueuedParams; result: AdmissionStatus }
   'prompt.submit': { params: CanonicalSubmitParams; result: AdmissionStatus }
   /** The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer. */

@@ -46,6 +46,24 @@ it('carries the queued-row controls the owner lists onto the card, and none when
   expect(Object.values(readPendingSubmissions('chat')).some(entry => 'controls' in entry)).toBe(false)
 })
 
+it('a steer in transfer hides its card without retiring it, so a return to the queue repaints it (RT-35)', () => {
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'queued', user: 'steer me' }])
+  // Handed to the running turn: listed `started` and `steering` until that turn settles it.
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'started', steering: true, user: 'steer me' }])
+  expect(getQueuedPrompts('chat')).toEqual([])
+
+  // The text never reached the turn: the owner puts the same admission back in its queue place.
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'queued', user: 'steer me' }])
+  expect(getQueuedPrompts('chat').map(({ id, serverStatus }) => ({ id, serverStatus }))).toEqual([
+    { id: 'moving', serverStatus: 'queued' }
+  ])
+
+  // An ordinary claim still only moves forward: a replayed `queued` never repaints a started row.
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'started', user: 'steer me' }])
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'queued', user: 'steer me' }])
+  expect(getQueuedPrompts('chat')).toEqual([])
+})
+
 it('reconciles server queue by identity without replaying or duplicating local entries', () => {
   enqueueQueuedPrompt('chat', { id: 'one', text: 'same', attachments: [] })
   enqueueQueuedPrompt('chat', { id: 'local', text: 'same', attachments: [] })

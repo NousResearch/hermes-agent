@@ -6,6 +6,8 @@ picker consume — whenever models are staged, without any credential."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 
@@ -88,3 +90,50 @@ def test_explicit_only_filter_keeps_local_row_on_any_profile(hermes_home):
     kept = _filter_explicit_provider_rows([row], ctx)
     assert kept, "explicit-only filter dropped the local-runtime row"
     assert kept[0]["slug"] == "llamacpp"
+
+
+@pytest.mark.parametrize("entry", ["llamacpp", "LLAMACPP", "llama.cpp", "llama-cpp"])
+def test_excluded_providers_hides_the_local_row(hermes_home, entry):
+    """``model_catalog.excluded_providers`` must hide the injected Local row.
+
+    The row is appended after ``list_authenticated_providers`` has already applied the
+    exclusion, so ``_local_runtime_row`` has to consult the same config itself — otherwise a
+    machine-scoped staged GGUF forces a row into every profile's picker that the exclusion
+    cannot remove (the documented contract is "every /model picker surface", matched
+    case-insensitively against the provider id and its aliases)."""
+    from hermes_cli.inventory import _local_runtime_row, load_picker_context
+
+    _stage(hermes_home, "Qwen3-4B-Instruct-2507-UD-Q8_K_XL")
+    ctx = replace(load_picker_context(), excluded_providers=[entry])
+    assert _local_runtime_row(ctx) is None
+
+
+def test_excluded_providers_hides_the_local_row_from_the_payload(hermes_home):
+    """Through the REAL payload builder — the shape the desktop picker eats."""
+    from hermes_cli.inventory import build_models_payload, load_picker_context
+
+    _stage(hermes_home, "Local-Model-X")
+    ctx = replace(load_picker_context(), excluded_providers=["llamacpp"])
+    payload = build_models_payload(
+        ctx, probe_custom_providers=False, probe_current_custom_provider=False,
+    )
+    assert "llamacpp" not in [p["slug"] for p in payload["providers"]]
+
+
+def test_excluding_another_provider_keeps_the_local_row(hermes_home):
+    """Only the excluded provider disappears — the Local row is not collateral damage."""
+    from hermes_cli.inventory import _local_runtime_row, load_picker_context
+
+    _stage(hermes_home, "Local-Model-X")
+    ctx = replace(load_picker_context(), excluded_providers=["openrouter"])
+    row = _local_runtime_row(ctx)
+    assert row is not None and row["slug"] == "llamacpp"
+
+
+def test_empty_excluded_providers_keeps_the_local_row(hermes_home):
+    from hermes_cli.inventory import _local_runtime_row, load_picker_context
+
+    _stage(hermes_home, "Local-Model-X")
+    ctx = replace(load_picker_context(), excluded_providers=[])
+    assert _local_runtime_row(ctx) is not None
+

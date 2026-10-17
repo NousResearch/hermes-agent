@@ -45,6 +45,10 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typed only
 logger = logging.getLogger(__name__)
 
 
+class TeardownError(RuntimeError):
+    """A strict registry sweep could not prove every selected handle closed."""
+
+
 class _TeardownBarrier:
     """Accounting for every admitted-but-unfinished physical close of one path.
 
@@ -324,9 +328,16 @@ def _teardown_swept_generations(
     generations: list[_Generation],
     teardown_barriers: dict[Path, _TeardownBarrier],
     active_teardowns: list[_TeardownBarrier],
+    *,
+    strict: bool = False,
 ) -> int:
-    """Close *generations* outside the registry lock; wait for already-admitted teardowns."""
+    """Close *generations* outside the registry lock; wait for already-admitted teardowns.
+
+    Normal cleanup preserves the historical best-effort contract.  A destructive caller can
+    request ``strict`` to finish the whole sweep and then refuse to continue if any close failed.
+    """
     by_path: dict[Path, list[_Generation]] = {}
+    failures: list[tuple[Path, Exception]] = []
     for generation in generations:
         by_path.setdefault(generation.path, []).append(generation)
     for path, path_generations in by_path.items():
@@ -335,11 +346,21 @@ def _teardown_swept_generations(
         try:
             with lifecycle_lock:
                 for generation in path_generations:
-                    _teardown(generation.db)
+                    if not strict:
+                        _teardown(generation.db)
+                        continue
+                    try:
+                        generation.db._shared_registry_owned = False
+                        generation.db.close()
+                    except Exception as exc:
+                        failures.append((path, exc))
         finally:
             _finish_teardown(path, teardown_barriers[path])
     for barrier in active_teardowns:
         barrier.event.wait()
+    if failures:
+        details = "; ".join(f"{path}: {exc}" for path, exc in failures)
+        raise TeardownError(f"Could not prove SessionDB teardown: {details}") from failures[0][1]
     return len(generations)
 
 
@@ -359,7 +380,7 @@ def close_all() -> int:
     return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
-def close_all_under(directory: str | Path) -> int:
+def close_all_under(directory: str | Path, *, strict: bool = False) -> int:
     """Force-close every shared SessionDB whose file lives under *directory*; returns the count.
 
     Profile delete rmtree (and a same-name recreate) fails while this process still holds
@@ -395,7 +416,7 @@ def close_all_under(directory: str | Path) -> int:
             if _generations.get(generation.path) is generation:
                 _generations.pop(generation.path, None)
             _retired.pop(id(generation.db), None)
-    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns, strict=strict)
 
 
 def other_generations_for_path(

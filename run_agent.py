@@ -922,18 +922,38 @@ class AIAgent(
         except Exception:
             pass
 
-    def release_clients(self) -> None:
+    def release_clients(self, *, strict: bool = False) -> None:
         """Release LLM clients and child agents WITHOUT tearing down session tool state (gateway cache
         eviction: the session may resume on the same task_id, so processes, sandbox, browser, computer-use and
-        memory provider are kept). Idempotent; distinct from ``close()``."""
-        self._close_active_children(soft=True)
+        memory provider are kept). Idempotent; distinct from ``close()``.
+
+        ``strict`` retains the best-effort cleanup order but raises after every step has run if
+        a client teardown could not be proven.  Callers which destroy or replace their owner can
+        therefore refuse that operation instead of silently treating cleanup as successful.
+        """
+        failures: list[tuple[str, Exception]] = []
+
+        def release(label: str, operation: Callable[[], None]) -> None:
+            try:
+                operation()
+            except Exception as exc:
+                if strict:
+                    failures.append((label, exc))
+                else:
+                    raise
+
+        release("child agents", lambda: self._close_active_children(soft=True))
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
-        _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
-        self._close_request_clients("cache_evict")
+        release("shared client", lambda: self._drop_shared_client(
+            lambda c: self._retire_shared_openai_client(c, reason="cache_evict")))
+        release("request clients", lambda: self._close_request_clients("cache_evict"))
         # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
         # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
-        _quietly(self._close_codex_session)
+        release("Codex session", self._close_codex_session)
+        if failures:
+            detail = "; ".join(f"{label}: {exc}" for label, exc in failures)
+            raise RuntimeError(f"Could not prove client teardown: {detail}") from failures[0][1]
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never

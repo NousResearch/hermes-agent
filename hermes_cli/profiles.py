@@ -1815,11 +1815,10 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         _released = import_provider_module("holographic", "store").MemoryStore.release_all_under(profile_dir)
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
-    with contextlib.suppress(Exception):
-        from hermes_state_registry import close_all_under as _close_session_dbs_under
-        _closed = _close_session_dbs_under(profile_dir)
-        if _closed:
-            print(f"✓ Released {_closed} session database connection(s) held by this process")
+    from hermes_state_registry import close_all_under as _close_session_dbs_under
+    _closed = _close_session_dbs_under(profile_dir, strict=True)
+    if _closed:
+        print(f"✓ Released {_closed} session database connection(s) held by this process")
 
     # The Desktop serve process routes its agent/errors logs for every profile through one
     # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their

@@ -562,8 +562,15 @@ def _is_cron_silence_response(text: str) -> bool:
 # Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
 # per-profile config key — a single process-global pool is sized by whichever profile ticked first
 # and then imposes that limit on all the others.
-_parallel_pools: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
-_parallel_pool_max_workers: dict[str, Optional[int]] = {}
+#
+# Within a home there is one pool per LANE, because the job's MODE — not the profile's limit —
+# decides whether it consumes the model. A ``no_agent`` job runs its script and returns (0.3 s
+# measured, no AIAgent, no tokens); an agent job can hold its worker for hours on a local model.
+# One shared FIFO worker let a 9 h 40 m agent run delay a 0.3 s script job for 9 h 40 m.
+PARALLEL_LANE_AGENT = "agent"
+PARALLEL_LANE_NO_AGENT = "no-agent"
+_parallel_pools: dict[str, dict[str, concurrent.futures.ThreadPoolExecutor]] = {}
+_parallel_pool_max_workers: dict[str, dict[str, Optional[int]]] = {}
 
 
 def _inflight_key(job_id: str, home: Optional[Path | str] = None) -> tuple:
@@ -1208,22 +1215,33 @@ def _cron_inactivity_seconds() -> float:
         return 600.0
 
 
-def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
-    """Return (or create) the persistent parallel pool for the ACTIVE profile.
+def _get_parallel_pool(
+    max_workers: Optional[int], lane: str = PARALLEL_LANE_AGENT
+) -> concurrent.futures.ThreadPoolExecutor:
+    """Return (or create) the persistent parallel pool for one LANE of the ACTIVE profile.
 
     Pools are per profile home because ``cron.max_parallel_jobs`` is a per-profile config key:
     a single process-global pool is created by whichever profile the multiplexing gateway ticks
     first and then silently imposes that profile's limit on every other profile.
+
+    Pools are ALSO per lane (``PARALLEL_LANE_*``): one worker must not make a job that needs no
+    model wait on a job that may hold its worker for hours. Each lane is sized by the same
+    ``max_workers``, so the config key keeps its meaning per lane; in-flight de-duplication is
+    unaffected because ``_inflight_key`` is per (home, job id), not per pool.
     """
     home = hermes_home_key(_remember_inflight_home(_get_hermes_home()))
-    pool = _parallel_pools.get(home)
-    if pool is None or _parallel_pool_max_workers.get(home) != max_workers:
+    lanes = _parallel_pools.get(home)
+    if lanes is None:
+        lanes = _parallel_pools[home] = {}
+    pool = lanes.get(lane)
+    if pool is None or _parallel_pool_max_workers.get(home, {}).get(lane) != max_workers:
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=False)
+        _prefix = "cron-parallel" if lane == PARALLEL_LANE_AGENT else f"cron-parallel-{lane}"
         pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="cron-parallel")
-        _parallel_pools[home] = pool
-        _parallel_pool_max_workers[home] = max_workers
+            max_workers=max_workers, thread_name_prefix=_prefix)
+        lanes[lane] = pool
+        _parallel_pool_max_workers.setdefault(home, {})[lane] = max_workers
     return pool
 
 
@@ -1236,16 +1254,17 @@ def discard_parallel_pools(home_keys) -> None:
     ticker is never blocked; queued work still drains before the executor dies.
     """
     for key in list(home_keys):
-        pool = _parallel_pools.pop(key, None)
+        lanes = _parallel_pools.pop(key, None)
         _parallel_pool_max_workers.pop(key, None)
-        if pool is not None:
+        for pool in (lanes or {}).values():
             pool.shutdown(wait=False, cancel_futures=False)
 
 
 def _shutdown_parallel_pool() -> None:
     """Shut down every profile's persistent pool on process exit."""
-    for pool in list(_parallel_pools.values()):
-        pool.shutdown(wait=True, cancel_futures=False)
+    for lanes in list(_parallel_pools.values()):
+        for pool in lanes.values():
+            pool.shutdown(wait=True, cancel_futures=False)
     _parallel_pools.clear()
     _parallel_pool_max_workers.clear()
 
@@ -1933,24 +1952,34 @@ def _open_cron_session_db(job: dict):
     return None
 
 
-def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
-    """Log the agent's last activity, hard-interrupt it and raise TimeoutError."""
+def _raise_inactivity_timeout(agent, job_name: str, limit_s: float,
+                              tripped_idle: Optional[float] = None) -> None:
+    """Log the agent's last activity, hard-interrupt it and raise TimeoutError.
+
+    ``tripped_idle`` is the idle sample the watchdog actually crossed *limit_s* on. The activity
+    summary is re-read here for the context fields, so a run that re-stamped between the trip and
+    this raise would otherwise be reported with a figure that cannot explain it (measured
+    2026-09-28 01:32:54: "idle for 1s (limit 600s)" on a run killed by a 903s host sleep).
+    """
     _activity = {}
     if hasattr(agent, "get_activity_summary"):
         with contextlib.suppress(Exception):
             _activity = agent.get_activity_summary()
     _last_desc = _activity.get("last_activity_desc", "unknown")
-    _secs_ago = _activity.get("seconds_since_activity", 0)
+    # None when the run was killed before its first activity stamp: the message must still build.
+    _secs_ago = float(_activity.get("seconds_since_activity") or 0.0)
+    _reported = _secs_ago if tripped_idle is None else float(tripped_idle)
     logger.error(
-        "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
+        "Job '%s' idle for %.0fs (inactivity limit %.0fs, sample the watchdog tripped on; "
+        "activity re-read at raise: %.0fs) "
         "| last_activity=%s | iteration=%s/%s | tool=%s",
-        job_name, _secs_ago, limit_s,
+        job_name, _reported, limit_s, _secs_ago,
         _last_desc, _activity.get("api_call_count", 0), _activity.get("max_iterations", 0),
         _activity.get("current_tool") or "none")
     request_hard_interrupt(agent, "Cron job timed out (inactivity)", tool_reason="cron inactivity watchdog")
     raise TimeoutError(
         f"Cron job '{job_name}' idle for "
-        f"{int(_secs_ago)}s (limit {int(limit_s)}s) "
+        f"{int(_reported)}s (limit {int(limit_s)}s) "
         f"— last activity: {_last_desc}")
 
 
@@ -2006,6 +2035,9 @@ def _run_agent_with_watchdog(
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
+    # The sample the watchdog crossed the limit on (card t_93aa6105), reported instead of a
+    # fresh read of the agent at raise time.
+    _trip_sample: dict = {}
     _watch_stop = threading.Event()
 
     def _idle_seconds() -> float:
@@ -2023,7 +2055,8 @@ def _run_agent_with_watchdog(
             return
         if _inactivity_watchdog_loop(
             get_idle_seconds=_idle_seconds, limit_s=_cron_inactivity_limit, poll_s=_POLL_INTERVAL,
-            stop=_watch_stop, future_done=_cron_future.done, meter=_awake_idle):
+            stop=_watch_stop, future_done=_cron_future.done, meter=_awake_idle,
+            trip_sample=_trip_sample):
             _inactivity_timeout = True
 
     _watch_thread = threading.Thread(
@@ -2062,7 +2095,8 @@ def _run_agent_with_watchdog(
         _cron_pool.shutdown(wait=False, cancel_futures=True)
 
     if _inactivity_timeout:
-        _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit)
+        _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit,
+                                  tripped_idle=_trip_sample.get("idle_s"))
 
     if not isinstance(result, dict):
         raise RuntimeError(

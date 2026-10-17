@@ -28,7 +28,9 @@ export XDG_CONFIG_HOME="$HERMES_BD_CONFIG_HOME"
 export XDG_CACHE_HOME="${HERMES_BD_CACHE_HOME:-$HERMES_BD_CONFIG_HOME/.cache}"
 export XDG_DATA_HOME="${HERMES_BD_DATA_HOME:-$HERMES_BD_CONFIG_HOME/.local-share}"
 export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=XFCE
-export GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb NO_AT_BRIDGE=1 GTK_A11Y=none
+export GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
+# Accessibility stays on (no NO_AT_BRIDGE / GTK_A11Y=none): computer_use reads every app's elements through
+# AT-SPI, and this session's bus starts the a11y bus (at-spi2-core) on first use.
 export LANG="${LANG:-C.UTF-8}"
 # Inheriting a login session's bus/session manager yields "Another session manager is already
 # running" / "Unable to contact settings server".

@@ -21,6 +21,12 @@ from tools.bot_desktop import runtime
 
 DISK_CACHE_BYTES = 256 * 1024 * 1024
 
+# THE Chromium flags for the bot's browser on this screen. The dock's Browser icon (dock_argv) and the agent's
+# headed launch (browser_tool_session) both pass them: whichever starts first owns the window the other is
+# forwarded into. Chromium shows AT-SPI only its frame until renderer accessibility is forced on (it does not
+# count computer_use's driver as an assistive technology), so without the flag no page element has bounds.
+SCREEN_ARGS = ("--force-renderer-accessibility",)
+
 _SYSTEM_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
 
 
@@ -99,7 +105,7 @@ def dock_argv(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = 
     # The profile is persistent by design (logins survive handoffs); its HTTP cache is not worth a
     # gateway's disk: uncapped it grows for months toward a hosted instance's 6 GB.
     return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0", "--no-first-run",
-            "--no-default-browser-check", "--test-type", f"--disk-cache-size={DISK_CACHE_BYTES}",
+            "--no-default-browser-check", "--test-type", f"--disk-cache-size={DISK_CACHE_BYTES}", *SCREEN_ARGS,
             *(CHROMIUM_SANDBOX_BYPASS_ARGS if (_needs_chromium_sandbox_bypass() if sandbox_bypass is None
                                               else sandbox_bypass) else ())]
 

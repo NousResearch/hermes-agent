@@ -64,6 +64,19 @@ def _apply_chromium_sandbox_args(browser_env: dict[str, str]) -> None:
         browser_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)
 
 
+def _apply_bot_desktop_screen_args(browser_env: dict[str, str], session_info: dict[str, Any]) -> None:
+    """A headed Chromium on the Bot Desktop starts with the dock Browser's screen flags, added to whatever
+    AGENT_BROWSER_ARGS already holds. The agent often launches the shared browser before a human clicks the
+    dock icon, and Chromium's singleton then keeps the agent's flags for both."""
+    if not (_cloud._is_headed_mode() and _shares_bot_desktop_browser(session_info)):
+        return
+    from tools.bot_desktop.browser import SCREEN_ARGS
+    args = browser_env.get("AGENT_BROWSER_ARGS", "")
+    missing = [flag for flag in SCREEN_ARGS if flag not in args]
+    if missing:  # agent-browser splits on commas or newlines; keep the separator the value already uses
+        browser_env["AGENT_BROWSER_ARGS"] = ("\n" if "\n" in args else ",").join(([args] if args else []) + missing)
+
+
 def windows_headless_browser_options(browser_env: dict[str, str],
                                      is_windows: Optional[bool] = None) -> dict[str, str]:
     """(#64867) Pin local Chromium headless on Windows.
@@ -766,6 +779,7 @@ def _spawn_and_collect(
                              command)
     else:
         _apply_chromium_sandbox_args(browser_env)
+        _apply_bot_desktop_screen_args(browser_env, session_info)
         # #64867: a local Chromium launch (no --cdp attach) must stay headless on
         # Windows; headed mode is the intentional opt-out (dispatch adds --headed).
         if not session_info.get("cdp_url") and not _cloud._is_headed_mode():

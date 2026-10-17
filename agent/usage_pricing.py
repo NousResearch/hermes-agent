@@ -734,10 +734,11 @@ def normalize_usage(
     # Responses API: output_tokens_details.reasoning_tokens. Chat Completions
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.
     # Anthropic Messages: output_tokens_details.thinking_tokens (the full thinking, not the summary).
-    # Hidden thinking dominates output spend on reasoning models, so read all three.
+    # OpenAI-compatible relays (MiMo/xiaomi #41583, GitHub Copilot) report a top-level
+    # reasoning_tokens instead. Hidden thinking dominates output spend on reasoning models, so read all.
     reasoning_tokens = _first_nonzero(
         u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens"),
-        ("output_tokens_details", "thinking_tokens"),
+        ("output_tokens_details", "thinking_tokens"), ("reasoning_tokens",),
     )
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant

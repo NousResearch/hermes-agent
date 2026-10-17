@@ -1133,6 +1133,23 @@ Built-in decomposition also inherits its root's durable session. Session lineage
 
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
+To stop new tasks from automatically subscribing the current chat, set this in
+the originating profile's `config.yaml`:
+
+```yaml
+kanban:
+  auto_subscribe_on_create: false
+```
+
+This applies to both the `kanban_create` tool and gateway `/kanban create`.
+Task creation still succeeds; the gateway omits the subscription confirmation.
+Existing subscriptions and inherited worker subscriptions remain in place. For
+a passive notification on a particular task, explicitly use
+`/kanban notify-subscribe <task-id> --platform <platform> --chat-id <chat-id> --delivery-mode notify`;
+include `--thread-id <thread-id>` when targeting a thread. Passive `notify`
+delivery does not start an agent turn. An explicit `notify+wake` or `wake`
+subscription continues to request one.
+
 ### Output truncation in messaging
 
 Gateway platforms have practical message-length caps. If `/kanban list`, `/kanban show`, or `/kanban tail` produce more than ~3800 characters of output, the response is truncated with a `… (truncated; use \`hermes kanban …\` in your terminal for full output)` footer. The CLI surface has no such cap.

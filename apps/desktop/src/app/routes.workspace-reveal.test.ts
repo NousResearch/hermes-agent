@@ -1,12 +1,13 @@
 /**
- * A full page (Capabilities/Messaging/Artifacts/a contributed route) renders
- * INSIDE the `workspace` pane, so navigating to one has to front that pane —
- * otherwise a main zone parked on a session tile keeps the tile on screen and
- * the click looks dead until the app restarts (#72602).
+ * A full page (Messaging/Artifacts/a contributed route) renders INSIDE the
+ * `workspace` pane, so navigating to one has to front that pane — otherwise a
+ * main zone parked on a session tile keeps the tile on screen and the click
+ * looks dead until the app restarts (#72602).
  *
  * Two layers, both covered here: `syncWorkspaceRoute` (the router location,
  * every entry point) and `navigateToWorkspacePage` (the re-click, where the
- * location doesn't change).
+ * location doesn't change). Capabilities is an OVERLAY and must stay out of
+ * both — it floats over the chat rather than replacing it.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -96,14 +97,14 @@ describe('classification of targets carrying a query', () => {
 
 describe('syncWorkspaceRoute', () => {
   it('publishes and fronts on a page route', () => {
-    syncWorkspaceRoute(CAPABILITIES_ROUTE)
+    syncWorkspaceRoute(MESSAGING_ROUTE)
 
     expect($workspaceIsPage.get()).toBe(true)
     expect(fronted()).toBe(true)
   })
 
   it('fronts on a page route reached with a query', () => {
-    syncWorkspaceRoute(`${CAPABILITIES_ROUTE}?tab=connectors`)
+    syncWorkspaceRoute(`${ARTIFACTS_ROUTE}?tab=files`)
 
     expect($workspaceIsPage.get()).toBe(true)
     expect(fronted()).toBe(true)
@@ -137,7 +138,11 @@ describe('syncWorkspaceRoute', () => {
     ['a session route', sessionRoute('sess-a')],
     ['the new-chat route', NEW_CHAT_ROUTE],
     ['an overlay', SETTINGS_ROUTE],
-    ['an overlay with a query', `${SETTINGS_ROUTE}?tab=keys`]
+    ['an overlay with a query', `${SETTINGS_ROUTE}?tab=keys`],
+    // Capabilities is an overlay now: reaching it must leave the session tabs
+    // the user is working in untouched.
+    ['the capabilities overlay', CAPABILITIES_ROUTE],
+    ['the capabilities overlay with a query', `${CAPABILITIES_ROUTE}?tab=connectors`]
   ])('leaves the tab alone on %s', (_label, to) => {
     syncWorkspaceRoute(to)
 
@@ -150,19 +155,20 @@ describe('navigateToWorkspacePage', () => {
   it('navigates and fronts, so a re-click on the page you are already on still shows it', () => {
     const navigate = vi.fn()
 
-    navigateToWorkspacePage(navigate, CAPABILITIES_ROUTE)
+    navigateToWorkspacePage(navigate, MESSAGING_ROUTE)
 
-    expect(navigate).toHaveBeenCalledWith(CAPABILITIES_ROUTE, undefined)
+    expect(navigate).toHaveBeenCalledWith(MESSAGING_ROUTE, undefined)
     expect(fronted()).toBe(true)
   })
 
-  it('navigates without fronting for chat and overlay targets', () => {
+  it('navigates without fronting for chat, overlay and capabilities targets', () => {
     const navigate = vi.fn()
 
     navigateToWorkspacePage(navigate, sessionRoute('sess-a'))
     navigateToWorkspacePage(navigate, SETTINGS_ROUTE)
+    navigateToWorkspacePage(navigate, CAPABILITIES_ROUTE)
 
-    expect(navigate).toHaveBeenCalledTimes(2)
+    expect(navigate).toHaveBeenCalledTimes(3)
     expect(revealTreePane).not.toHaveBeenCalled()
   })
 })

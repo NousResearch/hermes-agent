@@ -79,6 +79,9 @@ export const zhHantBoot = {
   },
   promptNotices: {
     legacySendUnconfirmed: '此伺服器無法確認這則訊息先前的傳送，它可能已經執行過。再次傳送前請先查看對話。',
+    mcpReloadDeferred: '此對話正忙：MCP 變更會在目前輪次結束並再次重新載入 MCP 後生效，或在重新開啟對話時生效',
+    mcpReloadNotInChat: server => `此對話未啟用 ${server}`,
+    mcpReloadUnavailable: servers => `未能連線：${servers}`,
     sessionCommands: zhHantSessionCommands
   },
 

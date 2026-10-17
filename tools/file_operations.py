@@ -1111,10 +1111,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         except ValueError:
             total_lines = 0
 
-        # Only the page reaching the file's final line can carry the ``cut`` newline
-        # artifact (see _assemble_read_result); probe the last byte just for that case.
+        # wc -l counts newlines, not lines. Probe the last byte for every
+        # nonempty file — not only when this page looks like it reached EOF —
+        # so a missing final LF still counts on truncated pages (#3907).
+        # _assemble_read_result strips cut's phantom newline only when this
+        # page actually reaches the end.
         file_ends_with_newline: Optional[bool] = None
-        if not total_lines > end_line and read_output.endswith('\n'):
+        if file_size > 0:
             tail_result = self._exec(f"tail -c 1 {self._escape_shell_arg(path)} | wc -l")
             if tail_result.exit_code == 0:
                 file_ends_with_newline = _strip_terminal_fence_leaks(tail_result.stdout).strip() != "0"

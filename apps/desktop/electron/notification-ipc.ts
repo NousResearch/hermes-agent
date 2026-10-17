@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain, Notification } from 'electron'
 
 import { createEventDeduper } from './event-dedupe'
 import { resolveNotificationAction } from './notification-actions'
+import { showNotification } from './notification-delivery'
 import { createLinuxNotifications } from './notification-linux'
 import { createNotificationRegistry } from './notification-registry'
 import type { HermesNotification } from './notification-types'
@@ -35,8 +36,14 @@ export function registerNativeNotifications({
     // Peer renderers share one OS notification for the same event.
     const key = `${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`
 
+    const previous = deliveries.get(key)
+
+    if (previous) {
+      return previous
+    }
+
     if (isDuplicateNotification(key)) {
-      return deliveries.get(key) ?? false
+      return false
     }
 
     const actions = Array.isArray(payload?.actions) ? payload.actions : []
@@ -109,14 +116,19 @@ export function registerNativeNotifications({
     })
     notifications.retain(notification)
 
-    // Peers share the actual outcome, including pending/failed Linux delivery.
-    const delivery = Promise.resolve(notification.show()).then(result => result !== false)
+    // Peers share pending native delivery, even past the short dedupe window.
+    const delivery = showNotification(notification, platform)
     deliveries.set(key, delivery)
-    setTimeout(() => {
-      if (deliveries.get(key) === delivery) {
-        deliveries.delete(key)
-      }
-    }, dedupeIntervalMs).unref()
+
+    const expire = () => {
+      setTimeout(() => {
+        if (deliveries.get(key) === delivery) {
+          deliveries.delete(key)
+        }
+      }, dedupeIntervalMs).unref()
+    }
+
+    void delivery.then(expire, expire)
 
     return delivery
   })

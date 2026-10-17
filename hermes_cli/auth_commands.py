@@ -91,6 +91,15 @@ def _normalize_provider(provider: str) -> str:
             or auth_mod._plugin_aliases().get(normalized) or normalized)
 
 
+def _resolve_remove_provider(provider: str) -> str:
+    """Keep an exact stored pool addressable before resolving provider aliases."""
+    raw_provider = (provider or "").strip()
+    credential_pool = auth_mod._load_auth_store().get("credential_pool")
+    if isinstance(credential_pool, dict) and raw_provider in credential_pool:
+        return raw_provider
+    return _normalize_provider(raw_provider)
+
+
 def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
     """Move a keyed provider's old ``custom:`` pool into its runtime slug."""
     with auth_mod._auth_store_lock():
@@ -566,7 +575,7 @@ def _print_oauth_heal_notices() -> None:
 
 
 def auth_remove_command(args) -> None:
-    provider = _normalize_provider(getattr(args, "provider", ""))
+    provider = _resolve_remove_provider(getattr(args, "provider", ""))
     target = getattr(args, "target", None)
     target = getattr(args, "index", None) if target is None else target
     pool = load_pool(provider)
@@ -796,7 +805,7 @@ def _interactive_auth() -> None:
         handler()
 
 
-def _pick_provider(prompt: str = "Provider") -> str:
+def _pick_provider(prompt: str = "Provider", *, prefer_stored_pool: bool = False) -> str:
     """Prompt for a provider name with auto-complete hints."""
     from providers import unlisted_provider_names
     known = sorted((set(PROVIDER_REGISTRY) - unlisted_provider_names()) | {"openrouter"})
@@ -807,7 +816,7 @@ def _pick_provider(prompt: str = "Provider") -> str:
     raw = _ask(f"{prompt}: ", line_input)
     if raw is None:
         raise SystemExit()
-    return _normalize_provider(raw)
+    return _resolve_remove_provider(raw) if prefer_stored_pool else _normalize_provider(raw)
 
 
 def _interactive_add() -> None:
@@ -840,7 +849,7 @@ def _interactive_add() -> None:
 
 
 def _interactive_remove() -> None:
-    provider = _pick_provider("Provider to remove credential from")
+    provider = _pick_provider("Provider to remove credential from", prefer_stored_pool=True)
     pool = load_pool(provider)
     if not pool.has_credentials():
         print(f"No credentials for {provider}.")

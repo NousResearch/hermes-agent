@@ -735,6 +735,63 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     assert entries[0]["priority"] == 0
 
 
+def test_auth_remove_prefers_exact_stored_alias_pool(tmp_path, monkeypatch):
+    """An alias-named pool listed by ``auth list`` remains addressable."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "bar": [{"id": "bar-key", "label": "canonical", "auth_type": "api_key",
+                         "priority": 0, "source": "manual", "access_token": "bar-secret"}],
+                "foo": [{"id": "foo-key", "label": "alias", "auth_type": "api_key",
+                         "priority": 0, "source": "manual", "access_token": "foo-secret"}],
+            },
+        },
+    )
+    monkeypatch.setattr("hermes_cli.auth._plugin_aliases", lambda: {"foo": "bar"})
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(type("Args", (), {"provider": "foo", "target": "1"})())
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert payload["credential_pool"]["foo"] == []
+    assert payload["credential_pool"]["bar"][0]["id"] == "bar-key"
+
+
+def test_interactive_remove_prefers_exact_stored_alias_pool(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "bar": [{"id": "bar-key", "label": "canonical", "auth_type": "api_key",
+                         "priority": 0, "source": "manual", "access_token": "bar-secret"}],
+                "foo": [{"id": "foo-key", "label": "alias", "auth_type": "api_key",
+                         "priority": 0, "source": "manual", "access_token": "foo-secret"}],
+            },
+        },
+    )
+    monkeypatch.setattr("hermes_cli.auth._plugin_aliases", lambda: {"foo": "bar"})
+    answers = iter(("foo", "1"))
+    monkeypatch.setattr("hermes_cli.auth_commands._ask", lambda *args: next(answers))
+
+    from hermes_cli.auth_commands import _interactive_remove
+
+    _interactive_remove()
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    assert payload["credential_pool"]["foo"] == []
+    assert payload["credential_pool"]["bar"][0]["id"] == "bar-key"
+
+
 def test_auth_remove_codex_migrates_legacy_dict_suppression(tmp_path, monkeypatch):
     """Removing a Codex credential must tolerate legacy dict suppression data."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

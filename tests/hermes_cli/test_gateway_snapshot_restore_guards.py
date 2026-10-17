@@ -37,7 +37,7 @@ def _restore_error(sid):
     ("satellite-not-reserved", lambda sid: True, "manual", "is not served again yet: host operation is still pending"),
     ("invalid-id", lambda sid: False, "manual", "Snapshot not found: ../outside"),
     ("other-pid-paused", None, "manual", "Gateway refused the snapshot maintenance handoff"),
-    ("satellite-unserve-error", None, "manual", "Gateway refused the snapshot maintenance handoff"),
+    ("satellite-unserve-error", None, "manual", "nothing was restored. Park the profile with `hermes -p state"),
 ])
 def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch, capsys,
                                                           case, restore, supervisor, expected):

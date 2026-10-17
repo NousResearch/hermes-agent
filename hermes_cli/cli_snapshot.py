@@ -67,8 +67,10 @@ def _pause_owner(home, control_home, identity):
     else:
         accepted = pause_acked(pause_gateway_for_update(control_home, timeout=8), identity)
     if not accepted:
-        raise GatewayClientError("Gateway refused the snapshot maintenance handoff; nothing was restored. "
-                                 "Stop the gateway and retry.")
+        # Stopping the host gateway would take down every profile it multiplexes.
+        retry = (f"Park the profile with `hermes -p {home.name} gateway stop` and retry."
+                 if control_home != home else "Stop the gateway and retry.")
+        raise GatewayClientError(f"Gateway refused the snapshot maintenance handoff; nothing was restored. {retry}")
 
 
 def _restore_gateway_snapshot(cli, store, snap_id):

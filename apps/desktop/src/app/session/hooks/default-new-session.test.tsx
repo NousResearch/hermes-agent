@@ -177,23 +177,31 @@ describe('generic new session default routing', () => {
     expect(getSessionOwnerHint('created-stored')).toEqual(selected)
   })
 
-  it.each(['draft', 'tile'])('keeps a legacy default on the profile-only creation path for a %s', async action => {
+  // A saved legacy default that conflicts with the live selection yields:
+  // the draft/tile follows the live selection instead of the saved profile.
+  it.each(['draft', 'tile'])('a saved legacy default yields to the live selection for a %s', async action => {
     const { result, requestGateway } = mountActions()
     await act(() => setDefaultProfile({ connectionId: null, profile: 'personal' }))
 
     if (action === 'draft') {
       act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
-      expect(resolveNewChatOwnerRoute()).toBeNull()
+      expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: 'previous', profile: 'other' })
       await act(() => result.current.createBackendSessionForSend())
     } else {
       await act(() => result.current.openNewSessionTile('right'))
     }
 
-    expect(ensureGatewayProfile).toHaveBeenCalledWith('personal', { forceLegacyRoute: true })
+    expect(ensureGatewayProfile).not.toHaveBeenCalledWith('personal', { forceLegacyRoute: true })
     expect(ensureGatewayAgent).not.toHaveBeenCalledWith('local', 'personal')
     expect(ensureGatewayAgent).not.toHaveBeenCalledWith('previous', 'personal')
-    expect(requestGatewayForAgent).not.toHaveBeenCalled()
-    expect(requestGateway).toHaveBeenCalledWith('session.create', expect.objectContaining({ profile: 'personal' }))
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'previous',
+      'other',
+      'session.create',
+      expect.objectContaining({ profile: 'other' }),
+      ...FOREGROUND_CREATE_DIAL
+    )
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 
   it('keeps a legacy profile peer separate from the app default and the active source', async () => {
@@ -221,12 +229,17 @@ describe('generic new session default routing', () => {
     const { result } = mountActions()
     await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
     act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
-    expect($newChatRoute.get()).toEqual({ connectionId: 'lab', profile: 'research' })
+    // The saved 'lab'/'research' default conflicts with the live selection,
+    // so the live route is pinned — and neither one is the
+    // configured-folder-as-"project" route.
+    expect($newChatRoute.get()).toEqual({ connectionId: 'previous', profile: 'other' })
     applyConfiguredDefaultProjectDir('')
   })
 
   it.each(['/', '/?peer=1&profile=opener&connectionId=opener-host'])(
-    'routes /new to the saved default in %s',
+    // /new follows the live selection, not the saved default (the saved
+    // default only confirms, never re-homes).
+    'routes /new to the live selection over the saved default in %s',
     async query => {
       window.history.replaceState(null, '', query)
       const { result } = mountActions()
@@ -234,7 +247,7 @@ describe('generic new session default routing', () => {
 
       await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
       await act(() => slash.result.current('/new'))
-      expect($newChatRoute.get()).toEqual({ connectionId: 'lab', profile: 'research' })
+      expect($newChatRoute.get()).toEqual({ connectionId: 'previous', profile: 'other' })
     }
   )
 
@@ -254,7 +267,9 @@ describe('generic new session default routing', () => {
   })
 
   it.each([
-    { options: undefined, connectionId: 'lab', profile: 'research' },
+    // A generic tile (no options) also follows the live selection when the
+    // saved default conflicts.
+    { options: undefined, connectionId: 'previous', profile: 'other' },
     { options: { profile: 'chosen' }, connectionId: 'previous', profile: 'chosen' },
     {
       options: { route: { connectionId: 'chosen-host', profile: 'chosen' } },
@@ -279,10 +294,12 @@ describe('generic new session default routing', () => {
     }
   )
 
+  // A saved default that conflicts with the live selection never re-homes
+  // the draft — either variant is ignored.
   it.each([
     { connectionId: 'lab', profile: 'research' },
     { connectionId: 'local', profile: 'personal' }
-  ])('uses the saved exact owner only for a new draft: $connectionId/$profile', async saved => {
+  ])('follows the live selection for a new draft, not the conflicting saved $connectionId/$profile', async saved => {
     const { result, requestGateway } = mountActions()
     await act(() => setDefaultProfile(saved))
     expect($activeSessionId.get()).toBe('existing-runtime')
@@ -291,7 +308,7 @@ describe('generic new session default routing', () => {
     act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
     await act(() => result.current.createBackendSessionForSend('hello'))
 
-    const expected = saved
+    const expected = { connectionId: 'previous', profile: 'other' }
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
       expected.connectionId,
       expected.profile,

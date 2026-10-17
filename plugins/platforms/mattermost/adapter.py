@@ -211,6 +211,14 @@ class MattermostAdapter(BasePlatformAdapter):
         return _post_result(await self._post_message(chat_id, caption or "", reply_to, metadata, [file_id]),
                             _POST_WITH_FILE_ERROR)
 
+    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+        """Create a top-level post that anchors a new Mattermost thread for ``/branch``."""
+        title = (name or "").strip() or "Hermes branch"
+        post = await self._api_post(
+            "posts", _with_mentions_disabled({"channel_id": parent_chat_id, "message": title}))
+        post_id = post.get("id") if post else None
+        return str(post_id) if post_id else None
+
     async def _upload_file(self, channel_id: str, file_data: bytes, filename: str,
                            content_type: str = "application/octet-stream") -> Optional[str]:
         """Upload a file and return its file ID, or None on failure."""

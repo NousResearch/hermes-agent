@@ -40,6 +40,73 @@ scanning or pick a different profile. Open conversations are told about the new 
 The `skill/install` route needs an updated Desktop build. If the app is missing or
 does not recognize the link, expand the card and copy its CLI install command.
 
+## Pin a hub skill to an exact commit
+
+For a GitHub skill or an explicit `skills-sh/owner/repo/path` identifier,
+`install` and `inspect` accept `--revision <commit>`. Supply a full,
+40-character lowercase hexadecimal commit SHA from the repository. Branch names,
+tags, abbreviated SHAs, uppercase SHAs and whitespace are rejected before fetching.
+This option is not supported for other registries, direct URLs or fuzzy skill names.
+
+Set `COMMIT_SHA` in your shell to the reviewed full commit SHA, then run:
+
+```bash
+hermes skills inspect owner/repo/candidates/my-skill --revision "$COMMIT_SHA"
+hermes skills install skills-sh/owner/repo/candidates/my-skill --revision "$COMMIT_SHA" --yes
+```
+
+The path is literal: pinning a `candidates/` package does not relabel it as a
+published `skills/` package. Pinned resolution does not fall back to another path,
+registry or the default branch. Hermes resolves the requested commit and its tree
+separately, verifies every downloaded blob, and rejects incomplete trees, missing
+files, unsafe members and unresolved support-file references. The whole bundle
+still passes through quarantine and Skills Guard; a commit pin grants no trust.
+
+The hub lock records `requested_revision`, `resolved_commit`, `source_tree` and
+`source_blob_hashes` in its metadata. The legacy `source_revision` field remains a
+tree SHA, not a commit SHA. Only entries with none of the four pin fields are
+legacy floating entries. Partial, null, malformed or inconsistent pin metadata
+is rejected before probing or fetching; restore the original lock entry rather
+than removing individual fields. Registered blob hashes and inventory must match
+the pinned fetch and are not silently replaced. Hermes never infers a commit pin
+from a legacy tree SHA.
+
+`skills check` and `skills update` retain an installed pin even if the default
+branch advances. They verify actual local bytes and inventory, not just the lock's
+hash. Local edits are preserved by default. `skills update <name> --force` authorizes
+replacement of local edits only: it does not override Skills Guard. A scan refusal
+leaves installed files and lock unchanged, including when overwrite was requested.
+Moving a pin requires an explicit install with the new revision, not an automatic
+update. A same-name skill with conflicting provenance must be uninstalled explicitly
+before replacing it.
+
+Portable pinned trees use a conservative component policy before any blob download:
+trailing dots/spaces, Win32 invalid characters (`<>:"\\|?*`), Unicode control
+characters and surrogate code points are rejected. Reserved device basenames
+`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1`–`COM9` and `LPT1`–`LPT9`
+(including the superscript digits ¹, ², ³) are rejected case-insensitively, also
+with extensions. File/directory conflicts and differently spelled aliases in
+explicit directories or implicit parents are rejected using canonical Unicode
+normalization (NFC) plus casefold solely as a comparison key. Literal paths and
+identifiers are never rewritten; noncolliding Unicode names remain supported.
+This policy is not a claim of native Windows/macOS filesystem verification.
+
+After writing quarantine and again before publication, Hermes verifies the actual
+literal file and parent-directory inventory and every Git blob hash against the
+complete pinned bundle. Missing/extra/renamed files, extra directories, changed
+bytes, hardlinks and special members cause refusal, preserving installed files
+and lock. The writer cleans its failed quarantine; scanner policy is unchanged.
+Local inventories accept only ordinary directories and regular files. Symlinks,
+junctions, FIFOs, sockets and devices cause refusal; `--force` does not authorize
+deleting those members. These checks do not certify power-loss/fsync durability,
+concurrent publishers or every platform-specific filesystem alias.
+
+If publication fails or is interrupted, Hermes attempts to restore the previous
+files and exact lock bytes. If recovery itself fails, its `publish-` staging
+directory is retained with recovery material and an error identifies that directory.
+Recover the files and lock there before retrying; do not delete it as temporary
+clutter. Recovery snapshots may also remain after a successful rollback.
+
 ## Starting with a blank slate
 
 By default every profile is seeded with the bundled skill catalog, and each `hermes update` adds any newly bundled skills. If you want a profile with **no bundled skills** — and that stays empty across updates — you have two paths:

@@ -37,7 +37,9 @@ _BROWSE_API_LIMITS = {
 _EXTRA_META_LABELS = (
     ("repo_url", "Repo"), ("detail_url", "Detail Page"), ("index_url", "Index"),
     ("endpoint", "Endpoint"), ("install_command", "Install Command"),
-    ("installs", "Installs"), ("weekly_installs", "Weekly Installs"))
+    ("installs", "Installs"), ("weekly_installs", "Weekly Installs"),
+    ("requested_revision", "Requested Commit"), ("resolved_commit", "Resolved Commit"),
+    ("source_tree", "Git Tree"))
 
 # --- Small shared helpers ---
 
@@ -77,10 +79,10 @@ def _table(*columns, **table_kw) -> Table:
     return table
 
 
-def _try(fn, *args):
+def _try(fn, *args, **kwargs):
     """`fn(*args)`, or None when it raises (adapter probes are best-effort)."""
     try:
-        return fn(*args)
+        return fn(*args, **kwargs)
     except Exception:
         return None
 
@@ -255,18 +257,19 @@ def _resolve_short_name(name: str, sources, console: Console, attempt: Optional[
     return ""
 
 
-def _resolve_source_meta_and_bundle(identifier: str, sources):
+def _resolve_source_meta_and_bundle(identifier: str, sources, revision: Optional[str] = None):
     """(meta, bundle, source) from ONE adapter — mixing skills.sh metadata with a ClawHub zip of
     a same-named skill once showed the wrong SKILL.md. Falls back to the first meta-only hit.
     """
     first_meta = None
     first_meta_source = None
+    kw = {"revision": revision} if revision is not None else {}
     for src in sources:
-        meta = _try(src.inspect, identifier)
-        bundle = _try(src.fetch, identifier)
+        meta = _try(src.inspect, identifier, **kw)
+        bundle = _try(src.fetch, identifier, **kw)
         if bundle:
             if meta is None:
-                meta = _try(src.inspect, identifier)
+                meta = _try(src.inspect, identifier, **kw)
             return meta, bundle, src
         if first_meta is None and meta:
             first_meta, first_meta_source = meta, src
@@ -278,14 +281,15 @@ def _full_identifier(identifier: str, sources, c, attempt: Optional[dict] = None
     return identifier if "/" in identifier else _resolve_short_name(identifier, sources, c, attempt)
 
 
-def _resolve_identifier(identifier: str, sources, c) -> tuple:
+def _resolve_identifier(identifier: str, sources, c, revision: Optional[str] = None) -> tuple:
     """Short-name resolution + (meta, bundle, source). identifier == "" means unresolved."""
     from tools.skills_hub import skills_hub_http_session
     with skills_hub_http_session():
         identifier = _full_identifier(identifier, sources, c)
         if not identifier:
             return "", None, None, None
-        return (identifier, *_resolve_source_meta_and_bundle(identifier, sources))
+        return (identifier, *_resolve_source_meta_and_bundle(identifier, sources,
+                                                        **({"revision": revision} if revision is not None else {})))
 
 
 def _is_valid_installed_skill_name(name: str) -> bool:
@@ -488,15 +492,24 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
         "page": page, "total_pages": total_pages, "total": len(deduped)}
 
 
-def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
+def do_inspect(identifier: str, console: Optional[Console] = None,
+               revision: Optional[str] = None) -> Optional[bool]:
     """Preview a skill's SKILL.md content without installing."""
     c = console or _console
-    identifier, meta, bundle, _src = _resolve_identifier(identifier, _sources(), c)
+    try:
+        source_id = _revision_source_id(identifier, revision)
+    except ValueError as exc:
+        _print_error(c, str(exc))
+        return False
+    sources = _pinned_sources(c, _sources(), source_id, identifier)
+    if sources is None:
+        return False
+    identifier, meta, bundle, _src = _resolve_identifier(identifier, sources, c, revision)
     if not identifier:
         return
-    if not meta:
-        _print_error(c, f"Could not find '{identifier}' in any source.")
-        return
+    if not meta or (revision is not None and bundle is None):
+        _print_error(c, f"Could not fetch and verify '{identifier}' at the requested source/revision.")
+        return False
     c.print()
     info_lines = [f"[bold]Name:[/] {meta.name}", f"[bold]Description:[/] {meta.description}",
                   f"[bold]Source:[/] {meta.source}",
@@ -788,10 +801,29 @@ def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Option
                              error=error)
 
 
+def _revision_source_id(identifier: str, revision: Optional[str]) -> Optional[str]:
+    if revision is None:
+        return None
+    from tools.skills_hub_github import validate_revision
+    from tools.skills_hub_skillssh import SkillsShSource
+    validate_revision(revision)
+    if identifier.startswith(SkillsShSource._ID_PREFIX_ALIASES):
+        canonical = SkillsShSource._normalize_identifier(identifier)
+        source_id = "skills-sh"
+    else:
+        canonical, source_id = identifier, "github"
+    if (canonical.count("/") < 2 or ":" in canonical
+            or canonical.startswith(("official/", "clawhub/", "lobehub/", "browse-sh/"))
+            or any(not part for part in canonical.rstrip("/").split("/"))):
+        raise ValueError("--revision requires an exact GitHub owner/repo/path or skills-sh identifier")
+    return source_id
+
+
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> Optional[bool]:
+               source_id: Optional[str] = None, revision: Optional[str] = None,
+               overwrite_existing: bool = False) -> Optional[bool]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere.
@@ -806,11 +838,20 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     """
     from tools.skills_hub import HubLockFile
     fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
+    try:
+        revision_source = _revision_source_id(identifier, revision)
+        if revision_source and source_id not in (None, revision_source, "skills.sh" if revision_source == "skills-sh" else "github"):
+            raise ValueError("revision source conflicts with the recorded registry")
+        source_id = revision_source or source_id
+    except ValueError as exc:
+        _print_error(console or _console, str(exc))
+        return False
     attempt: dict = {}
     try:
         bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
                                                     skip_confirm, invalidate_cache, name_override, source_id,
-                                                    attempt=attempt)
+                                                    attempt=attempt, revision=revision,
+                                                    overwrite_existing=overwrite_existing)
     except Exception as exc:
         if fresh:
             _record_skill_install(identifier, None, "failed", attempt, error=exc)
@@ -822,7 +863,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
                    invalidate_cache: bool, name_override: str, source_id: Optional[str],
-                   attempt: Optional[dict] = None) -> tuple:
+                   attempt: Optional[dict] = None, revision: Optional[str] = None,
+                   overwrite_existing: bool = False) -> tuple:
     """``do_install``'s body: ``(bundle, outcome, installed)``. ``outcome`` is the extension-install
     event (None when this was no new install); ``installed`` is ``do_install``'s return value.
     ``attempt`` collects the metric's ``registry`` (adapter id) and, on a failed exit, its
@@ -855,7 +897,8 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
                 attempt["failure_class"] = "auth_rejected"
             return None, "failed", False
         c.print(f"\n[bold]Fetching:[/] {identifier}")
-        meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+        meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources,
+                                                        **({"revision": revision} if revision is not None else {}))
     if _matched_source is not None:
         attempt["registry"] = _matched_source.source_id() or "other"
     elif attempt.get("registry") == "unresolved":
@@ -878,8 +921,12 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
 
     existing = HubLockFile().get_installed(bundle.name)
     if existing:
+        if revision is not None and (existing.get("identifier") != bundle.identifier
+                                    or existing.get("source") != bundle.source):
+            _print_error(c, "Pinned install conflicts with existing skill provenance; uninstall it explicitly first.")
+            return bundle, None, False
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
-        if not force:
+        if not (force or overwrite_existing):
             c.print("Use --force to reinstall.\n")
             return bundle, None, None
     failed = None if existing else "failed"
@@ -909,7 +956,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
-    if not force and not skip_confirm and not _confirm_install(c, bundle, category):
+    if not (force or overwrite_existing) and not skip_confirm and not _confirm_install(c, bundle, category):
         shutil.rmtree(q_path, ignore_errors=True)
         return bundle, None, None
 
@@ -1028,15 +1075,13 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
 def _has_local_edits(installed: dict) -> bool:
     """True when the on-disk content no longer matches the install-time hash."""
-    from tools.skills_hub import SKILLS_DIR
-    from tools.skills_guard import content_hash
-    recorded_hash = installed.get("content_hash", "")
-    skill_path = SKILLS_DIR / installed.get("install_path", "")
+    from tools.skills_hub_install import installed_skill_matches, _resolve_lock_install_path
     try:
-        return (bool(recorded_hash) and skill_path.is_dir()
-                and content_hash(skill_path) != recorded_hash)
-    except OSError:
-        return False
+        install_path = installed.get("install_path", "")
+        skill_path = _resolve_lock_install_path(install_path, Path(install_path).name)
+        return not installed_skill_matches(installed, skill_path)
+    except (ValueError, OSError):
+        return True
 
 
 def do_update(name: Optional[str] = None, console: Optional[Console] = None,
@@ -1045,9 +1090,9 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
     update rmtree-replaces the user's work, so that must be an explicit choice. Returns False
     when any update failed (e.g. the new version is refused by the scan gate), else None.
 
-    Skills whose on-disk content no longer matches the hash recorded at install time have been edited
-    locally; updating them would silently destroy the user's work (``do_install(force=True)``
-    rmtree-replaces the directory). Those are skipped by default and only overwritten when ``force=True``.
+    Skills with local edits are skipped unless replacement is explicitly authorized.
+    ``overwrite_existing=True`` authorizes replacement only; ``do_install(force=False)``
+    preserves the scanner gate even when the update's ``force=True`` permits local edits.
     Mirrors the user-modified protection bundled skills already get from ``hermes update`` (ported from
     paperclipai/paperclip#10978's explicit-merge-mode rule: destructive replacement must be an explicit
     caller choice, never a rerun default).
@@ -1056,13 +1101,18 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
     from tools.skills_hub_install import check_for_skill_updates
     c = console or _console
     lock = HubLockFile()
-    updates = [entry for entry in check_for_skill_updates(name=name) if entry.get("status") == "update_available"]
+    checked = check_for_skill_updates(name=name)
+    unavailable = [entry["name"] for entry in checked if entry.get("status") in ("unavailable", "invalid_install")]
+    updates = [entry for entry in checked if entry.get("status") == "update_available"]
     if not updates:
+        if unavailable:
+            _print_error(c, f"Cannot verify updates for: {', '.join(unavailable)}. Existing files and pins were preserved.")
+            return False
         c.print("[dim]No updates available.[/]\n")
         return
 
     skipped_local: list[str] = []
-    failed: list[str] = []
+    failed: list[str] = list(unavailable)
     for entry in updates:
         installed = lock.get_installed(entry["name"])
         category = ""
@@ -1078,11 +1128,13 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         # Pin to the lockfile's source registry: a bare identifier such as "reddit" would
         # otherwise fuzzy-resolve inside do_install to a same-named skill in a DIFFERENT
         # registry, overwriting the user's files and rewriting the lock's `source`.
-        if do_install(entry["identifier"], category=category, force=True, console=c,
+        revision = (installed.get("metadata") or {}).get("requested_revision") if installed else None
+        if do_install(entry["identifier"], category=category, force=False, console=c,
+                      overwrite_existing=True, revision=revision,
                       source_id=entry.get("source", "") or None) is False:
             failed.append(entry["name"])
 
-    updated = len(updates) - len(skipped_local) - len(failed)
+    updated = len(updates) - len(skipped_local) - (len(failed) - len(unavailable))
     if updated:
         c.print(f"[bold green]Updated {updated} skill(s).[/]\n")
     if skipped_local:
@@ -1545,8 +1597,10 @@ _CLI_ACTIONS = {
                                   as_json=getattr(a, "json", False)),
     "install": lambda a: do_install(a.identifier, category=a.category, force=a.force,
                                     skip_confirm=getattr(a, "yes", False),
-                                    name_override=getattr(a, "name", "") or ""),
-    "inspect": lambda a: do_inspect(a.identifier),
+                                    name_override=getattr(a, "name", "") or "",
+                                    **({"revision": a.revision} if getattr(a, "revision", None) is not None else {})),
+    "inspect": lambda a: do_inspect(a.identifier,
+                                    **({"revision": a.revision} if getattr(a, "revision", None) is not None else {})),
     "list": lambda a: do_list(source_filter=a.source,
                               enabled_only=getattr(a, "enabled_only", False)),
     "check": lambda a: do_check(name=getattr(a, "name", None)),
@@ -1644,8 +1698,10 @@ _SLASH_ACTIONS = {
     "install": lambda args, c: do_install(
         args[0], category=_opt_value(args, "--category", "", last=True),
         force="--force" in args, skip_confirm=True, invalidate_cache="--now" in args,
-        name_override=_opt_value(args, "--name", "", last=True), console=c),
-    "inspect": lambda args, c: do_inspect(args[0], console=c),
+        name_override=_opt_value(args, "--name", "", last=True), console=c,
+        **({"revision": _opt_value(args, "--revision", "", last=True)} if "--revision" in args else {})),
+    "inspect": lambda args, c: do_inspect(args[0], console=c,
+        **({"revision": _opt_value(args, "--revision", "", last=True)} if "--revision" in args else {})),
     "list": lambda args, c: do_list(
         source_filter=_opt_value(args, "--source", "all"),
         enabled_only="--enabled-only" in args or "--enabled" in args, console=c),

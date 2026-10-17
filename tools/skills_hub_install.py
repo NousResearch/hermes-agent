@@ -11,11 +11,15 @@ from __future__ import annotations
 import logging
 import hashlib
 import shutil
+import tempfile
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 from tools.skills_guard import ScanResult, content_hash
-from tools.skills_hub_github import GitHubAuth
+from tools.skills_hub_github import (
+    GitHubAuth, _portable_component_key, _preflight_commit_members, git_blob_hash, validate_revision,
+)
 from tools.skills_hub_models import (
     SkillBundle, SkillSource, _normalize_lock_install_path, _validate_bundle_rel_path,
     _validate_install_parent_path, _validate_skill_name,
@@ -57,9 +61,42 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     return target
 
 
+def _pinned_bundle_blobs(bundle: SkillBundle) -> Optional[dict[str, str]]:
+    if _validated_pin({"metadata": bundle.metadata, "files": list(bundle.files)}) is None:
+        return None
+    if _validate_skill_name(bundle.name) != bundle.name:
+        raise ValueError("Pinned bundle name must retain its literal spelling")
+    _portable_component_key(bundle.name)
+    blobs = bundle.metadata["source_blob_hashes"]
+    entries = [{"path": path, "type": "blob", "mode": "100644", "sha": sha} for path, sha in blobs.items()]
+    if _preflight_commit_members(entries, "") is None:
+        raise ValueError("Pinned bundle contains non-portable or conflicting paths")
+    return blobs
+
+
+def _verify_pinned_materialization(directory: Path, bundle: SkillBundle) -> None:
+    """Check literal inventory and Git blob bytes, before scan and again before publication."""
+    blobs = _pinned_bundle_blobs(bundle)
+    if blobs is None:
+        return
+    try:
+        files = _regular_inventory(directory)
+        parents = {"/".join(path.split("/")[:index]) for path in blobs
+                   for index in range(1, len(path.split("/")))}
+        actual_dirs = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_dir()}
+        if set(files) != set(blobs) or actual_dirs != parents:
+            raise ValueError("Pinned materialization inventory differs from the verified bundle")
+        for rel, path in files.items():
+            if path.stat().st_nlink != 1 or git_blob_hash(path.read_bytes()) != blobs[rel]:
+                raise ValueError("Pinned materialization bytes or file identity differ from the verified bundle")
+    except OSError as exc:
+        raise ValueError("Pinned materialization could not be verified") from exc
+
+
 def quarantine_bundle(bundle: SkillBundle) -> Path:
     """Write a skill bundle to the quarantine directory for scanning."""
     from tools.skills_hub import _quarantine_dir, ensure_hub_dirs
+    _pinned_bundle_blobs(bundle)
     ensure_hub_dirs()
     skill_name = _validate_skill_name(bundle.name)
     # Validate every path before touching disk so a bad member aborts cleanly.
@@ -68,15 +105,20 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    for rel_path, file_content in validated_files:
-        file_dest = dest.joinpath(*rel_path.split("/"))
-        file_dest.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(file_content, bytes):
-            file_dest.write_bytes(file_content)
+    try:
+        for rel_path, file_content in validated_files:
+            file_dest = dest.joinpath(*rel_path.split("/"))
+            file_dest.parent.mkdir(parents=True, exist_ok=True)
+            # UTF-8 bytes are literal: no host newline translation before Git blob verification.
+            file_dest.write_bytes(file_content if isinstance(file_content, bytes) else file_content.encode("utf-8"))
+        _verify_pinned_materialization(dest, bundle)
+    except BaseException:
+        # Only this call's newly created quarantine is owned cleanup material.
+        if _is_path_redirect(dest):
+            dest.unlink()
         else:
-            # newline="" keeps the bundle's LF bytes verbatim; the default None mode would
-            # translate to os.linesep on Windows and desync content_hash from bundle_content_hash.
-            file_dest.write_text(file_content, encoding="utf-8", newline="")
+            shutil.rmtree(dest)
+        raise
     return dest
 
 
@@ -125,6 +167,7 @@ def _check_install_target(install_dir: Path) -> None:
     if not install_dir.is_dir():
         raise ValueError(f"Refusing to install: '{install_dir.name}' already exists "
                          f"and is not a directory. Remove it or choose a different skill name.")
+    _regular_inventory(install_dir)
     # Guard against silent data loss when the install target collides with an existing category bucket (a
     # directory that holds other skills). This was reported as GitHub issue #75983: installing a skill with
     # --name matching an existing category directory caused rmtree to wipe all sibling skills. A directory
@@ -140,12 +183,25 @@ def _check_install_target(install_dir: Path) -> None:
                              f"Use a different --name or install into a subcategory.")
 
 
+def _check_pinned_install_target(bundle: SkillBundle, name: str, install_rel_path: str, install_dir: Path) -> None:
+    if bundle.metadata.get("requested_revision") is None:
+        return
+    from tools.skills_hub import HubLockFile
+    existing = HubLockFile().get_installed(name)
+    if existing:
+        if (existing.get("source") != bundle.source or existing.get("identifier") != bundle.identifier
+                or existing.get("install_path") != install_rel_path):
+            raise ValueError("Pinned install conflicts with existing provenance or location; uninstall explicitly first")
+    elif install_dir.exists():
+        raise ValueError("Pinned install would overwrite an untracked local skill; remove it explicitly first")
+
+
 def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
     scan_provenance: Optional[dict[str, Any]] = None,
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
-    from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
+    from tools.skills_hub import _quarantine_dir, _skills_dir
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
@@ -157,8 +213,7 @@ def install_from_quarantine(
     # symlink-redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
+    _check_pinned_install_target(bundle, safe_skill_name, install_rel_path, install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -182,24 +237,85 @@ def install_from_quarantine(
                 rel = entry
             raise ValueError(f"Installed skill contains symlinks, which is not allowed: {rel}")
 
+    _verify_pinned_materialization(quarantine_path, bundle)
     install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
-    installed_hash = content_hash(install_dir)
-    HubLockFile().record_install(
+    installed_hash = content_hash(quarantine_path)
+    _publish_scanned_bundle(quarantine_path, install_dir, dict(
         name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict, skill_hash=installed_hash,
         install_path=install_dir.resolve().relative_to(_skills_dir().resolve()).as_posix(),
         files=list(bundle.files.keys()), metadata=bundle.metadata,
         scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
-    )
-    append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
-                     installed_hash)
+    ))
+
     try:
         from tools.skill_usage import record_installed
         record_installed(safe_skill_name)
     except Exception:
         logger.debug("Unable to record skill install lifecycle for %s", safe_skill_name, exc_info=True)
     return install_dir
+
+
+def _restore_publication(install_dir: Path, backup: Path, lock, before: Optional[bytes],
+                         had_previous: bool, phase: str) -> None:
+    """Recovery deliberately leaves its staging directory intact on any error."""
+    errors = []
+    try:
+        if phase == "backup" and install_dir.exists():
+            if backup.exists():
+                raise RuntimeError("Backup move incomplete; both copies retained")
+        elif backup.exists() or not had_previous:
+            if install_dir.exists():
+                shutil.rmtree(install_dir)
+            if backup.exists():
+                shutil.move(str(backup), str(install_dir))
+    except BaseException as exc:
+        # Recovery must restore the lock even when filesystem recovery is interrupted.
+        logger.error("Skill filesystem recovery failed; backup retained", exc_info=True)
+        errors.append(exc)
+    try:
+        if before is None:
+            lock.path.unlink(missing_ok=True)
+        else:
+            lock.path.write_bytes(before)
+    except BaseException as exc:
+        logger.error("Skill lock recovery failed; exact snapshot retained", exc_info=True)
+        errors.append(exc)
+    if errors:
+        raise RuntimeError(f"Recovery incomplete; recover files and lock from {backup.parent} before retrying") from errors[0]
+
+
+def _publish_scanned_bundle(quarantine_path: Path, install_dir: Path, record: dict) -> None:
+    """Keep recoverable previous files and exact lock bytes until commit/restore succeeds."""
+    from tools.skills_hub import HubLockFile, _quarantine_dir, append_audit_log
+    lock = HubLockFile()
+    before = lock.path.read_bytes() if lock.path.exists() else None
+    staging = Path(tempfile.mkdtemp(prefix="publish-", dir=_quarantine_dir()))
+    backup = staging / "previous"
+    if before is not None:
+        (staging / "lock.before").write_bytes(before)
+    else:
+        (staging / "lock.absent").touch()
+    had_previous = install_dir.exists()
+    phase = "backup"
+    try:
+        if had_previous:
+            shutil.move(str(install_dir), str(backup))
+        phase = "publish"
+        shutil.move(str(quarantine_path), str(install_dir))
+        lock.record_install(**record)
+        append_audit_log("INSTALL", record["name"], record["source"], record["trust_level"],
+                         record["scan_verdict"], record["skill_hash"])
+    except BaseException:
+        # Includes Ctrl-C, and moves that took effect before reporting failure.
+        _restore_publication(install_dir, backup, lock, before, had_previous, phase)
+        raise
+    # Never recursively clean a backup on the exception path. A committed replacement
+    # is now durable; a cleanup failure remains explicit with its recovery material.
+    try:
+        shutil.rmtree(staging)
+    except (OSError, KeyboardInterrupt) as exc:
+        raise RuntimeError(f"Publication committed; cleanup incomplete at {staging}; inspect staging before retrying") from exc
 
 
 def uninstall_skill(skill_name: str) -> tuple[bool, str]:
@@ -261,6 +377,93 @@ def _current_revision_or_empty(src, identifier: str) -> str:
         logger.debug("current_revision probe failed for %s", identifier, exc_info=True)
         return ""
 
+def _regular_inventory(install_dir: Path) -> dict[str, Path]:
+    """lstat every member: an ignored FIFO/device is still user data, never safe to replace."""
+    files = {}
+    pending = [install_dir]
+    while pending:
+        path = pending.pop()
+        mode = path.lstat().st_mode
+        if _is_path_redirect(path) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            raise ValueError("Skill contains a non-regular member; remove it explicitly before replacement")
+        if stat.S_ISDIR(mode):
+            pending.extend(path.iterdir())
+        else:
+            files[path.relative_to(install_dir).as_posix()] = path
+    return files
+
+
+def _validated_pin(entry: dict) -> Optional[str]:
+    """Only absence of all pin fields is legacy; partial/null pins never float."""
+    metadata = entry.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("Invalid pin metadata: expected an object")
+    fields = ("requested_revision", "resolved_commit", "source_tree", "source_blob_hashes")
+    if not any(field in metadata for field in fields):
+        return None
+    if not all(field in metadata for field in fields):
+        raise ValueError("Incomplete pin metadata; restore the original lock entry")
+    for field in fields[:3]:
+        validate_revision(metadata[field])
+    revision = metadata["requested_revision"]
+    if metadata["resolved_commit"] != revision or metadata.get("source_revision", metadata["source_tree"]) != metadata["source_tree"]:
+        raise ValueError("Inconsistent commit/tree pin metadata; restore the original lock entry")
+    blobs, files = metadata["source_blob_hashes"], entry.get("files")
+    if not isinstance(blobs, dict) or not isinstance(files, list) or not all(isinstance(p, str) for p in files):
+        raise ValueError("Invalid pinned blob map or recorded inventory")
+    if "SKILL.md" not in blobs or len(files) != len(set(files)) or set(files) != set(blobs):
+        raise ValueError("Inconsistent pinned blob map and recorded inventory")
+    for path, blob_sha in blobs.items():
+        if not isinstance(path, str) or _validate_bundle_rel_path(path) != path:
+            raise ValueError("Invalid pinned blob path")
+        validate_revision(blob_sha)
+    return revision
+
+
+def installed_skill_matches(entry: dict, install_dir: Path) -> bool:
+    """Verify real inventory and bytes, including files absent from the recorded inventory."""
+    try:
+        files = _regular_inventory(install_dir)
+        if "files" in entry and set(files) != set(entry["files"]):
+            return False
+        blobs = (entry.get("metadata") or {}).get("source_blob_hashes")
+        if blobs is not None:
+            return set(blobs) == set(files) and all(git_blob_hash(p.read_bytes()) == blobs[rel]
+                                                   for rel, p in files.items())
+        return bool(entry.get("content_hash")) and content_hash(install_dir) == entry["content_hash"]
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _check_pinned_update(entry: dict, row: dict, matching: list, install_dir: Path) -> dict:
+    metadata = entry.get("metadata") or {}
+    revision = metadata["requested_revision"]
+    if metadata.get("resolved_commit") != revision:
+        return {**row, "status": "unavailable"}
+    bundle = None
+    for src in matching:
+        try:
+            bundle = src.fetch(entry["identifier"], revision=revision)
+        except Exception:
+            logger.debug("Pinned skill fetch failed", exc_info=True)
+        if bundle:
+            break
+    if not bundle:
+        return {**row, "status": "unavailable"}
+    if (bundle.metadata.get("requested_revision") != revision
+            or bundle.metadata.get("resolved_commit") != revision
+            or bundle.metadata.get("source_tree") != metadata.get("source_tree")
+            or bundle.metadata.get("source_revision") != metadata.get("source_tree")
+            or bundle.metadata.get("source_blob_hashes") != metadata["source_blob_hashes"]
+            or set(bundle.files) != set(entry["files"])
+            or bundle_content_hash(bundle) != entry.get("content_hash")):
+        return {**row, "status": "unavailable", "error": "Fetched bundle conflicts with registered pin/inventory"}
+    unchanged = installed_skill_matches(entry, install_dir)
+    return {**row, "status": "up_to_date" if unchanged else "update_available",
+            "local_modified": not unchanged, "current_hash": content_hash(install_dir),
+            "latest_hash": bundle_content_hash(bundle), "bundle": bundle}
+
+
 def check_for_skill_updates(
     name: Optional[str] = None, *, lock: Optional[HubLockFile] = None,
     sources: Optional[list[SkillSource]] = None, auth: Optional[GitHubAuth] = None,
@@ -286,6 +489,11 @@ def check_for_skill_updates(
         identifier, source_name = entry.get("identifier", ""), entry.get("source", "")
         row = {"name": entry.get("name", ""), "identifier": identifier, "source": source_name}
         try:
+            pin = _validated_pin(entry)
+        except ValueError as exc:
+            results.append({**row, "status": "unavailable", "error": str(exc)})
+            continue
+        try:
             install_dir = _resolve_lock_install_path(
                 entry.get("install_path", ""), entry.get("name", "skill"))
             orphaned = not install_dir.is_dir()
@@ -298,13 +506,22 @@ def check_for_skill_updates(
             # instead of re-paying it on every update run (#104291).
             results.append({**row, "status": "orphaned"})
             continue
+        try:
+            _regular_inventory(install_dir)
+        except (ValueError, OSError) as exc:
+            results.append({**row, "status": "invalid_install", "error": str(exc)})
+            continue
         matching = [src for src in sources if _source_matches(src, source_name)]
+        if pin is not None:
+            results.append(_check_pinned_update(entry, row, matching, install_dir))
+            continue
         recorded = (entry.get("metadata") or {}).get("source_revision", "")
-        if recorded and any(_current_revision_or_empty(src, identifier) == recorded for src in matching):
+        if (recorded and installed_skill_matches(entry, install_dir)
+                and any(_current_revision_or_empty(src, identifier) == recorded for src in matching)):
             # Same upstream tree as at install time: the bundle bytes cannot differ, so
             # skip downloading SKILL.md + every support blob just to re-hash them (#101454).
-            content_hash = entry.get("content_hash", "")
-            results.append({**row, "status": "up_to_date", "current_hash": content_hash, "latest_hash": content_hash})
+            recorded_hash = entry.get("content_hash", "")
+            results.append({**row, "status": "up_to_date", "current_hash": recorded_hash, "latest_hash": recorded_hash})
             continue
         bundle = None
         for src in matching:
@@ -317,7 +534,7 @@ def check_for_skill_updates(
         if not bundle:
             results.append({**row, "status": "unavailable"})
             continue
-        current_hash, latest_hash = entry.get("content_hash", ""), bundle_content_hash(bundle)
+        current_hash, latest_hash = content_hash(install_dir), bundle_content_hash(bundle)
         results.append({
             **row, "status": "up_to_date" if current_hash == latest_hash else "update_available",
             "current_hash": current_hash, "latest_hash": latest_hash, "bundle": bundle,

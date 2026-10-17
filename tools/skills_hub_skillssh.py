@@ -93,8 +93,14 @@ class SkillsShSource(SkillSource):
         _cache_metas(cache_key, results)
         return results
 
-    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+    def fetch(self, identifier: str, *, revision: Optional[str] = None) -> Optional[SkillBundle]:
         canonical = self._normalize_identifier(identifier)
+        if revision is not None:
+            # Exact paths are authoritative: no registry page or alternate-directory discovery.
+            bundle = self.github.fetch(canonical, revision=revision)
+            if bundle:
+                bundle.source, bundle.identifier = "skills.sh", self._wrap_identifier(canonical)
+            return bundle
         detail = self._fetch_detail_page(canonical)
 
         def _relabel(github_id: Optional[str]) -> Optional[SkillBundle]:
@@ -112,8 +118,11 @@ class SkillsShSource(SkillSource):
                 return bundle
         return _relabel(self._discover_identifier(canonical, detail=detail))
 
-    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+    def inspect(self, identifier: str, *, revision: Optional[str] = None) -> Optional[SkillMeta]:
         canonical = self._normalize_identifier(identifier)
+        if revision is not None:
+            meta = self.github.inspect(canonical, revision=revision)
+            return self._finalize_inspect_meta(meta, canonical, None) if meta else None
         detail = self._fetch_detail_page(canonical)
         meta = self._resolve_github_meta(canonical, detail=detail)
         return self._finalize_inspect_meta(meta, canonical, detail) if meta else None

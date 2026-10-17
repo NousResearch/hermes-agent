@@ -60,11 +60,15 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
     )
     _flag(skills_install, "--force", help="Install despite blocked scan verdict")
+    skills_install.add_argument("--revision", default=None,
+        help="Pin GitHub/skills-sh to a full lowercase 40-character commit SHA")
     add_yes_flag(skills_install, "Skip confirmation prompt (needed in TUI mode)")
 
     skills_inspect = skills_subparsers.add_parser(
         "inspect", help="Preview a skill without installing")
     skills_inspect.add_argument("identifier", help="Skill identifier")
+    skills_inspect.add_argument("--revision", default=None,
+        help="Inspect an exact GitHub/skills-sh commit SHA")
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])

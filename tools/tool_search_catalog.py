@@ -11,8 +11,6 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-import snowballstemmer
-
 # Reserved bridge names: a user/plugin/MCP tool may not take them (registry override
 # protection rejects such registrations).
 TOOL_SEARCH_NAME = "tool_search"
@@ -43,10 +41,19 @@ _thread_local = threading.local()
 def _stem(token: str) -> str:
     """Stem one token, memoized across stateless catalog rebuilds. Snowball stemmers carry
     mutable parsing state and bridge dispatch runs on parallel tool-call threads, so the
-    stemmer is one-per-thread, created lazily."""
-    if getattr(_thread_local, "stemmer", None) is None:
-        _thread_local.stemmer = snowballstemmer.stemmer("english")
-    return _thread_local.stemmer.stemWord(token)
+    stemmer is one-per-thread, created lazily. Falls back to unstemmed token on ImportError."""
+    stemmer = getattr(_thread_local, "stemmer", None)
+    if stemmer is None:
+        try:
+            import snowballstemmer
+
+            stemmer = snowballstemmer.stemmer("english")
+        except ImportError:
+            stemmer = False
+        _thread_local.stemmer = stemmer
+    if stemmer is False:
+        return token.lower()
+    return stemmer.stemWord(token)
 
 
 def _tokenize(text: str) -> list[str]:

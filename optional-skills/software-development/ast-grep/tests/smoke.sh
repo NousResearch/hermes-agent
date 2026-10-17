@@ -20,10 +20,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-HELPER="python3 $SKILL_DIR/scripts/ast_grep_helper.py"
+
+# Git Bash / MSYS: convert the POSIX-style path (/c/Users/...) to a Windows
+# path (C:/Users/...) so the native Windows `python3` can find the helper.
+# On real POSIX (Linux/macOS/WSL) cygpath may not exist -> keep the path as-is.
+if command -v cygpath >/dev/null 2>&1; then
+  PY_SKILL_DIR="$(cygpath -m "$SKILL_DIR")"
+else
+  PY_SKILL_DIR="$SKILL_DIR"
+fi
+HELPER="python3 $PY_SKILL_DIR/scripts/ast_grep_helper.py"
 
 OUTPUT_DIR="$(mktemp -d -t ast-grep-skill-smoke-XXXXXX)"
 trap 'rm -rf "$OUTPUT_DIR"' EXIT
+
+# Windows-native python3 cannot read MSYS paths (/tmp/...), so keep a
+# Windows-form copy of OUTPUT_DIR for env vars and helper invocations.
+if command -v cygpath >/dev/null 2>&1; then
+  PY_OUTPUT_DIR="$(cygpath -m "$OUTPUT_DIR")"
+else
+  PY_OUTPUT_DIR="$OUTPUT_DIR"
+fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
@@ -46,7 +63,19 @@ omo_runtime_slug() {
 fake_sg() {
   local target="$1"
   mkdir -p "$(dirname "$target")"
-  cat > "$target" <<'SH'
+  if [ "$(uname -s | cut -c1-5)" = "MINGW" ] || [ "$(uname -s | cut -c1-4)" = "MSYS" ] || [ "$(uname -s | cut -c1-6)" = "CYGWIN" ]; then
+    # Windows: generate a .cmd batch (native executable via PATHEXT) so
+    # Python's subprocess can spawn it directly; a POSIX script cannot.
+    cat > "$target" <<'CMD'
+@echo off
+if "%1"=="--version" (
+  echo ast-grep 0.45.0 fake
+) else (
+  echo fake ast-grep
+)
+CMD
+  else
+    cat > "$target" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then
   printf 'ast-grep 0.45.0 fake\n'
@@ -54,7 +83,8 @@ else
   printf 'fake ast-grep\n'
 fi
 SH
-  chmod +x "$target"
+    chmod +x "$target"
+  fi
 }
 
 # 1. --version
@@ -117,24 +147,29 @@ pass "doctor produces output"
 
 # Given OMO_AST_GREP_SG_PATH points at a fake executable.
 # When doctor resolves ast-grep, then it reports that exact path.
-FAKE_ENV_SG="$OUTPUT_DIR/fake-env/sg"
+# Note: doctor prints the native Windows path (backslashes) on Windows,
+# so compare against cygpath -w output, not the forward-slash form.
+FAKE_ENV_SG="$PY_OUTPUT_DIR/fake-env/sg.cmd"
+FAKE_ENV_SG_NATIVE="$(cygpath -w "$FAKE_ENV_SG" 2>/dev/null || echo "$FAKE_ENV_SG")"
 fake_sg "$FAKE_ENV_SG"
 OMO_AST_GREP_SG_PATH="$FAKE_ENV_SG" $HELPER doctor > "$OUTPUT_DIR/omo-env.out" 2>&1
-grep -Fq "ast-grep binary: $FAKE_ENV_SG" "$OUTPUT_DIR/omo-env.out" || fail "OMO_AST_GREP_SG_PATH was not preferred: $(cat "$OUTPUT_DIR/omo-env.out")"
+grep -Fq "ast-grep binary: $FAKE_ENV_SG_NATIVE" "$OUTPUT_DIR/omo-env.out" || fail "OMO_AST_GREP_SG_PATH was not preferred: $(cat "$OUTPUT_DIR/omo-env.out")"
 pass "OMO_AST_GREP_SG_PATH resolves first"
 
 # Given HOME has an OMO runtime sg executable.
 # When doctor resolves ast-grep, then it reports the HOME runtime path.
-RUNTIME_HOME="$OUTPUT_DIR/home"
+# Windows note: pathlib.Path.home() reads USERPROFILE (not HOME), so set both.
+RUNTIME_HOME="$PY_OUTPUT_DIR/home"
 RUNTIME_SLUG="$(omo_runtime_slug)"
-RUNTIME_BIN="sg"
+RUNTIME_BIN="sg.cmd"
 case "$RUNTIME_SLUG" in
-  win32-*) RUNTIME_BIN="sg.exe" ;;
+  win32-*) RUNTIME_BIN="sg.cmd" ;;
 esac
 FAKE_RUNTIME_SG="$RUNTIME_HOME/.omo/runtime/ast-grep/$RUNTIME_SLUG/$RUNTIME_BIN"
+FAKE_RUNTIME_SG_NATIVE="$(cygpath -w "$FAKE_RUNTIME_SG" 2>/dev/null || echo "$FAKE_RUNTIME_SG")"
 fake_sg "$FAKE_RUNTIME_SG"
-HOME="$RUNTIME_HOME" CODEX_HOME= OMO_AST_GREP_SG_PATH= $HELPER doctor > "$OUTPUT_DIR/omo-runtime.out" 2>&1
-grep -Fq "ast-grep binary: $FAKE_RUNTIME_SG" "$OUTPUT_DIR/omo-runtime.out" || fail "OMO HOME runtime was not resolved: $(cat "$OUTPUT_DIR/omo-runtime.out")"
+HOME="$RUNTIME_HOME" USERPROFILE="$RUNTIME_HOME" CODEX_HOME= OMO_AST_GREP_SG_PATH= $HELPER doctor > "$OUTPUT_DIR/omo-runtime.out" 2>&1
+grep -Fq "ast-grep binary: $FAKE_RUNTIME_SG_NATIVE" "$OUTPUT_DIR/omo-runtime.out" || fail "OMO HOME runtime was not resolved: $(cat "$OUTPUT_DIR/omo-runtime.out")"
 pass "OMO HOME runtime resolves before standalone fallback"
 
 # 9. search w/o binary => either runs successfully (binary found) OR exits 3 with hint
@@ -166,7 +201,7 @@ pass "install.sh syntax + --help"
 # 11. SKILL.md frontmatter
 python3 - <<PY
 import re, sys
-src = open("$SKILL_DIR/SKILL.md").read()
+src = open("$PY_SKILL_DIR/SKILL.md").read()
 assert src.startswith("---\n"), "SKILL.md must start with YAML frontmatter"
 end = src.find("\n---\n", 4)
 assert end > 0, "SKILL.md missing closing ---"
@@ -184,7 +219,7 @@ for f in references/install.md references/patterns.md references/pitfalls.md \
 done
 pass "all references present"
 
-python3 - "$SKILL_DIR" <<'PY' || fail "Korean characters found in skill content"
+python3 - "$PY_SKILL_DIR" <<'PY' || fail "Korean characters found in skill content"
 import pathlib, re, sys
 root = pathlib.Path(sys.argv[1])
 hangul = re.compile(r"[\uac00-\ud7a3]")

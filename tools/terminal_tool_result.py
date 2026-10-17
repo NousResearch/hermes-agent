@@ -1,6 +1,7 @@
 """Foreground result post-processing for the terminal tool (cwd dual-write,
 sudo handling, transform hook, truncation, ANSI strip, redaction, exit-code
-notes/hints, spill redaction, verification evidence) + exit-code tables. Lazy
+notes/hints, structured signal + output_truncated flags, spill redaction,
+verification evidence) + exit-code tables. Lazy
 ``tools.terminal_tool`` lookups keep the origin's monkeypatch points authoritative.
 """
 
@@ -44,6 +45,13 @@ _SIGNAL_EXIT_NOTES: dict[int, str] = {
 }
 
 
+def _signal_name(signum: int) -> str:
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"signal {signum}"
+
+
 def _interpret_signal_exit(exit_code: int) -> str | None:
     """Note for a signal-termination exit code, or None. Negative codes are
     definite (subprocess semantics); 128+signum is the shell convention and a
@@ -54,14 +62,29 @@ def _interpret_signal_exit(exit_code: int) -> str | None:
             return None
         if note := _SIGNAL_EXIT_NOTES.get(signum):
             return f"Command terminated by signal {signum}: {note}"
-        try:
-            name = signal.Signals(signum).name
-        except ValueError:
-            name = f"signal {signum}"
-        return f"Command terminated by {name} (signal {signum})"
+        return f"Command terminated by {_signal_name(signum)} (signal {signum})"
     if exit_code > 128 and (note := _SIGNAL_EXIT_NOTES.get(exit_code - 128)):
         return (f"Exit code {exit_code} usually means the command was "
                 f"terminated by signal {exit_code - 128}: {note}")
+    return None
+
+
+def _signal_exit_field(exit_code: int) -> dict | None:
+    """Machine-readable twin of :func:`_interpret_signal_exit` (issue #93700): the
+    prose note is easy to miss when the agent branches on the result JSON, so the
+    signal death is also reported as ``{"number", "name", "definite"}``. Same
+    evidence bar as the note — negative codes are definite (``Popen`` ``-signum``),
+    128+signum is the shell convention and stays ``definite: false`` because a
+    program *can* exit 139 itself, and uncurated shell-band codes stay silent so an
+    application's own exit code is never mislabeled as a signal."""
+    if exit_code < 0:
+        signum = -exit_code
+        if signum == 2:  # SIGINT — executor's interrupt-marker path owns it
+            return None
+        return {"number": signum, "name": _signal_name(signum), "definite": True}
+    if exit_code > 128 and (exit_code - 128) in _SIGNAL_EXIT_NOTES:
+        signum = exit_code - 128
+        return {"number": signum, "name": _signal_name(signum), "definite": False}
     return None
 
 
@@ -227,7 +250,16 @@ def finalize_foreground_result(
     returncode = result.get("returncode", 0)
     output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(command, output, env_type)
     output = _apply_output_transform_hook(command, output, returncode, effective_task_id, env_type)
+    # Truncation is only visible in-band (a TRUNCATED marker) or as a spill handle, and
+    # the handle is dropped when spill redaction fails — so report it structurally too
+    # (issue #93700). The collector flag covers a capped capture; the length compare
+    # covers a payload the truncation pass below cuts on its own (a transform hook can
+    # grow the output past the cap after the collector already rendered it).
+    output_truncated = bool(result.get("full_output_path") or result.get("output_total_chars"))
+    pre_truncate_len = len(output)
     output = _truncate_head_tail(output)
+    if len(output) != pre_truncate_len:
+        output_truncated = True
     # Strip ANSI so the model never copies escapes into file writes, then
     # redact secrets; redact_terminal_output is command-aware (env-dump
     # commands get the KEY=value pass, source/config dumps skip it).
@@ -262,10 +294,12 @@ def finalize_foreground_result(
         ("cwd", changed_cwd),
         ("environment_recreated", _ENV_RECREATED_NOTE if result.get("environment_recreated") else None),
         *_redact_spill_file(result.get("full_output_path"), result.get("output_total_chars"), command),
+        ("output_truncated", True if output_truncated else None),
         ("verification_evidence", _verification_evidence(
             command, command_cwd, session_id or task_id or effective_task_id or "default",
             returncode, output)),
         ("approval", approval_note or None),
+        ("signal", _signal_exit_field(returncode)),
         ("exit_code_meaning", exit_note or None),
         ("hint", failure_hint or None),
         ("sudo_auth_failed", True if sudo_auth_failed else None),

@@ -34,12 +34,24 @@ import {
   renameProject
 } from '@/store/projects'
 
+import { ProjectRemoveFolderDialog } from './project-remove-folder-dialog'
 import { baseName } from './projects/workspace-groups'
 
-// Single dialog mounted once in the sidebar; it renders create / rename /
-// add-folder flows driven by the $projectDialog atom. Folders are chosen via
-// the native directory picker (reused from the default-project-dir setting).
+// Mounted once in the sidebar: the create / rename / add-folder dialog plus the
+// separate remove-folder dialog.
 export function ProjectDialog() {
+  return (
+    <>
+      <ProjectFormDialog />
+      <ProjectRemoveFolderDialog />
+    </>
+  )
+}
+
+// Renders create / rename / add-folder flows driven by the $projectDialog atom.
+// Folders are chosen via the native directory picker (reused from the
+// default-project-dir setting).
+function ProjectFormDialog() {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const state = useStore($projectDialog)

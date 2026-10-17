@@ -427,6 +427,37 @@ Requests that include an explicit `provider` — and the Hermes-native
 `/v1/runs` and session-chat endpoints — always honor the requested model
 regardless of this flag.
 
+### API-scoped fallback chain
+
+By default the API server uses the same `fallback_providers` chain as the
+messaging platforms. An API client that picks its provider and model per
+request often wants a different chain, or none, so the API server can have its
+own:
+
+```yaml
+gateway:
+  api_server:
+    fallback_providers:
+      - provider: openrouter
+        model: anthropic/claude-sonnet-4.6
+```
+
+- Unset or `null`: the global `fallback_providers` chain, as before.
+- `[]`: no fallback for API requests.
+- A list: this chain only. Each row has exactly `provider` and `model`
+  (credentials come from the provider's normal configuration). Anything else
+  rejects the request instead of silently falling back to the global chain.
+
+The API-scoped chain is used for capacity failures only (rate limits,
+upstream rate limits and overload). Authentication, approval and unknown
+errors never advance it, so a request is not quietly answered by another
+provider. A request with an explicit `provider` resolves that provider directly
+rather than through the global runtime. A request locked to its session's
+runtime still gets no fallback at all.
+
+Explicit `model_options` reasoning survives a fallback switch: the fallback
+model runs with the requested effort instead of its own configured default.
+
 Example:
 
 ```json

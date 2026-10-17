@@ -3424,6 +3424,29 @@ _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
 )
 
+_TRAILING_CONTINUE_INTENT_CJK_RE = re.compile(
+    r"(?:^|[，,；;。！？!?\n])\s*"
+    r"(?:(?:现在|接下来|下面|然后|接着)\s*)?"
+    r"(?:让我(?:先|来|现在|再|接着|直接|用|把|去|继续)?"
+    r"|我(?:现在|接下来|下面|先)?(?:来|去|继续|将|再)?"
+    r"|接下来我|下面我|那我)"
+    r"[^。！？!?\n]{2,60}[。：:]?\s*$"
+)
+# A trailing clause that hands the outcome back ("……，结论是 X") is a conclusion, not a dangling
+# announcement; the stall guard must stay quiet for it.
+_TRAILING_CONTINUE_INTENT_CJK_CONCLUSION_RE = re.compile(r"(?:结论|答案是|因此|所以|已完成)")
+# Single-character entries carry negative lookaheads so they cannot fire from inside common
+# two-character words (补充 / 翻译 / 写法 / 改善 / 切换 …), while the compound itself stays a
+# separate alternation where it is a real action ("切换一下分支").
+_TRAILING_CONTINUE_INTENT_CJK_ACTION_RE = re.compile(
+    r"(?:搜|查|检索|扫|抓|爬|拉取|拉|下载|读|打开|看|翻(?!译)"
+    r"|分析|解析|对比|统计|计算|算(?![法式])|定位|排查|检查|校验|核对|验证|测试|试(?!验|图)"
+    r"|生成|写(?!法)|改(?![善进])|修改|替换|更新|补(?!充|丁)|重试|处理|整理|提取|抽取|收集|调用|执行"
+    r"|切换|切(?!片)|换(?![个句行])"
+    r"|运行|跑|启动|重启|部署|安装|遍历|列出|打印|确认|删除|提交|推送|合并|编译|构建|截图|等待|观察|跟踪|复现)"
+)
+_CJK_CLAUSE_SPLIT_RE = re.compile(r"[，,；;：:]")
+
 # Content longer than this is a substantive reply, not a dangling ack.
 _TRAILING_CONTINUE_INTENT_MAX_CHARS = 400
 
@@ -3433,7 +3456,19 @@ def trailing_continue_intent(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
         return False
-    return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
+    tail = t[-160:]
+    if _TRAILING_CONTINUE_INTENT_RE.search(tail):
+        return True
+    cjk = _TRAILING_CONTINUE_INTENT_CJK_RE.search(tail)
+    if not cjk:
+        return False
+    announcement = cjk.group(0).strip().rstrip("。：:")
+    if _TRAILING_CONTINUE_INTENT_CJK_CONCLUSION_RE.search(announcement):
+        return False
+    # Anchored on the LAST clause: the announced action must be what the text ENDS on.
+    # A verb in an earlier clause ("我来补充一点，…O(n)。") is bridging prose, not a plan.
+    last_clause = _CJK_CLAUSE_SPLIT_RE.split(announcement)[-1]
+    return bool(_TRAILING_CONTINUE_INTENT_CJK_ACTION_RE.search(last_clause))
 
 
 # Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered

@@ -73,6 +73,7 @@ DEFAULT_CONFIG = {
         "storage": "hermes-home",
     },
     "agent": {
+        "subdirectory_hints": True,
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,
@@ -117,9 +118,8 @@ DEFAULT_CONFIG = {
         "cron_drain_timeout": 30,
         # In-band restart (/restart, SIGUSR1): refuse new work, then wait up to this many seconds
         # for in-flight agents/cron/api runs to finish before stop(). 0 = enter stop() at once. 30
-        # min is a safety valve for wedged agents, not a target; raise for long unattended turns.
-        # Default 30 min is a safety valve for wedged agents, not a target latency — an interactive `hermes
-        # gateway restart` must never block for hours on a turn that wedged (#79133).
+        # min is a safety valve for wedged agents, not a target; raise for long unattended turns. An
+        # interactive `hermes gateway restart` must never block for hours on a wedged turn (#79133).
         "restart_after_turn_timeout": 1800,
         # Max seconds a submitted prompt waits for the deferred agent build (MCP discovery, model
         # metadata, skills scan) before failing visibly. The prompt is delivered as soon as the

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from agent.prompt_builder import drain_truncation_warnings
+from agent import agent_init
 from agent.subdirectory_hints import SubdirectoryHintTracker
 
 
@@ -485,3 +486,27 @@ class TestHomeWorkingDirGuard:
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call("read_file", {"path": str(sub / "f.py")})
         assert result is not None and "Package rules" in result
+
+
+class TestSubdirectoryHintsConfigSwitch:
+    """agent.subdirectory_hints: false turns lazy discovery off without skip_context_files."""
+
+    def test_config_default_is_true(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["agent"]["subdirectory_hints"] is True
+
+    @pytest.mark.parametrize("skip, section, expected", [
+        (False, {}, True), (False, {"subdirectory_hints": True}, True),
+        (False, {"subdirectory_hints": None}, True), (False, {"subdirectory_hints": False}, False),
+        (True, {}, False), (True, {"subdirectory_hints": False}, False)])
+    def test_tracker_enabled_combines_config_and_skip(self, skip, section, expected):
+        from types import SimpleNamespace
+
+        agent = SimpleNamespace(skip_context_files=skip, session_cwd=None)
+        with patch.object(agent_init, "_set_defaults", lambda *a, **k: None):
+            agent_init._init_usage_state(agent, {"agent": section})
+        assert agent._subdirectory_hints.enabled is expected
+
+    def test_disabled_tracker_returns_none(self, project):
+        tracker = SubdirectoryHintTracker(working_dir=str(project), enabled=False)
+        assert tracker.check_tool_call("read_file", {"path": str(project / "frontend" / "x.ts")}) is None

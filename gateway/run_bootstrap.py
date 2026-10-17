@@ -109,7 +109,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     _clear_takeover_marker_quiet()
     # Stopped (Ctrl+Z) processes don't release scoped locks on exit; stale lock files block the new gateway.
     try:
-        from gateway.status import release_all_scoped_locks
+        from gateway.status_scoped_locks import release_all_scoped_locks
         _released = release_all_scoped_locks(owner_pid=existing_pid, owner_start_time=existing_start_time)
         if _released:
             logger.info("Released %d stale scoped lock(s) from old gateway.", _released)

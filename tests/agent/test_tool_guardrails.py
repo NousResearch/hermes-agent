@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -230,6 +232,65 @@ def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_poller
     for i in range(6):
         hard.observe_call("terminal", {"command": "date"}, f"t{i}", failed=False)
     assert hard.halt_decision is None
+
+
+def test_blocks_repeated_successful_mutation_before_sixth_call_even_when_results_change():
+    """Regression for #137170: comment IDs make each successful write result distinct."""
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    args = {"task_id": "task-1", "body": "Awaiting a human decision."}
+
+    for comment_id in range(1, 6):
+        assert controller.before_call("kanban_comment", args).action == "allow"
+        controller.after_call("kanban_comment", args, f'{{"success": true, "id": {comment_id}}}', failed=False)
+
+    decision = controller.before_call("kanban_comment", args)
+
+    assert decision.action == "block"
+    assert decision.code == "repeated_successful_call_block"
+    assert decision.count == 5
+
+
+@pytest.mark.parametrize("hard_stop_enabled", [False, True])
+@pytest.mark.parametrize("tool_name", ["terminal", "execute_code", "browser_navigate", "process_manage", "job_poll", "job_get_result"])
+def test_changing_success_results_continue_for_execution_navigation_and_pollers(tool_name, hard_stop_enabled):
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=hard_stop_enabled))
+    args = {"command": "check progress"}
+    for i in range(8):
+        assert controller.before_call(tool_name, args).allows_execution
+        result = json.dumps({"output": f"progress {i}"})
+        controller.after_call(tool_name, args, result, failed=False)
+        controller.observe_call(tool_name, args, result)
+        assert controller.halt_decision is None
+
+
+def test_successful_mutations_do_not_block_when_hard_stops_disabled():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=False))
+    for i in range(8):
+        assert controller.before_call("kanban_comment", {}).allows_execution
+        controller.after_call("kanban_comment", {}, json.dumps({"id": i}), failed=False)
+    assert controller.halt_decision is None
+
+
+@pytest.mark.parametrize("reset", ["failure", "different_args", "different_tool", "idempotent", "turn"])
+def test_successful_mutation_streak_resets(reset):
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    args = {"task_id": "task-1", "body": "hello"}
+    for i in range(4):
+        assert controller.before_call("kanban_comment", args).allows_execution
+        controller.after_call("kanban_comment", args, json.dumps({"id": i}), failed=False)
+
+    if reset == "turn":
+        controller.reset_for_turn()
+    else:
+        tool_name = {"different_tool": "write_file", "idempotent": "read_file"}.get(reset, "kanban_comment")
+        reset_args = {**args, "body": "different"} if reset == "different_args" else args
+        assert controller.before_call(tool_name, reset_args).allows_execution
+        controller.after_call(tool_name, reset_args, "result", failed=reset == "failure")
+
+    for i in range(5):
+        assert controller.before_call("kanban_comment", args).allows_execution
+        controller.after_call("kanban_comment", args, json.dumps({"id": 100 + i}), failed=False)
+    assert controller.before_call("kanban_comment", args).code == "repeated_successful_call_block"
 
 
 

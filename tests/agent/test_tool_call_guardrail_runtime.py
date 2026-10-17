@@ -461,6 +461,44 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
+@pytest.mark.parametrize("hard_stop_enabled", [False, True])
+@pytest.mark.parametrize("tool_name", ["kanban_comment", "terminal"])
+def test_run_conversation_bounds_successful_mutations_but_allows_changing_terminal_output(tool_name, hard_stop_enabled):
+    agent = _make_agent(tool_name, config=_hard_stop_config(hard_stop_enabled=hard_stop_enabled))
+    args = {"task_id": "task-1", "body": "hello"} if tool_name == "kanban_comment" else {"command": "check progress"}
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="", finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(tool_name, json.dumps(args), f"c{i}")],
+        )
+        for i in range(7)
+    ] + [_mock_response(content="done", finish_reason="stop")]
+
+    with (
+        patch("model_tools.handle_function_call", side_effect=[
+            json.dumps({"success": True, "id": i, "output": f"progress {i}", "exit_code": 0})
+            for i in range(7)
+        ]) as dispatch,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("repeat the tool call")
+
+    if hard_stop_enabled and tool_name == "kanban_comment":
+        assert dispatch.call_count == 5  # the sixth mutation never reaches dispatch
+        assert result["turn_exit_reason"] == "guardrail_halt"
+        assert any(
+            "repeated_successful_call_block" in m["content"]
+            for m in result["messages"] if m.get("role") == "tool"
+        )
+    else:
+        assert dispatch.call_count == 7
+        assert result["turn_exit_reason"].startswith("text_response")
+        assert result["final_response"] == "done"
+        assert "guardrail" not in result
+
+
 
 
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():

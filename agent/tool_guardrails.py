@@ -252,6 +252,10 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked {tool_name}: this read-only call returned the same result {count} times. "
         "Stop repeating it unchanged; use the result already provided or try a different query."
     ),
+    "repeated_successful_call_block": (
+        "Blocked {tool_name}: the same successful call ran {count} times with identical arguments. "
+        "Do not repeat a state-changing action unchanged; use its result or take a different step."
+    ),
     "same_tool_failure_halt": (
         "Stopped {tool_name}: it failed {count} times this turn. "
         "Stop retrying the same failing tool path and choose a different approach."
@@ -317,6 +321,8 @@ class ToolCallGuardrailController:
         # signature -> a mutating call succeeded since its last failure
         self._progress_since_failure: dict[ToolCallSignature, bool] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._successful_streak_sig: ToolCallSignature | None = None
+        self._successful_streak_count = 0
         self._halt_decision: ToolGuardrailDecision | None = None
         # Identical-call streak: CONSECUTIVE identical (tool, args, result) calls; any different call or
         # result resets it, so re-reads after edits and varied polling are never flagged.
@@ -359,6 +365,22 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         allow = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
+        if signature != self._successful_streak_sig:
+            self._successful_streak_sig = None
+            self._successful_streak_count = 0
+        # Argument-only replay protection covers non-idempotent successes even when
+        # resource IDs change. Execution/navigation tools need identical-result evidence.
+        elif (
+            self.config.hard_stop_enabled
+            and not self._is_idempotent(tool_name)
+            and tool_name not in FAILURE_TOLERANT_TOOL_NAMES
+            and not is_stall_guard_repeatable(tool_name)
+            and self._successful_streak_count >= self.config.no_progress_block_after
+        ):
+            return self._decide(
+                "block", "repeated_successful_call_block", tool_name, self._successful_streak_count, signature,
+            )
+
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
         if cap_block is not None or not self.config.hard_stop_enabled:
@@ -383,6 +405,8 @@ class ToolCallGuardrailController:
         warnings = self.config.warnings_enabled
 
         if failed:
+            self._successful_streak_sig = None
+            self._successful_streak_count = 0
             # An identical failing call is only a REPLAY if nothing landed in between;
             # a mutation since the last identical failure restarts the exact-args streak.
             if self._progress_since_failure.pop(signature, False):
@@ -420,6 +444,14 @@ class ToolCallGuardrailController:
         if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
+        if self._is_idempotent(tool_name):
+            self._successful_streak_sig = None
+            self._successful_streak_count = 0
+        elif signature == self._successful_streak_sig:
+            self._successful_streak_count += 1
+        else:
+            self._successful_streak_sig = signature
+            self._successful_streak_count = 1
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)

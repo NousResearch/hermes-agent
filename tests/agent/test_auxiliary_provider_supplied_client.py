@@ -112,3 +112,13 @@ def test_profile_without_a_client_falls_back_to_the_standard_client(registered, 
     # A raising plugin can only fail to provide a client, never break auxiliary resolution.
     assert isinstance(client, OpenAI)
     assert model == "probe-model"
+
+
+def test_strict_profile_errors_reach_the_caller(registered):
+    from agent.auxiliary_client import resolve_provider_client
+
+    profile = _probe_profile(_ExplodingProfile, "aux-seam-strict")
+    profile.strict_client = True
+    registered(profile)
+    with pytest.raises(RuntimeError, match="plugin is broken"):
+        resolve_provider_client("aux-seam-strict", "probe-model")

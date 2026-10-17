@@ -1894,27 +1894,34 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     """Ask the registered ProviderProfile for a custom client, if any. Resolves by provider name,
     then by ``base_url`` prefix so a URL-only runtime (``acp://…``) still reaches its profile.
     A profile that raises is logged and skipped: a third-party plugin must not be able to take
-    the turn down, it can only fail to provide a client."""
+    the turn down, it can only fail to provide a client. A ``strict_client`` profile is the
+    exception: it is matched only by its exact provider name and its errors propagate."""
     try:
         from providers import get_provider_profile
     except Exception:
         return None
     profile = None
-    provider_name = (getattr(agent, "provider", "") or "").strip()
+    raw_name = getattr(agent, "provider", "") or ""
+    provider_name = raw_name.strip()
     if provider_name:
         try:
             profile = get_provider_profile(provider_name)
         except Exception:
             profile = None
+    # Unpadded only: the inline branch strict profiles replaced was an exact set membership test.
+    by_name = profile is not None and raw_name == provider_name
     if profile is None:
         base_url = str(client_kwargs.get("base_url", "") or "").strip()
         if base_url:
             profile = _profile_for_base_url(base_url)
-    if profile is None:
+    # A strict profile's client is keyed on its exact provider name, never a URL or a padded name.
+    if profile is None or (profile.strict_client and not by_name):
         return None
     try:
         return profile.create_client(**client_kwargs)
     except Exception:
+        if profile.strict_client:
+            raise
         _ra().logger.warning(
             "Provider profile %r failed to create a client; falling back to the standard client path",
             getattr(profile, "name", provider_name) or "?", exc_info=True,
@@ -1954,27 +1961,6 @@ def _ensure_copilot_headers(client_kwargs: dict) -> None:
             client_kwargs["default_headers"] = existing
     except Exception:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
-
-
-def _gemini_native_client(agent, client_kwargs: dict, httpx_verify, *, reason: str, shared: bool):
-    """Native Gemini client when the base_url is the Gemini API, else None."""
-    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
-    base_url = str(client_kwargs.get("base_url", "") or "")
-    if not is_native_gemini_base_url(base_url):
-        return None
-    safe_kwargs = {
-        k: v for k, v in client_kwargs.items()
-        if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
-    }
-    if "http_client" not in safe_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(base_url, verify=httpx_verify)
-        if keepalive_http is not None:
-            safe_kwargs["http_client"] = keepalive_http
-    client = GeminiNativeClient(**safe_kwargs)
-    _ra().logger.info(
-        "Gemini native client created (%s, shared=%s) %s", reason, shared, agent._client_log_context()
-    )
-    return client
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
@@ -2029,18 +2015,13 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # before the built-in ladder so a profile registered from ~/.hermes/plugins/ or a pip entry
     # point can ship a transport without editing this function (what makes an out-of-tree ACP
     # provider possible). None (the default) falls through, so existing providers are unaffected.
-    provider_client = _provider_supplied_client(agent, client_kwargs)
+    provider_client = _provider_supplied_client(agent, {**client_kwargs, "httpx_verify": httpx_verify})
     if provider_client is not None:
         _ra().logger.info(
             "%s client created from provider profile (%s, shared=%s) %s",
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
-    from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
-    if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
-        client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
-        if client is not None:
-            return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
     # pinned by tests/agent/test_create_openai_client_reuse.py. What IS shared across those per-client wrappers is the

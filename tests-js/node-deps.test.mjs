@@ -325,3 +325,40 @@ test('a receipt keyed by the probed version reuses under the manifest version, e
   json(join(npmRoot, 'package.json'), { name: 'npm', version: '10.8.3' })
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
 }, 30000)
+
+// The retry ALSO failing with ENOTEMPTY (#57408): the tree is corrupt beyond
+// npm's own recovery, so the failure must carry the manual fix (which
+// node_modules to delete and that the same command is re-run) instead of a
+// bare exit-1. The fake npm here keeps failing on EVERY ci run — the stuck
+// entry is re-created by its "install", so removing node_modules does not help.
+function persistentlyStuckNpm(root) {
+  const env = fakeNpm(root, 'ENOTEMPTY')
+  const cli = join(root, 'fake-npm', 'npm-cli.js')
+  writeFileSync(cli, readFileSync(cli, 'utf8').replace(
+    "if (fs.existsSync('node_modules/.bin/stuck')) {",
+    "fs.mkdirSync('node_modules/.bin', { recursive: true }); fs.writeFileSync('node_modules/.bin/stuck', '')\nif (true) {"
+  ))
+  return env
+}
+
+test('a retry that still hits ENOTEMPTY prints the manual recovery, not a bare failure', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const stderr = []
+  const originalError = console.error
+  console.error = (...parts) => stderr.push(parts.join(' '))
+  try {
+    expect(() => prepareNodeDependencies({
+      source, workspaces: ['web'], env: persistentlyStuckNpm(source),
+    })).toThrow()
+  } finally {
+    console.error = originalError
+  }
+  const message = stderr.join('\n')
+  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\nci\n')  // exactly one retry
+  expect(message).toContain('ENOTEMPTY')
+  expect(message).toContain(JSON.stringify(join(source, 'node_modules')))  // the exact directory to delete
+  expect(message).toContain('rm -rf')
+  expect(message).toContain('Remove-Item -Recurse -Force')  // the Windows form
+  expect(message).toContain('re-run the same command')
+}, 30000)

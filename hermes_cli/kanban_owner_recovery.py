@@ -5,6 +5,8 @@ from pathlib import Path
 import sqlite3
 import psutil
 
+from hermes_process_identity import matches_process_birth
+
 
 def owner_reclaim_paused(conn, task_id):
     """Missing/ambiguous owner receipts never authorize another attempt."""
@@ -24,7 +26,7 @@ def owner_reclaim_paused(conn, task_id):
             return row[1] == 'interrupted'
         if row is None or row[0] in {'queued', 'unknown'}:
             return True
-        return psutil.Process(binding['pid']).create_time() != binding['birth']
+        return not matches_process_birth(psutil.Process(binding['pid']), binding['birth'])
     except (OSError, ValueError, KeyError, sqlite3.Error):
         return True
     except psutil.Error:

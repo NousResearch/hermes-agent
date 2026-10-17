@@ -170,7 +170,12 @@ def _history_replay_updates(history: list[dict[str, Any]]):
 def _mcp_server_config(server: McpServerStdio | McpServerHttp | McpServerSse) -> dict:
     if isinstance(server, McpServerStdio):
         return {"command": server.command, "args": list(server.args), "env": {i.name: i.value for i in server.env}}
-    return {"url": server.url, "headers": {i.name: i.value for i in server.headers}}
+    config = {"url": server.url, "headers": {i.name: i.value for i in server.headers}}
+    if isinstance(server, McpServerHttp):
+        # ACP clients supply the endpoint explicitly. A POST-only MCP route may return
+        # HTML for HEAD/GET, so let the SDK handshake validate it instead of probing it.
+        config["skip_preflight"] = True
+    return config
 
 
 def _restore_env(key: str, value: str | None) -> None:

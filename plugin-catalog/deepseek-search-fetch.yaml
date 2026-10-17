@@ -1,14 +1,15 @@
 name: deepseek-search-fetch
 repo: https://github.com/JasonSwindle/hermes-deepseek-search-fetch
-sha: 21d6653087835f14946b3850be4f6fd089fb7b56
+sha: 7df0e42a0705eb31ed209ef66b3493f4298b920e
 description: "DeepSeek Search & Fetch as a backend for the built-in web_search and web_extract. Disclosure — sends web_search queries and web_extract URLs to api.deepseek.com with your DEEPSEEK_API_KEY and DeepSeek fetches the pages server-side; billed to your DeepSeek balance per successful request; no other endpoint, no telemetry, no file or shell access."
 maintainer: JasonSwindle
 tier: community
 category: web
 docs_url: https://github.com/JasonSwindle/hermes-deepseek-search-fetch#readme
-version: "1.0.1"
+version: "1.0.2"
 platforms: []
 known_issues:
+  - "Two documented Search API request fields (ori_question, localization) are not forwarded \u2014 Hermes hands the provider only the query and a result limit."
   - "Billed by DeepSeek per successful request (list price $0.75 per 1,000; failed calls are free)."
   - "web_extract calls DeepSeek's fetch endpoint one URL at a time, so a multi-URL extract runs sequentially."
 capabilities:

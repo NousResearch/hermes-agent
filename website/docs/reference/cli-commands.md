@@ -688,7 +688,7 @@ hermes auth remove openrouter 2                          # Remove by index
 hermes auth priority openrouter backup-key 0             # Move a credential to the front of fill_first order
 hermes auth reset openrouter                             # Clear cooldowns
 hermes auth reset openrouter 2                           # Clear the cooldown on one credential
-hermes auth refresh openai-codex work                    # Refresh one OAuth credential and clear its cooldown
+hermes auth refresh openai-codex work                    # Refresh OAuth tokens; model cooldowns remain until expiry or auth reset
 hermes auth status anthropic                             # Show auth status for a provider
 hermes auth logout anthropic                             # Log out and clear stored auth state
 ```

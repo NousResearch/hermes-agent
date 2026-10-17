@@ -29,8 +29,9 @@ def _rows():
             for i in range(2)]
 
 
+@pytest.mark.parametrize("cooldown", ["active", "expired", "none"])
 @pytest.mark.parametrize("status", [200, 503, 401])
-def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
+def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, capsys, status, cooldown):
     from hermes_cli import auth_codex
     requests = []
 
@@ -53,6 +54,8 @@ def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
     monkeypatch.setattr(auth_codex, "CODEX_OAUTH_TOKEN_URL", f"http://127.0.0.1:{server.server_port}/token")
     from agent.credential_pool import PooledCredential
     rows = [PooledCredential.from_dict("openai-codex", row).to_dict() for row in _rows()]
+    if cooldown != "none":
+        rows[1]["model_cooldowns"] = {"fixture-model": time.time() + (3600 if cooldown == "active" else -3600)}
     write_credential_pool("openai-codex", rows)
     before = read_credential_pool("openai-codex")
     try:
@@ -67,6 +70,17 @@ def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
                              "client_id": [auth_codex.CODEX_OAUTH_CLIENT_ID]}]
         assert after["row0"] == before[0], (after["row0"], before[0])
         target = after["row1"]
+        output = capsys.readouterr().out
+        assert target.get("model_cooldowns", {}) == before[1].get("model_cooldowns", {})
+        if status == 200 and cooldown == "active":
+            # Refreshing a token does not restore model quota/entitlement (#135873).
+            from agent.credential_pool import load_pool
+            assert load_pool("openai-codex").token_is_blocked("fixture-new-access", model="fixture-model")
+            assert "Model cooldowns remain" in output
+            assert "fixture-model" in output
+            assert "hermes auth reset openai-codex row1" in output
+        else:
+            assert "Model cooldowns remain" not in output
         if status == 200:
             assert target["access_token"] == "fixture-new-access"
             assert target["refresh_token"] == "fixture-new-refresh"

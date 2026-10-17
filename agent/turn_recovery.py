@@ -1398,9 +1398,27 @@ def reset_hint(api_error: Exception) -> str:
     return f"~{format_duration_compact(remaining)}" if remaining >= 1 else ""
 
 
+def _live_retry_reason(api_error: Exception, retry_reason: FailoverReason | None, *,
+                       is_rate_limited: bool, is_zai_coding_overload: bool, free_busy: bool) -> str:
+    """Return static retry copy for a classified failure; never surface provider text."""
+    if free_busy:
+        return "the free model is busy —"
+    if is_rate_limited:
+        return "rate limited —"
+    if is_zai_coding_overload or retry_reason == FailoverReason.overloaded:
+        return "provider reported overload —"
+    if retry_reason == FailoverReason.server_error:
+        return "upstream HTTP error —"
+    if retry_reason == FailoverReason.timeout:
+        if "no substantive model progress" in str(api_error).lower():
+            return "no substantive model progress — local watchdog triggered;"
+        return "provider connection or timeout error —"
+    return "waiting on provider —"
+
+
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
-    is_zai_coding_overload: bool, base_url: Any, model: Any,
+    is_zai_coding_overload: bool, base_url: Any, model: Any, retry_reason: FailoverReason | None = None,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``); otherwise
@@ -1453,7 +1471,10 @@ def compute_error_backoff(
     if _reset:
         _live_reason = f"{_wait_reason.lower()} — resets in {_reset},"
     else:
-        _live_reason = "the free model is busy —" if _free_busy else "waiting on provider —"
+        _live_reason = _live_retry_reason(
+            api_error, retry_reason, is_rate_limited=is_rate_limited,
+            is_zai_coding_overload=is_zai_coding_overload, free_busy=_free_busy,
+        )
     agent._emit_diagnostic_wait(
         f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )

@@ -96,6 +96,12 @@ _WS_LOG_PAYLOAD_PREVIEW = 240
 # by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
 # handler latency (#108325). A full queue parks the reader — the old serial behaviour.
 _WS_DISPATCH_QUEUE_MAX = 256
+# These handlers only project already-owned state.  They may take seconds for a large stored
+# transcript, so running them through the serial control lane turns an inexpensive interrupt or
+# control read behind them into a client timeout.  Keep the exception deliberately narrow: mutating
+# RPCs still retain arrival order, and no more than two expensive reads consume a connection.
+_WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
+_WS_CONCURRENT_READ_LIMIT = 2
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
@@ -405,28 +411,55 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
 
     pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
     dispatcher: asyncio.Task | None = None
+    concurrent_reads: set[asyncio.Task] = set()
+    concurrent_read_slots = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT)
     stop = object()  # queue sentinel; a JSON ``null`` frame parses to None, so None can't be it
 
-    async def _dispatch_loop() -> None:
-        """Dispatch queued requests one at a time in arrival order until the ``stop`` sentinel."""
+    async def _dispatch_one(req: Any) -> None:
+        """Dispatch one request and write its inline reply."""
         nonlocal dispatch_crashes
-        while (req := await pending.get()) is not stop:
-            req_id = req.get("id") if isinstance(req, dict) else None
-            req_method = req.get("method") if isinstance(req, dict) else None
-            # dispatch() may schedule long handlers on the pool; it returns None then and the worker
-            # writes the response itself via transport.write (a separate thread, so that is the safe
-            # path). Inline handlers return the response dict, written here from the loop.
+        req_id = req.get("id") if isinstance(req, dict) else None
+        req_method = req.get("method") if isinstance(req, dict) else None
+        # dispatch() may schedule long handlers on the pool; it returns None then and the worker
+        # writes the response itself via transport.write (a separate thread, so that is the safe
+        # path). Inline handlers return the response dict, written here from the loop.
+        try:
+            resp = await _dispatch_request(authority_connection, req, req_method, transport)
+        except Exception:
+            dispatch_crashes += 1
+            _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
+                         "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            return
+        if resp is not None:
+            await _reply(resp, "send_failed_after_response",
+                         "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+
+    async def _dispatch_concurrent_read(req: Any) -> None:
+        async with concurrent_read_slots:
             try:
-                resp = await _dispatch_request(authority_connection, req, req_method, transport)
-            except Exception:
-                dispatch_crashes += 1
-                _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
-                await _reply(_error(-32603, "internal error", req_id), "send_failed_after_dispatch_crash",
-                             "ws dispatch-crash reply send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+                await _dispatch_one(req)
+            except _SendFailed:
+                # A failed response must end the reader even when it came from the concurrent lane.
+                if dispatcher is not None:
+                    dispatcher.cancel()
+                raise
+
+    def _finish_concurrent_read(task: asyncio.Task) -> None:
+        concurrent_reads.discard(task)
+        with contextlib.suppress(asyncio.CancelledError, _SendFailed):
+            task.result()
+
+    async def _dispatch_loop() -> None:
+        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
+        while (req := await pending.get()) is not stop:
+            req_method = req.get("method") if isinstance(req, dict) else None
+            if req_method in _WS_CONCURRENT_READ_METHODS:
+                task = asyncio.create_task(_dispatch_concurrent_read(req))
+                concurrent_reads.add(task)
+                task.add_done_callback(_finish_concurrent_read)
                 continue
-            if resp is not None:
-                await _reply(resp, "send_failed_after_response",
-                             "ws response send failed peer=%s id=%s method=%s", peer, req_id, req_method)
+            await _dispatch_one(req)
 
     async def _unless_dispatch_failed(aw: Any) -> Any:
         """Await *aw*, or raise _SendFailed once the dispatcher has ended on a reply it could not send."""
@@ -529,6 +562,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
+        if concurrent_reads:
+            await asyncio.gather(*concurrent_reads, return_exceptions=True)
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
             await authority_connection.close()

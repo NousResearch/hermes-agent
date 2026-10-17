@@ -188,6 +188,11 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
 )
 
 
+# Names the block so it stops reading as the tail of the section before it. Not "# Memory":
+# the volatile tier already carries a "MEMORY (your personal notes)" block.
+MEMORY_GUIDANCE_HEADING = "# Carrying knowledge across sessions"
+
+
 # Keep the every-session memory scope even when task knowledge cannot be saved as a skill.
 def build_memory_guidance(
     memory_enabled: bool = True, profile_enabled: bool = True, *, skill_manage_available: bool = True,
@@ -216,7 +221,7 @@ def build_memory_guidance(
         "and corrections for that kind of work — belongs in skills, not in memory, "
         "even when skill writing is unavailable. "
     )
-    return frame + skill_routing + (
+    return MEMORY_GUIDANCE_HEADING + "\n" + frame + skill_routing + (
         "Memory is the narrow exception for facts that apply to EVERY "
         "session regardless of task (who the user is, environment facts, "
         "standing conventions with no task home); it has a hard character "

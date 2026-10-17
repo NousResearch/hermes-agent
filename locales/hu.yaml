@@ -2596,6 +2596,7 @@ cli:
     legend_bg_tasks: "Futó /background promptok"
     legend_bg_processes: "Futó háttér-shellek (rejtve, amíg az élő munka sáv listázza őket)"
     legend_bg_subagents: "Futó alügynökök (rejtve, amíg az élő munka sáv listázza őket)"
+    legend_plugin_badges: "Állapotjelvények bővítmény-láblécelemekből (csak olvasható; a sorok a láblécben vannak)"
     legend_goal: "Aktív /goal: felhasznált körök / korlát"
     legend_git_branch: "Aktuális git-ág"
     legend_duration: "A munkamenet kezdete óta eltelt idő"

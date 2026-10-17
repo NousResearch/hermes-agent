@@ -15,7 +15,7 @@ PLUGIN = '''
 import threading
 
 calls = []
-state = {"mode": "live", "boom": False}
+state = {"mode": "live", "boom": False, "badge": "◈ live"}
 release_slow = threading.Event()
 
 
@@ -25,6 +25,7 @@ def snapshot(session):
     return {
         "label": "◈ demo · " + state["mode"],
         "tone": "warn" if state["mode"] == "held" else "ok",
+        "badge": state["badge"],
         "rows": [{"key": "r1", "label": "demo r1", "detail": "1280x800 · 2 windows"},
                  {"key": "", "label": "dropped: no key"}],
         "actions": [{"id": "watch", "label": "watch", "key": "enter"},
@@ -215,6 +216,66 @@ def test_click_on_a_plugin_row_runs_its_enter_action(footer_plugin, monkeypatch)
     handler(MouseEvent(Point(0, 0), MouseEventType.MOUSE_UP, MouseButton.LEFT, frozenset()))
     wait_until(lambda: opened, what="clicked row opened")
     assert footer_plugin.module.calls[0][:2] == ("watch", "r1")
+
+
+def _status_bar_cli(monitor):
+    """A real HermesCLI status bar reading the footer monitor that polled the plugin."""
+    from datetime import datetime, timedelta
+    from cli import HermesCLI
+
+    cli_obj = HermesCLI.__new__(HermesCLI)
+    cli_obj.model = "anthropic/claude-sonnet-4"
+    cli_obj.session_start = datetime.now() - timedelta(minutes=2)
+    cli_obj.agent = None
+    cli_obj._background_tasks = {}
+    cli_obj._subagent_monitor = monitor
+    return cli_obj
+
+
+def test_an_item_badge_is_a_read_only_status_bar_segment_while_the_item_is_visible(footer_plugin):
+    from hermes_cli.cli_subagent_monitor import install_dock
+
+    cli = _cli()
+    install_dock(cli)
+    monitor = cli._subagent_monitor
+    _settled(monitor, lambda: any(i.get("badge") == "◈ live" for i in monitor.plugin_items), "badge")
+    bar = _status_bar_cli(monitor)
+    # Medium and wide tiers show it; the narrow tier drops it like the other optional counters.
+    assert "◈ live" in bar._build_status_bar_text(width=140)
+    assert "◈ live" in bar._build_status_bar_text(width=60)
+    assert "◈ live" not in bar._build_status_bar_text(width=40)
+    # Painted in the item's tone; a badge is display only, so it carries no mouse handler.
+    bar._status_bar_visible = True
+    bar._prompt_stash = SimpleNamespace(indicator=lambda: "")
+    bar._get_tui_terminal_width = lambda: 140
+    badge = [frag for frag in bar._get_status_bar_fragments() if frag[1] == "◈ live"]
+    assert badge == [("class:status-bar-good", "◈ live")]
+    # A hidden item takes its badge with it.
+    footer_plugin.module.state["mode"] = "hidden"
+    _settled(monitor, lambda: not monitor.plugin_items or all(not i.get("badge") for i in monitor.plugin_items),
+             "hidden")
+    assert "◈" not in bar._build_status_bar_text(width=140)
+
+
+def test_badges_are_sanitised_clipped_and_follow_status_bar_fields(footer_plugin, monkeypatch):
+    import cli as cli_mod
+    from prompt_toolkit.utils import get_cwidth
+    from hermes_cli.cli_plugin_footer import BADGE_COLUMNS, status_badges
+    from hermes_cli.cli_subagent_monitor import install_dock
+
+    footer_plugin.module.state["badge"] = "◈ live\x1b[31m\nwith a much longer tail"
+    cli = _cli()
+    install_dock(cli)
+    monitor = cli._subagent_monitor
+    _settled(monitor, lambda: any(i.get("badge") for i in monitor.plugin_items), "long badge")
+    ((tone, text),) = status_badges(cli)
+    assert tone == "ok" and text.startswith("◈ live") and text.endswith("…")
+    assert text.isprintable() and get_cwidth(text) <= BADGE_COLUMNS
+    bar = _status_bar_cli(monitor)
+    assert text in bar._build_status_bar_text(width=140)
+    hidden = _status_bar_cli(monitor)
+    monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}})
+    assert text not in hidden._build_status_bar_text(width=140)
 
 
 def test_raising_or_hanging_snapshots_never_break_the_footer(footer_plugin):

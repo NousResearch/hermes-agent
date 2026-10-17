@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "実行中の /background プロンプト"
     legend_bg_processes: "実行中のバックグラウンドシェル(ライブ作業フッターに表示中は非表示)"
     legend_bg_subagents: "実行中のサブエージェント(ライブ作業フッターに表示中は非表示)"
+    legend_plugin_badges: "プラグインのフッター項目のステータスバッジ(表示のみ。行はフッターにあります)"
     legend_goal: "有効な /goal:使用ターン / 上限"
     legend_git_branch: "現在の git ブランチ"
     legend_duration: "セッション開始からの経過時間"

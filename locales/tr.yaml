@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "Çalışan /background prompt'ları"
     legend_bg_processes: "Çalışan arka plan kabukları (canlı iş alt bilgisi listelerken gizli)"
     legend_bg_subagents: "Çalışan alt ajanlar (canlı iş alt bilgisi listelerken gizli)"
+    legend_plugin_badges: "Eklenti alt bilgi öğelerinden durum rozetleri (salt okunur; satırlar alt bilgide)"
     legend_goal: "Etkin /goal: kullanılan tur / sınır"
     legend_git_branch: "Geçerli git dalı"
     legend_duration: "Oturum başladığından beri geçen süre"

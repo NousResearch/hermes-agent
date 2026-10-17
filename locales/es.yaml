@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "Prompts de /background en ejecución"
     legend_bg_processes: "Shells en segundo plano en ejecución (ocultas mientras el pie de trabajo en vivo las lista)"
     legend_bg_subagents: "Subagentes en ejecución (ocultos mientras el pie de trabajo en vivo los lista)"
+    legend_plugin_badges: "Insignias de estado de elementos del pie de plugins (solo lectura; las filas están en el pie)"
     legend_goal: "/goal activo: turnos usados / límite"
     legend_git_branch: "Rama de git actual"
     legend_duration: "Tiempo desde que empezó la sesión"

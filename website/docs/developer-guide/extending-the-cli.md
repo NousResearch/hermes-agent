@@ -187,7 +187,7 @@ The default layout from top to bottom:
 
 A wrapper CLI is not needed to show live plugin state under the composer: a plugin can add a pill
 part and selectable rows to the live-work footer with `ctx.register_footer_item()` (keyboard and
-mouse actions included). See
+mouse actions included), plus an optional read-only status-bar badge. See
 [Show live state in the CLI footer](./plugins/index.md#show-live-state-in-the-cli-footer).
 
 ## Tips

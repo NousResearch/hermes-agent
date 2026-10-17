@@ -2857,6 +2857,7 @@ cli:
     legend_bg_tasks: "Prompts /background en cours"
     legend_bg_processes: "Shells d'arrière-plan en cours (masqués tant que le pied de travail en direct les liste)"
     legend_bg_subagents: "Sous-agents en cours (masqués tant que le pied de travail en direct les liste)"
+    legend_plugin_badges: "Badges d'état des éléments de pied de plugins (lecture seule ; les lignes sont dans le pied)"
     legend_goal: "/goal actif : tours utilisés / limite"
     legend_git_branch: "Branche git courante"
     legend_duration: "Temps écoulé depuis le début de la session"

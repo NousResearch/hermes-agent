@@ -1603,6 +1603,7 @@ def snapshot(session):
     _cache.update(at=time.monotonic(), value=None if not jobs else {
         "label": f"⛭ {len(jobs)} deploys",
         "tone": "warn" if any(j.failed for j in jobs) else "ok",
+        "badge": f"⛭ {len(jobs)}",                    # optional: read-only status-bar segment
         "rows": [{"key": j.id, "label": j.name, "detail": j.state} for j in jobs],
         "actions": [{"id": "open", "label": "open", "key": "enter"},
                     {"id": "cancel", "label": "cancel", "key": "c", "confirm": True}],
@@ -1628,6 +1629,11 @@ def register(ctx):
   `label` (pill text), `tone` (`ok` | `warn` | `bad` | `dim`), `rows` (`key`, `label`, `detail`;
   at most 8) and `actions` (`id`, `label`, `key` = `"enter"` or one lowercase letter, optional
   `confirm: true` to require pressing the key twice).
+- Optional `badge`: a short string (e.g. `"◈ 2 live"`) the classic CLI status bar shows as one
+  read-only segment, in the item's tone, while the item is visible. It is sanitised like labels
+  and clipped to 12 columns, shown in the medium and wide tiers (dropped below 52 columns like the
+  other optional counters), and hidden with `display.status_bar.fields` (field `plugin_badges`).
+  It is never clickable; rows and actions stay in the footer.
 - Each snapshot runs in its own worker thread, never while the footer paints. A snapshot that raises
   keeps the item's last good value (logged once); a slow one keeps running while the footer shows
   the last value. Cache inside the plugin if your read is not cheap.

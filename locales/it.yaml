@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "Prompt /background in esecuzione"
     legend_bg_processes: "Shell in background in esecuzione (nascoste mentre il piè di pagina del lavoro in corso le elenca)"
     legend_bg_subagents: "Subagenti in esecuzione (nascosti mentre il piè di pagina del lavoro in corso li elenca)"
+    legend_plugin_badges: "Badge di stato dagli elementi del piè di pagina dei plugin (sola lettura; le righe sono nel piè di pagina)"
     legend_goal: "/goal attivo: turni usati / limite"
     legend_git_branch: "Branch git corrente"
     legend_duration: "Tempo dall'inizio della sessione"

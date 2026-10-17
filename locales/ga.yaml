@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "Leideanna /background ag rith"
     legend_bg_processes: "Blaoisc chúlra ag rith (i bhfolach fad a liostaíonn buntásc na hoibre beo iad)"
     legend_bg_subagents: "Fo-ghníomhairí ag rith (i bhfolach fad a liostaíonn buntásc na hoibre beo iad)"
+    legend_plugin_badges: "Suaitheantais stádais ó mhíreanna buntáisc breiseán (léamh amháin; tá na sraitheanna sa bhuntásc)"
     legend_goal: "/goal gníomhach: sealanna úsáidte / teorainn"
     legend_git_branch: "An brainse git reatha"
     legend_duration: "Am ó thosaigh an seisiún"

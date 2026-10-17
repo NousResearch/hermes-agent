@@ -2679,6 +2679,7 @@ cli:
     legend_bg_tasks: "Running /background prompts"
     legend_bg_processes: "Running background shells (hidden while the live-work footer lists them)"
     legend_bg_subagents: "Running subagents (hidden while the live-work footer lists them)"
+    legend_plugin_badges: "Status badges from plugin footer items (read-only; the rows live in the footer)"
     legend_goal: "Active /goal: turns used / limit"
     legend_git_branch: "Current git branch"
     legend_duration: "Time since the session started"

@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "正在运行的 /background 提示"
     legend_bg_processes: "正在运行的后台 shell(实时工作栏列出时隐藏)"
     legend_bg_subagents: "正在运行的子代理(实时工作栏列出时隐藏)"
+    legend_plugin_badges: "插件页脚项目的状态徽章(只读;行在页脚中)"
     legend_goal: "进行中的 /goal:已用轮数 / 上限"
     legend_git_branch: "当前 git 分支"
     legend_duration: "会话开始以来的时间"

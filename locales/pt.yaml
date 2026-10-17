@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "Prompts de /background em execução"
     legend_bg_processes: "Shells em segundo plano em execução (ocultos enquanto o rodapé de trabalho ao vivo os lista)"
     legend_bg_subagents: "Subagentes em execução (ocultos enquanto o rodapé de trabalho ao vivo os lista)"
+    legend_plugin_badges: "Selos de estado dos itens de rodapé de plugins (só leitura; as linhas ficam no rodapé)"
     legend_goal: "/goal ativo: turnos usados / limite"
     legend_git_branch: "Branch git atual"
     legend_duration: "Tempo desde o início da sessão"

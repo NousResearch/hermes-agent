@@ -20,6 +20,9 @@ from typing import Any, Dict, Optional
 _SB = "class:status-bar"
 _DIM = "class:status-bar-dim"
 _STRONG = "class:status-bar-strong"
+# Plugin footer-item tones (``cli_plugin_footer.TONES``) as status-bar styles.
+_BADGE_STYLES = {"ok": "class:status-bar-good", "warn": "class:status-bar-warn",
+                 "bad": "class:status-bar-bad", "dim": _DIM}
 _AGENT_COUNTERS = (
     "session_input_tokens", "session_output_tokens", "session_cache_read_tokens",
     "session_cache_write_tokens", "session_prompt_tokens", "session_completion_tokens",
@@ -32,6 +35,14 @@ def _threshold_style(value, ladder, fallback: str) -> str:
         if value >= bound:
             return f"class:status-bar-{name}"
     return f"class:status-bar-{fallback}"
+
+
+def _plugin_badge_segments(cli, field_set) -> list:
+    """Read-only badges from visible plugin footer items (``plugin_badges``), one segment each."""
+    if field_set is not None and "plugin_badges" not in field_set:
+        return []
+    from hermes_cli.cli_plugin_footer import status_badges
+    return [[(_BADGE_STYLES[tone], text)] for tone, text in status_badges(cli)]
 
 
 def _finite(v):
@@ -990,7 +1001,7 @@ class CLIStatusBarMixin:
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
+        bg_tasks, bg_processes, bg_subagents, plugin_badges, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
         (opt-in only). Order is fixed; the config controls visibility only.
         """
@@ -1081,6 +1092,7 @@ class CLIStatusBarMixin:
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")
             add_count("bg_subagents", "active_background_subagents", "⛓")
+            segs += _plugin_badge_segments(self, field_set)
         if goal_segment:
             add("goal", _STRONG, goal_segment)
         git_branch = snapshot.get("git_branch") or ""

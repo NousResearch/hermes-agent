@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "Lopende /background-prompts"
     legend_bg_processes: "Lopende agtergronddoppe (versteek terwyl die lewendige werkvoetstuk hulle lys)"
     legend_bg_subagents: "Lopende subagente (versteek terwyl die lewendige werkvoetstuk hulle lys)"
+    legend_plugin_badges: "Statuskentekens van inprop-voetstukitems (slegs lees; die rye is in die voetstuk)"
     legend_goal: "Aktiewe /goal: beurte gebruik / limiet"
     legend_git_branch: "Huidige git-tak"
     legend_duration: "Tyd sedert die sessie begin het"

@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "실행 중인 /background 프롬프트"
     legend_bg_processes: "실행 중인 백그라운드 셸(라이브 작업 푸터에 표시되는 동안 숨김)"
     legend_bg_subagents: "실행 중인 서브에이전트(라이브 작업 푸터에 표시되는 동안 숨김)"
+    legend_plugin_badges: "플러그인 푸터 항목의 상태 배지(읽기 전용, 행은 푸터에 있음)"
     legend_goal: "활성 /goal: 사용한 턴 / 한도"
     legend_git_branch: "현재 git 브랜치"
     legend_duration: "세션 시작 후 경과 시간"

@@ -28,6 +28,8 @@ SLOW_SNAPSHOT_SECONDS = 2.0
 # At most one snapshot per item per interval, however often the footer refreshes.
 SNAPSHOT_INTERVAL = 1.0
 _MAX_ROWS = 8
+# A status-bar badge (``snapshot()['badge']``) is clipped to this many cells.
+BADGE_COLUMNS = 12
 _MAX_ACTIONS = 8
 _ACTION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 _LETTER = re.compile(r"[a-z]")
@@ -83,7 +85,7 @@ def normalize(raw) -> Optional[dict]:
     if not label and not rows:
         return None
     return {"label": label, "tone": raw.get("tone") if raw.get("tone") in TONES else "dim",
-            "rows": rows, "actions": actions}
+            "rows": rows, "actions": actions, "badge": _text(raw.get("badge"), 64)}
 
 
 class _Slot:
@@ -183,6 +185,16 @@ def footer_rows(items: list[dict]) -> list[dict]:
              "plugin": item["plugin"], "row_key": row["key"], "label": row["label"],
              "detail": row["detail"], "tone": item["tone"], "actions": item["actions"]}
             for item in items for row in item["rows"]]
+
+
+def status_badges(cli) -> list[tuple[str, str]]:
+    """``(tone, text)`` for each visible footer item that sets ``badge``: the read-only status-bar
+    segments (``plugin_badges``), sanitised like labels and clipped to ``BADGE_COLUMNS`` cells."""
+    from hermes_cli.cli_dock_footer import clip
+    monitor = getattr(cli, "_subagent_monitor", None)
+    items = getattr(monitor, "plugin_items", None) or []
+    return [(item["tone"], text) for item in items
+            if (text := clip(item.get("badge"), BADGE_COLUMNS).strip())]
 
 
 def action_for(row: Optional[dict], key: str) -> Optional[dict]:

@@ -14,8 +14,8 @@ from agent.i18n import t
 # Bar order; the meaning of each is ``cli.status_bar.legend_<field>``.
 _LEGEND_FIELDS = (
     "model", "context_detail", "context_pct", "cache_hit", "latency", "tps", "compressions",
-    "bg_tasks", "bg_processes", "bg_subagents", "goal", "git_branch", "duration", "prompt_elapsed",
-    "idle_since", "focus", "yolo", "total_tokens", "stash", "battery", "title")
+    "bg_tasks", "bg_processes", "bg_subagents", "plugin_badges", "goal", "git_branch", "duration",
+    "prompt_elapsed", "idle_since", "focus", "yolo", "total_tokens", "stash", "battery", "title")
 
 
 def footer_covered_fields(cli) -> frozenset:
@@ -47,6 +47,7 @@ def _samples() -> dict[str, str]:
         "cache_hit": "◎ 48.4%", "latency": "◷ " + t("cli.status_bar.latency_label", value="4.8"),
         "tps": "↑ " + t("cli.status_bar.velocity_label", value="55"), "compressions": "🗜️ 2",
         "bg_tasks": "▶ 1", "bg_processes": "⚙ 1", "bg_subagents": "⛓ 2",
+        "plugin_badges": "◈ live",
         "goal": t("cli.status_bar.goal_turns", used=3, max=20), "git_branch": "⎇ main", "duration": "2m",
         "prompt_elapsed": timers, "idle_since": bar._format_idle_since(time.time() - 240, turn_live=False),
         "focus": focus_statusbar_segment(True), "yolo": t("cli.status_bar.yolo_badge"),

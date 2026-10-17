@@ -2579,6 +2579,7 @@ cli:
     legend_bg_tasks: "Laufende /background-Prompts"
     legend_bg_processes: "Laufende Hintergrund-Shells (ausgeblendet, solange die Live-Arbeitsleiste sie zeigt)"
     legend_bg_subagents: "Laufende Subagenten (ausgeblendet, solange die Live-Arbeitsleiste sie zeigt)"
+    legend_plugin_badges: "Status-Abzeichen von Plugin-Fußzeilenelementen (nur Anzeige; die Zeilen stehen in der Fußzeile)"
     legend_goal: "Aktives /goal: verbrauchte Züge / Limit"
     legend_git_branch: "Aktueller Git-Branch"
     legend_duration: "Zeit seit Sitzungsbeginn"

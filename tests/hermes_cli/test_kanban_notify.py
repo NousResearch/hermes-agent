@@ -74,9 +74,12 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
     finally:
         conn.close()
 
-def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
+def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home, monkeypatch):
     """The CLI must persist thread route anchors without dropping existing metadata."""
     import argparse
+
+    # notify-subscribe records its caller on the subscription: explicit signal required.
+    monkeypatch.setenv("HERMES_PROFILE", "operator")
 
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="thread route", assignee="worker")

@@ -122,8 +122,8 @@ class DecomposeOutcome:
 
 
 def _profile_author() -> str:
-    """Mirror of ``hermes_cli.kanban._profile_author``."""
-    return _specify_author("decomposer")
+    """Mirror of ``hermes_cli.kanban._profile_author``: shared contract, explicit signals only."""
+    return _specify_author()
 
 
 def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = None) -> str:

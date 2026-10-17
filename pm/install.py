@@ -293,10 +293,21 @@ def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
 
 
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:
-    """Explicit installs re-check realized bytes; startup keeps its cheap facts check."""
+    """Explicit installs re-check realized bytes; startup keeps its cheap facts check.
+
+    A package with ``digest_skip_dirs`` never fails on a digest mismatch:
+    its recorded digest may predate the skip (facts written by an older
+    hermes counted the mutable layer), and the bytes a re-realization
+    would restore are the bare upstream archive — not the bundle-preinstalled
+    tree — so repairing on drift wipes both layers (#138689). Its integrity
+    stays with verify()."""
     entry = store.entry(fact["entry"])
     try:
-        return not package.verify(entry, target) and fact.get("digest") == tree_digest(entry)
+        if package.verify(entry, target):
+            return False
+        if package.digest_skip_dirs:
+            return True
+        return fact.get("digest") == tree_digest(entry)
     except OSError:
         return False
 
@@ -371,7 +382,9 @@ def _copy_verified_source(package, lockfile, copy_from, staged, version, target)
             or not _entry_verified(package, source, source_store, target)):
         raise InstallError(package.name, "bundled copy source failed verification")
     shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
-    if tree_digest(staged) != source["digest"]:
+    # The source digest may come from either side of a digest_skip_dirs
+    # change; either spelling proves the copy carried the source's bytes.
+    if (source["digest"] not in (tree_digest(staged, package.digest_skip_dirs), tree_digest(staged))):
         raise InstallError(package.name, "copied bytes do not match the bundled source")
 
 
@@ -462,7 +475,7 @@ def _install(
                         facts.record(
                             package.name, version, entry_name, package.env(entry, target), store.root,
                             target=target, artifacts=[a["sha256"] for a in artifacts],
-                            digest=tree_digest(entry),
+                            digest=tree_digest(entry, package.digest_skip_dirs),
                         )
                 _remove_downloads(store, artifacts)
             except (InstallError, DownloadPaused):

@@ -9,7 +9,7 @@ docs_url: https://github.com/JasonSwindle/hermes-deepseek-search-fetch#readme
 version: "1.0.2"
 platforms: []
 known_issues:
-  - "Two documented Search API request fields (ori_question, localization) are not forwarded \u2014 Hermes hands the provider only the query and a result limit."
+  - "Two documented Search API request fields (ori_question, localization) are not forwarded — Hermes hands the provider only the query and a result limit."
   - "Billed by DeepSeek per successful request (list price $0.75 per 1,000; failed calls are free)."
   - "web_extract calls DeepSeek's fetch endpoint one URL at a time, so a multi-URL extract runs sequentially."
 capabilities:

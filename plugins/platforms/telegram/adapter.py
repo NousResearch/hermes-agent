@@ -5675,6 +5675,23 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 _protect_fenced,
                 text,
             )
+        # 1b) Whatever triple-backtick run is still bare is literal text, not a fence: a run quoted
+        #     inside a line, an inline "```x```" span, or an opener with no closing fence. Two such
+        #     runs on DIFFERENT lines must not pair — the inline pass below would render every line
+        #     between them as one code span. Same-line pairs keep the inline-span rendering the
+        #     inline pass gives them today, so only the cross-line shape changes.
+        _runs = list(re.finditer(r'(?<!\\)```', text))
+        _pairs = [(start.span(), end.span()) for start, end in zip(_runs[::2], _runs[1::2])
+                  if "\n" in text[start.end():end.start()]]
+        if _pairs:
+            _parts: list = []
+            _cursor = 0
+            for (_a0, _a1), (_b0, _b1) in _pairs:
+                _parts += [text[_cursor:_a0], _ph('\\`\\`\\`'), text[_a1:_b0], _ph('\\`\\`\\`')]
+                _cursor = _b1
+            _parts.append(text[_cursor:])
+            text = "".join(_parts)
+
         # 2) Protect inline code (`...`)
         #    Escape \ inside inline code per MarkdownV2 spec.
         text = re.sub(

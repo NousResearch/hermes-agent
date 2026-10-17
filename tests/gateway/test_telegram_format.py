@@ -159,6 +159,18 @@ class TestFormatMessageCodeBlocks:
         assert "second line" in result
         assert result.index("second line") < result.index("```")
 
+    def test_cross_line_quoted_runs_stay_literal(self, adapter):
+        r"""Two quoted ``` runs on different lines must not pair into a code span.
+
+        Without the pairing guard the inline pass spans from the first run to
+        the second, rendering every line between them as monospace.
+        """
+        text = "⚙️ a|```|b\nprose line\n⚙️ c|```|d"
+        result = adapter.format_message(text)
+        assert r"\`\`\`" in result
+        assert "```" not in result
+        assert "prose line" in result
+
     def test_quoted_run_elsewhere_leaves_lead_in_fence_protected(self, adapter):
         r"""A quoted run earlier in the message must not stop a later block whose
         opener carries lead-in prose from being protected."""

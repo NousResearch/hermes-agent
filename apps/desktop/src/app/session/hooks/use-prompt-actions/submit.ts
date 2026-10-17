@@ -178,6 +178,34 @@ function isPreAdmissionRefusal(error: unknown): boolean {
   return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
 }
 
+/** Freeze literal attachment aliases and terminal selections before submission. */
+function prepareComposerTransport(rawText: string, attachments: ComposerAttachment[], options?: SubmitTextOptions) {
+  let transportRaw = rawText
+  let bubbleOverride = options?.displayText
+
+  if (!options?.fromQueue) {
+    const frozen = freezeComposerTransportPayload(rawText, undefined, attachments)
+
+    if (frozen.missingLabels.length > 0) {
+      notify({
+        kind: 'warning',
+        title: translateNow('composer.terminalSelectionMissingTitle'),
+        message: translateNow('composer.terminalSelectionMissingBody')
+      })
+
+      return null
+    }
+
+    transportRaw = frozen.transportText
+
+    if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
+      bubbleOverride = frozen.displayText
+    }
+  }
+
+  return { visibleText: sanitizeComposerInput(transportRaw).trim(), bubbleOverride }
+}
+
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
   const {
     activeSessionIdRef,
@@ -214,34 +242,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         a => typeof a.titlePreview === 'string' && a.titlePreview.trim()
       )?.titlePreview
 
-      // Freeze `@terminal:` chips into transport text before send. Queue drains
-      // already carry frozen transport (tokens stripped at enqueue) — never
-      // re-resolve against the live selection map, or a later Cmd+L that reused
-      // the same shell:row label silently injects unrelated output (#77078).
-      let transportRaw = rawText
-      let bubbleOverride = options?.displayText
+      // Queue entries already own frozen transport; never resolve them against later selections.
+      const transport = prepareComposerTransport(rawText, attachments, options)
 
-      if (!options?.fromQueue) {
-        const frozen = freezeComposerTransportPayload(rawText)
-
-        if (frozen.missingLabels.length > 0) {
-          notify({
-            kind: 'warning',
-            title: translateNow('composer.terminalSelectionMissingTitle'),
-            message: translateNow('composer.terminalSelectionMissingBody')
-          })
-
-          return false
-        }
-
-        transportRaw = frozen.transportText
-
-        if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
-          bubbleOverride = frozen.displayText
-        }
+      if (!transport) {
+        return false
       }
 
-      const visibleText = sanitizeComposerInput(transportRaw).trim()
+      const { visibleText } = transport
+      let { bubbleOverride } = transport
+
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to

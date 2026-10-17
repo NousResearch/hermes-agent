@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import { attachmentReferenceName } from '@/app/chat/composer/attachment-references'
@@ -12,17 +13,20 @@ import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desk
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
 import {
-  $freshDraftKey,
   addComposerAttachment,
   type ComposerAttachment,
   type ComposerAttachmentPatch,
   createComposerAttachmentOccurrenceId,
+  freshDraftScope,
+  isFreshDraftScope,
+  onNewSessionDraftAssigned,
   patchMainComposerAttachmentOccurrence,
   removeComposerAttachment,
   setComposerTerminalSelection,
   updateComposerAttachment
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
+import { $selectedStoredSessionId } from '@/store/session'
 
 import type { ImageDetachResponse } from '../../types'
 
@@ -398,24 +402,56 @@ const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
 
 interface ComposerActionsOptions {
   activeSessionId: string | null
+  draftSessionKey?: string | null
   currentCwd: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   scope?: ComposerActionsScope
 }
 
+/** Main attachments follow the durable draft through runtime recreation. */
+export function useMainComposerActions(options: Omit<ComposerActionsOptions, 'scope' | 'draftSessionKey'>) {
+  const draftSessionKey = useStore($selectedStoredSessionId)
+
+  return useComposerActions({ ...options, draftSessionKey })
+}
+
 export function useComposerActions({
   activeSessionId,
+  draftSessionKey = activeSessionId,
   currentCwd,
   requestGateway,
   scope = MAIN_ACTIONS_SCOPE
 }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
-  const ownerRef = useRef({ session: activeSessionId, target: scope.target })
+  const draftKey = draftSessionKey ?? freshDraftScope()
 
-  if (ownerRef.current.session !== activeSessionId || ownerRef.current.target !== scope.target) {
-    ownerRef.current = { session: activeSessionId, target: scope.target }
+  const ownerRef = useRef<{ session: string; target: string; assigned?: string }>({
+    session: draftKey,
+    target: scope.target
+  })
+
+  if (
+    ownerRef.current.target !== scope.target ||
+    (ownerRef.current.session !== draftKey && ownerRef.current.assigned !== draftKey)
+  ) {
+    ownerRef.current = { session: draftKey, target: scope.target }
+  } else if (ownerRef.current.assigned === draftKey) {
+    ownerRef.current.session = draftKey
+    delete ownerRef.current.assigned
   }
+
+  // An announced first-send assignment keeps the same draft. Navigation does
+  // not announce an assignment, and still invalidates the captured owner.
+  useEffect(
+    () =>
+      onNewSessionDraftAssigned((fromKey, toKey) => {
+        if (ownerRef.current.session === fromKey) {
+          ownerRef.current.assigned = toKey
+        }
+      }),
+    []
+  )
 
   useEffect(
     () => () => {
@@ -428,9 +464,9 @@ export function useComposerActions({
   // sessions. Discard that result rather than attaching into a different draft.
   const captureOwner = useCallback(() => {
     const owner = ownerRef.current
-    const freshKey = $freshDraftKey.get()
 
-    return () => ownerRef.current === owner && (owner.session !== null || $freshDraftKey.get() === freshKey)
+    return () =>
+      ownerRef.current === owner && (!isFreshDraftScope(owner.session) || owner.session === freshDraftScope())
   }, [])
 
   /** Add to this scope's composer and focus it. All sidebar/picker/drop

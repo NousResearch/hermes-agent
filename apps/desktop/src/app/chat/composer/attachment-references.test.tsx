@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import {
+  announceNewSessionDraftKey,
   clearSessionDraft,
   createComposerAttachmentScope,
   mainComposerScope,
@@ -25,15 +26,22 @@ let actions: ReturnType<typeof useComposerActions>
 const actionsBySession = new Map<string, ReturnType<typeof useComposerActions>>()
 
 interface ComposerProps {
-  session: string
+  session: string | null
+  draftSessionKey?: string | null
   onSubmit: ChatBarProps['onSubmit']
 }
 
-function Composer({ session, onSubmit }: ComposerProps) {
+function Composer({ session, draftSessionKey, onSubmit }: ComposerProps) {
   const { attachments, target } = useComposerScope()
   const scope = useMemo(() => ({ ...attachments, target }), [attachments, target])
-  actions = useComposerActions({ activeSessionId: session, currentCwd: '/project', requestGateway: vi.fn(), scope })
-  actionsBySession.set(session, actions)
+  actions = useComposerActions({
+    activeSessionId: session,
+    draftSessionKey,
+    currentCwd: '/project',
+    requestGateway: vi.fn(),
+    scope
+  })
+  actionsBySession.set(session ?? 'fresh', actions)
 
   return (
     <ChatBar
@@ -45,6 +53,7 @@ function Composer({ session, onSubmit }: ComposerProps) {
       onAttachPastedText={actions.attachPastedText}
       onCancel={vi.fn()}
       onSubmit={onSubmit}
+      queueSessionKey={draftSessionKey}
       sessionId={session}
       state={{
         model: { canSwitch: false, model: '', provider: '' },
@@ -56,13 +65,15 @@ function Composer({ session, onSubmit }: ComposerProps) {
 }
 
 interface HarnessProps {
-  session?: string
+  session?: string | null
+  draftSessionKey?: string | null
   onSubmit?: ChatBarProps['onSubmit']
   scope?: ComposerScope
 }
 
 function Harness({
   session = 'references-A',
+  draftSessionKey,
   onSubmit = vi.fn(async () => true),
   scope = MAIN_COMPOSER_SCOPE
 }: HarnessProps) {
@@ -78,7 +89,7 @@ function Harness({
       <MemoryRouter>
         <I18nProvider configClient={null} initialLocale="en">
           <ComposerScopeProvider value={scope}>
-            <Composer onSubmit={onSubmit} session={session} />
+            <Composer draftSessionKey={draftSessionKey} onSubmit={onSubmit} session={session} />
           </ComposerScopeProvider>
         </I18nProvider>
       </MemoryRouter>
@@ -105,6 +116,8 @@ afterEach(() => {
   mainComposerScope.clear()
   clearSessionDraft('references-A')
   clearSessionDraft('references-B')
+  clearSessionDraft(null)
+  announceNewSessionDraftKey(null)
   actionsBySession.clear()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -324,4 +337,73 @@ it('keeps simultaneous composers and their attachment reference names isolated',
   expect(mainEditor.querySelector('[data-attachment-reference]')).toBeNull()
   expect(mainComposerScope.$attachments.get()).toEqual([])
   expect(scope.attachments.$attachments.get()).toHaveLength(1)
+})
+
+it('keeps a pending image paste through the announced first-session assignment', async () => {
+  $gatewayState.set('open')
+  let finish!: (path: string) => void
+
+  const saveImageBuffer = vi.fn(
+    () =>
+      new Promise<string>(resolve => {
+        finish = resolve
+      })
+  )
+
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: { saveImageBuffer }
+  })
+  const view = render(<Harness session={null} />)
+  const editor = editorIn(view.container)
+  typeDraft(editor, 'follow-up draft')
+  const file = new File(['image'], 'pending.png', { type: 'image/png' })
+  Object.defineProperty(file, 'arrayBuffer', { value: async () => new ArrayBuffer(4) })
+  let pasting!: Promise<boolean>
+  act(() => {
+    pasting = actions.attachImageBlob(file)
+  })
+  await waitFor(() => expect(saveImageBuffer).toHaveBeenCalled())
+  act(() => {
+    announceNewSessionDraftKey('references-A')
+  })
+  view.rerender(<Harness session="references-A" />)
+  await act(async () => {
+    finish('/cache/pending.png')
+    await pasting
+  })
+  expect(mainComposerScope.$attachments.get()).toEqual([
+    expect.objectContaining({ label: 'pending.png', path: '/cache/pending.png' })
+  ])
+  expect(composerPlainText(editor)).toBe('follow-up draft [pending.png] ')
+})
+
+it('keeps a delayed picker result when the runtime changes within one durable draft', async () => {
+  $gatewayState.set('open')
+  let finish!: (paths: string[]) => void
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: {
+      selectPaths: vi.fn(
+        () =>
+          new Promise<string[]>(resolve => {
+            finish = resolve
+          })
+      )
+    }
+  })
+  const view = render(<Harness draftSessionKey="references-A" session="runtime-old" />)
+  const editor = editorIn(view.container)
+  typeDraft(editor, 'same draft')
+  let picking!: Promise<void>
+  act(() => {
+    picking = actions.pickContextPaths('file')
+  })
+  view.rerender(<Harness draftSessionKey="references-A" session="runtime-new" />)
+  await act(async () => {
+    finish(['/project/late.txt'])
+    await picking
+  })
+  expect(composerPlainText(editor)).toBe('same draft [late.txt] ')
+  expect(mainComposerScope.$attachments.get()).toEqual([expect.objectContaining({ path: '/project/late.txt' })])
 })

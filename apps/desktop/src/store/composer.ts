@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { attachmentReferenceMatches, attachmentReferenceName } from '@/app/chat/composer/attachment-references'
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
 import { persistString, storedString } from '@/lib/storage'
@@ -591,8 +592,24 @@ export function migrateSessionDraft(fromKey: string | null | undefined, toKey: s
  */
 let announcedNewSessionDraftKey: string | null = null
 
+const newSessionDraftListeners = new Set<(fromKey: string, toKey: string) => void>()
+
+export function onNewSessionDraftAssigned(listener: (fromKey: string, toKey: string) => void) {
+  newSessionDraftListeners.add(listener)
+
+  return () => {
+    newSessionDraftListeners.delete(listener)
+  }
+}
+
 export function announceNewSessionDraftKey(toKey: string | null | undefined): void {
   announcedNewSessionDraftKey = toKey?.trim() || null
+
+  if (announcedNewSessionDraftKey) {
+    for (const listener of newSessionDraftListeners) {
+      listener(freshDraftScope(), announcedNewSessionDraftKey)
+    }
+  }
 }
 
 /** Consume the announcement; move the `__new__` draft when it names `toKey`.
@@ -762,11 +779,20 @@ function unquoteRefValue(raw: string) {
   return (quoted ? raw.slice(1, -1) : raw).replace(/[,.;!?]+$/, '').trim()
 }
 
-function terminalLabelsFromDraft(draft: string) {
+function terminalRefMatches(draft: string, attachments: readonly ComposerAttachment[] = []) {
+  const names = attachments.map(attachmentReferenceName).filter((name): name is string => name !== null)
+  const references = attachmentReferenceMatches(draft, names)
+
+  return [...draft.matchAll(TERMINAL_REF_RE)].filter(
+    match => !references.some(reference => match.index >= reference.start && match.index < reference.end)
+  )
+}
+
+function terminalLabelsFromDraft(draft: string, attachments: readonly ComposerAttachment[] = []) {
   const labels: string[] = []
   const seen = new Set<string>()
 
-  for (const match of draft.matchAll(TERMINAL_REF_RE)) {
+  for (const match of terminalRefMatches(draft, attachments)) {
     const label = unquoteRefValue(match[1] || '')
 
     if (!label || seen.has(label)) {
@@ -781,8 +807,8 @@ function terminalLabelsFromDraft(draft: string) {
 }
 
 /** True when the draft still carries `@terminal:` chips (not already-frozen transport). */
-export function draftHasTerminalChips(draft: string): boolean {
-  return terminalLabelsFromDraft(draft).length > 0
+export function draftHasTerminalChips(draft: string, attachments: readonly ComposerAttachment[] = []): boolean {
+  return terminalLabelsFromDraft(draft, attachments).length > 0
 }
 
 export function setComposerTerminalSelection(label: string, text: string) {
@@ -830,9 +856,14 @@ function terminalFence(text: string) {
   return `\`\`\`terminal\n${text}\n\`\`\``
 }
 
-function stripTerminalRefTokens(draft: string) {
-  return draft
-    .replace(new RegExp(TERMINAL_REF_RE.source, 'g'), '')
+function stripTerminalRefTokens(draft: string, attachments: readonly ComposerAttachment[]) {
+  let remainder = draft
+
+  for (const match of terminalRefMatches(draft, attachments).reverse()) {
+    remainder = remainder.slice(0, match.index) + remainder.slice(match.index + match[0].length)
+  }
+
+  return remainder
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
@@ -858,9 +889,10 @@ export interface ComposerTransportPayload {
  */
 export function freezeComposerTransportPayload(
   draft: string,
-  selections: Record<string, string> = $composerTerminalSelections.get()
+  selections: Record<string, string> = $composerTerminalSelections.get(),
+  attachments: readonly ComposerAttachment[] = []
 ): ComposerTransportPayload {
-  const labels = terminalLabelsFromDraft(draft)
+  const labels = terminalLabelsFromDraft(draft, attachments)
 
   if (labels.length === 0) {
     return { transportText: draft, displayText: draft, missingLabels: [] }
@@ -890,7 +922,7 @@ export function freezeComposerTransportPayload(
     }
   }
 
-  const remainder = stripTerminalRefTokens(draft)
+  const remainder = stripTerminalRefTokens(draft, attachments)
   const transportText = [...fences, remainder].filter(Boolean).join('\n\n')
 
   return { transportText, displayText: draft, missingLabels: [] }

@@ -26,6 +26,7 @@ import {
   undoRestoredDraft,
   updateComposerAttachment
 } from './composer'
+import { resolveQueuedPromptTransport } from './composer-queue'
 
 describe('voice conversation start requests', () => {
   it('latches each request until the main composer consumes it once', () => {
@@ -450,5 +451,28 @@ describe('freezeComposerTransportPayload', () => {
     expect(frozen.transportText).toContain('selected terminal lines')
     expect(frozen.displayText).toBe('look at @terminal:`zsh:23-58`')
     expect(freezeComposerTransportPayload(frozen.transportText).transportText).toBe(frozen.transportText)
+  })
+})
+
+describe('literal attachment references at transport boundaries', () => {
+  it('keeps a terminal-like filename literal through freezing and queued transport', () => {
+    const attachments: ComposerAttachment[] = [{ id: 'file:literal', kind: 'file', label: '@terminal:log.txt' }]
+    const text = 'Read [@terminal:log.txt]'
+    expect(freezeComposerTransportPayload(text, {}, attachments)).toEqual({
+      transportText: text,
+      displayText: text,
+      missingLabels: []
+    })
+    expect(resolveQueuedPromptTransport({ id: 'literal', text, attachments, queuedAt: 1 })).toEqual({
+      ok: true,
+      transportText: text
+    })
+    const mixed = `${text} and @terminal:selection`
+    expect(freezeComposerTransportPayload(mixed, { selection: 'real output' }, attachments)).toEqual({
+      transportText: '```terminal\nreal output\n```\n\nRead [@terminal:log.txt] and',
+      displayText: mixed,
+      missingLabels: []
+    })
+    expect(freezeComposerTransportPayload(mixed, {}, attachments).missingLabels).toEqual(['selection'])
   })
 })

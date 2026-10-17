@@ -558,3 +558,14 @@ async def test_title_rename_true_miss_noops():
     )
     await task
     assert renames == []
+
+
+def test_relay_help_manifest_exposes_optional_query():
+    help_command = next(row for row in build_relay_command_manifest() if row["name"] == "help")
+    assert help_command == {
+        "name": "help", "description": "Show available commands",
+        "options": [{
+            "type": 3, "name": "query", "description": "Use skills to list skills, or text to filter commands",
+            "required": False,
+        }],
+    }

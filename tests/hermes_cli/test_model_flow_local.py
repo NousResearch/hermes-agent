@@ -18,14 +18,17 @@ def test_local_models_row_follows_the_engine_pin_and_exclusions():
     assert "llamacpp" not in _picker_keys({"model_catalog": {"excluded_providers": ["llama.cpp"]}})
 
 
-@pytest.mark.parametrize("outcome", ["done", "error"])
+@pytest.mark.parametrize("outcome", ["done", "error", "interrupted"])
 def test_picked_model_runs_the_quickstart_job_and_reports_how_it_ended(monkeypatch, capsys, outcome):
     """The CLI starts the same quickstart job the desktop's button does and reports that job's
     terminal state; only a finished job claims the default changed."""
+    from urllib.error import HTTPError
+
     import hermes_cli.main_provider_setup as provider_setup
     from hermes_cli import setup
     from hermes_cli.model_setup_flows_local import _model_flow_local
     from hermes_cli.web_routers import local_models as lm
+    from pm.downloader import DownloadTransportError
 
     row = {"id": "tiny", "display_name": "Tiny", "fits": True, "needs_engine": False, "recommended": True,
            "downloaded": False, "size_label": "1.0 GB", "fit_summary": "runs fully on your GPU"}
@@ -43,6 +46,9 @@ def test_picked_model_runs_the_quickstart_job_and_reports_how_it_ended(monkeypat
             lm._step(job, "downloading", "Downloading Tiny")
             if outcome == "error":
                 raise RuntimeError("disk full")
+            if outcome == "interrupted":
+                url = "https://example.invalid/tiny.gguf"
+                raise DownloadTransportError(url, HTTPError(url, 503, "Unavailable", {}, None))
             lm._finish(job, "Tiny is ready — new chats use it")
 
         lm._spawn_job(job, "test-quickstart", run, resumable=True)
@@ -58,5 +64,9 @@ def test_picked_model_runs_the_quickstart_job_and_reports_how_it_ended(monkeypat
     assert started == ["tiny"]
     if outcome == "done":
         assert "✓ Tiny is ready" in out and "Default model set to: Tiny" in out
-    else:
+    elif outcome == "error":
         assert "✗ disk full" in out and "Default model set to" not in out
+    else:
+        assert "503" in out and "Paused" in out
+        assert "Run `hermes model` → Local models again to resume; finished bytes are kept." in out
+        assert "Default model set to" not in out

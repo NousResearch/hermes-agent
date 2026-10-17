@@ -14,11 +14,11 @@ import logging
 import os
 import signal
 import sys
-from typing import Optional, Tuple
+from typing import Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
-from gateway.session import SessionSource, build_session_context
+from gateway.session import SessionSource
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -243,43 +243,6 @@ class GatewayInboundHooksMixin:
     async def _hm_dispatch_plugin_command(
         self, event: MessageEvent, source: SessionSource, command: str
     ) -> tuple[bool, Optional[str], Optional[str]]:
-        """Plugin-registered slash command *command* → ``(handled, result, command)``. No quick
-        commands: a local session resolves those in its own profile before calling this."""
-        # Underscores normalize to hyphens so Telegram's underscored autocomplete form matches
-        # plugin commands registered with hyphens.
-        if command:
-            try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
-        return False, None, command
-
-    async def _hm_run_plugin_handler(
-        self, plugin_handler, event: MessageEvent, source: SessionSource, session_entry=None, args=None
-    ) -> Optional[str]:
-        """Run a resolved plugin command handler for *source* → its reply text or None; raises what
-        the handler raises (``gateway/session_commands.py`` resolves the exact registered name).
-        *args* is the argument as typed (a local session's command); otherwise the message's
-        command arguments, with the messaging dash repair of ``get_command_args``."""
-        # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
-        # sits before it, so a handler reading get_session_env() would see an empty or a
-        # foreign (cron agent's os.environ) session (#108698). A local session's command
-        # passes its live *session_entry* (key and id, as its turns bind them); a messaging
-        # message has none yet, so session_key is derived from source. Sync handlers run on the
-        # gateway pool (contextvars carried), never the loop thread: blocking I/O there starves
-        # the liveness watchdog and the process exits 75 mid-handler (#105279).
-        _plugin_context = build_session_context(source, self.config, session_entry)
-        if session_entry is None:
-            _plugin_context.session_key = self._session_key_for_source(source)
-        user_args = event.get_command_args().strip() if args is None else args
-        with self._session_env_scope(_plugin_context):
-            if asyncio.iscoroutinefunction(plugin_handler):
-                result = await plugin_handler(user_args)
-            else:
-                result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                if asyncio.iscoroutine(result):
-                    result = await result
-        return str(result) if result else None
+        """Dispatch through the source-aware adapter, preserving legacy handler signatures."""
+        from gateway.run_plugin_commands import dispatch_gateway_plugin_command
+        return await dispatch_gateway_plugin_command(self, event, source, command)

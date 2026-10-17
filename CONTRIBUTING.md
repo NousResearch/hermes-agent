@@ -236,6 +236,21 @@ Run the relevant JS workspace checks for JS changes. Native install/update
 E2E runs on disposable CI hosts, never against the developer's live app.
 See [Package management](website/docs/reference/package-management.md) for PM commands and runtime ownership.
 
+#### Never execute a must-BLOCK control
+
+Tests, probes and verify scripts for the approval guards (hardline floor, dangerous patterns,
+Tirith, unattended `*_mode` settings) assert on `tools.approval.check_all_command_guards()` or on
+the pure detectors in `tools.approval_detection`. They never send the command through `terminal()`,
+`model_tools.handle_function_call("terminal", ...)`, `execute_code`, `subprocess`, or a real
+terminal backend. If a guard misses, the "blocked" control runs for real as your user, under
+whatever approval mode the loaded config sets. When a test genuinely needs the executor, stub the
+backend so nothing can spawn.
+
+This happened. A verify script pointed at a real profile with `approvals.single_query_mode: approve`
+and sent `X="rm -rf /home"; $X`. The floor missed the variable indirection, and the command deleted
+most of the home directory. The regression tests are in
+`tests/tools/test_approval_variable_indirection.py`.
+
 ---
 
 ## Project Structure

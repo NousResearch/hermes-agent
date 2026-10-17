@@ -1,0 +1,16 @@
+name: git-tasks
+repo: https://github.com/meviusisback/git-tasks
+sha: ef8b8da83a30bf8da57585f69a0bdfaedae7555b
+description: Multi-repo GitHub issues & PRs in an Orca-style Tasks view for Hermes Desktop. Disclosure — data via your logged-in gh CLI; creates git worktrees and opens seeded Hermes sessions from the detail view.
+maintainer: meviusisback
+tier: community
+category: desktop
+requires_hermes: ">=0.21.1"
+docs_url: https://github.com/meviusisback/git-tasks#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -968,6 +968,13 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     builtin_names = set(_read_manifest())
     # Rows are what skill_view loads: shadowed copies hidden, same-tier duplicates under their exact path.
     all_skills = [{**s, "name": s["load_name"]} for s in _skill_catalog(skip_disabled=True) if s["load_name"]]
+    # Piped output must stay greppable: a non-TTY Rich console sizes itself to 80 columns
+    # and ellipsis-truncates the Name column, so `hermes skills list | grep <name>` reads
+    # an installed skill as missing (#140555). Widen the render to fit the longest name;
+    # the interactive terminal path is unchanged.
+    if console is None and not sys.stdout.isatty():
+        longest_name = max((len(s["name"]) for s in all_skills), default=0)
+        c = Console(width=max(_console.width, longest_name + 80))
     root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 

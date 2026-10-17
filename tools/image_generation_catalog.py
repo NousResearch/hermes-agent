@@ -70,6 +70,29 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=9,
     ),
+    # FLUX 3 Image (Oct 2026) is BFL's flagship, under the `blackforestlabs/` namespace like
+    # its video siblings. Native aspect_ratio enum; `resolution` is a tier (512sq…4k) and 1k
+    # is the cheapest non-square tier. No seed in the vendor schema (filtered by `supports`).
+    # Edits omit aspect_ratio so "auto" follows the first reference image; expansion stays
+    # off so the prompt is sent verbatim.
+    "blackforestlabs/flux-3/text-to-image": _model(
+        "FLUX 3 Image", "~10s", "Black Forest Labs flagship, natural-language prompts, up to 10 reference images", "$0.048/image (1K)",
+        style="aspect_ratio",
+        defaults={
+            "resolution": "1k", "output_format": "png", "safety_tolerance": 4,
+            "enable_prompt_expansion": False,
+        },
+        supports={
+            "prompt", "aspect_ratio", "resolution", "output_format", "safety_tolerance",
+            "enable_prompt_expansion", "sync_mode",
+        },
+        edit_endpoint="blackforestlabs/flux-3/edit-image",
+        edit_supports={
+            "prompt", "image_urls", "resolution", "output_format", "safety_tolerance",
+            "enable_prompt_expansion", "sync_mode",
+        },
+        max_reference_images=10,
+    ),
     "fal-ai/z-image/turbo": _model(
         "Z-Image Turbo", "~2s", "Bilingual EN/CN, 6B", "$0.005/MP",
         defaults={  # prompt expansion off: avoids the extra per-request charge
@@ -286,6 +309,24 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         supports={
             "prompt", "image_size", "expansion_model", "rendering_speed", "num_images", "seed", "sync_mode",
         },
+    ),
+    # Ideogram 4.5 (Sep 30 2026) prices by `quality` tier, not by pixels: low $0.03, medium
+    # $0.06, high $0.22. Medium is the vendor default and the sensible picker tier. The edit
+    # endpoint takes a SINGULAR `image_url` (Kling Image v3 shape) plus optional
+    # `reference_image_urls`/`mask_url`; image_size is omitted on edits so "auto" preserves
+    # the source geometry.
+    "ideogram/v4.5": _model(
+        "Ideogram V4.5", "~8s", "Ideogram flagship: posters, logos, accurate text rendering, mask + precise edits", "$0.06/image (medium)",
+        defaults={"quality": "medium", "num_images": 1, "enable_prompt_expansion": True},
+        supports={
+            "prompt", "image_size", "quality", "num_images", "seed", "enable_prompt_expansion", "sync_mode",
+        },
+        edit_endpoint="ideogram/v4.5/edit",
+        edit_supports={
+            "prompt", "image_url", "quality", "num_images", "seed", "sync_mode", "edit_precision",
+            "reference_image_urls", "mask_url",
+        },
+        max_reference_images=1, edit_image_param="image_url",
     ),
     "alibaba/qwen-image-3/text-to-image": _model(
         "Qwen Image 3", "~8s", "Complex CN/EN text rendering, prompt-guided resolution", "$0.04 (1K) / $0.075 (2K) per image",

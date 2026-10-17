@@ -773,8 +773,15 @@ class CLITuiMixin:
                                                     or self._sudo_state.get("vault_code")):
                     hint_key = "cli.tui.hint_vault_username"
                 hint = "  " + t(hint_key)
-                remaining = max(0, int(getattr(self, deadline_attr) - time.monotonic()))
-                return [('class:hint', hint), ('class:clarify-countdown', f'  ({remaining}s)')]
+                deadline = getattr(self, deadline_attr)
+                # None deadline = unlimited (currently only _approval_deadline can be None,
+                # when approvals.timeout <= 0) — hide the countdown entirely, same treatment
+                # as the _clarify_deadline None case just below.
+                if deadline is None:
+                    countdown = ''
+                else:
+                    countdown = f'  ({max(0, int(deadline - time.monotonic()))}s)'
+                return [('class:hint', hint), ('class:clarify-countdown', countdown)]
         if self._clarify_state:
             # None deadline = unlimited wait → hide the countdown entirely.
             if self._clarify_deadline is None:

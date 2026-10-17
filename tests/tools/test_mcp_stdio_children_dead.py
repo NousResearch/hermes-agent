@@ -105,6 +105,7 @@ def test_fast_fail_probe_never_calls_the_watcher_on_the_plain_path():
     # and counts calls even when the returned coroutine is never awaited.
     watcher = AsyncMock()
     server = SimpleNamespace(
+        _config={},
         session=SimpleNamespace(call_tool=lambda name, arguments: {"ok": name}),
         _watch_stdio_children=watcher,
     )

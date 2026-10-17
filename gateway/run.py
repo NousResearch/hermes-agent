@@ -2001,7 +2001,7 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "backend": "TERMINAL_ENV",
         "degraded_mode": "TERMINAL_DEGRADED_MODE",
         "cwd": "TERMINAL_CWD",
-        "timeout": "TERMINAL_TIMEOUT",
+        "timeout": "TERMINAL_TIMEOUT", "max_foreground_timeout": "TERMINAL_MAX_FOREGROUND_TIMEOUT",
         "home_mode": "TERMINAL_HOME_MODE",
         "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
         "docker_image": "TERMINAL_DOCKER_IMAGE",

@@ -72,11 +72,24 @@ def _safe_parse_import_env(name: str, default: Any, converter, type_label: str):
         return default
 
 
-# Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
-FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env("TERMINAL_MAX_FOREGROUND_TIMEOUT", 600, int, "integer")
+# Default cap on a foreground timeout; terminal.max_foreground_timeout (TERMINAL_MAX_FOREGROUND_TIMEOUT)
+# overrides it. Read per call via _foreground_max_timeout: a multiplexed process serves profiles with
+# different caps, so an import-time read would pin the launch profile's onto all of them.
+FOREGROUND_MAX_TIMEOUT = 600
 
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env("TERMINAL_DISK_WARNING_GB", 500.0, float, "number")
+
+
+def _foreground_max_timeout() -> int:
+    """The active profile's foreground cap; a malformed or non-positive value keeps the default
+    (a cap of 0 would promote every foreground call to the background)."""
+    try:
+        cap = _parse_env_var("TERMINAL_MAX_FOREGROUND_TIMEOUT", str(FOREGROUND_MAX_TIMEOUT))
+    except ValueError as exc:
+        logger.warning("%s Falling back to %ss.", exc, FOREGROUND_MAX_TIMEOUT)
+        return FOREGROUND_MAX_TIMEOUT
+    return cap if cap > 0 else FOREGROUND_MAX_TIMEOUT
 
 
 # Approval / sudo-prompt UI callbacks (CLI registers prompt_toolkit-aware
@@ -1151,7 +1164,7 @@ def _plan_execution(
             guidance = _foreground_background_guidance(command)
             if guidance:
                 raise _Rejected(_error_json(guidance, status="error"))
-            if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+            if timeout and timeout > _foreground_max_timeout():
                 promoted = timeout
     else:
         auto_bg = None
@@ -1181,7 +1194,7 @@ def _with_promoted_note(result_json: str, requested_timeout: int) -> str:
     if not isinstance(data, dict) or data.get("error"):
         return result_json
     template = _PROMOTED_NOTE if data.get("notify_on_complete") else _PROMOTED_NOTE_POLL_ONLY
-    data["promoted_from_foreground"] = template.format(requested=requested_timeout, cap=FOREGROUND_MAX_TIMEOUT)
+    data["promoted_from_foreground"] = template.format(requested=requested_timeout, cap=_foreground_max_timeout())
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -1509,6 +1522,13 @@ def check_terminal_requirements() -> bool:
 
 from tools.registry import registry
 
+
+def _timeout_param_description(cap: int) -> str:
+    return (f"Max seconds (default 180, foreground max {cap}). Finishing early returns at once, so set it "
+            f"generously. Above {cap}s the command runs as a tracked background process with "
+            "notify_on_complete=true (the result says so; do not re-run it).")
+
+
 TERMINAL_SCHEMA = {
     "name": "terminal",
     "description": TERMINAL_TOOL_DESCRIPTION,
@@ -1526,7 +1546,7 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds (default 180, foreground max {FOREGROUND_MAX_TIMEOUT}). Finishing early returns at once, so set it generously. Above {FOREGROUND_MAX_TIMEOUT}s the command runs as a tracked background process with notify_on_complete=true (the result says so; do not re-run it).",
+                "description": _timeout_param_description(FOREGROUND_MAX_TIMEOUT),
                 "minimum": 1
             },
             "workdir": {
@@ -1642,12 +1662,20 @@ def _handle_terminal(args, **kw):
     )
 
 
+def _terminal_schema_overrides() -> dict:
+    """Name the configured foreground cap in the timeout description (ToolEntry.dynamic_schema_overrides)."""
+    params = TERMINAL_SCHEMA["parameters"]
+    timeout = {**params["properties"]["timeout"], "description": _timeout_param_description(_foreground_max_timeout())}
+    return {"parameters": {**params, "properties": {**params["properties"], "timeout": timeout}}}
+
+
 registry.register(
     name="terminal",
     toolset="terminal",
     schema=TERMINAL_SCHEMA,
     handler=_handle_terminal,
     check_fn=check_terminal_requirements,
+    dynamic_schema_overrides=_terminal_schema_overrides,
     emoji="💻",
     max_result_size_chars=100_000,
 )

@@ -231,6 +231,7 @@ terminal:
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
+  max_foreground_timeout: 600  # Largest foreground timeout=; above it the command runs as a tracked background process
   home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   client_env_passthrough: []  # Extra non-secret toolchain names (e.g. GEM_HOME) a local CLI/TUI session's tools take from its launching shell
@@ -475,6 +476,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_LIFETIME_SECONDS` | `lifetime_seconds` | Idle reaper window |
 | `TERMINAL_TEMP_DIR` | `temp_dir` | Session temp root (local backend) |
 | `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout |
+| `TERMINAL_MAX_FOREGROUND_TIMEOUT` | `max_foreground_timeout` | Foreground timeout cap; larger requests run in the background |
 | `HERMES_DOCKER_BINARY` | _none_ | Force a specific docker/podman binary path |
 
 ### SSH Backend

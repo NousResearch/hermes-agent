@@ -424,6 +424,8 @@ terminal:
   # Desktop xterm font. Install the font locally; Nerd Fonts render Powerlevel10k glyphs.
   # font_family: "MesloLGS NF"  # Also accepts a CSS stack; blank uses bundled JetBrains Mono.
   timeout: 180
+  # Largest foreground timeout= the terminal tool accepts; longer calls run as tracked background processes.
+  max_foreground_timeout: 600
   # HOME policy for tool subprocesses:
   #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
   #   real    - force your real OS-user HOME

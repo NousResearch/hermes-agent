@@ -86,6 +86,7 @@ def _show_terminal_section(config: dict[str, Any]) -> None:
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
+    print(f"  Foreground max: {terminal.get('max_foreground_timeout', 600)}s")
 
     configured = lambda *names: 'configured' if all(_cfg.get_env_value(n) for n in names) else '(not set)'
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img, DEFAULT_VERCEL_IMAGE as _DEFAULT_VERCEL_IMAGE

@@ -68,7 +68,16 @@ class _Pool:
         if spawn:
             # Daemon: a call stuck on its model must not hold up interpreter exit (it writes no state).
             from agent.memory_provider import spawn_context_thread
-            spawn_context_thread(self.drain, name='hermes-oneshot').start()
+            try:
+                spawn_context_thread(self.drain, name='hermes-oneshot').start()
+            except RuntimeError:
+                # No new worker (thread exhaustion). A live worker drains this call; with none it
+                # would never run, so it leaves the queue with its slot and the error goes out.
+                with self.lock:
+                    self.threads -= 1
+                    orphaned = not self.threads
+                if orphaned and call.cancel():
+                    raise
         return call
 
     def release(self, call):

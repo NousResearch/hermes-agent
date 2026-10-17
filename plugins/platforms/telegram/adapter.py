@@ -5959,11 +5959,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    @staticmethod
-    def _entity_sources(message: Message):
-        """``(text, entities)`` pairs for the message text and caption."""
-        yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
-        yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+    @classmethod
+    def _entity_sources(cls, message: Message):
+        """Legacy entity spans, or conservative entity-less rich prose."""
+        from plugins.platforms.telegram.telegram_rich_triggers import entity_sources
+        return entity_sources(cls, message)
 
     @staticmethod
     def _entity_type(entity) -> str:
@@ -6108,7 +6108,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return False
         return any(
             pattern.search(candidate)
-            for candidate in (getattr(message, "text", None), getattr(message, "caption", None)) if candidate
+            for candidate, _ in self._entity_sources(message) if candidate
             for pattern in self._mention_patterns)
 
     def _is_guest_mention(self, message: Message) -> bool:

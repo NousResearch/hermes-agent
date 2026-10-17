@@ -6,7 +6,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -47,6 +47,7 @@ SIGNAL_IGNORE_STORIES HASS_TOKEN HASS_URL EMAIL_ADDRESS EMAIL_PASSWORD EMAIL_IMA
 EMAIL_SMTP_HOST EMAIL_HOME_ADDRESS EMAIL_HOME_ADDRESS_NAME HERMES_DASHBOARD_SESSION_TOKEN
 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD HERMES_DASHBOARD_BASIC_AUTH_SECRET HERMES_DASHBOARD_DRAIN_SECRET
 HERMES_DASHBOARD_OIDC_CLIENT_SECRET HERMES_ANON_API_SECRET HERMES_MEET_REALTIME_KEY
+OP_SERVICE_ACCOUNT_TOKEN BWS_ACCESS_TOKEN
 GATEWAY_ALLOWED_USERS GATEWAY_ALLOW_ALL_USERS GH_TOKEN GITHUB_APP_ID
 GITHUB_APP_PRIVATE_KEY_PATH GITHUB_APP_INSTALLATION_ID MODAL_TOKEN_ID MODAL_TOKEN_SECRET
 DAYTONA_API_KEY VERCEL_OIDC_TOKEN VERCEL_TOKEN VERCEL_PROJECT_ID VERCEL_TEAM_ID GATEWAY_RELAY_ID
@@ -985,7 +986,12 @@ class TestNativeEnvironmentContracts:
             proc.poll.return_value = 0
             return proc
 
-        with patch("tools.code_execution_tool._load_config",
+        # The fake child never connects to RPC. Isolate its unused transport so
+        # this environment-composition contract also runs without socket access.
+        with patch("tools.code_kernel._bind_rpc_socket",
+                   return_value="tcp://127.0.0.1:1"), \
+             patch("tools.code_kernel._rpc_forever"), \
+             patch("tools.code_execution_tool._load_config",
                    return_value={"mode": "strict"}), \
              patch("model_tools.handle_function_call",
                    side_effect=_mock_handle_function_call), \

@@ -193,6 +193,14 @@ def list_plugin_sources() -> list[SecretSource]:
         return list(merged.values())
 
 
+def is_bundled_source(source: SecretSource, home_path: Path) -> bool:
+    """Whether this instance is still owned by the bundled registry layer."""
+    with _REGISTRY_LOCK:
+        return (_SOURCE_ORIGINS.get(source.name) == "builtin"
+                and _SOURCES.get(source.name) is source
+                and source.name not in _SCOPED_SOURCES.get(hermes_home_key(home_path), {}))
+
+
 def _ensure_builtin_sources() -> None:
     """Idempotently register the bundled sources (lazy so import stays cheap;
     per-source guarded so one broken source can't block the others)."""
@@ -233,9 +241,12 @@ def _fetch_with_timeout(source: SecretSource, cfg: dict, home_path: Path,
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"secret-src-{source.name}")
     try:
         def _fetch() -> FetchResult:
-            token = set_source_environment(environ)
+            from hermes_cli.secret_source_process_token import private_fetch_inputs
+
+            fetch_cfg, fetch_env = private_fetch_inputs(source, cfg, home_path, environ)
+            token = set_source_environment(fetch_env)
             try:
-                return source.fetch(cfg, home_path)
+                return source.fetch(fetch_cfg, home_path)
             finally:
                 reset_source_environment(token)
 

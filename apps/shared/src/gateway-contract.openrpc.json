@@ -9118,6 +9118,37 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "controls": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "steer",
+                    "replace"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Controls"
+          },
+          "steering": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Steering"
           }
         },
         "required": [
@@ -9420,6 +9451,88 @@
           "profiles"
         ],
         "title": "CanonicalProfilesResult",
+        "type": "object"
+      },
+      "CanonicalReplaceQueuedParams": {
+        "additionalProperties": false,
+        "description": "The edited prompt: admitted as a NEW admission (``submission_id``) at the FIFO tail.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          },
+          "submission_id": {
+            "title": "Submission Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "attachments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanonicalAttachment"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attachments"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "const": "hidden",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id",
+          "submission_id",
+          "text"
+        ],
+        "title": "CanonicalReplaceQueuedParams",
         "type": "object"
       },
       "CanonicalReplayEvent": {
@@ -10971,6 +11084,37 @@
           "desktop_protocol"
         ],
         "title": "CanonicalSnapshotInfo",
+        "type": "object"
+      },
+      "CanonicalSteerQueuedParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "admission_id": {
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "CanonicalSteerQueuedParams",
         "type": "object"
       },
       "CanonicalSubmitParams": {
@@ -38249,7 +38393,7 @@
       },
       "SessionUsagePayload": {
         "additionalProperties": false,
-        "description": "``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative\ncounters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level:\npublished after every API call and at turn end, what main's classic CLI read off its agent.",
+        "description": "``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker\n(``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call\nand at turn end (``gateway/session_usage.py::usage_frame``). Read this.\n\nDeprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``\ndict) that the gateway frame also carries. They are kept for existing readers; new readers use\n``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them.",
         "properties": {
           "usage": {
             "anyOf": [
@@ -46734,6 +46878,24 @@
       }
     },
     {
+      "name": "bot_relay.settle",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotDeliverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotDeliverResult"
+        }
+      }
+    },
+    {
       "name": "clarify.lock",
       "summary": "Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock.",
       "params": [
@@ -47094,6 +47256,24 @@
       }
     },
     {
+      "name": "prompt.replace_queued",
+      "summary": "Cancel a still-queued admission and admit the edited prompt as a new admission at the back of the FIFO, in one write bound to the replaced admission. Refusals: admission_started, admission_conflict (the submission_id replaced another admission), queue_full, unsupported_control, not_found.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalReplaceQueuedParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
       "name": "prompt.resolve_unknown",
       "summary": "Acknowledge a turn lost across an owner restart; the FIFO behind it resumes. Never requeues the lost input.",
       "params": [
@@ -47101,6 +47281,24 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/PromptResolveUnknownParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.steer_queued",
+      "summary": "Hand a still-queued admission's text to the running turn's agent as a steer. The admission reads 'started' with that turn (pending snapshots mark it 'steering') and never runs on its own; it settles terminal 'steered' when the turn completes with its text, else 'interrupted' (its completion frame says 'cancelled', as an interrupted turn's does); a text the turn never consumed goes back to its queue place. Refusals: admission_started, session_idle, steer_unavailable (no agent to take it: the admission stays queued), unsupported_control, not_found.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalSteerQueuedParams"
           }
         }
       ],

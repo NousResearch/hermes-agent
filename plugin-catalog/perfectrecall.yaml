@@ -1,0 +1,51 @@
+name: perfectrecall
+repo: https://github.com/arslanr-com/perfectrecall
+sha: a8c1559e0346f110f314b63a7924cb314229e528
+version: 0.1.0a5
+description: Jev-powered memory with Mnemosyne-compatible SQLite storage and tools;
+  automatic recall and capture, paid remote inference.
+maintainer: arslanr-com
+tier: community
+category: memory
+docs_url: https://github.com/arslanr-com/perfectrecall/blob/main/docs/INSTALLATION.md
+capabilities:
+  provides_tools:
+  - mnemosyne_remember
+  - mnemosyne_recall
+  - mnemosyne_stats
+  - mnemosyne_triple_add
+  - mnemosyne_triple_query
+  - mnemosyne_sleep
+  - mnemosyne_scratchpad_write
+  - mnemosyne_scratchpad_read
+  - mnemosyne_scratchpad_clear
+  - mnemosyne_invalidate
+  - mnemosyne_export
+  - mnemosyne_import
+  - mnemosyne_update
+  - mnemosyne_forget
+  - mnemosyne_diagnose
+  - mnemosyne_graph_query
+  - mnemosyne_graph_link
+  - mnemosyne_sync_push
+  - mnemosyne_sync_pull
+  - mnemosyne_sync_status
+  - mnemosyne_batch
+  - mnemosyne_get
+  - mnemosyne_validate
+  - mnemosyne_remember_canonical
+  - mnemosyne_recall_canonical
+  - mnemosyne_forget_canonical
+  - mnemosyne_persona_promote
+  - mnemosyne_persona_demote
+  - mnemosyne_persona_list
+  - mnemosyne_persona_reinforce
+  - mnemosyne_triple_end
+  - mnemosyne_shared_remember
+  - mnemosyne_shared_recall
+  - mnemosyne_shared_forget
+  - mnemosyne_shared_stats
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - OPENROUTER_API_KEY

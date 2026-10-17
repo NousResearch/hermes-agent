@@ -544,6 +544,15 @@ def _cron_failure_marker_error(text: str) -> Optional[str]:
     return evidence or "Cron agent reported failure."
 
 
+class _ScriptGateSilence(str):
+    """Run-local provenance for a successful script's explicit wakeAgent=false.
+
+    Keep the public four-tuple/string result compatible. Only the scheduler can
+    produce this type; model text or a matching audit document is not authority
+    to bypass the required-response contract.
+    """
+
+
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
     NO_REPLY / NO REPLY) as the whole response OR its own first/last line — NOT mid-sentence.
@@ -557,6 +566,20 @@ def _is_cron_silence_response(text: str) -> bool:
     from gateway.response_filters import is_autonomous_silence_response
 
     return is_autonomous_silence_response(text)
+
+
+def _forbidden_final_response(job: dict, text: str) -> str | None:
+    """Return a configured whole-response token that may not count as a reply."""
+    response = (text or "").strip()
+    if not response:
+        return None
+    for token in job.get("forbidden_final_responses") or ():
+        token_text = str(token).strip()
+        if token_text and response == token_text:
+            return token_text
+        if _is_cron_silence_response(token_text) and _is_cron_silence_response(response):
+            return token_text
+    return None
 
 # Persistent pool for parallel cron jobs: tick() submits and returns; long jobs never block it.
 # Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
@@ -1565,7 +1588,7 @@ def _run_no_agent_job(
     # wakeAgent=false is a silent signal, same as empty stdout.
     if not _parse_wake_gate(output):
         logger.info("Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id)
-        return True, f"{header}**Status:** silent (wakeAgent=false)\n", SILENT_MARKER, None
+        return True, f"{header}**Status:** silent (wakeAgent=false)\n", _ScriptGateSilence(SILENT_MARKER), None
 
     if not output.strip():
         logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
@@ -2306,7 +2329,7 @@ def _prepare_job_prompt(
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
-            return (True, silent_doc, SILENT_MARKER, None), None
+            return (True, silent_doc, _ScriptGateSilence(SILENT_MARKER), None), None
 
     try:
         prompt = _build_job_prompt(
@@ -3059,6 +3082,7 @@ class _RunDelivery:
     agent_declared: bool = False
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
+    terminal_status: Optional[str] = None
     side_effect_ownership_lost: bool = False
 
 
@@ -3095,6 +3119,20 @@ def _save_compose_deliver(
         output_file=output_file, agent_declared=d.agent_declared)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
+    forbidden_response = _forbidden_final_response(job, deliver_content)
+    # An explicit successful pre-run gate skips the agent, so its scheduler-
+    # generated marker is not a forbidden model reply. Do not infer provenance
+    # from output prose or job-wide state (concurrent fires share the job).
+    script_gate_suppressed = isinstance(final_response, _ScriptGateSilence)
+    if d.should_deliver and d.success and forbidden_response and not script_gate_suppressed:
+        d.success = False
+        d.error = (
+            "Forbidden final response {!r}; cron contract requires a user-facing "
+            "message or an allowed suppression marker."
+        ).format(forbidden_response)
+        d.terminal_status = "forbidden_final_response"
+        d.should_deliver = False
+        logger.warning("Job '%s': forbidden final response %s", job["id"], forbidden_response)
     if d.should_deliver and not d.success and job.get("_model_unreachable"):
         # The model was never reached and a bounded automatic re-run will be scheduled
         # (cron/unreachable_retry.py): hold the failure notice — the re-run either

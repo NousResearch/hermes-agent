@@ -132,6 +132,12 @@ _PLATFORM_HINT = (
 
 
 def register(ctx) -> None:
+    from .manage import setup_parser, run_args
+
+    ctx.register_cli_command(
+        name="qqbot", help="Manage QQ menus and panels (writes preview by default)",
+        setup_fn=setup_parser, handler_fn=run_args,
+    )
     from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
         standalone_send=StandaloneSendPolicy(label="QQ Bot", media=True, captionable=True, text_direct=True),

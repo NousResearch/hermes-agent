@@ -294,8 +294,10 @@ def test_turn_runner_host_side_resolution_failure_does_not_send_user_to_login(mo
                           session_key="discord:T1", user_config={}, message="retry")
         result = TurnRunner(runner, ctx).run_sync()
         assert result["failed"] is True and result["api_calls"] == 0
-        replies[label] = (result["final_response"], result["failure_reason"])
+        replies[label] = (result["final_response"], result["failure_reason"], result["failure_retryable"])
     assert "/login" not in replies["oserror"][0] and "hermes logs" in replies["oserror"][0]
-    assert replies["oserror"][1] == "unknown"
+    assert replies["oserror"][1:] == ("host_error", False)
+    from agent.error_surface import LAYER_GATEWAY, _REASON_TO_LAYER
+    assert _REASON_TO_LAYER["host_error"] == LAYER_GATEWAY  # no "Switch provider" for a host fault
     for label in ("auth", "mixed"):  # an AuthError anywhere in the chain is a credential verdict
         assert "/login" in replies[label][0] and replies[label][1] == "auth_permanent", label

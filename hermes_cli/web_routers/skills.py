@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_identifiers
 from hermes_cli.web_models import (
-    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
+    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillPin, SkillToggle, SkillUninstallRequest,
     SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
@@ -366,6 +366,10 @@ async def get_skills(profile: Optional[str] = None):
         for s in skills:
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
+            # Curator pin (`hermes curator pin`): the inactivity rule never
+            # auto-archives a pinned skill. Read straight off the record the CLI
+            # writes, so the pane cannot disagree with `hermes curator status`.
+            s["pinned"] = bool((usage.get(s["name"]) or {}).get("pinned"))
             s["provenance"] = (
                 "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
@@ -390,6 +394,45 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
                 disabled.add(body.name)
             save_disabled_skills(config, disabled)
         return {"ok": True, "name": body.name, "enabled": body.enabled}
+
+    return await asyncio.to_thread(_run)
+
+
+@router.put("/api/skills/pin")
+async def pin_skill(body: SkillPin, profile: Optional[str] = None):
+    """Pin/unpin a learned skill so the curator's inactivity rule leaves it alone.
+
+    Writes the same ``.usage.json`` flag as ``hermes curator pin`` through the
+    same guarded setter, so the desktop and the CLI cannot drift apart. A refusal
+    (bundled/hub skill, or a name the curator would never touch anyway) comes back
+    as ``ok: false`` with the reason and a message rather than an HTTP error: the
+    pane applies the toggle optimistically and needs something to roll back with,
+    and ``managed: false`` mirrors the CLI's "recorded, but unmanaged" note.
+    """
+    from tools import skill_usage
+
+    def _run():
+        with _profile_scope(body.profile or profile):
+            if not skill_usage.is_agent_created(body.name):
+                return {
+                    "ok": False, "name": body.name, "pinned": False,
+                    "reason": "not_agent_created",
+                    "message": ("Only learned skills can be pinned — bundled and hub skills are "
+                                "managed by their sources.")}
+            if not skill_usage.set_pinned(body.name, body.pinned):
+                return {
+                    "ok": False, "name": body.name, "pinned": False,
+                    "reason": "not_eligible",
+                    "message": ("This skill is not curation-eligible (protected built-in or "
+                                "external mount), so the curator would never archive it anyway.")}
+            managed = skill_usage.is_curator_managed(body.name)
+            return {
+                "ok": True, "name": body.name, "pinned": body.pinned, "managed": managed,
+                "message": (f"Pinned '{body.name}' — the curator will never auto-archive it."
+                            if body.pinned else f"Unpinned '{body.name}'.")
+                           + ("" if managed else
+                              " (recorded: the curator does not manage this skill, so "
+                              "auto-transitions never considered it.)")}
 
     return await asyncio.to_thread(_run)
 

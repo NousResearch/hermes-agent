@@ -38,6 +38,9 @@ COMMANDS: dict[str, tuple[str, str | None]] = {
     "usage": ("Show token usage and rate limits", None),
     "status": ("Show session, model, token, and context info", None),
     "version": ("Show Hermes version", None),
+    "title": ("Show or set the session title", "new title"),
+    "undo": ("Remove the last N user turns and their replies", "number of turns"),
+    "retry": ("Resend the last user message", None),
 }
 
 
@@ -51,7 +54,8 @@ def available_commands_update() -> AvailableCommandsUpdate:
 def help_text() -> str:
     lines = ["Available commands:", ""]
     lines.extend(f"  /{name:10s}  {description}" for name, (description, _hint) in COMMANDS.items())
-    lines.extend(["", "Unrecognized /commands are sent to the model as normal messages."])
+    lines.extend(["", "Other Hermes commands run on the gateway, which answers them or says why not.",
+                  "Unrecognized /commands are sent to the model as normal messages."])
     return "\n".join(lines)
 
 

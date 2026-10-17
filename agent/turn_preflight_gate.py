@@ -13,6 +13,7 @@ from typing import Any
 from agent.message_metadata import append_message
 from agent.turn_context import _compression_warrants_another_preflight_pass
 from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
+from agent.turn_context_window import overflow_recheck_threshold
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -62,6 +63,8 @@ def run_preflight_gate(
     # failure cooldown, then should_compress().
     _compressor = agent.context_compressor
     _preflight_threshold = int(getattr(_compressor, "threshold_tokens", 0) or 0)
+    if _provider_overflow_recovery_pending and _preflight_threshold <= 0:
+        _preflight_threshold = overflow_recheck_threshold(agent, _compressor)
     _provider_overflow_preflight = _provider_overflow_recovery_pending and (
         _preflight_threshold <= 0 or request_pressure_tokens >= _preflight_threshold
     )

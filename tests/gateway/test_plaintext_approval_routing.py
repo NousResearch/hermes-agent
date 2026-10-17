@@ -134,3 +134,23 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     _clear_approval_state()
 
 
+
+
+def test_plaintext_approval_obeys_the_slash_admin_gate():
+    """The bare word reaches the /approve handler, so it must pass the same admin gate as the slash
+    form: a non-admin's "always" must not resolve the approval (it would write the profile-wide
+    allowlist), while an admin's bare word still does."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(
+        enabled=True, token="***", extra={"allow_admin_from": ["admin1"]})})
+    session_key, entry = _register_blocking_approval(runner)
+
+    asyncio.run(runner._handle_active_session_busy_message(_make_event("always"), session_key))
+    assert not entry.event.is_set()
+
+    admin_event = _make_event("yes")
+    admin_event.source.user_id = "admin1"
+    assert asyncio.run(runner._handle_active_session_busy_message(admin_event, session_key)) is True
+    assert entry.event.is_set() and entry.result == "once"
+    _clear_approval_state()

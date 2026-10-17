@@ -238,7 +238,11 @@ def _run_sync_with_note(batch: _Batch, reason: str) -> str:
     result = _execute_and_aggregate(batch)
     if isinstance(result, dict):
         result["note"] = _SYNC_FALLBACK_NOTES[reason]
-    return json.dumps(result, ensure_ascii=False)
+    from tools.tool_output_limits import cap_json_output
+    return cap_json_output(
+        json.dumps(result, ensure_ascii=False),
+        list_fields=("results",),
+    )
 
 def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_delivery: bool = False) -> Optional[str]:
     """Detached result target: empty for push, a resumable API id, or None for inline.
@@ -465,7 +469,11 @@ def _dispatch_background(batch: _Batch) -> str:
     payload = _dispatched_payload(batch, dispatched)
     if inline_results:
         payload["inline_results"] = inline_results
-    return json.dumps(payload, ensure_ascii=False)
+    from tools.tool_output_limits import cap_json_output
+    return cap_json_output(
+        json.dumps(payload, ensure_ascii=False),
+        list_fields=("inline_results", "results"),
+    )
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
@@ -475,4 +483,13 @@ def _run_batch(batch: _Batch, background: bool) -> str:
     )
     if background:
         return _dispatch_background(batch)
-    return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
+    from tools.tool_output_limits import cap_json_output
+    return cap_json_output(
+        json.dumps(_execute_and_aggregate(batch), ensure_ascii=False),
+        list_fields=("results",),
+        truncation_message=(
+            "Output capped at {cap} chars (dropped {dropped} of the worker "
+            "results from '{field}'). Narrow the fan-out or request specific "
+            "task_index values to inspect individual results."
+        ),
+    )

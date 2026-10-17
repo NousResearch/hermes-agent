@@ -393,6 +393,65 @@ def _looks_like_opaque_credential(value: str) -> bool:
     return sum(bool(re.search(p, value)) for p in (r"[a-z]", r"[A-Z]", r"[0-9]")) >= 2
 
 
+_ATTESTATION_KEYS = frozenset({
+    "secret-scan", "secret_scan", "secrets-scan", "secrets_scan",
+    "secret-clean", "secret_clean", "secrets-clean", "secrets_clean",
+})
+# Verdict words accepted as an attestation value. ``clean (gitleaks 8.21.2)``
+# reaches the validator as ``clean`` — the YAML value group stops at whitespace.
+_ATTESTATION_VERDICTS = frozenset({
+    "clean", "cleaned", "pass", "passed", "ok", "green", "none",
+    "no-hits", "nohits", "0",
+})
+# Optional tool annotation glued to the verdict (``clean(gitleaks 8.21.2)``,
+# the no-space ENV form). Deliberately narrow: at most three short lexemes made
+# of tool/version characters. Without this, ``v.split("(")[0]`` accepted
+# ``clean(<64-hex>)`` and ``clean(Sup3rS3cret!passw0rd)`` and left the payload
+# untouched — a false negative the pre-fix code did not have (adversarial probe
+# of this change, 2026-09-18; cases ``paren-nospace-*``/``env-nospace-hex``).
+_ATTESTATION_ANNOT_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9._-]{0,15}(?:\s+[A-Za-z0-9][A-Za-z0-9._-]{0,15}){0,2}")
+# Rejoin of an annotation split by the value token: the key=value rules stop
+# the value at the first whitespace, so ``clean(gitleaks 8.21.2)`` arrives as
+# ``clean(gitleaks`` plus a line remainder. Only a remainder that closes the
+# paren and then ends the line counts — a payload can never be accepted on a
+# prefix (``clean(<hex> <hex>)`` has no valid annotation inside).
+_ATTESTATION_TAIL_RE = re.compile(r"^([^()\n]*)\)[ \t]*$")
+
+
+def _is_attestation_value(value: str, rest: str = "") -> bool:
+    """True only when ``value`` reads as a scan verdict, not as a credential.
+
+    Accepted: a verdict word (``clean``) with an optional whitespace-separated
+    annotation (``clean (gitleaks 8.21.2)``), a glued annotation whose content
+    passes :data:`_ATTESTATION_ANNOT_RE`, and the nested label form
+    (``secret-scan:`` as the value of ``secrets_clean:``). Everything else —
+    opaque tokens, hex keys, URLs, passwords, even when they follow ``clean(``
+    without a space — falls back to the normal redaction rules.
+
+    ``rest`` is the line remainder after the captured value, used only to
+    rejoin an annotation that the value token split at whitespace.
+    """
+    v = value.strip().rstrip(":")
+    lv = v.lower()
+    if lv in _ATTESTATION_KEYS:
+        return True  # nested label form: ``secrets_clean: secret-scan: …``
+    head, sep, tail = v.partition("(")
+    if not sep:
+        return lv in _ATTESTATION_VERDICTS
+    if head.strip().lower() not in _ATTESTATION_VERDICTS:
+        return False
+    if not tail.endswith(")"):
+        # Unterminated here: the annotation continued past whitespace (the
+        # value token stops at the first space). ``rest`` is the remainder of
+        # the whole *text*, so clip it to the current line before rejoining.
+        m = _ATTESTATION_TAIL_RE.match(tail + rest.split("\n", 1)[0])
+        if not m:
+            return False
+        tail = m.group(1) + ")"
+    return bool(_ATTESTATION_ANNOT_RE.fullmatch(tail[:-1].strip()))
+
+
 def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> bool:
     """Shared gate for the ENV / JSON / YAML assignment passes: skip programmatic env
     lookups used as values, optionally require a word-bounded keyword in the key,
@@ -814,6 +873,8 @@ def _assignment_sub(render, *, check_keyword: bool):
     """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction."""
     def _sub(m):
         groups = m.groups()
+        if _is_attestation_value(groups[0], groups[-1]):
+            return m.group(0)
         if not _should_redact_assignment(groups[0], groups[-1], check_keyword=check_keyword):
             return m.group(0)
         return render(groups)

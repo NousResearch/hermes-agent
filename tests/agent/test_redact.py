@@ -1633,3 +1633,16 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+def test_secrets_clean_attestation_survives_redaction():
+    """A secrets_clean verdict line is governance evidence, not a credential:
+    the ``secret`` in the key must not mask the ``clean`` verdict (D-128 19.2)."""
+    from agent.redact import redact_sensitive_text
+
+    out = redact_sensitive_text("secret-scan: clean (gitleaks 8.21.2)", force=True)
+    assert "clean" in out
+    assert "***" not in out
+    # A real secret on such a line is still masked (fail closed).
+    leaked = redact_sensitive_text("secret-scan: clean (ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)", force=True)
+    assert "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in leaked

@@ -1565,6 +1565,22 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_tui_web_search_completion_counts_results_not_searches(monkeypatch):
+    """Regression for #139416: ``data.web`` contains result records, not calls."""
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(server._sessions, "web-search-test", {"tool_progress_mode": "all"})
+    result = json.dumps({"success": True, "data": {"web": [{"title": str(index)} for index in range(5)]}})
+
+    server._on_tool_complete("web-search-test", "tool-search", "web_search", {"query": "news"}, result)
+
+    payload = events[0][2]
+    assert payload["summary"] == "Found 5 web results"
+    assert payload["result"] == json.loads(result)
+
+
 def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(

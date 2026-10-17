@@ -15,6 +15,16 @@ def retired_session(db, session_id):
         return retired_in(conn, session_id)
 
 
+def create_conflict(conn, session_id):
+    """``(code, message)`` refusing a create of the explicit *session_id*, else None: a live row, or a
+    deleted (retired) id. A row recreated beside the fence would list fine and refuse every turn."""
+    if conn.execute('SELECT 1 FROM sessions WHERE id=?', (session_id,)).fetchone():
+        return 'session_exists', 'Session already exists'
+    if retired_in(conn, session_id):
+        return 'session_deleted', 'Session was deleted; its id cannot be reused'
+    return None
+
+
 def first_generation(db, derive, *, pinned=None, spent=None):
     """``(n, derive(n))``: the first generation of a derived session id a NEW request may use. A
     user-deleted id stays retired for good, so a derived id (header-less chat, Bot Chat, hosted-room

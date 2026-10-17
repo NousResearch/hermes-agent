@@ -3107,9 +3107,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         title = body.get("title")
 
         def _atomic(conn):
-            # One BEGIN IMMEDIATE write: a concurrent same-id create blocks and sees the row.
-            if conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone():
-                return None, "exists"
+            from hermes_state_mutation_retirement import create_conflict
+            if conflict := create_conflict(conn, session_id):  # one BEGIN IMMEDIATE write: a racing create sees the row
+                return None, conflict
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, model, model_config, system_prompt, started_at
@@ -3129,8 +3129,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return (dict(session_row) if session_row else {
                 "id": session_id, "source": source, "model": model_name, "title": title}), None
         session, err = await asyncio.to_thread(db._execute_write, _atomic)
-        if err == "exists":
-            return _error_response(f"Session already exists: {session_id}", 409, code="session_exists")
+        if isinstance(err, tuple):  # a live row, or a deleted id's fence: refused now, not on every turn
+            return _error_response(f"{err[1]}: {session_id}", 409, code=err[0])
         if err and err.startswith("title:"):
             return _error_response(err[len("title:"):], 400, code="invalid_title")
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)

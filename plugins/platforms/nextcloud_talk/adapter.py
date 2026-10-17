@@ -20,10 +20,18 @@ Configuration in config.yaml::
           conversations:                  # required — list of conversations to join
             - token: "abc123def"
               alias: "general"            # optional friendly name for routing
+              mode: mention               # optional: mention | watch | free (default free)
             - token: "ghi456jkl"
               alias: "alerts"
           channel_aliases:                # optional — extra alias → token map
             "ops": "abc123def"
+          default_room_mode: free         # mode for conversations without an explicit one
+          display_name: "Hermes"          # optional; plain-text @"Hermes" mention detection
+          watch_flush_interval: 900       # seconds between watch-mode digests (default 900)
+          federation:                     # optional — Talk federation invitations
+            allowed_inviters:             # full cloud ids; invites from anyone else stay pending
+              - "alice@cloud.example.com"
+            poll_interval: 60             # seconds between invitation checks (default 60)
           edit_ack_into_response: true    # default true; edit "⏳ Thinking..." into reply
           show_status_updates: true       # default true; send "⏳ Thinking..." ack
           poll_timeout: 30                # default 30 (max 60)
@@ -46,21 +54,55 @@ over config.yaml ``extra``):
     NEXTCLOUD_TALK_HOME_CHANNEL_NAME  Human label for the home channel
     NEXTCLOUD_TALK_POLL_TIMEOUT     Long-poll timeout (default 30, max 60)
     NEXTCLOUD_TALK_SHOW_STATUS_UPDATES  Send "⏳ Thinking..." acks (default true)
+    NEXTCLOUD_TALK_DISPLAY_NAME     Bot display name for plain-text mention detection
+    NEXTCLOUD_TALK_ROOM_MODES       "token1=mention,token2=watch" per-conversation modes
+    NEXTCLOUD_TALK_DEFAULT_ROOM_MODE  mention | watch | free (default free)
+    NEXTCLOUD_TALK_WATCH_FLUSH_INTERVAL  Seconds between watch-mode digests (default 900)
+    NEXTCLOUD_TALK_ALLOWED_INVITERS  Comma-separated full cloud ids allowed to invite
+                                    Hermes into federated conversations
+    NEXTCLOUD_TALK_FEDERATION_POLL_INTERVAL  Seconds between invitation checks (default 60)
 
 Identity model: Nextcloud Talk has a native user identity (``actorId``).
 Allowlists are matched against ``actorId`` (the Nextcloud username, e.g.
 ``alice`` — not a display name and not an email). System messages and
 the bot's own messages are filtered out before allowlist evaluation.
+
+Room modes (group conversations only — DMs are always ``free``):
+
+* ``free`` (default) — every authorized message starts an agent turn.
+* ``mention`` — only messages that @mention the bot (rich ``messageParameters``
+  of type ``user`` with the bot's id, ``@all``/``@here``-style ``call``
+  mentions, or a plain-text ``@username`` / ``@"Display Name"``) start a turn.
+* ``watch`` — direct mentions are answered immediately; everything else is
+  buffered and handed to the agent every ``watch_flush_interval`` seconds
+  as ONE internal digest that asks "is there anything here worth
+  answering?". The agent ends the digest turn with ``NO_REPLY`` when
+  nothing warrants a response, and the gateway then sends nothing.
+
+``!``-prefixed commands (``!new``, ``!help`` …) are always addressed to the
+bot and bypass mode gating. Mode gating runs AFTER the pre-effect
+authorization gate: a watch buffer only ever holds messages from
+authorized actors, which matters because the digest is an ``internal``
+event that bypasses the gateway's per-sender allowlist.
+
+Federation: with ``federation.allowed_inviters`` configured, the adapter
+polls Talk's federation-invitation endpoint and auto-accepts PENDING
+invitations whose ``inviterCloudId`` exactly matches an allowlisted full
+cloud id (``user@host``, case-insensitive). Every other invitation is
+left pending for a human — never declined. An accepted conversation is
+adopted into the live conversation list for this process; add its token
+to ``conversations`` to keep polling it across restarts.
 """
 
 import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Optional
 
 try:
     import httpx
@@ -86,10 +128,177 @@ MEDIA_TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes-media")
 # so messages stay readable in mobile clients.
 MAX_MESSAGE_LENGTH = 4096
 
+# Per-conversation room modes (see module docstring).
+ROOM_MODE_FREE = "free"
+ROOM_MODE_MENTION = "mention"
+ROOM_MODE_WATCH = "watch"
+VALID_ROOM_MODES = frozenset({ROOM_MODE_FREE, ROOM_MODE_MENTION, ROOM_MODE_WATCH})
+DEFAULT_ROOM_MODE = ROOM_MODE_FREE
+DEFAULT_WATCH_FLUSH_INTERVAL = 900  # seconds between watch-mode digests
+# A watch buffer is bounded so a runaway room can never grow process memory
+# without limit between flushes; the oldest entries are dropped first.
+WATCH_BUFFER_MAX_MESSAGES = 200
+
+# Talk federation invitations. Only ever act on a PENDING one: the list
+# endpoint has been observed to keep returning already-accepted invites, and
+# re-POSTing accept on those always 400s.
+DEFAULT_FEDERATION_POLL_INTERVAL = 60
+INVITE_STATE_PENDING = 0
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────
+
+def _read_file_bytes(path: str) -> bytes:
+    """Blocking file read — always called via ``asyncio.to_thread``."""
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _write_file_bytes(path: str, data: bytes) -> None:
+    """Blocking file write (creates parents) — always via ``asyncio.to_thread``."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def _normalize_room_mode(value: Any, default: str = DEFAULT_ROOM_MODE) -> str:
+    """Coerce a configured mode to one of :data:`VALID_ROOM_MODES`.
+
+    Unknown values fall back to *default* (logged by the caller) — a typo in
+    one room's mode must never break config loading for the others.
+    """
+    mode = str(value or "").strip().lower()
+    return mode if mode in VALID_ROOM_MODES else default
+
+
+def _parse_room_modes_csv(raw: Optional[str]) -> dict[str, str]:
+    """Parse ``NEXTCLOUD_TALK_ROOM_MODES`` (``"tok1=mention,tok2=watch"``).
+
+    Malformed pairs and unknown modes are skipped, never raised.
+    """
+    modes: dict[str, str] = {}
+    if not raw:
+        return modes
+    for pair in raw.split(","):
+        token, sep, mode = pair.partition("=")
+        token, mode = token.strip(), mode.strip().lower()
+        if sep and token and mode in VALID_ROOM_MODES:
+            modes[token] = mode
+    return modes
+
+
+def _is_mention(
+    text: str,
+    message_parameters: Optional[dict[str, Any]],
+    own_user_id: str,
+    own_display_name: str,
+    room_token: str = "",
+) -> bool:
+    """True if a Talk message addresses the bot.
+
+    Independent signals, any one is sufficient:
+
+    1. Rich ``messageParameters`` of type ``user`` whose ``id`` is the bot's
+       Nextcloud user id (Talk always mentions THIS server's local account
+       by its local id, also inside federated rooms).
+    2. Rich ``messageParameters`` of type ``call`` — Talk's ``@all`` /
+       ``@here`` style room-wide mention; its ``id`` is the room token.
+    3. Plain-text fallback for clients that send no rich parameters:
+       ``@username`` or Talk's quoted ``@"Display Name"`` syntax,
+       case-insensitive.
+    """
+    params = message_parameters if isinstance(message_parameters, dict) else {}
+    for param in params.values():
+        if not isinstance(param, dict):
+            continue
+        ptype = param.get("type")
+        if ptype == "user" and param.get("id") == own_user_id:
+            return True
+        if ptype == "call" and (not room_token or param.get("id") in (room_token, "all")):
+            return True
+
+    text = text or ""
+    own_user_id = (own_user_id or "").strip()
+    own_display_name = (own_display_name or "").strip()
+    if own_user_id and re.search(rf"(?<!\w)@{re.escape(own_user_id)}(?!\w)", text, re.IGNORECASE):
+        return True
+    if own_display_name:
+        if re.search(rf'@"{re.escape(own_display_name)}"', text, re.IGNORECASE):
+            return True
+        if re.search(rf"(?<!\w)@{re.escape(own_display_name)}(?!\w)", text, re.IGNORECASE):
+            return True
+    return False
+
+
+def _normalize_cloud_id(value: Any) -> str:
+    """Canonical form of a federation cloud id (``user@host``).
+
+    Strips the ``federated_users/`` actor prefix some Talk surfaces add, a
+    scheme, and a trailing slash; lower-cases the whole id (Nextcloud user
+    ids are matched case-insensitively by Talk itself).
+    """
+    cloud_id = str(value or "").strip().removeprefix("federated_users/")
+    user, sep, host = cloud_id.partition("@")
+    if sep:
+        host = re.sub(r"^https?://", "", host.strip()).rstrip("/")
+        cloud_id = f"{user.strip()}@{host}"
+    return cloud_id.lower()
+
+
+def _is_allowed_inviter(inviter_cloud_id: Any, allowed_inviters: list[str]) -> bool:
+    """True only if the inviter's FULL cloud id is on the explicit allowlist.
+
+    Deliberately stricter than matching the local part alone: ``alice`` on
+    the allowlist must not admit ``alice@attacker.example``. Entries are
+    full ``user@host`` cloud ids; an entry without a host never matches. An
+    empty allowlist admits nobody (fail closed).
+    """
+    inviter = _normalize_cloud_id(inviter_cloud_id)
+    if not inviter or "@" not in inviter:
+        return False
+    for entry in allowed_inviters or []:
+        candidate = _normalize_cloud_id(entry)
+        if candidate and "@" in candidate and candidate == inviter:
+            return True
+    return False
+
+
+def _is_pending_invite(invite: dict[str, Any]) -> bool:
+    """True if a federation invitation is still pending.
+
+    A missing ``state`` (older Talk versions never returned the field) is
+    treated as pending so nothing regresses there.
+    """
+    state = invite.get("state")
+    return state is None or state == INVITE_STATE_PENDING
+
+
+def _build_watch_digest(room_label: str, entries: list[dict[str, Any]]) -> str:
+    """Render buffered watch-mode messages as ONE review prompt for the agent."""
+    lines = [
+        f"[Nextcloud Talk watch-mode digest: {len(entries)} message(s) in "
+        f"\"{room_label}\" since the last review]",
+        "",
+    ]
+    for entry in entries:
+        who = entry.get("user_name") or entry.get("user_id") or "?"
+        uid = entry.get("user_id") or "?"
+        text = (entry.get("text") or "").strip()
+        attachment = entry.get("attachment")
+        if attachment:
+            text = (text + " " if text else "") + f"[attachment: {attachment}]"
+        lines.append(f"- {who} ({uid}) #{entry.get('message_id', '?')}: {text}")
+    lines += [
+        "",
+        "Review this conversation. Reply ONLY if something here genuinely "
+        "warrants a response from you — a question addressed to you, a task "
+        "you can help with, or something you must act on. Otherwise reply "
+        "with exactly NO_REPLY.",
+    ]
+    return "\n".join(lines)
+
 
 def _parse_user_message(msg: dict, *, own_user_id: str) -> Optional[dict]:
     """Parse a Talk User-API message dict into a normalized dict.
@@ -209,6 +418,32 @@ def _env_enablement() -> Optional[dict]:
     if show_status:
         seed["show_status_updates"] = show_status in ("1", "true", "yes")
 
+    display_name = os.getenv("NEXTCLOUD_TALK_DISPLAY_NAME", "").strip()
+    if display_name:
+        seed["display_name"] = display_name
+
+    room_modes = _parse_room_modes_csv(os.getenv("NEXTCLOUD_TALK_ROOM_MODES", ""))
+    if room_modes:
+        seed["room_modes"] = room_modes
+    default_mode = os.getenv("NEXTCLOUD_TALK_DEFAULT_ROOM_MODE", "").strip().lower()
+    if default_mode in VALID_ROOM_MODES:
+        seed["default_room_mode"] = default_mode
+    watch_interval = os.getenv("NEXTCLOUD_TALK_WATCH_FLUSH_INTERVAL", "").strip()
+    if watch_interval.isdigit():
+        seed["watch_flush_interval"] = int(watch_interval)
+
+    inviters_csv = os.getenv("NEXTCLOUD_TALK_ALLOWED_INVITERS", "").strip()
+    federation_interval = os.getenv("NEXTCLOUD_TALK_FEDERATION_POLL_INTERVAL", "").strip()
+    if inviters_csv or federation_interval.isdigit():
+        federation: dict = {}
+        if inviters_csv:
+            federation["allowed_inviters"] = [
+                s.strip() for s in inviters_csv.split(",") if s.strip()
+            ]
+        if federation_interval.isdigit():
+            federation["poll_interval"] = int(federation_interval)
+        seed["federation"] = federation
+
     home = os.getenv("NEXTCLOUD_TALK_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {
@@ -271,7 +506,7 @@ class TalkUserClient:
         reply_to: Optional[int] = None,
     ) -> "tuple[bool, Optional[int], Optional[str]]":
         url = f"{self._base_url}/ocs/v2.php/apps/spreed/api/v1/chat/{token}"
-        data: Dict[str, Any] = {"message": message}
+        data: dict[str, Any] = {"message": message}
         if reply_to is not None:
             data["replyTo"] = reply_to
         try:
@@ -343,6 +578,43 @@ class TalkUserClient:
             return True, (data if isinstance(data, list) else []), None
         return False, [], f"HTTP {resp.status_code}: {resp.text[:200]}"
 
+    async def list_federation_invitations(self) -> "tuple[bool, list, Optional[str], int]":
+        """List this user's federation invitations.
+
+        Returns ``(ok, invitations, error, status_code)``. A 404 means the
+        federation endpoint is not available on this server (Talk too old
+        or federation disabled) — callers treat that as "nothing to do",
+        not as an error.
+        """
+        url = f"{self._base_url}/ocs/v2.php/apps/spreed/api/v1/federation/invitation"
+        try:
+            resp = await self._http.get(url)
+        except Exception as exc:
+            return False, [], f"connection error: {exc}", 0
+        if resp.status_code == 200:
+            data = resp.json().get("ocs", {}).get("data", [])
+            return True, (data if isinstance(data, list) else []), None, 200
+        return False, [], f"HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code
+
+    async def accept_federation_invitation(
+        self, invite_id: int,
+    ) -> "tuple[bool, Optional[dict], Optional[str]]":
+        """Accept a federation invitation. Returns ``(ok, room, error)``;
+        ``room`` is Talk's conversation payload (its ``token`` is the LOCAL
+        proxy token this user polls the federated conversation through)."""
+        url = f"{self._base_url}/ocs/v2.php/apps/spreed/api/v1/federation/invitation/{invite_id}"
+        try:
+            resp = await self._http.post(url)
+        except Exception as exc:
+            return False, None, f"connection error: {exc}"
+        if resp.status_code in (200, 201):
+            try:
+                data = resp.json().get("ocs", {}).get("data", {})
+            except Exception:
+                data = {}
+            return True, (data if isinstance(data, dict) else {}), None
+        return False, None, f"HTTP {resp.status_code}: {resp.text[:200]}"
+
     async def get_latest_message_id(self, token: str) -> int:
         """Return the newest message id in a conversation.
 
@@ -376,8 +648,7 @@ class TalkUserClient:
     ) -> "tuple[bool, Optional[str]]":
         url = f"{self._base_url}/remote.php/dav/files/{self._username}/{remote_path.lstrip('/')}"
         try:
-            with open(local_path, "rb") as f:
-                data = f.read()
+            data = await asyncio.to_thread(_read_file_bytes, local_path)
             resp = await self._http.put(url, content=data)
             if resp.status_code in (200, 201, 204):
                 return True, None
@@ -402,7 +673,7 @@ class TalkUserClient:
         talk_meta: Optional[dict] = None,
     ) -> "tuple[bool, Optional[int], Optional[str]]":
         url = f"{self._base_url}/ocs/v2.php/apps/files_sharing/api/v1/shares"
-        data: Dict[str, Any] = {"shareType": "10", "shareWith": token, "path": file_path}
+        data: dict[str, Any] = {"shareType": "10", "shareWith": token, "path": file_path}
         if talk_meta:
             data["talkMetaData"] = json.dumps(talk_meta)
         try:
@@ -422,9 +693,7 @@ class TalkUserClient:
         try:
             resp = await self._http.get(url)
             if resp.status_code == 200:
-                os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
-                with open(local_path, "wb") as f:
-                    f.write(resp.content)
+                await asyncio.to_thread(_write_file_bytes, local_path, resp.content)
                 return True, local_path, None
             return False, None, f"HTTP {resp.status_code}"
         except Exception as exc:
@@ -456,13 +725,13 @@ class LlamaCppSTT:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         try:
-            with open(audio_path, "rb") as f:
-                files = {"file": (os.path.basename(audio_path), f, "audio/ogg")}
-                data: Dict[str, Any] = {"model": "whisper-1"}
-                if self._language:
-                    data["language"] = self._language
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    resp = await client.post(url, headers=headers, data=data, files=files)
+            audio = await asyncio.to_thread(_read_file_bytes, audio_path)
+            files = {"file": (os.path.basename(audio_path), audio, "audio/ogg")}
+            data: dict[str, Any] = {"model": "whisper-1"}
+            if self._language:
+                data["language"] = self._language
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(url, headers=headers, data=data, files=files)
             if resp.status_code == 200:
                 return (resp.json().get("text") or "").strip() or None
         except Exception as exc:
@@ -536,17 +805,16 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
                 "nextcloud_talk: 'conversations' is required (config.extra.conversations "
                 "or NEXTCLOUD_TALK_CONVERSATIONS env)."
             )
-        self._conversations: List[Dict[str, Any]] = [dict(c) for c in raw_conversations]
+        self._conversations: list[dict[str, Any]] = [dict(c) for c in raw_conversations]
 
         # ── Options ─────────────────────────────────────────────────
         self._edit_ack_into_response = bool(extra.get("edit_ack_into_response", True))
         self._show_status_updates = bool(extra.get("show_status_updates", True))
         self._poll_timeout = int(extra.get("poll_timeout", 30))
-        if self._poll_timeout > 60:
-            self._poll_timeout = 60
+        self._poll_timeout = min(self._poll_timeout, 60)
 
         # ── Channel alias map ───────────────────────────────────────
-        self._channel_aliases: Dict[str, str] = {}
+        self._channel_aliases: dict[str, str] = {}
         for conv in self._conversations:
             alias = str(conv.get("alias", "")).strip()
             token = str(conv.get("token", "")).strip()
@@ -558,6 +826,69 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
                 k, v = str(k).strip(), str(v).strip()
                 if k and v:
                     self._channel_aliases[k] = v
+
+        # ── Room modes (mention / watch / free) ─────────────────────
+        self._display_name: str = str(
+            extra.get("display_name") or os.getenv("NEXTCLOUD_TALK_DISPLAY_NAME", "")
+        ).strip()
+        raw_default_mode = extra.get("default_room_mode") or os.getenv(
+            "NEXTCLOUD_TALK_DEFAULT_ROOM_MODE", DEFAULT_ROOM_MODE
+        )
+        self._default_room_mode = _normalize_room_mode(raw_default_mode)
+        if self._default_room_mode != str(raw_default_mode).strip().lower():
+            logger.warning(
+                "nextcloud_talk: unknown default_room_mode %r, using %r",
+                raw_default_mode, self._default_room_mode,
+            )
+        self._room_modes: dict[str, str] = {}
+        raw_modes = extra.get("room_modes")
+        if isinstance(raw_modes, str):
+            raw_modes = _parse_room_modes_csv(raw_modes)
+        elif not isinstance(raw_modes, dict):
+            raw_modes = _parse_room_modes_csv(os.getenv("NEXTCLOUD_TALK_ROOM_MODES", ""))
+        for token, mode in raw_modes.items():
+            self._set_room_mode(str(token).strip(), mode)
+        for conv in self._conversations:
+            if conv.get("mode") is not None:
+                self._set_room_mode(str(conv.get("token", "")).strip(), conv["mode"])
+        try:
+            self._watch_flush_interval = max(1, int(
+                extra.get("watch_flush_interval")
+                or os.getenv("NEXTCLOUD_TALK_WATCH_FLUSH_INTERVAL", "")
+                or DEFAULT_WATCH_FLUSH_INTERVAL
+            ))
+        except (TypeError, ValueError):
+            self._watch_flush_interval = DEFAULT_WATCH_FLUSH_INTERVAL
+
+        # ── Federation invitations ──────────────────────────────────
+        federation = extra.get("federation") or {}
+        if not isinstance(federation, dict):
+            federation = {}
+        raw_inviters = federation.get("allowed_inviters")
+        if raw_inviters is None:
+            raw_inviters = os.getenv("NEXTCLOUD_TALK_ALLOWED_INVITERS", "")
+        if isinstance(raw_inviters, str):
+            raw_inviters = [s for s in raw_inviters.split(",")]
+        self._allowed_inviters: list[str] = []
+        for entry in raw_inviters or []:
+            cloud_id = _normalize_cloud_id(entry)
+            if not cloud_id:
+                continue
+            if "@" not in cloud_id:
+                logger.warning(
+                    "nextcloud_talk: ignoring federation inviter %r — entries must be "
+                    "full cloud ids (user@host)", entry,
+                )
+                continue
+            self._allowed_inviters.append(cloud_id)
+        try:
+            self._federation_poll_interval = max(5, int(
+                federation.get("poll_interval")
+                or os.getenv("NEXTCLOUD_TALK_FEDERATION_POLL_INTERVAL", "")
+                or DEFAULT_FEDERATION_POLL_INTERVAL
+            ))
+        except (TypeError, ValueError):
+            self._federation_poll_interval = DEFAULT_FEDERATION_POLL_INTERVAL
 
         # ── STT provider ────────────────────────────────────────────
         stt_config = extra.get("stt") or {}
@@ -571,22 +902,53 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
             self._stt = PlaceholderSTT()
 
         # ── Runtime state ───────────────────────────────────────────
-        self._chat_name_cache: Dict[str, str] = {}
+        self._chat_name_cache: dict[str, str] = {}
         self._client: Optional[TalkUserClient] = None
-        self._poll_tasks: List[asyncio.Task] = []
+        self._poll_tasks: list[asyncio.Task] = []
         self._shutdown: bool = False
         # "Thinking..." acks pending an edit-into-response, scoped PER
         # conversation (a single global slot raced across conversations).
         # Each chat keeps a FIFO of ack message ids: the gateway serializes
         # turns per session, so replies arrive in turn order and each reply
         # edits the oldest outstanding ack of its own conversation.
-        self._pending_acks: Dict[str, Deque[int]] = {}
+        self._pending_acks: dict[str, deque[int]] = {}
+        # Watch-mode buffers, per conversation token. Only ever filled AFTER
+        # the pre-effect authorization gate (the digest is an internal event
+        # that bypasses the gateway's per-sender allowlist).
+        self._watch_buffers: dict[str, list[dict[str, Any]]] = {}
+        self._watch_flush_task: Optional[asyncio.Task] = None
+        # Federation: invitation ids already decided in this process (accepted,
+        # or logged once as "left pending"), so each poll stays quiet.
+        self._invitation_task: Optional[asyncio.Task] = None
+        self._invites_seen: dict[Any, str] = {}
+        self._federation_unavailable_logged = False
 
     # ── Classification ──────────────────────────────────────────────
 
     def _classify_chat(self, chat_id: str) -> str:
         tokens = {c["token"] for c in self._conversations}
         return "group" if chat_id in tokens else "dm"
+
+    def _set_room_mode(self, token: str, mode: Any) -> None:
+        if not token:
+            return
+        normalized = _normalize_room_mode(mode, self._default_room_mode)
+        if normalized != str(mode or "").strip().lower():
+            logger.warning(
+                "nextcloud_talk: unknown room mode %r for %s, using %r",
+                mode, token, normalized,
+            )
+        self._room_modes[token] = normalized
+
+    def _room_mode(self, chat_id: str) -> str:
+        """Effective mode for a conversation. DMs are always ``free``."""
+        if self._classify_chat(chat_id) == "dm":
+            return ROOM_MODE_FREE
+        return self._room_modes.get(chat_id, self._default_room_mode)
+
+    def _has_watch_rooms(self) -> bool:
+        tokens = {c["token"] for c in self._conversations}
+        return any(self._room_mode(t) == ROOM_MODE_WATCH for t in tokens)
 
     def _is_chat_allowed(self, chat_id: str) -> bool:
         tokens = {c["token"] for c in self._conversations}
@@ -620,7 +982,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
             return s
         return None
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {
             "chat_id": chat_id,
             "name": self._chat_name_cache.get(chat_id, chat_id),
@@ -706,6 +1068,13 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
             task = loop.create_task(self._poll_loop(conv["token"]))
             self._poll_tasks.append(task)
 
+        # Background loops are only started when something needs them, so a
+        # default configuration makes no extra requests at all.
+        if self._has_watch_rooms() and self._watch_flush_task is None:
+            self._watch_flush_task = loop.create_task(self._watch_flush_loop())
+        if self._allowed_inviters and self._invitation_task is None:
+            self._invitation_task = loop.create_task(self._invitation_loop())
+
         logger.info(
             "nextcloud_talk: polling %d conversation(s) as %s",
             len(self._conversations), self._username,
@@ -714,7 +1083,12 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._shutdown = True
-        for task in self._poll_tasks:
+        background = [self._watch_flush_task, self._invitation_task]
+        self._watch_flush_task = None
+        self._invitation_task = None
+        for task in [*self._poll_tasks, *background]:
+            if task is None:
+                continue
             task.cancel()
             try:
                 await task
@@ -726,6 +1100,170 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
         if self._client:
             await self._client.close()
             self._client = None
+
+    # ── Watch-mode digest loop ─────────────────────────────────────
+
+    async def _watch_flush_loop(self) -> None:
+        while not self._shutdown:
+            try:
+                await asyncio.sleep(self._watch_flush_interval)
+            except asyncio.CancelledError:
+                raise
+            if self._shutdown:
+                return
+            try:
+                await self._flush_watch_buffers()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("nextcloud_talk: watch-mode flush failed")
+
+    def _buffer_watch_message(self, chat_id: str, parsed: dict[str, Any]) -> None:
+        attachment = parsed.get("attachment") or {}
+        buffer = self._watch_buffers.setdefault(chat_id, [])
+        buffer.append({
+            "user_id": parsed.get("user_id", ""),
+            "user_name": parsed.get("user_name", ""),
+            "text": parsed.get("text", ""),
+            "message_id": parsed.get("message_id"),
+            "attachment": attachment.get("name") if attachment else None,
+        })
+        if len(buffer) > WATCH_BUFFER_MAX_MESSAGES:
+            del buffer[: len(buffer) - WATCH_BUFFER_MAX_MESSAGES]
+
+    async def _flush_watch_buffers(self) -> None:
+        """Hand every non-empty watch buffer to the agent as ONE digest turn.
+
+        The digest is an ``internal`` event: it never interrupts a running
+        turn, carries no reply-to, and a bare ``NO_REPLY`` answer makes the
+        gateway send nothing. Its source is the most recent buffered sender
+        — every entry passed the pre-effect authorization gate before it was
+        buffered, so the adapter is the authority here.
+        """
+        for chat_id in list(self._watch_buffers):
+            entries = self._watch_buffers.pop(chat_id, [])
+            if not entries:
+                continue
+            last = entries[-1]
+            room_label = next(
+                (str(c.get("alias")) for c in self._conversations
+                 if c.get("token") == chat_id and c.get("alias")),
+                None,
+            ) or self._chat_name_cache.get(chat_id) or chat_id
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=room_label,
+                chat_type="group",
+                user_id=last.get("user_id") or None,
+                user_name=last.get("user_name") or None,
+            )
+            event = MessageEvent(
+                text=_build_watch_digest(room_label, entries),
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"watch-digest-{chat_id}-{last.get('message_id') or uuid.uuid4().hex[:8]}",
+                internal=True,
+            )
+            try:
+                await self.handle_message(event)
+            except Exception:
+                logger.exception("nextcloud_talk: watch digest for %s raised", chat_id)
+
+    # ── Federation invitations ─────────────────────────────────────
+
+    async def _invitation_loop(self) -> None:
+        while not self._shutdown:
+            try:
+                await self._process_federation_invitations()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("nextcloud_talk: federation invitation check failed")
+            try:
+                await asyncio.sleep(self._federation_poll_interval)
+            except asyncio.CancelledError:
+                raise
+
+    async def _process_federation_invitations(self) -> None:
+        """Auto-accept PENDING invitations from allowlisted inviters only.
+
+        Everything else is left pending for a human to decide — never
+        declined. Each invitation is decided (and logged) once per process.
+        """
+        if not self._allowed_inviters or self._client is None:
+            return
+        ok, invitations, err, status = await self._client.list_federation_invitations()
+        if not ok:
+            if status == 404:
+                if not self._federation_unavailable_logged:
+                    logger.info(
+                        "nextcloud_talk: federation invitation endpoint not available "
+                        "(HTTP 404) — Talk federation disabled or too old"
+                    )
+                    self._federation_unavailable_logged = True
+                return
+            logger.warning("nextcloud_talk: could not list federation invitations: %s", err)
+            return
+
+        for invite in invitations:
+            if not isinstance(invite, dict):
+                continue
+            invite_id = invite.get("id")
+            if invite_id is None or invite_id in self._invites_seen:
+                continue
+            inviter = invite.get("inviterCloudId") or ""
+            room_name = invite.get("roomName") or invite.get("remoteToken") or "?"
+            if not _is_pending_invite(invite):
+                self._invites_seen[invite_id] = "not-pending"
+                continue
+            if not _is_allowed_inviter(inviter, self._allowed_inviters):
+                self._invites_seen[invite_id] = "left-pending"
+                logger.info(
+                    "nextcloud_talk: federation invitation %s to %r from %r left pending "
+                    "(inviter not on allowed_inviters)",
+                    invite_id, room_name, inviter,
+                )
+                continue
+            ok, room, err = await self._client.accept_federation_invitation(invite_id)
+            if not ok:
+                # Not recorded as seen: a transient failure is retried next pass.
+                logger.warning(
+                    "nextcloud_talk: could not accept federation invitation %s from %r: %s",
+                    invite_id, inviter, err,
+                )
+                continue
+            self._invites_seen[invite_id] = "accepted"
+            logger.info(
+                "nextcloud_talk: accepted federation invitation %s to %r from %r",
+                invite_id, room_name, inviter,
+            )
+            token = str((room or {}).get("token") or invite.get("localToken") or "").strip()
+            if token:
+                self._adopt_conversation(token, (room or {}).get("displayName") or room_name)
+
+    def _adopt_conversation(self, token: str, name: Optional[str] = None) -> None:
+        """Add a conversation to the live lane set and start polling it.
+
+        Used for accepted federation invitations: allowlisting the inviter
+        is the operator's explicit authorization for that conversation to
+        become a lane. Caller authorization still runs per message. The
+        adoption is process-local — persist it by adding the token to
+        ``conversations`` in config.yaml.
+        """
+        if any(c.get("token") == token for c in self._conversations):
+            return
+        self._conversations.append({"token": token, "federated": True})
+        if name:
+            self._record_chat_name(token, str(name))
+        logger.info(
+            "nextcloud_talk: adopted conversation %s (%s) with room mode %r — add it to "
+            "platforms.nextcloud_talk.extra.conversations to keep it across restarts",
+            token, name or token, self._room_mode(token),
+        )
+        if self._client is not None and not self._shutdown and self._poll_tasks:
+            self._poll_tasks.append(asyncio.get_event_loop().create_task(self._poll_loop(token)))
+            if self._room_mode(token) == ROOM_MODE_WATCH and self._watch_flush_task is None:
+                self._watch_flush_task = asyncio.get_event_loop().create_task(self._watch_flush_loop())
 
     # ── Poll loop ──────────────────────────────────────────────────
 
@@ -761,8 +1299,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
                     break
                 for msg in messages:
                     msg_id = msg.get("id", 0)
-                    if msg_id > last_known_id:
-                        last_known_id = msg_id
+                    last_known_id = max(last_known_id, msg_id)
                     await self._on_poll_message(msg, token)
             except asyncio.CancelledError:
                 break
@@ -770,7 +1307,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
                 logger.exception("nextcloud_talk: poll error, retrying in 5s")
                 await asyncio.sleep(5)
 
-    async def _on_poll_message(self, msg: Dict[str, Any], token: str) -> None:
+    async def _on_poll_message(self, msg: dict[str, Any], token: str) -> None:
         parsed = _parse_user_message(msg, own_user_id=self._username)
         if parsed is None:
             return
@@ -816,6 +1353,22 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
         if text.startswith("!"):
             text = "/" + text[1:]
 
+        # Room-mode gating (group conversations only; commands are always
+        # addressed to the bot and bypass it). Runs AFTER the authorization
+        # gate so a watch buffer never holds an unauthorized actor's message,
+        # and BEFORE the "Thinking..." ack / attachment download so a gated
+        # message costs nothing.
+        mode = self._room_mode(chat_id)
+        if mode != ROOM_MODE_FREE and not text.startswith("/"):
+            mentioned = _is_mention(
+                parsed["text"], msg.get("messageParameters"),
+                self._username, self._display_name, chat_id,
+            )
+            if not mentioned:
+                if mode == ROOM_MODE_WATCH:
+                    self._buffer_watch_message(chat_id, parsed)
+                return
+
         # Adapter-local commands shortcut the runtime.
         if text.startswith("/"):
             reply = await self._handle_command(text, chat_id)
@@ -836,7 +1389,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
             self._pending_acks.setdefault(chat_id, deque()).append(ack_msg_id)
 
         # Attachment handling
-        media_urls: List[str] = []
+        media_urls: list[str] = []
         event_type = MessageType.TEXT
         attachment = parsed.get("attachment")
         if attachment:
@@ -947,7 +1500,7 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         if self._client is None:
             return SendResult(
@@ -1019,9 +1572,9 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[list[str]] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Out-of-process send for cron / send_message_tool fallback paths.
 
     Used when the gateway runner is not in this process (e.g. ``hermes cron``
@@ -1053,7 +1606,7 @@ async def _standalone_send(
     try:
         async with httpx.AsyncClient(timeout=20.0, auth=(username, password), headers=headers) as client:
             # Split long messages — Talk hard-cap is 32K, we chunk at MAX_MESSAGE_LENGTH.
-            chunks: List[str] = []
+            chunks: list[str] = []
             remaining = message
             while len(remaining) > MAX_MESSAGE_LENGTH:
                 chunks.append(remaining[:MAX_MESSAGE_LENGTH])

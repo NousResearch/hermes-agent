@@ -462,3 +462,22 @@ class TestCompressionNetSavingsGuard:
         assert sum(tc.count_turn_tokens(compressed)) == before
         tc._generate_summary.assert_not_called()
 
+
+def test_compressor_clients_name_hermes_in_user_agent(monkeypatch):
+    """A gateway in front of the endpoint names the calling app by User-Agent — magpie counts usage
+    that way — so the compressor's own clients must carry Hermes', or its calls are counted as a
+    client of their own (repro: Hermes' compactions showed up as "OpenAI"/"AsyncOpenAI")."""
+    monkeypatch.setenv("COMPRESSOR_TEST_API_KEY", "test-key")
+    config = CompressionConfig(
+        summarization_model="test-model",
+        base_url="http://127.0.0.1:3425/v1",
+        api_key_env="COMPRESSOR_TEST_API_KEY",
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+
+    compressor._init_summarizer()
+    assert compressor.client.default_headers["User-Agent"].startswith("HermesAgent/")
+
+    compressor._get_async_client()
+    assert compressor.async_client.default_headers["User-Agent"].startswith("HermesAgent/")

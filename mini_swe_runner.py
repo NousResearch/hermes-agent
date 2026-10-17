@@ -23,6 +23,7 @@ from typing import List, Dict, Any, Optional
 import fire
 from dotenv import load_dotenv
 from agent.tool_dispatch_helpers import make_tool_result_message
+from agent.client_headers import user_agent_headers
 from trajectory_compressor import _effective_temperature_for_model
 
 # Load environment variables
@@ -150,15 +151,23 @@ class MiniSWERunner:
         """Explicit api_key/base_url -> direct OpenAI client; otherwise the provider router."""
         if api_key or base_url:
             from openai import OpenAI
-            return OpenAI(base_url=base_url or _OPENROUTER_URL, api_key=api_key or os.getenv(
-                "OPENROUTER_API_KEY", os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", ""))))
+            return OpenAI(
+                base_url=base_url or _OPENROUTER_URL,
+                api_key=api_key
+                or os.getenv("OPENROUTER_API_KEY", os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENAI_API_KEY", ""))),
+                default_headers=user_agent_headers(),
+            )
         from agent.auxiliary_client import resolve_provider_client
         client, _ = resolve_provider_client("openrouter", model=self.model)
         if client is None:
             client, _ = resolve_provider_client("auto", model=self.model)
         if client is None:
             from openai import OpenAI
-            client = OpenAI(base_url=_OPENROUTER_URL, api_key=os.getenv("OPENROUTER_API_KEY", ""))
+            client = OpenAI(
+                base_url=_OPENROUTER_URL,
+                api_key=os.getenv("OPENROUTER_API_KEY", ""),
+                default_headers=user_agent_headers(),
+            )
         return client
 
     def _create_env(self):

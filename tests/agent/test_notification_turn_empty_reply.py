@@ -118,11 +118,18 @@ def _completed_tool_round():
 
 
 class TestNotificationTurnLoop:
-    def test_process_complete_empty_reply_exits_without_nudge(self, loop_agent):
+    @pytest.mark.parametrize(
+        ("display_kind", "prompt"),
+        [
+            ("process_complete", "[process completed] Background task finished."),
+            ("internal_notification", "[kanban] Board updated."),
+        ],
+    )
+    def test_machinery_empty_reply_exits_without_nudge(self, loop_agent, display_kind, prompt):
         result = loop_agent.run_conversation(
-            "[process completed] Background task finished.",
+            prompt,
             conversation_history=_completed_tool_round(),
-            persist_user_display_kind="process_complete",
+            persist_user_display_kind=display_kind,
         )
 
         assert loop_agent.client.chat.completions.create.call_count == 1

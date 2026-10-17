@@ -17,6 +17,53 @@ from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
+
+
+def leaked_tool_args_target(text: Any, tools: Any, reasoning: Any) -> Optional[str]:
+    """Tool name when ``text`` is a tool call's arguments leaked as plain content, else None.
+
+    gpt-oss (Harmony) on Ollama occasionally writes its intended call into the content channel, so the
+    reply arrives as e.g. ``{"command": "date", "timeout": 30}`` with no ``tool_calls`` (2026-10-16: ~1 in
+    12 replays of one Hermes request). Narrow on purpose — a bare JSON object can be a real answer: the
+    whole reply must be one JSON object whose keys fit exactly one declared tool (all required keys
+    present, no unknown keys) AND the model's own reasoning names that tool."""
+    s = text.strip() if isinstance(text, str) else ""
+    if not (s.startswith("{") and s.endswith("}")) or not isinstance(reasoning, str) or not reasoning:
+        return None
+    import json
+
+    try:
+        obj = json.loads(s)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict) or not obj:
+        return None
+    matches = []
+    for tool in tools or ():
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        params = (fn or {}).get("parameters") or {}
+        props = set((params.get("properties") or {}).keys())
+        if props and set(obj) <= props and set(params.get("required") or ()) <= set(obj):
+            matches.append(fn.get("name"))
+    if len(matches) != 1 or not matches[0]:
+        return None
+    return matches[0] if matches[0].lower() in reasoning.lower() else None
+
+
+def _tool_call_missing(agent: Any, assistant_message: Any, finish_reason: Any, final_response: Any) -> bool:
+    """The model meant to call a tool but the reply carries no ``tool_calls``: either
+    finish_reason="tool_calls" with an empty array, or the call leaked into the text as its bare
+    arguments (gpt-oss/Harmony on Ollama)."""
+    if assistant_message.tool_calls:
+        return False
+    if finish_reason == "tool_calls":
+        return True
+    leaked = leaked_tool_args_target(
+        final_response, getattr(agent, "tools", None), agent._extract_reasoning(assistant_message))
+    if leaked:
+        logger.warning("Reply is the bare arguments of a %s call with no tool_calls (leaked tool call, "
+                       "model=%s provider=%s)", leaked, agent.model, agent.provider)
+    return bool(leaked)
 from agent.turn_truncation import partial_result, repetition_copy
 
 _REPETITION_STOPPED = repetition_copy(
@@ -288,9 +335,9 @@ def finish_text_response(
 
     # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
+    # Same for a call leaked into the text as its bare arguments (gpt-oss/Harmony on Ollama).
     if (
-        finish_reason == "tool_calls"
-        and not assistant_message.tool_calls
+        _tool_call_missing(agent, assistant_message, finish_reason, final_response)
         and getattr(agent, "_dropped_toolcall_retries", 0) < 3
     ):
         agent._dropped_toolcall_retries = getattr(agent, "_dropped_toolcall_retries", 0) + 1

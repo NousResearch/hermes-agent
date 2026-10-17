@@ -214,16 +214,15 @@ export class LogUpdate {
     const prevHadScrollback = cursorAtBottom && prev.screen.height >= prev.viewport.height
 
     const isShrinking = next.screen.height < prev.screen.height
-    const nextFitsViewport = next.screen.height <= prev.viewport.height
 
-    // When shrinking from above-viewport to at-or-below-viewport, content that
-    // was in scrollback should now be visible. Terminal clear operations can't
-    // bring scrollback content into view, so we need a full reset.
-    // Use <= (not <) because even when next height equals viewport height, the
-    // scrollback depth from the previous render differs from a fresh render.
-    if (prevHadScrollback && nextFitsViewport && isShrinking) {
+    // Shrinking an overflowing inline transcript changes the mapping between
+    // virtual rows and physical scrollback, even if it still fills the viewport.
+    // Clearing bottom rows cannot pull earlier rows back from scrollback. A
+    // partial diff would skip those rows and leave the cursor above the bottom,
+    // so later writes can overwrite response text. Repaint to re-anchor both.
+    if (prevHadScrollback && isShrinking) {
       logForDebugging(
-        `Full reset (shrink->below): prevHeight=${prev.screen.height}, nextHeight=${next.screen.height}, viewport=${prev.viewport.height}`
+        `Full reset (shrink with scrollback): prevHeight=${prev.screen.height}, nextHeight=${next.screen.height}, viewport=${prev.viewport.height}`
       )
 
       return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool)

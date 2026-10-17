@@ -52,8 +52,15 @@ async def _delete(api, session_id):
         return deleted.status, await deleted.text()
 
 
-def _explode(conn, references, after_id=0):
-    raise sqlite3.OperationalError('database disk image is malformed')
+# A locked store raises ``OperationalError``; a corrupt one raises its parent ``DatabaseError``.
+_STORE_ERRORS = [sqlite3.OperationalError('database is locked'),
+                 sqlite3.DatabaseError('database disk image is malformed')]
+
+
+def _exploding(error):
+    def explode(conn, references, after_id=0):
+        raise error
+    return explode
 
 
 @pytest.mark.asyncio
@@ -72,12 +79,13 @@ async def test_delete_session_with_many_api_images_succeeds(api, owner, count):
 
 
 @pytest.mark.asyncio
-async def test_a_cleanup_failure_after_the_delete_committed_is_not_a_500(api, owner, monkeypatch):
+@pytest.mark.parametrize('error', _STORE_ERRORS, ids=type)
+async def test_a_cleanup_failure_after_the_delete_committed_is_not_a_500(api, owner, monkeypatch, error):
     """The session is already gone when the image sweep runs: its failure is logged and the
     files stay for the next sweep, but the finished delete answers 200."""
     _settle_text(api, owner, 'chat')
     planted = _plant(1)
-    monkeypatch.setattr('gateway.session_ingress_media._history_mentions', _explode)
+    monkeypatch.setattr('gateway.session_ingress_media._history_mentions', _exploding(error))
     status, body = await _delete(api, 'chat')
     assert status == 200, body
     assert owner.db.get_session('chat') is None
@@ -100,13 +108,14 @@ def test_startup_recovery_survives_a_thousand_api_images(api, owner, monkeypatch
     assert _remaining(planted) == [kept_digest]
 
 
-def test_startup_recovery_continues_when_image_collection_fails(api, owner, monkeypatch, caplog):
+@pytest.mark.parametrize('error', _STORE_ERRORS, ids=type)
+def test_startup_recovery_continues_when_image_collection_fails(api, owner, monkeypatch, caplog, error):
     """A collection error is logged and skipped, never a reason to leave queued turns unscheduled."""
     admit_api_turn(
         api, session_id='queued', request_id='queued-turn',
         user_message='pending', conversation_history=[])
     _plant(1)
-    monkeypatch.setattr('gateway.session_ingress_media._history_mentions', _explode)
+    monkeypatch.setattr('gateway.session_ingress_media._history_mentions', _exploding(error))
     scheduled = []
     monkeypatch.setattr(owner, '_schedule', lambda ref: scheduled.append(ref.session_id))
     recover_api_turns(api)

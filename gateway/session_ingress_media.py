@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -22,6 +23,7 @@ from hermes_dir_acl import make_user_dir
 from hermes_state_runtime import RuntimeStoreError
 from utils import fsync_directory
 
+logger = logging.getLogger(__name__)
 
 _API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
 _SHA256_NAME = re.compile(r'[0-9a-f]{64}')
@@ -462,8 +464,7 @@ def collect_unheld_api_images(db):
     unowned, so it collects nothing."""
     from hermes_constants import get_hermes_home
     if Path(db.db_path).resolve().parent != get_hermes_home().resolve():
-        import logging
-        logging.getLogger(__name__).warning(
+        logger.warning(
             'Skipped retained API image collection: %s is not the active profile store', db.db_path)
         return 0
     root = _media_root()
@@ -471,10 +472,10 @@ def collect_unheld_api_images(db):
         return release_unheld_media(db, [
             {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
             if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
-    except sqlite3.OperationalError:
+    except sqlite3.DatabaseError:
         # Callers run after a committed delete or during startup recovery: neither may fail on it.
-        import logging
-        logging.getLogger(__name__).exception('API image collection failed; files stay for the next sweep')
+        # ``DatabaseError`` also covers a corrupt store, not only ``OperationalError`` (locked, limits).
+        logger.exception('API image collection failed; files stay for the next sweep')
         return 0
 
 

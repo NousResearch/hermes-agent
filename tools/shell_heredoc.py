@@ -18,6 +18,10 @@ _INERT_HEREDOC_CONSUMER_RE = re.compile(
     r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
     re.IGNORECASE)
 
+# Do not infer a data sink from an arbitrary executable basename or an
+# environment override (e.g. ./cat or PATH=./bin cat may execute stdin).
+_DATA_HEREDOC_CONSUMER_RE = re.compile(r"^[ \t]*(?:cat|tee)(?=[ \t]|$)")
+
 
 def _span_end(command: str, cursor: int, closer: str) -> int:
     """Index just past the backslash-aware span opened at ``cursor``."""
@@ -177,8 +181,14 @@ def _find_heredoc_close(
         cursor = after
 
 
-def strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+def strip_inert_heredoc_bodies(command: str, *, data_only: bool = False) -> str:
+    """Mask quoted heredocs, optionally excluding all interpreter consumers.
+
+    ``data_only`` is for security scanners: Python/AppleScript input may execute
+    code even though its contents are not shell syntax. Existing shell-syntax
+    scanners retain their wider consumer set.
+    """
+    consumer_re = _DATA_HEREDOC_CONSUMER_RE if data_only else _INERT_HEREDOC_CONSUMER_RE
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.
     if "<<" not in command:
         return command
@@ -210,6 +220,13 @@ def strip_inert_heredoc_bodies(command: str) -> str:
                 return command  # unterminated
             body_ranges.append((body_cursor, close_end))
             body_cursor = close_end
+        if data_only and (
+            command_start != 0 or owner_start != 0
+            or command[body_cursor:].strip()
+        ):
+            # Security scans only exempt a standalone write. Earlier commands
+            # may redefine cat/tee or PATH; later commands may execute the file.
+            return command
         if (
             all(quoted for _delimiter, _strip_tabs, quoted in specs)
             and not post_heredoc_list_operator
@@ -219,7 +236,7 @@ def strip_inert_heredoc_bodies(command: str) -> str:
             if not any(
                 marker in masked_opener
                 for marker in ("$(", "`", "<(", ">(", "(", ")", "{", "}")
-            ) and _INERT_HEREDOC_CONSUMER_RE.search(masked_owner):
+            ) and consumer_re.search(masked_owner):
                 ranges.extend(body_ranges)
         command_start = body_cursor
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.

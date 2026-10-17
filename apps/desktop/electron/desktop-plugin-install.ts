@@ -10,6 +10,8 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
+import { parse } from 'yaml'
+
 import { publishDesktopTree, writeDesktopHalfMarker } from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 
@@ -194,13 +196,42 @@ export function findDesktopEntry(pluginRoot: string): { entryFile: string; sourc
   return null
 }
 
-export async function detectPluginComponents(pluginRoot: string): Promise<PluginComponentDetection> {
-  const hasYaml =
-    pathExistsSync(path.join(pluginRoot, 'plugin.yaml')) || pathExistsSync(path.join(pluginRoot, 'plugin.yml'))
+// The backend's truthiness check on `provides_locales`: a non-empty list, mapping or string. Empty
+// forms (`[]`, `{}`, `''`) and a bare key (YAML null) declare nothing.
+function isDeclared(value: unknown): boolean {
+  if (Array.isArray(value) || typeof value === 'string') {
+    return value.length > 0
+  }
 
+  return value !== null && typeof value === 'object' && Object.keys(value).length > 0
+}
+
+async function declaresLanguagePack(yamlPath: string, pluginRoot: string): Promise<boolean> {
+  if (!pathExistsSync(path.join(pluginRoot, 'locales'))) {
+    return false
+  }
+
+  try {
+    const manifest: unknown = parse(await fsp.readFile(yamlPath, 'utf8'), { maxAliasCount: 20 })
+
+    return isDeclared((manifest as { provides_locales?: unknown } | null)?.provides_locales)
+  } catch {
+    return false
+  }
+}
+
+export async function detectPluginComponents(pluginRoot: string): Promise<PluginComponentDetection> {
+  const yamlPath = ['plugin.yaml', 'plugin.yml']
+    .map(name => path.join(pluginRoot, name))
+    .find(candidate => pathExistsSync(candidate))
+
+  const hasYaml = yamlPath !== undefined
   const hasInit = pathExistsSync(path.join(pluginRoot, '__init__.py'))
   const hasPortable = pathExistsSync(path.join(pluginRoot, 'plugin.json'))
-  const agent = (hasYaml && hasInit) || hasPortable
+  // Mirrors the backend's loadable check: a declared language pack (`provides_locales` + `locales/`)
+  // loads from its files alone, with no `__init__.py`.
+  const hasLanguagePack = yamlPath !== undefined && !hasInit && (await declaresLanguagePack(yamlPath, pluginRoot))
+  const agent = (hasYaml && (hasInit || hasLanguagePack)) || hasPortable
 
   const desktopEntry = findDesktopEntry(pluginRoot)
   const desktop = desktopEntry !== null
@@ -210,12 +241,8 @@ export async function detectPluginComponents(pluginRoot: string): Promise<Plugin
   if (agent) {
     agentName = path.basename(pluginRoot)
 
-    if (hasYaml) {
+    if (yamlPath) {
       try {
-        const yamlPath = pathExistsSync(path.join(pluginRoot, 'plugin.yaml'))
-          ? path.join(pluginRoot, 'plugin.yaml')
-          : path.join(pluginRoot, 'plugin.yml')
-
         const text = await fsp.readFile(yamlPath, 'utf8')
         const match = text.match(/^name:\s*['"]?([^'"\n]+)['"]?\s*$/m)
 

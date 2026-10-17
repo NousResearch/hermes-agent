@@ -370,11 +370,11 @@ def compress_after_tool_results(
             agent._warn_context_overflow_blocked(
                 _block_reason, _real_tokens, int(getattr(_compressor, "threshold_tokens", 0) or 0)
             )
-        # Proactive tool-result prune (deterministic, no LLM, keeps tail): no-op unless
-        # proactive_prune_tokens is exceeded; commits only past
-        # proactive_prune_min_reclaim_tokens so cache breaks stay episodic.
+        # Proactive prune (no LLM, keeps tail; commits past min_reclaim so cache breaks stay episodic). Skipped when
+        # the checkpoint hook is required (the prune bypasses it) or no session store keeps the originals.
         _prune = getattr(_compressor, "prune_tool_results_only", None)
-        if callable(_prune):
+        if (callable(_prune) and getattr(_compressor, "_session_db", None) is not None
+                and getattr(agent, "compression_checkpoint_required", False) is not True):
             try:
                 _pruned_msgs, _pruned_n = _prune(messages, current_tokens=_real_tokens)
             except Exception:

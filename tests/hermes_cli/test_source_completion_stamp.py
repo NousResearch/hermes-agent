@@ -254,3 +254,85 @@ def test_full_checkout_refreshes_release_tags_before_publishing_identity(tmp_pat
     assert stamp is not None
     assert (stamp["baseVersion"], stamp["distance"]) == (versions[1][1], 1)
     assert stamp["commit"] == commit == git(checkout, "rev-parse", "HEAD")
+
+
+def _release_server_with_a_fork(tmp_path: Path, *, fork_exists: bool = True) -> tuple[Path, Path]:
+    """A release repo, a fork mirror of it, and a checkout whose ``origin`` is the fork.
+
+    Releases are published to the repo the fork mirrors (the project's own), and the fork carries
+    none of its own tags — the shape `hermes update`'s fork handler leaves behind: the official
+    URL is moved to ``upstream`` (`_add_upstream_remote`) while the releases stay there.
+    """
+    server = _repo(tmp_path)
+    env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
+
+    def git(root: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=root, env=env, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    git(server, "tag", "-d", "v0.21.4")
+    versions = (("v2026.9.21", "0.21.4"), ("v2026.9.24", "0.21.5"))
+    for tag, version in versions:
+        (server / "pyproject.toml").write_text(f'[project]\nversion = "{version}"\n', encoding="utf-8")
+        git(server, "add", "pyproject.toml")
+        git(server, "commit", "-qm", "release")
+        git(server, "tag", tag)
+    git(server, "commit", "-q", "--allow-empty", "-m", "after release")
+
+    fork = tmp_path / "fork"
+    git(tmp_path, "clone", "-q", "--bare", str(server), str(fork))
+    git(fork, "tag", "-d", "v2026.9.21")  # a mirror of the branch, not of the tags
+    git(fork, "tag", "-d", "v2026.9.24")
+    checkout = tmp_path / "fork-checkout"
+    git(tmp_path, "clone", "-q", "--no-tags", str(fork), str(checkout))
+    git(checkout, "remote", "add", "upstream", str(server))
+    git(checkout, "remote", "set-url", "origin", str(fork))
+    # The one tag the checkout happens to hold is the stale one, so its identity is a real reading
+    # (an old release) and not the "no release tag at all" fallback.
+    git(checkout, "tag", versions[0][0], git(server, "rev-parse", versions[0][0]))
+    if not fork_exists:
+        for directory, _dirs, files in os.walk(fork, topdown=False):
+            for name in files:
+                os.unlink(Path(directory) / name)
+            os.rmdir(directory)
+    return checkout, fork
+
+
+def test_tag_refresh_reads_the_remote_that_publishes_the_releases(tmp_path):
+    """A fork checkout's ``origin`` carries no release tags; the identity must still advance.
+
+    This is the plugin-gate failure in #122054 in its fork form: the tree is current, its nearest
+    tag says an older release, and every gate derived from `running_hermes_version()` — plugin
+    installs, source-update dependency preparation — judges the current code by that stale number.
+    """
+    from hermes_cli.gitlock import fetch_full_commit_graph
+
+    checkout, _fork = _release_server_with_a_fork(tmp_path)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=checkout, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    before = write_source_stamp(checkout)
+    assert before is not None
+    assert before["baseVersion"] == "0.21.4"  # the stale tag the fork could prove
+
+    fetch_full_commit_graph(checkout)
+
+    stamp = write_source_stamp(checkout)
+    assert stamp is not None
+    assert (stamp["baseVersion"], stamp["distance"]) == ("0.21.5", 1)
+    assert stamp["commit"] == commit
+
+
+def test_tag_refresh_survives_an_unreachable_remote(tmp_path):
+    """An offline fork must not hide the releases held by another configured remote."""
+    from hermes_cli.gitlock import fetch_full_commit_graph
+
+    checkout, _fork = _release_server_with_a_fork(tmp_path, fork_exists=False)
+
+    fetch_full_commit_graph(checkout)
+
+    stamp = write_source_stamp(checkout)
+    assert stamp is not None
+    assert stamp["baseVersion"] == "0.21.5"

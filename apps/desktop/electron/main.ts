@@ -1,3 +1,6 @@
+// health: allow FILE_LINES -- remote plugin seam glue only (four dial-site hooks,
+// registry wiring, startup/quit); remote plugin logic lives in the
+// remote-plugin-registry/-loader/-dial siblings.
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
@@ -184,6 +187,14 @@ import {
   withTransientRetries
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { DESKTOP_PLUGINS_DIR } from './desktop-plugins-root'
+import { loadRemotePlugins } from './remote-plugin-loader'
+import { resolveRemoteBaseUrl } from './remote-plugin-dial'
+import {
+  remotePluginHostLabel,
+  createRemotePluginRegistry,
+  type RemotePluginSummary
+} from './remote-plugin-registry'
 import {
   backendScopeKey,
   backendScopePrefix,
@@ -9402,12 +9413,17 @@ async function buildRemoteConnection(
   remoteIdentity?,
   headers?
 ) {
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  // Remote-plugin-scheme urls dial to a loopback access point before any http;
+  // ensure() returns null for https, which continues on the core path.
+  const dialed = await remotePlugins.ensure(rawUrl, rememberLog)
+  const baseUrl = normalizeRemoteBaseUrl(dialed ? dialed.baseUrl : rawUrl)
   const remoteHeaders = decryptRemoteHeaders(headers)
   // For token/oauth remotes the meaningful host is the real backend URL; for
   // SSH remotes the caller passes the entered/resolved host explicitly (the
   // baseUrl is a 127.0.0.1 tunnel and would be useless in the pill).
-  const host = remoteHost || hostLabelFromBaseUrl(baseUrl)
+  // Remote-plugin-backed remotes: the loopback baseUrl would be useless in
+  // the pill, so it shows the remote plugin's label, else `<scheme>:<target>`.
+  const host = remoteHost || (dialed ? dialed.hostLabel || remotePluginHostLabel(rawUrl) : hostLabelFromBaseUrl(baseUrl))
 
   if (authMode === 'oauth') {
     const ticket = await resolveRemoteOauthTicket(baseUrl, remoteHeaders, {
@@ -9464,6 +9480,33 @@ const sshConnections = new Map<string, any>()
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
+// Remote gateway plugins: scheme-claiming transports contributed by
+// desktop plugins (`<desktop-plugins>/…/remote.mjs`). RemotePlugin
+// enable/disable state lives in the renderer's plugins store; the renderer
+// mirrors it here via `hermes:remote-plugins-decisions`.
+const remotePlugins = createRemotePluginRegistry({
+  plugins: [],
+  normalizeHttp: normalizeRemoteBaseUrl,
+  log: chunk => rememberLog(chunk)
+})
+
+/** (Re)discover remote plugins in the desktop-plugins root and hot-swap them
+ * into the registry; surviving remote plugins keep their live pipes. */
+async function refreshRemotePlugins(decisions: Record<string, boolean> = {}): Promise<RemotePluginSummary[]> {
+  const { plugins, issues } = await loadRemotePlugins({
+    root: path.join(HERMES_HOME, DESKTOP_PLUGINS_DIR),
+    isEnabled: id => decisions[id] !== false,
+    log: chunk => rememberLog(chunk)
+  })
+
+  await remotePlugins.reseed(plugins)
+  rememberLog(
+    `[remote-plugins] live: ${plugins.map(c => `${c.id} (${c.scheme}://)`).join(', ') || 'none'}${issues.length ? `; ${issues.length} issue(s)` : ''}`
+  )
+
+  return remotePlugins.list()
+}
 
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
@@ -10428,7 +10471,20 @@ async function probeRemoteAuthMode(rawUrl) {
   // OAuth login button vs a session-token entry box. Network/parse failures
   // surface as ``reachable: false`` rather than throwing, so a half-typed or
   // unreachable URL degrades to "can't tell yet" instead of a hard error.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  //
+  // Remote-plugin-scheme urls: bring the access point up first and probe the
+  // loopback as plain http (ensure is idempotent). https returns null and
+  // falls straight through; an unclaimed scheme rejects with
+  // UnsupportedSchemeError.
+  let baseUrl: string
+
+  try {
+    baseUrl = await resolveRemoteBaseUrl(remotePlugins, rawUrl, rememberLog)
+  } catch (err) {
+    rememberLog(`[remote-plugins] probe: access point failed: ${String((err as Error)?.message ?? err)}`)
+
+    throw err
+  }
 
   let status
 
@@ -10587,7 +10643,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
   let testHeaders = {}
 
   if (wantRemote && block?.url) {
-    baseUrl = normalizeRemoteBaseUrl(block.url)
+    baseUrl = await resolveRemoteBaseUrl(remotePlugins, block.url, rememberLog)
     authMode = normAuthMode(block.authMode)
     testHeaders = decryptRemoteHeaders(block.headers)
 
@@ -14933,6 +14989,15 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
 })
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 
+// Renderer view of the remote plugin registry: scheme inventory for the
+// Add-Connection flow and the dialability gate; `decisions` mirrors the
+// renderer plugins store so Settings → Plugins toggles apply in main too.
+ipcMain.handle('hermes:remote-plugins:list', () => remotePlugins.list())
+ipcMain.handle('hermes:remote-plugins-accepts', (_event, rawUrl) => remotePlugins.accepts(rawUrl))
+ipcMain.handle('hermes:remote-plugins-decisions', (_event, decisions) =>
+  refreshRemotePlugins(decisions && typeof decisions === 'object' ? (decisions as Record<string, boolean>) : {})
+)
+
 // ── Opt-in keychain encryption for stored secrets ───────────────────────────
 // get returns the current policy without touching safeStorage; set flips it
 // and re-encodes every stored secret (see applySecretStorageEncryption).
@@ -15640,7 +15705,10 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   //     check (existing compatibility)
   //   - a failed native login reports the error rather than auto-falling back
   //     to the embedded flow — one sign-in action opens at most one window.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  // Remote-plugin-backed remotes sign in through the access point: the login
+  // window and its cookie jar must live on the exact loopback origin the
+  // dial will use.
+  const baseUrl = await resolveRemoteBaseUrl(remotePlugins, rawUrl, rememberLog)
   // Order login attempts without interrupting rotation of the existing session.
   const authIsCurrent: () => boolean = nativeAccessTokenCoordinator.beginLogin(baseUrl)
 
@@ -17042,6 +17110,9 @@ app.on('will-quit', () => {
   closeGatewayTicketBridges()
   killTimedGitChildren()
   sshIsolatedKeepalives.stopAll()
+  // Release remote plugin access points; teardown swallows its own errors so a
+  // wedged transport cannot block quit finalization.
+  void remotePlugins.teardownAll().catch(() => {})
   destroyKeepaliveAgents()
   nativeNotifications.dispose()
   quitFinalization.arm()
@@ -18164,6 +18235,13 @@ app.whenReady().then(() => {
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()
+
+  // Discover remote plugins early so a saved remote-plugin-scheme url can dial on
+  // first connect without waiting on UI init. Until the renderer pushes its
+  // decisions, every remote plugin folder is enabled by default.
+  void refreshRemotePlugins().catch(err =>
+    rememberLog(`[remote-plugins] startup discovery failed: ${String((err as Error)?.message ?? err)}`)
+  )
 
   if (CRASH_DIAGNOSTICS) {
     startChromiumLogWatcher(CHROMIUM_LOG_PATH)

@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- PluginContext.register_remote_plugin is registration API glue
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
@@ -728,6 +729,32 @@ class PluginContext:
         self._memory_provider = provider
         logger.debug("Plugin '%s' registered memory provider: %s", self.manifest.name,
                      getattr(provider, "name", "?"))
+
+    def register_remote_plugin(self, plugin) -> Optional[PluginRegistration]:
+        """Register a :class:`gateway.remote_plugins.RemotePlugin` — a transport
+        owning ``<scheme>://`` dispatch for remote gateway connections (serve/accept
+        side plus optional dial side). Wrong type warns and is ignored; duplicate or
+        built-in schemes raise at the registry and are warned-and-ignored here, never
+        propagated into the plugin's ``register()``. The teardown handle is
+        ``persistent=True``:  a remote plugin's access points outlive per-home manager
+        teardown."""
+        from gateway.remote_plugins import (
+            RemotePlugin,
+            register_remote_plugin as _register,
+            unregister_remote_plugin as _unregister,
+        )
+        if self._wrong_type(plugin, RemotePlugin, "remote plugin"):
+            return None
+        plugin.plugin_id = self.manifest.name
+        try:
+            _register(plugin)
+        except ValueError as exc:
+            logger.warning("Plugin '%s' remote-plugin registration failed: %s", self.manifest.name, exc)
+            return None
+        scheme = plugin.scheme
+        handle = self._track("remote_plugin", scheme, lambda: _unregister(scheme), persistent=True)
+        logger.info("Plugin '%s' registered remote plugin: %s://", self.manifest.name, scheme)
+        return handle
 
     @_serialized_replacement
     def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:

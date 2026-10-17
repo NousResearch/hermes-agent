@@ -73,8 +73,12 @@ function saveDecisions(next: Record<string, boolean>) {
   try {
     window.localStorage.setItem(DECISIONS_KEY, JSON.stringify(next))
   } catch {
-    // Nonfatal.
+    // Nonfatal — fall through to no choices.
   }
+
+  // Remote plugins run in main and cannot read localStorage; mirror the
+  // decision set there. Fire-and-forget: never block a UI toggle.
+  void window.hermesDesktop?.remotePlugins?.setDecisions?.(next)?.catch?.(() => {})
 }
 
 export const $pluginRecords = atom<Record<string, PluginRecord>>({})

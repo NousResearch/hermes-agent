@@ -582,7 +582,7 @@ from hermes_cli._parser import command_argv
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
-    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+    from hermes_cli.venv_sync import RELAUNCH_MARKER, prepare_launch, relaunch_command
 
     try:
         _launch_python = prepare_launch(_root, sys.argv[1:])
@@ -592,6 +592,7 @@ if not _pm_repair:
                 _launch_python, _root, sys.argv, sys.orig_argv,
                 getattr(_main_spec, "name", None),
             )
+            os.environ[RELAUNCH_MARKER] = "1"
             if os.name == "nt":
                 import subprocess
 

@@ -167,6 +167,7 @@ export const af: Translations = {
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
     newChat: "Nuwe klets",
+    showAutomationSessions: "Wys outomatiseringsessies",
     workspace: "werkruimte",
     workspaceDefault: "Verstek",
     workspaceRescan: "Herskandeer bewaarplekke",

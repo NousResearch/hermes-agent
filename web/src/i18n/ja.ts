@@ -167,6 +167,7 @@ export const ja: Translations = {
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
     newChat: "新しいチャット",
+    showAutomationSessions: "自動化セッションを表示",
     workspace: "ワークスペース",
     workspaceDefault: "デフォルト",
     workspaceRescan: "リポジトリを再スキャン",

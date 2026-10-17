@@ -167,6 +167,7 @@ export const it: Translations = {
     failedToDeleteSelected: "Impossibile eliminare le sessioni selezionate",
     resumeInChat: "Riprendi nella chat",
     newChat: "Nuova chat",
+    showAutomationSessions: "Mostra sessioni di automazione",
     workspace: "area di lavoro",
     workspaceDefault: "Predefinito",
     workspaceRescan: "Riesamina i repository",

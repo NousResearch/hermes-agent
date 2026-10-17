@@ -400,6 +400,15 @@ class InterruptControlMixin:
             self._steer_last_drain = (text, parts)  # requeue_drained_steer restores its tickets
         return text
 
+    def _drain_leftover_steer(self) -> Optional[str]:
+        """The turn finalizer's drain: return and clear the ticketless steers (they become the next user
+        turn) and keep each ticketed one buffered. A transfer is never a follow-up a restart may discard:
+        settlement withdraws it and its admission goes back to its own queue place."""
+        with _ic_lock(self, "_pending_steer_lock"):
+            parts = _steer_parts(self)
+            _set_steer_parts(self, [part for part in parts if part[0] is not None])
+        return "\n".join(text for ticket, text in parts if ticket is None) or None
+
     def withdraw_steer(self, ticket) -> bool:
         """Settle one ``steer(text, ticket=...)`` by identity (the gateway's transfer of a queued prompt):
         True when no drain handed it to the turn, either still buffered (taken out now; every other steer

@@ -174,6 +174,72 @@ async def test_each_transfer_settles_by_its_own_identity_whatever_text_another_c
     assert agent._pending_steer is None
 
 
+def _runner_authority(tmp_path, monkeypatch):
+    """``_authority`` whose runner is a real ``GatewayRunner``, so its follow-up handling reads the same
+    ``_draining`` a restart sets."""
+    from types import SimpleNamespace
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_state import SessionDB
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='gui')
+    runner = object.__new__(GatewayRunner)
+    vars(runner).update(_draining=False, _restart_requested=True, config=SimpleNamespace(multiplex_profiles=False),
+                        _adapter_for_source=lambda source: None)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='current', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='current'))
+    authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
+    return db, authority, runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('draining', [False, True])
+async def test_a_late_transfer_is_never_a_follow_up_that_a_restart_can_discard(tmp_path, monkeypatch, caplog, draining):
+    """Reviewer repro (round 3): the transfer lands after the turn's last drain, and the gateway may begin
+    draining for a restart before the turn ends. The turn's leftover steer must not carry it: a restart
+    discards that follow-up while settlement recorded it steered. It goes back to its own queue place."""
+    import logging
+    caplog.set_level(logging.INFO)
+    db, authority, runner = _runner_authority(tmp_path, monkeypatch)
+    agent, claimed, release, handled, follow_ups = BufferedAgent(), asyncio.Event(), asyncio.Event(), [], []
+
+    async def handle_message(event):  # the real ingress up to here; no model
+        handled.append(event.text)
+        authority.adopt_agent('s', authority.executing['s'], agent)
+        claimed.set()
+        await asyncio.wait_for(release.wait(), 30)
+        result = {'final_response': 'done', 'messages': []}
+        # The leftover drain agent/turn_finalizer.py runs (an agent without one drains everything).
+        leftover = (getattr(agent, '_drain_leftover_steer', None) or agent._drain_pending_steer)()
+        if leftover:
+            result['pending_steer'] = leftover
+        follow_ups.append((await runner._run_agent_drain_pending(result, None, event.source, 'k'))[1])
+        return 'done'
+    runner._handle_message = handle_message
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(claimed.wait(), 30)
+        queued = await _submit(authority, 'follow-up')
+        assert 'error' not in await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
+        runner._draining = draining  # a restart begins while the turn's last model call streams
+        release.set()
+
+        def settled():
+            task = authority.sessions['s'].task
+            return _ledger(db)[1][1] != 'started' and (task is None or task.done())
+        await async_wait_until(settled, timeout=30, what='the transfer settled and the queue went idle')
+    assert follow_ups[0] is None, 'a transferred prompt never rides the leftover-steer follow-up'
+    assert not [r for r in caplog.records if 'Discarding pending follow-up' in r.getMessage()]
+    assert ('follow-up', 'terminal', 'steered') not in _ledger(db)
+    # Back in its FIFO place: it runs once as its own admission, or, while the owner drains for its
+    # restart (it claims nothing new), it waits queued for the next owner.
+    if draining:
+        assert (_ledger(db)[1], handled) == (('follow-up', 'queued', None), ['running'])
+    else:
+        assert (_ledger(db)[1], handled) == (('follow-up', 'terminal', 'completed'), ['running', 'follow-up'])
+
+
 @pytest.mark.asyncio
 async def test_a_transfer_stays_listed_as_steering_until_its_claim_settles(tmp_path, monkeypatch):
     """Reviewer repro (returned prompt stays hidden): a pending snapshot taken while a steer is in

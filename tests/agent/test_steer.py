@@ -112,6 +112,16 @@ class TestSteerDrain:
         assert agent.withdraw_steer("t") is True
         assert agent._pending_steer == "note"
 
+    def test_the_leftover_drain_hands_back_only_ticketless_steers(self):
+        agent = _bare_agent()
+        agent.steer("typed /steer")
+        agent.steer("queued prompt", ticket="t")
+        assert agent._drain_leftover_steer() == "typed /steer"
+        assert agent._pending_steer == "queued prompt"
+        assert agent._drain_leftover_steer() is None
+        assert agent.withdraw_steer("t") is True
+        assert agent._pending_steer is None
+
     def test_a_hard_stop_drops_a_ticket_unread(self):
         agent = _bare_agent()
         agent.steer("queued prompt", ticket="t")

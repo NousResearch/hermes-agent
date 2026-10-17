@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import hashlib
 import shutil
+import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -64,6 +65,15 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     skill_name = _validate_skill_name(bundle.name)
     # Validate every path before touching disk so a bad member aborts cleanly.
     validated_files = [(_validate_bundle_rel_path(rel_path), content) for rel_path, content in bundle.files.items()]
+    # Two members that normalize to one path, or differ only by case or Unicode form, land on the same file on
+    # APFS/NTFS: the later write silently replaces the earlier one, so the installed skill no longer matches the
+    # bundle that was previewed, scanned and hashed. Refused on every OS so the outcome does not depend on the host.
+    seen: Dict[str, str] = {}
+    for rel_path, _ in validated_files:
+        key = unicodedata.normalize("NFC", rel_path).casefold()
+        if key in seen:
+            raise ValueError(f"Unsafe bundle file path: {rel_path} collides with {seen[key]}")
+        seen[key] = rel_path
     dest = _quarantine_dir() / skill_name
     if dest.exists():
         shutil.rmtree(dest)

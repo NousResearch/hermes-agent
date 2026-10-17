@@ -1038,6 +1038,13 @@ def build_cache_parity_fork(
         # rotation the review's usage was attributed to a different conversation than its parent.
         review_agent._cached_conversation_root = agent._conversation_root_id()
         _inherit_parent_tool_surface(review_agent, agent)
+        # Tool-screenshot retire latch (``outbound_retired_image_ids`` keys on session_id): a
+        # fresh fork resolves it from scratch, and the from-scratch decision can RESTORE
+        # screenshots the parent's requests already retired — rewriting the shared prefix on a
+        # byte-parity fork. Inherit the parent's latched ids as a copy (same session key); the
+        # fork's own retire decisions then record into its copy, never the parent's set.
+        if (held := getattr(agent, "_outbound_retired_image_ids", None)) and held[0] == agent.session_id:
+            review_agent._outbound_retired_image_ids = (review_agent.session_id, set(held[1]))
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).

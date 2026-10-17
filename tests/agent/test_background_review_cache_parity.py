@@ -57,6 +57,10 @@ def _make_agent_stub(agent_cls):
     agent.provider_sort = "throughput"
     agent.provider_require_parameters = False
     agent.provider_data_collection = None
+    # Non-empty so tests catch the tool-screenshot retire latch NOT being inherited —
+    # a fork that re-derives it from scratch restores screenshots the parent's
+    # requests retired, rewriting the shared prefix (837213a054's divergence class).
+    agent._outbound_retired_image_ids = ("sess-123", {"retired-call-a", "retired-call-b"})
     return agent
 
 
@@ -104,6 +108,7 @@ def _make_recorder_class(captured=None, record_on_run=()):
             self.tools = None
             self.valid_tool_names = set()
             self._tool_snapshot_generation = 0
+            self._outbound_retired_image_ids = None
             self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
 
         def run_conversation(self, *args, **kwargs):
@@ -580,4 +585,37 @@ def test_routed_fork_does_not_inherit_cache_scope():
     assert not getattr(fork, "_inherited_cache_scope", None), (
         "Routed fork must not inherit the parent's cache scope — its prefix "
         "is cache-cold on the different model regardless."
+    )
+
+
+def test_same_model_fork_inherits_retired_screenshot_latch():
+    """The fork must carry the parent's latched retired-screenshot ids.
+
+    ``outbound_retired_image_ids`` keys the retire latch on ``session_id`` and
+    the send path widens its per-request retire decision from it. A fresh fork
+    resolves the latch from scratch, and the from-scratch decision can RESTORE
+    screenshots the parent's requests already retired — rewriting the shared
+    prefix mid-history on a byte-parity fork (the divergence class 837213a054
+    fixed for the main loop). Refs #140758.
+    """
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent, "AIAgent", _make_recorder_class()):
+        fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+
+    assert not routed
+    held = getattr(fork, "_outbound_retired_image_ids", None)
+    assert held is not None, (
+        "The review fork did not inherit the parent's retired-screenshot "
+        "latch; its from-scratch retire decision can restore screenshots the "
+        "parent's requests retired and rewrite the shared prompt-cache prefix."
+    )
+    assert held[0] == "sess-123"
+    assert held[1] == {"retired-call-a", "retired-call-b"}
+    assert held[1] is not agent._outbound_retired_image_ids[1], (
+        "The fork must record its own retire decisions into a copy, never "
+        "the parent's live set."
     )

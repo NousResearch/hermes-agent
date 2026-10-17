@@ -333,6 +333,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
+  const workspaceMode = useStore($workspaceMode)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routedSessionIdRef = useRef(routedSessionId)
@@ -1039,14 +1040,20 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   // The MAIN tab's Close. The workspace pane can't leave the tree, so its
   // closer empties it instead: the next stacked session shifts in, else main
-  // drops to a fresh draft. Registering it here is also what gives the tab its
-  // close GESTURE (⌘-click / middle-click) — the strip reads the closer, not
-  // the `uncloseable` flag, so the pane stays undismissable either way.
+  // drops to a fresh draft. A Bot Chat is the selected bot's standing main
+  // surface, so it must not advertise a close gesture that only refills the
+  // same workspace (#139713).
   useEffect(() => {
+    if (workspaceMode === 'bots') {
+      registerPaneCloser('workspace')
+
+      return
+    }
+
     registerPaneCloser('workspace', () => void closeWorkspaceTab(id => navigate(sessionRoute(id))))
 
     return () => registerPaneCloser('workspace')
-  }, [navigate])
+  }, [navigate, workspaceMode])
 
   // One owner-aware door for "open a stored session from a list row" — the
   // sessions sidebar, the Cron page's run history and the command center all

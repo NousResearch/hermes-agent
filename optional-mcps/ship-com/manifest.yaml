@@ -1,0 +1,33 @@
+manifest_version: 1
+
+name: ship-com
+description: Ship.com shipping rates, order management and tracking for shipments originating in the United States.
+source: https://www.ship.com/api/mcp
+
+transport:
+  type: http
+  url: https://app.ship.com/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_SHIP_COM_API_KEY
+      prompt: Ship.com access token (Settings > API Integration; without Bearer prefix)
+      required: true
+      secret: true
+
+post_install: |
+  Supports shipments originating in the United States.
+  This entry uses a Ship.com access token with the hosted Streamable HTTP
+  endpoint. Obtain your access token from Ship.com Settings > API Integration.
+  See https://www.ship.com/api/mcp for account requirements and current setup.
+
+  Ship.com documents OAuth for supported Claude clients only; OAuth does not
+  offer label purchasing. This entry does not use OAuth. Access-token
+  connections can expose purchasing and other mutating tools, subject to
+  account and plan entitlements. Review the tool selection before use and
+  obtain explicit approval before any purchase or other consequential action.
+
+  The public ship-com-mcp repository contains metadata and setup links, not
+  the hosted service implementation. Authenticated installation and business
+  operations have not been tested for this catalog submission.

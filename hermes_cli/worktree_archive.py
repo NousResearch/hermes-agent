@@ -7,9 +7,10 @@ are only read): ``I`` = the staged state (tree of a copy of the real index, pare
 branch, HEAD, reason, skipped files) as JSON in its message, and the ref keeps every object
 reachable, so the tree and even its branch can be deleted without losing work.
 
-Bytes are stored raw: clean/smudge filters are neutralized (``noninteractive_repo_git_env``),
-``core.autocrlf`` is off and ``.gitattributes`` are read from the empty tree, so a restore writes
-back exactly the bytes that were archived. Untracked files over a size cap are skipped and listed
+Bytes are stored raw: every tracked/untracked regular file is re-hashed with
+``hash-object --no-filters`` and restored by writing the blob bytes directly, so no attribute
+source (``.gitattributes``, ``$GIT_COMMON_DIR/info/attributes``, ``core.attributesFile``) and no
+clean/smudge/eol conversion can change them; a restore writes back exactly the archived bytes. Untracked files over a size cap are skipped and listed
 (so ``.git`` never balloons with build artefacts the ignore rules missed); an untracked embedded
 repository cannot be captured at all and fails the snapshot, which keeps the tree.
 """
@@ -94,6 +95,73 @@ def _raw_attrs(args, cwd, env, empty_tree: str, **kw) -> str:
     return result.stdout
 
 
+def _run_bytes(args, cwd, env, data: bytes, timeout: float = 300) -> bytes:
+    result = subprocess.run(["git", *args], cwd=str(cwd), env=env, capture_output=True, input=data,
+                            timeout=timeout, check=False)
+    if result.returncode != 0:
+        raise ArchiveError(f"git {args[0]} failed: {result.stderr.decode('utf-8', 'replace').strip()[-300:]}")
+    return result.stdout
+
+
+def _regular_entries(cwd, env) -> list[tuple[str, str, str]]:
+    """``(mode, sha, path)`` for every regular-file entry of the index ``env`` points at."""
+    out = _ok(["ls-files", "-s", "-z"], cwd, env)
+    entries = []
+    for record in out.split("\0"):
+        meta, _, path = record.partition("\t")
+        parts = meta.split()
+        if path and len(parts) == 3 and parts[0] in ("100644", "100755"):
+            entries.append((parts[0], parts[1], path))
+    return entries
+
+
+def _rehash_raw(wt: Path, tenv) -> None:
+    """Replace every regular-file blob in the temporary index with the file's exact bytes.
+
+    ``add`` runs content conversion from every attribute source, and ``--attr-source`` only
+    replaces ``.gitattributes``: ``info/attributes`` and ``core.attributesFile`` still apply.
+    ``hash-object --no-filters`` skips all of it.
+    """
+    entries = [e for e in _regular_entries(wt, tenv) if os.path.isfile(wt / e[2]) and not os.path.islink(wt / e[2])]
+    if not entries:
+        return
+    shas: list[str] = []
+    # --stdin-paths reads one path per line and C-unquotes a leading '"': hash those one by one.
+    batch = [p for _m, _s, p in entries if "\n" not in p and not p.startswith('"')]
+    if batch:
+        data = "".join(p + "\n" for p in batch).encode("utf-8", "surrogateescape")
+        shas = _run_bytes(["hash-object", "-w", "--no-filters", "--stdin-paths"], wt, tenv, data).decode().split()
+    by_path = dict(zip(batch, shas))
+    for _m, _s, path in entries:
+        if path not in by_path:
+            raw = (wt / path).read_bytes()
+            by_path[path] = _run_bytes(["hash-object", "-w", "--no-filters", "--stdin"], wt, tenv, raw).decode().strip()
+    info = "".join(f"{mode} {by_path[path]}\t{path}\0" for mode, _s, path in entries)
+    _run_bytes(["update-index", "-z", "--index-info"], wt, tenv, info.encode("utf-8", "surrogateescape"))
+
+
+def _write_raw(dest: Path, env) -> None:
+    """Overwrite every regular file of the index with its blob's exact bytes (no smudge/eol)."""
+    entries = _regular_entries(dest, env)
+    if not entries:
+        return
+    out = _run_bytes(["cat-file", "--batch"], dest, env, "".join(f"{s}\n" for _m, s, _p in entries).encode())
+    pos = 0
+    for _mode, _sha, path in entries:
+        header_end = out.index(b"\n", pos)
+        size = int(out[pos:header_end].split()[2])
+        body = out[header_end + 1:header_end + 1 + size]
+        pos = header_end + 1 + size + 1
+        target = dest / path
+        if target.is_symlink():
+            target.unlink()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        mode = target.stat().st_mode if target.exists() else None
+        target.write_bytes(body)
+        if mode is not None:
+            os.chmod(target, mode)
+
+
 def ref_safe(name: str) -> str:
     """A tree name as a single valid ref component."""
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.") or "tree"
@@ -173,9 +241,8 @@ def snapshot_worktree(repo_root: str, wt_path, *, reason: str, max_untracked_mb:
         pathspec.write_bytes(("\0".join(specs) + "\0").encode("utf-8", "surrogateescape"))
         _raw_attrs(["add", "-A", "--pathspec-from-file", str(pathspec), "--pathspec-file-nul"],
                    wt, tenv, empty_tree)
-        # Unmodified tracked files keep their normalized (e.g. LF) index blob; re-hash them raw so
-        # a CRLF/smudged checkout comes back byte-for-byte.
-        _raw_attrs(["add", "--renormalize", "--", ":(top)"], wt, tenv, empty_tree)
+        # Every blob from the exact bytes on disk (add converted them per attributes).
+        _rehash_raw(wt, tenv)
         work_tree = _ok(["write-tree"], wt, tenv).strip()
         index_commit = _ok(["commit-tree", index_tree, "-p", head, "-m", f"index of {wt.name}"], wt, env).strip()
         meta = {"version": 1, "name": wt.name, "path": str(wt), "repo_root": str(repo_root),
@@ -290,6 +357,7 @@ def restore_archive(repo_root: str, name: str, target=None) -> dict:
     empty_tree = _ok(["mktree"], dest, wenv, stdin_text="").strip()
     _ok(["read-tree", f"{arc.sha}^{{tree}}"], dest, wenv)
     _raw_attrs(["checkout-index", "-a", "-f"], dest, wenv, empty_tree)
+    _write_raw(dest, wenv)  # checkout-index still converted per info/attributes
     _ok(["read-tree", f"{index_commit}^{{tree}}"], dest, wenv)
     _run(["update-index", "-q", "--refresh"], dest, wenv)
     from hermes_cli.worktree_registry import record_worktree_repo

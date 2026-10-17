@@ -44,6 +44,8 @@ class Decision:
     verdict: str = ""
     lock_state: Optional[str] = None
     size_mb: Optional[int] = None
+    tier_hours: float = 0.0
+    planned_at: float = 0.0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -144,11 +146,13 @@ def live_process_pids(paths, exclude=()) -> dict[str, list[int]]:
 
 
 def _last_activity(path: str) -> float:
-    """Newest mtime among the tree's ref/reflog files and every changed or untracked file.
+    """Newest mtime among the tree's HEAD/reflog, every changed or untracked file, and the
+    directory holding each changed path.
 
     The tree dir's own mtime only moves when a top-level entry is created or removed, so a lane
-    editing files deep inside for days still looks idle by it. ``GIT_OPTIONAL_LOCKS=0`` keeps
-    this probe from refreshing (and re-stamping) the index.
+    editing files deep inside for days still looks idle by it. A deleted file has no mtime; its
+    nearest surviving parent directory was stamped by the unlink. The index is not a signal:
+    the classifier's own ``git status`` may rewrite it. ``GIT_OPTIONAL_LOCKS=0`` keeps this probe from refreshing (and re-stamping) the index.
     """
     from hermes_cli._subprocess_compat import noninteractive_repo_git_env
     newest = 0.0
@@ -159,7 +163,7 @@ def _last_activity(path: str) -> float:
     env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=path, env=env, capture_output=True,
-                                 text=True, timeout=10, stdin=subprocess.DEVNULL, check=False).stdout.strip()
+                                 text=True, encoding="utf-8", errors="surrogateescape", timeout=10, stdin=subprocess.DEVNULL, check=False).stdout.strip()
         status = subprocess.run(["git", "status", "--porcelain", "-z", "-uall", "--no-renames"], cwd=path, env=env,
                                 capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
                                 timeout=60, stdin=subprocess.DEVNULL, check=False)
@@ -168,8 +172,14 @@ def _last_activity(path: str) -> float:
     if status.returncode != 0:
         return time.time()
     candidates = [Path(git_dir) / name for name in ("HEAD", "logs/HEAD")] if git_dir else []
-    candidates += [wt / entry[3:] for entry in status.stdout.split("\0") if len(entry) > 3]
-    for candidate in candidates:
+    changed = [wt / entry[3:] for entry in status.stdout.split("\0") if len(entry) > 3]
+    candidates += changed
+    for item in changed:
+        parent = item.parent
+        while parent != wt and not parent.exists() and wt in parent.parents:
+            parent = parent.parent  # a whole deleted subtree: its surviving ancestor moved
+        candidates.append(parent)
+    for candidate in dict.fromkeys(candidates):
         try:
             newest = max(newest, candidate.lstat().st_mtime)
         except OSError:
@@ -181,27 +191,28 @@ def _last_activity(path: str) -> float:
 
 
 def _tier_hours(name: str, max_age_hours: float) -> float:
-    return max_age_hours if name.startswith("hermes-") else max_age_hours * 3
+    from hermes_cli.worktree_ops import prune_tier_hours
+    return prune_tier_hours(name, max_age_hours)
 
 
 def _plan_survivor(repo_root: str, entry: Path, verdict: str, lock_state, settings: dict,
-                   tier_hours: float, now: float) -> tuple[str, str, Optional[str]]:
-    """(action, reason, lock_state) for a dirty/unpushed tree past its tier."""
+                   tier_hours: float, now: float) -> tuple[str, str, Optional[str], Optional[float]]:
+    """(action, reason, lock_state, last_activity) for a dirty/unpushed tree past its tier."""
     from hermes_cli import worktree_ops as ops
     from hermes_cli.worktree_archive import archive_preflight
     what = _ARCHIVE_REASONS[verdict]
     lock_state = ops._worktree_lock_is_live(repo_root, str(entry), timeout=5)
     if lock_state == "live":
-        return "skip-live-lock", "lock owner still running", lock_state
+        return "skip-live-lock", "lock owner still running", lock_state, None
     active = _last_activity(str(entry))
     if active > now - tier_hours * 3600:
-        return "skip-young", f"{what}; last activity {(now - active) / 3600:.1f}h ago", lock_state
+        return "skip-young", f"{what}; last activity {(now - active) / 3600:.1f}h ago", lock_state, active
     if not settings["archive_dirty"]:
-        return f"keep-{verdict}", what, lock_state  # idle: only the size budget may evict it
+        return f"keep-{verdict}", what, lock_state, active  # idle: only the size budget may evict it
     unsafe = archive_preflight(str(entry))
     if unsafe:
-        return "keep-unarchivable", unsafe, lock_state
-    return "archive-remove", what, lock_state
+        return "keep-unarchivable", unsafe, lock_state, active
+    return "archive-remove", what, lock_state, active
 
 
 def _apply_budget(decisions: list[Decision], max_total_gb: float) -> None:
@@ -227,9 +238,16 @@ def _apply_budget(decisions: list[Decision], max_total_gb: float) -> None:
         total -= d.size_mb or 0
 
 
+_DESTRUCTIVE = ("remove", "remove-keep-branch", "archive-remove")
+
+
 def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict] = None,
-               now: Optional[float] = None) -> list[Decision]:
-    """Read-only decision for every tree under ``<repo>/.worktrees`` (kanban/young included)."""
+               now: Optional[float] = None, older_than_days: Optional[float] = None) -> list[Decision]:
+    """Read-only decision for every tree under ``<repo>/.worktrees`` (kanban/young included).
+
+    *older_than_days* (``hermes worktree prune --older-than``) only restricts: a tree idle for
+    less than that is never archived or removed, whatever its tier.
+    """
     import re
 
     from hermes_cli import worktree_ops as ops
@@ -255,8 +273,9 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
     # archive_dirty: false is the classic pruner verbatim (I6), which has no process check.
     live = {} if classic_mode(settings) else live_process_pids([str(v[0]) for v in verdicts])
     for entry, mtime, force, verdict, lock_state in verdicts:
+        tier = _tier_hours(entry.name, max_age_hours)
         d = Decision(entry.name, str(entry), "", "", round((now - mtime) / 3600, 1), mtime=mtime, force=force,
-                     verdict=verdict, lock_state=lock_state)
+                     verdict=verdict, lock_state=lock_state, tier_hours=tier, planned_at=now)
         if live.get(str(entry)):
             d.action, d.reason = "skip-live-process", f"in use by pid {', '.join(map(str, live[str(entry)][:5]))}"
         elif verdict == "locked-live":
@@ -264,14 +283,20 @@ def plan_sweep(repo_root: str, max_age_hours: int = 24, settings: Optional[dict]
         elif verdict in _ARCHIVE_REASONS and classic_mode(settings):
             d.action, d.reason = f"keep-{verdict}", _ARCHIVE_REASONS[verdict]
         elif verdict in _ARCHIVE_REASONS:
-            d.action, d.reason, d.lock_state = _plan_survivor(
-                repo_root, entry, verdict, lock_state, settings, _tier_hours(entry.name, max_age_hours), now)
+            d.action, d.reason, d.lock_state, active = _plan_survivor(
+                repo_root, entry, verdict, lock_state, settings, tier, now)
+            if active:
+                d.age_hours = min(d.age_hours, round((now - active) / 3600, 1))
         else:
             d.action = "remove-keep-branch" if verdict == "reap-keep-branch" else "remove"
             d.reason = "pushed to origin; branch kept" if verdict == "reap-keep-branch" else "clean and merged/pushed"
         decisions.append(d)
     if settings["max_total_gb"]:
         _apply_budget(decisions, settings["max_total_gb"])
+    if older_than_days is not None:
+        for d in decisions:
+            if d.action in _DESTRUCTIVE and d.age_hours < older_than_days * 24:
+                d.action, d.reason = "skip-young", f"idle {d.age_hours:.1f}h (--older-than {older_than_days:g})"
     return decisions
 
 
@@ -293,19 +318,39 @@ def _branch_published(repo_root: str, branch: str, remote_heads: Optional[dict])
     return refs is None or bool(refs.strip())
 
 
+def _in_use_since(path: str, since: float, exclude=()) -> Optional[str]:
+    """Why *path* must not be removed now: a live process works in it, or a file/ref in it
+    changed at or after *since*. None = still idle."""
+    pids = live_process_pids([path], exclude=exclude).get(path)
+    if pids:
+        return f"in use by pid {', '.join(map(str, pids[:5]))}"
+    active = _last_activity(path)
+    if active >= since:
+        return f"changed {max(0.0, time.time() - active):.0f}s ago"
+    return None
+
+
 def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked_mb: float,
                         unlock: bool, remote_heads_fn=None, keep_branch: bool = False,
+                        exclude_pids=(),
                         ) -> tuple[str, Optional[str], bool]:
     """Snapshot *path*, then remove it -> ``(archive_ref, kept_branch, removed)``.
 
-    Raises ``ArchiveError`` (tree untouched) when the snapshot fails. The branch survives when it
-    is protected or published on a remote (an open PR may still need it); otherwise the archive
-    ref anchors its commits and the local branch is deleted.
+    Raises ``ArchiveError`` (tree untouched) when the snapshot fails. Right after the snapshot the
+    tree is checked again: a process (other than *exclude_pids*) now working in it, or any edit
+    made while the snapshot ran, keeps the tree (``removed`` False; the archive stays). The branch
+    survives when it is protected or published on a remote (an open PR may still need it);
+    otherwise the archive ref anchors its commits and the local branch is deleted.
     """
     from hermes_cli.worktree_archive import snapshot_worktree
     from hermes_cli.worktree_ops import _git, _git_quiet, release_lsp_clients
     from hermes_cli._subprocess_compat import noninteractive_git_env
+    started = time.time()
     arc = snapshot_worktree(repo_root, path, reason=reason, max_untracked_mb=max_untracked_mb)
+    busy = _in_use_since(path, started, exclude=exclude_pids)
+    if busy:
+        logger.warning("Archived %s to %s but keeping it: %s", path, arc.ref, busy)
+        return arc.ref, None, False
     release_lsp_clients(path)
     if unlock:
         _git_quiet(["worktree", "unlock", path], repo_root, log=f"unlock {path}")
@@ -327,13 +372,32 @@ def archive_then_remove(repo_root: str, path: str, *, reason: str, max_untracked
     return arc.ref, None, True
 
 
+def _recheck(repo_root: str, d: Decision) -> tuple[Optional[str], Optional[str]]:
+    """Fresh gate for ONE planned tree, run immediately before it is touched -> (why_keep,
+    lock_state). Earlier trees in the batch can take minutes to archive; a user may have entered
+    this one meanwhile."""
+    from hermes_cli import worktree_ops as ops
+    if not os.path.isdir(d.path):
+        return "gone", None
+    lock_state = ops._worktree_lock_is_live(repo_root, d.path, timeout=5)
+    if lock_state == "live":
+        return "lock owner still running", lock_state
+    since = d.planned_at or time.time()
+    if d.action == "archive-remove" and d.tier_hours:
+        since = min(since, time.time() - d.tier_hours * 3600)  # back inside its idle tier
+    busy = _in_use_since(d.path, since)
+    if busy:
+        return busy, lock_state
+    if d.action != "archive-remove" and ops._worktree_is_dirty(d.path, repo_root, timeout=10):
+        return "new uncommitted changes", lock_state
+    return None, lock_state
+
+
 def execute_plan(repo_root: str, plan: list[Decision], settings: dict) -> tuple[list[str], set, list[str]]:
-    """Apply a frozen plan -> ``(preserved_stale, kept_branches, archived_refs)``."""
+    """Apply a frozen plan -> ``(preserved_stale, kept_branches, archived_refs)``. Each tree is
+    re-gated (lock, live process, fresh activity) right before it is archived or removed."""
     from hermes_cli import worktree_ops as ops
     from hermes_cli.worktree_archive import ArchiveError
-    doomed = [d for d in plan if d.action in ("remove", "remove-keep-branch", "archive-remove")]
-    # Classification can take minutes on a big board: re-check liveness right before acting.
-    live = live_process_pids([d.path for d in doomed])
     memo: dict = {}
 
     def remote_heads():
@@ -341,18 +405,23 @@ def execute_plan(repo_root: str, plan: list[Decision], settings: dict) -> tuple[
             memo["heads"] = ops._fetch_remote_branch_heads(repo_root, timeout=10)
         return memo["heads"]
 
-    reap = [(Path(d.path), d.mtime, d.force, d.verdict, d.lock_state) for d in doomed
-            if d.action != "archive-remove" and not live.get(d.path)]
-    _, kept_branches = ops._reap_prune_verdicts(repo_root, reap, 0.0)
+    kept_branches: set = set()
     archived: list[str] = []
     preserved: list[str] = [f"{d.name} ({d.reason})" for d in plan if d.action.startswith("keep-")]
-    for d in doomed:
-        if d.action != "archive-remove" or live.get(d.path):
+    for d in (d for d in plan if d.action in _DESTRUCTIVE):
+        why_keep, lock_state = _recheck(repo_root, d)
+        if why_keep:
+            logger.info("Sweep: keeping %s (%s)", d.name, why_keep)
+            continue
+        if d.action != "archive-remove":
+            _, kept = ops._reap_prune_verdicts(
+                repo_root, [(Path(d.path), d.mtime, d.force, d.verdict, lock_state)], 0.0)
+            kept_branches |= kept
             continue
         try:
             ref, kept, _removed = archive_then_remove(
                 repo_root, d.path, reason=f"sweep: {d.reason}", max_untracked_mb=settings["archive_max_file_mb"],
-                unlock=d.lock_state == "dead", remote_heads_fn=remote_heads)
+                unlock=lock_state == "dead", remote_heads_fn=remote_heads)
         except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
             logger.warning("Keeping worktree %s: archive failed (%s)", d.name, exc)
             preserved.append(f"{d.name} (archive failed)")

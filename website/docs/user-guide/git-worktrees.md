@@ -189,7 +189,9 @@ worktree has uncommitted changes or unpushed commits, Hermes asks:
 
 - **Keep the worktree** (default, also what Enter/Esc picks) — nothing changes.
 - **Archive and remove it** — the full working state is archived (see below)
-  and the tree is removed; Hermes prints the `hermes worktree restore` command.
+  and the tree is removed before the session finishes exiting, so a large tree
+  is never cut short; Hermes prints the `hermes worktree restore` command. If
+  the archive fails, the tree is kept.
 - **Remove it and discard the changes** — only when you pick it explicitly.
 
 One-shot runs (`-q`, `-z`), cron jobs, gateway sessions and any exit without a
@@ -209,14 +211,16 @@ repositories' `.worktrees/`:
 | Idle past its tier (`hermes-*`/`subagent-*` 24 h, named trees 72 h), clean and merged or pushed | removed |
 | Idle past its tier with uncommitted changes or unpushed commits | **archived, then removed** |
 | A live hermes lock owner, or any live process whose cwd (Linux: or an open file) is inside | never touched |
-| File, `HEAD` or reflog activity younger than its tier | never touched |
+| File, `HEAD` or reflog activity younger than its tier (a deleted file counts through its folder) | never touched |
 | Kanban task trees (`t_<hex>`) | never touched (the Kanban GC owns them) |
 
 An archive is a commit stored at `refs/hermes/archive/<tree>` holding the
 tree's `HEAD`, staged changes, unstaged changes and untracked files (files your
 `.gitignore` excludes, such as `node_modules/` or `.venv/`, are not captured).
 It is built with a temporary index, so the tree itself is never modified; if
-the archive cannot be built, the tree is kept. Untracked files larger than
+the archive cannot be built, the tree is kept. File bytes are stored and
+restored exactly: no `.gitattributes`, `info/attributes`, `core.attributesFile`
+line-ending or filter rule is applied. Untracked files larger than
 `worktrees.archive_max_file_mb` are left out and listed in the archive. A
 branch that exists on a remote (an open PR) is kept; otherwise the archive
 holds its commits and the local branch is deleted.

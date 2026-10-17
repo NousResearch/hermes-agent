@@ -88,8 +88,9 @@ Worktrees registered **outside** `.worktrees/` (created by hand or by another
 tool) are reported read-only in `list` output and are never removed. The one
 exception is metadata: registrations whose directory no longer exists are
 dropped via `git worktree prune` (no files are touched). `--older-than DAYS`
-only ever narrows what gets reaped — a tree carrying real work is kept at any
-age regardless of the flag.
+only ever narrows what gets reaped, including what the stale-worktree sweep
+archives and removes during that run: a tree idle for less than DAYS is
+never touched.
 
 Inside a session, `/worktree prune [--dry-run]` does the same (and never
 touches the tree the session is running in).
@@ -115,7 +116,8 @@ Safety guarantees (all modes, any age):
   remote can't be reached, the tree is preserved.
 - Trees **in use** are never touched: a running hermes session's lock, or any
   live process whose working directory (or, on Linux, an open file) is inside
-  the tree.
+  the tree. Each tree is checked again right before it is archived or removed,
+  and again after its archive is built; a tree that changed meanwhile is kept.
 - **Untracked-only scratch** (PR body drafts, notes) is archived to
   `~/.hermes/archive/worktree-prune/` before its tree is removed — never
   destroyed.

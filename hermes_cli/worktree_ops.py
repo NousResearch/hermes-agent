@@ -909,18 +909,28 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
     return "dead" if pid is not None else "live"  # a session lock without its store: unverifiable
 
 
+# Trees Hermes names itself (``hermes -w`` sessions, subagent isolation) age on the base tier.
+_AUTO_TREE_PREFIXES = ("hermes-", "subagent-")
+
+
+def prune_tier_hours(name: str, max_age_hours: float) -> float:
+    """Idle hours before a tree may be reclaimed: *max_age_hours* for Hermes-made trees
+    (``hermes-*``, ``subagent-*``), 3x for deliberately named ones."""
+    return max_age_hours if name.startswith(_AUTO_TREE_PREFIXES) else max_age_hours * 3
+
+
 def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float) -> list:
     """Phase 1, stat-only age filter -> ``[(entry, mtime, force)]`` for trees past their soft cutoff.
 
-    Kanban trees (``t_<hex>``) belong to the kanban gc. ``hermes-*`` trees age on *max_age_hours*,
-    deliberately named trees at 3x; *force* marks the hard (3x) tier.
+    Kanban trees (``t_<hex>``) belong to the kanban gc. Hermes-made trees age on *max_age_hours*,
+    deliberately named trees at 3x (``prune_tier_hours``); *force* marks the hard (3x) tier.
     """
     kanban_re = re.compile(r"^t_[0-9a-f]+$")
     candidates: list = []
     for entry in sorted(worktrees_dir.iterdir()):
         if not entry.is_dir() or kanban_re.match(entry.name):
             continue
-        tier_hours = max_age_hours if entry.name.startswith("hermes-") else max_age_hours * 3
+        tier_hours = prune_tier_hours(entry.name, max_age_hours)
         try:
             mtime = entry.stat().st_mtime
             if mtime > now - (tier_hours * 3600):

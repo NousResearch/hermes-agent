@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "Worktree'yi koru (varsayılan)"
     exit_choice_archive: "Arşivle ve kaldır (geri yüklenebilir)"
     exit_choice_discard: "Kaldır ve değişiklikleri at"
+    archiving: "{path} arşivleniyor … (büyük bir ağaçta bu biraz sürebilir)"
     archived: "✓ Worktree {ref} konumuna arşivlendi ve kaldırıldı: {path}"
     restore_hint: "Geri yüklemek için: hermes worktree restore {name}"
     archive_failed: "✗ {path} arşivlenemedi, korunuyor: {error}"

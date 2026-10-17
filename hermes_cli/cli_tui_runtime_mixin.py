@@ -541,12 +541,14 @@ class CLITuiRuntimeMixin:
         # turn fires it in the gateway when the interrupted turn finalizes.
         if self.agent and self._agent_running and not _gateway_owns_session_end(self.agent):
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
-        # Before _run_cleanup arms the exit watchdog; a signal-driven exit never asks.
+        # Ask AND apply before _run_cleanup arms the exit watchdog, so a large archive is never cut
+        # short; a signal-driven exit never asks.
         import cli as _cli_mod
-        if not _cli_mod._signal_watchdog_armed:
-            from hermes_cli.worktree_exit import ask_exit_choice
-            with suppress(Exception):
+        if not _cli_mod._signal_watchdog_armed and _cli_mod._active_worktree:
+            from hermes_cli.worktree_exit import apply_exit_choice, ask_exit_choice
+            with suppress(Exception, KeyboardInterrupt):
                 ask_exit_choice(_cli_mod._active_worktree)
+                apply_exit_choice(_cli_mod._active_worktree, _cprint)
         _run_cleanup()
         self._print_exit_summary()
         self._release_active_session()

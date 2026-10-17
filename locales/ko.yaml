@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "워크트리 유지 (기본값)"
     exit_choice_archive: "보관 후 제거 (복원 가능)"
     exit_choice_discard: "제거하고 변경 사항 버리기"
+    archiving: "{path} 보관 중… (큰 트리는 시간이 걸릴 수 있습니다)"
     archived: "✓ 워크트리를 {ref}에 보관하고 제거했어요: {path}"
     restore_hint: "복원하려면: hermes worktree restore {name}"
     archive_failed: "✗ {path}을(를) 보관하지 못해 유지해요: {error}"

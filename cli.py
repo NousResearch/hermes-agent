@@ -559,7 +559,7 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
         return
     _active_worktree = None
     from hermes_cli.worktree_exit import apply_exit_choice
-    if apply_exit_choice(info, _cprint):  # the exit question's Archive / Discard answer
+    if apply_exit_choice(info, _cprint):  # an exit-question answer not applied yet (normally none)
         return
 
     if _worktree_is_dirty(wt_path, repo_root, timeout=10):

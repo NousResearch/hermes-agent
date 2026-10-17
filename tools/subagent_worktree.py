@@ -218,7 +218,8 @@ def _archive_finished_worktree(info: dict[str, str], payload: dict[str, Any]) ->
     try:
         ref, _kept, removed = archive_then_remove(
             info.get("repo_root", "") or path, path, reason="subagent finished",
-            max_untracked_mb=settings["archive_max_file_mb"], unlock=False, keep_branch=True)
+            max_untracked_mb=settings["archive_max_file_mb"], unlock=False, keep_branch=True,
+            exclude_pids=(os.getpid(),))
     except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
         logger.warning("subagent worktree: archive failed, keeping %s: %s", path, exc)
         return payload

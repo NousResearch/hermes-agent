@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "保留工作树（默认）"
     exit_choice_archive: "归档并移除（可恢复）"
     exit_choice_discard: "移除并丢弃更改"
+    archiving: "正在归档 {path} …(大型工作树可能需要一些时间)"
     archived: "✓ 工作树已归档到 {ref} 并移除：{path}"
     restore_hint: "恢复方式：hermes worktree restore {name}"
     archive_failed: "✗ 无法归档 {path}，保留：{error}"

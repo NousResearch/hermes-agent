@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "保留工作樹（預設）"
     exit_choice_archive: "封存並移除（可還原）"
     exit_choice_discard: "移除並捨棄變更"
+    archiving: "正在封存 {path} …(大型工作樹可能需要一些時間)"
     archived: "✓ 工作樹已封存至 {ref} 並移除：{path}"
     restore_hint: "還原方式：hermes worktree restore {name}"
     archive_failed: "✗ 無法封存 {path}，保留：{error}"

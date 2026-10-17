@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "Hou die werkboom (verstek)"
     exit_choice_archive: "Argiveer en verwyder dit (herstelbaar)"
     exit_choice_discard: "Verwyder dit en gooi die veranderinge weg"
+    archiving: "Argiveer {path} … (dit kan 'n rukkie neem vir 'n groot boom)"
     archived: "✓ Werkboom geargiveer na {ref} en verwyder: {path}"
     restore_hint: "Herstel dit met: hermes worktree restore {name}"
     archive_failed: "✗ Kon nie {path} argiveer nie, word behou: {error}"

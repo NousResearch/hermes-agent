@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "Manter a worktree (padrão)"
     exit_choice_archive: "Arquivar e remover (restaurável)"
     exit_choice_discard: "Remover e descartar as alterações"
+    archiving: "Arquivando {path} … (pode demorar em uma árvore grande)"
     archived: "✓ Worktree arquivada em {ref} e removida: {path}"
     restore_hint: "Restaure com: hermes worktree restore {name}"
     archive_failed: "✗ Não foi possível arquivar {path}; mantendo: {error}"

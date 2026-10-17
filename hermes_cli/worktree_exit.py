@@ -3,7 +3,8 @@ dirty or unpushed worktree.
 
 Asked once, in the foreground, after the UI released the terminal: by the classic CLI in
 ``_tui_shutdown`` (before ``_run_cleanup`` arms the exit watchdog) and by the TUI launcher after
-the Ink child exits. The answer is applied by the exit cleanup. Only a real interactive session
+the Ink child exits. The answer is applied right there, synchronously, before any exit watchdog
+or teardown runs: a large archive is never cut short, and a failed one keeps the tree. Only a real interactive session
 asks: ``-q``/``-z``/cron/gateway never reach these call sites, a missing TTY or a signal-driven
 shutdown skips the question, and every skip means Keep (the sweep archives the tree later).
 """
@@ -80,21 +81,24 @@ def ask_exit_choice(info: Optional[dict]) -> str:
 
 
 def apply_exit_choice(info: dict, echo) -> bool:
-    """Carry out an Archive/Discard answer -> True when the tree was handled (removed or a
+    """Carry out an Archive/Discard answer once -> True when the tree was handled (removed or a
     message printed). Keep (or no answer) -> False: the caller's default keep path runs."""
-    choice = info.get("exit_choice")
+    choice = info.pop("exit_choice", None)
     if choice not in (ARCHIVE, DISCARD):
         return False
     path, repo_root, branch = info["path"], info["repo_root"], info.get("branch")
     if choice == ARCHIVE:
+        import subprocess
+
         from hermes_cli.worktree_archive import ArchiveError
         from hermes_cli.worktree_sweep import archive_then_remove, sweep_settings
+        echo(t("cli.worktree.archiving", path=path))
         try:
             ref, _kept, removed = archive_then_remove(
-                repo_root, path, reason="session exit", unlock=True,
+                repo_root, path, reason="session exit", unlock=True, exclude_pids=(os.getpid(),),
                 max_untracked_mb=sweep_settings()["archive_max_file_mb"])
-        except (ArchiveError, OSError) as exc:
-            echo(f"\033[31m{t('cli.worktree.archive_failed', path=path, error=exc)}\033[0m")
+        except (ArchiveError, OSError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
+            echo(f"\033[31m{t('cli.worktree.archive_failed', path=path, error=str(exc) or 'interrupted')}\033[0m")
             return True
         name = ref.rsplit("/", 1)[-1]
         echo(f"\033[32m{t('cli.worktree.archived', path=path, ref=ref)}\033[0m")

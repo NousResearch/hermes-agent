@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "Залишити робоче дерево (типово)"
     exit_choice_archive: "Архівувати й видалити (можна відновити)"
     exit_choice_discard: "Видалити й відкинути зміни"
+    archiving: "Архівування {path} … (для великого дерева це може зайняти час)"
     archived: "✓ Робоче дерево заархівовано в {ref} і видалено: {path}"
     restore_hint: "Відновити: hermes worktree restore {name}"
     archive_failed: "✗ Не вдалося заархівувати {path}, залишаємо: {error}"

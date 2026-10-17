@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "ワークツリーを保持する（デフォルト）"
     exit_choice_archive: "アーカイブして削除する（復元可能）"
     exit_choice_discard: "削除して変更を破棄する"
+    archiving: "{path} をアーカイブしています…(大きなツリーでは時間がかかることがあります)"
     archived: "✓ ワークツリーを {ref} にアーカイブして削除しました: {path}"
     restore_hint: "復元するには: hermes worktree restore {name}"
     archive_failed: "✗ {path} をアーカイブできなかったため保持します: {error}"

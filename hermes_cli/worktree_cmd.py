@@ -83,11 +83,12 @@ def _sweep_lines(plan) -> list[str]:
     return lines
 
 
-def _sweep(repo_root: str, dry_run: bool) -> tuple[list, list[str]]:
-    """The automatic sweep's plan for this repo (applied unless *dry_run*) -> (plan, actions)."""
+def _sweep(repo_root: str, dry_run: bool, older_than: Optional[float] = None) -> tuple[list, list[str]]:
+    """The automatic sweep's plan for this repo (applied unless *dry_run*) -> (plan, actions).
+    *older_than* (days) bounds what the plan may archive or remove before anything runs."""
     from hermes_cli import worktree_sweep
     settings = worktree_sweep.sweep_settings()
-    plan = worktree_sweep.plan_sweep(repo_root, settings=settings)
+    plan = worktree_sweep.plan_sweep(repo_root, settings=settings, older_than_days=older_than)
     if dry_run or worktree_sweep.classic_mode(settings):
         return plan, []
     _, _, archived = worktree_sweep.execute_plan(repo_root, plan, settings)
@@ -116,7 +117,7 @@ def _prune(worktree_gc, repo_root: str, args) -> int:
     kept: list = []
     plan: list = []
     if not getattr(args, "branches_only", False):
-        plan, actions = _sweep(repo_root, dry_run)
+        plan, actions = _sweep(repo_root, dry_run, older_than)
         if not as_json:
             print("\n".join(_sweep_lines(plan)) + "\n")
         actions += worktree_gc.prune_missing_registrations(repo_root, dry_run=dry_run)

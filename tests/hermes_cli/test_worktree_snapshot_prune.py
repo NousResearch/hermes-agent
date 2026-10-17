@@ -83,11 +83,18 @@ def _set_worktrees_config(text):
 
 
 def test_removed_dirty_tree_restores_byte_for_byte_and_archiving_never_touches_the_tree(repo):
-    """I1 + I4: HEAD, staged, unstaged (CRLF) and untracked bytes survive delete -> restore;
-    the archive step leaves the real index and every working file untouched."""
+    """I1 + I4: HEAD, staged, unstaged (CRLF) and untracked bytes survive delete -> restore,
+    even under eol rules from info/attributes and core.attributesFile (which ``--attr-source``
+    does not replace); the archive step leaves the real index and every working file untouched."""
     from hermes_cli.worktree_archive import restore_archive, snapshot_worktree
 
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "attributes").write_text("*.md text eol=crlf\n", encoding="utf-8")
+    (repo / "attrs").write_text("*.cfg text eol=lf\n", encoding="utf-8")
+    _git(["config", "core.attributesFile", str(repo / "attrs")], repo)
     wt = _tree(repo, "lane-roundtrip", unpushed=True)
+    (wt / "lf.md").write_bytes(b"lf only\n")                 # restore must not add CR
+    (wt / "crlf.cfg").write_bytes(b"keep\r\nthe CR\r\n")     # archive must not strip CR
     (wt / "b.py").write_text("x = 2\n", encoding="utf-8")
     _git(["add", "b.py"], wt)
     (wt / "b.py").write_text("x = 3\n", encoding="utf-8")               # unstaged on top of a staged change
@@ -129,8 +136,17 @@ def test_sweep_archives_idle_work_and_never_touches_live_kanban_or_young_trees(r
     unarchivable = _tree(repo, "lane-embedded", dirty=True)
     _git(["init", "-q", str(unarchivable / "inner")], repo)
     (unarchivable / "inner" / "f").write_text("x", encoding="utf-8")
-    for tree in (clean, dirty, unpushed, live_cwd, live_lock, kanban, unarchivable):
+    subagent = _tree(repo, "subagent-done", dirty=True)
+    deleted = _tree(repo, "lane-deleted")
+    (deleted / "sub").mkdir()
+    (deleted / "sub" / "x.py").write_text("x\n", encoding="utf-8")
+    (deleted / "sub" / "y.py").write_text("y\n", encoding="utf-8")
+    _git(["add", "sub"], deleted)
+    _git(["commit", "-qm", "sub"], deleted)
+    for tree in (clean, dirty, unpushed, live_cwd, live_lock, kanban, unarchivable, deleted):
         _idle(tree)
+    _idle(subagent, hours=30)                   # past the 24h hermes-made tier, inside 72h
+    (deleted / "sub" / "x.py").unlink()         # the newest work: a deletion in a subdir
     sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], cwd=str(live_cwd))
     try:
         worktree_ops._prune_stale_worktrees(str(repo))
@@ -141,11 +157,59 @@ def test_sweep_archives_idle_work_and_never_touches_live_kanban_or_young_trees(r
     assert not clean.exists()
     for gone in (dirty, unpushed):
         assert not gone.exists(), f"idle {gone.name} should be archived then removed"
+    assert not subagent.exists(), "subagent-* trees age on the 24h tier"
     archived = {ref.rsplit("/", 1)[-1] for ref in _archives(repo)}
-    assert archived == {"lane-dirty", "hermes-unpushed"}
+    assert archived == {"lane-dirty", "hermes-unpushed", "subagent-done"}
+    assert (deleted / "sub" / "y.py").exists(), "a fresh deletion is activity: the tree is not idle"
     assert _git(["show", "refs/hermes/archive/lane-dirty:notes.md"], repo) == "uncommitted"
     for kept in (live_cwd, live_lock, kanban, young, unarchivable):
         assert kept.exists() and (kept / "notes.md").read_text(encoding="utf-8-sig") == "uncommitted\n", kept.name
+
+
+def test_a_tree_resumed_mid_sweep_is_never_removed(repo, monkeypatch):
+    """I2 at the removal boundary: a process entering a later tree while an earlier one is being
+    archived, or an edit made while a tree's own snapshot ran, keeps that tree."""
+    from hermes_cli import worktree_archive, worktree_sweep
+
+    first, second = _tree(repo, "lane-a", dirty=True), _tree(repo, "lane-b", dirty=True)
+    for tree in (first, second):
+        _idle(tree)
+    plan = worktree_sweep.plan_sweep(str(repo), settings=worktree_sweep.sweep_settings())
+    assert {d.name for d in plan if d.action == "archive-remove"} == {"lane-a", "lane-b"}
+    real_snapshot, sleepers = worktree_archive.snapshot_worktree, []
+
+    def snapshot_then_user_returns(repo_root, wt_path, **kw):
+        arc = real_snapshot(repo_root, wt_path, **kw)
+        (Path(wt_path) / "notes.md").write_text("edited during the snapshot\n", encoding="utf-8")
+        sleepers.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(second)))
+        return arc
+
+    monkeypatch.setattr(worktree_archive, "snapshot_worktree", snapshot_then_user_returns)
+    try:
+        worktree_sweep.execute_plan(str(repo), plan, worktree_sweep.sweep_settings())
+    finally:
+        for proc in sleepers:
+            proc.kill()
+            proc.wait()
+    assert (first / "notes.md").read_text(encoding="utf-8-sig") == "edited during the snapshot\n"
+    assert second.exists() and (second / "notes.md").read_text(encoding="utf-8-sig") == "uncommitted\n"
+    assert [ref.rsplit("/", 1)[-1] for ref in _archives(repo)] == ["lane-a"]
+
+
+def test_prune_older_than_bounds_what_the_sweep_removes(repo, capsys):
+    """`hermes worktree prune --older-than N` never archives or removes a tree idle < N days."""
+    import argparse
+
+    from hermes_cli.worktree_cmd import cmd_worktree
+
+    dirty, clean = _tree(repo, "hermes-dirty", dirty=True), _tree(repo, "hermes-clean")
+    for tree in (dirty, clean):
+        _idle(tree)                                   # ~4 days idle: past every tier
+    args = argparse.Namespace(repo=str(repo), worktree_action="prune", dry_run=False, json=True,
+                              older_than=30, trees_only=True, branches_only=False)
+    assert cmd_worktree(args) == 0
+    assert dirty.exists() and clean.exists()
+    assert _archives(repo) == []
 
 
 def test_archive_dirty_false_keeps_the_classic_never_delete_dirty_pruner(repo):

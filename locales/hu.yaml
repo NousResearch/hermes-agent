@@ -3321,6 +3321,7 @@ cli:
     exit_choice_keep: "Worktree megtartása (alapértelmezett)"
     exit_choice_archive: "Archiválás és eltávolítás (visszaállítható)"
     exit_choice_discard: "Eltávolítás a változások elvetésével"
+    archiving: "{path} archiválása … (nagy fánál ez eltarthat egy ideig)"
     archived: "✓ Worktree archiválva ide: {ref}, és eltávolítva: {path}"
     restore_hint: "Visszaállítás: hermes worktree restore {name}"
     archive_failed: "✗ {path} archiválása sikertelen, megtartva: {error}"

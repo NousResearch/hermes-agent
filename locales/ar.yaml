@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "الاحتفاظ بالـ worktree (افتراضي)"
     exit_choice_archive: "أرشفته وإزالته (قابل للاستعادة)"
     exit_choice_discard: "إزالته وتجاهل التغييرات"
+    archiving: "جارٍ أرشفة {path} … (قد يستغرق ذلك بعض الوقت لشجرة كبيرة)"
     archived: "✓ تمت أرشفة الـ worktree في {ref} وإزالته: {path}"
     restore_hint: "لاستعادته: hermes worktree restore {name}"
     archive_failed: "✗ تعذّرت أرشفة {path}، سيُحتفظ به: {error}"

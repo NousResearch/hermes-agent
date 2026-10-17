@@ -3304,6 +3304,7 @@ cli:
     exit_choice_keep: "Coinnigh an worktree (réamhshocrú)"
     exit_choice_archive: "Cartlannaigh agus bain é (is féidir é a athchóiriú)"
     exit_choice_discard: "Bain é agus caith na hathruithe uait"
+    archiving: "{path} á chartlannú … (féadfaidh sé seo tamall a thógáil do chrann mór)"
     archived: "✓ Worktree cartlannaithe go {ref} agus bainte: {path}"
     restore_hint: "Athchóirigh é le: hermes worktree restore {name}"
     archive_failed: "✗ Níorbh fhéidir {path} a chartlannú, á choinneáil: {error}"

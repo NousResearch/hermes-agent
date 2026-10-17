@@ -61,6 +61,11 @@ _NODE_PLAT = {
     "darwin-arm64": "darwin-arm64",
 }
 
+_DARWIN_NODE_LIBCPP_FAILURE = (
+    "Node requires a newer macOS libc++ than this host provides; "
+    "the staged Node binary cannot run"
+)
+
 
 class BinaryPackage(Package):
     """A downloaded archive exposing one binary. Covers most tools."""
@@ -527,13 +532,28 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
 
+    def verify(self, entry: Path, target: str) -> str:
+        reason = super().verify(entry, target)
+        if (
+            target == current_target()
+            and target.startswith("darwin-")
+            and "Symbol not found" in reason
+            and "libc++.1.dylib" in reason
+        ):
+            return _DARWIN_NODE_LIBCPP_FAILURE
+        return reason
+
     def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
         """Repair the host library needed by official Linux Node, then re-probe.
 
         Keep this out of verify(): doctor/status checks call verify and must
         never gain permission to install host packages.
         """
-        if target != current_target() or not target.startswith("linux") or "libatomic.so.1" not in reason:
+        if target != current_target():
+            return reason, ""
+        if target.startswith("darwin-") and reason == _DARWIN_NODE_LIBCPP_FAILURE:
+            return reason, "upgrade macOS to a version supported by this Node release, then retry"
+        if not target.startswith("linux") or "libatomic.so.1" not in reason:
             return reason, ""
         from pm.libatomic import try_install_libatomic
 

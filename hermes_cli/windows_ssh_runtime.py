@@ -427,29 +427,12 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
         "path": path,
         "version": (version.stdout + version.stderr).splitlines()[0] if version.returncode == 0 else "",
         "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text,
-        "capabilities": ["launcher-ownership", "profile-inventory"]}
+        "capabilities": ["launcher-ownership"]}
 
 
 def _probe(*_: str) -> dict[str, Any]:
     import platform
     return {"os": "Windows", "arch": platform.machine(), "hermesHome": str(get_default_hermes_root()), "python": sys.executable}
-
-
-def list_profiles_op(*_: str) -> dict[str, Any]:
-    """Names of the profiles in this install (``default`` first, deleted ones skipped)."""
-    from hermes_cli.profiles import list_profile_names
-    return {"profiles": list_profile_names()}
-
-
-def install_id_op(*_: str) -> dict[str, Any]:
-    """The install's opaque identity, read-only: no directory, file or id is ever created here.
-
-    ``get_default_hermes_root()`` is the install root — a HERMES_HOME of ``<root>/profiles/<name>``
-    resolves to ``<root>`` — so the id matches what ``install_identity`` mints beside the code tree.
-    """
-    from hermes_cli.install_identity import _INSTALL_ID_FILENAME, _read_existing
-    existing, _ = _read_existing(get_default_hermes_root() / _INSTALL_ID_FILENAME)
-    return {"installId": existing}
 
 
 def _read_log(ownership_id: str, spawn_nonce: str) -> dict[str, Any]:
@@ -476,8 +459,6 @@ _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "remove-log": (2, lambda o, n: {"removed": remove_artifact(_log_path(o, n))}),
     "spawn": (None, lambda *_: spawn_backend(_read_json_stdin())),
     "inspect": (1, inspect_hermes),
-    "list-profiles": (0, list_profiles_op),
-    "install-id": (0, install_id_op),
     "process-state": (4, lambda p, c, h, n: process_state(int(p), int(c), h, n)),
     "terminate": (4, lambda p, c, h, n: {"terminated": terminate_owned(int(p), int(c), h, n)})}
 

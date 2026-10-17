@@ -379,78 +379,7 @@ async function assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath = '') 
   throw error
 }
 
-/**
- * The profile inventory on a Windows remote comes from the native helper
- * (`hermes_cli.windows_ssh_runtime`), never from a POSIX shell command: Desktop's
- * `echo "${HERMES_HOME:-$HOME/.hermes}"` reaches the Windows remote's cmd.exe,
- * comes back verbatim, and is rejected as "Unsafe remote Hermes home" (#137742).
- * The helper's `inspect` advertises `profile-inventory`, so a checkout too old to
- * answer `list-profiles` reports `update-required` instead of an empty roster.
- *
- * The dynamic import is deliberate: `windows-remote-lifecycle` imports this module
- * (`resolveReadyTimeoutMs`), so a static import here would close the cycle.
- */
-async function windowsProfileInventoryHelper(ssh, runtime) {
-  const { assertWindowsRemoteInstallUpdateClear, helper } = await import('./windows-remote-lifecycle')
-
-  await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
-
-  const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
-
-  if (!Array.isArray(inspection?.capabilities) || !inspection.capabilities.includes('profile-inventory')) {
-    const error: any = new Error(
-      'The remote Windows Hermes install cannot report its profiles; update Hermes on the remote host.'
-    )
-
-    error.kind = 'update-required'
-    throw error
-  }
-
-  return helper
-}
-
-async function listWindowsRemoteHermesProfiles(ssh, runtime) {
-  const helper = await windowsProfileInventoryHelper(ssh, runtime)
-  let payload
-
-  try {
-    payload = await helper(ssh, runtime, 'list-profiles')
-  } catch (cause) {
-    const error: any = new Error('Could not list remote Hermes profiles.')
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
-  }
-
-  // The helper reports the same names `ls -1 <home>/profiles` would; the names ride
-  // through the same filter so both transports agree on what counts as a profile.
-  return parseRemoteProfileListing(Array.isArray(payload?.profiles) ? payload.profiles.join('\n') : '')
-}
-
-async function readWindowsRemoteInstallId(ssh, runtime) {
-  const helper = await windowsProfileInventoryHelper(ssh, runtime)
-  let payload
-
-  try {
-    payload = await helper(ssh, runtime, 'install-id')
-  } catch (cause) {
-    const error: any = new Error('Could not read the remote Hermes install id.')
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
-  }
-
-  // Same shape rule the POSIX read applies: a 32-hex identity or "no id".
-  const id = String(payload?.installId ?? '').trim().toLowerCase()
-
-  return /^[0-9a-f]{32}$/.test(id) ? id : undefined
-}
-
-async function listRemoteHermesProfiles(ssh, platform = null) {
-  if (platform?.os === 'Windows') {
-    return listWindowsRemoteHermesProfiles(ssh, platform)
-  }
-
+async function listRemoteHermesProfiles(ssh) {
   const home = assertSafeRemoteHome(await probeRemoteHermesHome(ssh))
   const dir = expandRemotePath(`${home}/profiles`)
   let listing = ''
@@ -467,11 +396,7 @@ async function listRemoteHermesProfiles(ssh, platform = null) {
   return parseRemoteProfileListing(listing)
 }
 
-async function readRemoteInstallId(ssh, platform = null) {
-  if (platform?.os === 'Windows') {
-    return readWindowsRemoteInstallId(ssh, platform)
-  }
-
+async function readRemoteInstallId(ssh) {
   // The stable backend identity the roster collapses on (`hermes_cli/install_identity.py`:
   // `<install root>/install_id`, opaque hex). Read from the INSTALL root, so an ssh connection
   // pinned to `<root>/profiles/<name>` reports the same id as one pointed at the root — they are

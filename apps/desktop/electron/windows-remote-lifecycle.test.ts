@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
@@ -21,6 +22,7 @@ import {
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
+  supportsLauncherOwnership,
   terminateOwnedWindowsDashboardForUpdate,
   validLock
 } from './windows-remote-lifecycle'
@@ -28,14 +30,14 @@ import {
 const ownershipId = '0123456789abcdef0123456789abcdef'
 
 test('Windows spawn holds the update mutex across marker check and helper spawn', () => {
-  // atomicWindowsSpawnCommand returns the raw script (it rides the probe's stdin transport),
-  // so assert on it directly instead of decoding a -EncodedCommand.
-  const script = atomicWindowsSpawnCommand({
+  const command = atomicWindowsSpawnCommand({
     hermesHome: 'C:\\Users\\andre\\.hermes',
     hermesPath: 'C:\\Windows\\hermes.exe',
     python: 'C:\\Users\\andre\\.hermes\\python.exe'
   })
 
+  const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
+  const script = encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
   assert.match(script, /\.hermes-update-in-progress/)
   assert.match(
     script,
@@ -45,7 +47,7 @@ test('Windows spawn holds the update mutex across marker check and helper spawn'
 })
 
 test('Windows spawn publishes the initial ownership record before releasing the mutex', () => {
-  const script = atomicWindowsSpawnCommand(
+  const command = atomicWindowsSpawnCommand(
     {
       hermesHome: 'C:\\Users\\andre\\.hermes',
       hermesPath: 'C:\\Windows\\hermes.exe',
@@ -62,6 +64,9 @@ test('Windows spawn publishes the initial ownership record before releasing the 
     }
   )
 
+  const encoded = command.split(' ').at(-1) || ''
+  const script = encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
+
   assert.match(script, /read-lock/)
   assert.match(script, /write-lock/)
   assert.match(script, /\$lock\s*\|\s*&.*write-lock/)
@@ -74,42 +79,13 @@ test.runIf(process.platform === 'win32')(
   async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-win-marker-'))
     const marker = path.join(root, '.hermes-update-in-progress')
+    const run = (command: string) => promisify(execCallback)(command, { timeout: 30_000 })
 
-    // Execute the production transport locally, with stdinData written to its stdin.
-    const run = (command: string, options: SshExecOptions = {}) =>
-      new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        const child = execCallback(command, { timeout: 30_000 }, (error, stdout, stderr) =>
-          error ? reject(Object.assign(error, { stdout, stderr })) : resolve({ stdout, stderr })
-        )
-
-        child.stdin?.end(options.stdinData ?? '')
-      })
-
-    const runtime = {
+    const command = atomicWindowsSpawnCommand({
       hermesHome: root,
-      hermesPath: path.join(root, 'hermes.exe'),
+      hermesPath: path.join(root, 'missing-hermes.exe'),
       python: path.join(root, 'missing-python.exe')
-    }
-
-    const ssh = sshWith(async (command: string, options: SshExecOptions = {}) => (await run(command, options)).stdout)
-
-    // The spawn rides the same stdin transport as the platform probe (`powerShellStdinCommand`), so
-    // borrow that command from the probe instead of hard-coding a bootstrap string, and ship exactly
-    // the bytes ssh.exec would: the spawn script base64'd as one CRLF-terminated stdin line.
-    let bootstrapCommand = ''
-
-    await probeWindowsRemote(
-      sshWith(async (command: string) => {
-        bootstrapCommand = command
-
-        return JSON.stringify({ os: 'Windows', arch: 'AMD64' })
-      })
-    )
-
-    const spawnRemote = () =>
-      run(bootstrapCommand, {
-        stdinData: `${encodedPowerShell(atomicWindowsSpawnCommand(runtime, {}, ''))}\r\n`
-      })
+    })
 
     // An updater: hold <marker>.lock sharing nothing (marker.ps1 Open-MarkerLock),
     // write its v2 claim, release, and stay alive as the live owner.
@@ -138,15 +114,18 @@ test.runIf(process.platform === 'win32')(
 
     try {
       await new Promise(resolve => updater.stdout.once('data', resolve))
-      await assert.rejects(spawnRemote, (error: any) =>
+      await assert.rejects(run(command), (error: any) =>
         String(error.stderr).includes(`remote update marker is LIVE:${updater.pid}`)
       )
 
       updater.kill()
       await new Promise(resolve => updater.once('exit', resolve))
-      await assertWindowsRemoteInstallUpdateClear(ssh, root)
-      // The dead claim is deleted inside the hold; the missing python then fails the spawn itself.
-      await assert.rejects(spawnRemote)
+      await assertWindowsRemoteInstallUpdateClear(
+        sshWith(async (probe: string) => (await run(probe)).stdout),
+        root
+      )
+      // The dead claim is deleted inside the hold; the missing launcher then fails the spawn itself.
+      await assert.rejects(run(command))
       await assert.rejects(readFile(marker), { code: 'ENOENT' })
     } finally {
       updater.kill()
@@ -203,11 +182,13 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
     'C:\\Users\\alice\\.hermes'
   )
   scripts.push(
-    atomicWindowsSpawnCommand({
-      hermesHome: 'C:\\Users\\alice\\.hermes',
-      hermesPath: 'C:\\Hermes\\hermes.exe',
-      python: 'C:\\py\\python.exe'
-    }),
+    decode(
+      atomicWindowsSpawnCommand({
+        hermesHome: 'C:\\Users\\alice\\.hermes',
+        hermesPath: 'C:\\Hermes\\hermes.exe',
+        python: 'C:\\py\\python.exe'
+      })
+    ),
     decode(buildWindowsInteractiveCommand('C:\\work'))
   )
 
@@ -283,7 +264,7 @@ test('Windows gates keep a dead marker while the checkout lock or a lease byte i
     python: 'C:\\src\\hermes\\venv\\Scripts\\python.exe'
   }
 
-  const spawnScript = atomicWindowsSpawnCommand(runtime)
+  const spawnScript = decode(atomicWindowsSpawnCommand(runtime))
   let probeScript = ''
 
   const observed = await assertWindowsRemoteInstallUpdateClear(
@@ -471,11 +452,13 @@ test('every parsed Windows PowerShell script silences the progress stream', asyn
     'C:\\h'
   )
   scripts.push(
-    atomicWindowsSpawnCommand({
-      hermesHome: 'C:\\h',
-      hermesPath: 'C:\\h\\hermes.exe',
-      python: 'C:\\py\\python.exe'
-    }),
+    decode(
+      atomicWindowsSpawnCommand({
+        hermesHome: 'C:\\h',
+        hermesPath: 'C:\\h\\hermes.exe',
+        python: 'C:\\py\\python.exe'
+      })
+    ),
     decode(helperCommand({ hermesPath: 'C:\\h\\hermes.exe', python: 'C:\\py\\python.exe' }, 'inspect', []))
   )
 
@@ -555,37 +538,6 @@ test('Windows platform probe preserves Unicode paths in its UTF-16LE stdin paylo
   assert.ok(decodedScript.includes('C:\\Users\\한글\\hermes.exe'))
 })
 
-// The probes stream their script to powerShellStdinCommand as one base64 line ended by a single
-// CRLF; there is no framing. The command line stays short, so it fits cmd.exe's 8191-char limit.
-test('Windows stdin transport ships the UTF-16LE script as a single base64 line', async () => {
-  let stdinData = ''
-
-  await probeWindowsRemote({
-    async exec(_command: string, options: SshExecOptions = {}) {
-      stdinData = String(options.stdinData || '')
-
-      return JSON.stringify({
-        os: 'Windows',
-        arch: 'AMD64',
-        hermesHome: 'C:\\h',
-        hermesPath: 'C:\\h\\bin\\hermes.cmd',
-        python: 'C:\\h\\python.exe',
-        launcher: true
-      })
-    }
-  })
-
-  assert.equal(stdinData.slice(-2), '\r\n')
-  assert.equal(stdinData.slice(0, -2).includes('\r\n'), false)
-  assert.match(stdinData.slice(0, -2), /^[A-Za-z0-9+/=]+$/)
-
-  const script = Buffer.from(stdinData.trim(), 'base64').toString('utf16le')
-
-  assert.equal(encodedPowerShell(script), stdinData.slice(0, -2))
-  assert.match(script, /^\$ProgressPreference="SilentlyContinue"/)
-  assert.match(script, /--print-runtime-command/)
-})
-
 test('Windows probe resolves a hermes.cmd launcher and skips candidates without a runtime', async () => {
   let script = ''
 
@@ -598,8 +550,7 @@ test('Windows probe resolves a hermes.cmd launcher and skips candidates without 
         arch: 'AMD64',
         hermesHome: 'C:\\h',
         hermesPath: 'C:\\h\\bin\\hermes.cmd',
-        python: 'C:\\h\\python.exe',
-        launcher: true
+        python: 'C:\\h\\python.exe'
       })
     })
   )
@@ -635,8 +586,7 @@ test('Windows launcher without launcher-ownership refuses before uploading a tok
         arch: 'AMD64',
         hermesHome: 'C:\\h',
         hermesPath: 'C:\\h\\bin\\hermes.cmd',
-        python: 'C:\\h\\python.exe',
-        launcher: true
+        python: 'C:\\h\\python.exe'
       })
     }
 
@@ -672,90 +622,17 @@ test('Windows launcher without launcher-ownership refuses before uploading a tok
     (error: any) => error.kind === 'update-required' && /launcher/.test(error.message)
   )
 
-  // The refusal happens before the token upload and before anything is started remotely.
+  // The refusal happens before the token upload, before the ownership record and before the
+  // helper's spawn is ever invoked.
   assert.equal(scripts.some(script => script.includes("'upload-token'")), false)
-  assert.equal(scripts.some(script => script.includes('$spawnPayload=')), false)
+  assert.equal(scripts.some(script => script.includes("'read-lock'")), false)
+  assert.equal(scripts.some(script => script.includes("'spawn'")), false)
 })
 
-test('Windows spawn rides the shared stdin bootstrap and embeds its payload in the script', async () => {
-  const calls: { command: string; stdinData: string }[] = []
-
-  const ssh = sshWith(async (command: string, options: SshExecOptions = {}) => {
-    calls.push({ command, stdinData: String(options.stdinData || '') })
-
-    const script = scriptFromInvocation(command, options)
-
-    if (script.includes('$spawnPayload=')) {
-      return JSON.stringify({ pid: 4242, creationTimeNs: '1784219690452757504' })
-    }
-
-    if (script.includes('--print-runtime-command')) {
-      return JSON.stringify({
-        os: 'Windows',
-        arch: 'AMD64',
-        hermesHome: 'C:\\h',
-        hermesPath: 'C:\\h\\bin\\hermes.cmd',
-        python: 'C:\\h\\python.exe',
-        launcher: true
-      })
-    }
-
-    if (script.includes('.hermes-update-in-progress')) {
-      return 'CLEAR'
-    }
-
-    if (script.includes("'inspect'")) {
-      return JSON.stringify({
-        supported: true,
-        version: '2.0.0',
-        path: 'C:\\h\\bin\\hermes.cmd',
-        python: 'C:\\h\\python.exe',
-        capabilities: ['launcher-ownership', 'profile-inventory']
-      })
-    }
-
-    if (script.includes("'read-lock'")) {
-      return 'null'
-    }
-
-    return JSON.stringify({ ok: true })
-  })
-
-  // The spawn succeeds, so the flow stops at the readiness wait; that is past the spawn itself.
-  await connectWindowsRemote({
-    ssh,
-    ownershipId,
-    pickLocalPort: async () => 50000,
-    forward: async () => {},
-    cancelForward: async () => {},
-    waitForHermes: async () => {},
-    probeReuseProof: async () => 'authenticated-ok',
-    readyTimeoutMs: 300
-  }).catch(() => {})
-
-  const spawn = calls.find(call => scriptFromInvocation(call.command, { stdinData: call.stdinData }).includes('$spawnPayload='))
-  assert.ok(spawn, 'the spawn must reach the remote')
-
-  // The spawn reuses the probe's stdin bootstrap instead of building its own command line: the
-  // command line is short and the ~9k script travels on one base64 stdin line.
-  assert.match(spawn!.command, /-Command \[ScriptBlock\]::Create/)
-  assert.doesNotMatch(spawn!.command, /-EncodedCommand/)
-  assert.ok(spawn!.command.length < 8191, `spawn command is ${spawn!.command.length} chars (limit 8191)`)
-  assert.equal(spawn!.stdinData.slice(-2), '\r\n')
-  assert.equal(spawn!.stdinData.slice(0, -2).includes('\r\n'), false)
-
-  const script = Buffer.from(spawn!.stdinData.trim(), 'base64').toString('utf16le')
-
-  // The payload is written into the script as a literal and piped to the helper's spawn; the
-  // helper never reads the session stdin, which the bootstrap already consumed.
-  assert.match(script, /\$spawnPayload='/)
-  assert.ok(script.includes(ownershipId), 'the ownership id must ride the embedded payload')
-  assert.match(script, /\$spawnPayload \| & /)
-  assert.doesNotMatch(script, /\[Console\]::In/)
-  assert.ok(
-    script.indexOf('$OutputEncoding=[Text.UTF8Encoding]::new($false)') < script.indexOf('$spawnPayload | &'),
-    'UTF-8 without BOM must be set before the payload is piped to the helper'
-  )
+test('the launcher-ownership predicate refuses an old helper and admits a capable one', () => {
+  // Shared by Connect and the connection Test (main.ts), which is not importable from a node test.
+  assert.equal(supportsLauncherOwnership({ supported: true }), false)
+  assert.equal(supportsLauncherOwnership({ supported: true, capabilities: ['launcher-ownership'] }), true)
 })
 
 test('every Windows probe command fits the cmd.exe 8191-char limit (#106716)', async () => {

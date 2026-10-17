@@ -4839,7 +4839,15 @@ async def _wait_for_pid_exit(pid: int, attempts: int, delay: float) -> bool:
 
 
 def _start_gateway_make_restart_signal_handler(runner):
-    """Build the SIGUSR1 handler: log what the signal means, then the drain-aware service restart."""
+    """Build the SIGUSR1 handler: log what the signal means, then the drain-aware service restart.
+
+    Deferred-restart awareness (``hermes gateway defer-restart``, invariants I1-I3):
+    the signal is also the wake-up for a validated deferred restart request. All
+    request-file I/O runs in a loop task — never inside the raw signal callback —
+    and when no deferred request is pending the legacy restart behaviour below is
+    unchanged. A deferred request that FAILS validation is rejected and must never
+    fall through to the legacy unconditional restart.
+    """
     def restart_signal_handler():
         # systemd's `reload` verb (ExecReload=kill -USR1) lands here too; say so, because operators
         # expect `reload` to mean an in-process config reload, not a drain-and-relaunch (#117267).
@@ -4847,7 +4855,27 @@ def _start_gateway_make_restart_signal_handler(runner):
             "SIGUSR1 received (systemctl reload / hermes gateway restart): performing a graceful "
             "gateway restart — drain active turns, exit, supervisor relaunches. Not an in-process "
             "config reload.")
-        runner.request_restart(detached=False, via_service=True)
+        from gateway.defer_restart import might_have_pending_request, process_sigusr1_request
+
+        if not might_have_pending_request():
+            # Legacy path: plain restart signal, behaviour unchanged.
+            runner.request_restart(detached=False, via_service=True)
+            return
+
+        # A deferred restart request may be pending: do the request-file work in a
+        # loop task (never inside the raw signal callback) and decide there.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - handler is registered on the loop
+            process_sigusr1_request(
+                lambda: runner.request_restart(detached=False, via_service=True))
+            return
+
+        async def _wake() -> None:
+            process_sigusr1_request(
+                lambda: runner.request_restart(detached=False, via_service=True))
+
+        loop.create_task(_wake())
     return restart_signal_handler
 
 

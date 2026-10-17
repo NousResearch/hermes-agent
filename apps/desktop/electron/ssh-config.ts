@@ -172,4 +172,38 @@ function parseSshGOutput(text) {
   return out
 }
 
-export { collectSshConfigHosts, parseSshConfigHosts, parseSshConfigIncludes, parseSshGOutput }
+/**
+ * resolveEffectiveSshUser — pick the username an ssh invocation should use.
+ *
+ * The authority is the client's effective SSH config: `~/.ssh/config` (and any
+ * host alias it maps to) wins over a stored username. A stored username that
+ * was auto-filled from the desktop's OS login (e.g. `localuser` on a host where the
+ * remote account is `deploy`) must never override the config's `User` directive —
+ * that mismatch made the desktop authenticate as the wrong account and fail
+ * non-interactively, while the primary bootstrap (which resolves the user via
+ * `ssh -G`) used the config user, so the two paths disagreed.
+ *
+ * Mirrors the "config user wins" precedence of the primary bootstrap so every
+ * SSH path resolves to the same username.
+ *
+ * @param storedUser The username persisted on the connection (may be '').
+ * @param configUser The username the effective SSH config resolves for the host
+ *                    (from `ssh -G <host>`), or '' when the config sets none.
+ * @returns The username to use, or '' to let `ssh` decide from the config.
+ */
+function resolveEffectiveSshUser(storedUser, configUser) {
+  const stored = String(storedUser || '').trim()
+  const config = String(configUser || '').trim()
+
+  if (config) {
+    return config
+  }
+
+  if (stored) {
+    return stored
+  }
+
+  return ''
+}
+
+export { collectSshConfigHosts, parseSshConfigHosts, parseSshConfigIncludes, parseSshGOutput, resolveEffectiveSshUser }

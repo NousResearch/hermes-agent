@@ -1125,6 +1125,29 @@
 }
 .hermes-kanban-attention-icon { color: #ff9e3b; font-size: 1rem; }
 .hermes-kanban-attention-text { flex: 1; }
+/* Dispatch health: a STARVED queue (spawnable ready tasks exist, every one held
+   back) must not render like an idle board. Fed by the board payload's
+   `dispatch_health` tuple — the same read as `hermes kanban health`. */
+.hermes-kanban-health {
+  border: 1px solid rgba(255, 79, 79, 0.4);
+  background: rgba(255, 79, 79, 0.08);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.hermes-kanban-health--starved {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.hermes-kanban-health-icon { color: #ff5a5a; font-size: 1rem; }
+.hermes-kanban-health-text { flex: 1; display: flex; flex-direction: column; gap: 0.1rem; }
+.hermes-kanban-health-detail {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  opacity: 0.75;
+}
 .hermes-kanban-attention-toggle,
 .hermes-kanban-attention-dismiss,
 .hermes-kanban-attention-row-btn {

@@ -62,6 +62,9 @@ class ModelInfo:
     cost_output: float = 0.0
     cost_cache_read: Optional[float] = None
     cost_cache_write: Optional[float] = None
+    # Whole-request long-context rates: ``{"above": N, "input": ..., ...}`` rows from ``cost.tiers``
+    # (type ``context``); above N prompt tokens the row's rates replace the base ones.
+    cost_context_tiers: tuple[dict[str, Any], ...] = ()
     # Metadata
     knowledge_cutoff: str = ""
     release_date: str = ""
@@ -927,13 +930,22 @@ def _parse_model_info(model_id: str, raw: dict[str, Any], provider_id: str) -> M
         return tuple(mods) if isinstance(mods, list) else ()
     def _cost(key: str) -> Optional[float]:
         return float(cost[key]) if cost.get(key) is not None else None
+    def _context_tier(row: Any) -> Optional[dict[str, Any]]:
+        tier = _dict_or_empty(_dict_or_empty(row).get("tier"))
+        size = tier.get("size")
+        if tier.get("type") != "context" or isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            return None
+        rates = {k: float(row[k]) for k in ("input", "output", "cache_read", "cache_write") if isinstance(row.get(k), (int, float))}
+        return {"above": size, **rates}
+    tiers = cost.get("tiers")
+    context_tiers = tuple(t for t in map(_context_tier, tiers if isinstance(tiers, list) else ()) if t)
     return ModelInfo(
         id=model_id, name=raw.get("name", "") or model_id, family=raw.get("family", "") or "", provider_id=provider_id,
         **{k: bool(raw.get(k, False)) for k in ("reasoning", "tool_call", "attachment", "temperature", "structured_output", "open_weights")},
         input_modalities=_mods("input"), output_modalities=_mods("output"),
         context_window=_extract_limit(raw, "context") or 0, max_output=_extract_limit(raw, "output") or 0, max_input=_extract_limit(raw, "input"),
         cost_input=float(cost.get("input", 0) or 0), cost_output=float(cost.get("output", 0) or 0),
-        cost_cache_read=_cost("cache_read"), cost_cache_write=_cost("cache_write"),
+        cost_cache_read=_cost("cache_read"), cost_cache_write=_cost("cache_write"), cost_context_tiers=context_tiers,
         knowledge_cutoff=raw.get("knowledge", "") or "", release_date=raw.get("release_date", "") or "",
         status=raw.get("status", "") or "", interleaved=raw.get("interleaved", False),
     )

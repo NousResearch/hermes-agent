@@ -3,6 +3,8 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
+import type { SessionStats } from '@hermes/shared/gateway-events'
+
 import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
@@ -126,10 +128,15 @@ export function canonicalReasoning(payload: { scope?: string; value: string }, c
   }
 
   void mutateCanonical(ctx.gateway.gw, ctx.sid!, 'reasoning', { effort }, ctx.stale)
-    .then(
-      mutation =>
-        mutation?.result && !ctx.stale() && ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
-    )
+    .then(mutation => {
+      if (mutation?.result) {
+        ctx.ran?.() // the owner accepted it; a refusal rejects and reports nothing
+
+        if (!ctx.stale()) {
+          ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
+        }
+      }
+    })
     .catch(ctx.guardedErr)
 
   return true
@@ -191,7 +198,7 @@ export function canonicalUsage(ctx: SlashRunCtx) {
         return
       }
 
-      const usage = usageFromTick(asRpcResult<Record<string, unknown>>(raw))
+      const usage = usageFromTick(asRpcResult<SessionStats>(raw))
 
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))

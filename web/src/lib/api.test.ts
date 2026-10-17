@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   api,
   authedFetch,
+  buildWsUrl,
   fetchJSON,
   getManagementProfile,
   setManagementProfile,
@@ -204,6 +205,45 @@ describe("management profile scope", () => {
       expect(fetchMock.mock.calls[0][0]).toBe(expected);
     },
   );
+});
+
+describe("plugin SDK calls follow the selected profile (PLG-3)", () => {
+  // A plugin's bundle is the selected profile's copy; its backend calls must name that
+  // profile too, or they reach the launch profile's handlers (or 404 for a secondary-only one).
+  it.each([
+    ["fetchJSON", fetchJSON],
+    ["authedFetch", authedFetch],
+  ] as const)("%s scopes /api/plugins/ to the selected profile", async (_name, helper) => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("beta");
+
+    await helper("/api/plugins/kanban/board?id=1");
+    await helper("/api/plugins/kanban/board?profile=alpha");
+
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      "/api/plugins/kanban/board?id=1&profile=beta",
+      "/api/plugins/kanban/board?profile=alpha",
+    ]);
+  });
+
+  it("buildWsUrl names the selected profile on a plugin socket only", async () => {
+    vi.stubGlobal("window", {
+      __HERMES_SESSION_TOKEN__: "tok",
+      location: { protocol: "http:", host: "127.0.0.1:9119" },
+    });
+    setManagementProfile("beta");
+    const query = async (path: string, params?: Record<string, string>) =>
+      new URL(await buildWsUrl(path, params)).searchParams;
+
+    const plugin = await query("/api/plugins/kanban/events", { board: "b" });
+    expect([plugin.get("board"), plugin.getAll("profile"), plugin.get("token")]).toEqual([
+      "b", ["beta"], "tok",
+    ]);
+    expect((await query("/api/plugins/kanban/events", { profile: "alpha" })).getAll("profile")).toEqual(["alpha"]);
+    expect((await query("/api/events")).has("profile")).toBe(false);
+  });
 });
 
 describe("api OAuth helpers", () => {

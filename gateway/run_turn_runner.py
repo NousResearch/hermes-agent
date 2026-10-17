@@ -1121,7 +1121,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 cli_fields = self.__dict__.pop("_cli_result_fields", None)
                 # A classic CLI viewer reads the run_conversation-shaped dict from the receipt; the
                 # delivered reply (message.complete text) keeps the gateway's own copy.
-                captured['result'] = {**result, **cli_fields} if cli_fields else result
+                captured['result'] = (
+                    {**result, **cli_fields, **({'response_previewed': True} if result.get('response_previewed') else {})}
+                    if cli_fields else result
+                )
             return result
 
     def _run_sync_scoped(self):
@@ -1213,7 +1216,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # 'custom' resolved without credentials ...") is the diagnosis; /login is not.
                 return _unresolved(f"⚠️ {exc}")
             return _unresolved(t("gateway.errors.no_credentials"))
-        pr = runner._provider_routing
+        from gateway.session_authorities import active_authority
+        from gateway.session_worker_construct import session_routing
+        pr = session_routing(active_authority(runner), policy) if policy else runner._provider_routing
         reasoning_config = (policy.current_reasoning_config(runner, ctx.session_key) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
         runner._service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
@@ -1315,6 +1320,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             **usage,
             **({"persisted_turn": persisted_turn} if persisted_turn else {}),
         }
+        previewed = result.get("response_previewed", False)
+        viewer_meta = {}
+        if local_sinks is not None:
+            was_delivered = getattr(agent, "_interim_text_was_delivered", None)
+            previewed = bool(previewed or (callable(was_delivered) and bool(final_response) and was_delivered(final_response) is True))
+            viewer_meta = {
+                "local_viewer": True,
+                **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
+                **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
+            }
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
@@ -1322,13 +1337,19 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 final_response = t("gateway.shared.warn_passthrough", error=result["error"]) if result.get("error") else ""
             # NOTE: deliberately omits agent_persisted/last_reasoning/response_* — the caller
             # defaults agent_persisted differently when the key is absent.
+            if local_sinks is not None:
+                return {
+                    "final_response": final_response, **common, **viewer_meta,
+                    "response_previewed": previewed,
+                    "response_transformed": bool(result.get("response_transformed")),
+                }
             return {"final_response": final_response, **common}
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.
         return {
-            "final_response": final_response, "last_reasoning": result.get("last_reasoning"), **common,
-            "response_previewed": result.get("response_previewed", False),
+            "final_response": final_response, "last_reasoning": result.get("last_reasoning"), **common, **viewer_meta,
+            "response_previewed": previewed,
             "response_transformed": result.get("response_transformed", False),
             "response_reused": result.get("response_reused", False),
             # Lets the persistence block tell whether the codex app-server path self-persisted (it

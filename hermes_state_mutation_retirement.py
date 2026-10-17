@@ -95,6 +95,8 @@ def retire_sessions(conn, session_ids):
     accounting/constructor backfill recreates the deleted row, and the same request is then
     admitted a second time against it. Every delete path (canonical mutate, legacy
     ``delete_session*``, prunes and sweeps) must publish the whole fence, so it lives here once."""
+    from hermes_state_media import retire_spillover
+    retire_spillover(conn, session_ids)  # before the caller's DELETEs take the pointers away
     retire_terminal_receipts(conn, session_ids)
     retire_mutation_receipts(conn, session_ids)
     retire_routes(conn, session_ids)

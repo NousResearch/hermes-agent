@@ -66,6 +66,11 @@ def policy_identity(policy):
         data.pop('editor_mcp_json', None)
     if not data.get('coding_posture'):
         data.pop('coding_posture', None)
+    for name in ('client_env_json', 'client_env_rules_json'):
+        if data.get(name) is None:
+            data.pop(name, None)
+    if not data.get('client_env_remote'):
+        data.pop('client_env_remote', None)
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
@@ -79,6 +84,16 @@ def config_reference(authority, session_id, policy, secrets):
         'session': session_id, 'policy': policy_identity(policy),
         'entries': [[list(path), _fingerprint(value)] for path, value in secrets.items()]},
         sort_keys=True)
+
+
+def secrets_moved(ref, secrets, sections):
+    """Whether *secrets* (the private values of *sections*, as the profile has them now) differ from the ones
+    the durable reference *ref* froze there, by fingerprint. Unknown for an in-memory reference: False."""
+    if ref is not None and not ref.startswith(PREFIX):
+        return False
+    entries = json.loads(ref[len(PREFIX):])['entries'] if ref else []
+    frozen = {tuple(path): fingerprint for path, fingerprint in entries if path[0] in sections}
+    return frozen != {path: _fingerprint(value) for path, value in secrets.items()}
 
 
 def recover_config_secrets(authority, policy, skip=None):

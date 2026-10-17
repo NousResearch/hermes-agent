@@ -135,6 +135,7 @@ class AuthorityConnection:
         name is declared in ``tui_gateway/contracts`` (``METHODS`` or ``CANONICAL_METHODS``)."""
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
+                    'plugins.list': self.plugins_list, 'command.observe': self.command_observe,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
@@ -324,9 +325,17 @@ class AuthorityConnection:
         from gateway.session_commands import execute_command
         return await execute_command(self, ref, params, dispatch=True)
 
+    async def command_observe(self, ref, params):
+        from gateway.session_commands import observe_command
+        return await observe_command(self, ref, params)
+
     async def command_catalog(self, ref, params):
         from gateway.session_discovery import discover_commands
         return await discover_commands(self.authority, self.actor, params)
+
+    async def plugins_list(self, ref, params):
+        from gateway.session_discovery import list_plugins
+        return await list_plugins(self.authority, self.actor, params)
 
     async def slash_completions(self, ref, params):
         from gateway.session_discovery import discover_commands
@@ -376,7 +385,9 @@ class AuthorityConnection:
                 sid = local_identity(self.authority.profile_id, self.actor.subject, params['request_id'])
                 if self.authority.db.get_session(sid) is None:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
-            ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt)
+            # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
+            ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
+                                      client_local=self.native_owner)
             if isinstance(ref, dict):
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).
@@ -492,7 +503,10 @@ class AuthorityConnection:
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
         else:
             from gateway.session_local_migration import resolve_local_target
+            from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+            # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
+            await refresh_settled(self.authority, ref.session_id)
             row = self.authority.db.get_session(ref.session_id)
             if row and row['source'] in LEGACY_LOCAL_SOURCES:
                 ref = resolve_local_target(self.authority, self.actor,
@@ -510,8 +524,14 @@ class AuthorityConnection:
         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
         # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
+        if 'session:control' in self.actor.capabilities and ref.session_id not in self.subscriptions:
+            # A client attaching (main's `hermes -c` was a new process) re-reads the config-derived settings
+            # (CFG-2); a snapshot poll on this attachment does not.
+            from gateway.session_policy_refresh import refresh_resumed_policy
+            await refresh_resumed_policy(self.authority, ref)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
+        self._spawn_notice(ref)
         # Only local routes have a frozen local launch policy to project; with it, main's banner and
         # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
         info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
@@ -532,6 +552,14 @@ class AuthorityConnection:
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
                 'prompts': list(snapshot.prompts), 'info': info}
+
+    def _spawn_notice(self, ref):
+        """Low-disk auto-prune question for this viewer, off the resume reply's path."""
+        from gateway.run_housekeeping_disk import publish_local_auto_prune_notice
+        task = asyncio.get_running_loop().create_task(publish_local_auto_prune_notice(self.authority, ref))
+        tasks = self.__dict__.setdefault('_notice_tasks', set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
     async def detach(self, ref, params):
         if set(params) - {'end_reason'} != {'session_id', 'subscription_id'}:

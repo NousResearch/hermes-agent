@@ -205,7 +205,7 @@ async def read(connection, ref, params, *, kind):
         _require_current_route(authority, ref)
         if kind == 'control':
             return {'control': control_snapshot(authority, ref)}
-        agent, records = _owner_objects(authority, ref)
+        agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
         if kind == 'subagents':
             return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
                                   for record in records], 'delegations': []}
@@ -251,7 +251,11 @@ async def kill_process(connection, ref, params):
 async def reload_mcp(connection, ref, params):
     """Desktop's MCP add / toggle / repair: bring THIS profile's live MCP servers in step with its
     config (the owner's housekeeping reconcile, run now) and refresh this profile's cached agents.
-    Never the sidecar's teardown of every server, which cut every chat's in-flight MCP calls."""
+    Never the sidecar's teardown of every server, which cut every chat's in-flight MCP calls. The calling
+    session's MCP servers then change as a new policy generation when it is idle (``session``: applied,
+    unchanged or busy); other sessions take theirs when next attached. A configured server that did not
+    connect is named: a refusal when nothing took effect (no server registered or removed, no session
+    generation), else ``unavailable`` beside the success."""
     if set(params) - {'session_id', 'confirm', 'rev', 'profile'}:
         raise RuntimeStoreError('invalid_params')
     if 'session:control' not in connection.actor.capabilities:
@@ -259,18 +263,62 @@ async def reload_mcp(connection, ref, params):
     if params.get('confirm') is not True:
         return {'status': 'confirm_required', 'message': 'Reloading MCP refreshes every chat of this profile.'}
     from tools.mcp_oauth import suppress_interactive_oauth
-    from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
+    from tools import mcp_tool_discovery as discovery
 
     def reconcile():
         with suppress_interactive_oauth():
-            return reconcile_mcp_servers_with_config()
-    result = await asyncio.to_thread(reconcile)
+            return (discovery.reconcile_mcp_servers_with_config(), discovery.mcp_servers_not_connected(),
+                    discovery.mcp_servers_ready())
+    result, failed, ready = await asyncio.to_thread(reconcile)
+    # ``added`` is what reconcile attempted: only those now registered (live or lazy) changed anything.
+    result = {**result, 'added': [name for name in result.get('added', []) if name not in failed]}
     from gateway.session_authorities import served_profile_name
     runner = connection.authority.runner
     multiplex = bool(getattr(runner.config, 'multiplex_profiles', False))
     runner._mcp_reload_refresh_cached_agents(multiplex, served_profile_name(connection.authority.profile_id))
+    session = await _commit_session_mcp(connection, ref, params)
+    if failed and session != 'applied' and not (result.get('removed') or result['added']):
+        raise RuntimeStoreError('mcp_servers_unavailable', field='mcp_servers',
+                                detail=f'did not connect: {", ".join(failed)}')
     changed = ', '.join(f'{k}: {", ".join(v)}' for k, v in result.items() if v) or 'no server changes'
-    return {'status': 'reloaded', 'message': f'MCP servers reconciled ({changed})'}
+    note = {'applied': '; this chat\'s tools changed for its next turn',
+            'busy': '; this chat is busy: its new tools apply once the turn finishes and reload runs again '
+                    'or the chat is reopened'}.get(session or '', '')
+    unavailable = f'; did not connect: {", ".join(failed)}' if failed else ''
+    selected = {'session_servers': await asyncio.to_thread(_session_servers, connection.authority, ref.session_id,
+                                                           ready)} if session else {}
+    return {'status': 'reloaded', 'message': f'MCP servers reconciled ({changed}){note}{unavailable}',
+            **({'session': session} if session else {}), **({'unavailable': failed} if failed else {}), **selected}
+
+
+def _session_servers(authority, sid, ready):
+    """The profile MCP servers the session's committed policy runs (its toolsets name them) that are *ready*
+    (live or lazy): a server connected for the profile is not one a chat with ``no_mcp``, an explicit pick or
+    a platform allowlist enabled, and one the policy names but that parked serves the chat nothing."""
+    import json
+    from gateway.session_policy import restore_policy
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    from hermes_state_local import local_receipt
+    policy = restore_policy(local_receipt(authority.db, sid)['policy'])
+    return sorted(set(policy.toolsets) & enabled_mcp_server_names(json.loads(policy.config_json)) & set(ready))
+
+
+async def _commit_session_mcp(connection, ref, params):
+    """The calling local session's MCP servers as a gateway-committed generation (``commit_refresh``):
+    never a running or queued turn's, never another session's."""
+    from gateway.config import Platform
+    authority, sid = connection.authority, getattr(ref, 'session_id', None)
+    live = authority.sessions.get(sid) if sid else None
+    if live is None or live.source is None or live.source.platform != Platform.LOCAL:
+        return None
+    authorize(connection, ref, params, 'session:control')
+    from gateway.session_policy_refresh import commit_refresh
+    try:
+        return 'applied' if await commit_refresh(authority, ref, mcp_only=True) else 'unchanged'
+    except RuntimeStoreError as exc:
+        if exc.reason not in {'session_busy', 'unknown_execution', 'revision_conflict'}:
+            raise
+        return 'busy'
 
 
 async def stop_processes(connection, ref, params):
@@ -312,7 +360,7 @@ def _require_current_route(authority, ref):
             raise RuntimeStoreError('stale_generation')
 
 
-def _owner_objects(authority, ref):
+def _owner_objects(authority, ref, *, include_fallback_evicted=False):
     """``(agent, subagent records)`` of this in-process session. Process-local registries cannot
     describe (or stop) another interpreter's live objects: a managed worker is refused rather than
     answered with an empty success."""
@@ -320,7 +368,12 @@ def _owner_objects(authority, ref):
     if managed_policy(authority, ref) is not None:
         raise RuntimeStoreError('unsupported_projection')
     agent = authority.agent(ref)
-    return agent, subagent_records(agent)
+    session_id = physical_target(authority, ref) if include_fallback_evicted else None
+    route = authority.sessions[ref.session_id].route if include_fallback_evicted else None
+    session_db = getattr(authority, 'db', None) if include_fallback_evicted else None
+    return agent, subagent_records(
+        agent, session_id=session_id, session_db=session_db, route=route,
+        include_fallback_evicted=include_fallback_evicted)
 
 
 def physical_target(authority, ref):
@@ -362,15 +415,62 @@ def control_snapshot(authority, ref):
             'updated_at': _snapshot_updated_at(*states)}
 
 
-def subagent_records(parent):
+def _has_fallback_evicted_ancestor(agent, target_sids, expected_db, route, registry):
+    if not target_sids:
+        return False
+    current = agent
+    for _ in range(getattr(registry, '_MAX_ANCESTOR_HOPS', 8)):
+        ref = getattr(current, '_delegate_parent_ref', None) if current is not None else None
+        current = ref() if callable(ref) else None
+        if current is None:
+            return False
+        marker = getattr(current, '_evicted_on_fallback', False)
+        if not (marker is True or (isinstance(marker, str) and bool(marker))):
+            continue
+        if getattr(current, 'session_id', None) not in target_sids:
+            continue
+        if (expected_db is not None or getattr(current, '_session_db', None) is not None) and getattr(current, '_session_db', None) is not expected_db:
+            continue
+        if route is not None and marker != route:
+            continue
+        if route is None and isinstance(marker, str) and getattr(current, 'gateway_session_key', None) not in (None, marker):
+            continue
+        return True
+    return False
+
+
+def subagent_records(parent, session_id=None, *, session_db=None, route=None, include_fallback_evicted=True):
     registry = sys.modules.get('tools.delegate_tool_registry')
-    if parent is None or registry is None:
+    target_sid = (session_id or getattr(parent, 'session_id', None)) if include_fallback_evicted else None
+    if registry is None or (parent is None and not target_sid):
         return []
+    expected_db = session_db if session_db is not None else getattr(parent, '_session_db', None)
+    effective_route = route if route is not None else getattr(parent, 'gateway_session_key', None)
+    # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
+    target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
-        # Deliberately no durable-ID fallback: equal IDs cannot transfer a live
-        # old parent's transcript to a replacement execution object.
+        # Deliberately no unconditional durable-ID fallback: only a parent evicted by this session's own fallback keeps its children visible in the read-only roster.
         return [dict(record) for record in registry._active_subagents.values()
-                if registry._is_descendant_of(record.get('agent'), parent)]
+                if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
+                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)]
+
+
+def _compression_lineage(db, session_id):
+    """*session_id* plus the sessions it continues by compression, walked backward so a closed sibling under a compressed parent cannot divert the walk."""
+    if not session_id:
+        return frozenset()
+    ids, current = {session_id}, session_id
+    is_child, get = getattr(db, '_is_compression_child_row', None), getattr(db, 'get_session', None)
+    if callable(is_child) and callable(get):
+        row = get(current)
+        while row and is_child(row) and row['parent_session_id'] not in ids and len(ids) < 200:
+            current = row['parent_session_id']
+            ids.add(current)
+            row = get(current)
+        return frozenset(ids)
+    lineage = getattr(db, 'get_compression_lineage', None)
+    found = lineage(session_id) if callable(lineage) else None
+    return frozenset(found if isinstance(found, (list, tuple)) else ()) | ids
 
 
 def subagent_tail(records, subagent_id):

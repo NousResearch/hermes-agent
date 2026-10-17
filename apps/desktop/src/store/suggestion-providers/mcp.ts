@@ -2,9 +2,9 @@ import { capabilityScoped } from '@/api/client'
 import { addMcpServer, getMcpCatalog, listMcpServers, removeMcpServer } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
+import { McpReloadDeferred, reloadMcpFor } from '@/lib/mcp-reload'
 import { prettyName } from '@/lib/text'
 import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
-import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import type { McpCatalogEntry } from '@/types/hermes'
 
@@ -201,16 +201,12 @@ async function connect(known: SuggestibleServer, sessionId: string | null, cance
       throw error
     }
 
-    // Tools reach the live session before the pill claims success — the
-    // same write-through the Capabilities tab and the setup card use.
-    await $gateway
-      .get()
-      ?.request('reload.mcp', { confirm: true, session_id: sessionId ?? undefined })
-      .catch(() => {})
-
     invalidateMcpSuggestionIndex()
+    // The pill claims success only once the chat runs the server: not while a
+    // turn defers the change, and not when the server did not connect.
+    await reloadMcpFor(known.server, sessionId)
   } catch (error) {
-    if (!(error instanceof McpOAuthCancelled)) {
+    if (!(error instanceof McpOAuthCancelled || error instanceof McpReloadDeferred)) {
       notifyError(error, translateNow('composer.mcpSuggestions.connectFailed', prettyName(known.server)))
     }
 

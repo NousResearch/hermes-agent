@@ -138,9 +138,10 @@ def _body_over_bound(body: Optional[str]) -> tuple[int, bool]:
 def _with_unseen_tail(new_body: str, original: str, *, actor: str = "specifier") -> str:
     """Append the tail the model never saw (the prompt clamped at
     ``PROMPT_BODY_LIMIT - 1`` + '…'), verbatim, for the forced path."""
+    limit = PROMPT_BODY_LIMIT - 1
     return (
         new_body
-        + "\n\n---\n\n## Original body tail (verbatim; the {} saw only the first {} chars)\n\n".format(actor, PROMPT_BODY_LIMIT - 1)
+        + f"\n\n---\n\n## Original body tail (verbatim; the {actor} saw only the first {limit} chars)\n\n"
         + (original or "")[PROMPT_BODY_LIMIT - 1:]
     )
 

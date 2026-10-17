@@ -11,9 +11,13 @@ from types import SimpleNamespace
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from tests.gateway.test_api_implicit_session_after_delete import (
-    _OPENING, _app, _content, _post, served)
-from tests.gateway.test_derived_session_after_delete import _settle, a2a
+from tests.gateway import test_api_implicit_session_after_delete as chat
+from tests.gateway import test_derived_session_after_delete as derived
+from tests.gateway.test_api_implicit_session_after_delete import _OPENING, _app, _content, _post
+from tests.gateway.test_derived_session_after_delete import _settle
+
+served = chat.served  # the header-less chat fixture of the delete tests
+a2a = derived.a2a  # the A2A forward fixture of the delete tests
 
 
 def _sweep(authority, sid):

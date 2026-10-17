@@ -1291,6 +1291,153 @@ class TestGitDestructiveOps:
         assert fold("VAR=-D git branch -D x") == "var=-d git branch -D x"
 
 
+class TestGitGlobalFlagPrefix:
+    """A git GLOBAL flag before the subcommand must not defeat the destructive-verb rules.
+
+    Every git row was spelled ``\\bgit\\s+<verb>``, so ``git -C <dir> push --force origin main``
+    ran with NO approval while the contiguous spelling was gated. ONE shared prefix fragment
+    (``_QUOTED_GLOBAL_FLAGS``) is inserted between ``\\bgit\\s+`` and the verb in every git row;
+    the ``systemctl`` row (same defect class, module grammar ``_GLOBAL_FLAGS``) is widened the
+    same way. Row ORDER and descriptions are unchanged - order is the mechanism.
+
+    The ``git push --force-with-lease`` key and its main/master/bulk scope guards are NOT on this
+    base; they ride their own PR (the lease rows of the corpus live with that key), so the rows
+    here are the ones this base can express.
+    """
+
+    BARE = "git force push (rewrites remote history)"
+    SHORT = "git force push short flag (rewrites remote history)"
+    RESET = "git reset --hard (destroys uncommitted changes)"
+    BRANCH = "git branch force delete"
+    BRANCH_LONG = "git branch force delete (long flags)"
+    CLEAN = "git clean with force (deletes untracked files)"
+    SYSC = "stop/restart system service"
+
+    DETECTED = [
+        ("git -C /opt/hermes_sandbox/clone push --force-with-lease origin main", BARE),
+        ("git -C /opt/hermes_sandbox/clone push --force origin main", BARE),
+        ("git -C /opt/hermes_sandbox/clone push -f origin main", SHORT),
+        ("git --git-dir=/tmp/x/.git push --force origin main", BARE),
+        ("cd /opt/hermes_sandbox/clone && git push --force-with-lease origin main", BARE),
+        ("git --git-dir /tmp/x/.git push --force origin main", BARE),
+        ("git --work-tree=/tmp/x push --force origin main", BARE),
+        ("git --work-tree /tmp/x push -f origin main", SHORT),
+        ("git -c core.pager=cat push -f origin main", SHORT),
+        ("git --namespace=foo push -f origin main", SHORT),
+        ("git --config-env=http.proxyEnv=PROXY push -f origin main", SHORT),
+        ("git --exec-path=/usr/lib/git push -f origin main", SHORT),
+        ("git --no-pager push -f origin main", SHORT),
+        ("git --bare push -f origin main", SHORT),
+        ("git -p push -f origin main", SHORT),
+        ("git --no-replace-objects push -f origin main", SHORT),
+        ("git -C /x --no-pager push -f origin main", SHORT),
+        ('git -C "/opt/a b/clone" push -f origin main', SHORT),
+        ("git -C '/opt/a b/clone' push -f origin main", SHORT),
+        ('git --git-dir "/opt/a b/.git" push --force origin main', BARE),
+        ("git -c 'user.name=a b' push -f origin main", SHORT),
+        ("git -C /x reset --hard HEAD~1", RESET),
+        ("git -C /x --bare reset --hard HEAD~1", RESET),
+        ("git -C /x branch -D feature", BRANCH),
+        ("git -C /x --bare branch -D feature", BRANCH),
+        ("git -C /x branch --delete --force feature", BRANCH_LONG),
+        ("git -C /x clean -fd", CLEAN),
+        ("git --no-pager clean -fd", CLEAN),
+        ("sudo git -C /x push -f origin main", SHORT),
+        ("env FOO=1 git -C /x push -f origin main", SHORT),
+        # The lease key's "never to main" clause is only true for the contiguous spelling
+        # unless these four hold: the scope guards must stay AHEAD of the lease key.
+        ("git -C /x push --force-with-lease origin main", BARE),
+        ("git -C /x push --force-with-lease origin master", BARE),
+        ("git -C /x push --force-with-lease origin refs/heads/main", BARE),
+        ("git -C /x push --all --force-with-lease", BARE),
+        ("git -C /x push --mirror --force-with-lease", BARE),
+        ("GIT -C /X PUSH --FORCE ORIGIN MAIN", BARE),
+        # Already-accepted class: the live detector prompts on the contiguous spellings
+        # (`echo "git push --force origin main"`), so the global-flag spelling of the same
+        # prose is not a new class of prompt, only a new spelling of it.
+        ('echo "git -C /x push -f origin main"', SHORT),
+        ('git commit -m "document the git -C /x push -f recipe"', SHORT),
+        # The quoted-value branch is not optional: _GLOBAL_FLAGS alone MISSES this one.
+        ("git -C '/pa th/x' push --force origin main", BARE),
+    ]
+
+    CLEAN_ROWS = [
+        "git status",
+        "git push origin main",
+        "git -C /x status",
+        "git -C /x push origin feature/x",
+        "git -C /x log --oneline",
+        "git -C /x fetch --all",
+        "git -C /x branch -d merged-feature",
+        "git -C /x branch --delete merged-feature",
+        "git -C /x clean -n",
+        "git -C /x config --get user.name",
+        "git --no-pager log --oneline",
+        "git --bare log",
+        "git -c user.name=agent commit -m 'msg'",
+        'git -C "/opt/a b/clone" status',
+        # Verb-adjacency guards: a global flag must not license a pre-verb match on prose.
+        'git -C repo commit -m "push --force to main manually"',
+        "git -C /x log --grep=push -f",
+        "git -C /x stash push -m wip -f",
+        'git -C /x commit -m "wip" -f',
+        "git -C /x push --dry-run origin main",
+    ]
+
+    SYSTEMCTL_DETECTED = [
+        ("systemctl --host user@prod stop hermes-gateway", SYSC),
+        ("systemctl -H user@prod restart nginx", SYSC),
+        ("systemctl --root /mnt stop nginx", SYSC),
+        ("systemctl --machine box restart nginx", SYSC),
+        ("systemctl --user restart hermes-gateway", SYSC),
+    ]
+
+    SYSTEMCTL_CLEAN = [
+        "systemctl status hermes-gateway",
+        "systemctl --user status hermes-gateway",
+        "systemctl start nginx",
+        "systemctl reload nginx",
+        "systemctl list-units --type=service",
+        "systemctl --user daemon-reload",
+        "systemctl is-active hermes-gateway",
+    ]
+
+    def test_git_global_flag_spellings_are_gated_with_their_key(self):
+        for command, key in self.DETECTED:
+            assert detect_dangerous_command(command) == (True, key, key), command
+
+    def test_git_global_flag_spellings_that_stay_clean(self):
+        for command in self.CLEAN_ROWS:
+            assert detect_dangerous_command(command) == (False, None, None), command
+
+    def test_systemctl_global_flag_spellings(self):
+        for command, key in self.SYSTEMCTL_DETECTED:
+            assert detect_dangerous_command(command) == (True, key, key), command
+        for command in self.SYSTEMCTL_CLEAN:
+            assert detect_dangerous_command(command) == (False, None, None), command
+
+    def test_every_git_row_carries_the_shared_prefix(self):
+        """A fix that widens `push` but leaves a sibling git row on the bare prefix is worse
+        than no fix: the family reads as closed while a row still admits the bypass."""
+        prefix = r"\bgit\s+" + approval_detection._QUOTED_GLOBAL_FLAGS
+        rows = [p for p, _d in approval_detection.DANGEROUS_PATTERNS if p.startswith(r"\bgit")]
+        assert rows
+        assert all(p.startswith(prefix) for p in rows), [p for p in rows if not p.startswith(prefix)]
+
+    def test_systemctl_row_carries_the_module_grammar(self):
+        prefix = r"\bsystemctl\s+" + approval_detection._GLOBAL_FLAGS
+        rows = [p for p, _d in approval_detection.DANGEROUS_PATTERNS if p.startswith(r"\bsystemctl")]
+        assert rows
+        assert all(p.startswith(prefix) for p in rows), rows
+
+    def test_fragment_keeps_the_apostrophe_alternative(self):
+        """`\\'` inside a single-quoted raw literal IS a literal apostrophe to the regex engine
+        (Python keeps the backslash, `re` reads it as an escaped non-special character); `\\\\'`
+        would be a literal BACKSLASH and would silently drop the single-quoted value spelling."""
+        fragment = approval_detection._QUOTED_GLOBAL_FLAGS
+        assert r"\'[^\']*\'" in fragment
+        assert "\\\\'" not in fragment
+
 class TestChmodExecuteCombo:
     """chmod +x && ./ is the two-step social engineering pattern where a
     script is first made executable then immediately run. The script

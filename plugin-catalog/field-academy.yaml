@@ -1,0 +1,34 @@
+name: field-academy
+title: Field Academy
+repo: https://github.com/Dgardenhire/hermes-field-academy
+sha: 43f7ce77f53f5d1dc7d8f23fe2f316f089c37a1e
+description: "Learn Hermes by doing real work. Four paths (Messenger, Traveler, Crossroads, Boundary Keeper) climb Beginner, Intermediate and Advanced to a capstone on a problem of your own, and a fifth, Guide, covers setting Hermes up for a client: practice labs built from made-up data, a proposal, one real service run by a scheduled job for several days, a recovery drill, and a review signed by a reviewer you choose. Every mission ends with a check on something you made; your own Hermes scores your written answers in a new chat; passed missions come back for short spaced reviews; and at the end of a path you can create a Field Record, your own self-issued learning record. Field Academy is an independent community plugin. It is not made, issued or endorsed by Nous Research. Disclosure — no network calls (a source link opens in your browser only when you click it); no credentials, telemetry, shell commands, background processes or self-updates; registers six tools, two hooks, the /academy command and one skill: pre_llm_call may add one sentence offering a practice to the user message, only in interactive desktop, TUI and CLI sessions, and post_tool_call records which tool was used; pressing Try it or a scoring button opens a new chat and sends the practice or scoring prompt there (on an older Hermes it goes to the clipboard instead); the Desktop page calls gateway list methods only (session.list, cron.manage list, skills.manage list, tools.list, mcp.catalog, commands.catalog, setup.runtime_check); stores progress, pasted documents, practice labs, review packets and saved Field Records in $HERMES_HOME/plugin-data/field-academy/; reads a file you name (UTF-8 text, max 5 MiB) and hashes a recording you name without copying it; Guide labs write and check made-up .env and auth.json files inside its own labs folder (refusing to build in a real Hermes home) and never read Hermes's real ones; on the Guide path reads Hermes's run-history database read-only and immutable, jobs.json and up to 25 log files (2 MiB each), keeping only timestamps for the job you name, and reads install-stamp.json for the Hermes version; no private Hermes imports."
+maintainer: Dgardenhire
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://linchpin.studio/school-of-hermes/manual/
+version: "0.8.4"
+image: "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/43f7ce77f53f5d1dc7d8f23fe2f316f089c37a1e/docs/card.png"
+screenshots:
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/43f7ce77f53f5d1dc7d8f23fe2f316f089c37a1e/docs/shots/home.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/43f7ce77f53f5d1dc7d8f23fe2f316f089c37a1e/docs/shots/mission.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/43f7ce77f53f5d1dc7d8f23fe2f316f089c37a1e/docs/shots/miss.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/43f7ce77f53f5d1dc7d8f23fe2f316f089c37a1e/docs/shots/certificate.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/43f7ce77f53f5d1dc7d8f23fe2f316f089c37a1e/docs/shots/deployer.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-field-academy/43f7ce77f53f5d1dc7d8f23fe2f316f089c37a1e/docs/shots/home-light.png"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - field_academy_snapshot
+    - field_academy_mission
+    - field_academy_grade_explanation
+    - field_academy_grade_review
+    - field_academy_grade_deployer
+    - field_academy_record_evidence
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

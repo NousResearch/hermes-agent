@@ -103,6 +103,8 @@ class SessionState:
         # ``session.replay_gap``s seen, and how many a re-attach covered: the owner retired this viewer's
         # subscription on overflow, so its frames stop until ``GatewayConnection.reattach``.
         self.gaps = self.attached_gaps = 0
+        # This viewer's preference, not snapshot state: None leaves the owner's default alone.
+        self.show_reasoning: bool | None = None
 
     def adopt_snapshot(self, snapshot):
         self.info = dict(snapshot.get("info") or {})
@@ -308,6 +310,11 @@ class GatewayConnection:
                     raise
                 logger.debug("session.resume %s after reconnect: %s", session_id, exc)
                 state.subscription_id = None
+                continue
+            if state.show_reasoning is not None:
+                # Restore before ready/prompt.submit, on this loop's client (call() would deadlock).
+                await client.rpc("config.set", session_id=session_id, key="show_reasoning",
+                                 value="1" if state.show_reasoning else "0", _timeout=10)
 
     def resume(self, call, session_id, *, typed=False):
         """``session.resume`` through ``call`` (the store's attach), re-supplying :attr:`launch_api_key`;

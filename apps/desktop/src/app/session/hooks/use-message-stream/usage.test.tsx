@@ -11,7 +11,9 @@ import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 const SID = 'session-1'
 
 // What gateway/session_usage.py::publish_usage sends a local viewer: the embedded ticker's nested
-// `usage` view plus the deprecated top-level counters (#140194).
+// `usage` view plus the deprecated top-level counters (#140194). A hand-written copy: this file pins
+// how Desktop reads that shape, not that the gateway produces it (tests/gateway/test_local_viewer_usage.py
+// pins the producer).
 const GATEWAY_FRAME = {
   active_subagents: 0,
   api_calls: 3,
@@ -143,7 +145,7 @@ describe('useMessageStream status-bar usage scoping', () => {
     expect(sessionStates.get(SID)?.usage).toEqual($currentUsage.get())
   })
 
-  it('paints the status-bar meters from the gateway frame', () => {
+  it('paints the status-bar meters from either half of the gateway frame shape', () => {
     $currentUsage.set({ calls: 0, input: 0, output: 0, total: 0 })
     mountStream()
 

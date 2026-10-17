@@ -52,6 +52,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI API (direct)** | `OPENAI_API_KEY` in `~/.hermes/.env` (provider: `openai-api`, optional `OPENAI_BASE_URL`) |
 | **Azure AI Foundry** | `hermes model` → "Azure AI Foundry" (provider: `azure-foundry`; uses Azure OpenAI / Foundry endpoint and key) |
 | **AWS Bedrock** | `hermes model` → "AWS Bedrock" (provider: `bedrock`; standard AWS credentials chain via boto3) |
+| **Oracle Cloud (OCI Generative AI)** | `OCI_GENAI_API_KEY` in `~/.hermes/.env` (provider: `oci`, aliases: `oci-genai`, `oracle`, `oracle-cloud`; OpenAI-compatible endpoint, optional `OCI_GENAI_BASE_URL` for other regions) |
 | **NVIDIA Build** | `NVIDIA_API_KEY` in `~/.hermes/.env` (provider: `nvidia`; NIM-hosted models on build.nvidia.com) |
 | **Ollama Cloud** | `hermes model` → "Ollama Cloud" (provider: `ollama-cloud`; cloud-hosted Ollama API) |
 | **Qwen OAuth** | `hermes model` → "Qwen OAuth" (provider: `qwen-oauth`; browser PKCE login) |
@@ -612,6 +613,36 @@ For either deployment, save the provider and model identifier in `config.yaml` t
 model:
   provider: "nvidia"
   default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
+```
+
+### Oracle Cloud (OCI Generative AI)
+
+OCI Generative AI serves OpenAI gpt-oss, xAI Grok and Google Gemini models through an OpenAI-compatible endpoint. Hermes authenticates with an OCI Generative AI API key, which is scoped to a compartment, so no compartment ID or OCI config file is needed.
+
+Create the key in the OCI Console (Generative AI service, API keys) or with `oci generative-ai api-key create`. The key only works once an IAM policy allows API-key principals to use the service, for example:
+
+```text
+allow any-user to use generative-ai-family in compartment <name> where request.principal.type='generativeaiapikey'
+```
+
+Create the policy before the key. A key minted before any policy covered it can keep returning 401 after the policy is added; minting a new key fixes it.
+
+```bash
+OCI_GENAI_API_KEY=sk-...
+```
+
+```bash
+hermes chat --provider oci --model openai.gpt-oss-120b
+```
+
+The default endpoint is us-chicago-1. For another region, set `OCI_GENAI_BASE_URL`, e.g. `https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/openai/v1`.
+
+OCI does not serve `GET /models` on this endpoint, so `hermes model` offers a short list (`openai.gpt-oss-120b`, `openai.gpt-oss-20b`, `xai.grok-4.3`, `google.gemini-2.5-pro`, `google.gemini-2.5-flash`). Any other model ID your region and tenancy serve can be passed with `--model`. Meta Llama models are left out of the list because OCI rejects Llama tool calls unless the first message is from the user, and Hermes always starts with a system prompt.
+
+```yaml
+model:
+  provider: "oci"
+  default: "openai.gpt-oss-120b"
 ```
 
 ### GMI Cloud
@@ -1725,7 +1756,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `oci`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](../user-guide/features/fallback-providers.md).

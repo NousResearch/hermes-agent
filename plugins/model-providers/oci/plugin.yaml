@@ -1,0 +1,5 @@
+name: oci-provider
+kind: model-provider
+version: 1.0.0
+description: Oracle Cloud Infrastructure (OCI) Generative AI
+author: Federico Kamelhar

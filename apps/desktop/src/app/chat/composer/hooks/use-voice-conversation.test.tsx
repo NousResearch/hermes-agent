@@ -416,7 +416,7 @@ describe('useVoiceConversation TTS echo guard (#126708)', () => {
 })
 
 // #44263 — the "Read replies aloud" toggle ($autoSpeakReplies, the store the
-// settings toggle writes, seeded once from voice.auto_tts) must govern the
+// settings toggle writes; never seeded from voice.auto_tts) must govern the
 // voice-conversation loop too: with it off, Voice Chat runs STT-only and the
 // reply stays text on screen — no TTS stream or sentence playback is started
 // for it, and the loop re-arms the mic for the next turn.

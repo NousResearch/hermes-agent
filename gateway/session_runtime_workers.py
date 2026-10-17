@@ -136,6 +136,8 @@ def stop_authority_work(authority):
             request_hard_interrupt(holder[0], 'Profile runtime is stopping')
     for cancel in getattr(authority, '_cron_cancellations', {}).values():
         cancel.set()
+    for _, _, cancel in getattr(authority, '_cron_monitor_fires', {}).values():
+        cancel.set()
 
 
 async def join_authority_work(authority, timeout):

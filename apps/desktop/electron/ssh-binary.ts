@@ -49,12 +49,36 @@ export function gitForWindowsSshCandidates(env: WindowsSshEnv, fs: GitCandidateF
 }
 
 /**
+ * Installed-native Win32-OpenSSH candidates, in preference order: the
+ * machine-wide MSI/PowerShell install roots, then the per-user one. Unlike
+ * Git for Windows' `usr\bin\ssh.exe`, these clients are MSVCRT-linked and
+ * hand the remote shell the exact argv the desktop built — an MSYS2/Cygwin
+ * CRT re-parses the Windows command line under different quoting rules and
+ * corrupts `sh -c` payloads mid-escape (#134949).
+ */
+export function nativeOpenSshCandidates(env: WindowsSshEnv): string[] {
+  const candidates = [
+    path.win32.join(env.programFiles, 'OpenSSH', 'ssh.exe'),
+    path.win32.join(env.programFilesX86, 'OpenSSH', 'ssh.exe')
+  ]
+
+  if (env.localAppData) {
+    candidates.push(path.win32.join(env.localAppData, 'Programs', 'OpenSSH', 'ssh.exe'))
+  }
+
+  return candidates
+}
+
+/**
  * The ssh executable to spawn.
  *
  * Windows, in order: an explicit `desktop.ssh_path` (returned as-is so a typo
  * fails loudly with its own path instead of silently using another client),
- * then the in-box System32 OpenSSH, then Git for Windows' bundled ssh.exe,
- * then bare `ssh` for PATH lookup. Every other platform: bare `ssh`.
+ * then the in-box System32 OpenSSH, then an installed-native Win32-OpenSSH
+ * client, then Git for Windows' bundled ssh.exe — a last-resort client whose
+ * MSYS CRT may rewrite quoted remote commands, kept only so #103288's
+ * broken-in-box boot-loop stays fixed — then bare `ssh` for PATH lookup.
+ * Every other platform: bare `ssh`.
  */
 export function resolveSshBinary({ platform, override, env, fs }: SshBinaryInputs): string {
   if (platform !== 'win32') {
@@ -71,6 +95,12 @@ export function resolveSshBinary({ platform, override, env, fs }: SshBinaryInput
 
   if (fs.existsSync(inbox)) {
     return inbox
+  }
+
+  const native = nativeOpenSshCandidates(env).find(candidate => fs.existsSync(candidate))
+
+  if (native) {
+    return native
   }
 
   return gitForWindowsSshCandidates(env, fs).find(candidate => fs.existsSync(candidate)) || 'ssh'

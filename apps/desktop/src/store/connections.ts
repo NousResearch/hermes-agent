@@ -36,6 +36,8 @@ import {
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
+import { readLocalStartupProfile } from './local-startup-profile'
+
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
 // Every await of a source switch is bounded. A wedged spawn, ticket mint,
@@ -278,21 +280,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   const defaultRoute = $defaultProfileRoute.get()
 
   if (defaultRoute) {
-    if ($activeSessionId.get() || $selectedStoredSessionId.get()) {
-      return registry
-    }
-
-    const connectionId = defaultRoute.connectionId
-
-    if (connectionId === null) {
-      return registry
-    }
-
-    if (registry.connections.some(connection => connection.id === connectionId)) {
-      await selectConnection(connectionId, { profile: defaultRoute.profile })
-    }
-
-    return $connectionsRegistry.get() ?? registry
+    return restoreDefaultProfileRoute(registry, defaultRoute)
   }
 
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
@@ -318,6 +306,10 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
 
   if (!preferredId) {
     return registry
+  }
+
+  if (!$connection.get() && registry.connections.find(connection => connection.id === preferredId)?.kind === 'local') {
+    return restoreLocalStartupConnection(registry, preferredId)
   }
 
   if ($activeConnectionId.get() === preferredId) {
@@ -584,4 +576,46 @@ export async function selectConnection(connectionId: string, options: SelectConn
       $pendingConnectionId.set(null)
     }
   }
+}
+
+async function restoreDefaultProfileRoute(
+  registry: DesktopConnectionsRegistry,
+  defaultRoute: NonNullable<ReturnType<typeof $defaultProfileRoute.get>>
+): Promise<DesktopConnectionsRegistry> {
+  if ($activeSessionId.get() || $selectedStoredSessionId.get()) {
+    return registry
+  }
+
+  const connectionId = defaultRoute.connectionId
+
+  if (connectionId === null) {
+    return registry
+  }
+
+  if (registry.connections.some(connection => connection.id === connectionId)) {
+    await selectConnection(connectionId, { profile: defaultRoute.profile })
+  }
+
+  return $connectionsRegistry.get() ?? registry
+}
+
+async function restoreLocalStartupConnection(
+  registry: DesktopConnectionsRegistry,
+  preferredId: string
+): Promise<DesktopConnectionsRegistry> {
+  // A slow primary can outlive the descriptor deadline. Electron's explicit
+  // next-launch profile still outranks this renderer's empty/stale source map;
+  // otherwise recovery opens Default while the chosen local profile boots.
+  const profileIntent = $newChatProfile.get()
+  const startupProfile = await readLocalStartupProfile()
+
+  // The primary or an explicit choice may have won during the IPC read.
+  // Background recovery must never replace that newly published workspace.
+  if (switchRevision > 0 || pendingTarget !== null || $connection.get() || $newChatProfile.get() !== profileIntent) {
+    return registry
+  }
+
+  await selectConnection(preferredId, { profile: startupProfile })
+
+  return $connectionsRegistry.get() ?? registry
 }

@@ -41,7 +41,7 @@ function makeFakeServerFactory(port = 51234) {
 
   // Drive a synthetic browser hit to the loopback callback.
   state.hitCallback = (query: string) => {
-    const res: any = { writeHead: () => undefined, end: () => undefined }
+    const res: any = { writeHead: () => undefined, end: (body: string) => (state.responseBody = body) }
     state.handler({ url: `/callback?${query}` }, res)
   }
 
@@ -100,6 +100,35 @@ test('runNativeLogin completes the loopback round trip and returns tokens', asyn
   assert.ok(tokenPostBody.code_verifier && tokenPostBody.code_verifier.length >= 43)
   // Listener was cleaned up.
   assert.equal(state.closed, true)
+})
+
+test('the browser acknowledges the response without claiming success when app-side login fails', async () => {
+  for (const failure of ['state', 'exchange']) {
+    const { createServer, state } = makeFakeServerFactory()
+    let opened!: (url: string) => void
+    const browserOpened = new Promise<string>(resolve => (opened = resolve))
+
+    const promise = runNativeLogin('https://gw.example.com', {
+      createServer,
+      openExternal: async url => opened(url),
+      postJson: async () => {
+        throw new Error('token exchange rejected')
+      },
+      timeoutMs: 5_000
+    })
+
+    const rejection = assert.rejects(promise, failure === 'state' ? /state mismatch/i : /token exchange rejected/)
+    const authorize = new URL(await browserOpened)
+    const callbackState = failure === 'state' ? 'wrong-state' : authorize.searchParams.get('state')!
+
+    state.hitCallback(`code=test-code&state=${encodeURIComponent(callbackState)}`)
+    await rejection
+
+    assert.doesNotMatch(state.responseBody, /signed in|success|&#10003;/i)
+    assert.match(state.responseBody, /response received/i)
+    assert.match(state.responseBody, /app.*result|result.*app/i)
+    assert.equal(state.closed, true)
+  }
 })
 
 test('runNativeLogin rejects on a state mismatch (CSRF) without redeeming', async () => {

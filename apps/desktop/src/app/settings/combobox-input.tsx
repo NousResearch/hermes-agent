@@ -26,6 +26,8 @@ const IDLE = '\u0000idle'
  */
 export function ComboboxInput({
   'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy,
   className,
   disabled,
   onChange,
@@ -36,6 +38,8 @@ export function ComboboxInput({
   value
 }: {
   'aria-label'?: string
+  'aria-labelledby'?: string
+  'aria-describedby'?: string
   className?: string
   disabled?: boolean
   onChange: (value: string) => void
@@ -78,8 +82,10 @@ export function ComboboxInput({
           <Input
             aria-autocomplete="list"
             aria-controls={expanded ? listId : undefined}
+            aria-describedby={ariaDescribedBy}
             aria-expanded={expanded}
             aria-label={ariaLabel}
+            aria-labelledby={ariaLabelledBy}
             className="w-full pr-7"
             disabled={disabled}
             onChange={e => {

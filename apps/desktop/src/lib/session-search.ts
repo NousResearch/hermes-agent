@@ -1,4 +1,4 @@
-import { normalize } from '@/lib/text'
+import { includesQuery, normalize } from '@/lib/text'
 import type { SessionInfo } from '@/types/hermes'
 
 import { sessionTitle } from './chat-runtime'
@@ -19,5 +19,5 @@ export function sessionMatchesSearch(session: SessionInfo, query: string): boole
     session.cwd ?? '',
     session.git_branch ?? '',
     ...sessionSourceSearchTerms(session.source)
-  ].some(value => value.toLowerCase().includes(needle))
+  ].some(value => includesQuery(value, needle))
 }

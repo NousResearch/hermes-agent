@@ -28,6 +28,28 @@ const searchCopy = {
 }
 
 describe('settings search index', () => {
+  it('keeps Unicode-equivalent queries and fields at the same rank without changing display text', () => {
+    const entries = buildCredentialSearchEntries(
+      { HANGUL_API_KEY: envVar('tool', { description: '한글 설명' }) },
+      { settings: '설정', tools: '도구' },
+      { settings: Settings2, tools: Wrench }
+    )
+
+    for (const form of ['NFC', 'NFD'] as const) {
+      const label = '한글 검색'.normalize(form)
+      const localized = { ...entries[0], context: '도구'.normalize(form), label }
+
+      for (const query of ['한글 검색', '도구 한글', '한글 설명']) {
+        for (const queryForm of ['NFC', 'NFD'] as const) {
+          expect(filterSettingsSearchEntries([localized], query.normalize(queryForm))).toEqual([localized])
+        }
+      }
+
+      expect(localized.label).toBe(label)
+      expect(filterSettingsSearchEntries([localized], '한글 없는단어')).toEqual([])
+    }
+  })
+
   it('builds config results from renderable schema fields with exact deep links', () => {
     const schema: Record<string, ConfigFieldSchema> = {
       'display.personality': { type: 'select' },

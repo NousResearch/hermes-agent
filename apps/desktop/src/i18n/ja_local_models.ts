@@ -112,5 +112,6 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   deleteAction: 'モデルを削除',
   deleteConfirm: model => `${model} をディスクから削除しますか？`,
   deleted: model => `${model} を削除しました。`,
-  deleteFailed: '削除に失敗しました'
+  deleteFailed: '削除に失敗しました',
+  updateToast: next => `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`
 }

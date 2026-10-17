@@ -43,10 +43,10 @@ export function OfficialSkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={t.skills.skillDescriptions?.[skill.name] ?? (asText(skill.description) || t.skills.noDescription)}
         pills={
           <>
-            <PanelPill>{prettyName(skill.category)}</PanelPill>
+            <PanelPill>{t.skills.skillCategoryNames?.[skill.category] ?? prettyName(skill.category)}</PanelPill>
             <PanelPill tone="muted">{t.skills.officialPill}</PanelPill>
           </>
         }

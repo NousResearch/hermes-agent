@@ -35,6 +35,21 @@ const EN = {
 }
 const LOCALES = {
   en: EN,
+  ko: {
+    radio: '라디오', browse: '방송국 선택', play: '라디오 재생', pause: '라디오 일시 정지', next: '다음 방송국',
+    live: '실시간', paused: '일시 정지', connecting: '연결 중', error: '방송을 재생할 수 없습니다', retry: '다시 시도',
+    search: '방송국 검색…', volume: '음량', audioOnly: '재생 중 · 시각화 표시 불가',
+    mute: '라디오 음소거', unmute: '라디오 음소거 해제', save: '방송국 고정', unsave: '방송국 고정 해제',
+    visit: '방송국 웹사이트 열기', artistProfile: '아티스트 프로필 열기',
+    noResults: '방송국을 찾지 못했습니다', searchHint: '방송국 이름으로 검색하세요. jazz, ambient, house 등을 입력해 보세요.',
+    searchError: '방송국을 검색할 수 없습니다. 기본 방송국은 계속 이용할 수 있습니다.', searching: '방송국 검색 중',
+    directory: 'Radio Browser 제공 검색', note: '실시간 라디오 · 다음 버튼으로 방송국 전환',
+    streamError: '방송에 연결하지 못했습니다. 다시 시도하거나 다른 방송국을 선택하세요.',
+    close: '라디오 닫기', nowPlaying: '현재 재생 중', elsewhere: '일시 정지 — 다른 창에서 재생 중',
+    'chillsynthDescription': '편안한 집중 · 따뜻한 신스 사운드', 'nightrideDescription': '신스웨이브 · 늦은 밤',
+    'darksynthDescription': '어두운 전자음 · 강렬한 에너지', 'spacesynthDescription': '우주적인 신스 · 레트로 미래',
+    'paradise-mainDescription': '다양한 장르 · 사람이 고른 음악', 'paradise-mellowDescription': '한결 여유로운 흐름'
+  },
   ja: { ...EN, artistProfile: 'アーティストのプロフィールを開く', audioOnly: '再生中 · 波形を表示できません', radio: 'ラジオ', browse: 'ステーションを選択', play: 'ラジオを再生', pause: 'ラジオを一時停止', next: '次のステーション', live: 'ライブ', paused: '一時停止', connecting: '接続中', error: '再生できません', retry: '再試行', search: 'ステーションを検索…', volume: '音量', mute: 'ミュート', unmute: 'ミュート解除', save: 'ステーションを固定', unsave: '固定を解除', visit: '公式サイトを開く', noResults: '見つかりませんでした', searchHint: '名前で検索。jazz、ambient、house など。', searchError: '検索できません。おすすめは再生できます。', searching: '検索中', directory: 'Radio Browser による検索', note: 'ライブ放送 · 次へでステーションを切り替え', streamError: '接続できませんでした。再試行するか別のステーションを選んでください。', close: 'ラジオを閉じる', nowPlaying: '再生中', elsewhere: '別のウィンドウで再生中', 'chillsynthDescription': 'やさしい集中 · 暖かなシンセ', 'nightrideDescription': 'シンセウェーブ · 深夜', 'darksynthDescription': 'ダークな電子音 · 高揚感', 'spacesynthDescription': '宇宙的シンセ · レトロな未来', 'paradise-mainDescription': '多彩な選曲 · 人がキュレーション', 'paradise-mellowDescription': 'ゆったりした時間' },
   zh: { ...EN, artistProfile: '访问艺人主页', audioOnly: '正在播放 · 无法显示波形', radio: '电台', browse: '选择电台', play: '播放电台', pause: '暂停电台', next: '下一个电台', live: '直播', paused: '已暂停', connecting: '正在连接', error: '无法播放', retry: '重试', search: '搜索电台…', volume: '音量', mute: '静音', unmute: '取消静音', save: '置顶电台', unsave: '取消置顶', visit: '访问电台网站', noResults: '没有找到电台', searchHint: '按名称搜索，例如 jazz、ambient 或 house。', searchError: '暂时无法搜索，精选电台仍可使用。', searching: '正在搜索', directory: '搜索由 Radio Browser 提供', note: '直播电台 · 下一首将切换电台', streamError: '无法连接，请重试或选择其他电台。', close: '关闭电台', nowPlaying: '正在播放', elsewhere: '已暂停，正在其他窗口播放', 'chillsynthDescription': '轻松专注 · 温暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑电子 · 充满能量', 'spacesynthDescription': '宇宙合成器 · 复古未来', 'paradise-mainDescription': '多元风格 · 人工精选', 'paradise-mellowDescription': '放慢节奏' },
   'zh-hant': { ...EN, artistProfile: '造訪藝人主頁', audioOnly: '播放中 · 無法顯示波形', radio: '電台', browse: '選擇電台', play: '播放電台', pause: '暫停電台', next: '下一個電台', live: '直播', paused: '已暫停', connecting: '正在連線', error: '無法播放', retry: '重試', search: '搜尋電台…', volume: '音量', mute: '靜音', unmute: '取消靜音', save: '釘選電台', unsave: '取消釘選', visit: '造訪電台網站', noResults: '找不到電台', searchHint: '按名稱搜尋，例如 jazz、ambient 或 house。', searchError: '暫時無法搜尋，精選電台仍可使用。', searching: '正在搜尋', directory: '搜尋由 Radio Browser 提供', note: '直播電台 · 下一首會切換電台', streamError: '無法連線，請重試或選擇其他電台。', close: '關閉電台', nowPlaying: '正在播放', elsewhere: '已暫停，正在其他視窗播放', 'chillsynthDescription': '輕鬆專注 · 溫暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑電子 · 充滿能量', 'spacesynthDescription': '宇宙合成器 · 復古未來', 'paradise-mainDescription': '多元風格 · 人工精選', 'paradise-mellowDescription': '放慢節奏' }

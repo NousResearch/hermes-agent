@@ -6,6 +6,7 @@ import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
+import { I18nProvider, type Locale, TRANSLATIONS, useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
@@ -80,20 +81,33 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
+async function renderSkills(locale: Locale = 'en', route = '/capabilities?tab=toolsets') {
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // CapabilitiesView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/capabilities?tab=toolsets']}>
-          <CapabilitiesView />
-        </MemoryRouter>
+        <I18nProvider configClient={null} initialLocale={locale}>
+          <MemoryRouter initialEntries={[route]}>
+            <CapabilitiesView />
+            <SwitchLanguage />
+          </MemoryRouter>
+        </I18nProvider>
       </QueryClientProvider>
     )
   })
 
   return result!
+}
+
+function SwitchLanguage() {
+  const { locale, setLocale } = useI18n()
+
+  return (
+    <button onClick={() => void setLocale(locale === 'en' ? 'ko' : 'en')} type="button">
+      Switch language
+    </button>
+  )
 }
 
 beforeEach(() => {
@@ -130,7 +144,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await renderSkills()
 
     // The switch names the action, so an enabled toolset offers to turn it off.
-    const sw = await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
+    const sw = await screen.findByRole('switch', {
+      name: TRANSLATIONS.en.skills.toggleToolset(TRANSLATIONS.en.skills.toolsetLabels.web, false)
+    })
+
     expect(sw.getAttribute('aria-checked')).toBe('true')
 
     await act(async () => {
@@ -291,7 +308,9 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     // On a non-Skills tab the docs-site iframe must not exist at all — an
     // eagerly mounted hub is exactly the Capabilities lag bug.
     await renderSkills() // ?tab=toolsets
-    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
+    await screen.findByRole('switch', {
+      name: TRANSLATIONS.en.skills.toggleToolset(TRANSLATIONS.en.skills.toolsetLabels.web, false)
+    })
     expect(document.querySelector('iframe')).toBeNull()
     cleanup()
 
@@ -494,5 +513,33 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() =>
       expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
     )
+  })
+  it('updates installed skill descriptions and Korean search when the UI language changes', async () => {
+    getSkills.mockResolvedValue([
+      {
+        name: 'codebase-inspection',
+        description: 'Inspect code',
+        category: 'github',
+        enabled: true,
+        provenance: 'bundled'
+      }
+    ])
+    await renderSkills('ko', '/capabilities?tab=skills')
+    const translated = TRANSLATIONS.ko.skills.skillDescriptions!['codebase-inspection']
+    expect(await screen.findByText(translated)).toBeTruthy()
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+    })
+    expect(await screen.findByText('Inspect code')).toBeTruthy()
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+    })
+    expect(await screen.findByText(translated)).toBeTruthy()
+    await act(async () => {
+      fireEvent.change(screen.getByRole('textbox', { name: TRANSLATIONS.ko.skills.searchSkills }), {
+        target: { value: translated.normalize('NFD') }
+      })
+    })
+    expect(await screen.findByRole('switch', { name: 'codebase-inspection' })).toBeTruthy()
   })
 })

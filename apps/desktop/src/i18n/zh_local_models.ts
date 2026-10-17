@@ -115,5 +115,6 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   deleteAction: '删除模型',
   deleteConfirm: model => `从磁盘删除 ${model}？`,
   deleted: model => `已删除 ${model}。`,
-  deleteFailed: '删除失败'
+  deleteFailed: '删除失败',
+  updateToast: next => `本地引擎有新构建（${next}）。可在 设置 → 本地模型 中更新。`
 }

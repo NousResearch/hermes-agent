@@ -1,5 +1,5 @@
 import type { IconComponent } from '@/lib/icons'
-import { normalize } from '@/lib/text'
+import { normalizeSearch } from '@/lib/text'
 import type { ConfigFieldSchema, EnvVarInfo, HermesConfigRecord } from '@/types/hermes'
 
 import { FIELD_LABELS, SECTIONS } from './constants'
@@ -139,15 +139,15 @@ export function buildCredentialSearchEntries(
 }
 
 function searchScore(entry: SettingsSearchEntry, query: string): number {
-  const needle = normalize(query)
+  const needle = normalizeSearch(query)
 
   if (!needle) {
     return 0
   }
 
-  const label = normalize(entry.label)
-  const context = normalize(entry.context)
-  const haystack = normalize([entry.label, entry.context, entry.description ?? '', ...entry.keywords].join(' '))
+  const label = normalizeSearch(entry.label)
+  const context = normalizeSearch(entry.context)
+  const haystack = normalizeSearch([entry.label, entry.context, entry.description ?? '', ...entry.keywords].join(' '))
   const terms = needle.split(/\s+/).filter(Boolean)
 
   if (!terms.every(term => haystack.includes(term))) {

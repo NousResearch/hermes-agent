@@ -1,5 +1,8 @@
-import { isValidElement } from 'react'
+import { cleanup, render, screen } from '@testing-library/react'
+import { createElement, isValidElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { I18nProvider } from '@/i18n'
 
 import { discoverBundledPlugins } from './plugins'
 import { $pluginDecisions, $pluginRecords, setPluginEnabled } from './plugins-store'
@@ -26,6 +29,7 @@ function player(): RadioPlayer {
 }
 
 afterEach(async () => {
+  cleanup()
   await setPluginEnabled('radio', false)
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -39,6 +43,7 @@ describe('bundled Radio plugin', () => {
     const audio = vi.fn()
     vi.stubGlobal('fetch', fetch)
     vi.stubGlobal('Audio', audio)
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
     const initialStyles = document.head.querySelectorAll('style').length
 
     discoverBundledPlugins()
@@ -51,6 +56,14 @@ describe('bundled Radio plugin', () => {
     expect(player().status.get()).toBe('paused')
     expect(audio).not.toHaveBeenCalled()
     expect(fetch).not.toHaveBeenCalled()
+
+    const contribution = registry.getArea('statusBar.right').find(item => item.source === 'plugin:radio')
+    render(createElement(I18nProvider, { children: contribution?.render?.(), configClient: null, initialLocale: 'ko' }))
+    expect(screen.getByRole('button', { name: '라디오 재생' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '다음 방송국' })).toBeTruthy()
+    expect(audio).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+    cleanup()
 
     await setPluginEnabled('radio', false)
     expect(registry.getArea('statusBar.right').some(item => item.source === 'plugin:radio')).toBe(false)

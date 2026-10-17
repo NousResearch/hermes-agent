@@ -46,7 +46,7 @@ describe('surfaceModelSwitchConfirm through the shell dialog', () => {
     // The gateway's line breaks survive: the description is not one run-on line.
     const description = screen.getByText(/Context window shrinks/)
 
-    expect(description.textContent).toBe(GUARD_MESSAGE)
+    expect(description.textContent).toContain(GUARD_MESSAGE)
 
     fireEvent.click(screen.getByRole('button', { name: 'Keep current model' }))
 

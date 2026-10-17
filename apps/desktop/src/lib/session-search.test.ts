@@ -26,6 +26,22 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 describe('sessionMatchesSearch', () => {
+  it('matches canonically equivalent text in every searchable session field without changing it', () => {
+    for (const field of ['title', 'preview', 'cwd', 'git_branch'] as const) {
+      for (const form of ['NFC', 'NFD'] as const) {
+        const value = '한글 작업'.normalize(form)
+        const session = makeSession({ [field]: value })
+
+        for (const queryForm of ['NFC', 'NFD'] as const) {
+          expect(sessionMatchesSearch(session, '한글'.normalize(queryForm))).toBe(true)
+        }
+
+        expect(session[field]).toBe(value)
+        expect(sessionMatchesSearch(session, '다른 작업')).toBe(false)
+      }
+    }
+  })
+
   it('matches loaded sessions by full and partial session id', () => {
     const session = makeSession()
 

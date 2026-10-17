@@ -57,6 +57,7 @@ class StreamDeliveryMixin:
         self._native_reasoning_streamed = False
         # Next stream re-reads plugins.stream_reasoning_deltas (config edits land per request).
         self._stream_reasoning_hooks_enabled = None
+        self._current_streamed_assistant_reasoning = ""
 
         def deliver(tail: str) -> None:
             if tail:
@@ -90,6 +91,18 @@ class StreamDeliveryMixin:
     @_current_streamed_assistant_text.setter
     def _current_streamed_assistant_text(self, value: str) -> None:
         self._streamed_assistant_text_parts = [value] if value else []
+
+    @property
+    def _current_streamed_assistant_reasoning(self) -> str:
+        """Reasoning text streamed so far this model response, native or inline-scraped
+        (``_fire_reasoning_delta`` accumulates it). The interrupt/redirect path persists it
+        onto the interrupted row (#134946); same piece-list shape as the text accumulator."""
+        parts = getattr(self, "_streamed_reasoning_parts", None)
+        return "".join(parts) if parts else ""
+
+    @_current_streamed_assistant_reasoning.setter
+    def _current_streamed_assistant_reasoning(self, value: str) -> None:
+        self._streamed_reasoning_parts = [value] if value else []
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks (superseded writers excluded)."""
@@ -345,6 +358,13 @@ class StreamDeliveryMixin:
             # content deltas.
             self._note_dropped_stream_writer("_fire_reasoning_delta")
             return
+        if isinstance(text, str) and text:
+            # Piece-list accumulation (joining per token would copy the whole reasoning): the
+            # interrupt path reads it once when the row is written (#134946).
+            parts = getattr(self, "_streamed_reasoning_parts", None)
+            if parts is None:
+                parts = self._streamed_reasoning_parts = []
+            parts.append(text)
         self._call_quietly(self.reasoning_callback, text)
         # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and
         # serialized every streaming thread in the process behind a config cache hit.

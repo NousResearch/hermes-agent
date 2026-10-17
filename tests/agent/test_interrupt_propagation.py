@@ -1,7 +1,7 @@
 """Test interrupt propagation from parent to child agents.
 
-Reproduces the CLI scenario: user sends a message while delegate_task is
-running, main thread calls parent.interrupt(), child should stop.
+A soft interrupt (typing while busy, a new message) must NOT cancel running
+subagents; only an explicit stop (hard_cancel) tears down the child tree.
 """
 
 import threading
@@ -40,8 +40,8 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         agent._base_url = "http://localhost:1234"
         return agent
 
-    def test_parent_interrupt_sets_child_flag(self):
-        """When parent.interrupt() is called, child._interrupt_requested should be set."""
+    def test_soft_interrupt_does_not_cancel_child(self):
+        """A soft interrupt (typing while busy) must not cancel running subagents."""
         parent = self._make_bare_agent()
         child = self._make_bare_agent()
 
@@ -50,8 +50,8 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         parent.interrupt("new user message")
 
         assert parent._interrupt_requested is True
-        assert child._interrupt_requested is True
-        assert child._interrupt_message == "new user message"
+        assert child._interrupt_requested is False
+        assert child._interrupt_message is None
         assert is_interrupted() is False
         assert parent._interrupt_thread_signal_pending is True
 

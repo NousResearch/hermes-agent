@@ -338,8 +338,14 @@ def _require_token(request: Request) -> None:
     A verified native owner (``authenticate_native_http``) is the same-user
     principal the outer seams already accepted; local Desktop runs with no
     static token, so that principal must satisfy route-local policy too.
+    A dashboard-forwarded plugin request (``plugins.isolation: host``) was
+    authenticated by the dashboard's own gates before the forward; the host
+    process's ``_SESSION_TOKEN`` is an unrelated fresh value, so the marker set
+    by ``op_asgi`` is what makes the guard satisfiable there (#140499).
     """
     if getattr(request.state, "native_http_principal", None):
+        return
+    if getattr(request.state, "dashboard_forwarded", False):
         return
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None

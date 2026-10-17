@@ -6688,6 +6688,8 @@ export interface CanonicalRpcMethods {
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
+  'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
   'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
   /** Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired). */
@@ -6759,6 +6761,7 @@ export const CANONICAL_RPC_METHODS = [
   'a2a.forward',
   'approval.respond',
   'bot_relay.deliver',
+  'clarify.lock',
   'clarify.respond',
   'command.observe',
   'config.get',
@@ -6972,6 +6975,8 @@ export interface BackendGatewayEventMap {
   'sessions.changed': ChangeSignalPayload
   /** The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record. */
   'setup.ready': SetupReadyPayload
+  /** A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway. */
+  'skills.changed': ChangeSignalPayload
   /** The active skin moved (name switch or live colour edit); repaint from this palette. */
   'skin.changed': SkinPayload
   /** Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …). */
@@ -7074,6 +7079,7 @@ export const GATEWAY_EVENT_TYPES = [
   'session.usage',
   'sessions.changed',
   'setup.ready',
+  'skills.changed',
   'skin.changed',
   'status.update',
   'subagent.complete',

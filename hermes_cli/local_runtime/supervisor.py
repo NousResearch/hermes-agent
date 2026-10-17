@@ -96,6 +96,24 @@ def _stable_api_key() -> str:
     return key
 
 
+def _api_key_args(api_key: str) -> list[str]:
+    """Hand llama-server its key by file when the persisted copy is exactly that key.
+
+    ``--api-key`` on argv is readable by every local user via ``ps`` and lands in
+    llama-server.log with each spawn (#137804). The env route (``LLAMA_API_KEY``) is closed:
+    server_child_env strips ``*_API_KEY`` because it crashes the bundled OpenMP on Windows
+    (#116109). llama-server reads the file line by line through a narrow-path ifstream, so
+    anything it might read differently (a BOM, stray whitespace, a non-ASCII path on Windows,
+    no persisted file) falls back to argv rather than refusing every request with 401.
+    """
+    key_path = runtimes_root() / ".api_key"
+    with suppress(OSError):
+        raw = key_path.read_bytes()
+        if str(key_path).isascii() and raw in (api_key.encode("utf-8"), api_key.encode("utf-8") + b"\n"):
+            return ["--api-key-file", str(key_path)]
+    return ["--api-key", api_key]
+
+
 @lru_cache(maxsize=16)
 def _direct_io_args(executable: Path) -> tuple[str, ...]:
     """Select the loading option supported by this engine, including older pinned builds."""
@@ -178,7 +196,7 @@ class LlamaServerSupervisor:
             str(exe),
             "--host", "127.0.0.1",
             "--port", str(self.port),
-            "--api-key", self.api_key,
+            *_api_key_args(self.api_key),
             "--models-max", str(self.models_max),
             # Residency contract: a chat request to a staged-but-unloaded model loads it (slow
             # first token) instead of a bare 400/404 after an eject.
@@ -201,7 +219,8 @@ class LlamaServerSupervisor:
             # The crash-restart loop calls _spawn repeatedly; each restart would leak one fd.
             _quiet(self._log_handle.close)
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
-        self._log_handle.write(f"\n# spawn: {cmd}\n")
+        # The argv fallback still carries the key; the log never does.
+        self._log_handle.write(f"\n# spawn: {['***' if arg == self.api_key else arg for arg in cmd]}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
         self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,

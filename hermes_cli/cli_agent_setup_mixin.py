@@ -219,11 +219,17 @@ def _resume_panel_colors() -> tuple:
 def _retire_agent(cli) -> None:
     """Drop ``cli.agent`` so the next turn rebuilds it, releasing its LLM clients first: the Codex
     app-server child (and MCP descendants) belongs to the instance, so ``self.agent = None`` alone
-    orphans it for the CLI process lifetime (#72548). Session tool state is kept (soft release)."""
+    orphans it for the CLI process lifetime (#72548). Session tool state is kept (soft release).
+    The release drains and shuts down memory providers (seconds), so it runs off the command path;
+    non-daemon, so a normal exit still waits for it."""
     agent = cli.agent
-    if agent is not None and hasattr(agent, "release_clients"):
-        agent.release_clients()
     cli.agent = None
+    if agent is not None and hasattr(agent, "release_clients"):
+        from agent.memory_provider import spawn_context_thread
+        try:
+            spawn_context_thread(agent.release_clients, name="cli-agent-retire", daemon=False).start()
+        except RuntimeError:  # no new threads (interpreter shutting down): release inline
+            agent.release_clients()
 
 
 class CLIAgentSetupMixin:

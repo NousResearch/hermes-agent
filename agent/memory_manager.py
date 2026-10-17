@@ -12,14 +12,17 @@ import json
 import logging
 import re
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.redact import redact_for_egress
 
+from agent.memory_manager_tools import normalize_tool_schema
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
+from hermes_constants import hermes_home_key
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
 
@@ -32,6 +35,10 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+# A background provider call (sync_turn / queue_prefetch) running longer than this is treated as
+# stuck: later calls for the same provider are skipped until it returns. Well above the shutdown
+# drain bound and the prefetch timeout so a slow-but-healthy backend is never skipped.
+_BACKGROUND_CALL_STALL_S = 30.0
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
@@ -59,105 +66,6 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
         return False
     kind = getattr(params.get("require_checkpoint"), "kind", None)
     return _has_var_kwargs(params) or kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-
-
-# -- Tool-schema plumbing -----------------------------------------------------
-
-def normalize_tool_schema(schema: Any) -> Optional[dict[str, Any]]:
-    """Return a bare function-tool dict with a resolvable top-level ``name``, else None.
-
-    Providers should return ``{"name", "description", "parameters"}`` but some return the
-    wrapped OpenAI form; wrapping that twice yields a nameless ``function`` and strict
-    providers (DeepSeek) reject the ENTIRE request, so both shapes are normalized here.
-    """
-    if not isinstance(schema, dict):
-        return None
-    if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
-        schema = schema["function"]
-    name = schema.get("name", "")
-    return schema if name and isinstance(name, str) else None
-
-
-def memory_provider_tools_enabled(enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]] = None,
-                                  *, memory_tool_present: bool = False) -> bool:
-    """Return whether external memory-provider tools should be exposed."""
-    if disabled_toolsets and "memory" in disabled_toolsets:
-        return False
-    if memory_tool_present or enabled_toolsets is None:
-        return True
-    if not enabled_toolsets:
-        return False
-    if "memory" in enabled_toolsets:
-        return True
-    try:
-        from toolsets import resolve_toolset
-
-        return any("memory" in resolve_toolset(name) for name in enabled_toolsets)
-    except Exception:
-        logger.debug("Failed to resolve enabled toolsets for memory-provider tools", exc_info=True)
-        return False
-
-
-def _tool_name(tool: Any) -> Any:
-    return tool.get("function", {}).get("name") if isinstance(tool, dict) else None
-
-
-def memory_provider_tools_exposed(agent: Any) -> bool:
-    """Whether external memory-provider tools are exposed on ``agent``.
-
-    Same gate as ``inject_memory_provider_tools`` so a provider's ``system_prompt_block()``
-    never advertises tools absent from the tool surface.
-    """
-    tools = getattr(agent, "tools", None)
-    present = isinstance(tools, (list, tuple)) and any(_tool_name(t) == "memory" for t in tools)
-    enabled, disabled = getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
-    return memory_provider_tools_enabled(enabled, disabled, memory_tool_present=present)
-
-
-def inject_memory_provider_tools(agent: Any) -> int:
-    """Append external memory-provider tool schemas to an agent tool surface; return count added."""
-    memory_manager = getattr(agent, "_memory_manager", None)
-    tools = getattr(agent, "tools", None)
-    if not memory_manager or tools is None:
-        return 0
-
-    if not memory_provider_tools_exposed(agent):
-        # Say so once: a silent 0 leaves the provider looking "half on" with no clue which
-        # config key (platform_toolsets / disabled_toolsets) gated it.
-        # See #81014.
-        _providers = [p for p in getattr(memory_manager, "providers", None) or []
-                      if getattr(p, "name", "") != "builtin"]
-        if _providers:
-            logger.info(
-                "Memory provider(s) %s configured but the 'memory' toolset is "
-                "gated off for this session (platform_toolsets / "
-                "agent.disabled_toolsets) — provider tools and system-prompt "
-                "block are both withheld.",
-                [getattr(p, "name", type(p).__name__) for p in _providers],
-            )
-        return 0
-
-    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
-    if not callable(get_schemas):
-        return 0
-
-    if getattr(agent, "valid_tool_names", None) is None:
-        agent.valid_tool_names = set()
-    existing_tool_names = {_tool_name(tool) for tool in tools if isinstance(tool, dict)}
-    added = 0
-    for raw_schema in get_schemas():
-        schema = normalize_tool_schema(raw_schema)
-        if schema is None:
-            logger.warning(
-                "Memory provider returned a tool schema with no resolvable "
-                "name; skipping to avoid poisoning the request (%r)", raw_schema,
-            )
-        elif schema["name"] not in existing_tool_names:
-            tools.append({"type": "function", "function": schema})
-            agent.valid_tool_names.add(schema["name"])
-            existing_tool_names.add(schema["name"])
-            added += 1
-    return added
 
 
 # -- Context fencing helpers --------------------------------------------------
@@ -388,12 +296,43 @@ def build_memory_context_block(raw_context: str) -> str:
     )
 
 
+def _forget_inflight(registry: dict, key: tuple[str, str], token: object) -> bool:
+    """Drop one call's entry from a process-wide in-flight registry (caller holds its lock); the key goes
+    with its last entry. True when the key is now clear."""
+    inflight = registry.get(key)
+    if inflight is not None:
+        inflight.pop(token, None)
+        if not inflight:
+            registry.pop(key, None)
+    return key not in registry
+
+
 class MemoryManager:
     """Builtin provider (always first) plus at most one external provider.
 
     Failures in one provider never block the other: every fan-out hook logs and
     swallows per-provider exceptions.
     """
+
+    # Process-wide registry of in-flight external prefetch threads and their deadlines, keyed by
+    # (Hermes home, provider name). A new MemoryManager is built per agent init, so a
+    # per-instance registry would let every fresh manager spawn one more stuck thread
+    # against the same provider (#134392); shared, any call past its deadline suppresses new
+    # spawns from every manager until it returns. Healthy concurrent prefetches from
+    # different sessions still run side by side, and each thread removes only its own
+    # entry. The home is part of the key because one gateway process can serve several
+    # profiles, each with its own config and credentials for a same-named provider: one
+    # profile's hung backend must not silence another's recall.
+    _EXTERNAL_PREFETCH_THREADS: dict[tuple[str, str], dict[threading.Thread, float]] = {}
+    _EXTERNAL_PREFETCH_LOCK = threading.Lock()
+    # Same idea for background writes: start times of in-flight sync_turn / queue_prefetch calls per
+    # (Hermes home, provider name). Python cannot stop a thread, so a call that never returns pins its
+    # mem-sync worker for the process lifetime; managers are rebuilt per agent, so without a shared
+    # view every fresh manager would start one more call against the hung backend and pin one more
+    # thread. Calls are skipped while any call for the key is stuck past _BACKGROUND_CALL_STALL_S.
+    _BACKGROUND_CALLS: dict[tuple[str, str], dict[object, float]] = {}
+    _BACKGROUND_SKIPS: dict[tuple[str, str], int] = {}
+    _BACKGROUND_CALLS_LOCK = threading.Lock()
 
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: list[MemoryProvider] = []
@@ -405,8 +344,8 @@ class MemoryManager:
         if timeout <= 0:
             raise ValueError("external_prefetch_timeout must be positive")
         self._external_prefetch_timeout = timeout
-        self._external_prefetch_threads: dict[str, threading.Thread] = {}
-        self._external_prefetch_lock = threading.Lock()
+        # Captured at build time, inside the profile scope the agent is built for.
+        self._home_key = hermes_home_key()
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
@@ -415,6 +354,7 @@ class MemoryManager:
         # within a bound, then report exactly what it abandoned.
         self._background_futures: dict[Future, str] = {}
         self._shutting_down = False
+        self._teardown_claim: Optional[str] = None  # see claim_teardown()
         self._shutdown_drain_state: dict[str, Any] = {
             "status": "not_started", "abandoned_writes": 0, "abandoned_prefetches": 0, "active_tasks": 0,
         }
@@ -527,20 +467,34 @@ class MemoryManager:
 
         result_box: dict[str, Any] = {}
 
+        key = (self._home_key, provider.name)
+
         def _run() -> None:
             try:
                 result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 result_box["error"] = exc
+            finally:
+                # Every call removes its own entry when it returns, so the registry never pins
+                # a finished thread and one call's return never forgets another stuck one.
+                with self._EXTERNAL_PREFETCH_LOCK:
+                    _forget_inflight(self._EXTERNAL_PREFETCH_THREADS, key, thread)
 
         thread = spawn_context_thread(_run, name=f"memory-prefetch-{provider.name}")
-        with self._external_prefetch_lock:
-            existing = self._external_prefetch_threads.get(provider.name)
-            if existing is not None and existing.is_alive():
-                logger.debug("Memory provider '%s' prefetch is still running; skipping this turn", provider.name)
+        with self._EXTERNAL_PREFETCH_LOCK:
+            inflight = self._EXTERNAL_PREFETCH_THREADS.setdefault(key, {})
+            now = time.monotonic()
+            if any(now > deadline for deadline in inflight.values()):
+                logger.debug("Memory provider '%s' prefetch is still stuck; skipping this turn", provider.name)
                 return ""
-            self._external_prefetch_threads[provider.name] = thread
-            thread.start()
+            inflight[thread] = now + self._external_prefetch_timeout
+            try:
+                thread.start()
+            except RuntimeError:
+                # Never started, so its finally never runs: drop the entry or it would gate the
+                # provider forever once its deadline passes.
+                _forget_inflight(self._EXTERNAL_PREFETCH_THREADS, key, thread)
+                raise
 
         thread.join(self._external_prefetch_timeout)
         if thread.is_alive():
@@ -550,9 +504,6 @@ class MemoryManager:
             )
             return ""
 
-        with self._external_prefetch_lock:
-            if self._external_prefetch_threads.get(provider.name) is thread:
-                self._external_prefetch_threads.pop(provider.name, None)
         if "error" in result_box:
             raise result_box["error"]
         result = result_box.get("value", "")
@@ -586,7 +537,8 @@ class MemoryManager:
             return
         clean_query = _redact_for_provider(clean_query)
         self._submit_background(lambda: self._each_provider(
-            "queue_prefetch failed (non-fatal)", lambda p: p.queue_prefetch(clean_query, session_id=session_id),
+            "queue_prefetch failed (non-fatal)",
+            lambda p: self._call_unless_stalled(p, lambda: p.queue_prefetch(clean_query, session_id=session_id)),
             providers=providers,
         ), kind="prefetch")
 
@@ -622,7 +574,8 @@ class MemoryManager:
             for keyword, value in optional_kwargs.items():
                 if value is not None and self._provider_sync_accepts(provider, keyword):
                     kwargs[keyword] = value
-            provider.sync_turn(clean_user_content, assistant_content, **kwargs)
+            self._call_unless_stalled(
+                provider, lambda: provider.sync_turn(clean_user_content, assistant_content, **kwargs))
 
         self._submit_background(
             lambda: self._each_provider("sync_turn failed", _sync, level=logging.WARNING, providers=providers)
@@ -666,6 +619,34 @@ class MemoryManager:
             fn()
         except Exception as e:  # pragma: no cover - fn guards internally
             logger.debug("Inline memory background task failed: %s", e)
+
+    def _call_unless_stalled(self, provider: MemoryProvider, call: Callable[[], Any]) -> None:
+        """Run a background provider call unless an earlier one for the same provider (any manager in
+        this process) is stuck; skipping costs that turn's write/prefetch but keeps the thread count
+        bounded. The builtin provider is local and never gated."""
+        if provider.name == "builtin":
+            call()
+            return
+        key = (self._home_key, provider.name)
+        token = object()
+        now = time.monotonic()
+        with self._BACKGROUND_CALLS_LOCK:
+            calls = self._BACKGROUND_CALLS.setdefault(key, {})
+            if any(now - started > _BACKGROUND_CALL_STALL_S for started in calls.values()):
+                skips = self._BACKGROUND_SKIPS[key] = self._BACKGROUND_SKIPS.get(key, 0) + 1
+                if skips == 1 or skips % 100 == 0:
+                    logger.warning(
+                        "Memory provider '%s' has a background call stuck for over %.0fs; skipping its "
+                        "sync/prefetch until it returns (%d skipped)", provider.name, _BACKGROUND_CALL_STALL_S, skips,
+                    )
+                return
+            calls[token] = now
+        try:
+            call()
+        finally:
+            with self._BACKGROUND_CALLS_LOCK:
+                if _forget_inflight(self._BACKGROUND_CALLS, key, token):
+                    self._BACKGROUND_SKIPS.pop(key, None)
 
     def _forget_background_future(self, future: Future) -> None:
         with self._sync_executor_lock:
@@ -940,6 +921,26 @@ class MemoryManager:
             "on_delegation failed",
             lambda p: p.on_delegation(task, result, child_session_id=child_session_id, **kwargs),
         )
+
+    def claim_teardown(self, *, session_end: bool) -> bool:
+        """Claim extraction + ``shutdown_all()`` for end-of-session shutdown or soft release. The first
+        claimer wins and the loser skips, so the two never overlap and providers (no idempotency
+        contract) are never shut down twice. Session-end callers may re-claim (the gateway claims before
+        its flush, then ``shutdown_memory_provider`` claims again); a soft release is once-only and also
+        loses to a manager another owner is already draining."""
+        with self._sync_executor_lock:
+            if self._teardown_claim is None and (session_end or not self._shutting_down):
+                self._teardown_claim = "session_end" if session_end else "soft_release"
+                return True
+            return session_end and self._teardown_claim == "session_end"
+
+    def release_soft(self) -> None:
+        """Soft release (cache eviction, CLI agent rebuild): stop provider writer threads, which otherwise leak
+        one per evicted agent, WITHOUT on_session_end(): sweeps commit first and a pending session end owns
+        both. Flush first, since shutdown_all()'s short drain would cancel writes the old worker finished."""
+        if self.claim_teardown(session_end=False):
+            self.flush_pending(timeout=10)
+            self.shutdown_all()
 
     def shutdown_all(self) -> None:
         """Drain the background executor (bounded), then shut providers down in reverse order."""

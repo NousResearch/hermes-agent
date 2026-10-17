@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+from agent.memory_manager import MemoryManager
+from agent.memory_manager_tools import inject_memory_provider_tools
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -479,19 +480,81 @@ class TestMemoryManager:
         external.release.set()
 
         deadline = time.monotonic() + 1.0
-        while (
-            external.name in mgr._external_prefetch_threads
-            and mgr._external_prefetch_threads[external.name].is_alive()
-            and time.monotonic() < deadline
-        ):
+        while (mgr._home_key, external.name) in mgr._EXTERNAL_PREFETCH_THREADS and time.monotonic() < deadline:
             time.sleep(0.01)
 
         result = mgr.prefetch_all("query 3")
 
         assert result == "builtin memory\n\nlate external memory"
         assert external.prefetch_queries == ["query", "query 3"]
-        assert external.name not in mgr._external_prefetch_threads
+        assert (mgr._home_key, external.name) not in mgr._EXTERNAL_PREFETCH_THREADS
 
+    def test_stuck_prefetch_thread_is_shared_across_managers(self, tmp_path):
+        """#134392: a new MemoryManager is built per agent init, so the in-flight
+        registry must be process-wide — N fresh managers against one stuck provider
+        keep at most one live ``memory-prefetch-*`` thread, not one per manager. It is
+        keyed per Hermes home: another profile's same-named provider still recalls.
+        """
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        external = BlockingPrefetchProvider("cross-manager-stuck")
+        try:
+            for i in range(5):
+                mgr = MemoryManager(external_prefetch_timeout=0.01)
+                mgr.add_provider(external)
+                mgr._prefetch_provider(external, "query", session_id=f"s{i}")
+
+            live = [
+                t for t in threading.enumerate()
+                if t.name.startswith("memory-prefetch-cross-manager-stuck")
+            ]
+            assert len(live) == 1
+            assert external.prefetch_queries == ["query"]
+
+            other_profile = FakeMemoryProvider("cross-manager-stuck")
+            other_profile._prefetch_result = "profile b memory"
+            token = set_hermes_home_override(tmp_path / "profile-b")
+            try:
+                mgr_b = MemoryManager(external_prefetch_timeout=1.0)
+            finally:
+                reset_hermes_home_override(token)
+            mgr_b.add_provider(other_profile)
+            assert mgr_b._prefetch_provider(other_profile, "q", session_id="b") == "profile b memory"
+
+            # Once the stuck call returns, the shared registry clears and a fresh
+            # manager prefetches again.
+            external.release.set()
+            live[0].join(timeout=2.0)
+            assert not live[0].is_alive()
+            assert (mgr._home_key, external.name) not in MemoryManager._EXTERNAL_PREFETCH_THREADS
+            mgr = MemoryManager(external_prefetch_timeout=1.0)
+            mgr.add_provider(external)
+            mgr._prefetch_provider(external, "after", session_id="s-after")
+            assert external.prefetch_queries == ["query", "after"]
+        finally:
+            external.release.set()
+
+    def test_healthy_concurrent_prefetches_from_two_sessions_both_recall(self):
+        """Only a TIMED-OUT call gates other managers: a slow-but-healthy prefetch in one session
+        must not blank the recall of another session that prefetches meanwhile."""
+        first = BlockingPrefetchProvider("concurrent-healthy")
+        first._prefetch_result = "session a memory"
+        second = FakeMemoryProvider("concurrent-healthy")
+        second._prefetch_result = "session b memory"
+        mgr_a = MemoryManager(external_prefetch_timeout=5.0)
+        mgr_a.add_provider(first)
+        mgr_b = MemoryManager(external_prefetch_timeout=5.0)
+        mgr_b.add_provider(second)
+        results = {}
+        worker = threading.Thread(target=lambda: results.update(a=mgr_a.prefetch_all("q", session_id="a")))
+        worker.start()
+        try:
+            assert first.started.wait(timeout=2.0)
+            results["b"] = mgr_b.prefetch_all("q", session_id="b")
+        finally:
+            first.release.set()
+            worker.join(timeout=5.0)
+        assert results == {"a": "session a memory", "b": "session b memory"}
 
 class TestPluginMemoryDiscovery:
     """Memory providers are discovered from plugins/memory/ directory."""
@@ -1149,7 +1212,7 @@ class TestNormalizeToolSchema:
 
 
     def test_non_dict_rejected(self):
-        from agent.memory_manager import normalize_tool_schema
+        from agent.memory_manager_tools import normalize_tool_schema
         assert normalize_tool_schema("nope") is None
         assert normalize_tool_schema(None) is None
 
@@ -1260,24 +1323,24 @@ class TestSystemPromptGateParity:
         return agent, mgr, provider
 
     def test_tools_exposed_when_memory_in_enabled_toolsets(self):
-        from agent.memory_manager import memory_provider_tools_exposed
+        from agent.memory_manager_tools import memory_provider_tools_exposed
         agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["memory"])
         assert memory_provider_tools_exposed(agent) is True
 
     def test_tools_hidden_when_memory_in_disabled_toolsets(self):
-        from agent.memory_manager import memory_provider_tools_exposed
+        from agent.memory_manager_tools import memory_provider_tools_exposed
         agent, _mgr, _p = self._agent_with_provider(disabled_toolsets=["memory"])
         assert memory_provider_tools_exposed(agent) is False
 
     def test_tools_hidden_when_memory_not_in_enabled_toolsets(self):
-        from agent.memory_manager import memory_provider_tools_exposed
+        from agent.memory_manager_tools import memory_provider_tools_exposed
         agent, _mgr, _p = self._agent_with_provider(enabled_toolsets=["web_search"])
         assert memory_provider_tools_exposed(agent) is False
 
     def test_tools_exposed_when_memory_tool_already_present(self):
         """The built-in "memory" tool is a sufficient opt-in even when the
         toolset gate says nothing about memory."""
-        from agent.memory_manager import memory_provider_tools_exposed
+        from agent.memory_manager_tools import memory_provider_tools_exposed
         tools = [
             {"type": "function", "function": {"name": "memory", "description": "x", "parameters": {}}},
         ]
@@ -1288,7 +1351,7 @@ class TestSystemPromptGateParity:
         """``inject_memory_provider_tools`` and ``memory_provider_tools_exposed``
         must agree — both determine whether provider tools are presented to
         the model (#81014)."""
-        from agent.memory_manager import inject_memory_provider_tools, memory_provider_tools_exposed
+        from agent.memory_manager_tools import inject_memory_provider_tools, memory_provider_tools_exposed
 
         # Disabled toolsets — neither path should add or advertise provider tools.
         agent, _mgr, _p = self._agent_with_provider(disabled_toolsets=["memory"])

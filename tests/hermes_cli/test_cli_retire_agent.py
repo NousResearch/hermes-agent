@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
+from tests.waiting import wait_until
 
 
 class _FakeAgent:
@@ -24,4 +25,4 @@ def test_reasoning_command_releases_old_agent_clients_before_rebuild():
         CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high")
     assert stub.reasoning_config == {"enabled": True, "effort": "high"}
     assert stub.agent is None
-    assert agent.release_calls == 1
+    wait_until(lambda: agent.release_calls == 1, what="the retired agent's clients to be released")

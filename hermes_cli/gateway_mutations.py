@@ -133,6 +133,17 @@ def compress_payload(arg):
     return payload
 
 
+def reasoning_level(arg):
+    """The session ``/reasoning <level>`` names. The level must be one ``parse_reasoning_effort``
+    knows (a typo never reaches the policy); ``--global`` writes the profile, which a viewer's
+    session edit never does, so it is refused rather than silently scoped to the session."""
+    from hermes_constants import parse_reasoning_effort
+    tokens = arg.split()
+    if len(tokens) != 1 or tokens[0].startswith('--') or parse_reasoning_effort(tokens[0]) is None:
+        raise GatewayClientError('unsupported_reasoning_options')
+    return tokens[0].lower()
+
+
 def slash_mutation(command, arg):
     name = command.lstrip('/')
     if name == 'model':
@@ -144,6 +155,8 @@ def slash_mutation(command, arg):
             {'provider': parsed.explicit_provider} if parsed.explicit_provider else {})}
     if name == 'compress':
         return name, compress_payload(arg)
+    if name == 'reasoning':
+        return name, {'effort': reasoning_level(arg)}
     if name != 'branch':
         raise GatewayClientError('unsupported_command')
     return name, {'title': arg} if arg else {}

@@ -21,6 +21,11 @@ class _Conn:
         return self.replies.get(method, {})
 
 
+def _observed(name, arg):
+    """The ``command.observe`` notice a command the CLI runs itself sends first (``pre_command``)."""
+    return ("command.observe", {"session_id": "local-s", "name": name, "arg": arg})
+
+
 @pytest.fixture
 def gateway_cli(monkeypatch):
     def make(**replies):
@@ -41,7 +46,7 @@ def test_diff_session_renders_the_gateway_sessions_checkpoint_diff(gateway_cli, 
     cli, conn = gateway_cli(**{"rollback.session_diff": {
         "enabled": True, "success": True, "stat": " a.py | 450 +", "diff": body, "diff_lines": 450}})
     assert cli.process_command("/diff session") is True
-    assert conn.calls == [("rollback.session_diff", {"session_id": "local-s"})]
+    assert conn.calls == [_observed("diff", "session"), ("rollback.session_diff", {"session_id": "local-s"})]
     out = capsys.readouterr().out
     assert "a.py | 450 +" in out and "+edited 399" in out and "+edited 400" not in out
     assert "50 more lines" in out and "```" not in out
@@ -62,14 +67,14 @@ def test_diff_of_the_working_tree_stays_a_local_git_read(gateway_cli, monkeypatc
     monkeypatch.setattr("tools.working_diff.collect_working_diff",
                         lambda cwd, mode, paths=None: seen.append(mode) or {"success": True, "empty": True})
     cli.process_command("/diff staged")
-    assert seen == ["staged"] and conn.calls == []
+    assert seen == ["staged"] and conn.calls == [_observed("diff", "staged")]
 
 
 def test_reload_rereads_env_in_the_gateway_and_reports_its_count(gateway_cli, monkeypatch, capsys):
     cli, conn = gateway_cli(**{"reload.env": {"updated": 3}})
     monkeypatch.setattr("hermes_cli.config.reload_env", lambda: 0)
     assert cli.process_command("/reload") is True
-    assert conn.calls == [("reload.env", {"session_id": "local-s"})]
+    assert conn.calls == [_observed("reload", ""), ("reload.env", {"session_id": "local-s"})]
     assert "3" in capsys.readouterr().out
 
 
@@ -77,4 +82,4 @@ def test_handoff_is_refused_with_a_message_on_the_gateway(gateway_cli, capsys):
     cli, conn = gateway_cli()
     assert cli.process_command("/handoff telegram") is True  # the session stays
     assert "/handoff is not available on the shared gateway yet" in capsys.readouterr().out
-    assert conn.calls == []
+    assert conn.calls == []  # a named refusal runs nothing: no command.observe (pre_command) either

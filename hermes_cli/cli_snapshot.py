@@ -115,8 +115,13 @@ def _restore_gateway_snapshot(cli, store, snap_id):
                       "The host retries on its next rescan (within 30s).")
         store.snapshots.clear()
         store.current = None
-        store.connection = GatewayConnection.shared()
-        _rejoin_cli(cli, store)
+        # The restore's own result or error decides the reply; a failed rejoin must not replace it.
+        try:
+            store.connection = GatewayConnection.shared()
+            _rejoin_cli(cli, store)
+        except Exception as exc:
+            logger.warning("Rejoin after snapshot restore failed: %s", exc, exc_info=True)
+            print(f"  Reconnecting to the gateway failed: {exc}. Run /new or restart the CLI.")
 
 
 def _rejoin_cli(cli, store):

@@ -1,0 +1,59 @@
+{
+  "brand": "Harbor",
+  "tagline": "Savings that stay put",
+  "brief": "A savings app for first-time savers who find finance intimidating. It should feel calm, safe and patient — the opposite of flashy trading apps.",
+  "adjectives": [
+    "calm",
+    "safe",
+    "patient",
+    "warm"
+  ],
+  "criteria": "Success: distinct from blue fintech marks, recognisable at 16 px, works in one colour, feels calm and safe.",
+  "industry": "consumer-app",
+  "nav": [
+    "How it works",
+    "Security",
+    "Download"
+  ],
+  "brand_color": "#0F7C80",
+  "greyscale": true,
+  "designer": "Your studio",
+  "round": 1,
+  "concepts": [
+    {
+      "name": "Horizon H",
+      "symbol": "concept-a-symbol.svg",
+      "lockup": "concept-a-horizontal.svg",
+      "idea": "An H whose crossbar is a calm horizon line.",
+      "rationale": [
+        "Letterform works as app icon and favicon",
+        "The horizon expresses calm and patience",
+        "Built on a 16-unit grid with one radius"
+      ]
+    },
+    {
+      "name": "Safe Bay",
+      "symbol": "concept-b-symbol.svg",
+      "idea": "A sheltering bay shape that holds a coin in its negative space.",
+      "rationale": [
+        "Protection without the cliché shield",
+        "Negative-space coin rewards a second look"
+      ]
+    },
+    {
+      "name": "Rising Tide",
+      "symbol": "concept-c-symbol.svg",
+      "idea": "Three stacked waves that rise like a growing balance.",
+      "rationale": [
+        "Growth expressed gently, not as a stock chart",
+        "Modular — extends into a pattern"
+      ]
+    }
+  ],
+  "recommendation": "Horizon H — the most ownable, the strongest at small sizes, and it grows naturally into an icon set.",
+  "next_steps": [
+    "Pick a direction (or tell us what you like in each)",
+    "Refinement and colour round",
+    "Final artwork, variants and mini guidelines"
+  ]
+}

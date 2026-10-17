@@ -177,8 +177,8 @@ def _eager_reconcile_own_session_db() -> None:
     must never see a second writable ``SessionDB`` from this process (its
     close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
     two-writer corruption vector, #107688 / #100896). Access-mode semantics
-    (bootstrap of a missing store, ONE writable heal of a stale schema, so the
-    #79531 contract holds) live in the routers' own-store opener,
+    (no bootstrap of a missing store; one additive catch-up of a store that lags
+    SCHEMA_SQL, only while no gateway owns it, #79531 / #140315) live in the routers' own-store opener,
     :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
     raises: an unfixable store still gets the per-poll read-probe heal.
     """

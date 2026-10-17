@@ -144,16 +144,35 @@ def test_exit_4_when_gateway_reports_stopping(cli_env, monkeypatch):
 # --- supervisor pre-check semantics (review gate 1, item 4) ---------------------
 
 
-def test_launchd_keepalive_successful_exit_true_is_refused():
-    """{"SuccessfulExit": true} only relaunches on exit 0 — no exit-75 recovery."""
-    assert hd._launchd_keepalive_recovers_exit75({"SuccessfulExit": True}) is False
-    assert hd._launchd_keepalive_recovers_exit75({"SuccessfulExit": False}) is True
+def test_launchd_keepalive_only_bare_true_is_accepted():
+    """v1 accepts ONLY bare ``KeepAlive=true``: dict forms are conditional and
+    their loaded state cannot be proven to recover exit 75 (probe, 2026-10-17:
+    ``launchctl print`` drops the ``keepalive`` property token for dicts)."""
     assert hd._launchd_keepalive_recovers_exit75(True) is True
-    assert hd._launchd_keepalive_recovers_exit75(False) is False
-    # Other conditional forms cannot be attributed to exit-75 recovery.
-    assert hd._launchd_keepalive_recovers_exit75({"Crash": True}) is False
-    assert hd._launchd_keepalive_recovers_exit75({"SuccessfulExit": False, "Crash": True}) is False
-    assert hd._launchd_keepalive_recovers_exit75(None) is False
+    for refused in (False, None,
+                    {"SuccessfulExit": True}, {"SuccessfulExit": False},
+                    {"Crash": True}, {"SuccessfulExit": False, "Crash": True}):
+        assert hd._launchd_keepalive_recovers_exit75(refused) is False
+
+
+def test_launchd_loaded_properties_parse():
+    """The loaded-job ``properties`` line is the only observable policy evidence;
+    a missing line must refuse (undeterminable), never pass."""
+    assert hd._launchd_loaded_properties_have_keepalive(
+        "    path = /x/ai.hermes.gateway.plist\n"
+        "    properties = keepalive | runatload | inferred program\n") is True
+    assert hd._launchd_loaded_properties_have_keepalive(
+        "    properties = runatload | inferred program\n") is False
+    assert hd._launchd_loaded_properties_have_keepalive("    state = running\n") is None
+
+
+def test_s6_is_conservatively_refused_in_v1(monkeypatch):
+    """s6 distinguishes up from wantedup — without a binding proof, exit 4."""
+    monkeypatch.setattr(hd, "_supervisor_precheck", hd._supervisor_precheck)  # real code path
+    ok, why = hd._supervisor_precheck({"kind": "s6", "service_id": "svc:gw",
+                                       "hermes_home": "/tmp/x"}, 4242)
+    assert ok is False
+    assert "s6" in why
 
 
 @pytest.mark.parametrize("restart,prevented,succeeded,expect_ok", [

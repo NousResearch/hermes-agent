@@ -75,7 +75,11 @@ def _supervisor_precheck(identity: dict[str, str], target_pid: int) -> tuple[boo
         if kind == "systemd":
             return _precheck_systemd(service_id, target_pid)
         if kind == "s6":
-            return _precheck_s6(service_id)
+            # v1 conservative refusal (review gate 1 round 2): s6 distinguishes
+            # up from wantedup, and we have no helper proving the slot both
+            # supervises this pid and will restart it after a clean exit.
+            return False, ("s6 deferred restart is not supported in v1: supervision binding "
+                           "and post-exit restart intent cannot be proven for the target")
     except Exception as exc:
         return False, f"supervisor probe failed: {exc}"
     return False, f"unsupported supervisor kind {kind!r}"
@@ -84,21 +88,35 @@ def _supervisor_precheck(identity: dict[str, str], target_pid: int) -> tuple[boo
 def _launchd_keepalive_recovers_exit75(keepalive: object) -> bool:
     """True only when the EFFECTIVE KeepAlive semantics relaunch after exit 75.
 
-    Apple's KeepAlive forms: bare ``true`` relaunches unconditionally; the dict
-    form is conditional and may only restart on SUCCESSFUL exits
-    (``{"SuccessfulExit": true}``), which does NOT recover exit 75. Anything we
-    cannot positively attribute to exit-75 recovery is refused (review gate 1).
+    Bare ``true`` relaunches unconditionally. Dict forms are CONDITIONAL and
+    may only restart on successful exits (``{"SuccessfulExit": true}``), which
+    does NOT recover exit 75. Empirically (probe, 2026-10-17) ``launchctl
+    print`` renders the loaded-job ``properties`` line with a ``keepalive``
+    token ONLY for the unconditional form — dict forms lose the token — so the
+    loaded-state check below is meaningful exactly for bare ``true``.
     """
-    if keepalive is True:
-        return True
-    if isinstance(keepalive, dict):
-        # Restart on abnormal exit only: {"SuccessfulExit": false} covers 75.
-        return set(keepalive.keys()) == {"SuccessfulExit"} and keepalive.get("SuccessfulExit") is False
-    return False
+    return keepalive is True
+
+
+def _launchd_loaded_properties_have_keepalive(print_output: str) -> Optional[bool]:
+    """``True``/``False`` from the loaded job's ``properties = ...`` line, or
+    ``None`` when the line cannot be found (→ refuse: undeterminable)."""
+    for line in print_output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("properties"):
+            _, _, value = stripped.partition("=")
+            return "keepalive" in value
+    return None
 
 
 def _precheck_launchd(target_pid: int) -> tuple[bool, str]:
-    """launchd: job registered, KeepAlive recovers exit 75, and it supervises the target."""
+    """launchd: disk plist is bare KeepAlive=true, the LOADED policy shows the
+    unconditional keepalive property, and the job supervises the target pid.
+
+    Both disk and loaded state are checked because a stale-load (disk edited
+    after bootstrap) must not pass: the loaded ``properties`` line is the only
+    observable evidence of the policy actually in force (review gate 1).
+    """
     import plistlib
 
     from hermes_cli.gateway import (
@@ -117,8 +135,8 @@ def _precheck_launchd(target_pid: int) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"launchd agent plist unreadable: {exc}"
     if not _launchd_keepalive_recovers_exit75(data.get("KeepAlive")):
-        return False, (f"launchd agent {label} KeepAlive does not guarantee relaunch after "
-                       f"exit 75 (got {data.get('KeepAlive')!r})")
+        return False, (f"launchd agent {label} plist KeepAlive={data.get('KeepAlive')!r} does not "
+                       f"guarantee relaunch after exit 75 (only bare true is accepted)")
     try:
         registered = _launchd_service_registered(label)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -126,7 +144,7 @@ def _precheck_launchd(target_pid: int) -> tuple[bool, str]:
     if not registered:
         return False, f"launchd job {label} is not loaded"
     try:
-        _domain, job_pid = _locate_launchd_gateway_service(label)
+        domain, job_pid = _locate_launchd_gateway_service(label)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return False, f"launchctl probe failed: {exc}"
     if job_pid is None:
@@ -134,7 +152,20 @@ def _precheck_launchd(target_pid: int) -> tuple[bool, str]:
     if job_pid != target_pid:
         return False, (f"launchd job {label} supervises pid {job_pid}, not target {target_pid} "
                        f"(a hand-started gateway holds this home)")
-    return True, f"launchd job {label} (KeepAlive relaunches exit 75, owns pid {job_pid})"
+    # Loaded-state policy check (not just the disk file).
+    try:
+        result = subprocess.run(["launchctl", "print", f"{domain}/{label}"],
+                                timeout=10, capture_output=True, text=True, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return False, f"launchctl probe failed: {exc}"
+    loaded_keepalive = _launchd_loaded_properties_have_keepalive(result.stdout)
+    if loaded_keepalive is None:
+        return False, f"launchd job {label}: cannot determine the LOADED keepalive policy"
+    if not loaded_keepalive:
+        return False, (f"launchd job {label} is loaded WITHOUT the unconditional keepalive "
+                       f"property (loaded policy does not recover exit 75)")
+    return True, (f"launchd job {label} (loaded keepalive + plist bare true, "
+                  f"owns pid {job_pid})")
 
 
 def _precheck_systemd(service_id: str, target_pid: int) -> tuple[bool, str]:

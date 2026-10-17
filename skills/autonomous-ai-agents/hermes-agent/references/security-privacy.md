@@ -52,14 +52,14 @@ mode, and NOT a per-edit diff prompt (which doesn't exist; file writes never
 go through the approval prompt, only shell commands do). Two stores hold it:
 
 1. Shell-command allowlist: `hermes config set command_allowlist '[]'`
-2. Shell-hook consent (only if present): `rm -f ~/.hermes/shell-hooks-allowlist.json`
+2. Shell-hook consent (only if present): `rm -f ${HERMES_HOME:-~/.hermes}/shell-hooks-allowlist.json`
 
 Then sanity-check `hermes config get approvals.mode` (should not be `off`)
 and confirm `--yolo` isn't baked into their launch alias or systemd unit.
 
 ### Shell hooks allowlist
 
-Some shell-hook integrations require explicit allowlisting before they fire. Managed via `~/.hermes/shell-hooks-allowlist.json` — prompted interactively the first time a hook wants to run.
+Some shell-hook integrations require explicit allowlisting before they fire. Managed via `${HERMES_HOME:-~/.hermes}/shell-hooks-allowlist.json` — prompted interactively the first time a hook wants to run.
 
 ### Disabling the web/browser/image-gen tools
 

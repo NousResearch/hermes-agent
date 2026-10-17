@@ -22,7 +22,7 @@ widgets.
 
 ## How to Run
 
-1. Use `write_file` to create `~/.hermes/tui-widgets/<name>.mjs` (see
+1. Use `write_file` to create `${HERMES_HOME:-~/.hermes}/tui-widgets/<name>.mjs` (see
    `templates/clock.mjs` for a complete working widget).
 2. If the TUI is running it hot-loads the file within ~a second (the
    widgets directory is watched); `/widgets-reload` forces a rescan.
@@ -127,7 +127,7 @@ Contract essentials:
 - Ambient widgets must stay small (≤ ~6 rows) — the dock sits between the
   transcript and the status bar.
 - A thrown `register()` is logged and skipped; check
-  `~/.hermes/logs/tui_gateway_crash.log` if a widget never appears.
+  `${HERMES_HOME:-~/.hermes}/logs/tui_gateway_crash.log` if a widget never appears.
 
 ## Verification
 

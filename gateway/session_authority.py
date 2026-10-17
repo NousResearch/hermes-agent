@@ -276,6 +276,8 @@ class SessionAuthority:
             snapshot = SubscriptionSnapshot(subscription, handle, epoch,
                                         sequence, tuple(local_history(self, ref)),
                                         tuple(self._pending_receipt(r) for r in self._pending_rows(ref)), prompts)
+        from gateway.session_viewer_close import cancel_persisted_close
+        await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach
         await reask_on_attach(self, ref, live)
         return snapshot
@@ -665,10 +667,16 @@ class SessionAuthority:
         settlement write failed (its exact result is still in ``pending_results``) commits that
         result instead of discarding it: the answer was produced, only its receipt was lost."""
         self.authorize(actor, ref, 'session:control')
-        before = await self.receipt(actor, ref, admission_id)
+        await self.receipt(actor, ref, admission_id)
+        return await self.resolve_unknown_as_owner(ref, admission_id, generation)
+
+    async def resolve_unknown_as_owner(self, ref, admission_id, generation):
+        """``resolve_unknown`` past authorization: also the owner's own call when the last viewer
+        closed a session whose turn recovered ``unknown`` (gateway/session_viewer_close)."""
         captured = self.pending_results.get(admission_id)
+        before = get_session_admission(self.db, admission_id=admission_id)
         prepared = None
-        if captured is not None and before.status == 'unknown':
+        if captured is not None and before is not None and before['status'] == 'unknown':
             from gateway.session_results import prepare_result
             row = get_session_admission(self.db, admission_id=admission_id)
             prepared = prepare_result(row, captured['result'].get('final_response') or '', 'completed', captured)

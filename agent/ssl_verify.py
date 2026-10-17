@@ -130,16 +130,25 @@ def platform_ssl_context() -> ssl.SSLContext:
     return _shared_context(None)
 
 
+_STALE_BUNDLE_OUTCOMES: dict[str, Optional[str]] = {}
+_STALE_BUNDLE_LOCK = threading.Lock()
+
+
 def certifi_bundle_path() -> Optional[str]:
     """certifi's CA bundle path, re-derived when a rotation invalidated it.
 
-    ``certifi.where()`` builds its path from the imported module's ``__file__``, so a
-    process that outlives an install-environment rotation — the package manager creates
-    a new environment directory and deletes the old one — keeps pointing into the
-    deleted directory for the rest of its life, and every TLS client it builds
-    afterwards fails. Re-executing the module re-derives ``__file__`` from the live
-    ``sys.path``; when even that finds nothing, the platform store is the answer and
+    ``certifi.where()`` resolves its path once, against the ``certifi`` package on the
+    ``sys.path`` of the moment it was first called, and caches it in ``certifi.core``:
+    a process that outlives an install-environment rotation — the package manager
+    creates a new environment directory and deletes the old one — keeps pointing into
+    the deleted directory for the rest of its life, and every TLS client it builds
+    afterwards fails. Re-importing the package against the live ``sys.path`` repairs it
+    process-wide; when even that finds nothing, the platform store is the answer and
     never an exception.
+
+    The repair, and its warning, happen ONCE per dead path: a gateway builds clients
+    per turn, per cron run and per model-metadata fetch, so an un-cached reload here
+    would re-execute third-party module code and re-log on every client it builds.
 
     Returns a bundle path that exists on disk, else ``None``.
     """
@@ -150,7 +159,23 @@ def certifi_bundle_path() -> Optional[str]:
     stale = certifi.where()
     if Path(stale).is_file():
         return stale
-    recovered = _reload_certifi_bundle()
+    return _recover_bundle_once(stale)
+
+
+def _recover_bundle_once(stale: str) -> Optional[str]:
+    """Re-derive ``stale`` at most once, and report it at most once.
+
+    A cached outcome is reused while it still holds (a re-derived path that exists, or
+    an unrecoverable one); a later rotation dead-path is a new key and is repaired on
+    its own.
+    """
+    with _STALE_BUNDLE_LOCK:
+        if stale in _STALE_BUNDLE_OUTCOMES:
+            cached = _STALE_BUNDLE_OUTCOMES[stale]
+            if cached is None or Path(cached).is_file():
+                return cached
+        recovered = _reload_certifi_bundle()
+        _STALE_BUNDLE_OUTCOMES[stale] = recovered
     if recovered is not None:
         logger.warning(
             "TLS trust: certifi's CA bundle %s no longer exists — the install "
@@ -169,7 +194,15 @@ def certifi_bundle_path() -> Optional[str]:
 
 
 def _reload_certifi_bundle() -> Optional[str]:
-    """Re-execute the imported certifi module so its path follows the live ``sys.path``.
+    """Re-import certifi from the live ``sys.path`` so its ``where()`` follows it.
+
+    ``importlib.reload`` on its own does NOT re-derive the path with the real package:
+    ``certifi.where`` is ``certifi.core.where`` re-exported by ``__init__``, and ``core``
+    caches the resolved path in a module global, so re-executing ``__init__`` re-binds
+    ``where`` from the still-loaded ``core`` — the replaced directory, cached a second
+    time. Only dropping the package and its submodules from ``sys.modules`` makes both
+    files re-execute against the live ``sys.path``. They are put back when the import
+    fails, so the process is never left without the ``certifi`` it already had.
 
     ``None`` when certifi was never imported or its package is gone from every
     ``sys.path`` entry — the caller then falls back to the platform store.
@@ -177,15 +210,19 @@ def _reload_certifi_bundle() -> Optional[str]:
     import importlib
     import sys
 
-    module = sys.modules.get("certifi")
-    if module is None:
+    if "certifi" not in sys.modules:
         return None
     # The replaced directory is gone; a finder holding a cached listing of it would
     # still resolve the old package.
     importlib.invalidate_caches()
+    dropped = {
+        name: sys.modules.pop(name)
+        for name in [n for n in sys.modules if n == "certifi" or n.startswith("certifi.")]
+    }
     try:
-        path = importlib.reload(module).where()
-    except Exception as exc:  # the reload re-executes third-party module code
+        path = importlib.import_module("certifi").where()
+    except Exception as exc:  # the import re-executes third-party module code
+        sys.modules.update(dropped)
         logger.debug("certifi could not be re-resolved: %s", exc, exc_info=True)
         return None
     return path if path and Path(path).is_file() else None

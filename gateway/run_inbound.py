@@ -617,6 +617,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         authority = active_authority(self)
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
         if not sid or sid not in authority.sessions:
+            if authority is not None:
+                authority.fence_route(_quick_key)  # the chat's first input, not committed yet
             return
         from gateway.session_contract import Principal, SessionRef
         from hermes_state_runtime import RuntimeStoreError, list_session_admissions
@@ -627,6 +629,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice
         # promised the queued followers stay saved, so a /new from the chat leaves them queued.
         paused = any(row['status'] == 'unknown' for row in rows)
+        if not paused:
+            # Input that arrived before this and is not committed yet never commits after it; one
+            # that committed before the fence is in the second listing and cancelled below.
+            authority.fence_route(_quick_key)
+            rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
         for row in [] if paused else rows:
             if row['status'] == 'queued' and row['principal_id'].startswith('messaging:'):
                 # Claimed meanwhile (stale_generation): it runs as main's post-claim race does.

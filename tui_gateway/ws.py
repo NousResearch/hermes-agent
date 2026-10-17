@@ -13,7 +13,7 @@ import logging
 import socket
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
@@ -29,20 +29,42 @@ _log = logging.getLogger(__name__)
 _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S = 5.0
 _dashboard_client_touched_at = 0.0
 _dashboard_client_touch_lock = threading.Lock()
+# The touch is file I/O and every caller sits on the event loop, where a slow disk stalls every
+# connection, managed-worker RPCs included (#139011). It runs on its own single worker so it never
+# ties up the pool asyncio.to_thread shares, and at most one write per path waits behind a slow one.
+_dashboard_client_touch_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="dashboard-client-touch")
+_dashboard_client_touch_pending: set = set()
+
+
+def _touch_dashboard_client_marker(path) -> None:
+    with _dashboard_client_touch_lock:
+        # Cleared before the write: activity during a slow write queues exactly one follow-up.
+        _dashboard_client_touch_pending.discard(path)
+    from gateway.scale_to_zero import touch_dashboard_client_heartbeat
+    touch_dashboard_client_heartbeat(path)  # best-effort, never raises
 
 
 def _note_dashboard_client_activity(*, force: bool = False) -> None:
-    """Refresh the dashboard-client liveness marker (throttled, best-effort)."""
+    """Refresh the dashboard-client liveness marker (throttled, best-effort, never blocks the caller)."""
     global _dashboard_client_touched_at
     now = time.monotonic()
     with _dashboard_client_touch_lock:
         if not force and now - _dashboard_client_touched_at < _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S:
             return
         _dashboard_client_touched_at = now
+    path = None
     try:
-        from gateway.scale_to_zero import touch_dashboard_client_heartbeat
-        touch_dashboard_client_heartbeat()
+        from gateway.scale_to_zero import dashboard_client_heartbeat_path
+        # Resolved here: the worker thread does not carry the caller's profile scope.
+        path = dashboard_client_heartbeat_path()
+        with _dashboard_client_touch_lock:
+            if path in _dashboard_client_touch_pending:
+                return
+            _dashboard_client_touch_pending.add(path)
+        _dashboard_client_touch_pool.submit(_touch_dashboard_client_marker, path)
     except Exception:
+        _dashboard_client_touch_pending.discard(path)  # a refused submit (shutdown) must not wedge it
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
 
 
@@ -197,21 +219,29 @@ class WSTransport:
 
     async def write_many_async(self, frames: list[dict]) -> bool:
         """``write_async`` for an ordered batch: buffered tokens, then *frames*, in one send batch."""
+        return await self.write_many_if_current_async(frames, None)
+
+    async def write_many_if_current_async(self, frames: list[dict], is_current: Callable[[], bool] | None) -> bool:
+        """Recheck the batch's owner at each send without gating other producers' buffered tokens."""
         if self._closed:
             return False
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
+            unguarded_prefix = len(batch)
             batch.extend(serialize_frame(frame, self._peer, _log) for frame in frames)
-        await self._safe_send_many(batch)
+        await self._safe_send_many(batch, is_current=is_current, unguarded_prefix=unguarded_prefix)
         return not self._closed
 
-    async def _safe_send_many(self, lines: list[str]) -> None:
+    async def _safe_send_many(self, lines: list[str], *, is_current: Callable[[], bool] | None = None,
+                              unguarded_prefix: int = 0) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
         async with self._send_lock:
             if self._closed:
                 return
-            for line in lines:
+            for index, line in enumerate(lines):
                 if self._closed:
+                    return
+                if is_current is not None and index >= unguarded_prefix and not is_current():
                     return
                 payload = _sanitize_ws_text(line)
                 try:

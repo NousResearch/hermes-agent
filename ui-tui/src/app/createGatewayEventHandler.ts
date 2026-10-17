@@ -11,7 +11,6 @@ import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup
 import { usageFromTick } from '../domain/usage.js'
 import type {
   AnyGatewayEvent,
-  CommandsCatalogResponse,
   ConfigFullResponse,
   DelegationStatusResponse,
   GatewaySkin,
@@ -40,6 +39,7 @@ import {
   openCanonicalClarify,
   settleSharedPrompt
 } from './gatewayCanonicalEvents.js'
+import { reportGatewayStartTimeout } from './gatewayStartTimeout.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
@@ -47,6 +47,8 @@ import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
+import { mutateCanonicalSession, openModelConfirmation } from './slash/canonicalSessionControls.js'
+import { loadSlashCatalog } from './slashCatalog.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { markNextSubmitVoice } from './submissionCore.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
@@ -55,8 +57,6 @@ import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 import {
   backendReconnecting,
-  backendSlowStart,
-  backendSlowStartStatus,
   describeRpcError,
   describeTurnFailure,
   isBareErrorText,
@@ -576,6 +576,62 @@ function handleErrorEvent(
   setStatus('ready')
 }
 
+/** Live usage tick while a turn runs (see tui_gateway _start_usage_ticker): keeps the status-bar
+ *  context window current mid-turn instead of only at message.complete. The session filter at the
+ *  top of the handler already dropped ticks for non-focused sessions. */
+function applyUsageTick(payload: Extract<AnyGatewayEvent, { type: 'session.usage' }>['payload']): void {
+  const usage = usageFromTick(payload) // canonical: the owner's counters at the top level
+
+  if (usage) {
+    patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+  }
+}
+
+/** A model pick made during a turn resolves at the next turn boundary. The owner announces a pick
+ *  that did not apply on `session.updated`: a refusal is named and the committed model shown again;
+ *  a guarded target asks with the same dialog as `/model`. Applied picks arrive as session.info. */
+function applyDeferredPickOutcome(
+  update: Record<string, unknown> | undefined,
+  sid: null | string | undefined,
+  gw: { request: (method: string, params?: Record<string, unknown>) => Promise<unknown> },
+  sys: (text: string) => void
+): void {
+  if (update?.operation !== 'model' || !sid) {
+    return
+  }
+
+  if (update.status === 'refused') {
+    const info = getUiState().info
+
+    if (info && typeof update.model === 'string' && update.model) {
+      patchUiState({ info: { ...info, model: update.model, ...(typeof update.provider === 'string' ? { provider: update.provider } : {}) } })
+    }
+
+    sys(t('slashCmd.session.model.deferredRefused', String(update.target_model ?? ''), String(update.reason ?? 'refused')))
+
+    return
+  }
+
+  if (update.status === 'confirmation_required' && typeof update.confirm === 'string') {
+    const pick = (update.payload ?? {}) as { model?: string; provider?: string; reasoning?: string }
+    // The confirmed resend is the same selection: its level commits with the model.
+    const arg = `${pick.model ?? ''}${pick.provider ? ` --provider ${pick.provider}` : ''}${pick.reasoning ? ` --reasoning ${pick.reasoning}` : ''}`
+
+    openModelConfirmation(update.confirm_message as string | undefined, String(update.target_model ?? pick.model ?? ''), () =>
+      void mutateCanonicalSession(gw, sid, 'model', arg, undefined, update.confirm as string).then(
+        mutation => {
+          // Refused again (a queued turn or another pick moved the session first): say so once,
+          // never re-ask in a loop.
+          if (mutation?.result.status === 'confirmation_required') {
+            sys(t('slashCmd.session.model.confirmStale'))
+          }
+        },
+        (error: unknown) => sys(`error: ${error instanceof Error ? error.message : String(error)}`)
+      )
+    )
+  }
+}
+
 interface SessionInfoSinks {
   appendMessage: (msg: Msg) => void
   setHistoryItems: GatewayEventHandlerContext['transcript']['setHistoryItems']
@@ -915,32 +971,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
     }
 
-    // Bound to the live session when one exists (reconnect): project-local
-    // skills follow the session's repo. Before the first session the gateway
-    // uses the same workspace it seeds a new session with.
-    const catalogSid = getUiState().sid
-
-    rpc<CommandsCatalogResponse>('commands.catalog', catalogSid ? { session_id: catalogSid } : {})
-      .then(r => {
-        if (!r?.pairs) {
-          return
-        }
-
-        setCatalog({
-          canon: (r.canon ?? {}) as Record<string, string>,
-          categories: r.categories ?? [],
-          pairs: r.pairs as [string, string][],
-          skillCount: (r.skill_count ?? 0) as number,
-          sub: (r.sub ?? {}) as Record<string, string[]>
-        })
-
-        if (r.warning) {
-          turnController.pushActivity(String(r.warning), 'warn')
-        }
-      })
-      .catch((e: unknown) =>
-        turnController.pushActivity(t('gatewayMsg.startup.commandCatalogUnavailable', rpcErrorMessage(e)), 'info')
-      )
+    // The pre-session catalog; useSlashCatalog owns every session-bound load, reconnects included.
+    if (!getUiState().sid) {
+      void loadSlashCatalog(rpc, null, setCatalog)
+    }
 
     // Keep the recovery target until resume succeeds, including across a second
     // disconnect during setup or history loading. Recovery never resends the prompt.
@@ -1007,6 +1041,29 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
   }
 
+  type NoticeEventPayload = Extract<AnyGatewayEvent, { type: 'notification.show' }>['payload']
+
+  const showGatewayNotice = (p: NoticeEventPayload) => {
+    if (!p?.text) {
+      return
+    }
+
+    // A notice with a full question (the low-disk auto-prune prompt) prints it into the
+    // transcript once: the status slot is one truncated line and would drop the commands.
+    if (typeof p.detail === 'string' && p.detail.trim()) {
+      sys(p.detail)
+    }
+
+    turnController.showNotice({
+      id: p.id ?? undefined,
+      key: p.key ?? undefined,
+      kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
+      level: isNoticeLevel(p.level) ? p.level : 'info',
+      text: p.text,
+      ttl_ms: p.ttl_ms ?? null
+    })
+  }
+
   return (ev: AnyGatewayEvent) => {
     const sid = getUiState().sid
 
@@ -1069,6 +1126,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'session.updated' as typeof ev.type:
+        applyDeferredPickOutcome(ev.payload as Record<string, unknown> | undefined, sid, gw, sys)
+
+        return
+
       case 'session.replay_gap':
         // The authority retired this subscription (fanout overflow) while the
         // socket stayed healthy, so no reconnect will ever re-attach it and the
@@ -1083,21 +1145,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         return
-      case 'session.usage': {
-        // Live usage tick while a turn runs (see tui_gateway
-        // _start_usage_ticker) — keeps the status-bar context window current
-        // mid-turn instead of only at message.complete. The session filter at
-        // the top of this handler already dropped ticks for non-focused
-        // sessions.
-        const usage = usageFromTick(ev.payload) // canonical: the owner's counters at the top level
 
-        if (usage) {
-          patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
-        }
+      case 'session.usage':
+        applyUsageTick(ev.payload)
 
         return
-      }
-
       case 'thinking.delta': {
         if (!getUiState().busy) {
           return
@@ -1187,20 +1239,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // wire and stays snake_case in UiState.notice (no mapping layer). The
         // text already carries its own glyph; turnController decides whether to
         // show now or hold until turn end (FaceTicker wins while busy).
-        const p = ev.payload
-
-        if (!p?.text) {
-          return
-        }
-
-        turnController.showNotice({
-          id: p.id ?? undefined,
-          key: p.key ?? undefined,
-          kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
-          level: isNoticeLevel(p.level) ? p.level : 'info',
-          text: p.text,
-          ttl_ms: p.ttl_ms ?? null
-        })
+        showGatewayNotice(ev.payload)
 
         return
       }
@@ -1306,31 +1345,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'gateway.start_timeout': {
-        // Still waiting (the ready timer does not give up) — say so, and point
-        // at /logs for the interpreter/cwd/stderr detail instead of printing
-        // paths here. Only failure-looking stderr lines are echoed inline so
-        // "wrong python" / "missing dep" stay diagnosable at a glance.
-        const { stderr_tail: stderrTail } = ev.payload ?? {}
-
-        setStatus(backendSlowStartStatus())
-        turnController.pushActivity(backendSlowStart(), 'warn')
-
-        const STDERR_LINE_CAP = 120
-        const STDERR_LINES_MAX = 4
-
-        const tailLines = (stderrTail ?? '')
-          .split('\n')
-          .map(l => l.trim())
-          .filter(l => l && stderrLooksLikeProblem(l))
-          .slice(-STDERR_LINES_MAX)
-
-        for (const line of tailLines) {
-          turnController.pushActivity(line.slice(0, STDERR_LINE_CAP), 'error')
-        }
+      case 'gateway.start_timeout':
+        reportGatewayStartTimeout(ev.payload?.stderr_tail, setStatus)
 
         return
-      }
 
       case 'gateway.protocol_error':
         setStatus(t('gatewayMsg.status.protocolWarning'))

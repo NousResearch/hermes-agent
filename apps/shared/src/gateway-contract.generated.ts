@@ -1080,7 +1080,7 @@ export interface ConnectionTargetEnvField {
   default: string
   prompt?: string | null
 }
-export type CatalogTier = 'official' | 'community'
+export type CatalogTier = 'official' | 'verified' | 'community'
 /** The catalog's security scan of the pinned commit; read-only on the card. */
 export interface CatalogScan {
   status: CatalogScanStatus
@@ -3765,6 +3765,8 @@ export interface CommandsCatalogResult {
   skills?: Record<string, SkillCatalogEntry>
   skill_count?: number
   warning?: string
+  plugin_discovery_error?: string
+  plugin_commands?: Record<string, string>
 }
 export interface CommandCatalogMeta {
   argument_mode?: ArgumentMode | null
@@ -4039,6 +4041,7 @@ export interface ReloadMcpParams {
   always?: boolean
   rev?: string | null
 }
+/** ``session``: what the calling local session's MCP servers did (a new policy generation, nothing to change, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect beside what did apply; ``session_servers``: the MCP servers that session's committed policy runs. */
 export interface ReloadMcpResult {
   status: ReloadMcpStatus
   message?: string | null
@@ -4046,8 +4049,12 @@ export interface ReloadMcpResult {
   coalesced?: boolean | null
   turn_isolation?: boolean | null
   host_ack?: unknown | null
+  session?: ReloadMcpSession | null
+  unavailable?: string[] | null
+  session_servers?: string[] | null
 }
 export type ReloadMcpStatus = 'confirm_required' | 'reloaded'
+export type ReloadMcpSession = 'applied' | 'unchanged' | 'busy'
 /** ``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size`` apply to ``browse``. */
 export interface SkillsManageParams {
   profile?: string | null
@@ -4331,11 +4338,23 @@ export interface McpOauthCallbackResult {
 export type PluginsListParams = Record<string, never>
 export interface PluginsListResult {
   plugins: LegacyPluginRow[]
+  toolsets?: PluginToolsetRow[] | null
+  portable_mcp_servers?: string[] | null
 }
 export interface LegacyPluginRow {
   name: string
   version: string
   enabled: boolean
+  key?: string | null
+  tools?: number | null
+  hooks?: number | null
+  commands?: number | null
+  error?: string | null
+}
+export interface PluginToolsetRow {
+  key: string
+  label: string
+  description: string
 }
 /** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
 export interface PluginsManageParams {
@@ -4554,6 +4573,15 @@ export interface SessionPruneResult {
   routing_deleted?: number | null
   skipped?: number | null
 }
+export interface CommandObserveParams {
+  session_id: string
+  name: string
+  arg?: string | null
+  profile?: string | null
+}
+export interface CommandObserveResult {
+  queued: boolean
+}
 export interface CanonicalSessionInfoParams {
   session_id: string
 }
@@ -4575,6 +4603,7 @@ export interface CanonicalSessionInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   browser_backend_notice?: string | null
+  unknown_toolsets?: string[] | null
   source: string
   model?: string | null
   lazy: boolean
@@ -4594,6 +4623,7 @@ export interface CanonicalSessionInfo {
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null
+  config_warning?: string | null
   [key: string]: unknown
 }
 export interface SessionStatsParams {
@@ -4881,6 +4911,7 @@ export interface CanonicalCreateParams {
   cwd_explicit?: boolean | null
   run_budget?: number | null
   verbose?: boolean
+  client_env?: Record<string, string> | null
 }
 export interface CanonicalSnapshot {
   session_id: string
@@ -4939,6 +4970,7 @@ export interface CanonicalSnapshotInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   browser_backend_notice?: string | null
+  unknown_toolsets?: string[] | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
   model?: string | null
@@ -4958,6 +4990,7 @@ export interface CanonicalSnapshotInfo {
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null
+  config_warning?: string | null
 }
 export interface CanonicalResumeParams {
   profile?: string | null
@@ -5186,12 +5219,14 @@ export interface CanonicalBotDeliverParams {
   author?: Record<string, unknown> | null
   notification_category?: string | null
 }
+/** A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
 export interface CanonicalBotDeliverResult {
   status: string
   delivery_id: string
   profile_home: string
   session_id: string
-  admission_id: string
+  admission_id?: string | null
+  refused?: true | null
   message: string
   reply?: string | null
   retry_admission_id?: string | null
@@ -5655,7 +5690,7 @@ export interface TodoUpdatedPayload {
   todos: unknown[]
   revision: number
 }
-/** ``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent. */
+/** ``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent. ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows it in the toast's expandable body, the Ink TUI prints it into the transcript. */
 export interface NotificationShowPayload {
   text: string
   level: string
@@ -5663,6 +5698,7 @@ export interface NotificationShowPayload {
   ttl_ms?: number | null
   key?: string | null
   id?: string | null
+  detail?: string | null
 }
 export interface NotificationClearPayload {
   key: string
@@ -6654,6 +6690,8 @@ export interface CanonicalRpcMethods {
   'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
   'clarify.respond': { params: ClarifyRespondParams; result: PromptResponseResult }
+  /** Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired). */
+  'command.observe': { params: CommandObserveParams; result: CommandObserveResult }
   'config.get': { params: ConfigGetParams; result: CanonicalConfigGetResult }
   'config.set': { params: CanonicalConfigSetParams; result: ConfigSetResult }
   /** Cancel a queued cron admission or latch cancellation on a started one. */
@@ -6722,6 +6760,7 @@ export const CANONICAL_RPC_METHODS = [
   'approval.respond',
   'bot_relay.deliver',
   'clarify.respond',
+  'command.observe',
   'config.get',
   'config.set',
   'cron.cancel',

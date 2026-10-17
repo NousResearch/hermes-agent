@@ -9,7 +9,7 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
-import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, canonicalProfile, canonicalSessionKey, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
+import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -115,16 +115,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     if (this.deliveredPrompts.has(id)) { return }
     this.deliveredPrompts.set(id, { sessionId: sid, profile })
-    const choices = Array.isArray(p.choices) ? p.choices : []
-
-    // The question card reads one `questions[]` shape. A canonical clarify prompt is one
-    // question (the shared gateway asks a batch one card at a time), so its prompt id doubles
-    // as the qid that `clarify.lock` answers with (see `request` below).
-    const params: Record<string, unknown> = kind === 'clarify'
-      ? { session_id: sid, answers: p.answers,
-          questions: Array.isArray(p.questions) ? p.questions : [{ qid: id, question: p.question, choices, multi_select: p.multi_select }] }
-      : { session_id: sid, request_id: id, command: p.command, description: p.description, choices,
-          allow_permanent: choices.includes('always'), edit: p.edit }
+    const params = canonicalPromptParams(kind, sid, p)
 
     let settled = false
 
@@ -407,7 +398,19 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const wireMethod = this.protocol.wire(method, prepared)
 
     try {
-      const result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      let result: T
+
+      try {
+        result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      } catch (error) {
+        if (!this.protocol.retryableFence(prepared, error)) { throw error }
+        // The refusal carried the owner's current fences: one retry at them, never a loop.
+        this.protocol.failure(prepared, error)
+        this.requireConnectionGeneration(generation)
+        prepared = this.protocol.prepare(method, params)
+        result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      }
+
       this.requireConnectionGeneration(generation)
 
       if (['session.resume', 'session.create', 'session.activate'].includes(method)) {

@@ -5,10 +5,14 @@ transactions. Local reset prepares its replacement in the receipt transaction;
 branch/compress/model still require their own prepared runtime publication.
 """
 import asyncio
+import logging
 from contextlib import nullcontext
 from functools import partial
 
+from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
+
+logger = logging.getLogger(__name__)
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
@@ -92,7 +96,15 @@ async def _owned_mutation(authority, actor, ref, params):
             result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock)
     else:
         async with live.mutation_lock:
-            result = await _mutate_session(authority, actor, ref, params)
+            try:
+                result = await _mutate_session(authority, actor, ref, params)
+            except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
+                # A pick on a running session is for the next turn (the running turn keeps its route).
+                if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
+                    raise
+                from gateway.session_deferred_pick import defer_pick
+                # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
+                return await asyncio.to_thread(defer_pick, authority, actor, ref, params)
     if params.get('operation') in {*_POLICY, 'compress', 'reset'}:
         authority._schedule(ref)
     return result
@@ -132,6 +144,20 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
                                 commit_lock=commit_lock)
 
 
+def _runtime_owns_authority(authority) -> bool:
+    """Whether *authority* is one of its own runner's authorities, so one process coordinates
+    both writes of a delete: the receipt commit to ``authority.db`` and the routing retire
+    through the runner store's routing index. Raw ``db_path`` equality only ever holds for the
+    launch home — the routing index is pinned to the launch home for every profile (#66887) —
+    so a multiplexed secondary profile's store never compares equal and each of its deletes
+    was refused with ``runtime_coordination_required`` (#138826)."""
+    runner = getattr(authority, 'runner', None)
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is not None:
+        return any(a is authority for a in registry)
+    return getattr(runner, 'session_authority', None) is authority
+
+
 async def write_mutation(authority, ref, params, editor_servers, *, principal_id, authorize_write=None,
                          commit_lock=None):
     """The writer phase of ``session.mutate``, and of the admission-start editor MCP re-freeze
@@ -152,7 +178,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
         if operation == 'delete':
             store = getattr(authority.runner, 'session_store', None)
             if store is not None and (store._routing_db is None
-                    or store._routing_db.db_path != authority.db.db_path):
+                    or not _runtime_owns_authority(authority)):
                 raise RuntimeStoreError('runtime_coordination_required')
         if operation in {'rewind', 'reset'} and not callable(getattr(authority.runner, '_evict_cached_agent', None)):
             raise RuntimeStoreError('runtime_coordination_required')
@@ -249,12 +275,12 @@ def _project_committed(authority, ref, operation, result):
         # the old live one and paused; with both now equal, queued input must run, not wait for
         # the next submit or restart.
         authority._schedule(ref)
-    if operation == 'reasoning':
+    if operation == 'reasoning' or (operation == 'model' and 'effort' in result):
         # The picked level is the policy's now; a typed /reasoning override must not shadow it.
         authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
-    if operation in {'reasoning', 'workspace'}:
-        # Every viewer repaints its reasoning pill / workspace from the published policy, as main's
-        # _emit_session_info did after the live change.
+    if operation in {'model', 'reasoning', 'workspace'}:
+        # Every viewer repaints its model, reasoning pill or workspace from the published policy,
+        # as main's _emit_session_info did after the live change.
         from gateway.session_local import local_session_info
         authority.sessions[ref.session_id].event_stream.publish(
             ref.session_id, local_session_info(authority, ref), event_type='session.info')
@@ -285,22 +311,45 @@ def _project_committed(authority, ref, operation, result):
     if operation == 'delete':
         # Repeat local retirement on an exact retry too: publication may have
         # failed after the transaction committed. Never repeat the event.
-        retire_live_sessions(authority, result['deleted_ids'])
+        retire_live_sessions(authority, result['deleted_ids'], require_fence=True)
 
 
-def retire_live_sessions(authority, session_ids):
+def retire_live_sessions(authority, session_ids, *, require_fence=False):
     """Drop committed deletions from this owner's memory: routes, launch secrets, live sessions
-    and their cached agents. Shared by canonical delete and the owner-run bulk prune."""
+    and their cached agents. Shared by canonical delete and the owner-run bulk prune.
+    ``require_fence``: refuse ``storage_unavailable`` when the shared routing fence could not be
+    written (canonical delete, whose exact retry replays the receipt and repeats this call)."""
     store = getattr(authority.runner, 'session_store', None)
+    fence_error = None
     if store is not None:
         store.retire_runtime_sessions(session_ids)
+        # The delete transaction fenced and dropped routes in the owning store; a multiplexed
+        # secondary's routes live in the launch home's shared index, so the store fences them
+        # there too (markers + drop in one transaction). Without the marker in THAT database a
+        # whole-index snapshot taken before this delete and saved after it restored the route
+        # (#138826). A failure surfaces after the rest of the cleanup: an exact retry replays the
+        # committed receipt and repeats this fence.
+        routing = getattr(store, '_routing_db', None)
+        if session_ids and routing is not None and routing.db_path != authority.db.db_path:
+            try:
+                store.fence_retired_routes(session_ids)
+            except Exception as exc:
+                logger.warning('could not fence shared routing rows for deleted sessions', exc_info=True)
+                fence_error = exc
     from gateway.session_policy import release_launch_secrets
     release_launch_secrets(authority, session_ids)
+    from tools.async_delegation import allow_for_session
     for sid in session_ids:
+        # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.
+        allow_for_session((authority.profile_id, sid))
         candidate = authority.sessions.pop(sid, None)
-        if candidate is not None:
+        if candidate is not None and not candidate.superseded:  # its route is the newer session's
             evict = getattr(authority.runner, '_evict_cached_agent', None)
             if callable(evict):
                 evict(candidate.route)
     from gateway.session_local_mcp import release_editor_mcp
     release_editor_mcp(authority, session_ids)
+    from gateway.session_worker_construct import release_session_prefill
+    release_session_prefill(authority, session_ids)
+    if fence_error is not None and require_fence:
+        raise RuntimeStoreError('storage_unavailable') from fence_error

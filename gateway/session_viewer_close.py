@@ -47,7 +47,21 @@ class _PendingClose:
 
 
 async def close_viewer_session(authority, session_id, reason):
-    """``session.detach {end_reason}`` left *session_id* without viewers: close it now, or once idle."""
+    """``session.detach {end_reason}`` left *session_id* without viewers: close it now, or once idle.
+    Its own async delegations end now, mid-turn too, as main's CLI exit and TUI close ended them
+    (#134889 LC-7); each returns as an interrupted completion, and ones its still-running turn starts
+    later are refused until a viewer attaches again. Other sessions' work is untouched."""
+    live = authority.sessions[session_id]
+    if live.subscribers:
+        return  # a viewer attached while the detach was off the loop: nothing closes or ends
+    if live.superseded:
+        return  # a read-only historic mount: its route's delegations and agent are the newer session's
+    from tools.async_delegation import interrupt_for_session, refuse_for_session
+    route = live.route
+    parents = tuple(dict.fromkeys((session_id, _physical_target(authority, session_id))))
+    refuse_for_session((authority.profile_id, session_id), session_key=route, parent_session_ids=parents)
+    for parent in parents:
+        interrupt_for_session(session_key=route, parent_session_id=parent, reason=f'viewer_close:{reason}')
     authority.pending_closes[session_id] = _PendingClose(reason)
     await settle_viewer_close(authority, session_id)
 

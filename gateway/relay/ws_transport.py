@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, parse_slash_command
 from gateway.session import SessionSource
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.transport import InboundHandler
@@ -140,7 +140,7 @@ def _normalize_slack_parent_command(text: str, message_type: MessageType) -> tup
     else:
         normalized = payload or "/help"
 
-    normalized_type = MessageType.COMMAND if normalized.startswith("/") else MessageType.TEXT
+    normalized_type = MessageType.COMMAND if parse_slash_command(normalized) is not None else MessageType.TEXT
     return normalized, normalized_type
 
 

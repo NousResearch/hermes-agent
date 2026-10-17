@@ -76,7 +76,7 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, parse_slash_command
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
@@ -2163,7 +2163,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if media_msgtype is None:
             # Re-normalize after reply stripping so ``> quoted\n\n!model`` is still a command.
             body = _normalize_matrix_bang_command(body)
-            extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
+            extra["message_type"] = MessageType.COMMAND if parse_slash_command(body) is not None else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
         return MessageEvent(

@@ -90,7 +90,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, parse_slash_command
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
@@ -2618,7 +2618,7 @@ class FeishuAdapter(BasePlatformAdapter):
         text, inbound_type, media_urls, media_types, media_text_inlined, mentions = await self._extract_message_content(message)
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
-            if text.startswith("/"):
+            if parse_slash_command(text) is not None:
                 inbound_type = MessageType.COMMAND
         # Post-strip guard so a pure "@Bot" message (stripped to "") is dropped.
         if inbound_type == MessageType.TEXT and not text and not media_urls:

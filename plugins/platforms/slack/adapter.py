@@ -50,7 +50,7 @@ from gateway.platforms.base import (
     is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, parse_slash_command
 
 try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
@@ -4561,7 +4561,7 @@ class SlackAdapter(BasePlatformAdapter):
             mention_stripped
             if mention_stripped.startswith("/")
             else _rewrite_known_bang_command(mention_stripped))
-        if command_text.startswith("/"):
+        if parse_slash_command(command_text) is not None:
             original_text = text = command_probe_text = command_text
             is_command_text = True
         # Remember the thread so follow-ups auto-trigger (skipped under strict_mention /
@@ -4585,7 +4585,7 @@ class SlackAdapter(BasePlatformAdapter):
         command_probe_text = _rewrite_known_bang_command(original_text.lstrip())
         if command_probe_text != original_text.lstrip():
             original_text = command_probe_text
-        is_command_text = command_probe_text.startswith("/")
+        is_command_text = parse_slash_command(command_probe_text) is not None
         text = original_text
         # Quoted/forwarded block text is absent from flat ``text``. Skipped for commands: after
         # the ``!``→``/`` rewrite it no longer dedupes and would become bogus arguments.
@@ -6091,7 +6091,7 @@ class SlackAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_channel_skills
         event = MessageEvent(
             text=text,
-            message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),
+            message_type=(MessageType.COMMAND if parse_slash_command(text) is not None else MessageType.TEXT),
             source=source, raw_message=command,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             # Bound skills load only when a session starts; "/hermes <question>" can start one.

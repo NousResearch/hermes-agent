@@ -47,7 +47,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, parse_slash_command
 from gateway.platforms import helpers as _mdchunk
 from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
 from gateway.platforms.helpers import MessageDeduplicator, cancel_task
@@ -1152,7 +1152,7 @@ class ClassifyMessageTypeMiddleware(InboundMiddleware):
 
     @staticmethod
     def _classify(text: str, msg_body: list):
-        if text.startswith("/"):
+        if parse_slash_command(text) is not None:
             return MessageType.COMMAND
         for elem in msg_body:
             etype = elem.get("msg_type", "")

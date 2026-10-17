@@ -21,6 +21,27 @@ from gateway.session import SessionSource
 _ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNORECASE)
 
 
+def parse_slash_command(text: Optional[str]) -> Optional[str]:
+    """Return the slash-command name ``text`` carries, or ``None`` when it carries none.
+
+    ``/new`` is a command; ``/tmp/x is broken`` and ``/root/notes.md done`` are not: a valid
+    command name never contains ``/``. This is the single source of truth for "is this text a
+    slash command" — ``MessageEvent.is_command``/``get_command`` and every platform adapter's
+    inbound classification must route through it.
+
+    An adapter that classifies on a bare ``startswith("/")`` tags a file path
+    ``MessageType.COMMAND`` and the gateway then refuses the message as ``invalid_params``
+    before any handler sees it, so the turn is lost with only a refusal notice. (Desktop
+    attachment refs are stripped first, so ``@file:<path>\\n\\n/new`` still finds the command.)
+    """
+    cleaned = _ATTACHMENT_REF_RE.sub("", (text or "").lstrip()).lstrip()
+    if not cleaned.startswith("/"):
+        return None
+    raw = cleaned.split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+    # "": a lone "/" or "/@bot" carries no command name either.
+    return raw if raw and "/" not in raw else None
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
@@ -128,17 +149,29 @@ class MessageEvent:
         """
         return _ATTACHMENT_REF_RE.sub("", (self.text or "").lstrip()).lstrip()
 
+    def _command_name(self) -> Optional[str]:
+        """The command name this message carries, or ``None`` when it carries none.
+
+        ``allow_gateway_control`` gates it: a platform that opted out of gateway control has no
+        commands, whatever the text looks like.
+        """
+        if not self.allow_gateway_control:
+            return None
+        return parse_slash_command(self._command_text())
+
     def is_command(self) -> bool:
-        """Check if this is a command message (e.g., /new, /reset)."""
-        return self.allow_gateway_control and self._command_text().startswith("/")
+        """Check if this is a command message (e.g., /new, /reset).
+
+        Shares its verdict with :meth:`get_command`: a message whose first token is a file path
+        is text, not a command, so the two can never disagree — disagreement is what made
+        ``/root/notes.md done`` a "command" with no name to dispatch, which the gateway refused
+        as ``invalid_params``.
+        """
+        return self._command_name() is not None
 
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
-        if not self.is_command():
-            return None
-        raw = self._command_text().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
-        # Reject file paths: valid command names never contain /
-        return None if "/" in raw else raw
+        return self._command_name()
 
     def get_command_args(self) -> str:
         """Get the arguments after a command."""

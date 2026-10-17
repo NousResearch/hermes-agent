@@ -35,7 +35,7 @@ from gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, parse_slash_command
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 from gateway.platforms._shared import env_is_connected, extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
@@ -559,7 +559,7 @@ def _message_type_from_media(media_types: list[str], text: str) -> MessageType:
     for prefix, message_type in _MIME_PREFIX_TYPES:
         if any(m.startswith(prefix) for m in media_types):
             return message_type
-    return MessageType.DOCUMENT if media_types else MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+    return MessageType.DOCUMENT if media_types else MessageType.COMMAND if parse_slash_command(text) is not None else MessageType.TEXT
 
 
 def _load_sync_buf(hermes_home: str, account_id: str) -> str:

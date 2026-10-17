@@ -395,9 +395,17 @@ class SessionAuthority:
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
-        from gateway.session_ingress_media import capture_lease
-        with capture_lease():  # captured bytes are held from capture until commit or refusal
-            return await self._admit_native(event)
+        from gateway.session_ingress_media import capture_lease, release_abandoned_capture
+        with capture_lease(self) as scope:  # captured bytes are held until commit or refusal
+            try:
+                return await self._admit_native(event)
+            except BaseException:
+                # Before the shielded write starts, no row can own these bytes. A cancelled copy
+                # arranges its own completion cleanup in prepare_native; other failures clean here.
+                if not scope.write_started and not scope.abandoned:
+                    scope.abandoned = True
+                    await release_abandoned_capture(scope)
+                raise
 
     async def _admit_native(self, event):
         import json
@@ -423,6 +431,9 @@ class SessionAuthority:
             if rewrite is not None and rewrite.applied:
                 rewrite.on_commit()
             return self._admitted(committed[0], event, row)
+        from gateway.session_ingress_media import _lease_scope
+        if (scope := _lease_scope.get()) is not None:
+            scope.write_started = True
         native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,

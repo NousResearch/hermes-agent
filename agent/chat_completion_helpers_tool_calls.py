@@ -1,5 +1,6 @@
 """Streamed tool-call delta assembly for the chat-completions stream (and Relay's accumulator)."""
 
+import json
 from typing import Optional
 
 from agent.reasoning_carriers import field
@@ -26,6 +27,23 @@ class _ToolCallAccumulator:
             self.acc[idx]["function"]["arguments"] = "".join(parts)
         return self.acc
 
+    def _starts_new_call(self, tc_delta, slot: int) -> bool:
+        """Whether a fresh id at a reused raw index opens a new call (Ollama parallel batch) or
+        continues the current one. LM Studio and Kimi send a fresh id on every argument fragment
+        with no name, and some MiniMax routes resend the same name on each fragment too: only a
+        named delta can start a call, and a same-name one only once the current call's arguments
+        are complete JSON (two parallel calls of one tool must still split)."""
+        name = getattr(getattr(tc_delta, "function", None), "name", None)
+        if not name:
+            return False
+        if name != self.acc.get(slot, {}).get("function", {}).get("name"):
+            return True
+        try:
+            json.loads("".join(self._argument_parts.get(slot, ())))
+        except ValueError:
+            return False
+        return True
+
     def feed(self, tc_delta) -> Optional[str]:
         """Merge one delta; return the tool name the first time it is complete."""
         raw_idx = getattr(tc_delta, "index", None)
@@ -37,7 +55,10 @@ class _ToolCallAccumulator:
             tc_id = str(tc_id)
 
         self._active_slot_by_idx.setdefault(raw_idx, raw_idx)
-        if delta_id and raw_idx in self._last_id_at_idx and delta_id != self._last_id_at_idx[raw_idx]:
+        if (
+            delta_id and raw_idx in self._last_id_at_idx and delta_id != self._last_id_at_idx[raw_idx]
+            and self._starts_new_call(tc_delta, self._active_slot_by_idx[raw_idx])
+        ):
             self._active_slot_by_idx[raw_idx] = max(self.acc, default=-1) + 1
         if delta_id:
             self._last_id_at_idx[raw_idx] = delta_id

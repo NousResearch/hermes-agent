@@ -29,6 +29,7 @@ from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, reply_expected_metadata,
     silence_allowed,
 )
+from gateway.run_turn_notices import _bg_prompt_preview, _unexpected_silence_reply
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -84,17 +85,6 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "request entity too large", "prompt is too long",
     "payload too large", "input is too long",
 )
-
-def _unexpected_silence_reply() -> str:
-    """Reply when the model returned only a silence marker for a message that needed an answer."""
-    return t("gateway.errors.unexpected_silence")
-
-
-def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
-    """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
-    text = " ".join(str(prompt or "").split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
     """One verdict for "this failed turn is a context overflow", shared by transcript persistence
@@ -1675,12 +1665,15 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         """Finalize the streaming-TTS consumer on the outer event-loop thread (covers early returns
         from run_sync). On drain timeout abort to free the task — audible streams keep whole-file
         suppression, silent streams stay eligible for the whole-file fallback."""
+        from gateway.streaming_tts_consumer import wait_streaming_tts_drain
         _stts = turn_ctx.streaming_tts_consumer_holder[0]
         if _stts is None:
             return
         _stts.finish()
         try:
-            await _stts.wait_complete(timeout=10.0)
+            # An inactivity deadline, not a total one: a slow engine still synthesising keeps
+            # restarting the wait, so only a stream that stopped producing audio times out (#138022).
+            await wait_streaming_tts_drain(_stts)
         except Exception as _stts_done_err:
             logger.debug("streaming TTS wait_complete error: %s", _stts_done_err)
         if not _stts.done:

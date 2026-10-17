@@ -54,6 +54,16 @@ class TestClarifyPrimitive:
         assert cm.resolve_gateway_clarify("id-race", "") is False
         assert entry.response == "A"
 
+    def test_get_pending_tracks_lifecycle(self):
+        """Adapters read a pending entry through ``get_pending``; answered or unknown ids read None."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-pend", "sk-pend", "Pick", ["A", "B"])
+        assert cm.get_pending("id-pend") is entry
+        cm.resolve_gateway_clarify("id-pend", "A")
+        assert cm.get_pending("id-pend") is None
+        assert cm.get_pending("never-registered") is None
+
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
         from tools import clarify_gateway as cm

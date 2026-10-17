@@ -10,7 +10,7 @@ from rich.console import Console
 
 from hermes_constants import get_hermes_home
 
-NOTE = "slash command /handoff unavailable — name taken by built-in; use /skill handoff"
+NOTE = "slash command /handoff unavailable — name taken by built-in; rename the skill to expose a slash command"
 
 
 def _write_skill(name: str) -> None:

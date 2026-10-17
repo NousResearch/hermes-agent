@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # publication and the freshness lookup so a reader always sees a consistent
 # (key, map) pair. Scanning stays outside the lock (#14536, #74574).
 _skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
+_skill_command_disk_tags_by_key: dict[tuple, tuple] = {}
 # Keep the last map callers could actually see, even when plugin lifecycle
 # invalidation drops the projection cache before /reload-skills can diff it.
 _last_interactive_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
@@ -457,6 +458,35 @@ def _scaffold_header(
 _SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
 
 
+def _skill_command_disk_tag() -> tuple:
+    """Return metadata for the skill files that can alter slash commands.
+
+    This stays cheaper than parsing each skill while making a long-running
+    backend notice installs, removals, and edits before serving its memoized
+    command map.
+    """
+    from agent.skill_utils import TIER_PROJECT, iter_project_skill_files, iter_skill_index_files
+    from tools.skills_tool import _skill_search_dirs
+
+    tag = []
+    for tier, scan_dir in _skill_search_dirs()[0]:
+        try:
+            root_stat = scan_dir.stat()
+        except OSError:
+            continue
+        tag.append((str(scan_dir), root_stat.st_mtime_ns, root_stat.st_ctime_ns))
+        files = iter_project_skill_files(scan_dir) if tier == TIER_PROJECT else iter_skill_index_files(scan_dir, "SKILL.md")
+        for skill_md in files:
+            if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
+                continue
+            try:
+                stat = skill_md.stat()
+            except OSError:
+                continue
+            tag.append((str(skill_md), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size))
+    return tuple(tag)
+
+
 def skill_command_collision_note(name: str) -> Optional[str]:
     """User-facing note when *name*'s slash slug is a core command (name or alias), else None.
 
@@ -469,7 +499,7 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     cmd_name = slugify_skill_name(name)
     if not cmd_name or resolve_command(cmd_name) is None:
         return None
-    return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
+    return f"slash command /{cmd_name} unavailable — name taken by built-in; rename the skill to expose a slash command"
 
 
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
@@ -492,11 +522,11 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dic
     cmd_name = slugify_skill_name(name)
     if not cmd_name:
         return
-    # A collision with a core command (name or alias) skips auto-registration; the skill stays
-    # loadable via /skill <name>. The same predicate feeds the /skills + palette notes.
+    # A collision with a core command (name or alias) requires renaming the skill to expose
+    # a slash command. The same predicate feeds the /skills + palette notes.
     if skill_command_collision_note(name) is not None:
         logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
-                       "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
+                       "skipping auto-registration. Rename the skill to expose a slash command.", name, cmd_name)
         return
     # Dedup on the slug too: "git_helper" and "git-helper" normalize the same.
     # First-wins preserves project > local > external precedence.
@@ -519,6 +549,9 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     if safe_worker_enabled():
         return {}
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
+    # Stamp the result with the pre-scan state so a racing edit invalidates it on the next lookup,
+    # even when an older scan publishes last. Filesystem I/O stays outside the publication lock.
+    disk_tag = _skill_command_disk_tag()
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
     # partial results visible to everything else in the process: a second, overlapping scan deduped against
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
@@ -531,8 +564,9 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         seen_names: set = set()
         # Only names skill_view resolves to exactly this file get a /command: the shared catalog applies
         # project > local > create_dir > external precedence (live profile dir, #67277) and leaves
-        # same-tier duplicates to their exact paths (`/skill a/one`), so a bare slug never guesses.
-        for entry in _skill_catalog():
+        # same-tier duplicates to their exact paths (skill_view), so a bare slug never guesses.
+        # Bypass the shared TTL cache: clearing it cannot prevent an older writer repopulating it.
+        for entry in _skill_catalog(use_cache=False):
             if entry["status"] == "unique":
                 try:
                     _scan_skill_md(Path(entry["path"]), disabled, seen_names, commands)
@@ -548,6 +582,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         # reader between the lookup and this store (#14536, #74574); the scan above
         # (file I/O, deferred imports) stays outside it.
         _skill_commands_by_key[key] = commands
+        _skill_command_disk_tags_by_key[key] = disk_tag
     return commands
 
 
@@ -564,9 +599,11 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
     if safe_worker_enabled():
         return {}
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
+    disk_tag = _skill_command_disk_tag()
     with _publish_lock:
         cached = _skill_commands_by_key.get(key)
-    if cached is not None:
+        cached_disk_tag = _skill_command_disk_tags_by_key.get(key)
+    if cached is not None and cached_disk_tag == disk_tag:
         return cached
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
@@ -721,6 +758,7 @@ def reload_skills() -> dict[str, Any]:
         # Clear the entire multi-slot cache: a skill edit could affect any
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
+        _skill_command_disk_tags_by_key.clear()
     from tools.skills_tool import clear_skills_cache
     clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
     invalidate_plugin_skill_commands()

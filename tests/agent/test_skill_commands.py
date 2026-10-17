@@ -442,7 +442,6 @@ class TestScanSkillCommands:
         """A reader during a scan sees the previous map, never a half-built one."""
 
         import agent.skill_commands as skill_commands_module
-        import tools.skills_tool as _skills_tool
 
         skill_count = 5
         for index in range(skill_count):
@@ -451,10 +450,10 @@ class TestScanSkillCommands:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()
 
-        real_parse = _skills_tool._parse_frontmatter
+        real_scan = skill_commands_module._scan_skill_md
         observed_sizes = []
 
-        def observing_parse(content):
+        def observing_scan(*args):
             # Cache is now _skill_commands_by_key; count skill commands in the cached map (for this identity)
             key = (
                 skill_commands_module._resolve_skill_commands_platform(),
@@ -463,10 +462,11 @@ class TestScanSkillCommands:
             )
             cached_map = skill_commands_module._skill_commands_by_key.get(key, {})
             observed_sizes.append(len(cached_map))
-            return real_parse(content)
+            return real_scan(*args)
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch(
-            "tools.skills_tool._parse_frontmatter", observing_parse
+            # Observe registration, independent of catalog parsing or cache hits.
+            "agent.skill_commands._scan_skill_md", observing_scan
         ):
             scan_skill_commands()
 

@@ -128,6 +128,29 @@ export function modelOptionsQueryKey(
   return ['model-options', profileKey, sessionId || 'global', ...(ownerKey ? ['owner', ownerKey] : [])] as const
 }
 
+// The catalogue is a LIVE enumeration, not a fixed document: providers add and
+// retire model ids between releases. A selector must therefore re-read it every
+// time it is shown, instead of trusting the client's 60s `staleTime` and a
+// default `refetchOnWindowFocus: false` — that combination is why an open
+// selector could sit on a list that had already changed, with the only cure a
+// window reload. Applied to EVERY `model-options` read so the catalogue and the
+// capabilities/current-model reads that share its key never disagree. The
+// backend read path is cache-fast (it serves the warmed disk cache and only
+// live-probes on an explicit refresh), so re-reading on mount is cheap.
+export const MODEL_OPTIONS_QUERY_OPTIONS = {
+  refetchOnMount: 'always' as const,
+  refetchOnWindowFocus: true,
+  staleTime: 0
+}
+
+// Surfaces that render the model LIST stay mounted while they are open, so they
+// add a gentle interval and keep themselves current without the user closing and
+// reopening the menu. Menu/picker only — never an always-mounted hook.
+export const MODEL_OPTIONS_LIVE_OPTIONS = {
+  ...MODEL_OPTIONS_QUERY_OPTIONS,
+  refetchInterval: 60_000
+}
+
 function hasSelectableModels(options: ModelOptionsResult | null | undefined): boolean {
   return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
 }

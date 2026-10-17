@@ -7,7 +7,7 @@ import { useRef } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { MODEL_OPTIONS_QUERY_OPTIONS, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import {
   $modelPresets,
@@ -87,7 +87,8 @@ export function useModelMenuController({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResult> =>
-      requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
+      requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId }),
+    ...MODEL_OPTIONS_QUERY_OPTIONS
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(

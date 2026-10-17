@@ -1029,7 +1029,11 @@ skill_view("my-workflow")              # → built-in version (unchanged)
 
 **Key properties:**
 - Plugin skills are **read-only** — they don't enter `~/.hermes/skills/` and can't be edited via `skill_manage`.
-- Plugin skills are **not** listed in the system prompt's `<available_skills>` index — they're opt-in explicit loads.
+- Skills of an **enabled** plugin are listed in the system prompt's `<available_skills>` index under the `plugin` category, by their
+  qualified `plugin:skill` name. They pass the same filters as on-disk skills (platforms, environment, apps, tool and toolset
+  conditions), and `skills.disabled` takes the qualified name.
+- Hermes does not read a plugin skill's SKILL.md frontmatter for the index. Pass `description=` (the index row) and, when the skill
+  uses platform or tool conditions, `frontmatter=` (a dict) to `ctx.register_skill()`.
 - Bare skill names are unaffected — the namespace prevents collisions with built-in skills.
 - When the agent loads a plugin skill, a bundle context banner is prepended listing sibling skills from the same plugin.
 

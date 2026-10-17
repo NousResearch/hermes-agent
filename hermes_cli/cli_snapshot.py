@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def restore_snapshot_command(cli, parts):
-    from hermes_cli.backup import list_quick_snapshots, restore_quick_snapshot
+    from hermes_cli.backup import list_quick_snapshots, quick_snapshot_dir, restore_quick_snapshot
     from hermes_cli.gateway_tools_notify import gateway_store
     if len(parts) < 3:
         print(f"  {_t('snapshot.usage_restore')}")
@@ -33,7 +33,8 @@ def restore_snapshot_command(cli, parts):
     store = gateway_store(cli)
     gateway = store is not None and getattr(cli, "_gateway_session_open", False)
     try:
-        if gateway and _local_snapshot_exists(snap_id):
+        # An invalid/missing target must not take a working gateway offline.
+        if gateway and quick_snapshot_dir(snap_id) is not None:
             restored = _restore_gateway_snapshot(cli, store, snap_id)
         else:
             local_db = getattr(cli, "_session_db", None)
@@ -53,16 +54,6 @@ def restore_snapshot_command(cli, parts):
         print(f"  {_t('snapshot.restore_incomplete', snapshot_id=snap_id)}")
     else:
         print(f"  {_t('snapshot.not_found', snapshot_id=snap_id)}")
-
-
-def _local_snapshot_exists(snap_id):
-    """An invalid/missing target must not take a working gateway offline."""
-    from hermes_cli.backup import _quick_snapshot_root
-    root = _quick_snapshot_root()
-    if not snap_id or "/" in snap_id or "\\" in snap_id or snap_id in {".", ".."}:
-        return False
-    target = root / snap_id
-    return target.resolve().is_relative_to(root.resolve()) and (target / "manifest.json").is_file()
 
 
 def _pause_owner(home, control_home, identity):

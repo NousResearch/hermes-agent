@@ -4,6 +4,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { $gateway } from './gateway'
 import {
+  $nativeNotifyPrefs,
   clearPluginNotifyHandlers,
   dispatchNativeNotification,
   dispatchPluginNativeNotification,
@@ -23,6 +24,7 @@ import { dropSessionState, publishSessionState } from './session-states'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
+const NATIVE_NOTIFY_PREFS_KEY = 'hermes:native-notifications'
 
 const notify = vi.fn().mockResolvedValue(true)
 
@@ -157,6 +159,64 @@ describe('dispatchNativeNotification preferences', () => {
 
     dispatchNativeNotification({ kind: 'turnError', sessionId, title: 'boom' })
     expect(notify).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('native notification preferences across windows', () => {
+  it('preserves preference identity for semantically unchanged storage values', () => {
+    const current = $nativeNotifyPrefs.get()
+    const next = { kinds: current.kinds, enabled: current.enabled }
+
+    window.localStorage.setItem(NATIVE_NOTIFY_PREFS_KEY, JSON.stringify(next))
+    window.dispatchEvent(new StorageEvent('storage', { key: NATIVE_NOTIFY_PREFS_KEY }))
+
+    expect($nativeNotifyPrefs.get()).toBe(current)
+  })
+
+  it('follows master-switch changes made in another window', () => {
+    const current = $nativeNotifyPrefs.get()
+    setNativeNotifyEnabled(false)
+    const next = { ...current, enabled: true }
+
+    window.localStorage.setItem(NATIVE_NOTIFY_PREFS_KEY, JSON.stringify(next))
+    window.dispatchEvent(new StorageEvent('storage', { key: NATIVE_NOTIFY_PREFS_KEY }))
+
+    expect($nativeNotifyPrefs.get()).toEqual(next)
+    dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('follows per-kind changes made in another window', () => {
+    setNativeNotifyKind('approval', false)
+    const current = $nativeNotifyPrefs.get()
+    const next = { ...current, kinds: { ...current.kinds, approval: true } }
+
+    window.localStorage.setItem(NATIVE_NOTIFY_PREFS_KEY, JSON.stringify(next))
+    window.dispatchEvent(new StorageEvent('storage', { key: NATIVE_NOTIFY_PREFS_KEY }))
+
+    expect($nativeNotifyPrefs.get()).toEqual(next)
+    dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('resets preferences when another window clears local storage', () => {
+    setNativeNotifyEnabled(false)
+    setNativeNotifyKind('approval', false)
+    window.localStorage.removeItem(NATIVE_NOTIFY_PREFS_KEY)
+    window.dispatchEvent(new StorageEvent('storage', { key: null }))
+
+    expect($nativeNotifyPrefs.get()).toEqual({
+      enabled: true,
+      kinds: Object.fromEntries(NATIVE_NOTIFICATION_KINDS.map(kind => [kind, true]))
+    })
+  })
+
+  it('ignores changes to unrelated storage keys', () => {
+    setNativeNotifyEnabled(false)
+    window.localStorage.setItem(NATIVE_NOTIFY_PREFS_KEY, JSON.stringify({ ...$nativeNotifyPrefs.get(), enabled: true }))
+    window.dispatchEvent(new StorageEvent('storage', { key: 'hermes:unrelated' }))
+
+    expect($nativeNotifyPrefs.get().enabled).toBe(false)
   })
 })
 

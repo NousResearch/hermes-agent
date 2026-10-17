@@ -3841,11 +3841,11 @@ class _StreamingCall(StreamingWaitMonitor):
         # connection, so shut down the killed attempt's own socket too — still
         # shutdown-only, never close (see the helper).
         _killed_response = self._attempt_stream_response
+        self._count_stale_attempt()  # abort can release an inline caller before the monitor joins
         with contextlib.suppress(Exception):
             self._cancel_current_stream_attempt("stale_stream_kill")
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
-        self._count_stale_attempt()
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
         self.last_chunk_time["t"] = time.time()
         self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
@@ -3916,14 +3916,13 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
                 _partial_names, len(_partial_text or ""), error)
-        # Classify the error before it is swallowed into the stub: the loop reads the
-        # content-filter tag and falls back; a context overflow must not be continued at all.
+        # Preserve content-filter fallback and terminal context-overflow classification in the stub.
         _cls = None
         with contextlib.suppress(Exception):
             from agent.error_classifier import classify_api_error
             _cls = classify_api_error(
                 error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
-        _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker
+        # A failed stream cannot prove recovery; a successful response clears the breaker in run().
         # #106260: continuing after a context-overflow error re-sends a larger request into the
         # same overflow. Return an EMPTY stub marked terminal so the loop ends the turn instead.
         # Scope is context_overflow ONLY: payload_too_large (413) has its own byte-scored recovery

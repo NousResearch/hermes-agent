@@ -499,7 +499,19 @@ def _write_shell(target: Path, command: list[str]) -> Path | None:
 
 
 def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str) -> Path | None:
-    return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script])
+    # Keep the bootstrap in a real script so process supervisors can identify
+    # the agent from argv instead of seeing only ``python -c``.  The launcher
+    # remains the public command; its durable sibling carries the same bytes.
+    script_path = out_dir.parent / ".launcher" / name
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def write_script(staging: Path) -> None:
+        staging.write_text(f"#!{python_exe} -I\n{script}", encoding="utf-8", newline="\n")
+        staging.chmod(0o755)
+
+    if _write_atomic(script_path, write_script) is None:
+        return None
+    return _write_shell(out_dir / name, [str(python_exe), "-I", str(script_path)])
 
 
 def _owns_launcher(target: Path, root: Path) -> bool:

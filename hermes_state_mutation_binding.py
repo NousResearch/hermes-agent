@@ -19,6 +19,22 @@ def _owner_user(row):
     return None if legacy_account_label(dict(row)) else row['user_id']
 
 
+def _login_label(subject):
+    """The ``<provider>:<user>`` label Desktop stamps on its rows (tui_gateway/session_transports.py) when it
+    names exactly the dashboard subject ``auth:v1:[provider, "", user]`` (gateway/session_identity.py).
+    Only an issuer-less login maps: the label drops the issuer, so an issuer-bearing subject must not claim it."""
+    from gateway.session_identity import parse_authenticated_subject
+    parts = parse_authenticated_subject(subject)
+    if parts is None:
+        return None
+    provider, issuer, user = parts
+    if issuer or ':' in provider or not provider.strip() or not user.strip():
+        return None
+    label = f'{provider.strip()}:{user.strip()}'
+    # Never yield something that reads as a subject itself (a provider named ``auth`` + user ``v1:[...]``).
+    return None if label.startswith('auth:') else label
+
+
 def import_history_control(conn, actor, session_ids):
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     for sid in session_ids:
@@ -43,7 +59,7 @@ def authorize_history(conn, actor, session_id, *, claim=False):
         return True
     if row['source'] not in _history_sources():
         return False
-    if _owner_user(row) and row['user_id'] != actor.subject:
+    if _owner_user(row) and row['user_id'] not in (actor.subject, _login_label(actor.subject)):
         raise RuntimeStoreError('permission_denied')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')

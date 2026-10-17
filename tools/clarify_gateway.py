@@ -61,7 +61,14 @@ def register(clarify_id: str, session_key: str, question: str, choices: Optional
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     """Block until the entry resolves or ``timeout`` (``<= 0`` = unlimited) elapses; None on
     timeout/unknown id. Polls in 1s slices so the inactivity heartbeat keeps firing (a
-    single long ``Event.wait`` would let the gateway watchdog kill a live prompt)."""
+    single long ``Event.wait`` would let the gateway watchdog kill a live prompt).
+
+    Each slice also checks the agent-thread interrupt flag: ``/stop`` and hard session
+    boundaries set that bit on the worker thread that is blocked HERE (the turn's
+    ``finally`` cleanup cannot — it only runs after the turn returns, which it can't
+    while this wait holds it; #25482). On interrupt the entry is cancelled through
+    ``clear_session`` — same path as ``/new`` — and ``CANCELLED`` is returned, so the
+    delivery layer's existing CANCELLED handling unwinds the turn."""
     with _lock:
         entry = _entries.get(clarify_id)
     if entry is None:
@@ -74,6 +81,21 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     deadline = None if timeout is None or float(timeout) <= 0.0 else time.monotonic() + float(timeout)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
+        if is_interrupted is not None and is_interrupted():
+            # Same cleanup contract as the /new hard boundary: cancel every pending
+            # clarify of this session (first-writer-wins, late callbacks can't resurrect)
+            # and report CANCELLED so callers unwind without delivering a prompt reply.
+            try:
+                clear_session(entry.session_key)
+            except Exception:
+                with _lock:
+                    _entries.pop(clarify_id, None)
+                    ids = _session_index.get(entry.session_key) or []
+                    if clarify_id in ids:
+                        ids.remove(clarify_id)
+                        if not ids:
+                            _session_index.pop(entry.session_key, None)
+            return CANCELLED
         remaining = 1.0 if deadline is None else deadline - time.monotonic()
         if remaining <= 0 or entry.event.wait(timeout=min(1.0, remaining)):
             break

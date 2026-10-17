@@ -76,7 +76,7 @@ def drop_rejected_route(adapter, source):
         return
     logger.warning(
         '[%s] Refusing inbound event for %s: routed profile %r on %s is parked (reason=profile_parked); '
-        'nothing was admitted, the sender was asked to resend', name, chat_id, profile, platform)
+        'nothing was admitted, a resend notice to the sender is scheduled', name, chat_id, profile, platform)
     try:
         task = asyncio.get_running_loop().create_task(_send_refusal(adapter, source))
     except RuntimeError:
@@ -92,8 +92,13 @@ async def _send_refusal(adapter, source):
     """Reply in the sender's chat and thread, as the runner's own notices do."""
     try:
         metadata = adapter.gateway_runner._thread_metadata_for_source(source)
-        await adapter.send(source.chat_id, PARKED_ROUTE_NOTICE, reply_to=getattr(source, 'message_id', None),
-                           metadata=metadata)
+        result = await adapter.send(source.chat_id, PARKED_ROUTE_NOTICE, reply_to=getattr(source, 'message_id', None),
+                                    metadata=metadata)
+        if getattr(result, 'success', True) is False:
+            # Safe fields only: the raw ``error`` can echo tokens or message content.
+            logger.warning('[%s] The parked-profile refusal to %s was not delivered (error_kind=%s, retryable=%s)',
+                           getattr(adapter, 'name', '?'), getattr(source, 'chat_id', '?'),
+                           getattr(result, 'error_kind', None), getattr(result, 'retryable', None))
     except Exception:
         logger.warning('[%s] Could not send the parked-profile refusal to %s',
                        getattr(adapter, 'name', '?'), getattr(source, 'chat_id', '?'), exc_info=True)

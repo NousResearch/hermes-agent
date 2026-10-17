@@ -578,9 +578,9 @@ function Show-ProgressWindow {
 }
 
 function Show-ErrorFinale([string]$Message) {
-    # Terse by design: a title + the debug-share pointer. No error text, no
-    # log tail -- `hermes debug share` uploads the real evidence and the
-    # relaunched Desktop surfaces the result message.
+    # Terse by design: a title + the Send report pointer. No error text, no
+    # log tail -- the relaunched Desktop surfaces the result message with a
+    # Send report button that uploads the real evidence.
     if ($script:UiServer) {
         # The shim renders the error state itself; leave the window up for
         # the user to read and close. Nothing to hold for — the page keeps
@@ -595,7 +595,7 @@ function Show-ErrorFinale([string]$Message) {
         if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
         $ui.Title.Text = "Failed to update"
-        $ui.Sub.Text = "Run `"hermes debug share`" in a terminal to send a report."
+        $ui.Sub.Text = "Open Hermes and choose Send report to tell us what went wrong."
         $close = New-Object System.Windows.Forms.Button
         $close.Text = "Close"
         $close.SetBounds(100, 252, 80, 28)
@@ -1627,7 +1627,7 @@ try {
     if ($res.Code -ne 0 -and $res.Code -ne 2) { $committedAfterExit = Get-CommittedReceiptOutcome }
     if ($res.Code -ne 0 -and -not $committedAfterExit) {
         $finalCode = $res.Code
-        $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        $finalMsg = "Update failed (exit $($res.Code)). The update log has the details."
         exit $finalCode
     }
 

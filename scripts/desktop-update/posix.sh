@@ -1293,7 +1293,7 @@ elif [ "$CODE" -ne 2 ] && update_committed_after_exit; then
   esac
   add_warning "update" "hermes update exited $CODE after the commit point (receipt outcome: $RECEIPT_OUTCOME)"
 else
-  FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
+  FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). The update log has the details."
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).

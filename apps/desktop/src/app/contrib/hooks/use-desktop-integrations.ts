@@ -25,6 +25,7 @@ import {
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
+import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import {
   $selectedStoredSessionId,
   forgetSessionOwnerHintsForSession,
@@ -101,9 +102,12 @@ export function useDesktopIntegrations({
     // default pointed a Mac at its remote Linux backend and left the app itself
     // silently stale (#70266).
     const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow('client'))
+    // A failed detached update's boot dialog offers "Send report" (update-handoff-report.ts).
+    const unsubscribeReport = window.hermesDesktop?.onSendDiagnosticsRequested?.(requestSendDiagnostics)
 
     return () => {
       unsubscribe?.()
+      unsubscribeReport?.()
       stopUpdatePoller()
       stopMcpHealthChecker()
     }

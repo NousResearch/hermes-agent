@@ -2889,7 +2889,8 @@ async function waitForUpdateToFinish() {
     log: rememberLog,
     dialog,
     shell,
-    openUpdates: sendOpenUpdatesRequested
+    openUpdates: () => sendRendererRequest('hermes:open-updates'),
+    sendReport: context => sendRendererRequest('hermes:send-diagnostics', context)
   })
 
   if (outcome === 'cancelled') {
@@ -6429,12 +6430,12 @@ function getAppIconPath() {
   }
 }
 
-function sendOpenUpdatesRequested() {
-  // The renderer mounts its open-updates listener in the same effect pass that
-  // signals deep-link readiness. Before that (e.g. a boot-time dialog answered
-  // before the window is up) queue the request; 'hermes:deep-link-ready' flushes it.
+// The renderer mounts these listeners in the same effect pass that signals
+// deep-link readiness. Before that (e.g. a boot-time dialog answered before the
+// window is up) queue the request; 'hermes:deep-link-ready' flushes it.
+function sendRendererRequest(channel: string, ...args: unknown[]) {
   if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
-    _pendingOpenUpdates = true
+    _pendingRendererRequests.push([channel, args])
 
     return
   }
@@ -6445,8 +6446,7 @@ function sendOpenUpdatesRequested() {
     return
   }
 
-  webContents.send('hermes:open-updates')
-
+  webContents.send(channel, ...args)
   // #83998: never pump the Windows foreground from an ambient surface —
   // showInactive + a guarded focus keep the raise from dismissing another
   // app's native dialog.
@@ -6487,7 +6487,7 @@ function buildApplicationMenu() {
 
   const checkForUpdatesItem = {
     label: 'Check for Updates…',
-    click: () => sendOpenUpdatesRequested()
+    click: () => sendRendererRequest('hermes:open-updates')
   }
 
   if (IS_MAC) {
@@ -17947,8 +17947,8 @@ const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
 const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
-// Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
-let _pendingOpenUpdates = false
+// Requests sendRendererRequest() queued while the renderer could not hear them.
+const _pendingRendererRequests: Array<[string, unknown[]]> = []
 
 function _extractDeepLink(argv) {
   if (!Array.isArray(argv)) {
@@ -18053,9 +18053,8 @@ function handleDeepLink(url) {
 ipcMain.handle('hermes:deep-link-ready', () => {
   _rendererReadyForDeepLink = true
 
-  if (_pendingOpenUpdates) {
-    _pendingOpenUpdates = false
-    sendOpenUpdatesRequested()
+  for (const [channel, args] of _pendingRendererRequests.splice(0)) {
+    sendRendererRequest(channel, ...args)
   }
 
   if (_pendingDeepLink) {

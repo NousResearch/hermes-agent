@@ -2,8 +2,8 @@
   "cli-code.claude": {
     "prompt_tokens": {
       "context": 249,
-      "stable": 1935,
-      "volatile": 1813
+      "stable": 1565,
+      "volatile": 2183
     },
     "tool_tokens": 13277,
     "tools": [
@@ -45,8 +45,8 @@
   "cli.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1445,
-      "volatile": 1813
+      "stable": 1075,
+      "volatile": 2183
     },
     "tool_tokens": 13277,
     "tools": [
@@ -88,8 +88,8 @@
   "cli.gemini": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1866,
-      "volatile": 1811
+      "stable": 1496,
+      "volatile": 2181
     },
     "tool_tokens": 13277,
     "tools": [
@@ -131,8 +131,8 @@
   "cli.gpt": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 2640,
-      "volatile": 1809
+      "stable": 2270,
+      "volatile": 2179
     },
     "tool_tokens": 13433,
     "tools": [
@@ -174,8 +174,8 @@
   "cli.hermes": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1445,
-      "volatile": 1813
+      "stable": 1075,
+      "volatile": 2183
     },
     "tool_tokens": 13277,
     "tools": [
@@ -217,8 +217,8 @@
   "cron.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1317,
-      "volatile": 1813
+      "stable": 947,
+      "volatile": 2183
     },
     "tool_tokens": 13277,
     "tools": [
@@ -260,8 +260,8 @@
   "desktop.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1579,
-      "volatile": 1814
+      "stable": 1209,
+      "volatile": 2184
     },
     "tool_tokens": 13912,
     "tools": [
@@ -304,8 +304,8 @@
   "discord.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1349,
-      "volatile": 1814
+      "stable": 979,
+      "volatile": 2184
     },
     "tool_tokens": 13277,
     "tools": [
@@ -347,8 +347,8 @@
   "telegram.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1382,
-      "volatile": 1814
+      "stable": 1012,
+      "volatile": 2184
     },
     "tool_tokens": 13277,
     "tools": [

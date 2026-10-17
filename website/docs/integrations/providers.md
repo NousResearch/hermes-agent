@@ -16,6 +16,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 |----------|-------|
 | **Nous Portal** | `hermes model` (OAuth, subscription-based) |
 | **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth, uses Codex models) |
+| **ChatGPT plan (SIWC)** | `hermes auth add openai-chatgpt`, then `hermes model` (official Sign in with ChatGPT; public Responses API) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
@@ -70,6 +71,34 @@ For the official API-key path, see the dedicated [Google Gemini guide](../guides
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
 :::
 
+
+### ChatGPT plan (Sign in with ChatGPT)
+
+The `openai-chatgpt` provider uses OpenAI's [official Sign in with ChatGPT flow](https://developers.openai.com/siwc/token-sharing-open-source) to request permission to use your ChatGPT plan. It is separate from the existing `openai-codex` provider and from API-key billing. OpenAI determines account eligibility, available models, and usage limits.
+
+```bash
+hermes auth add openai-chatgpt --label personal
+hermes model
+```
+
+Choose **Continue with ChatGPT** in the browser, authorize Hermes, and let the browser return to the local callback. Then select the ChatGPT plan provider and a model returned for the signed-in account. Listing models or completing sign-in does not by itself prove that an inference request is available.
+
+Hermes keeps each account registration separate in the current profile's protected auth store. To sign in again to a saved registration, use its existing label; use a new label to add another account. Successful sign-in selects that account. Status shows the selected registration:
+
+```bash
+hermes auth add openai-chatgpt --label personal
+hermes auth status openai-chatgpt
+hermes auth refresh openai-chatgpt personal
+hermes auth logout openai-chatgpt
+```
+
+Signing out clears the selected account's local tokens and attempts to revoke its renewable session. Hermes retains the client/account mapping for a later sign-in. You can also disconnect the app or review its allowance in [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).
+
+After changing accounts or signing in again, start a new Hermes session so its client uses the selected account's current credentials. Existing clients cannot continue sending requests with a signed-out or replaced session.
+
+This provider uses streaming requests to the public Responses API, with full conversation history and no server-side response storage. Hermes executes local function tools through its existing agent loop. OpenAI's [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) still apply: this login does not enable hosted connectors, image generation, native computer use, or audio/transcription APIs. If plan permission is absent, enable it through sign-in before requesting inference; a usage-limit error does not mean that every allowance on the account is exhausted.
+
+For a remote self-hosted runtime, follow the callback/tunnel instructions printed by the CLI. Keep credentials on the owning runtime; never paste tokens into chat or copy an authorization URL containing an ID-token hint into logs or reports.
 
 ### Nous Portal
 

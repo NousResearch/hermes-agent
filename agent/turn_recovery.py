@@ -643,7 +643,7 @@ def recover_after_classification(
     # stale replayed blob far more often than a dead bearer (#88510): strip BEFORE the pool
     # refreshes/benches every healthy entry over a session-state problem. A real expiry pays
     # one extra round-trip and then takes the credential path below as before.
-    if _is_codex_token_expired(agent, api_error) and _recover_stale_codex_reasoning(
+    if _is_codex_token_expired(agent, api_error, classified) and _recover_stale_codex_reasoning(
         agent, _retry, messages, api_messages
     ):
         return True, False

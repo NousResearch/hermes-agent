@@ -870,7 +870,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
     _refused_entries = []
-    for _fb in _fallback_entries(fallback_model):
+    for _fb in _fallback_entries(fallback_model, provider=_explicit):
         _fb_provider = str(_fb["provider"])
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
@@ -2342,11 +2342,8 @@ def init_agent(
     # Skips the end-of-turn review fork (~30K tokens/event); one switch for both review paths.
     agent.skip_background_review = bool(skip_background_review)
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
-    # Effective base URL for feature detection (prompt caching, reasoning, etc.)
-    from hermes_cli.providers import is_actual_route
-    if is_actual_route(provider, base_url):
-        from hermes_cli.auth import normalize_actual_base_url
-        base_url = normalize_actual_base_url(base_url)
+    from agent.provider_endpoint import initial_provider_route
+    base_url, api_mode = initial_provider_route(provider, base_url, api_mode)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""

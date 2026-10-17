@@ -16,6 +16,7 @@ sidebar_position: 1
 |----------|-------|
 | **Nous Portal** | `hermes model`（OAuth，订阅制） |
 | **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth，使用 Codex 模型） |
+| **ChatGPT 套餐（SIWC）** | `hermes auth add openai-chatgpt`，然后运行 `hermes model`（官方 Sign in with ChatGPT，通过公有 Responses API 推理） |
 | **GitHub Copilot** | `hermes model`（OAuth 设备码流程，`COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `gh auth token`） |
 | **GitHub Copilot ACP** | `hermes model`（在本地生成 `copilot --acp --stdio` 子进程） |
 | **Anthropic** | `hermes model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
@@ -50,6 +51,34 @@ sidebar_position: 1
 在 `model:` 配置节中，可以使用 `default:` 或 `model:` 作为模型 ID 的键名。`model: { default: my-model }` 和 `model: { model: my-model }` 效果完全相同。
 :::
 
+
+### ChatGPT 套餐（Sign in with ChatGPT）
+
+openai-chatgpt 提供商通过 OpenAI 的[官方 Sign in with ChatGPT 流程](https://developers.openai.com/siwc/token-sharing-open-source)请求使用你的 ChatGPT 套餐额度。它与现有 openai-codex 登录、API key 计费分别配置；账号资格、可用模型和使用限额由 OpenAI 决定。
+
+```bash
+hermes auth add openai-chatgpt --label personal
+hermes model
+```
+
+在浏览器中选择 Continue with ChatGPT，授权 Hermes，并让浏览器返回本机回调。然后选择 ChatGPT 套餐提供商和当前账号返回的模型。完成登录或列出模型，并不代表推理请求已经验证成功。
+
+Hermes 将各个账号注册分别保存在当前配置档案的受保护认证存储中。再次登录已有账号时使用原标签；使用新标签可以添加另一账号。登录并验证成功后才会选择该账号。可以通过以下命令查看和管理授权：
+
+```bash
+hermes auth add openai-chatgpt --label personal
+hermes auth status openai-chatgpt
+hermes auth refresh openai-chatgpt personal
+hermes auth logout openai-chatgpt
+```
+
+退出时会清除所选账号的本地令牌，并尝试撤销可续期会话；客户端与账号的注册映射会保留，供下次登录复用。也可以在 [ChatGPT 设置 → 用量](https://chatgpt.com/settings/usage)中查看应用额度或断开应用。
+
+此提供商使用公有 Responses API 的流式请求，每次发送所需对话历史，并关闭服务端响应存储。Hermes 继续通过已有 Agent 循环执行本地函数工具。OpenAI 的[预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)仍然适用：这种登录不开放托管连接器、图片生成、原生计算机操作或音频与转录接口。未授予套餐使用权限时，需要先通过登录开启；额度错误也不代表账号的所有额度都已耗尽。
+
+远程自托管实例请遵循 CLI 打印的回调与 SSH 隧道说明。凭据应留在所属运行环境；不要将令牌粘贴到聊天中，也不要将含 ID-token hint 的授权链接复制到日志或报告。
+
+切换账号或重新登录后，请启动新的 Hermes 会话，使客户端使用当前所选账号的凭据。旧客户端不能继续使用已退出或被替换的登录会话发送请求。
 
 ### Nous Portal
 

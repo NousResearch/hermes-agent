@@ -979,9 +979,9 @@ _POOL_TOKEN_GENERATION_FIELDS = (
     "access_token", "refresh_token", "expires_at", "expires_at_ms", "expires_in", "obtained_at",
     "last_refresh", "agent_key", "agent_key_expires_at", "agent_key_expires_in", "agent_key_id",
     "agent_key_obtained_at", "agent_key_reused",
-    # Refresh-coupled metadata: a Nous refresh rewrites scope and the validated
-    # inference route together with the new pair, so they travel with it.
-    "scope", "inference_base_url",
+    # Refresh-coupled metadata: scopes, identity and validation state must follow
+    # the pair; stale writers must not mix a new pair with old metadata.
+    "scope", "inference_base_url", "chatgpt",
 )
 
 
@@ -1018,7 +1018,7 @@ def _merge_pool_row_generation(
 
     merge_disk = None if status_cleared else disk_entry
     disk_pair = _credential_token_pair(disk_entry)
-    if base_pair is None or not any(disk_pair) or disk_pair == base_pair:
+    if base_pair is None or disk_entry is None or disk_pair == base_pair:
         return _merge_disk_cooldown_state(entry, merge_disk, provider_id)
 
     merged = dict(entry)
@@ -1363,23 +1363,8 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
 def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
     """Clear auth state for a provider (the active one when *provider_id* is None). Used by
     ``hermes logout``. Returns True if something was cleared."""
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        target = provider_id or auth_store.get("active_provider")
-        if not target:
-            return False
-        cleared = False
-        for section in ("providers", "credential_pool"):
-            entries = _store_section(auth_store, section)
-            if target in entries:
-                del entries[target]
-                cleared = True
-        if auth_store.get("active_provider") == target:
-            auth_store["active_provider"] = None
-            cleared = True
-        if cleared:
-            _save_auth_store(auth_store)
-        return cleared
+    from hermes_cli.credential_lifecycle import disconnect_provider_auth
+    return disconnect_provider_auth(provider_id)
 
 
 def deactivate_provider() -> None:

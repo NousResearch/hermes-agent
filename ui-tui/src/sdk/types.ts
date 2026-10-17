@@ -16,6 +16,14 @@ export interface WidgetRenderCtx<S> {
   rows: number
   state: S
   t: Theme
+  /**
+   * Host-provided refresh lifecycle flags (only set when the app declares
+   * `refresh.fetch`): `stale` once `staleMs` has passed since the last good
+   * fetch landed, `dead` once `maxRetries` consecutive fetches failed. The
+   * last good state keeps rendering either way — badge/dim it in `render`.
+   */
+  stale?: boolean
+  dead?: boolean
 }
 
 /**
@@ -48,10 +56,39 @@ export interface WidgetApp<S = unknown> {
   /** Card width in cells (ambient). Floats RESERVE this as a transcript
    *  rail, so match your Dialog width. Default 44. */
   width?: number
+  /**
+   * Optional host-managed refresh lifecycle (#69277). When set, the host
+   * fetches on mount, re-fetches every `intervalMs`, keeps the last good
+   * state on failure, and passes `stale`/`dead` flags to render. Replaces
+   * the hand-rolled useEffect + setInterval + cancelled-flag boilerplate.
+   */
+  refresh?: WidgetRefresh<S>
   init(arg: string): null | S
   reduce(state: S, input: WidgetInput): null | S
   render(ctx: WidgetRenderCtx<S>): ReactNode
   usage?: string
+}
+
+export interface WidgetRefresh<S> {
+  /** Milliseconds between automatic fetches. */
+  intervalMs: number
+  /**
+   * How long a state stays fresh after a good fetch. Beyond it, render
+   * receives `stale: true`. Defaults to `intervalMs * 1.5`.
+   */
+  staleMs?: number
+  /**
+   * Consecutive fetch failures tolerated before render receives
+   * `dead: true` (the last good state still renders). Default 3.
+   */
+  maxRetries?: number
+  /**
+   * Called by the host on mount and on every interval tick. The return
+   * value becomes the next state (replacing whatever `init` returned);
+   * `null` keeps the previous state (a transient miss). A throw counts as
+   * a failure toward `maxRetries`.
+   */
+  fetch: (signal: AbortSignal) => null | Promise<null | S> | S
 }
 
 /**

@@ -97,6 +97,27 @@ def test_missing_history_table_is_not_recreated_as_empty(tmp_path, monkeypatch, 
     assert path.read_bytes() == before
 
 
+def test_snapshot_history_loss_is_not_promoted(tmp_path, monkeypatch):
+    import hermes_state_repair as repair
+    from hermes_state_reconcile import repair_declarative_schema
+    path = _legacy_store(tmp_path, monkeypatch)
+    before = path.read_bytes()
+    copy = repair._copy_database_snapshot
+
+    def changed_snapshot(source, destination, **kwargs):
+        copy(source, destination, **kwargs)
+        if kwargs.get('source_connection') is not None:
+            with closing(sqlite3.connect(destination)) as conn:
+                conn.execute('DROP TABLE messages')
+                conn.commit()
+
+    monkeypatch.setattr(repair, '_copy_database_snapshot', changed_snapshot)
+    report = repair_declarative_schema(path)
+    assert report['repaired'] is False
+    assert 'canonical history tables are missing' in report['error']
+    assert path.read_bytes() == before
+
+
 def test_repair_restores_missing_indexed_column(tmp_path, monkeypatch):
     path = tmp_path / 'state.db'
     with SessionDB(db_path=path) as db:

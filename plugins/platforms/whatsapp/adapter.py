@@ -321,6 +321,10 @@ _BRIDGE_PASSTHROUGH_ENV = (
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
+# Consecutive failed message polls before the adapter flags a retryable fatal: an adopted bridge (no Popen
+# handle) has no other death signal. 5 misses ≈ 30 s of refusals (or ~2.5 min of 30 s timeouts) — enough to
+# ride out a single dropped poll without letting a dead bridge wedge the profile as "connected" (#137831).
+_POLL_FAILURES_BEFORE_FATAL = 5
 # Inbound mediaType substring → kind; ptt = WhatsApp voice note, so "ptt" must precede "audio".
 _MEDIA_NEEDLES = (("image", MessageType.PHOTO), ("video", MessageType.VIDEO), ("ptt", MessageType.VOICE), ("audio", MessageType.AUDIO))
 # MessageType → (bridge label, default mime); documents take their mime from SUPPORTED_DOCUMENT_TYPES instead.
@@ -386,6 +390,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = self._bridge_log = self._poll_task = self._http_session = None
+        self._poll_error_streak = 0  # consecutive failed message polls; an adopted bridge reports no exit, so this is its only death signal (#137831)
         # Set by disconnect() before SIGTERMing so _check_managed_bridge_exit() can tell an intentional exit (-15/-2/0) from a crash.
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
@@ -456,6 +461,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         import aiohttp
         self._bridge_process = managed_process
         self._http_session = aiohttp.ClientSession()
+        self._poll_error_streak = 0
         self._poll_task = asyncio.create_task(self._poll_messages())
 
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
@@ -632,6 +638,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         lock_acquired = False
         try:
             if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
+                # Typically the unserve/re-serve race: the dying adapter's disconnect has not released the
+                # lock yet. Transient, so retryable — a bare False here leaves an unclassified failure the
+                # runtime status cannot name (#137831).
+                self._set_fatal_error(
+                    "whatsapp_session_lock_busy",
+                    f"The WhatsApp session lock for {self._session_path} is still held by another adapter "
+                    "(its disconnect may still be in flight); retried automatically.",
+                    retryable=True)
                 return False
             lock_acquired = True
         except Exception as e:
@@ -699,6 +713,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True
         except Exception as e:
             logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
+            # Spawn-time failures (node gone mid-run, Popen error) are transient; name them retryable so the
+            # reconnect watcher keeps trying instead of seeing an unclassified connect failure (#137831).
+            if not self.has_fatal_error:
+                self._set_fatal_error(
+                    "whatsapp_bridge_start_failed",
+                    f"Failed to start the WhatsApp bridge: {e} (see {self._bridge_log})", retryable=True)
             return False
         finally:
             if not self._running:
@@ -914,6 +934,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 async with self._bridge_req("get", "messages", 30) as resp:
                     if resp.status == 200:
+                        self._poll_error_streak = 0
                         for msg_data in await resp.json():
                             event = await self._build_message_event(msg_data)
                             if event:
@@ -927,6 +948,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 break
             except Exception as e:
                 if await self._report_bridge_exit():
+                    break
+                self._poll_error_streak += 1
+                # An adopted bridge holds no Popen handle, so _check_managed_bridge_exit() has nothing to
+                # report when it dies: without this bound the loop logs "Poll error" forever while the
+                # adapter stays "connected" and the reconnect watcher never fires (#137831).
+                if self._poll_error_streak >= _POLL_FAILURES_BEFORE_FATAL and not self.has_fatal_error:
+                    message = (f"WhatsApp bridge on port {self._bridge_port} did not answer the last "
+                               f"{self._poll_error_streak} message polls.")
+                    logger.error("[%s] %s", self.name, message)
+                    self._set_fatal_error("whatsapp_bridge_unreachable",
+                                          f"{message} (see {self._bridge_log})", retryable=True)
+                    self._close_bridge_log()
+                    await self._notify_fatal_error()
                     break
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)

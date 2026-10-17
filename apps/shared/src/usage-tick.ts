@@ -56,7 +56,8 @@ function contextFields(p: UsageTickPayload): Partial<TickUsage> {
   const used = num(p.last_prompt_tokens) ?? 0
   const max = num(p.context_length) ?? 0
   const compressions = num(p.compression_count)
-  const fields: Partial<TickUsage> = p.context_length == null || compressions === undefined ? {} : { compressions }
+  // A compressor, sized or not, sets `context_source` (`tui_usage`'s keying; `_get_usage`'s `if comp`).
+  const fields: Partial<TickUsage> = p.context_source == null || compressions === undefined ? {} : { compressions }
 
   if (!used || !max) {
     return fields

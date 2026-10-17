@@ -42,8 +42,13 @@ from pathlib import Path
 # Set by ``_launch_external_cron_worker`` in the child's env and consumed by
 # ``finish_worker_boot()`` -- after any relaunch, before the ack -- so it never reaches the
 # worker's own children; they inherit the activated PYTHONPATH instead.
-# Distinct from ``_HERMES_CRON_EXTERNAL_WORKER`` (the owning execution id) in scheduler.py.
+# Distinct from ``EXTERNAL_WORKER_ENV`` (the owning execution id) below.
 WORKER_MARKER = "_HERMES_CRON_WORKER_BOOT"
+
+# Process-tree marker for "inside a restart-safe cron execution": unlike WORKER_MARKER it is
+# deliberately inherited, so background jobs the execution spawns can leave its scope (see
+# ``tools.process_registry.ProcessRegistry._scope_argv``).
+EXTERNAL_WORKER_ENV = "_HERMES_CRON_EXTERNAL_WORKER"  # set to the owned execution id around run_one_job in the restart-safe worker; inherited by the whole execution tree
 
 
 def worker_bootstrap() -> None:

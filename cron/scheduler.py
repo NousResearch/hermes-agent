@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
+from cron.worker_bootstrap import EXTERNAL_WORKER_ENV, WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
@@ -2825,7 +2825,7 @@ def run_one_job(
 
     execution_id = str(job["execution_id"])
     note_cron_execution(job)
-    external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
+    external_owner = os.environ.get(EXTERNAL_WORKER_ENV) == execution_id
     if not external_owner:
         try:
             handed_off = _launch_external_cron_worker(job)
@@ -3255,7 +3255,7 @@ def _fire_secret_scope():
 def _start_owned_run(job: dict, execution_id: str) -> Optional[contextvars.Token]:
     """Win the run's ``claimed`` → ``running`` CAS and bind its cron identity; ``None`` when the run
     lost ownership first. A restart-safe worker already won it by adopting the row."""
-    if os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id:
+    if os.environ.get(EXTERNAL_WORKER_ENV) == execution_id:
         record = get_execution(execution_id)
     elif (record := mark_execution_running(execution_id)) is None:
         return None
@@ -3498,6 +3498,7 @@ def _wait_for_external_cron_worker_body(
     *,
     execution_id: str,
     stderr_path: Optional[Path] = None,
+    scope_unit: Optional[str] = None,
 ) -> bool:
     """Preserve ``run_one_job``'s synchronous contract after handoff.
 
@@ -3506,10 +3507,21 @@ def _wait_for_external_cron_worker_body(
     callers do not release their in-process guard or report stale job state.
     A gateway replacement may kill this waiter; it does not kill the scoped
     worker or change its ledger ownership.
+
+    *scope_unit* names the worker's transient scope when it was dispatched into one: every
+    path that finds the ledger row terminal schedules its release — normal returns and the
+    raise alike (the raise only routes post-handoff bookkeeping); a still-open row never releases.
     """
     def _is_terminal() -> bool:
         current = get_execution(execution_id)
         return bool(current and current.get("status") in _TERMINAL_STATES)
+
+    def _terminal() -> bool:
+        if scope_unit is not None:
+            from cron.scheduler_detached_worker import schedule_scope_unit_release
+
+            schedule_scope_unit_release(process, scope_unit)
+        return True
 
     # The worker commits its terminal row before its process exits, so exit is
     # the correct wakeup.  Each ledger read opens a connection and re-runs
@@ -3526,16 +3538,23 @@ def _wait_for_external_cron_worker_body(
             # cleanup; only a still-live terminal worker needs background reaping.
             returncode = process.poll()
             if returncode is None:
-                from cron.scheduler_detached_worker import reap_terminal_worker_in_background
+                if scope_unit is None:
+                    from cron.scheduler_detached_worker import reap_terminal_worker_in_background
 
-                reap_terminal_worker_in_background(process)
-                return True
+                    reap_terminal_worker_in_background(process)
+                # Otherwise the release thread subsumes the bounded reap.
+                return _terminal()
         # The worker can commit its terminal row and exit between the first
         # read and wait(). Re-read the exact attempt before declaring that
-        # it died without terminalizing.
+        # it died without terminalizing. The gate stays completed/failed on
+        # purpose: an ``unknown`` row must fall through to the dead-owner
+        # section so this waiter's exit code and stderr still surface as
+        # evidence — the release there is what keeps the raise from leaking
+        # the scope unit (tests/cron/test_restart_safe_worker_death_evidence
+        # pins the evidence; the raise-path release pins the leak closed).
         current = get_execution(execution_id)
         if current and current.get("status") in ("completed", "failed"):
-            return True
+            return _terminal()
         # If the adopted worker died without terminalizing, its owner is
         # now provably gone. Recover to ``unknown`` rather than routing the
         # exception through the pre-handoff dispatch-failure path, which
@@ -3551,13 +3570,29 @@ def _wait_for_external_cron_worker_body(
         from cron.scheduler_worker_failure import external_worker_exited_reason
 
         reason = external_worker_exited_reason(returncode)
-        if not terminalize_dead_owner(execution_id, reason=reason):
+        if terminalize_dead_owner(execution_id, reason=reason):
+            # The row IS terminal now — the raise below only routes the post-handoff
+            # bookkeeping (#128509), it does not dispute the terminalization. Schedule
+            # the scope release like the success returns, or the dead worker's cgroup
+            # stragglers pin the transient unit open: the crash path is the leak class
+            # this closes, not just the graceful one.
+            _terminal()
+        else:
             recover_interrupted_executions()
             # A concurrent sweep may have won the unknown transition. Still
             # surface this waiter's exit code and stderr instead of discarding them.
             current = get_execution(execution_id)
             if current and current.get("status") in ("completed", "failed"):
-                return True
+                return _terminal()
+            # Release before the raise on ANY terminal row — the incident state is
+            # ``unknown``: a worker that recorded it itself (give_up_execution) exits
+            # cleanly, terminalize_dead_owner refuses an already-terminal row, and
+            # without this the raise strands the cgroup stragglers pinning the unit.
+            # The check reuses the read above: no second ledger round-trip, so the
+            # release stays pinned to the exact row this waiter just observed. A
+            # still-open row must NEVER release — another owner may still hold it.
+            if current and current.get("status") in _TERMINAL_STATES:
+                _terminal()
         stderr_tail = ""
         if stderr_path is not None:
             from cron.scheduler_diagnostics import external_worker_stderr_tail
@@ -3577,10 +3612,11 @@ def _wait_for_external_cron_worker(
     job_id: Optional[str] = None,
     handoff_files: tuple[Path, ...] = (),
     stderr_path: Optional[Path] = None,
+    scope_unit: Optional[str] = None,
 ) -> bool:
     try:
         return _wait_for_external_cron_worker_body(
-            process, execution_id=execution_id, stderr_path=stderr_path
+            process, execution_id=execution_id, stderr_path=stderr_path, scope_unit=scope_unit
         )
     except Exception as wait_error:
         raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error
@@ -3760,6 +3796,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
                     stderr_path=stderr_path,
+                    scope_unit=dispatch.unit,
                 )
             finally:
                 ack_path.unlink(missing_ok=True)
@@ -3778,6 +3815,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     job_id=job_id,
                     handoff_files=(payload_path, stderr_path),
                     stderr_path=stderr_path,
+                    scope_unit=dispatch.unit,
                 )
             logger.info(
                 "Cron job '%s' handed to restart-safe worker pid=%s execution=%s dispatch=%s",
@@ -3797,6 +3835,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 job_id=job_id,
                 handoff_files=(payload_path, stderr_path),
                 stderr_path=stderr_path,
+                scope_unit=dispatch.unit,
             )
         returncode = process.poll()
         if returncode is not None:
@@ -3837,6 +3876,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         job_id=job_id,
         handoff_files=(payload_path, ack_path, stderr_path),
         stderr_path=stderr_path,
+        scope_unit=dispatch.unit,
     )
 
 
@@ -3931,8 +3971,8 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     execution_id,
                 )
                 return False
-            old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
-            os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
+            old_external_execution = os.environ.get(EXTERNAL_WORKER_ENV)
+            os.environ[EXTERNAL_WORKER_ENV] = execution_id
             try:
                 completed = run_one_job(job, adapters=None, loop=None, verbose=False)
                 # Successful return: the worker recorded its outcome. If it raises,
@@ -3942,9 +3982,9 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                 return completed
             finally:
                 if old_external_execution is None:
-                    os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
+                    os.environ.pop(EXTERNAL_WORKER_ENV, None)
                 else:
-                    os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = old_external_execution
+                    os.environ[EXTERNAL_WORKER_ENV] = old_external_execution
     finally:
         if secret_token is not None:
             reset_secret_scope(secret_token)

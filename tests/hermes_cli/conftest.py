@@ -57,6 +57,27 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _suppress_windows_gateway_respawn(request, monkeypatch):
+    """Keep ordinary update tests from stopping or starting live Windows gateways.
+
+    Tests of the pause helper use ``real_windows_gateway_respawn`` and replace
+    gateway discovery and process operations with controlled test values.
+    """
+    if request.node.get_closest_marker("real_windows_gateway_respawn"):
+        return
+    try:
+        from hermes_cli import main as cli_main
+    except Exception:
+        return
+    # Keep the existing partial-import behavior until it has separate validation.
+    for name in (
+        "_pause_windows_gateways_for_update",
+        "_resume_windows_gateways_after_update",
+    ):
+        monkeypatch.setattr(cli_main, name, lambda *_args, **_kwargs: None, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _private_repo_checkout_lock(monkeypatch, tmp_path_factory):
     """``cmd_update`` locks the checkout it runs from: in tests, this repository, whose git
     common dir every parallel test process (and, from a linked worktree, the live install's

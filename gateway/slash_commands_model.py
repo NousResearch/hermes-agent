@@ -695,10 +695,12 @@ class GatewayModelCommandsMixin:
         from hermes_cli.config import read_user_config_raw
         config_path = _gateway_config_home() / "config.yaml"
         try:
-            user_config = read_user_config_raw(config_path)  # raw: never persist merged defaults
-            *parents, leaf = key_path.split(".")
-            _nested_dict(user_config, *parents)[leaf] = value
-            atomic_config_write(config_path, user_config)
+            from hermes_cli.config_write_lock import config_write_lock
+            with config_write_lock(config_path):
+                user_config = read_user_config_raw(config_path)  # raw: never persist merged defaults
+                *parents, leaf = key_path.split(".")
+                _nested_dict(user_config, *parents)[leaf] = value
+                atomic_config_write(config_path, user_config)
             return True
         except Exception as e:
             logger.error("Failed to save config key %s: %s", key_path, e)

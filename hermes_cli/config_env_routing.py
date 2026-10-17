@@ -47,12 +47,14 @@ def _drop_config_yaml_copies(key: str) -> bool:
     from hermes_cli.config import _write_user_config, get_config_path, require_readable_config_before_write
 
     config_path = get_config_path()
-    user_config = require_readable_config_before_write(config_path)
-    stale = [name for name in {key, key.upper()} if name in user_config]
-    for name in stale:
-        del user_config[name]
-    if stale:
-        _write_user_config(config_path, user_config)
+    from hermes_cli.config_write_lock import config_write_lock
+    with config_write_lock(config_path):
+        user_config = require_readable_config_before_write(config_path)
+        stale = [name for name in {key, key.upper()} if name in user_config]
+        for name in stale:
+            del user_config[name]
+        if stale:
+            _write_user_config(config_path, user_config)
     return bool(stale)
 
 

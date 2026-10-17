@@ -1,0 +1,31 @@
+name: blackbox
+repo: https://github.com/umanitek/agent-blackbox
+sha: 7d697683e0d56608cfe3fee374d6a6866702058a
+subdir: plugins/blackbox
+title: Agent Blackbox
+description: 'Security for agents: checks every tool call and model request before it runs against a
+  curated, verifiable threat graph (prompt injection, dangerous commands, malicious packages, unsafe
+  skills, phishing and drainer indicators) and local rules that keep an agent away from wallet stores,
+  seed phrases, private keys and exchange API keys. Audit mode records; block mode refuses. Can share
+  privacy-safe threat reports with an open community graph once the user turns sharing on (off by
+  default); community findings only ever flag. Hooks only: no tools, no middleware.'
+maintainer: Umanitek
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/umanitek/agent-blackbox/tree/7d697683e0d56608cfe3fee374d6a6866702058a/plugins/blackbox
+image: https://raw.githubusercontent.com/umanitek/agent-blackbox/7d697683e0d56608cfe3fee374d6a6866702058a/docs/catalog/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/7d697683e0d56608cfe3fee374d6a6866702058a/docs/catalog/dashboard.png
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/7d697683e0d56608cfe3fee374d6a6866702058a/docs/catalog/trader-shield.png
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/7d697683e0d56608cfe3fee374d6a6866702058a/docs/catalog/threat-tiers.png
+readme: true
+platforms: []
+known_issues:
+  - "After installing, run `hermes blackbox setup` once: it installs Blackbox's local DKG node (a pinned, checksum-verified OriginTrail release from npm) and its graph store (Blazegraph in Docker, or Oxigraph when Docker is not available), then syncs the verified threat graph. Until setup has run, the built-in rules protect and `hermes blackbox status` says setup is needed."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, pre_api_request, on_session_start, on_session_end]
+  provides_middleware: []
+  requires_env: []

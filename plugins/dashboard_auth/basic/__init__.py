@@ -22,7 +22,8 @@ from typing import Optional
 
 from hermes_cli.dashboard_auth import DashboardAuthProvider, InvalidCredentialsError, RefreshExpiredError, Session
 from plugins.dashboard_auth._shared import (
-    NonInteractiveMixin, SkipRegistration, load_config_section, register_provider, resolve_env_or_cfg)
+    NonInteractiveMixin, SkipRegistration, load_config_section, register_provider,
+    resolve_env_or_cfg, sign_session_token, unsign_session_token)
 
 logger = logging.getLogger(__name__)
 _TAG = "dashboard-auth-basic"
@@ -83,30 +84,14 @@ _DUMMY_HASH = hash_password("dummy-password-for-constant-time-verify")
 
 
 # ---- Token signing (stateless HMAC-signed blobs) ----
+#
+# The exact signer now lives in _shared (one canonical seam every credential
+# provider rides): sign_session_token / unsign_session_token produce identical
+# tokens; these aliases keep the historical names import-stable for operators
+# and tests.
 
-def _sign(payload: dict, secret: bytes) -> str:
-    raw = json.dumps(payload, separators=(",", ":")).encode()
-    sig = hmac.new(secret, raw, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(raw + sig).decode()
-
-
-def _unsign(token: str, secret: bytes, kind: str) -> Optional[dict]:
-    """Return the payload if the signature is valid, ``kind`` matches and it
-    is unexpired; ``None`` otherwise (including on any decode error)."""
-    try:
-        blob = base64.urlsafe_b64decode(token.encode())
-        if len(blob) <= _SIG_LEN:
-            return None
-        raw, sig = blob[:-_SIG_LEN], blob[-_SIG_LEN:]
-        expected = hmac.new(secret, raw, hashlib.sha256).digest()
-        if not hmac.compare_digest(sig, expected):
-            return None
-        payload = json.loads(raw)
-    except Exception:
-        return None
-    if payload.get("kind") != kind or payload.get("exp", 0) <= int(time.time()):
-        return None
-    return payload
+_sign = sign_session_token
+_unsign = unsign_session_token
 
 
 # ---- Provider ----

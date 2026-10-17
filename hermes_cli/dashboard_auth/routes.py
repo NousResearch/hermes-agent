@@ -190,6 +190,19 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
     return resp
 
 
+def _provider_offered(provider, request: Request) -> bool:
+    """Whether ``provider`` is OFFERED on this request. A ``supports_webauthn``
+    provider is origin-gated (``webauthn_offered_for_request``): ceremonies and
+    the providers/login-page surfaces answer as if it were not registered on a
+    request whose origin cannot present a configured one (fail-inert, §11.2)."""
+    if not getattr(provider, "supports_webauthn", False):
+        return True
+    try:
+        return provider.webauthn_offered_for_request(request)
+    except NotImplementedError:
+        return False
+
+
 # --- Public: login page + provider list ------------------------------------
 
 @router.get("/login", name="login_page")
@@ -197,13 +210,18 @@ async def login_page(request: Request) -> HTMLResponse:
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
     return HTMLResponse(
-        render_login_html(next_path=next_path, prefix=_prefix(request)), headers=_NO_STORE)
+        render_login_html(next_path=next_path, prefix=_prefix(request),
+                          provider_filter=lambda p: _provider_offered(p, request)),
+        headers=_NO_STORE)
 
 
 @router.get("/api/auth/providers", name="auth_providers")
-async def api_auth_providers() -> Any:
-    # Only interactive providers are sign-in options; fail closed on zero.
-    providers = list_session_providers()
+async def api_auth_providers(request: Request) -> Any:
+    # Only interactive providers are sign-in options; origin-gated providers are
+    # omitted when this request cannot present a configured origin. Fail closed
+    # on zero OFFERED providers (a registered-but-never-offered provider would
+    # otherwise strand every gate check with an unanswerable list).
+    providers = [p for p in list_session_providers() if _provider_offered(p, request)]
     if not providers:
         return JSONResponse({"detail": "no auth providers registered"}, status_code=503)
     return {"providers": [
@@ -222,7 +240,9 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     if not getattr(p, "supports_session", True):
         raise _http(404, f"Provider does not support interactive login: {provider!r}")
     safe_next = _validate_post_login_target(next)
-    if getattr(p, "supports_password", False):
+    # Credential providers (password form / WebAuthn ceremony) are mediated by the
+    # /login page, never by the OAuth redirect dance; start_login would raise.
+    if getattr(p, "supports_password", False) or getattr(p, "supports_webauthn", False):
         login_url = f"{_prefix(request)}/login"
         if safe_next:
             login_url = f"{login_url}?next={quote(safe_next, safe='')}"
@@ -324,7 +344,7 @@ async def auth_native_authorize(
             client_ip=_client_ip(request))
     except native_flow.NativeFlowError as e:
         raise _http(503, str(e))
-    if getattr(p, "supports_password", False):
+    if getattr(p, "supports_password", False) or getattr(p, "supports_webauthn", False):
         _audit(request, AuditEvent.NATIVE_AUTHORIZE_START, provider=p.name)
         resp = RedirectResponse(url=f"{_prefix(request)}/login", status_code=302)
         _set_pkce(resp, request, {"provider": p.name, "broker": broker_state})
@@ -434,6 +454,13 @@ def _reset_password_rate_limit() -> None:
     """Test-only: clear all rate-limit buckets."""
     with _pw_attempts_lock:
         _pw_attempts.clear()
+
+
+# Shared login budget for every credential-ceremony POST (password-login and the
+# webauthn ceremony routes ride the SAME per-IP bucket — design doc §6). Thin
+# aliases keep the historical password names import-stable for existing tests.
+_login_rate_limited = _password_rate_limited
+_reset_login_rate_limit = _reset_password_rate_limit
 
 
 class _PasswordLoginBody(BaseModel):

@@ -1,0 +1,14 @@
+name: webauthn
+version: 1.0.0
+description: "Dashboard auth provider — passkeys/WebAuthn. A second factor on the basic password login: after the password step, the browser completes a WebAuthn assertion (platform authenticator or roaming key). Activates only when dashboard.webauthn.rp_id + rp_name + origins are configured AND the served origin can present a configured origin — on the stock plain-LAN-http bind the provider stays inert and password sign-in is unchanged. Dependency: Yubico fido2 via the optional 'webauthn' extra. Name-trap for operators: the PyPI dist is fido2; Duo's lib is 'webauthn', py_webauthn resolves to an unrelated package."
+author: NousResearch
+kind: backend
+config_schema:
+  dashboard.webauthn.rp_id: {type: str, description: "RP ID = the registrable domain of the sign-in origin. Binds enrolled passkeys forever - decide it before enrolling."}
+  dashboard.webauthn.rp_name: {type: str, description: "Human label shown in the browser passkey UI."}
+  dashboard.webauthn.origins: {type: list, description: "Exact scheme+host(+optional port) origins allowed to run the ceremonies."}
+  dashboard.webauthn.user_verification: {type: str, description: "required|preferred|discouraged; default preferred."}
+  dashboard.webauthn.session_ttl_seconds: {type: int, description: "Access-token TTL; mirrors basic_auth default 12h."}
+  dashboard.webauthn.challenge_ttl_seconds: {type: int, description: "Ceremony challenge TTL 30-300s; default 120."}
+  dashboard.webauthn.credential_store: {type: str, description: "Path to the 0600 credential file; default ~/.hermes/dashboard_webauthn.json."}
+  dashboard.webauthn.allowed_credential_ids: {type: list, description: "Optional id allowlist; enrolment rejects ids outside it."}

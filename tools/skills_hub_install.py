@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import os
 import shutil
+import stat
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -26,6 +29,22 @@ if TYPE_CHECKING:  # origin class; runtime use is via the lazy origin import
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.skills_hub")
+
+
+def _rmtree_force(path: Path) -> None:
+    """rmtree that survives read-only skill trees (restored backups, Nix/deb-sourced
+    installs keep ``r-xr-xr-x`` dirs). Removing a child needs a writable parent, so on
+    failure make the failing path and its parent writable and retry. Callers have already
+    validated ``path`` with ``_resolve_lock_install_path`` / ``_check_install_target``,
+    so no scope guard of its own (not reused from ``skills_sync._rmtree_writable``: that
+    resolves its root through the sync module's globals, which hub paths do not share).
+    See #34860, #34972, #139890."""
+    def _on_error(func, fpath, _exc):
+        for p in (os.path.dirname(fpath), fpath):
+            with suppress(OSError):
+                os.chmod(p, stat.S_IRWXU)
+        func(fpath)
+    shutil.rmtree(path, onerror=_on_error)
 
 
 def _is_path_redirect(path: Path) -> bool:
@@ -158,7 +177,7 @@ def install_from_quarantine(
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
     if install_dir.exists():
-        shutil.rmtree(install_dir)
+        _rmtree_force(install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -216,7 +235,7 @@ def uninstall_skill(skill_name: str) -> tuple[bool, str]:
     except ValueError as exc:
         return False, f"Refusing to uninstall '{skill_name}': {exc}"
     if install_path.exists():
-        shutil.rmtree(install_path)
+        _rmtree_force(install_path)
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
     from hermes_cli.observability.shared_metrics_disabled import record_skill_removed

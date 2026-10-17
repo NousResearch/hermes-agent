@@ -28,7 +28,7 @@ def _service_manager_env(monkeypatch) -> None:
     monkeypatch.setenv("INVOCATION_ID", "system-unit-104893")
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_service_gateway_boot_adopts_its_user_bus(monkeypatch):
     runtime_dir = _fake_user_bus(monkeypatch, present=True)
     _service_manager_env(monkeypatch)
@@ -62,7 +62,7 @@ def test_service_gateway_boot_adopts_its_user_bus(monkeypatch):
     assert worker_env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={runtime_dir}/bus"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_absent_user_bus_is_never_fabricated(monkeypatch):
     """Fail closed, never invent. With no user manager the env must stay bare so the
     scope probe keeps reaching its honest "unavailable" verdict — a bus address pointing

@@ -23,11 +23,22 @@ class SupervisedTickerThread:
                  stop_event: threading.Event, name: str = "cron-scheduler") -> None:
         self._target, self._args, self._kwargs = target, args, dict(kwargs or {})
         self._stop_event, self._name = stop_event, name
+        # An external provider's start() (Chronos) arms remote one-shots and RETURNS by design;
+        # only a target that escaped with an exception is a dead ticker worth respawning.
+        self._crashed = False
         self._thread = self._spawn()
         self.restarts = 0
 
+    def _run(self) -> None:
+        try:
+            self._target(*self._args, **self._kwargs)
+        except BaseException:
+            self._crashed = True
+            raise
+
     def _spawn(self) -> threading.Thread:
-        return threading.Thread(target=self._target, args=self._args, kwargs=self._kwargs, daemon=True, name=self._name)
+        self._crashed = False
+        return threading.Thread(target=self._run, daemon=True, name=self._name)
 
     def start(self) -> None:
         self._thread.start()
@@ -39,8 +50,8 @@ class SupervisedTickerThread:
         self._thread.join(timeout)
 
     def restart_if_dead(self) -> bool:
-        """Respawn the ticker when it ended without ``stop_event``; True when a restart happened."""
-        if self._stop_event.is_set() or self._thread.is_alive():
+        """Respawn the ticker when it crashed without ``stop_event``; True when a restart happened."""
+        if self._stop_event.is_set() or self._thread.is_alive() or not self._crashed:
             return False
         self.restarts += 1
         logger.error(

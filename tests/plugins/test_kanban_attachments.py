@@ -111,10 +111,41 @@ def test_add_list_get_delete_attachment(kanban_home, tmp_path):
         conn.close()
 
 
+
 def test_delete_attachment_missing_returns_none(kanban_home):
     conn = kbc.connect()
     try:
         assert kb.delete_attachment(conn, 999999) is None
+    finally:
+        conn.close()
+
+
+def test_delete_attachment_keeps_blob_referenced_by_another_row(kanban_home):
+    conn = kbc.connect()
+    try:
+        task_id = _make_task(conn)
+        blob = kb.task_attachments_dir(task_id) / "shared.txt"
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"shared attachment")
+
+        first_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename="first.txt",
+            stored_path=str(blob),
+            size=blob.stat().st_size,
+        )
+        second_id = kb.add_attachment(
+            conn,
+            task_id,
+            filename="second.txt",
+            stored_path=str(blob),
+            size=blob.stat().st_size,
+        )
+
+        assert kb.delete_attachment(conn, first_id) is not None
+        assert blob.exists(), "a surviving attachment row must keep its shared blob"
+        assert kb.get_attachment(conn, second_id) is not None
     finally:
         conn.close()
 
@@ -292,5 +323,3 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
         assert kb.list_attachments(conn, task_id) == []
     finally:
         conn.close()
-
-

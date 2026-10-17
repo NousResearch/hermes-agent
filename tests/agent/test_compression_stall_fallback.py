@@ -90,7 +90,7 @@ class _StalledSummaryWorker:
             fence.finish_commit()
 
 
-def _run(worker, *, chain, timeouts, messages, idle=0.05, ceiling=2.0):
+def _run(worker, *, chain, timeouts, messages, idle=2.0, ceiling=5.0):
     with _patch_chain(chain):
         return run_compress_context_with_progress_timeout(
             worker=worker,
@@ -151,8 +151,8 @@ def test_retry_runs_on_a_host_published_fence():
                 worker=worker,
                 messages=original,
                 system_prompt_fallback="degraded-prompt",
-                idle_timeout_seconds=0.05,
-                total_ceiling_seconds=2.0,
+                idle_timeout_seconds=2.0,
+                total_ceiling_seconds=5.0,
                 new_fence=_new_fence,
             )
     finally:
@@ -181,8 +181,8 @@ def test_hard_interrupt_suppresses_the_fallback_attempt():
                 worker=worker,
                 messages=original,
                 system_prompt_fallback="degraded-prompt",
-                idle_timeout_seconds=0.05,
-                total_ceiling_seconds=2.0,
+                idle_timeout_seconds=2.0,
+                total_ceiling_seconds=5.0,
                 on_timeout=lambda *args: timeouts.append(args),
                 telemetry_agent=agent,
             )
@@ -217,7 +217,7 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
         [{"role": "user", "content": "unused"}], stall_attempts=2
     )
     timeouts = []
-    entry = dict(CHAIN_ENTRY, timeout=0.05)
+    entry = dict(CHAIN_ENTRY, timeout=2.0)
 
     try:
         msgs, prompt = _run(worker, chain=[entry], timeouts=timeouts, messages=original)
@@ -225,9 +225,129 @@ def test_fallback_that_also_stalls_degrades_after_one_attempt():
         worker.release.set()
 
     assert worker.attempts == 2, "the fallback is attempted once, not in a loop"
+    assert worker.fences[1].deadline_monotonic == worker.fences[0].deadline_monotonic, (
+        "the fallback must not mint a second total ceiling"
+    )
     assert msgs is original, "no messages may be dropped when both routes stall"
     assert prompt == "degraded-prompt"
     assert len(timeouts) == 1, "the degrade must be reported exactly once"
+
+
+def test_total_ceiling_exhaustion_does_not_start_fallback():
+    original = [{"role": "user", "content": "keep-me"}]
+    worker = _StalledSummaryWorker([{"role": "user", "content": "unused"}])
+    timeouts = []
+
+    try:
+        msgs, prompt = _run(
+            # idle == ceiling: the primary's idle expiry spends the whole shared budget. >= 2 s so a
+            # loaded runner still starts the primary worker inside it (tests/AGENTS.md).
+            worker, chain=[dict(CHAIN_ENTRY, timeout=2.0)], timeouts=timeouts, messages=original,
+            idle=2.0, ceiling=2.0,
+        )
+    finally:
+        worker.release.set()
+
+    assert worker.attempts == 1, "an exhausted shared budget cannot fund a retry"
+    assert msgs is original
+    assert prompt == "degraded-prompt"
+    assert len(timeouts) == 1
+
+
+class _ReadThenStallWorker(_StalledSummaryWorker):
+    """The primary attempt's server reads the prompt (pushing the fence deadline back), then stalls."""
+
+    def __call__(self, fence: CompressionCommitFence):
+        if not self.routes:
+            assert fence.extend_deadline(10.0)
+        return super().__call__(fence)
+
+
+def test_stall_after_prompt_reading_still_funds_the_fallback():
+    """Prompt reading moves the fence deadline; the fallback must be budgeted from the moved deadline,
+    not the primary attempt's original one, or a long read followed by a stall skips the fallback."""
+    original = [{"role": "user", "content": "keep-me"}]
+    compressed = [{"role": "user", "content": "summary"}]
+    worker = _ReadThenStallWorker(compressed)
+    timeouts = []
+
+    try:
+        msgs, prompt = _run(
+            # Same budget as the exhaustion test above: without the extension the idle expiry spends it.
+            worker, chain=[dict(CHAIN_ENTRY, timeout=2.0)], timeouts=timeouts, messages=original,
+            idle=2.0, ceiling=2.0,
+        )
+    finally:
+        worker.release.set()
+
+    assert worker.attempts == 2, "the extended budget must fund the fallback attempt"
+    assert msgs == compressed
+    assert prompt == "summarized-prompt"
+    assert not timeouts
+
+
+def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_path, monkeypatch):
+    """The cancelled primary worker persists ``stall_interrupted`` while the fallback retry is already
+    running; that cooldown must not no-op the retry (#112387). Real AIAgent, real ``compress_context``
+    and facade timeout wrap; only the summary route (``compress``) is stubbed: the primary route stalls
+    silently until the host cancels its fence, the pinned fallback route returns a real compressed list."""
+    import os
+    import time
+    from pathlib import Path
+
+    import agent.conversation_compression as cc
+    from agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from hermes_state import SessionDB
+
+    session_id = "STALL_FALLBACK_SAME_TURN"
+    db = SessionDB(db_path=Path(tmp_path) / "state.db")
+    db.create_session(session_id, source="cli")
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+            session_db=db, session_id=session_id, skip_context_files=True, skip_memory=True,
+        )
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    agent._cached_system_prompt = "sys"
+    compressor = agent.context_compressor
+    compressor.threshold_tokens = 1_000
+    original = [{"role": "user", "content": f"m{i} " + "x" * 400} for i in range(20)]
+    live = list(original)
+    routes = []
+
+    def fake_compress(messages, **kwargs):
+        route = take_pinned_summary_route()
+        routes.append((route["label"] if route else None, kwargs.get("bypass_cooldown", False)))
+        if route is None:
+            cancelled = getattr(compressor, "_compression_cancelled_check", None)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not (callable(cancelled) and cancelled()):
+                time.sleep(0.0005)
+            raise AuxiliaryExplicitCancellation()
+        return [{"role": "user", "content": "summary of earlier turns"}, original[-1]]
+
+    compressor.compress = fake_compress
+    real_route = cc.resolve_compression_fallback_route
+
+    def route_after_primary_unwound():
+        # Pin the race outcome from the report: the primary persisted its backoff before the retry ran.
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and compressor._summary_failure_cooldown_until <= time.monotonic():
+            time.sleep(0.001)
+        return real_route()
+
+    monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (0.4, 4.0))
+    monkeypatch.setattr(cc, "resolve_compression_fallback_route", route_after_primary_unwound)
+    with _patch_chain([CHAIN_ENTRY]):
+        out_msgs, _prompt = agent._compress_context(live, "sys", approx_tokens=50_000)
+
+    assert [r[0] for r in routes] == [None, "fallback_chain[0](custom)"]
+    assert routes[1][1] is True, "the same-turn retry must bypass the cooldown the primary just armed"
+    assert len(out_msgs) == 2 and out_msgs is not live
+    assert getattr(agent, "_last_compression_timed_out", None) is not True
 
 
 # ---------------------------------------------------------------------------

@@ -5,14 +5,15 @@ is_interrupted(), which checks the CURRENT thread."""
 
 import contextvars
 import logging
-import os
 import threading
 from collections.abc import Callable
+
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
 # Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in tools/environments/base.py.
-_DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+_DEBUG_INTERRUPT = env_var_enabled("HERMES_DEBUG_INTERRUPT")
 if _DEBUG_INTERRUPT:
     # AIAgent's quiet_mode forces the `tools` logger to ERROR on CLI startup;
     # force ours back to INFO so the trace is visible in agent.log.

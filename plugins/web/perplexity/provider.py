@@ -18,11 +18,14 @@ Config keys this provider responds to::
 
 Env vars::
 
-    PERPLEXITY_API_KEY=...       # https://www.perplexity.ai/account/api (required)
+    PERPLEXITY_API_KEY=...       # required for direct search and extract
     PERPLEXITY_BASE_URL=...      # optional override of https://api.perplexity.ai
 
-Keyed only — Perplexity has no anonymous tier, so this provider is not a
-member of the zero-config keyless ring and never resolves without a key.
+No anonymous tier at Perplexity itself. The managed route serves search through
+``perplexity-gateway.<TOOL_GATEWAY_DOMAIN>`` as ``search_type: "fast"``, which the
+gateway serves to any Nous identity (paid, unpaid or anonymous guest); a direct key
+takes precedence.
+Managed extract stays on Firecrawl.
 
 Extract caveat: Perplexity's only supported page-content route returns the
 passages of a page relevant to a *query* (elisions marked ``…``), not the
@@ -40,7 +43,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.web_search_provider import WebSearchProvider
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ _KEY_URL = "https://www.perplexity.ai/account/api"
 _HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
     "X-Pplx-Integration": "hermes-agent",
 }
 
@@ -69,8 +72,18 @@ def _missing_key_error() -> str:
     return f"PERPLEXITY_API_KEY is not set. Get a key at {_KEY_URL}"
 
 
-def _perplexity_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """POST to the Perplexity API and return the parsed JSON response.
+def _managed_gateway(token_reader=None):
+    """Nous Tool Gateway config when web_search is on the managed route, else None."""
+    from tools import managed_tool_gateway as gw
+    from tools.web_tools import _managed_web_search
+
+    if not _managed_web_search():
+        return None
+    return gw.resolve_free_search_gateway(token_reader=token_reader)
+
+
+def _perplexity_request(endpoint: str, payload: dict[str, Any], gateway=None) -> dict[str, Any]:
+    """POST to Perplexity or the supplied gateway; return parsed JSON.
 
     Raises ``ValueError`` when the key is missing or on any non-2xx status,
     carrying the response body so Perplexity's own error text (invalid key,
@@ -79,9 +92,14 @@ def _perplexity_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any
     from agent.web_search_provider import get_provider_env
 
     api_key = get_provider_env("PERPLEXITY_API_KEY")
-    if not api_key:
+    headers = _HEADERS
+    if gateway is not None:
+        # Nous-owned key behind the gateway: identify the harness only, not a per-user integration.
+        base_url, api_key, headers = gateway.gateway_origin.rstrip("/"), gateway.nous_user_token, {"User-Agent": _HEADERS["User-Agent"]}
+    elif api_key:
+        base_url = (get_provider_env("PERPLEXITY_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
+    else:
         raise ValueError(_missing_key_error())
-    base_url = (get_provider_env("PERPLEXITY_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Perplexity %s request to %s", endpoint, url)
 
@@ -92,7 +110,7 @@ def _perplexity_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            **_HEADERS,
+            **headers,
         },
     )
     if response.status_code >= 400:
@@ -101,7 +119,7 @@ def _perplexity_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any
     return response.json()
 
 
-def _normalize_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_search_results(response: dict[str, Any]) -> dict[str, Any]:
     """Map Search API ``{results: [{title,url,snippet,...}]}`` to the tool shape."""
     web_results = []
     for i, result in enumerate(response.get("results") or []):
@@ -116,7 +134,7 @@ def _normalize_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": True, "data": {"web": web_results}}
 
 
-def _normalize_snippets(response: Dict[str, Any], urls: List[str]) -> List[Dict[str, Any]]:
+def _normalize_snippets(response: dict[str, Any], urls: list[str]) -> list[dict[str, Any]]:
     """Map ``{results: [{url,text?,tokens_count?,error?}]}`` to extract documents.
 
     One document per requested URL, in request order. A URL the backend
@@ -124,11 +142,11 @@ def _normalize_snippets(response: Dict[str, Any], urls: List[str]) -> List[Dict[
     rather than raising — a 200 does not mean every page succeeded.
     """
     by_url = {r.get("url", ""): r for r in (response.get("results") or []) if isinstance(r, dict)}
-    documents: List[Dict[str, Any]] = []
+    documents: list[dict[str, Any]] = []
     for url in urls:
         result = by_url.get(url, {})
         text = result.get("text") or ""
-        doc: Dict[str, Any] = {
+        doc: dict[str, Any] = {
             "url": url,
             "title": "",
             "content": text,
@@ -142,9 +160,9 @@ def _normalize_snippets(response: Dict[str, Any], urls: List[str]) -> List[Dict[
     return documents
 
 
-def _query_for_urls(urls: List[str]) -> str:
+def _query_for_urls(urls: list[str]) -> str:
     """Derive a relevance query from URL path words (``/bloom-filter`` -> ``bloom filter``)."""
-    words: List[str] = []
+    words: list[str] = []
     for url in urls:
         parsed = urlparse(url)
         for token in parsed.path.replace("-", " ").replace("_", " ").replace("/", " ").split():
@@ -156,7 +174,7 @@ def _query_for_urls(urls: List[str]) -> str:
 
 
 class PerplexityWebSearchProvider(WebSearchProvider):
-    """Perplexity Search API (search) + content snippets (extract), keyed only."""
+    """Direct or managed search; direct-key content snippets for extract."""
 
     @property
     def name(self) -> str:
@@ -167,10 +185,11 @@ class PerplexityWebSearchProvider(WebSearchProvider):
         return "Perplexity"
 
     def is_available(self) -> bool:
-        """Return True when ``PERPLEXITY_API_KEY`` is set to a non-empty value."""
+        """True with a ``PERPLEXITY_API_KEY``, or on the managed route with a likely-usable Nous token."""
         from agent.web_search_provider import get_provider_env
+        from tools.managed_tool_gateway import peek_nous_access_token
 
-        return bool(get_provider_env("PERPLEXITY_API_KEY"))
+        return bool(get_provider_env("PERPLEXITY_API_KEY")) or _managed_gateway(token_reader=peek_nous_access_token) is not None
 
     def supports_search(self) -> bool:
         return True
@@ -178,7 +197,7 @@ class PerplexityWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute a Perplexity Search API query.
 
         ``search_context_size: low`` keeps ``snippet`` at description length;
@@ -191,23 +210,35 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
-            logger.info("Perplexity search: '%s' (limit=%d)", query, limit)
-            raw = _perplexity_request(
-                "search",
-                {
-                    "query": query,
-                    "max_results": max(1, min(limit, _MAX_SEARCH_RESULTS)),
-                    "search_context_size": "low",
-                },
-            )
+            from agent.web_search_provider import get_provider_env
+            from tools.managed_tool_gateway import resolve_free_search_gateway
+            from tools.web_tools import _managed_web_search
+
+            direct = bool(get_provider_env("PERPLEXITY_API_KEY"))
+            managed = False if direct else _managed_web_search()
+            gateway = resolve_free_search_gateway() if managed else None
+            if gateway is None and managed:
+                from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
+
+                raise ValueError(selection_error(
+                    "web", NOUS_MANAGED_PROVIDER, "there is no usable Nous identity (sign in with `/login`)"))
+            logger.info("Perplexity search: '%s' (limit=%d%s)", query, limit, ", managed" if gateway else "")
+            payload = {
+                "query": query,
+                "max_results": max(1, min(limit, _MAX_SEARCH_RESULTS)),
+                "search_context_size": "low",
+            }
+            if gateway is not None:
+                payload["search_type"] = "fast"
+            raw = _perplexity_request("search", payload, gateway)
             return _normalize_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
-        except Exception as exc:  # noqa: BLE001 — including httpx errors
+        except Exception as exc:
             logger.warning("Perplexity search error: %s", exc)
             return {"success": False, "error": f"Perplexity search failed: {exc}"}
 
-    def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+    def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Return query-relevant snippets for one or more URLs.
 
         Sync — the underlying call is httpx.post(...). Per-URL failures
@@ -232,14 +263,14 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             return _normalize_snippets(raw, list(urls))
         except ValueError as exc:
             return [{"url": u, "title": "", "content": "", "error": str(exc)} for u in urls]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Perplexity extract error: %s", exc)
             return [
                 {"url": u, "title": "", "content": "", "error": f"Perplexity extract failed: {exc}"}
                 for u in urls
             ]
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "Perplexity",
             "badge": "paid",

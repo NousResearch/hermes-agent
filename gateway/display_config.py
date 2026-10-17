@@ -1,7 +1,8 @@
 """Per-platform display/verbosity resolver (``resolve_display_setting``).
 
 Resolution order, first non-None wins: ``display.platforms.<platform>.<key>`` →
-``display.<key>`` → ``_PLATFORM_DEFAULTS[platform][key]`` → ``_GLOBAL_DEFAULTS[key]``.
+``display.<key>`` → ``_PLATFORM_DEFAULTS[platform][key]`` (a plugin platform: its registered
+``display_tier`` + ``display_overrides``) → ``_GLOBAL_DEFAULTS[key]``.
 Exception: ``display.streaming`` is CLI-only; gateway streaming follows the top-level
 ``streaming`` config unless a per-platform override sets it. Legacy
 ``display.tool_progress_overrides`` is still read as a ``tool_progress`` fallback.
@@ -21,6 +22,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
+    "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
@@ -46,33 +48,30 @@ _TIER_LOW = {
 }
 _TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 
+# Core-only surfaces. A plugin platform declares ``display_tier`` (+ optional ``display_overrides``)
+# on its ``PlatformEntry``; _platform_defaults() reads it from the registry.
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
-    # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats so it
-    # doesn't look like "typing..." for 30 minutes.
-    "telegram": {**_TIER_HIGH, "tool_progress": "off", "busy_ack_detail": False},
-    "discord": {**_TIER_HIGH, "reasoning_style": "subtext"},  # "-# " subtext reads as metadata
-    # Slack: Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
-    "slack": {**_TIER_MEDIUM, "tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
-    "mattermost": _TIER_MEDIUM,
-    "matrix": _TIER_MEDIUM,
-    "feishu": _TIER_MEDIUM,
-    "buzz": _TIER_MEDIUM,  # Nostr: edits in place but channels are shared community spaces
-    "signal": _TIER_LOW,
-    "whatsapp": _TIER_MEDIUM,  # Baileys bridge supports /edit
-    "whatsapp_cloud": _TIER_LOW,  # adapter lacks edit_message; promote once it lands
-    "photon": _TIER_LOW,  # permanent-message iMessage inboxes (no edit)
-    "bluebubbles": _TIER_LOW,
-    "weixin": _TIER_LOW,
-    # Non-editable, but its native "stream" msgtype gives a typing animation + cumulative updates.
-    "wecom": {**_TIER_LOW, "streaming": True},
-    "wecom_callback": _TIER_LOW,
-    "dingtalk": _TIER_LOW,
-    "email": _TIER_MINIMAL,
-    "sms": _TIER_MINIMAL,
     "webhook": _TIER_MINIMAL,
-    "homeassistant": _TIER_MINIMAL,
     "api_server": {**_TIER_HIGH, "tool_preview_length": 0},
 }
+
+_TIERS = {"high": _TIER_HIGH, "medium": _TIER_MEDIUM, "low": _TIER_LOW, "minimal": _TIER_MINIMAL}
+
+
+def _platform_defaults(platform_key: str) -> dict[str, Any]:
+    """Built-in defaults for *platform_key*: the table above, else the ``display_tier`` a plugin
+    platform registered (``PlatformEntry.display_tier``) with its ``display_overrides`` on top."""
+    if platform_key in _PLATFORM_DEFAULTS:
+        return _PLATFORM_DEFAULTS[platform_key]
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_key)
+    except Exception:
+        return {}
+    tier = _TIERS.get(str(getattr(entry, "display_tier", "") or "").lower(), {})
+    overrides = getattr(entry, "display_overrides", None)
+    return {**tier, **overrides} if overrides else tier
+
 
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
@@ -87,7 +86,7 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     configured = _configured_display_value(user_config, platform_key, setting)
     if configured is not None:
         return _normalise(setting, configured)
-    val = _PLATFORM_DEFAULTS.get(platform_key, {}).get(setting)
+    val = _platform_defaults(platform_key).get(setting)
     if val is None:
         val = _GLOBAL_DEFAULTS.get(setting)
     return fallback if val is None else val
@@ -95,8 +94,11 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
 
 def _configured_display_value(user_config: dict, platform_key: str, setting: str) -> Any:
     """First non-None operator value, without introducing tier defaults."""
-    display_cfg = user_config.get("display") or {}
-    plat_overrides = (display_cfg.get("platforms") or {}).get(platform_key)
+    display_cfg = user_config.get("display")
+    if not isinstance(display_cfg, dict):
+        return None
+    platforms = display_cfg.get("platforms")
+    plat_overrides = platforms.get(platform_key) if isinstance(platforms, dict) else None
     if isinstance(plat_overrides, dict) and plat_overrides.get(setting) is not None:
         return plat_overrides[setting]
     if setting == "tool_progress":
@@ -150,6 +152,15 @@ def _norm_long_running(value: Any) -> Any:
     return "generic" if isinstance(value, str) and value.strip().lower() == "generic" else _norm_bool(value)
 
 
+def _norm_suppress_warning_notifications(value: Any) -> bool:
+    # Only an explicit, recognized opt-in may hide engine diagnostics.
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return False
+
+
 def _norm_cleanup_progress(value: Any) -> bool:
     return value.lower() in _TRUTHY if isinstance(value, str) else bool(value)
 
@@ -174,6 +185,7 @@ _NORMALISERS: dict[str, Any] = {
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
+    "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,

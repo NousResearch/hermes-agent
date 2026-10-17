@@ -10,12 +10,14 @@ into the designed "Restart required" message, which the renderer already maps to
 restart (``notifications.errors.codeSkewRestartRequired`` + ``RECOVERY_ACTIONS.restartHermes``).
 """
 
+import builtins
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-import tui_gateway.server as server
 from gateway import code_skew
+from tui_gateway import server
 
 
 class _Agent:
@@ -92,3 +94,61 @@ def test_mid_turn_pick_is_refused_before_it_is_stashed(monkeypatch):
         server._stash_pending_model_switch(42, "model", "new/model --provider nous", session, False, parsed)
 
     assert "pending_model_switch" not in session
+
+
+@pytest.mark.parametrize("entry", ["idle", "running", "sessionless-once"])
+def test_config_set_refuses_skew_before_lazy_import(monkeypatch, entry):
+    _set_skew(monkeypatch, ("abc1234567", "def4567890"))
+    agent = _Agent()
+    session = None if entry == "sessionless-once" else {"agent": agent, "running": entry == "running"}
+    original_session = dict(session) if session is not None else None
+    value = "new/model --provider nous" + (" --once" if session is None else "")
+    params = {"value": value, "session_id": "sid" if session is not None else ""}
+    writes = {}
+    for name in ("_stash_pending_model_switch", "_persist_live_session_runtime",
+                 "_persist_live_session_system_prompt", "_write_config_key", "_save_cfg"):
+        writes[name] = Mock(side_effect=AssertionError("selection must not be saved"))
+        monkeypatch.setattr(server, name, writes[name])
+    imports = []
+    original_import = builtins.__import__
+
+    def forbid_model_switch(name, *args, **kwargs):
+        if name == "hermes_cli.model_switch":
+            imports.append(name)
+            raise ImportError("stale model_switch lazy import reached")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", forbid_model_switch)
+
+    response = server._set_model(42, params, "model", value, session)
+
+    assert response["error"]["code"] == 5001
+    assert response["error"]["message"].startswith("Restart required:")
+    assert "abc1234567" in response["error"]["message"]
+    assert "def4567890" in response["error"]["message"]
+    assert imports == [], "the config.set entry must guard before even importing model_switch"
+    assert session == original_session
+    assert agent.model == "old"
+    for write in writes.values():
+        write.assert_not_called()
+
+
+def test_stdio_records_revision_before_starting_request_services(monkeypatch):
+    from hermes_cli.observability import shared_metrics_process
+    from tui_gateway import entry
+
+    fingerprint = "git:main:abc1234567890"
+    monkeypatch.setattr(code_skew, "_boot_fingerprint", None)
+    monkeypatch.setattr(code_skew, "_fingerprint", lambda: fingerprint)
+    monkeypatch.setattr(entry, "_install_sidecar_publisher", lambda: None)
+    monkeypatch.setattr(entry, "_close_rpc_stdin_on_exec", lambda: None)
+    monkeypatch.setattr(server, "install_tui_message_injector", lambda: None)
+    monkeypatch.setattr(server, "_stdio_is_rpc_channel", False)
+
+    def stop_after_boot(_surface):
+        assert code_skew._boot_fingerprint == fingerprint
+        raise RuntimeError("stop after boot fingerprint")
+
+    monkeypatch.setattr(shared_metrics_process, "begin_process", stop_after_boot)
+    with pytest.raises(RuntimeError, match="stop after boot fingerprint"):
+        entry._serve()

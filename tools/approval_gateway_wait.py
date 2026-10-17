@@ -24,7 +24,7 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged", "settle", "cancelled")
+    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -40,6 +40,8 @@ class _ApprovalEntry:
         # Why the prompt was withdrawn with nobody answering (interrupt cause, session teardown);
         # followers and teardown read it so a withdrawn prompt never renders as a user deny.
         self.cancelled: str | None = None
+        # The prompt timed out unanswered; followers woken by its event adopt that timeout.
+        self.expired = False
 
 
 def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
@@ -90,12 +92,15 @@ def _finish(payload: dict, resolved: bool, choice: str | None, reason, **extra) 
     """Fire the post hook and build the decision dict. Unresolved (timeout) and
     a None choice both mean the user never answered; ``cancelled`` carries the
     cause when the prompt was withdrawn rather than answered."""
-    if extra.get("cancelled"):
-        hook_choice = "cancelled"
-    else:
-        hook_choice = "timeout" if not resolved else (choice or "timeout")
-    _ctx._fire_approval_hook("post_approval_response", **payload, choice=hook_choice, **extra)
+    _ctx._fire_approval_hook("post_approval_response", **payload, choice=_hook_choice(resolved, choice, extra), **extra)
     return {"resolved": resolved, "choice": choice, "reason": reason, **extra}
+
+
+def _hook_choice(resolved: bool, choice: str | None, extra: dict) -> str:
+    """Observer-facing outcome of a wait: the choice, else ``cancelled`` / ``timeout``."""
+    if extra.get("cancelled"):
+        return "cancelled"
+    return (choice or "timeout") if resolved else "timeout"
 
 
 def _await_coalesced_leader(session_key: str, leader, payload: dict):
@@ -111,6 +116,8 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     state = _poll_event(leader.event, session_key,
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s")
+    if state == "set" and leader.result is None and leader.expired:
+        state = "timeout"
     cancelled = _cancel_cause(state, leader)
     if state == "interrupted":
         # Deny only OUR follower; the leader thread handles its own signal.
@@ -139,11 +146,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     coalesced: parallel tool calls would otherwise fire N identical prompts
     the user must /approve N times while the agent sits wedged. Followers adopt
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
-    the leader, so the follower falls through to a fresh prompt."""
+    the leader, so the followers fall through to ONE fresh prompt they coalesce on."""
     from tools import approval as _approval
     from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
 
     primary_key = approval_data.get("pattern_key", "")
+    if surface == "gateway":
+        surface = _ctx.gateway_approval_surface()
     payload = {
         "command": approval_data.get("command", ""),
         "description": approval_data.get("description", ""),
@@ -152,55 +161,94 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "session_key": session_key, "surface": surface,
     }
     keys = list(approval_data.get("pattern_keys") or [])
-    with _approval._lock:
-        leader = next((e for e in _approval._gateway_queues.get(session_key, [])
-                       if e.data.get("command") == approval_data.get("command")
-                       and list(e.data.get("pattern_keys") or []) == keys), None)
-    if leader is not None and not preparing_terminal_approval():
+    entry = _ApprovalEntry(approval_data)
+
+    def _enqueue() -> None:
+        register_prepared_approval(session_key, entry)
+        _approval._gateway_queues.setdefault(session_key, []).append(entry)
+
+    # The leader lookup and our enqueue are ONE critical section: split, two identical requests both
+    # miss each other, both enqueue and the user gets duplicate prompts. A ``once`` releases the
+    # followers to prompt for themselves; they re-coalesce behind whichever re-prompts first, so the
+    # user still sees one prompt at a time (the answered leader is already off the queue).
+    while True:
+        with _approval._lock:
+            leader = None
+            if not preparing_terminal_approval():
+                leader = next((e for e in _approval._gateway_queues.get(session_key, [])
+                               if e.data.get("command") == approval_data.get("command")
+                               and list(e.data.get("pattern_keys") or []) == keys), None)
+            if leader is None:
+                _enqueue()
+                break
         adopted = _await_coalesced_leader(session_key, leader, payload)
         if adopted is not None:
             return adopted
 
-    entry = _ApprovalEntry(approval_data)
-    with _approval._lock:
-        register_prepared_approval(session_key, entry)
-        _approval._gateway_queues.setdefault(session_key, []).append(entry)
-
-    def _drop_entry(reason: str) -> None:
+    def _drop_entry(state: str) -> str | None:
+        """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
+        removing the entry are one critical section under the approval lock: ``resolve_gateway_approval``
+        commits under the same lock, so a choice that landed after the deadline check but before this
+        removal is still ours to honour, and one arriving later finds no entry (the client is told
+        nothing was pending instead of being acked "ok" while the agent denies)."""
         with _approval._lock:
+            choice = entry.result
             queue = _approval._gateway_queues.get(session_key, [])
             if entry in queue:
                 queue.remove(entry)
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
             settle, entry.settle = entry.settle, None
+            if choice is None and state in ("timeout", "notify_failed"):
+                # Coalesced followers block on this event: wake them with the leader's outcome rather than
+                # leaving them waiting their own full timeout on a prompt that no longer exists.
+                entry.expired = state == "timeout"
+                if state == "notify_failed":
+                    entry.cancelled = "the approval prompt could not be delivered"
+                entry.event.set()
         if settle is not None:
+            # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
+            # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client
+            # cannot answer) is ``session_closed``; never the raw poll-state token "set".
+            if state == "set":
+                reason = "resolved" if choice is not None else "session_closed"
+            else:
+                reason = state
             try:
                 settle(reason)
             except Exception:
                 logger.debug("approval settle hook failed", exc_info=True)
+        return choice
 
-    # Plugins hear about the request before the gateway does (real-time observers).
-    _ctx._fire_approval_hook("pre_approval_request", **payload)
-    # Bridges sync agent thread → async gateway.
-    try:
-        notify_cb(dict(entry.data))
-        approval_published()
-    except Exception as exc:
-        logger.warning("Gateway approval notify failed: %s", exc)
-        _drop_entry("notify_failed")
-        _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
-        return {"resolved": False, "choice": None, "notify_failed": True}
+    from tools.human_input_hooks import human_input_request
+    with human_input_request("approval", prompt=payload["command"], session_key=session_key) as human:
+        # Plugins hear about the request before the gateway does (real-time observers).
+        _ctx._fire_approval_hook("pre_approval_request", **payload)
+        # Bridges sync agent thread → async gateway.
+        try:
+            notify_cb(dict(entry.data))
+            approval_published()
+        except Exception as exc:
+            logger.warning("Gateway approval notify failed: %s", exc)
+            _drop_entry("notify_failed")
+            _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
+            human.outcome = "notify_failed"
+            return {"resolved": False, "choice": None, "notify_failed": True}
 
-    state = _poll_event(entry.event, session_key,
-                        interrupt_log="Approval wait interrupted — returning deny for session %s")
-    cancelled = _cancel_cause(state, entry)
-    choice = entry.result
-    if state == "interrupted":
-        # Our own decision stays a fail-closed deny; coalesced followers wake with the
-        # cause instead of a deny nobody issued.
-        choice, entry.cancelled = "deny", cancelled
-        entry.event.set()
-    _drop_entry("answered" if state == "set" else state)
-    extra = {"cancelled": cancelled} if cancelled else {}
-    return _finish(payload, state != "timeout", choice, entry.reason, **extra)
+        state = _poll_event(entry.event, session_key,
+                            interrupt_log="Approval wait interrupted — returning deny for session %s")
+        cancelled = _cancel_cause(state, entry)
+        if state == "interrupted":
+            # Coalesced followers wake with the cause instead of a deny nobody issued.
+            entry.cancelled = cancelled
+            entry.event.set()
+        choice = _drop_entry(state)
+        if state == "interrupted":
+            # Our own decision stays a fail-closed deny.
+            choice = "deny"
+        # A choice that landed in the gap between the deadline check and leaving the queue is an answer,
+        # not a timeout (#112548) — the same first-settlement rule as server_requests.send().
+        resolved = state != "timeout" or choice is not None
+        extra = {"cancelled": cancelled} if cancelled else {}
+        human.outcome = _hook_choice(resolved, choice, extra)
+        return _finish(payload, resolved, choice, entry.reason, **extra)

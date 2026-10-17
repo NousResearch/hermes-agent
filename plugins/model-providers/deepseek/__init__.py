@@ -38,9 +38,17 @@ class DeepSeekProfile(ProviderProfile):
             return {}, {}
         # Always set thinking explicitly (default enabled, matching the API default)
         # to avoid the reasoning_content echo trap on subsequent turns.
-        return thinking_toggle_extras(
+        extras, top_level = thinking_toggle_extras(
             reasoning_config, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, always_emit_toggle=True
         )
+        # ``{effort: "none"|"false"|"disabled"}`` is also an explicit disable:
+        # UI/session surfaces report Off from the effort field even when
+        # ``enabled`` is missing or still True (#107238).
+        rc = reasoning_config
+        effort = (rc.get("effort") or "").strip().lower() if isinstance(rc, dict) else ""
+        if rc is not None and effort in {"none", "false", "disabled"}:
+            return {"thinking": {"type": "disabled"}}, {}
+        return extras, top_level
 
 
 deepseek = DeepSeekProfile(
@@ -48,6 +56,9 @@ deepseek = DeepSeekProfile(
     description="DeepSeek — native DeepSeek API", signup_url="https://platform.deepseek.com/",
     fallback_models=("deepseek-v4-pro", "deepseek-flash"), base_url="https://api.deepseek.com/v1",
     default_aux_model="deepseek-flash",
+    # Native API implements only ``json_object`` (https://api-docs.deepseek.com/guides/json_mode);
+    # ``json_schema`` is a guaranteed HTTP 400 "This response_format type is unavailable now".
+    unsupported_response_formats=("json_schema",),
 )
 
 register_provider(deepseek)

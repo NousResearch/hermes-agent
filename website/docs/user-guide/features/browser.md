@@ -73,7 +73,7 @@ The `.env` keys above supply **credentials only**. The active cloud browser is c
 
 Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/browser-use) instead of the built-in browser tools. The agent writes and executes Python in the browser to click, type, drag, scrape, and interact with webpages.
 
-**This is the default browser mode**: when `browser.backend` is unset and the `browser-use` CLI is runnable (installed, or available through `uvx`), the agent gets the single `browser_exec` tool. If the CLI can't run, Hermes falls back to the built-in browser tools automatically.
+**This is the default browser mode**: when `browser.backend` is unset, the agent gets the single `browser_exec` tool. Its engine is browser-harness (the Browser Use CLI is a thin wrapper around it), a regular Python dependency of Hermes, so every install ships it, including the Desktop app, with no separate download. If it is ever missing from Hermes's environment, Hermes falls back to the built-in browser tools and `hermes update` restores it.
 
 The mode is a **driver** that composes with your configured browser backend: it drives Hermes' own headless Chromium, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools.
 
@@ -91,7 +91,7 @@ browser:
 
 (`backend: "browser-use"` remains valid to force the mode explicitly.)
 
-Browser Use's own cloud browsers need `browser-use auth login` or `BROWSER_USE_API_KEY`; other browser sources use their existing credentials unchanged.
+Browser Use's own cloud browsers need `BROWSER_USE_API_KEY`; other browser sources use their existing credentials unchanged.
 
 :::note
 Because Browser Use mode executes model-written Python on your machine, the
@@ -210,41 +210,47 @@ browser:
   real_profile_pin: "Profile 2"   # directory name under the browser's user-data dir
 ```
 
-A pin naming a profile directory that doesn't exist fails closed with a
-fixable message — it never silently falls back to the last-used profile.
+A pin naming a profile directory that doesn't exist never silently falls back to
+the last-used profile: the agent gets a fresh browser without your logins and a
+message naming the bad pin.
 
 When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.
 
-:::note Windows: the browser must be fully closed
-On Windows a running Chrome/Edge/Brave holds its cookie and login databases with
-an exclusive (deny-all) lock, so Hermes cannot copy them while the browser is
-open — it fails fast with a "fully quit the browser and retry" message rather
-than hang or produce a signed-out session. Real-profile browsing on Windows
-therefore requires the browser **fully quit**, including any background/tray
-instance (Chrome's "continue running background apps when closed" keeps a
-`chrome.exe` alive after you close the window). macOS and Linux can usually copy
-the profile while the browser is running. On every platform, each authentication
-database backup has a five-second retry budget. If the source or snapshot database
-stays locked, Hermes stops the launch and asks you to close the browser and retry.
-It preserves committed WAL data through SQLite rather than falling back to a raw
-file copy, which could silently lose recent logins. Unreadable or corrupt databases
-also stop the launch.
+:::note When your profile can't be copied, the browser still works
+Real-profile browsing never takes the browser away. If Hermes can't copy your
+profile, the agent gets a fresh browser **without your logins** for that session,
+and its first browser result says why (`real_profile_unavailable`), so it can tell
+you instead of acting as if it were signed in. That happens when:
+
+- **Windows:** a running Chrome/Edge/Brave holds its cookie database with an
+  exclusive (deny-all) lock. To browse as you, **fully quit** the browser first,
+  including any background/tray instance (Chrome's "continue running background
+  apps when closed" keeps a `chrome.exe` alive after you close the window).
+- **Your default browser isn't a supported Chromium** (Firefox, a Beta/Dev/Canary
+  channel), or the pinned profile doesn't exist.
+- **The cookie database is unreadable or corrupt**: the message names it and the
+  SQLite error.
+
+On macOS and Linux a running Chrome holds `Login Data`, `Login Data For Account`
+and `Web Data` (saved passwords and autofill) with a write lock, but `Cookies`
+still copies, and cookies are what keep you signed in to sites. Hermes copies the
+cookies and skips the locked password/autofill files, so you can keep your browser
+open. Each database is copied through SQLite's online backup (never a raw file
+copy, which could lose recent logins).
 
 Set `browser.real_profile_autoclose: true` to let Hermes **offer to close the
-browser for you** when it's holding the profile. Even with this on, Hermes never
-closes it automatically — when the profile is locked it always stops and the
-agent asks you first; only on your approval does it run `hermes browser
-close-profile` (terminates the browser process tree bound to that profile,
-losing unsaved tabs), then retries. If the profile is still locked after that
-(e.g. a background/tray instance relaunched), Hermes stays blocked and tells you
-to fully quit the browser — it won't loop or kill again on its own.
+browser for you** when it's holding the profile lock (the Windows case). Even with
+this on, Hermes never closes it automatically: the agent asks you first, and only on
+your approval runs `hermes browser close-profile` (terminates the browser process
+tree bound to that profile, losing unsaved tabs). A new browser session then picks
+up your profile.
 :::
 
 - **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Chromium (whichever is your OS
-  default). A non-Chromium default (e.g. Firefox) fails closed with a clear
-  message rather than guessing.
+  default). A non-Chromium default (e.g. Firefox) gets a fresh browser and a clear
+  message rather than a guess at which profile to use.
 - **Works on any backend.** On a local backend it's automatic once the toggle
   is on. Under a **cloud** browser backend, the agent can still open a
   real-profile local session on demand via the `browser_exec` tool's `local`
@@ -282,8 +288,9 @@ Three things to set up before scheduling one:
   is what carries a run after your own session has expired.
 
 **Windows prerequisite:** the browser has to be fully quit before a snapshot can
-be taken at all, so a scheduled tick needs it closed beforehand — Hermes never
-closes it without asking you first (see the note above).
+be taken, so a scheduled tick needs it closed beforehand; otherwise the tick runs
+on a fresh, signed-out browser. Hermes never closes it without asking you first
+(see the note above).
 
 The bundled `product-price-monitor` skill is a worked example of the recurring
 shape — a JSON watch contract written during setup, then one scheduled tick that
@@ -620,13 +627,19 @@ AGENT_BROWSER_ARGS=--no-sandbox
 
 ### Install agent-browser CLI
 
-You don't need to install anything — `agent-browser` resolves automatically via
-`npx agent-browser` on first browser-tool use. To avoid the one-time npx fetch,
-you can install it globally ahead of time (optional):
+The installers and `hermes update` install `agent-browser` and its pinned
+Chromium through Hermes's package manager by default. If you installed with
+`--skip-browser` / `-SkipBrowser`, or the download failed, install them with:
 
 ```bash
-npm install -g agent-browser
+hermes pm install agent-browser
 ```
+
+This also undoes an earlier `--skip-browser` choice, so updates keep the
+browser tools current. An `agent-browser` already on your `PATH` also works.
+On Linux, Chromium may also need system libraries
+(`npx playwright install-deps chromium`). On Android/Termux, run
+`npm install -g agent-browser && agent-browser install` instead.
 
 :::info
 The `browser` toolset must be included in your config's `toolsets` list or enabled via `hermes config set toolsets '["hermes-cli", "browser"]'`.

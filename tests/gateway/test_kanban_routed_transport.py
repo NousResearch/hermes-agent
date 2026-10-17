@@ -45,11 +45,12 @@ def setup_runner(tmp_path, monkeypatch):
     return runner
 
 
-def completion(*, profile="yuki", metadata=None, chat="post", thread="post", mode="notify+wake"):
+def completion(*, profile="yuki", metadata=None, chat="post", thread="post",
+               user="creator", mode="notify+wake"):
     with kbc.connect() as conn:
         task = kb.create_task(conn, title="route completion", assignee="worker")
         kbn.add_notify_sub(conn, task_id=task, platform="discord", chat_id=chat,
-                           thread_id=thread, chat_type="thread", user_id="creator",
+                           thread_id=thread, chat_type="thread", user_id=user,
                            notifier_profile=profile, delivery_mode=mode,
                            delivery_metadata=metadata if metadata is not None else
                            {"guild_id": "guild", "scope_id": "guild", "parent_chat_id": "parent"})
@@ -83,7 +84,7 @@ def test_exact_routed_profile_delivers_once_on_its_authorized_transport(tmp_path
     source = primary.handled[0].source
     assert (source.profile, source.guild_id, source.scope_id, source.parent_chat_id) == (
         "yuki", "guild", "guild", "parent")
-    assert runner._adapter_for_source(source) is primary
+    assert runner._delivery_adapter_for(source) is primary
     assert not collect(runner)
 
     # A connected secondary owns its credential even where the primary route matches.
@@ -95,8 +96,29 @@ def test_exact_routed_profile_delivers_once_on_its_authorized_transport(tmp_path
     assert len(primary.sent) == 1
     assert len(secondary.sent) == len(secondary.handled) == 1
     assert secondary.handled[0].source.scope_id == "guild"
-    assert runner._adapter_for_source(secondary.handled[0].source) is secondary
+    assert runner._delivery_adapter_for(secondary.handled[0].source) is secondary
     assert not unseen(task)
+
+
+def test_user_routed_subscription_uses_only_its_authorized_profile(tmp_path, monkeypatch):
+    runner = setup_runner(tmp_path, monkeypatch)
+    primary = runner.adapters[Platform.DISCORD]
+    runner.config.profile_routes = parse_profile_routes([
+        dict(platform="discord", user_id="creator", profile="yuki"),
+    ])
+
+    routed = completion(profile="yuki", chat="shared", thread="")
+    rows = collect(runner)
+    assert [row["task"].id for row in rows] == [routed]
+    asyncio.run(deliver(runner, rows))
+    assert len(primary.sent) == len(primary.handled) == 1
+    assert primary.handled[0].source.user_id == "creator"
+
+    # Same sender can't fall back to the primary profile, and a legacy row with no sender
+    # identity must not skip a user route that could have won.
+    completion(profile="default", chat="shared", thread="")
+    completion(profile="default", chat="shared", thread="", user=None)
+    assert not collect(runner)
 
 
 def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkeypatch):
@@ -113,9 +135,6 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
     assert all(unseen(task) for task in tasks)
 
     good = completion()
-    runner._profile_adapters["yuki"] = {Platform.TELEGRAM: RecordingAdapter()}
-    assert not collect(runner)
-    runner._profile_adapters["yuki"] = {}
     # A tombstoned (deleted) owner profile is no longer served by the multiplexer.
     from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
     yuki_home = tmp_path / ".hermes" / "profiles" / "yuki"
@@ -212,3 +231,38 @@ def test_anchorless_thread_subscription_warns_once_instead_of_silent_skip(tmp_pa
     assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
     assert "--parent-chat-id" in warnings[0].getMessage()
     assert unseen(task)
+
+
+def test_pinned_profile_without_this_platform_delivers_via_primary(tmp_path, monkeypatch, caplog):
+    """A profile_routes-pinned profile that runs OTHER-platform adapters but none for the
+    subscription's platform is not a dead-end: the primary bot — the only credential serving that
+    chat, for inbound turns too — delivers, exactly as for a route-only profile (#115460, option 1).
+    A sub stamped with a profile other than the route's still warns ONCE instead of rewinding silently."""
+    import logging
+    from gateway import kanban_watchers_notifier as notifier
+
+    runner = setup_runner(tmp_path, monkeypatch)
+    primary = runner.adapters[Platform.DISCORD]
+    monkeypatch.setattr(notifier, "_UNROUTABLE_WARNED", set())
+    runner._profile_adapters["yuki"] = {Platform.TELEGRAM: RecordingAdapter()}
+    task = completion()
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        rows = collect(runner)
+    assert [row["task"].id for row in rows] == [task]
+    asyncio.run(deliver(runner, rows))
+    assert len(primary.sent) == len(primary.handled) == 1
+    assert primary.handled[0].source.profile == "yuki"
+    assert not unseen(task)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    # An owner stamped with the invoking shell's profile (#76483) instead of the route's
+    # is a permanent dead-end and must surface once at WARNING.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "stamped-owner.db"))
+    stamped = completion(profile="default")
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        assert not collect(runner)
+    warnings = [r for r in caplog.records if "pins that chat to profile yuki" in r.getMessage()
+                and stamped in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
+    assert "--notifier-profile yuki" in warnings[0].getMessage()
+    assert unseen(stamped)

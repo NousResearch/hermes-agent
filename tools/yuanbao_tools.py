@@ -3,7 +3,7 @@
 get_group_info / query_group_members / search_sticker / send_sticker / send_dm. Sticker
 flow mirrors chatbot-web's sticker-search/sticker-send: the LLM should search_sticker for
 a sticker_id (or pass the Chinese name), then send_sticker — never bare Unicode emoji.
-The active adapter singleton lives in ``gateway.platforms.yuanbao.YuanbaoAdapter.get_active``.
+The active adapter singleton lives in ``plugins.platforms.yuanbao.adapter.YuanbaoAdapter.get_active``.
 """
 
 from __future__ import annotations
@@ -54,9 +54,9 @@ def _yb_tool(label: str):
 
 
 def _get_active_adapter():
-    """Lazy import to avoid ImportError when gateway.platforms.yuanbao is unavailable."""
+    """Lazy import to avoid ImportError when plugins.platforms.yuanbao is unavailable."""
     with suppress(ImportError):
-        from gateway.platforms.yuanbao import YuanbaoAdapter
+        from plugins.platforms.yuanbao.adapter import YuanbaoAdapter
         return YuanbaoAdapter.get_active()
     return None
 
@@ -85,7 +85,7 @@ async def _members(adapter, group_code: str) -> list:
     return raw.get("members", [])
 
 
-async def _resolve_dm_recipient(adapter, group_code: str, name: str) -> Tuple[str, str]:
+async def _resolve_dm_recipient(adapter, group_code: str, name: str) -> tuple[str, str]:
     """Resolve ``name`` to (user_id, nickname) via the group member list; >1 partial match raises
     with ``candidates`` for disambiguation instead of guessing."""
     if not group_code:
@@ -163,7 +163,7 @@ async def query_group_members(args) -> dict:
 @_yb_tool("search_sticker")
 async def search_sticker(args) -> dict:
     """在内置贴纸表中按关键词模糊搜索，返回 Top-N 候选（空 query 返回前 N 条）。"""
-    from gateway.platforms.yuanbao_sticker import search_stickers
+    from plugins.platforms.yuanbao.yuanbao_sticker import search_stickers
 
     query, limit = args.get("query", ""), args.get("limit", 10)
     try:
@@ -183,7 +183,7 @@ async def send_sticker(args) -> dict:
     """向 chat_id（缺省取当前会话 HERMES_SESSION_CHAT_ID）发送一张内置贴纸（TIMFaceElem）。
     ``sticker``: 名称（如 "六六六"）或 sticker_id（如 "278"）；为空时随机发送。
     ``chat_id``: ``direct:{account_id}`` / ``group:{group_code}`` / 裸 account_id。"""
-    from gateway.platforms.yuanbao_sticker import get_sticker_by_id, get_sticker_by_name, get_random_sticker
+    from plugins.platforms.yuanbao.yuanbao_sticker import get_sticker_by_id, get_sticker_by_name, get_random_sticker
 
     target = (args.get("chat_id", "") or "").strip() or _session_env("HERMES_SESSION_CHAT_ID")
     if not target:
@@ -493,12 +493,3 @@ for _schema, _handler, _emoji in _TOOLS:
         name=_schema["name"], toolset="hermes-yuanbao", schema=_schema, handler=_handler,
         check_fn=_check_yuanbao, is_async=True, emoji=_emoji,
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

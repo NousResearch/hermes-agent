@@ -10,13 +10,36 @@
 const TARGET_RATE = 16_000
 const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
 
+// Health-monitor tuning for the continuous capture chain. A platform capture
+// failure (macOS PLAS IPC delegate error → StopSourceOnError, #119089) leaves
+// getUserMedia resolved but the PCM dead: ended track, halted callbacks, or
+// endless digital zeros. Without a watchdog the ear shows "listening" forever
+// and the gateway detector can never fire.
+/** -60 dBFS: live mic noise floors sit well above this; exact zeros do not. */
+const SILENCE_PEAK = 0.001
+/** ~8 s of digital zeros at 80 ms/frame before the ear is declared deaf. */
+const DEFAULT_SILENCE_FRAMES = 100
+const DEFAULT_STALL_TIMEOUT_MS = 3000
+const DEFAULT_MAX_FEED_FAILURES = 5
+
 export type WakeFeedRequester = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
 export interface ClientWakeCaptureOptions {
   /** Samples per frame at 16 kHz (from wake.start response). */
   frameLength?: number
   request: WakeFeedRequester
+  /**
+   * Fatal capture-chain failures only (dead track, stalled graph, sustained
+   * silence, refused feeds). Isolated feed RPC blips are retried silently —
+   * reporting every one would flap the ear on ordinary network jitter.
+   */
   onError?: (error: Error) => void
+  /** Consecutive near-silent 16 kHz frames before the ear is declared deaf. */
+  silenceFramesThreshold?: number
+  /** ms without an onaudioprocess callback before the graph is declared stalled. */
+  stallTimeoutMs?: number
+  /** Consecutive rejected/failed wake.feed calls before escalating. */
+  maxConsecutiveFeedFailures?: number
 }
 
 export interface ClientWakeCaptureHandle {
@@ -105,6 +128,21 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
     video: false
   })
 
+  // getUserMedia can resolve with a stillborn stream (no audio track, or an
+  // already-ended one after a platform capture error). Starting the graph on
+  // that feeds the detector silence forever — fail loudly instead (#119089).
+  const audioTracks = stream.getAudioTracks()
+
+  if (audioTracks.length === 0 || audioTracks.every(track => track.readyState === 'ended')) {
+    stream.getTracks().forEach(track => track.stop())
+
+    throw new Error('microphone track unavailable for client wake capture')
+  }
+
+  const silenceFramesThreshold = Math.max(1, Math.trunc(options.silenceFramesThreshold ?? DEFAULT_SILENCE_FRAMES))
+  const stallTimeoutMs = Math.max(250, options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS)
+  const maxFeedFailures = Math.max(1, Math.trunc(options.maxConsecutiveFeedFailures ?? DEFAULT_MAX_FEED_FAILURES))
+
   const context = new AudioContextCtor()
   const source = context.createMediaStreamSource(stream)
   // ScriptProcessor is deprecated but widely available and simple for PCM export.
@@ -115,6 +153,75 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
 
   let pending = new Float32Array(0)
   let stopped = false
+  let failed = false
+  let silentFrames = 0
+  let feedFailures = 0
+  let stallTimer: ReturnType<typeof setTimeout> | undefined
+
+  const handle: ClientWakeCaptureHandle = {
+    get active() {
+      return !stopped
+    },
+    stop() {
+      if (stopped) {
+        return
+      }
+
+      stopped = true
+      queue.length = 0
+
+      if (stallTimer !== undefined) {
+        clearTimeout(stallTimer)
+        stallTimer = undefined
+      }
+
+      try {
+        processor.disconnect()
+        source.disconnect()
+        mute.disconnect()
+      } catch {
+        // ignore
+      }
+
+      void context.close().catch(() => undefined)
+      stream.getTracks().forEach(t => t.stop())
+    }
+  }
+
+  // Fatal capture-chain failure: tear the graph down exactly once and report.
+  // stop() is idempotent, so late track-ended events after a manual stop stay silent.
+  const fail = (error: Error) => {
+    if (failed || stopped) {
+      return
+    }
+
+    failed = true
+    handle.stop()
+    options.onError?.(error)
+  }
+
+  const armStallTimer = () => {
+    if (stopped || failed) {
+      return
+    }
+
+    if (stallTimer !== undefined) {
+      clearTimeout(stallTimer)
+    }
+
+    stallTimer = setTimeout(() => {
+      fail(new Error('client wake capture stalled: no microphone audio callbacks — the OS capture chain may have died'))
+    }, stallTimeoutMs)
+  }
+
+  // A platform capture error (macOS StopSourceOnError) ends the track after a
+  // successful getUserMedia. Without this the graph feeds zeros forever.
+  for (const track of audioTracks) {
+    track.onended = () => {
+      fail(new Error('microphone track ended during client wake capture — the OS capture chain may have died'))
+    }
+  }
+
   // Bounded ordered queue of 16 kHz frames. We never drop the frame that is
   // currently being sent; under remote latency we drop the oldest queued
   // frames so the detector still sees contiguous recent PCM rather than gaps
@@ -126,6 +233,33 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
   const queue: Float32Array[] = []
   let draining = false
 
+  const noteFeedResult = (accepted: boolean, reason: string | null) => {
+    if (stopped || failed) {
+      return
+    }
+
+    if (accepted) {
+      feedFailures = 0
+
+      return
+    }
+
+    // The server dropped our PCM (lease lost, wrong owner, detector gone).
+    // One blip is ordinary network jitter; a run of them means the ear is
+    // armed but permanently deaf — escalate instead of staying "listening".
+    feedFailures += 1
+
+    if (feedFailures >= maxFeedFailures) {
+      fail(
+        new Error(
+          `client wake capture deaf: wake.feed refused ${feedFailures} consecutive frames` +
+            (reason ? ` (${reason})` : '') +
+            ' — re-toggle the ear to re-arm'
+        )
+      )
+    }
+  }
+
   const drainQueue = async () => {
     if (draining) {
       return
@@ -134,7 +268,7 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
     draining = true
 
     try {
-      while (!stopped && queue.length > 0) {
+      while (!stopped && !failed && queue.length > 0) {
         const batch = queue.splice(0, MAX_FRAMES_PER_FEED)
 
         if (batch.length === 0) {
@@ -145,19 +279,24 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
           const merged = new Float32Array(batch.length * frameLength)
           batch.forEach((frame, i) => merged.set(frame, i * frameLength))
           const pcm = floatToInt16LE(merged)
-          await options.request('wake.feed', {
+
+          const result = (await options.request('wake.feed', {
             pcm: bytesToBase64(pcm),
             sample_rate: TARGET_RATE
-          })
-        } catch (error) {
-          options.onError?.(error instanceof Error ? error : new Error(String(error)))
+          })) as { fed?: boolean; reason?: string | null } | null | undefined
+
+          // Absent on older backends that predate the {fed} envelope — only an
+          // explicit fed:false counts as a refusal. Thrown RPC errors land below.
+          noteFeedResult(!result || result.fed !== false, result?.reason ?? null)
+        } catch {
           // Keep draining later frames; one failed RPC should not freeze the ear.
+          noteFeedResult(false, null)
         }
       }
     } finally {
       draining = false
 
-      if (!stopped && queue.length > 0) {
+      if (!stopped && !failed && queue.length > 0) {
         void drainQueue()
       }
     }
@@ -178,9 +317,11 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
   }
 
   processor.onaudioprocess = event => {
-    if (stopped) {
+    if (stopped || failed) {
       return
     }
+
+    armStallTimer()
 
     const input = event.inputBuffer.getChannelData(0)
     const at16k = downsampleTo16k(input, context.sampleRate)
@@ -193,6 +334,37 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
     while (offset + frameLength <= merged.length) {
       const frame = merged.subarray(offset, offset + frameLength)
       offset += frameLength
+
+      // A dead capture chain delivers endless digital zeros. Live mics never
+      // do — their noise floor sits far above SILENCE_PEAK — so a long run of
+      // zeros means the detector is being fed silence, not speech (#119089).
+      let peak = 0
+
+      for (let i = 0; i < frame.length; i++) {
+        const abs = Math.abs(frame[i] ?? 0)
+
+        if (abs > peak) {
+          peak = abs
+        }
+      }
+
+      if (peak < SILENCE_PEAK) {
+        silentFrames += 1
+
+        if (silentFrames >= silenceFramesThreshold) {
+          fail(
+            new Error(
+              'client wake capture hears only silence — the microphone delivers no audio; check OS mic access and re-toggle the ear'
+            )
+          )
+
+          return
+        }
+
+        continue
+      }
+
+      silentFrames = 0
       enqueueFrame(new Float32Array(frame))
     }
 
@@ -207,28 +379,7 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
     await context.resume().catch(() => undefined)
   }
 
-  return {
-    get active() {
-      return !stopped
-    },
-    stop() {
-      if (stopped) {
-        return
-      }
+  armStallTimer()
 
-      stopped = true
-      queue.length = 0
-
-      try {
-        processor.disconnect()
-        source.disconnect()
-        mute.disconnect()
-      } catch {
-        // ignore
-      }
-
-      void context.close().catch(() => undefined)
-      stream.getTracks().forEach(t => t.stop())
-    }
-  }
+  return handle
 }

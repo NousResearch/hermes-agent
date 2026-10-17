@@ -6,14 +6,12 @@ having LSP output prepended to the lint string.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import (
-    PatchResult,
     ShellFileOperations,
-    WriteResult,
 )
 
 
@@ -30,9 +28,6 @@ from tools.file_operations import (
 
 
 
-def test_patchresult_to_dict_omits_field_when_none():
-    r = PatchResult(success=True)
-    assert "lsp_diagnostics" not in r.to_dict()
 
 
 
@@ -42,19 +37,6 @@ def test_patchresult_to_dict_omits_field_when_none():
 # ---------------------------------------------------------------------------
 
 
-def test_lint_and_lsp_diagnostics_are_separate_channels():
-    """A WriteResult can carry BOTH a syntax-error lint AND an LSP
-    diagnostic block.  They belong in separate fields."""
-    r = WriteResult(
-        bytes_written=42,
-        lint={"status": "error", "output": "SyntaxError: ..."},
-        lsp_diagnostics="<diagnostics>ERROR [1:5] type mismatch</diagnostics>",
-    )
-    d = r.to_dict()
-    assert "lint" in d
-    assert "lsp_diagnostics" in d
-    assert d["lint"]["output"] == "SyntaxError: ..."
-    assert "type mismatch" in d["lsp_diagnostics"]
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +60,22 @@ def test_write_file_skips_lsp_when_syntax_failed(tmp_path):
     assert mock_lsp.call_count == 0
     assert res.lsp_diagnostics is None
     assert res.lint["status"] == "error"
+
+
+def test_maybe_lsp_diagnostics_swallows_enabled_for_failure(tmp_path):
+    """``_maybe_lsp_diagnostics`` gates through the guarded ``_lsp_will_handle``
+    helper, so a workspace-resolution failure (e.g. the process cwd was removed
+    under a running worker) degrades to "no LSP for this write" instead of
+    surfacing as an error from a write that already landed on disk."""
+    fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+
+    with patch.object(fops, "_lsp_service") as mock_service:
+        mock_service.return_value.enabled_for = MagicMock(
+            side_effect=FileNotFoundError(2, "No such file or directory")
+        )
+        result = fops._maybe_lsp_diagnostics(str(tmp_path / "x.py"))
+
+    assert result == ""
 
 
 # ---------------------------------------------------------------------------

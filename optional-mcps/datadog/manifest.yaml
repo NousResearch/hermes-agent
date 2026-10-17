@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: datadog
+connector_slug: datadog_mcp
 description: >-
   Logs, monitors, dashboards, and incidents from Datadog.
 source: https://docs.datadoghq.com/bits_ai/mcp_server/

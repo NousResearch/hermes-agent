@@ -21,7 +21,7 @@ def _vision_mode_label() -> str:
 
 def _lightpanda_vision_preroute(
     effective_task_id: str, annotate: bool, screenshot_path: Path,
-) -> Tuple[bool, Optional[str], Path]:
+) -> tuple[bool, Optional[str], Path]:
     """Capture the vision screenshot via the Chrome fallback when Lightpanda is the engine
     (it has no graphical renderer). Returns ``(prerouted, fallback_warning, path)``;
     on fallback failure ``prerouted`` is False and the caller takes the normal
@@ -51,8 +51,8 @@ def _lightpanda_vision_preroute(
 
 def _native_vision_result(
     screenshot_path: Path, question: str, annotate: bool,
-    result: Dict[str, Any], lp_fallback_warning: Optional[str],
-) -> Dict[str, Any]:
+    result: dict[str, Any], lp_fallback_warning: Optional[str],
+) -> dict[str, Any]:
     """Multimodal tool-result envelope: the main model inspects the pixels itself.
 
     The embed is baked into history and re-sent every later turn, so apply the same
@@ -61,12 +61,13 @@ def _native_vision_result(
     """
     from tools.vision_tools import (
         _EMBED_MAX_DIMENSION,
-        _EMBED_TARGET_BYTES,
         _build_native_vision_tool_result,
         _resize_image_for_vision,
     )
+    from tools.vision_tools_history_budget import resolve_embed_target_bytes
 
-    data_url = _resize_image_for_vision(screenshot_path, mime_type="image/png", max_base64_bytes=_EMBED_TARGET_BYTES,
+    data_url = _resize_image_for_vision(screenshot_path, mime_type="image/png",
+                                        max_base64_bytes=resolve_embed_target_bytes(),
                                         max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
     native_result = _build_native_vision_tool_result(image_url=str(screenshot_path), question=question,
                                                      image_data_url=data_url,

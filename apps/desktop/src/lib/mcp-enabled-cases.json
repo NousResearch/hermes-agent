@@ -1,0 +1,22 @@
+[
+  {"enabled": true, "on": true},
+  {"enabled": false, "on": false},
+  {"enabled": 1, "on": true},
+  {"enabled": 0, "on": false},
+  {"enabled": 0.0, "on": false},
+  {"enabled": 2, "on": true},
+  {"enabled": -0.0, "on": false},
+  {"enabled": [], "on": true},
+  {"enabled": "true", "on": true},
+  {"enabled": "Yes", "on": true},
+  {"enabled": " on ", "on": true},
+  {"enabled": "1", "on": true},
+  {"enabled": "false", "on": false},
+  {"enabled": "OFF", "on": false},
+  {"enabled": "no", "on": false},
+  {"enabled": "0", "on": false},
+  {"enabled": "", "on": true},
+  {"enabled": "maybe", "on": true},
+  {"enabled": null, "on": true},
+  {"on": true}
+]

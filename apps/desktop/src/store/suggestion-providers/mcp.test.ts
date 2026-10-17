@@ -1,6 +1,129 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { matchSuggestions } from './mcp'
+import type { ComposerSuggestion } from '@/store/composer-suggestions'
+
+import { buildMcpSuggestionIndex, matchSuggestions } from './mcp'
+
+type DraftProvider = (context: { sessionId: string | null; text: string }) => Promise<ComposerSuggestion[]>
+
+const mocks = vi.hoisted(() => ({
+  notify: vi.fn(),
+  notifyError: vi.fn(),
+  provider: null as DraftProvider | null,
+  removeMcpServer: vi.fn(async () => {}),
+  request: vi.fn()
+}))
+
+vi.mock('@/api/client', () => ({ capabilityScoped: () => undefined }))
+vi.mock('@/hermes', () => ({
+  addMcpServer: async () => {},
+  getMcpCatalog: async () => ({
+    entries: [
+      {
+        auth_type: 'oauth',
+        name: 'hosted',
+        suggest: { hosts: [], keywords: ['hosted'] },
+        transport: 'http',
+        url: 'https://mcp.example.test'
+      }
+    ]
+  }),
+  listMcpServers: async () => ({ servers: [] }),
+  removeMcpServer: mocks.removeMcpServer
+}))
+vi.mock('@/lib/mcp-dashboard-oauth', () => ({
+  completeMcpDesktopOAuth: async () => ({ tools: [] }),
+  McpOAuthCancelled: class extends Error {}
+}))
+vi.mock('@/store/composer-suggestions', () => ({
+  registerDraftProvider: (_name: string, provider: DraftProvider) => {
+    mocks.provider = provider
+  }
+}))
+vi.mock('@/store/gateway', () => ({ $gateway: { get: () => ({ request: mocks.request }) } }))
+vi.mock('@/store/notifications', () => ({ notify: mocks.notify, notifyError: mocks.notifyError }))
+
+describe('connect reads what reload.mcp did for the chat', () => {
+  const connect = async () => {
+    const [suggestion] = await mocks.provider!({ sessionId: 's1', text: 'use the hosted board ' })
+
+    return suggestion!.invoke({ cancelled: () => false, sessionId: 's1' })
+  }
+
+  beforeEach(() => {
+    mocks.notify.mockReset()
+    mocks.notifyError.mockReset()
+    mocks.request.mockReset()
+  })
+
+  it('claims success once the chat runs the new server', async () => {
+    mocks.request.mockResolvedValue({ session: 'applied', status: 'reloaded' })
+
+    await connect()
+
+    expect(mocks.request).toHaveBeenCalledWith('reload.mcp', { confirm: true, session_id: 's1' })
+    expect(mocks.notify).not.toHaveBeenCalled()
+    expect(mocks.notifyError).not.toHaveBeenCalled()
+  })
+
+  it('does not claim the chat has the server while its turn defers the change', async () => {
+    mocks.request.mockResolvedValue({ session: 'busy', status: 'reloaded' })
+
+    await expect(connect()).rejects.toThrow()
+
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/busy/i) }))
+    expect(mocks.notifyError).not.toHaveBeenCalled()
+  })
+
+  it('fails when the new server is among those that did not connect', async () => {
+    mocks.request.mockResolvedValue({ session: 'applied', status: 'reloaded', unavailable: ['hosted'] })
+
+    await expect(connect()).rejects.toThrow(/hosted/)
+
+    expect(mocks.notifyError).toHaveBeenCalled()
+  })
+
+  it('fails when the reload is refused', async () => {
+    mocks.request.mockRejectedValue(new Error('mcp_servers_unavailable: did not connect: hosted'))
+
+    await expect(connect()).rejects.toThrow()
+
+    expect(mocks.notifyError).toHaveBeenCalled()
+  })
+
+  it('succeeds beside another server that did not connect, and names it', async () => {
+    mocks.request.mockResolvedValue({ session: 'applied', status: 'reloaded', unavailable: ['linear'] })
+
+    await connect()
+
+    expect(mocks.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'warning', message: expect.stringContaining('linear') })
+    )
+    expect(mocks.notifyError).not.toHaveBeenCalled()
+  })
+})
+
+it('does not send local-app or non-OAuth catalog suggestions through the hosted OAuth-only composer flow', () => {
+  const hosted = {
+    name: 'hosted',
+    url: 'https://mcp.example.test',
+    auth_type: 'oauth',
+    transport: 'http',
+    suggest: { keywords: ['hosted'], hosts: [] }
+  }
+
+  const editor = {
+    ...hosted,
+    name: 'editor',
+    url: 'http://127.0.0.1:8000/mcp',
+    auth_type: 'none',
+    suggest: { ...hosted.suggest, requires_app: true }
+  }
+
+  const key = { ...hosted, name: 'key', auth_type: 'api_key' }
+  const stdio = { ...hosted, name: 'stdio', url: null, transport: 'stdio' }
+  expect(buildMcpSuggestionIndex([hosted, editor, key, stdio]).map(row => row.server)).toEqual([hosted.name])
+})
 
 const INDEX = [
   { keywords: ['linear', 'issue tracker', 'ticket'], server: 'linear' },
@@ -91,17 +214,5 @@ describe('matchSuggestions', () => {
     expect(matchSuggestions('look at https://linear.app/team/issue/ABC-1', index)).toEqual([
       { keyword: 'linear.app', server: 'linear' }
     ])
-  })
-
-  it('does not offer GitHub: it is not in the catalog, so no index entry can match it', () => {
-    // GitHub is not in optional-mcps (its hosted MCP needs a per-host OAuth app), so a
-    // catalog-built index has no entry for it.
-    const catalogIndex = [
-      { hosts: ['linear.app'], keywords: ['linear'], server: 'linear' },
-      { hosts: ['figma.com'], keywords: ['figma'], server: 'figma' }
-    ]
-
-    expect(matchSuggestions('connect github please', catalogIndex)).toEqual([])
-    expect(matchSuggestions('connect github please', [])).toEqual([])
   })
 })

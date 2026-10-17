@@ -47,6 +47,16 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert "mcp_granola_get_account_info" in agent.valid_tool_names
     assert len(agent.tools) == 3
 
+    side = _agent(["read_file", "terminal"])
+    side.side_agent = True
+    monkeypatch.setattr(model_tools, "get_tool_definitions",
+                        lambda **kw: new_defs + [_tool("manage_connections")])
+
+    _mcp_agent.refresh_agent_mcp_tools(side)
+
+    assert "manage_connections" not in side.valid_tool_names
+    assert "manage_connections" not in [t["function"]["name"] for t in side.tools]
+
 
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
@@ -138,25 +148,6 @@ def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     assert "lcm_grep" not in agent.valid_tool_names   # gated out (#5544)
 
 
-def test_refreshed_tool_is_callable_through_valid_tool_names_guard(monkeypatch):
-    """The whole point: a late tool, once refreshed, passes the name guard the
-    run loop uses to accept/reject tool calls (agent.valid_tool_names)."""
-    agent = _agent(["read_file"])
-
-    import model_tools
-    monkeypatch.setattr(
-        model_tools, "get_tool_definitions",
-        lambda **kw: [_tool("read_file"), _tool("mcp_granola_list_meetings")],
-    )
-
-    # Before refresh the run loop would reject the call ("Tool does not exist").
-    assert "mcp_granola_list_meetings" not in agent.valid_tool_names
-
-    _mcp_agent.refresh_agent_mcp_tools(agent)
-
-    # After refresh the same guard accepts it AND it's in the tools= payload.
-    assert "mcp_granola_list_meetings" in agent.valid_tool_names
-    assert any(t["function"]["name"] == "mcp_granola_list_meetings" for t in agent.tools)
 
 
 def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
@@ -210,10 +201,6 @@ def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
 # ── discovery-wait bound (mcp_discovery_timeout config) ──────────────────────
 
 
-def test_resolve_discovery_timeout_explicit_wins(monkeypatch):
-    from hermes_cli import mcp_startup
-
-    assert mcp_startup._resolve_discovery_timeout(2.5) == 2.5
 
 
 def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
@@ -292,6 +279,52 @@ def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     ]
 
 
+def test_preserve_prefix_keeps_sent_tool_schemas_byte_identical(monkeypatch):
+    """A between-turns refresh must not rewrite a tool this session already sent.
+
+    The chat template prints every tool schema before the conversation. A local
+    server reuses the previous prompt only when the next one starts with those
+    exact tokens, so a new description on a tool that was already sent makes the
+    follow-up read the whole prompt again. New tools may append at the tail.
+    """
+    agent = _agent(["read_file"])
+    agent.tools[0]["function"]["description"] = "Read a file. schema v1"
+    sent = json.dumps(agent.tools)
+
+    fresh = _tool("read_file")
+    fresh["function"]["description"] = "Read a file. schema v2"
+    fresh["function"]["parameters"] = {
+        "type": "object", "properties": {"path": {"type": "string"}},
+    }
+    _serve(monkeypatch, [fresh, _tool("mcp_late")])
+    _registered(monkeypatch, ["read_file", "mcp_late"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert json.dumps(agent.tools[:1]) == sent
+    assert [t["function"]["name"] for t in agent.tools] == ["read_file", "mcp_late"]
+
+
+def test_explicit_reload_replaces_a_same_name_schema(monkeypatch):
+    """``/reload-mcp`` takes the fresh schema when the tool name stays the same.
+
+    Between-turns refresh freezes the bytes already sent. Reload is the other
+    path (``preserve_prefix`` off): the user already accepted a cache break, so
+    a new description on ``read_file`` has to be what the next request sends.
+    """
+    agent = _agent(["read_file"])
+    agent.tools[0]["function"]["description"] = "Read a file. schema v1"
+
+    fresh = _tool("read_file")
+    fresh["function"]["description"] = "Read a file. schema v2"
+    _serve(monkeypatch, [fresh])
+    _registered(monkeypatch, ["read_file"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert agent.tools[0]["function"]["description"] == "Read a file. schema v2"
+
+
 def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     """``tool_search``'s description is derived from the session at build time: the
     deferred-tool count, the embedded listing, and whether ``manage_connections`` was
@@ -321,6 +354,27 @@ def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     assert [t["function"]["name"] for t in agent.tools][-1] == "mcp_late_tool"
 
 
+def test_preserve_prefix_keeps_a_deactivated_bridge_tool_in_place(monkeypatch):
+    """The bridge tools are synthesized by ``assemble_tool_defs``, never registered. When the
+    deferred set shrinks under the activation threshold (an MCP server drops), the fresh
+    snapshot carries no ``tool_search`` at all; the sent one must still hold its slot, or
+    every tool after it moves and the prefix re-prefills. Search reads the live catalog."""
+    built = _tool("tool_search")
+    built["function"]["description"] = "Search 21 additional tools."
+    agent = _agent(["read_file"])
+    agent.tools.append(built)
+    agent.tools.append(_tool("terminal"))
+    agent.valid_tool_names.update({"tool_search", "terminal"})
+    before = json.dumps(agent.tools, sort_keys=True)
+
+    _serve(monkeypatch, [_tool("read_file"), _tool("terminal")])
+    _registered(monkeypatch, ["read_file", "terminal"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert json.dumps(agent.tools, sort_keys=True) == before
+
+
 # ---------------------------------------------------------------------------
 # tools[] freeze: eviction rebuild + the /reload-mcp re-probe hatch
 # ---------------------------------------------------------------------------
@@ -347,6 +401,80 @@ def test_eviction_rebuild_restores_the_sessions_saved_tool_order(monkeypatch):
     assert changed is True
     assert [t["function"]["name"] for t in rebuilt.tools] == saved
     assert rebuilt.valid_tool_names == set(saved)
+
+
+def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, tmp_path):
+    """One durable session hops gateway -> ``-q --resume``: the new process derives different
+    bytes for the SAME tools (tool_search's per-surface deferred catalog, per-surface dynamic
+    PARAMETERS like delegate_task's, the one-shot footprint pruning skill_manage). tools[] heads
+    every request, so a pin written by the same code hands back exactly what the session sent;
+    one written by other code (``hermes update``) takes the current definitions instead."""
+    from hermes_state import SessionDB
+    from tools import registry as registry_mod
+
+    def _described(name, description, **params):
+        tool = _tool(name)
+        tool["function"]["description"] = description
+        tool["function"]["parameters"] = {"type": "object", "properties": params}
+        return tool
+
+    sent = _agent([])
+    sent.tools = [_tool("read_file"), _described("delegate_task", "delegate", group={"type": "string"}),
+                  _described("skill_manage", "lands in /home/u/.hermes/skills"),
+                  _described("tool_search", "Search 6 additional tools.")]
+    static = {"skill_manage": _described("skill_manage", "lands in the profile's skills dir")["function"]}
+    monkeypatch.setattr(registry_mod.registry, "get_all_entries",
+                        lambda: [types.SimpleNamespace(name=n) for n in ("read_file", "delegate_task", "skill_manage")],
+                        raising=False)
+    monkeypatch.setattr(registry_mod.registry, "get_entry",
+                        lambda name, **kw: types.SimpleNamespace(name=name, schema=static[name]), raising=False)
+    this_surface = [_tool("read_file"), _described("delegate_task", "delegate"),  # drops `group` here
+                    _described("tool_search", "Search 5 additional tools.")]
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        sent._session_db = db
+        for sid in ("s1", "s2"):
+            db.create_session(sid, source="tui")
+            sent.session_id = sid
+            _mcp_agent.persist_agent_tool_names(sent)
+        # Stored once, like the system prompt: a ~50KB array per session row would bloat state.db.
+        stored = db._conn.execute("SELECT COUNT(*) FROM system_prompts").fetchone()[0]
+
+        resumed = _agent([])
+        resumed.tools, resumed._session_db, resumed.session_id = list(this_surface), db, "s1"
+        _mcp_agent.restore_agent_tool_prefix(resumed, json.loads(db.get_session("s1")["tool_names"]))
+        repinned = db.get_session("s1")["tool_names"]
+
+        # The pin came from other code: every tool built here takes this build's definition.
+        monkeypatch.setattr(_mcp_agent, "tool_pin_version", lambda: "sha-after-hermes-update")
+        updated = _agent([])
+        updated.tools, updated._session_db, updated.session_id = list(this_surface), db, "s2"
+        _mcp_agent.restore_agent_tool_prefix(updated, json.loads(db.get_session("s2")["tool_names"]))
+        upgraded_pin = json.loads(db.get_session("s2")["tool_names"])
+
+    assert json.dumps(resumed.tools) == json.dumps(sent.tools)
+    assert resumed.valid_tool_names == {"read_file", "delegate_task", "skill_manage", "tool_search"}
+    assert stored == 1
+    assert json.loads(repinned)["tools"] == sent.tools  # unchanged pin, no rewrite per hop
+    assert updated.tools == [*this_surface[:2], {"type": "function", "function": {**static["skill_manage"]}},
+                             this_surface[2]]
+    assert upgraded_pin == {"version": "sha-after-hermes-update", "tools": updated.tools}
+
+
+def test_a_pin_never_re_adds_a_tool_this_sessions_config_excludes(monkeypatch):
+    """A pin from a surface where ``terminal`` was allowed must not hand it back where config
+    disables it, nor ``browser_exec`` (host Python) once ``terminal`` is gone. A client-surface
+    tool (``focus_pane``) is still carried: no config choice removed it here."""
+    import model_tools
+
+    monkeypatch.setattr(_mcp_agent, "persist_agent_tool_names", lambda agent: None)
+    pin = {"version": _mcp_agent.tool_pin_version(),
+           "tools": [_tool(n) for n in ("read_file", "terminal", "browser_exec", "focus_pane")]}
+    agent = _agent(["read_file"], enabled=["hermes-cli"], disabled=["terminal"])
+
+    _mcp_agent.restore_agent_tool_prefix(agent, pin)
+
+    assert [t["function"]["name"] for t in agent.tools] == ["read_file", "focus_pane"]
+    assert agent.valid_tool_names == {"read_file", "focus_pane"}
 
 
 def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):

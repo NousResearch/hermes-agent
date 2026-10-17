@@ -13,9 +13,12 @@ import {
   hasExistingGitCheckout,
   installRefForStamp,
   isPinnedCommit,
+  isTransientInstallScriptHttpStatus,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  shouldRetryInstallScriptDownload,
+  shouldRetryInstallScriptDownloadForRef
 } from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
@@ -319,3 +322,42 @@ test.skipIf(process.platform === 'win32')(
     assert.equal(result.error, 'install.sh --manifest failed: exit 3\n✗ manifest broke')
   }
 )
+
+test('isTransientInstallScriptHttpStatus retries CDN blips only', () => {
+  for (const status of [408, 429, 500, 502, 503, 504]) {
+    assert.equal(isTransientInstallScriptHttpStatus(status), true, String(status))
+  }
+
+  for (const status of [200, 301, 400, 401, 403, 404, 410]) {
+    assert.equal(isTransientInstallScriptHttpStatus(status), false, String(status))
+  }
+})
+
+test('shouldRetryInstallScriptDownload is bounded and skips 404', () => {
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 503 from url'), 1), true)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 502 from url'), 2), true)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 503 from url'), 3), false)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 404 from url'), 1), false)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('Failed to download install.sh: HTTP 401 from url'), 1), false)
+
+  const reset: NodeJS.ErrnoException = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })
+  assert.equal(shouldRetryInstallScriptDownload(reset, 1), true)
+  assert.equal(shouldRetryInstallScriptDownload(reset, 3), false)
+  assert.equal(shouldRetryInstallScriptDownload(new Error('disk full'), 1), false)
+})
+
+test('shouldRetryInstallScriptDownloadForRef retries a mutable-ref 404 once, never an immutable pin', () => {
+  const notFound = new Error('Failed to download install.sh: HTTP 404 from url')
+
+  // #121615: a raw-CDN cache purge right after a push can briefly 404 an
+  // existing file on a moving branch — one bounded retry, then terminal.
+  assert.equal(shouldRetryInstallScriptDownloadForRef(notFound, 1, false), true)
+  assert.equal(shouldRetryInstallScriptDownloadForRef(notFound, 3, false), false)
+  // A bad immutable commit pin stays fatal immediately.
+  assert.equal(shouldRetryInstallScriptDownloadForRef(notFound, 1, true), false)
+  // The mutable path keeps the transient set too.
+  assert.equal(
+    shouldRetryInstallScriptDownloadForRef(new Error('Failed to download install.sh: HTTP 503 from url'), 1, false),
+    true
+  )
+})

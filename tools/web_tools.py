@@ -438,8 +438,30 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
         debug_call_data["processing_applied"].append("truncate_and_store")
         _truncate_results(results, _effective_char_limit(char_limit), debug_call_data)
         trimmed = _trim_results(results)
+        # A batch rescued by the keyless ring flags itself in per-entry metadata, which _trim_results
+        # strips below — so the surviving signal has to be lifted to the top level here, where a
+        # caller can tell a rescued call from a healthy one without knowing about nested keys (#133473).
+        rescued_meta = next(
+            (
+                r["metadata"]
+                for r in results
+                if isinstance(r.get("metadata"), dict)
+                and r["metadata"].get("rescued_from")
+            ),
+            None,
+        )
+        payload = {"results": trimmed}
+        if rescued_meta is not None:
+            # degraded alone says "that" a backend failed; rescued_from/backend_error say "which" and
+            # "why", matching what _rescue_search already mirrors for the search side.
+            payload.update(
+                degraded=True,
+                rescued_from=rescued_meta.get("rescued_from", ""),
+                backend_error=rescued_meta.get("backend_error", ""),
+            )
         result_json = (
-            json.dumps({"results": trimmed}, indent=2, ensure_ascii=False) if trimmed
+            json.dumps(payload, indent=2, ensure_ascii=False)
+            if trimmed
             else tool_error("Content was inaccessible or not found")
         )
         # Belt-and-suspenders sweep of the serialized JSON: a provider may tuck a base64 blob in metadata.

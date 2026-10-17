@@ -10,6 +10,7 @@ import uuid
 
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
+from gateway.session_llm_oneshot import DeferredReply
 from hermes_constants import profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
 
@@ -59,6 +60,26 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
         logger.warning(line, *args)
     else:
         logger.debug(line, *args)
+
+
+# (method, error class) pairs whose traceback this process already logged.
+_STORAGE_TRACEBACKS = set()
+
+
+def _log_storage_failure(profile, method, session_id, exc: sqlite3.Error) -> None:
+    """Keep SQLite's diagnostic at the gateway while its wire error stays retryable.
+
+    Clients retry on ``storage_unavailable``, so, like ``_log_refusal``, a retrying client must not
+    flood the log: every failure keeps one line with its cause, the traceback comes once per method
+    and error class, and the client-supplied ``session_id`` is capped."""
+    key = (method, type(exc).__name__)
+    first = key not in _STORAGE_TRACEBACKS
+    _STORAGE_TRACEBACKS.add(key)
+    shown = repr(session_id)
+    if len(shown) > 64:
+        shown = f'{shown[:48]}… ({len(shown)} chars)'
+    logger.warning('%s storage failure for profile=%s session_id=%s: %s',
+                   method, _profile_label(profile), shown, exc, exc_info=first)
 
 
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
@@ -173,6 +194,8 @@ class AuthorityConnection:
         handlers.update(tui_ops_handlers(self))
         from gateway.session_tui_side import handlers as side_handlers
         handlers.update(side_handlers(self))
+        from gateway.session_llm_oneshot import handlers as oneshot_handlers
+        handlers.update(oneshot_handlers(self))
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
@@ -243,6 +266,14 @@ class AuthorityConnection:
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
         original_params = dict(params)
         contract = contract or METHODS.get(method)
+        authority = self.authority
+        if (isinstance(ref.session_id, str) and ref.session_id and not getattr(authority, 'retiring', False)
+                and ref.profile_id == getattr(authority, 'profile_id', None)
+                and ref.session_id not in getattr(authority, 'sessions', {ref.session_id: None})):
+            # A first read of a session recovery never restored: its compression catch-up (#140060)
+            # commits in a worker here, so the handler's synchronous restore only reads.
+            from gateway.session_local_adoption import adopt_before_restore
+            await adopt_before_restore(authority, ref.session_id)
         handlers = self.handlers()
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
@@ -262,6 +293,9 @@ class AuthorityConnection:
                         'data': {'reason': 'unknown_method'}}}
                 else:
                     result = await handlers[method](ref, params)
+                    if isinstance(result, DeferredReply):  # answered off the serial dispatch
+                        check_params_accepted(contract, original_params)
+                        return result.start(self, rid, partial(check_result, contract))
             check_params_accepted(contract, original_params)
             check_result(contract, result)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
@@ -269,7 +303,9 @@ class AuthorityConnection:
             _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            _log_storage_failure(getattr(self.actor, 'profile_id', None), method,
+                                 params.get('session_id'), exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}
 
@@ -510,6 +546,14 @@ class AuthorityConnection:
             from gateway.session_local_title import resolve_titled_session
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
         else:
+            # The TUI exit hint abbreviates canonical local IDs to ``local-`` plus 16 hex
+            # characters. Resolve only that family before authorization so a unique hint reaches
+            # the same durable local route as its full ID; ambiguous and missing prefixes retain
+            # the normal not_found result.
+            if re.fullmatch(r'local-[0-9a-f]{16}', ref.session_id):
+                resolved_id = self.authority.db.resolve_session_id(ref.session_id)
+                if resolved_id is not None:
+                    ref = SessionRef(ref.profile_id, resolved_id)
             from gateway.session_local_migration import resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
@@ -719,6 +763,8 @@ class AuthorityConnection:
         for sibling in self._siblings.values():
             await sibling.close()
         self._siblings.clear()
+        from gateway.session_llm_oneshot import forget
+        forget(self)  # nobody is left to read its one-shot replies
         # Deletion may already have evicted a subscribed session; its membership died
         # with it, and one retired ID must not leave the others (or the transport) attached.
         for session_id, subscription in list(self.subscriptions.items()):

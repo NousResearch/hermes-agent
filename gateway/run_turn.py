@@ -2072,12 +2072,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     async def _run_agent_mark_streamed_delivery(self, response: Any, turn_ctx: TurnContext) -> None:
         """Set ``response["already_sent"]`` when streaming already delivered the final reply.
 
-        Never when the agent failed (the error is unseen content) or on "(empty)". Both suppression
-        flags reflect call success, not content, so reconcile against the recorded turn-final
-        payload: a mismatch (False, incl. payload-less split delivery) never suppresses; None (no
-        record) keeps legacy trust."""
+        Never when the agent failed (unseen error), on "(empty)", or on a finite (`-z`, `chat -q`) turn:
+        its viewer prints only the completion text, never the deltas (#139666). Both flags reflect call
+        success, not content: a mismatch with the recorded turn-final payload never suppresses."""
+        from gateway.session_finite import finite_turn_required
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
-        if not isinstance(response, dict) or response.get("failed"):
+        if not isinstance(response, dict) or response.get("failed") or finite_turn_required() is True:
             return
         _final = response.get("final_response") or ""
         _is_empty_sentinel = not _final or _final == "(empty)"

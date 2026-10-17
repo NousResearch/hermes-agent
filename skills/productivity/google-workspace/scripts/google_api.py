@@ -70,7 +70,7 @@ def _ensure_authenticated():
 
 def _stored_token_scopes() -> list[str]:
     try:
-        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
+        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return list(SCOPES)
     scopes = data.get("scopes")
@@ -156,13 +156,30 @@ def _extract_message_body(msg: dict) -> str:
 
 
 def _extract_body_text(body: dict) -> str:
+    """Plain text of a Docs body, in document order.
+
+    A body is a list of StructuralElements: ``paragraph``, ``table``,
+    ``tableOfContents`` or ``sectionBreak``. Tables nest a full body per cell
+    (``tableRows[].tableCells[].content[]``), so a paragraph-only walk silently
+    drops every table in the doc. Tables render one pipe-delimited line per row;
+    cell bodies (including nested tables) are flattened onto that line.
+    """
     text_parts = []
     for element in body.get("content", []):
-        paragraph = element.get("paragraph", {})
-        for pe in paragraph.get("elements", []):
-            text_run = pe.get("textRun", {})
-            if text_run.get("content"):
-                text_parts.append(text_run["content"])
+        if "paragraph" in element:
+            for pe in element["paragraph"].get("elements", []):
+                text_run = pe.get("textRun", {})
+                if text_run.get("content"):
+                    text_parts.append(text_run["content"])
+        elif "table" in element:
+            for row in element["table"].get("tableRows", []):
+                cells = [
+                    " ".join(_extract_body_text(cell).split())
+                    for cell in row.get("tableCells", [])
+                ]
+                text_parts.append("| " + " | ".join(cells) + " |\n")
+        elif "tableOfContents" in element:
+            text_parts.append(_extract_body_text(element["tableOfContents"]))
     return "".join(text_parts)
 
 

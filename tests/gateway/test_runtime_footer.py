@@ -279,3 +279,102 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# #19922: Expanded usage metrics in runtime footer
+# ---------------------------------------------------------------------------
+
+def test_format_footer_usage_metrics():
+    """Verify all usage metrics format and render properly when opted-in."""
+    out = format_runtime_footer(
+        model="google/gemini-3-flash-preview",
+        context_tokens=15_200,
+        context_length=1_000_000,
+        cwd="/workspace",
+        total_tokens=15_200,
+        input_tokens=12_300,
+        output_tokens=2_900,
+        cache_read_tokens=10_000,
+        reasoning_tokens=512,
+        estimated_cost_usd=0.015,
+        api_calls=3,
+        turn_seconds=2.4,
+        fields=["model", "tokens", "cost", "latency"],
+    )
+    assert out == "gemini-3-flash-preview · 15.2k tokens · ~$0.0150 · 2s"
+
+
+def test_format_footer_detailed_breakdown_fields():
+    """Verify in, out, cache, reasoning, and api_calls fields."""
+    out = format_runtime_footer(
+        model="gpt-5.4",
+        context_tokens=1_048_576,
+        context_length=2_000_000,
+        total_tokens=1_048_576,
+        input_tokens=1_000_000,
+        output_tokens=48_576,
+        cache_read_tokens=800_000,
+        reasoning_tokens=16_000,
+        api_calls=1,
+        fields=["in", "out", "cache", "reasoning", "api_calls"],
+    )
+    assert out == "in: 1M · out: 48.6k · cache: 800k · reasoning: 16k · 1 call"
+
+
+def test_format_footer_cost_edge_cases():
+    """Verify cost formatting for zero and sub-cent values."""
+    assert format_runtime_footer(
+        model="m", context_tokens=0, context_length=None,
+        estimated_cost_usd=0.0, fields=["cost"],
+    ) == "$0.00"
+
+    assert format_runtime_footer(
+        model="m", context_tokens=0, context_length=None,
+        estimated_cost_usd=0.00004, fields=["cost"],
+    ) == "<$0.0001"
+
+
+def test_format_footer_usage_metrics_byte_stability():
+    """Default fields must ignore all usage metrics to preserve byte stability."""
+    common = dict(
+        model="openai/gpt-5.4",
+        context_tokens=50_000,
+        context_length=100_000,
+        cwd="/var/data",
+        total_tokens=50_000,
+        input_tokens=40_000,
+        output_tokens=10_000,
+        cache_read_tokens=30_000,
+        reasoning_tokens=2_000,
+        estimated_cost_usd=0.05,
+        api_calls=2,
+    )
+    baseline = format_runtime_footer(
+        model="openai/gpt-5.4", context_tokens=50_000, context_length=100_000, cwd="/var/data",
+    )
+    with_metrics = format_runtime_footer(**common)
+    assert baseline == with_metrics
+
+
+def test_build_footer_line_threads_usage_metrics():
+    """build_footer_line correctly passes usage metrics to format_runtime_footer."""
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "tokens", "cost", "api_calls"],
+                }
+            }
+        },
+        platform_key=None,
+        model="anthropic/claude-sonnet-4.6",
+        context_tokens=10_000,
+        context_length=200_000,
+        total_tokens=10_000,
+        estimated_cost_usd=0.03,
+        api_calls=5,
+    )
+    assert out == "claude-sonnet-4.6 · 10k tokens · ~$0.0300 · 5 calls"
+

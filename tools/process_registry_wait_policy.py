@@ -6,9 +6,10 @@ with no new output, this promotes the session to ``notify_on_complete`` (wiring 
 the process was started silently) and tells the model to stop checking: the exit arrives as a message.
 
 Only where a completion can actually reach this agent: one-shot runners (``hermes -z``), cron, Kanban
-workers, stateless HTTP sessions, delegated subagents and profiles with
-``display.background_process_notifications: off`` keep the old result, since nothing would start a
-turn for the notice there. ``terminal.process_wait_auto_notify: false`` restores the old behaviour
+workers, stateless HTTP sessions, delegated subagents, profiles whose effective
+``display.background_process_notifications`` is ``off``, and callers that do not own the process's
+completion (another session's process, a subagent's un-handed-off process) keep the old result, since
+nothing would start a turn for the notice there. ``terminal.process_wait_auto_notify: false`` restores the old behaviour
 everywhere.
 """
 
@@ -34,11 +35,19 @@ _STOP_NOTE = (
 )
 
 
+def _effective_config() -> dict:
+    """The profile's effective user config (managed overlay, ``${VAR}`` expansion): the same reader the
+    completion consumers use (``gateway.run._load_gateway_config``, ``tui_gateway.server._load_cfg``), so
+    an admin-managed or env-expanded value decides promotion exactly as it decides delivery."""
+    from hermes_cli.config_effective import load_user_config_effective
+    return load_user_config_effective()
+
+
 def _enabled() -> bool:
     """``terminal.process_wait_auto_notify`` (default true); true when config is unreadable."""
-    from tools.process_registry import ProcessRegistry
+    from hermes_cli.config import cfg_get
     try:
-        return bool(ProcessRegistry._config_value("terminal", "process_wait_auto_notify", True))
+        return cfg_get(_effective_config(), "terminal", "process_wait_auto_notify", default=True) is not False
     except Exception:  # a broken config.yaml must not break process_manage
         logger.debug("process_wait_auto_notify unreadable; using default", exc_info=True)
         return True
@@ -70,19 +79,39 @@ def _can_deliver_completion() -> bool:
     from agent.delegation_context import is_delegated_child_context
     from gateway.session_context import async_delivery_supported, get_session_env
     from gateway.session_finite import finite_turn_required
-    from tools.process_registry import ProcessRegistry
     finite = finite_turn_required()
     if finite is True or (finite is None and get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1"):
         return False
     if not async_delivery_supported() or is_delegated_child_context():
         return False
-    # ``off`` drains the completion but never starts the agent turn (CLI, TUI and gateway alike).
+    # ``off`` drains the completion but never starts the agent turn (CLI, TUI and gateway alike). The
+    # gateway also honours the HERMES_BACKGROUND_NOTIFICATIONS override; either one saying off is off.
+    from hermes_cli.config import cfg_get
     try:
-        mode = ProcessRegistry._config_value("display", "background_process_notifications", "concise")
+        from gateway.platforms._shared import platform_gate_env
+        modes = (platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS"),
+                 cfg_get(_effective_config(), "display", "background_process_notifications"))
     except Exception:
         logger.debug("background_process_notifications unreadable; assuming on", exc_info=True)
         return True
-    return mode is not False and str(mode or "").strip().lower() != "off"
+    return not any(m is False or str(m or "").strip().lower() == "off" for m in modes)
+
+
+def _caller_receives_completion(session) -> bool:
+    """Whether the completion this process would publish is routed to the CALLER, judged by the
+    consumers' own predicates: ``ProcessRegistry._owns_event`` (session-key routing; another session's
+    process stays with its owner) and ``should_surface_notification`` (a subagent-owned process is
+    suppressed unless handed off or ``delegation.surface_child_process_notifications`` is on). Fails
+    closed: an unbound caller cannot prove ownership of a keyed process."""
+    from gateway.session_context import get_session_env
+    from tools.process_registry import ProcessRegistry
+    from tools.process_registry_notifications import should_surface_notification
+    caller_key = get_session_env("HERMES_SESSION_KEY", "")
+    evt = {"type": "completion", "session_id": session.id, "session_key": session.session_key,
+           "task_id": session.task_id, "owner_task_id": session.owner_task_id}
+    if session.session_key and not caller_key:
+        return False
+    return ProcessRegistry._owns_event(evt, caller_key, None, False) and should_surface_notification(evt)
 
 
 def _claim_notify_if_running(registry, session) -> bool:
@@ -139,6 +168,8 @@ def apply_wait_poll_policy(action: str, session_id: str, result: dict) -> dict:
         return result
     if session.exited or _count_unchanged(session) < _PROMOTE_AFTER or not _can_deliver_completion():
         return result
+    if not _caller_receives_completion(session):
+        return result  # the completion would reach its owner, not this caller: keep plain polling
     if not session.notify_on_complete:
         if not _claim_notify_if_running(process_registry, session):
             # Exited between the wait/poll and this check, before the flag was set: no completion

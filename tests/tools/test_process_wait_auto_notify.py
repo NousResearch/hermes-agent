@@ -32,14 +32,33 @@ def test_second_unchanged_wait_enables_notify_and_tells_model_to_stop(sleeper):
     assert "Do NOT call process_manage wait or poll" in second["timeout_note"]
 
 
-def test_opt_out_keeps_plain_polling(sleeper):
-    home, session = sleeper
-    (home / "config.yaml").write_text("terminal:\n  process_wait_auto_notify: false\n", encoding="utf-8")
+def test_opt_out_keeps_plain_polling(sleeper, tmp_path, monkeypatch):
+    """The opt-out is read from the EFFECTIVE config, so an admin-managed value counts too."""
+    _home, session = sleeper
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("terminal:\n  process_wait_auto_notify: false\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
     for _ in range(3):
         result = _wait(session.id)
         assert result["status"] == "timeout"
         assert "Poll again later" in result["timeout_note"] and "notify_on_complete" not in result
     assert session.notify_on_complete is False
+
+
+def test_caller_that_does_not_own_the_completion_keeps_plain_polling(tmp_path, monkeypatch):
+    """Session B polling session A's process must not be told to stop: the completion is routed to A."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    session = pr.process_registry.spawn_local("sleep 30", cwd=str(tmp_path), task_id="owner-a", session_key="owner-a")
+    session.notify_on_complete = False
+    monkeypatch.setenv("HERMES_SESSION_KEY", "caller-b")
+    try:
+        for _ in range(3):
+            result = _wait(session.id)
+            assert "Poll again later" in result["timeout_note"] and "notify_on_complete" not in result
+        assert session.notify_on_complete is False
+    finally:
+        pr.process_registry.kill_process(session.id)
 
 
 def test_exit_racing_promotion_is_never_lost(sleeper, monkeypatch):

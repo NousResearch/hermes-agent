@@ -137,6 +137,11 @@ export const SETTINGS_MANIFEST = {
       ['thinking', 'reasoning', 'collapse', 'expand', 'chain of thought'],
       'reasoningCollapsed'
     ),
+    trajectoryCollapsed: appearanceSetting(
+      'chat-display',
+      ['execution', 'trajectory', 'steps', 'completed', 'collapse', 'tools', 'thinking'],
+      'trajectoryCollapsed'
+    ),
     embeds: appearanceSetting('chat-display', ['external content', 'privacy'], 'embeds'),
     pet: {
       subpage: 'pet',

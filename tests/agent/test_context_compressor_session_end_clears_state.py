@@ -34,6 +34,7 @@ from agent.context_compressor import ContextCompressor
 def _make_compressor():
     """Build a ContextCompressor with enough state to pass compress() guards."""
     c = ContextCompressor.__new__(ContextCompressor)
+    c._pending_skill_view_results = {}
     c.quiet_mode = True
     c.model = "test/model"
     c.provider = "test"

@@ -181,23 +181,22 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
     "request exceeds the maximum size",
 )
 
-# Per-image size/dimension 400s (Anthropic 5 MB / 8000 px; MiniMax "media
-# exceeds size limit" #76039) — a specific 400 before the request hits 413. A
-# non-image media hit is harmless: the shrink pass finds no image parts.
-# "patches after processing": OpenAI Codex Responses rejects an image whose
-# tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
-# with wording that names no image-size vocabulary — without this pattern it
-# fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
 # Byte caps enforced with a 400 instead of a 413 (#112473): NVIDIA NIM caps the whole
 # payload ("Please make sure your payload is below 26214400 bytes in size"); Alibaba
 # DashScope caps the base64 image string via Jackson ("String value length (N) exceeds the
 # maximum allowed (M, from `StreamReadConstraints.getMaxStringLength()`)"). Only an inline
 # image reaches those sizes, so shrinking is the recovery; the method-scoped Jackson token
 # is used because the bare class name also appears when Jackson caps a *token* length.
+# Qwen2.5/3-VL processors (incl. vLLM's Qwen3VLProcessor) hard-fail with a 400 when an
+# image exceeds the processor's ``max_pixels`` budget (default 1920*28*28 = 1,505,280 px):
+# "Failed to apply Qwen3VLProcessor on data=...". Classifying it as image_too_large lets
+# the shrink-retry loop fire instead of falling all the way back to the text-mode
+# ``vision_analyze`` path (#76505).
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
     "patches after processing", "make sure your payload is below", "streamreadconstraints.getmaxstringlength",
+    "failed to apply qwen3vlprocessor",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings

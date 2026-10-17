@@ -119,8 +119,6 @@ async def export_session(connection, ref, params):
 
 async def session_history(connection, ref, params):
     """Main's ``session.history``: the display transcript of the conversation's current physical row (compression tip or local receipt entry), ancestors included, each row with its durable ``row_id``; Desktop's edit resolves its turn by it."""
-    # The contract's ``profile`` is nullable; null means this owner, as an omitted key does.
-    params = {key: value for key, value in params.items() if not (key == 'profile' and value is None)}
     _live_ref(connection, ref, params, {'session_id', 'profile'}, 'session:read')
     authority = connection.authority
     from gateway.session_local_recovery import transcript_target

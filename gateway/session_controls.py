@@ -724,8 +724,11 @@ class AuthorityConnection:
             result = await mutate_session(self.authority, self.actor, ref, params)
         except MUTATION_GUARD_REFUSALS as exc:
             # A live turn lease / compression lock is the same retryable busy verdict a
-            # running admission gets (REST maps it to 409), not an internal error.
-            raise RuntimeStoreError('session_busy') from exc
+            # running admission gets (REST maps it to 409), not an internal error. A held
+            # compression lock is named: Stop does not end it, so clients say to wait instead.
+            from hermes_state_errors import SessionCompressionInProgressError
+            compressing = isinstance(exc, SessionCompressionInProgressError)
+            raise RuntimeStoreError('session_busy', field='compression' if compressing else None) from exc
         except RuntimeStoreError as exc:
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.

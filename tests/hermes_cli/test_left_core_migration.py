@@ -220,6 +220,31 @@ def test_migrate_all_homes_migrates_only_the_profile_that_used_it(tmp_path, monk
     assert len(said) == 1 and str(a) in said[0]
 
 
+def test_migrate_all_homes_continues_after_one_profile_fails(tmp_path, monkeypatch):
+    """A path-escape (or any install failure) must not skip the rest of the group."""
+    import pm.plugins_state as ps
+    a = _home(tmp_path, "a", env="HASS_TOKEN=abc\n")
+    b = _home(tmp_path, "b", env="HASS_TOKEN=abc\n")
+    monkeypatch.setattr(ps, "dependency_homes", lambda: [a, b])
+    installed_into = []
+
+    def install_into(home, **_kw):
+        def _install(name):
+            installed_into.append((home, name))
+            if home == a:
+                return {"ok": False, "error": "plugin publication paths escape or overlap their home"}
+            return {"ok": True}
+        return _install
+
+    monkeypatch.setattr(lcm, "_install_into", install_into)
+    said = []
+    assert lcm.migrate_all_homes(say=said.append) == ["homeassistant"]
+    assert installed_into == [(a, "homeassistant"), (b, "homeassistant")]
+    assert any("could not be installed" in line and str(a) in line for line in said)
+    assert not any("either" in line for line in said)
+    assert any(str(b) in line and "moved out of core" in line for line in said)
+
+
 def test_startup_honours_lazy_install_opt_out(tmp_path, monkeypatch):
     home = _home(tmp_path, env="HASS_TOKEN=abc\n")
     monkeypatch.setenv("HERMES_HOME", str(home))

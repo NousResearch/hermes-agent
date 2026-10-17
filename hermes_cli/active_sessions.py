@@ -12,6 +12,7 @@ import logging
 import collections
 import math
 import os
+import stat
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -295,7 +296,28 @@ def _valid_process_start(v: Any) -> bool:
 
 
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
-    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True)
+    # The registry carries the lease ids that key the session-attach MACs, so
+    # it must never be readable by other users: an explicit mode wins over the
+    # umask default, and an already-loose file is tightened again on next write.
+    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True, mode=0o600)
+    _ensure_registry_dir_owner_only(path.parent)
+
+
+def _ensure_registry_dir_owner_only(directory: Path) -> None:
+    """Best effort: keep the registry directory owner-only as well.
+
+    A 0600 registry under a group/world-readable directory is still reachable
+    by other users through path traversal, so tighten the directory too. This
+    never raises: shared mounts or filesystems without POSIX modes may refuse
+    the chmod, and a registry write must not fail because of that.
+    """
+    if os.name != "posix":
+        return
+    try:
+        if stat.S_IMODE(os.stat(directory).st_mode) != 0o700:
+            os.chmod(directory, 0o700)
+    except OSError:
+        pass
 
 
 def _process_start_time(pid: int) -> Optional[float]:

@@ -15,7 +15,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import parse_qs
 
+from tools.mcp_oauth_pocket import PocketReadAuthExhausted, is_recoverable_read_request
 from tools.mcp_oauth_provider import HermesProviderMixin
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,42 @@ try:
     _SDK_BASES: tuple = (_SDKOAuthClientProvider,)
 except ImportError:  # pragma: no cover — SDK required in CI; module must still import
     _SDK_BASES = ()
+
+
+class _FlowLockHold:
+    """Whether one auth flow holds ``context.lock`` on behalf of the SDK generator's ``async with``.
+
+    The lock is a binary semaphore with no owner task, so a release on the wrong path silently
+    takes a peer flow's hold away from it. Every release/re-acquire of the bridge goes through
+    here, and cleanup re-owns the lock before closing the SDK generator (which releases it)."""
+
+    def __init__(self, lock: Any):
+        self._lock, self.held = lock, True
+
+    def release(self) -> None:
+        self.held = False
+        self._lock.release()
+
+    async def hold(self) -> None:
+        """Re-own the lock. Cancellation is deferred until it is owned, then re-raised: giving up
+        the wait would let cleanup release a lock a peer holds."""
+        import anyio
+        cancelled_exc, pending = anyio.get_cancelled_exc_class(), None
+        with anyio.CancelScope(shield=True):  # AnyIO scopes would re-deliver on every attempt
+            while not self.held:
+                try:
+                    await self._lock.acquire()
+                    self.held = True
+                except cancelled_exc as exc:  # raw task.cancel()/wait_for pierce the shield
+                    pending = pending or exc
+        if pending is not None:
+            raise pending
+
+
+def _is_refresh_grant(request: Any) -> bool:
+    return request.method == "POST" and parse_qs(request.content).get(b"grant_type") == [b"refresh_token"]
+
+
 
 
 @dataclass
@@ -254,28 +292,34 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         # into the inner generator via inner.asend(incoming), preserving the bidirectional contract.
         # Regression from PR #11383 caught by tests/tools/test_mcp_oauth_bidirectional.py.
         inner = super().async_auth_flow(request)
-        resource_lock_released = retry_after_concurrent_auth = False
+        hold = recovery = None  # hold: set once ``inner`` is inside its ``async with self.context.lock``
+        retry_after_concurrent_auth = read_401_recovered = False
         sent_access_token = None
+        refreshes = 0  # refresh POSTs in this flow, the SDK's initial expired-token refresh included
         try:
             outgoing = await inner.__anext__()
+            hold = _FlowLockHold(self.context.lock)
             while True:
                 # The SDK holds context.lock for its whole generator, even while HTTPX waits on
                 # the MCP request. Release it for that request only; OAuth transitions stay serialized.
                 if outgoing is request:
+                    # The SDK's initial refresh was rejected (no peer grant adopted): it would now send
+                    # the read unauthenticated and run full interactive OAuth on the 401.
+                    if (refreshes and not self.context.is_token_valid()
+                            and is_recoverable_read_request(self._hermes_server_name, request)):
+                        raise self._hermes_read_401_exhausted("initial refresh rejected")
                     tokens = self.context.current_tokens
                     sent_access_token = tokens.access_token if tokens is not None else None
-                    self.context.lock.release()
-                    resource_lock_released = True
+                    hold.release()
                 else:
+                    refreshes += _is_refresh_grant(outgoing)
                     try:  # refuse the SDK's guessed DCR POST before it hits the network
                         await self._maybe_reject_fabricated_registration(outgoing)
                     except Exception:
                         await inner.aclose()  # release the SDK's context.lock now, not at GC
                         raise
                 incoming = yield outgoing
-                if resource_lock_released:
-                    await self.context.lock.acquire()
-                    resource_lock_released = False
+                await hold.hold()
                 # Another request may have refreshed/authorized while this one was in flight:
                 # retry with that token instead of a duplicate OAuth transition from a stale 401/403.
                 tokens = self.context.current_tokens
@@ -285,6 +329,19 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     await inner.aclose()
                     retry_after_concurrent_auth = True
                     break
+                if (not read_401_recovered and outgoing is request and sent_access_token is not None
+                        and getattr(incoming, "status_code", None) == 401
+                        and is_recoverable_read_request(self._hermes_server_name, request)):
+                    read_401_recovered = True
+                    final = [incoming]
+                    recovery = self._hermes_recover_read_401(
+                        request, incoming, sent_access_token, hold, refreshes == 0, final)
+                    try:
+                        recovery_out = await recovery.__anext__()
+                        while True:
+                            recovery_out = await recovery.asend((yield recovery_out))
+                    except StopAsyncIteration:
+                        incoming = final[0]
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
@@ -292,15 +349,89 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
-            if resource_lock_released:
-                # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
-                # flow mid-request; shield only this local bookkeeping.
-                import anyio
-                with anyio.CancelScope(shield=True):
-                    await self.context.lock.acquire()
+            await self._hermes_close_flow(inner, hold, recovery)
         if retry_after_concurrent_auth:
             yield request
             self._persist_oauth_metadata_if_changed()
+
+    @staticmethod
+    async def _hermes_close_flow(inner, hold: Optional[_FlowLockHold], recovery) -> None:
+        """Deterministic cleanup, also on cancellation/timeout/``aclose``: close the recovery
+        sub-generator (its ``finally`` releases a held refresh fence), re-own the lock if this
+        flow released it, then close the SDK generator so its ``async with`` releases exactly
+        the hold this flow owns. A deferred cancellation re-raises only after that."""
+        import anyio
+        if recovery is not None:
+            with anyio.CancelScope(shield=True):
+                await recovery.aclose()
+        if hold is None or inner.ag_frame is None:  # never entered, or already left, its ``async with``
+            return
+        try:
+            await hold.hold()
+        finally:
+            with anyio.CancelScope(shield=True):
+                await inner.aclose()
+
+    def _hermes_read_401_exhausted(self, reason: str) -> PocketReadAuthExhausted:
+        logger.warning("MCP OAuth '%s': read request still unauthorized (%s); failing closed without "
+                       "interactive authorization", self._hermes_server_name, reason)
+        return PocketReadAuthExhausted()
+
+    async def _hermes_recover_read_401(self, request, response, sent_access_token: str,
+                                       hold: _FlowLockHold, may_refresh: bool, final: list):
+        """Recover a spurious 401 on an allow-listed read request (``tools.mcp_oauth_pocket``).
+
+        One retry with the current token; if still 401, at most one refresh through the fenced,
+        issuer-bound ``_refresh_token``/``_handle_refresh_response`` (or adoption of a peer's
+        rotation) and one final attempt: <= 3 resource requests and <= 1 refresh POST in the whole
+        flow (``may_refresh`` is False when the SDK already refreshed an expired token). Entered
+        and left holding ``context.lock``, released only around resource requests via ``hold``.
+        A non-401/403 lands in ``final[0]`` for the SDK; exhaustion (incl. any 403) raises
+        ``PocketReadAuthExhausted`` and never reaches the SDK's interactive 401/403 branches. Logs carry no tokens or bodies."""
+        from tools.mcp_oauth_provider import _RefreshCompletedByPeer, stamp_default_user_agent
+        logger.warning("MCP OAuth '%s': 401 on a read request; retrying once with the current token",
+                       self._hermes_server_name)
+        for attempt in range(2):
+            await response.aread()  # drain + close the discarded 401; HTTPX's own aread reuses it
+            self._add_auth_header(request)
+            hold.release()
+            final[0] = response = yield request
+            await hold.hold()
+            if response.status_code == 403:  # never the SDK's interactive scope step-up mid-recovery
+                await response.aread()
+                raise self._hermes_read_401_exhausted("403 during recovery")
+            if response.status_code != 401:
+                return
+            await response.aread()
+            if attempt:
+                raise self._hermes_read_401_exhausted("after refresh")
+            tokens = self.context.current_tokens
+            if self.context.is_token_valid() and tokens is not None and tokens.access_token != sent_access_token:
+                continue  # a concurrent flow in this process already replaced the token
+            if not may_refresh:
+                raise self._hermes_read_401_exhausted("token already refreshed in this flow")
+            if not self.context.can_refresh_token():
+                raise self._hermes_read_401_exhausted("no refresh token")
+            try:
+                refresh_request = await self._refresh_token()
+            except _RefreshCompletedByPeer:
+                refresh_request = None  # a peer process rotated the grant; its pair is installed
+            # health: allow BLE001 -- any refresh-build failure (SDK, storage, fence, issuer) must fail closed here, never reach the SDK's interactive branch
+            except Exception as exc:
+                raise self._hermes_read_401_exhausted(f"refresh unavailable: {type(exc).__name__}") from None
+            if refresh_request is not None:
+                stamp_default_user_agent(refresh_request)
+                try:
+                    refresh_response = yield refresh_request
+                    await self._maybe_flag_poisoned_client(refresh_response)
+                    refreshed = await self._handle_refresh_response(refresh_response)
+                finally:
+                    await self._hermes_release_refresh_fence()
+                if not refreshed:
+                    self._initialized = False  # as the SDK does after a failed refresh
+                    raise self._hermes_read_401_exhausted("refresh rejected")
+            if not self.context.is_token_valid():
+                raise self._hermes_read_401_exhausted("no valid token after refresh")
 
 
 # Cached at import time; None when the SDK's OAuth module is unavailable.

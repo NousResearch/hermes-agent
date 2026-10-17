@@ -279,6 +279,39 @@ def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
     assert compressor.threshold_tokens == _with_default_cap(int(1_000_000 * 0.50))
 
 
+def test_live_warn_after_compressions_applies_without_rebuild(monkeypatch):
+    session, _ = _session_with_compressor()
+    session["agent"].compression_warn_after_compressions = 2
+
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"compression": {"warn_after_compressions": 5}},
+    )
+    live_agent = session["agent"]
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert session["agent"] is live_agent
+    assert live_agent.compression_warn_after_compressions == 5
+
+
+def test_removing_warn_after_compressions_restores_two(monkeypatch):
+    session, _ = _neutral_session()
+    session["agent"].compression_warn_after_compressions = 9
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].compression_warn_after_compressions == 2
+
+
+def test_invalid_warn_after_compressions_falls_back_to_two(monkeypatch):
+    session, _ = _neutral_session()
+    _sync_with_cfg(monkeypatch, session, {"compression": {"warn_after_compressions": "abc"}})
+    assert session["agent"].compression_warn_after_compressions == 2
+
+
+def test_zero_warn_after_compressions_stays_disabled(monkeypatch):
+    session, _ = _neutral_session()
+    _sync_with_cfg(monkeypatch, session, {"compression": {"warn_after_compressions": 0}})
+    assert session["agent"].compression_warn_after_compressions == 0
+
+
 def test_removing_idle_compact_after_seconds_restores_zero(monkeypatch):
     session, _ = _neutral_session()
     session["agent"].compression_idle_compact_after_seconds = 1800

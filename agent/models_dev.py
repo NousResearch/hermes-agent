@@ -633,6 +633,13 @@ _DEEPSEEK_FLASH_VISION: dict[str, Any] = {
     "reasoning": True,
     "family": "deepseek-flash",
 }
+_GROK_VISION: dict[str, Any] = {
+    "limit": {"context": 500_000},
+    "modalities": {"input": ["text", "image"], "output": ["text"]},
+    "tool_call": True,
+    "reasoning": True,
+    "family": "grok",
+}
 
 _BUILTIN_MODEL_METADATA: dict[tuple[str, str], dict[str, Any]] = {
     ("openai", "gpt-6-astra"): {
@@ -650,6 +657,8 @@ _BUILTIN_MODEL_METADATA: dict[tuple[str, str], dict[str, Any]] = {
     ("deepseek", "deepseek-v4-flash"): _DEEPSEEK_FLASH_VISION,
     ("deepseek", "deepseek-v4.1-flash"): _DEEPSEEK_FLASH_VISION,
     ("deepseek", "deepseek-v4-flash-vision-exp"): _DEEPSEEK_FLASH_VISION,
+    ("xai", "grok-4.6"): _GROK_VISION,
+    ("xai", "grok-4.7"): _GROK_VISION,
 }
 
 

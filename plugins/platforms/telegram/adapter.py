@@ -3289,6 +3289,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         pending_tasks = self._collect_live_tasks(
             [
                 *self._media_group_tasks.values(), *self._pending_photo_batch_tasks.values(), *self._pending_text_batch_tasks.values(),
+                *self._inflight_text_batch_tasks,
                 getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
                 # Hold-queue redispatch must be cancellable+awaitable on teardown too.
                 getattr(self, "_held_inbound_redispatch_task", None),
@@ -6592,10 +6593,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
         (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
         the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
-        await self._flush_buffered(
-            self._pending_text_batches, self._pending_text_batch_tasks, key,
-            self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
-            lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
+        current_task = asyncio.current_task()
+        self._inflight_text_batch_tasks.add(current_task)
+        try:
+            await self._flush_buffered(
+                self._pending_text_batches, self._pending_text_batch_tasks, key,
+                self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
+                lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
+        finally:
+            self._inflight_text_batch_tasks.discard(current_task)
 
     # -- Photo batching --
 

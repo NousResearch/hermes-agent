@@ -700,504 +700,10 @@ def _discord_ready_timeout_seconds() -> float:
     return 30.0
 
 
-class VoiceReceiver:
-    """Captures voice audio from a Discord voice channel: hooks the VoiceClient socket, decrypts
-    RTP (NaCl + DAVE E2EE), decodes Opus per user; a polling loop delivers utterances on silence."""
-
-    SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
-    MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
-    SAMPLE_RATE = 48000        # Discord native rate
-    CHANNELS = 2               # Discord sends stereo
-    REKEY_FAILURE_STREAK = 25  # consecutive NaCl failures → re-resolve creds
-
-    def __init__(self, voice_client, allowed_user_ids: set | None = None):
-        self._vc = voice_client
-        self._allowed_user_ids = allowed_user_ids or set()
-        self._running = False
-
-        # Decryption state, kept as ONE tuple (secret_key, dave_session,
-        # dave_protocol_version, dave_downgraded) so the receive thread
-        # reads a consistent generation in a single reference load while
-        # refreshes happen on other threads — two separate assignments
-        # could pair a new key with an old session for a packet.
-        self._creds: tuple = (b"", None, 0, False)
-        self._bot_ssrc: int = 0
-        # Monotonic deadline while DAVE plaintext passthrough is allowed
-        # (mirrors discord.py's set_passthrough_mode windows, see the
-        # voice-ws hook).  Replace-semantics: an upgrade's 10s grace
-        # SHORTENS a residual downgrade window, never extends it.
-        self._dave_passthrough_until: float = 0.0
-
-        # SSRC -> user_id mapping (populated from SPEAKING events)
-        self._ssrc_to_user: dict[int, int] = {}
-        self._lock = threading.Lock()
-        self._buffers: dict[int, bytearray] = defaultdict(bytearray)
-        self._last_packet_time: dict[int, float] = {}
-        # Opus decoder per SSRC (each user needs own decoder state)
-        self._decoders: dict[int, object] = {}
-        # Pause flag: don't capture while bot is playing TTS
-        self._paused = False
-        # Debug logging counter (instance-level to avoid cross-instance races)
-        self._packet_debug_count = 0
-
-        # Decode-health counters (logged at teardown) and the NaCl failure
-        # streak used to detect stale credentials after a re-key.
-        self._decode_ok = 0
-        self._decode_failed = 0
-        self._dave_unmapped_dropped = 0
-        self._nacl_fail_streak = 0
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def start(self):
-        """Start listening for voice packets."""
-        conn = self._vc._connection
-        self._resolve_credentials(conn)
-
-        self._install_speaking_hook(conn)
-        conn.add_socket_listener(self._on_packet)
-        self._running = True
-        logger.info("VoiceReceiver started (bot_ssrc=%d)", self._bot_ssrc)
-
-    def _resolve_credentials(self, conn) -> None:
-        """Read the current decryption state from the live connection.
-
-        Discord rotates the transport ``secret_key`` on every voice
-        (re)connect (op 4 SESSION_DESCRIPTION), and ``reinit_dave_session``
-        REPLACES ``conn.dave_session`` with a new object when none existed
-        yet — e.g. when DAVE finishes negotiating after this receiver
-        started.  Credentials must therefore be re-resolvable at runtime;
-        a one-time snapshot decrypts nothing after either event, silently.
-
-        ``dave_protocol_version`` rides along because a non-null session is
-        NOT proof frames are encrypted: after a downgrade transition the
-        session object survives with the protocol at 0 and senders emit
-        plaintext.
-        """
-        self._creds = (
-            bytes(conn.secret_key),
-            conn.dave_session,
-            int(getattr(conn, "dave_protocol_version", 0) or 0),
-            bool(getattr(conn, "dave_downgraded", False)),
-        )
-        self._bot_ssrc = conn.ssrc
-        # A receiver can start (or refresh) while a downgrade transition is
-        # already pending — upstream has passthrough enabled for up to 120s
-        # but we never saw the op 21.  Seed the window from the connection's
-        # physical pending-transition state; the entry is popped on execute,
-        # so this cannot re-grant after the transition completes.
-        pending = getattr(conn, "dave_pending_transitions", None) or {}
-        if 0 in pending.values() and time.monotonic() >= self._dave_passthrough_until:
-            self.note_dave_passthrough_window(120.0)
-
-    @property
-    def _secret_key(self) -> bytes:
-        return self._creds[0]
-
-    @property
-    def _dave_session(self):
-        return self._creds[1]
-
-    @property
-    def _dave_protocol_version(self) -> int:
-        return self._creds[2]
-
-    @property
-    def _dave_downgraded(self) -> bool:
-        return self._creds[3]
-
-    def note_dave_passthrough_window(self, seconds: float) -> None:
-        """Open a plaintext-passthrough grace window for unmapped SSRCs.
-
-        Mirrors discord.py's own ``set_passthrough_mode`` calls: a pending
-        downgrade transition allows plaintext for up to 120s, and a
-        confirmed upgrade-after-downgrade allows a 10s grace while senders
-        catch up.  Replace-semantics, matching upstream: each grant resets
-        the deadline, so an upgrade's short grace supersedes a residual
-        downgrade window instead of being swallowed by it.
-        """
-        self._dave_passthrough_until = time.monotonic() + seconds
-
-    def refresh_credentials(self, reason: str) -> None:
-        """Re-resolve decryption state from the live connection.
-
-        Cheap and idempotent (attribute reads plus one small copy), so
-        callers invoke it on every trigger — session description, DAVE
-        epoch prepare, a membership change in the channel, or a decrypt
-        failure streak — without needing to coalesce.
-        """
-        if not self._running:
-            return
-        try:
-            conn = self._vc._connection
-            self._resolve_credentials(conn)
-            self._nacl_fail_streak = 0
-            logger.info(
-                "VoiceReceiver credentials refreshed (%s; bot_ssrc=%d, dave=%s)",
-                reason,
-                self._bot_ssrc,
-                "on" if self._dave_session else "off",
-            )
-        except Exception as e:
-            logger.warning(
-                "VoiceReceiver credential refresh failed (%s): %s", reason, e
-            )
-
-    def stop(self):
-        """Stop listening and clean up."""
-        self._running = False
-        try:
-            self._vc._connection.remove_socket_listener(self._on_packet)
-        except Exception:
-            pass
-        with self._lock:
-            self._buffers.clear()
-            self._last_packet_time.clear()
-            self._decoders.clear()
-            self._ssrc_to_user.clear()
-        logger.info(
-            "VoiceReceiver stopped (frames ok=%d, decrypt_failed=%d, "
-            "dave_unmapped_dropped=%d)",
-            self._decode_ok,
-            self._decode_failed,
-            self._dave_unmapped_dropped,
-        )
-
-    def pause(self):
-        self._paused = True
-
-    def resume(self):
-        self._paused = False
-
-    # --- SSRC -> user_id mapping via SPEAKING opcode hook ---
-
-    def map_ssrc(self, ssrc: int, user_id: int):
-        with self._lock:
-            self._ssrc_to_user[ssrc] = user_id
-
-    def _install_speaking_hook(self, conn):
-        """Wrap the voice websocket hook to capture SPEAKING events (op 5); ``conn.hook`` is
-        re-passed on each (re)connect, so wrap it on the state AND the live websocket."""
-        original_hook = conn.hook
-        receiver_self = self
-
-        async def wrapped_hook(ws, msg):
-            if isinstance(msg, dict) and msg.get("op") == 5:
-                data = msg.get("d", {})
-                ssrc = data.get("ssrc")
-                user_id = data.get("user_id")
-                if ssrc and user_id:
-                    logger.info("SPEAKING event: ssrc=%d -> user=%s", ssrc, user_id)
-                    receiver_self.map_ssrc(int(ssrc), int(user_id))
-            if original_hook:
-                await original_hook(ws, msg)
-            # Re-resolve decryption state after the events that change it.
-            # DiscordVoiceWebSocket.received_message dispatches the op (which
-            # is what updates conn.secret_key / conn.dave_session /
-            # conn.dave_protocol_version) BEFORE calling this hook, so the
-            # refresh reads the new values:
-            #   op 4  SESSION_DESCRIPTION — new transport key, and
-            #         reinit_dave_session() may replace conn.dave_session
-            #   op 24 DAVE_PREPARE_EPOCH  — epoch 1 recreates the MLS group
-            #   op 21 DAVE_PREPARE_TRANSITION with protocol_version 0 —
-            #         discord.py opens a 120s plaintext passthrough window
-            #         (set_passthrough_mode(True, 120)); mirror it so the
-            #         unmapped-SSRC gate doesn't drop legitimate plaintext
-            #   op 22 DAVE_EXECUTE_TRANSITION — the protocol version just
-            #         changed; refresh, plus a 10s grace mirroring the
-            #         upgrade path's set_passthrough_mode(True, 10)
-            if isinstance(msg, dict):
-                op = msg.get("op")
-                if op in (4, 24):
-                    receiver_self.refresh_credentials(f"voice ws op {op}")
-                elif op == 21:
-                    if (msg.get("d") or {}).get("protocol_version") == 0:
-                        # Pending downgrade: upstream enables plaintext
-                        # passthrough for up to 120s (set_passthrough_mode).
-                        receiver_self.note_dave_passthrough_window(120.0)
-                elif op == 22:
-                    # A transition may have executed; refresh and detect the
-                    # upgrade-after-downgrade EDGE (dave_downgraded flipping
-                    # True -> False) — the only case upstream grants the 10s
-                    # passthrough grace.  Same-version transitions and
-                    # unknown/duplicate ids change no state upstream, so no
-                    # edge fires and no window opens.
-                    was_downgraded = receiver_self._dave_downgraded
-                    receiver_self.refresh_credentials("voice ws op 22")
-                    if (
-                        was_downgraded
-                        and not receiver_self._dave_downgraded
-                        and receiver_self._dave_protocol_version > 0
-                    ):
-                        receiver_self.note_dave_passthrough_window(10.0)
-
-        # Set on connection state (for future reconnects)
-        conn.hook = wrapped_hook
-        try:
-            from discord.utils import MISSING
-            if hasattr(conn, 'ws') and conn.ws is not MISSING:
-                conn.ws._hook = wrapped_hook
-                logger.info("Speaking hook installed on live websocket")
-        except Exception as e:
-            logger.warning("Could not install hook on live ws: %s", e)
-
-    # --- Packet handler (called from SocketReader thread) ---
-
-    def _on_packet(self, data: bytes):
-        if not self._running or self._paused:
-            return
-
-        # One consistent credential generation for this packet — a refresh
-        # on another thread swaps the whole tuple, never half of it.
-        secret_key, dave_session, dave_pver, _dave_downgraded = self._creds
-
-        # Log first few raw packets for debugging
-        self._packet_debug_count += 1
-        if self._packet_debug_count <= 5:
-            logger.debug(
-                "Raw UDP packet: len=%d, first_bytes=%s",
-                len(data), data[:4].hex() if len(data) >= 4 else "short",
-            )
-        if len(data) < 16:
-            return
-        # RTP v2: top 2 bits 10 (rest varies); voice payload type (byte 1 & 0x7F) is 0x78.
-        if (data[0] >> 6) != 2 or (data[1] & 0x7F) != 0x78:
-            if self._packet_debug_count <= 5:
-                logger.debug("Skipped non-RTP: byte0=0x%02x byte1=0x%02x", data[0], data[1])
-            return
-        first_byte = data[0]
-        _, _, seq, _timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
-        if ssrc == self._bot_ssrc:
-            return
-        # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
-        cc = first_byte & 0x0F  # CSRC count
-        has_extension = bool(first_byte & 0x10)  # extension bit
-        has_padding = bool(first_byte & 0x20)  # padding bit (RFC 3550 §5.1)
-        header_size = 12 + (4 * cc) + (4 if has_extension else 0)
-        if len(data) < header_size + 4:  # need at least header + nonce
-            return
-        # Read extension length from preamble (for skipping after decrypt)
-        ext_data_len = 0
-        if has_extension:
-            ext_preamble_offset = 12 + (4 * cc)
-            ext_words = struct.unpack_from(">H", data, ext_preamble_offset + 2)[0]
-            ext_data_len = ext_words * 4
-        if self._packet_debug_count <= 10:
-            with self._lock:
-                known_user = self._ssrc_to_user.get(ssrc, "unknown")
-            logger.debug(
-                "RTP packet: ssrc=%d, seq=%d, user=%s, hdr=%d, ext_data=%d",
-                ssrc, seq, known_user, header_size, ext_data_len,
-            )
-        header = bytes(data[:header_size])
-        payload_with_nonce = data[header_size:]
-        # --- NaCl transport decrypt (aead_xchacha20_poly1305_rtpsize) ---
-        if len(payload_with_nonce) < 4:
-            return
-        nonce = bytearray(24)
-        nonce[:4] = payload_with_nonce[-4:]
-        encrypted = bytes(payload_with_nonce[:-4])
-        try:
-            import nacl.secret
-            box = nacl.secret.Aead(secret_key)
-            decrypted = box.decrypt(encrypted, header, bytes(nonce))
-            self._nacl_fail_streak = 0
-        except Exception as e:
-            self._decode_failed += 1
-            self._nacl_fail_streak += 1
-            # Never go fully dark: after the first 10 warnings, keep emitting
-            # one every 250 failures so a deaf session stays diagnosable.
-            if self._packet_debug_count <= 10 or self._nacl_fail_streak % 250 == 0:
-                logger.warning(
-                    "NaCl decrypt failed: %s (hdr=%d, enc=%d, streak=%d)",
-                    e, header_size, len(encrypted), self._nacl_fail_streak,
-                )
-            # A sustained failure streak means the transport key rotated
-            # under us (voice reconnect / re-key) — re-read it from the live
-            # connection instead of staying deaf on a stale copy.  The
-            # refresh resets the streak, so this retries every
-            # REKEY_FAILURE_STREAK packets while the failure persists.
-            if self._nacl_fail_streak >= self.REKEY_FAILURE_STREAK:
-                self.refresh_credentials("decrypt-failure streak")
-            return
-        # Skip encrypted extension data to get the actual opus payload
-        if ext_data_len and len(decrypted) > ext_data_len:
-            decrypted = decrypted[ext_data_len:]
-        # Strip RTP padding (RFC 3550 §5.1): last payload byte is the count; leaving it corrupts DAVE/Opus.
-        if has_padding:
-            if not decrypted:
-                if self._packet_debug_count <= 10:
-                    logger.warning("RTP padding bit set but no payload (ssrc=%d)", ssrc)
-                return
-            pad_len = decrypted[-1]
-            if pad_len == 0 or pad_len > len(decrypted):
-                if self._packet_debug_count <= 10:
-                    logger.warning(
-                        "Invalid RTP padding length %d for payload size %d (ssrc=%d)",
-                        pad_len, len(decrypted), ssrc,
-                    )
-                return
-            decrypted = decrypted[:-pad_len]
-            if not decrypted:
-                return
-        # --- DAVE E2EE decrypt ---
-        if dave_session:
-            with self._lock:
-                user_id = self._ssrc_to_user.get(ssrc, 0)
-                if not user_id:
-                    # Rejoin race: SPEAKING may never be resent for a user who
-                    # was already talking — try the sole-member inference
-                    # before giving up on this frame.
-                    user_id = self._infer_user_for_ssrc(ssrc)
-            if user_id:
-                try:
-                    import davey
-                    decrypted = dave_session.decrypt(
-                        user_id, davey.MediaType.audio, decrypted
-                    )
-                except Exception as e:
-                    # Unencrypted passthrough — use NaCl-decrypted data as-is
-                    if "Unencrypted" not in str(e):
-                        if self._packet_debug_count <= 10:
-                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
-                        return
-            elif (
-                dave_pver > 0
-                and time.monotonic() >= self._dave_passthrough_until
-            ):
-                # E2EE is actively on (protocol > 0, no passthrough window),
-                # so an unmapped SSRC's payload is still ciphertext.  Opus
-                # will happily "decode" it (producing shredded audio and
-                # poisoning decoder state), so drop the frame until a
-                # SPEAKING event maps the SSRC — bounded loss beats corrupt
-                # audio.  A non-null session alone is NOT this predicate: the
-                # session object survives protocol downgrades to 0 and
-                # passthrough transitions, where plaintext is legitimate and
-                # must fall through to opus below.
-                self._dave_unmapped_dropped += 1
-                if (
-                    self._packet_debug_count <= 10
-                    or self._dave_unmapped_dropped % 250 == 1
-                ):
-                    logger.debug(
-                        "Dropping DAVE frame for unmapped ssrc=%d (dropped=%d)",
-                        ssrc, self._dave_unmapped_dropped,
-                    )
-                return
-
-        # --- Opus decode -> PCM ---
-        try:
-            if ssrc not in self._decoders:
-                self._decoders[ssrc] = discord.opus.Decoder()
-            pcm = self._decoders[ssrc].decode(decrypted)
-            self._decode_ok += 1
-            with self._lock:
-                self._buffers[ssrc].extend(pcm)
-                self._last_packet_time[ssrc] = time.monotonic()
-        except Exception as e:
-            with self._lock:
-                self._decoders.pop(ssrc, None)
-            logger.debug("Opus decode error for SSRC %s; reset decoder: %s", ssrc, e)
-            return
-
-    # --- Silence detection ---
-
-    def _infer_user_for_ssrc(self, ssrc: int) -> int:
-        """Infer user_id for an unmapped SSRC: after a bot rejoin Discord may not resend
-        SPEAKING, so if exactly one allowed user is in the channel, map the SSRC to them."""
-        try:
-            channel = self._vc.channel
-            if not channel:
-                return 0
-            bot_id = self._vc.user.id if self._vc.user else 0
-            allowed = self._allowed_user_ids
-            candidates = [
-                m.id for m in channel.members
-                if m.id != bot_id and (not allowed or str(m.id) in allowed)
-            ]
-            if len(candidates) == 1:
-                uid = candidates[0]
-                self._ssrc_to_user[ssrc] = uid
-                logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
-                return uid
-        except Exception:
-            pass
-        return 0
-
-    def check_silence(self) -> list:
-        """Return list of (user_id, pcm_bytes) for completed utterances."""
-        now = time.monotonic()
-        completed = []
-        with self._lock:
-            ssrc_user_map = dict(self._ssrc_to_user)
-            ssrc_list = list(self._buffers.keys())
-            for ssrc in ssrc_list:
-                last_time = self._last_packet_time.get(ssrc, now)
-                silence_duration = now - last_time
-                buf = self._buffers[ssrc]
-                # 48kHz, 16-bit, stereo = 192000 bytes/sec
-                buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
-                if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
-                    user_id = ssrc_user_map.get(ssrc, 0)
-                    if not user_id:
-                        # SSRC unmapped (SPEAKING missing after rejoin) — infer from channel.
-                        user_id = self._infer_user_for_ssrc(ssrc)
-                    if user_id:
-                        completed.append((user_id, bytes(buf)))
-                    self._buffers[ssrc] = bytearray()
-                    self._last_packet_time.pop(ssrc, None)
-                elif silence_duration >= self.SILENCE_THRESHOLD * 2:
-                    # Stale buffer with no valid user — discard
-                    self._buffers.pop(ssrc, None)
-                    self._last_packet_time.pop(ssrc, None)
-        return completed
-
-    def flush_pending(self) -> list:
-        """Return buffered utterances that have not yet reached silence."""
-        completed = []
-        with self._lock:
-            ssrc_user_map = dict(self._ssrc_to_user)
-            for ssrc, buf in list(self._buffers.items()):
-                # 48kHz, 16-bit, stereo = 192000 bytes/sec
-                buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
-                if buf_duration >= self.MIN_SPEECH_DURATION:
-                    user_id = ssrc_user_map.get(ssrc, 0)
-                    if not user_id:
-                        user_id = self._infer_user_for_ssrc(ssrc)
-                    if user_id:
-                        completed.append((user_id, bytes(buf)))
-                self._buffers.pop(ssrc, None)
-                self._last_packet_time.pop(ssrc, None)
-        return completed
-
-    def discard_pending(self) -> None:
-        """Drop buffered PCM that no poll or flush has emitted yet."""
-        with self._lock:
-            self._buffers.clear()
-            self._last_packet_time.clear()
-
-    # --- PCM -> WAV conversion (for Whisper STT) ---
-
-    @staticmethod
-    def pcm_to_wav(pcm_data: bytes, output_path: str, src_rate: int = 48000, src_channels: int = 2):
-        """Convert raw PCM to 16kHz mono WAV via ffmpeg into *output_path* (not stdout: ffmpeg
-        can't seek a pipe, so piped WAV carries placeholder RIFF sizes strict readers misreport)."""
-        from hermes_cli._subprocess_compat import windows_hide_flags
-        subprocess.run(
-            [
-                resolve_ffmpeg_executable(), "-y", "-loglevel", "error", "-f", "s16le",
-                "-ar", str(src_rate), "-ac", str(src_channels), "-i", "pipe:0", "-ar", "16000",
-                "-ac", "1", output_path,
-            ],
-            input=pcm_data,
-            check=True,
-            timeout=10,
-            # Capture stderr so a failure's CalledProcessError carries ffmpeg's real message.
-            stderr=subprocess.PIPE,
-            creationflags=windows_hide_flags(),
-        )
+try:
+    from .voice_receiver import VoiceReceiver
+except ImportError:
+    from voice_receiver import VoiceReceiver
 
 
 from plugins.platforms.discord.adapter_config_readers import (
@@ -1216,6 +722,46 @@ from plugins.platforms.discord.adapter_authorization import DiscordAuthorization
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
+
+
+_VOICE_BINDING_UNSET: Any = object()
+
+
+def _read_discord_stt_settings() -> tuple[str, dict]:
+    """Return the selected Discord voice STT mode and merged config."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+    except Exception:  # health: allow BLE001 -- user config loader may fail across managed and plugin-backed layers
+        logger.warning("Discord STT mode configuration unavailable", exc_info=True)
+        config = {}
+    discord_config = config.get("discord")
+    discord_config = discord_config if isinstance(discord_config, dict) else {}
+    voice_stt = discord_config.get("voice_stt")
+    voice_stt = voice_stt if isinstance(voice_stt, dict) else {}
+    from plugins.platforms.discord.live_transcription import (
+        normalize_discord_stt_mode,
+    )
+
+    mode = normalize_discord_stt_mode(voice_stt.get("mode", "configured"))
+    return mode, config
+
+def _stt_enabled_in_config(config: dict) -> bool:
+    stt_config = config.get("stt")
+    stt_config = stt_config if isinstance(stt_config, dict) else {}
+    from tools.transcription_tools import is_stt_enabled
+    return is_stt_enabled(stt_config)
+
+def _read_runtime_stt_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+    except Exception:  # health: allow BLE001 -- unavailable config disables optional runtime STT
+        logger.warning("Discord runtime STT configuration unavailable", exc_info=True)
+        return False
+    return _stt_enabled_in_config(config)
 
 
 class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
@@ -1269,8 +815,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._voice_timeout_tasks: dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         self._voice_timeout_seconds = self._load_voice_timeout()
         self._playback_timeout_seconds = self._load_playback_timeout()
-        self._voice_receivers: dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
-        self._voice_listen_tasks: dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
+        self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        self._voice_stt_modes: Dict[int, str] = {}  # latched on fresh join
+        self._voice_live_transcribers: Dict[int, Any] = {}
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Voice-reply mode ("off"|"voice_only"|"all") per linked text-channel id (set by run.py) so
@@ -1570,6 +1118,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     and after.channel is not None
                     and before.channel != after.channel
                 )
+                if left or switched:
+                    await adapter_self._revoke_voice_stt_user(guild_id, member.id)
                 if joined or left or switched:
                     logger.info(
                         "Voice state: %s (%d) %s (guild %d)",
@@ -3786,6 +3336,240 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
+    async def _activate_voice_stt_mode(
+        self,
+        guild_id: int,
+        mode: str,
+        config: dict,
+    ) -> None:
+        """Latch one mode for a voice join and own its Live controller."""
+        modes = getattr(self, "_voice_stt_modes", None)
+        if modes is None:
+            self._voice_stt_modes = modes = {}
+        controllers = getattr(self, "_voice_live_transcribers", None)
+        if controllers is None:
+            self._voice_live_transcribers = controllers = {}
+
+        existing = controllers.get(guild_id)
+        if not _stt_enabled_in_config(config):
+            if existing is not None:
+                controllers.pop(guild_id, None)
+                await existing.close()
+            if mode != "configured":
+                raise ValueError("Discord optional STT modes require stt.enabled")
+            modes[guild_id] = mode
+            logger.info("Discord voice STT disabled for guild %d", guild_id)
+            return
+
+        if mode == "openai_live_high":
+            from plugins.platforms.discord.live_transcription import (
+                DiscordLiveTranscriptionController,
+                LiveTranscriptionConfig,
+                resolve_openai_realtime_api_key,
+            )
+
+            live_config = LiveTranscriptionConfig.from_hermes_config(config)
+            api_key = resolve_openai_realtime_api_key(config)
+            replacement = DiscordLiveTranscriptionController(
+                api_key=api_key,
+                config=live_config,
+            )
+            if existing is not None:
+                await existing.close()
+            controllers[guild_id] = replacement
+        elif existing is not None:
+            controllers.pop(guild_id, None)
+            await existing.close()
+        modes[guild_id] = mode
+        logger.info("Discord voice STT mode for guild %d: %s", guild_id, mode)
+
+    async def _close_voice_stt_mode(self, guild_id: int) -> None:
+        modes = getattr(self, "_voice_stt_modes", {})
+        modes.pop(guild_id, None)
+        controllers = getattr(self, "_voice_live_transcribers", {})
+        controller = controllers.pop(guild_id, None)
+        if controller is not None:
+            await controller.close()
+
+    def _voice_stt_admission(self, guild_id, receiver, controller, user_id, guild, tokens,
+                             captured_for=_VOICE_BINDING_UNSET):
+        """Capture operation-local identity; never resolve a replacement as the owner."""
+        if captured_for is _VOICE_BINDING_UNSET:
+            captured_for = getattr(self, "_voice_text_channels", {}).get(guild_id)
+        capture_generation = getattr(self, "_voice_capture_generations", {}).get(guild_id, 0)
+        def admitted():
+            return (
+                _read_runtime_stt_enabled()
+                and getattr(self, "_voice_capture_generations", {}).get(guild_id, 0) == capture_generation
+                and getattr(self, "_voice_text_channels", {}).get(guild_id) == captured_for
+                and getattr(self, "_voice_receivers", {}).get(guild_id) is receiver
+                and (controller is None or getattr(self, "_voice_live_transcribers", {}).get(guild_id) is controller)
+                and self._is_allowed_user(str(user_id), guild=guild, is_dm=False)
+                and bool(tokens)
+                and all(receiver.stream_chunk_is_current(*token) for token in tokens)
+            )
+        return admitted
+
+    async def _drain_voice_listener_pcm(
+        self, *, guild_id: int, receiver: VoiceReceiver, stt_mode: str, guild, controller,
+    ) -> None:
+        """Drain admitted PCM only; never extract or commit another utterance."""
+        if (getattr(self, "_voice_receivers", {}).get(guild_id) is not receiver
+                or not _read_runtime_stt_enabled()):
+            return
+        chunks = receiver.drain_stream_chunks()
+        if stt_mode == "openai_live_high" and controller is not None:
+            per_user = defaultdict(list)
+            for capture, ssrc, generation, user_id, pcm in chunks:
+                per_user[user_id].append((capture, ssrc, generation, user_id, pcm))
+            for user_id, user_chunks in per_user.items():
+                tokens = tuple(chunk[:4] for chunk in user_chunks)
+                admit = self._voice_stt_admission(
+                    guild_id, receiver, controller, user_id, guild, tokens)
+                if not admit():
+                    await controller.abort_user(user_id)
+                    continue
+                await controller.append_pcm48(
+                    user_id, b"".join(chunk[4] for chunk in user_chunks), admit=admit)
+                if not admit():
+                    await controller.abort_user(user_id)
+
+    async def _deliver_live_voice_batch(self, guild_id: int, batch) -> None:
+        for controller, user_id, admit, prepared, waiter in batch:
+            # The lexical owner cancels waiters exactly once, even during delivery cleanup.
+            result = await asyncio.shield(waiter)
+            await self._dispatch_live_voice_result(guild_id, user_id, result, admit)
+
+    async def _close_live_voice_batch(self, batch, delivery=None) -> None:
+        from plugins.platforms.discord.live_transcription import _bounded_teardown
+        cleanup = getattr(self, "_voice_cleanup_tasks", None)
+        if cleanup is None:
+            self._voice_cleanup_tasks = cleanup = set()
+        children = [entry[4] for entry in batch]
+        if delivery is not None:
+            children.append(delivery)
+        for child in children:
+            if not child.done():
+                child.cancel()
+        try:
+            if children:
+                await _bounded_teardown(set(children), cleanup)
+        finally:
+            retirements = {
+                asyncio.create_task(controller._retire_prepared_utterance(user_id, prepared))
+                for controller, user_id, admit, prepared, waiter in batch
+                if not waiter.done() or waiter.cancelled()
+            }
+            batch.clear()
+            if retirements:
+                await _bounded_teardown(retirements, cleanup)
+
+    async def _close_disabled_voice_stt(self, guild_id, receiver, controller) -> None:
+        if not _read_runtime_stt_enabled():
+            receiver.discard_pending()
+            controllers = getattr(self, "_voice_live_transcribers", {})
+            if controllers.get(guild_id) is controller:
+                controllers.pop(guild_id, None)
+            if controller is not None:
+                await controller.close()
+
+    async def _process_voice_listener_tick(
+        self, *, guild_id: int, receiver: VoiceReceiver, stt_mode: str, guild,
+        flush: bool = False, live_batch=None,
+    ) -> None:
+        """Seal the bounded extracted batch before its listener resumes PCM pumping."""
+        controller = getattr(self, "_voice_live_transcribers", {}).get(guild_id)
+        # Direct ticks and final flush own/await their batch here, without an ingress pump.
+        owns_batch = flush or live_batch is None
+        batch = live_batch if live_batch is not None and not flush else []
+        try:
+            await self._drain_voice_listener_pcm(
+                guild_id=guild_id, receiver=receiver, stt_mode=stt_mode,
+                guild=guild, controller=controller)
+            if not _read_runtime_stt_enabled():
+                return
+            if getattr(self, "_voice_receivers", {}).get(guild_id) is not receiver:
+                return
+            sources = receiver.snapshot_sources() if stt_mode != "configured" else {}
+            # Bind the entire extracted batch before any STT await can move the channel.
+            captured_for = getattr(self, "_voice_text_channels", {}).get(guild_id)
+            completed = receiver.flush_pending() if flush else receiver.check_silence()
+            for user_id, pcm_data in completed:
+                if not _read_runtime_stt_enabled():
+                    return
+                if not self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
+                    if controller is not None:
+                        await controller.abort_user(user_id)
+                    continue
+                # Leave-time flushing must not cancel its own inactivity task.
+                if not flush and hasattr(self, "_voice_timeout_tasks"):
+                    self._reset_voice_timeout(guild_id)
+                if stt_mode == "configured":
+                    if getattr(self, "_voice_receivers", {}).get(guild_id) is receiver:
+                        await self._process_completed_voice_utterance(
+                            guild_id, user_id, pcm_data, stt_mode=stt_mode,
+                            captured_for=captured_for)
+                    continue
+                admit = self._voice_stt_admission(
+                    guild_id, receiver, controller, user_id, guild, sources.get(user_id, ()),
+                    captured_for=captured_for)
+                if admit():
+                    if stt_mode == "openai_live_high" and controller is not None:
+                        prepared = await controller._prepare_utterance(
+                            user_id, expected_source_bytes=len(pcm_data), admit=admit)
+                        # Start each timeout after its SEND, not after later SENDs/deliveries.
+                        waiter = asyncio.create_task(controller._wait_for_utterance(user_id, prepared))
+                        batch.append((controller, user_id, admit, prepared, waiter))
+                    else:
+                        await self._process_completed_voice_utterance(
+                            guild_id, user_id, pcm_data, stt_mode=stt_mode, admit=admit,
+                            captured_for=captured_for)
+                elif controller is not None:
+                    await controller.abort_user(user_id)
+            if owns_batch:
+                await self._deliver_live_voice_batch(guild_id, batch)
+        finally:
+            if owns_batch:
+                await self._close_live_voice_batch(batch)
+            await self._close_disabled_voice_stt(guild_id, receiver, controller)
+
+    async def _revoke_voice_stt_user(self, guild_id: int, user_id: int) -> None:
+        receiver = self._voice_receivers.get(guild_id)
+        if receiver is not None:
+            receiver.unmap_user(user_id)
+        controller = self._voice_live_transcribers.get(guild_id)
+        if controller is not None:
+            await controller.abort_user(user_id)
+
+    async def _retire_voice_listener(self, listen_task: Any) -> bool:
+        if not listen_task:
+            return True
+        listen_task.cancel()
+        if inspect.isawaitable(listen_task):
+            from plugins.platforms.discord.live_transcription import _bounded_teardown
+            cleanup = getattr(self, "_voice_cleanup_tasks", None)
+            if cleanup is None:
+                self._voice_cleanup_tasks = cleanup = set()
+            await _bounded_teardown({listen_task}, cleanup)
+            return listen_task.done()
+        return True
+
+    async def _discard_disconnected_voice_runtime(self, guild_id: int) -> None:
+        listen_task = self._voice_listen_tasks.pop(guild_id, None)
+        await self._retire_voice_listener(listen_task)
+        receiver = self._voice_receivers.pop(guild_id, None)
+        if receiver is not None:
+            receiver.stop()
+        await self._close_voice_stt_mode(guild_id)
+        if getattr(self, "_voice_mixers", None) is not None:
+            self._voice_mixers.pop(guild_id, None)
+        self._voice_clients.pop(guild_id, None)
+        timeout_task = self._voice_timeout_tasks.pop(guild_id, None)
+        if timeout_task is not None:
+            timeout_task.cancel()
+        self._voice_text_channels.pop(guild_id, None)
+        self._voice_sources.pop(guild_id, None)
+
     async def join_voice_channel(self, channel, *, text_channel_id: int | None = None, source: dict | None = None) -> bool:
         """Join a voice channel; returns True on success. ``text_channel_id`` stores the
         transcription-routing binding so programmatic joins work without ``/voice join``."""
@@ -3796,16 +3580,46 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             existing = self._voice_clients.get(guild_id)
             if existing and existing.is_connected():
                 if existing.channel.id != channel.id:
-                    await existing.move_to(channel)
+                    receiver = self._voice_receivers.get(guild_id)
+                    generations = getattr(self, "_voice_capture_generations", None)
+                    if generations is None:
+                        self._voice_capture_generations = generations = {}
+                    generations[guild_id] = generations.get(guild_id, 0) + 1
+                    prior_channel = receiver.invalidate_channel() if receiver is not None else None
+                    controller = getattr(self, "_voice_live_transcribers", {}).get(guild_id)
+                    if controller is not None:
+                        from plugins.platforms.discord.live_transcription import _bounded_teardown
+                        cleanup = getattr(self, "_voice_cleanup_tasks", None)
+                        if cleanup is None:
+                            self._voice_cleanup_tasks = cleanup = set()
+                        await _bounded_teardown({asyncio.create_task(controller.abort_pending())}, cleanup)
+                    try:
+                        await existing.move_to(channel)
+                    except BaseException:
+                        if receiver is not None and prior_channel is not None:
+                            receiver.restore_channel_move(prior_channel)
+                        raise
+                    else:
+                        if receiver is not None:
+                            receiver.complete_channel_move()
                 self._reset_voice_timeout(guild_id)
                 self._bind_voice_text_channel(guild_id, text_channel_id, source)
                 return True
-            vc = await channel.connect()
+            if existing is not None:
+                await self._discard_disconnected_voice_runtime(guild_id)
+            stt_mode, stt_config = _read_discord_stt_settings()
+            await self._activate_voice_stt_mode(guild_id, stt_mode, stt_config)
+            try:
+                vc = await channel.connect()
+            except BaseException:
+                await self._close_voice_stt_mode(guild_id)
+                raise
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
             self._bind_voice_text_channel(guild_id, text_channel_id, source)
             try:
                 receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver.require_explicit_mapping = stt_mode != "configured"
                 receiver.start()
                 self._voice_receivers[guild_id] = receiver
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
@@ -3824,22 +3638,54 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
-            receiver = self._voice_receivers.pop(guild_id, None)
-            pending_inputs = []
-            if receiver:
-                pending_inputs = receiver.flush_pending()
-                receiver.stop()
+            stt_mode = getattr(self, "_voice_stt_modes", {}).get(
+                guild_id,
+                "configured",
+            )
             listen_task = self._voice_listen_tasks.pop(guild_id, None)
-            if listen_task:
-                listen_task.cancel()
-            guild = self._client.get_guild(guild_id) if self._client is not None else None
-            captured_for = self._voice_text_channels.get(guild_id)
-            for user_id, pcm_data in pending_inputs:
-                if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
-                    await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
+            listener_retired = await self._retire_voice_listener(listen_task)
+            receiver = self._voice_receivers.get(guild_id)
+            controller = getattr(self, "_voice_live_transcribers", {}).get(guild_id)
+            receiver_stopped = False
+            try:
+                if receiver is not None:
+                    if not listener_retired:
+                        # A stubborn old listener cannot own a leave-time flush.
+                        receiver.discard_pending()
+                        receiver.stop()
+                        receiver_stopped = True
+                        if self._voice_receivers.get(guild_id) is receiver:
+                            self._voice_receivers.pop(guild_id, None)
+                    guild = self._client.get_guild(guild_id) if self._client is not None else None
+                    if listener_retired and stt_mode == "configured":
+                        pending_inputs = receiver.flush_pending()
+                        receiver.stop()
+                        receiver_stopped = True
+                        if self._voice_receivers.get(guild_id) is receiver:
+                            self._voice_receivers.pop(guild_id, None)
+                        captured_for = self._voice_text_channels.get(guild_id)
+                        for user_id, pcm_data in pending_inputs:
+                            if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
+                                await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
+                    elif listener_retired:
+                        await self._process_voice_listener_tick(
+                            guild_id=guild_id, receiver=receiver, stt_mode=stt_mode, guild=guild, flush=True)
+            finally:
+                if receiver is not None:
+                    if not receiver_stopped:
+                        receiver.stop()
+                    if self._voice_receivers.get(guild_id) is receiver:
+                        self._voice_receivers.pop(guild_id, None)
+                current = getattr(self, "_voice_live_transcribers", {}).get(guild_id)
+                if current is controller or current is None:
+                    await self._close_voice_stt_mode(guild_id)
+                elif controller is not None:
+                    await controller.close()
+
             # Tear down the mixer (stops the continuous outgoing stream).
             if getattr(self, "_voice_mixers", None) is not None:
                 self._voice_mixers.pop(guild_id, None)
+
             vc = self._voice_clients.pop(guild_id, None)
             if vc and vc.is_connected():
                 try:
@@ -3884,6 +3730,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 logger.warning("Mixer decode failed for %s; falling back to legacy playback", audio_path)
             # Legacy one-shot path: pause receiver while playing (echo prevention).
             receiver = self._voice_receivers.get(guild_id)
+            controller = getattr(self, "_voice_live_transcribers", {}).get(guild_id)
             if receiver:
                 receiver.pause()
             try:
@@ -3923,6 +3770,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 return True
             finally:
                 if receiver:
+                    if controller is not None:
+                        await controller.abort_pending()
                     receiver.resume()
         finally:
             self._reset_voice_timeout(guild_id)
@@ -4005,16 +3854,31 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         receiver = self._voice_receivers.get(guild_id)
         if receiver is not None:
             receiver.discard_pending()
+        controller = getattr(self, "_voice_live_transcribers", {}).get(guild_id)
+        if controller is not None:
+            invalidate = getattr(controller, "invalidate_pending", None)
+            if callable(invalidate):
+                invalidate()
 
     async def _voice_listen_loop(self, guild_id: int):
         """Periodically check for completed utterances and process them."""
         receiver = self._voice_receivers.get(guild_id)
         if not receiver:
             return
+        stt_mode = getattr(self, "_voice_stt_modes", {}).get(
+            guild_id,
+            "configured",
+        )
         last_keepalive = time.monotonic()
+        batch = []
+        delivery = None
+        controller = None
         try:
             while receiver._running:
                 await asyncio.sleep(0.2)
+
+                # Send periodic UDP keepalive to prevent Discord from
+                # dropping the UDP session after ~60s of silence.
                 now = time.monotonic()
                 if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
                     last_keepalive = now
@@ -4024,45 +3888,173 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             vc._connection.send_packet(b'\xf8\xff\xfe')
                     except Exception:
                         pass
-                completed = receiver.check_silence()
-                # Each utterance keeps the binding it was collected under, not one set during an earlier STT.
-                captured_for = self._voice_text_channels.get(guild_id)
-                # Pass guild so role checks stay guild-scoped.
                 _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
-                for user_id, pcm_data in completed:
-                    if not self._is_allowed_user(str(user_id), guild=_vc_guild, is_dm=False):
+                if delivery is not None:
+                    if not delivery.done():
+                        if (not _read_runtime_stt_enabled()
+                                or self._voice_receivers.get(guild_id) is not receiver
+                                or self._voice_live_transcribers.get(guild_id) is not controller):
+                            break
+                        # Existing receiver caps still apply. Later phrases can coalesce
+                        # until this batch is delivered; there is no independent turn queue.
+                        await self._drain_voice_listener_pcm(
+                            guild_id=guild_id, receiver=receiver, stt_mode=stt_mode,
+                            guild=_vc_guild, controller=controller)
                         continue
-                    # User speech is activity too; keeps active listeners connected.
-                    self._reset_voice_timeout(guild_id)
-                    await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
+                    await delivery
+                    await self._close_live_voice_batch(batch, delivery)
+                    delivery = None
+                controller = getattr(self, "_voice_live_transcribers", {}).get(guild_id)
+                tick_kwargs: Dict[str, Any] = {}
+                if stt_mode == "openai_live_high":
+                    tick_kwargs["live_batch"] = batch
+                await self._process_voice_listener_tick(
+                    guild_id=guild_id,
+                    receiver=receiver,
+                    stt_mode=stt_mode,
+                    guild=_vc_guild,
+                    **tick_kwargs,
+                )
+                if batch:
+                    # At most four waiters, from the receiver's existing four-buffer cap.
+                    # Every admitted record is already sealed before this task can pump PCM.
+                    delivery = asyncio.create_task(self._deliver_live_voice_batch(guild_id, batch))
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
+        finally:
+            await self._close_live_voice_batch(batch, delivery)
+            await self._close_disabled_voice_stt(guild_id, receiver, controller)
 
-    async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes, captured_for: int | None):
-        """Convert PCM -> WAV -> STT -> callback; dropped if the binding moved off *captured_for* during STT."""
+    async def _dispatch_voice_transcript(
+        self,
+        guild_id: int,
+        user_id: int,
+        transcript: str,
+    ) -> None:
+        """Filter and dispatch one completed voice transcript."""
         from tools.voice_mode_transcript import is_whisper_hallucination
+
+        transcript = str(transcript or "").strip()
+        if not transcript or is_whisper_hallucination(transcript):
+            return
+        logger.info(
+            "Voice transcript received (guild=%d user=%d chars=%d)",
+            guild_id,
+            user_id,
+            len(transcript),
+        )
+        if self._voice_input_callback:
+            await self._voice_input_callback(
+                guild_id=guild_id,
+                user_id=user_id,
+                transcript=transcript,
+            )
+
+    async def _process_completed_voice_utterance(
+        self,
+        guild_id: int,
+        user_id: int,
+        pcm_data: bytes,
+        *,
+        stt_mode: str,
+        admit: Optional[Callable[[], bool]] = None,
+        captured_for: int | None = _VOICE_BINDING_UNSET,
+    ) -> None:
+        """Finalize a Live turn or delegate to the existing file pipeline."""
+        if not _read_runtime_stt_enabled() or (admit is not None and not admit()):
+            return
+        if stt_mode != "openai_live_high":
+            if stt_mode == "configured":
+                await self._process_voice_input(guild_id, user_id, pcm_data, captured_for)
+            else:
+                await self._process_voice_input(
+                    guild_id,
+                    user_id,
+                    pcm_data,
+                    stt_mode=stt_mode,
+                    **({"admit": admit, "captured_for": captured_for} if admit is not None else {}),
+                )
+            return
+
+        controller = getattr(self, "_voice_live_transcribers", {}).get(guild_id)
+        if controller is None:
+            logger.warning(
+                "Discord Live STT controller missing for guild %d; dropping turn",
+                guild_id,
+            )
+            return
+        if admit is None:
+            receiver = getattr(self, "_voice_receivers", {}).get(guild_id)
+            if receiver is None:
+                return
+            guild = self._client.get_guild(guild_id) if self._client is not None else None
+            admit = self._voice_stt_admission(
+                guild_id, receiver, controller, user_id, guild,
+                receiver.snapshot_sources().get(user_id, ()))
+        if not admit():
+            await controller.abort_user(user_id)
+            return
+        result = await controller.finish_utterance(
+            user_id,
+            expected_source_bytes=len(pcm_data),
+            admit=admit,
+        )
+        await self._dispatch_live_voice_result(guild_id, user_id, result, admit)
+
+    async def _dispatch_live_voice_result(self, guild_id, user_id, result, admit) -> None:
+        """Keep both direct and batched results on the authorized gateway callback path."""
+        if not result.get("success"):
+            # Fail closed. A paid fallback is never selected implicitly.
+            logger.warning(
+                "Discord Live STT turn failed for guild %d user %d: %s",
+                guild_id,
+                user_id,
+                result.get("error", "unknown_live_error"),
+            )
+            return
+        if not admit():
+            return
+        await self._dispatch_voice_transcript(
+            guild_id,
+            user_id,
+            result.get("transcript", ""),
+        )
+
+    async def _process_voice_input(
+        self, guild_id: int, user_id: int, pcm_data: bytes,
+        captured_for: int | None = _VOICE_BINDING_UNSET,
+        *, stt_mode: str = "configured",
+        admit: Optional[Callable[[], bool]] = None,
+    ):
+        """Convert PCM -> WAV -> STT; reject a result if its text-channel binding moved."""
+        if captured_for is _VOICE_BINDING_UNSET:
+            captured_for = getattr(self, "_voice_text_channels", {}).get(guild_id)
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
         tmp_f.close()
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
-            from tools.transcription_tools import transcribe_audio
-            result = await asyncio.to_thread(transcribe_audio, wav_path)
+            if stt_mode == "openai_contextual":
+                if not _read_runtime_stt_enabled() or (admit is not None and not admit()):
+                    return
+                from tools.transcription_tools import _transcribe_audio_with_provider
+                result = await asyncio.to_thread(
+                    _transcribe_audio_with_provider, wav_path,
+                    model="gpt-transcribe", provider="openai", source="discord",
+                )
+            else:
+                from tools.transcription_tools import transcribe_audio
+                result = await asyncio.to_thread(transcribe_audio, wav_path)
             if not result.get("success"):
                 return
-            transcript = result.get("transcript", "").strip()
-            if not transcript or is_whisper_hallucination(transcript):
+            if admit is not None and not admit():
                 return
-            logger.info("Voice input from user %d: %s", user_id, transcript[:100])
             if getattr(self, "_voice_text_channels", {}).get(guild_id) != captured_for:
                 logger.info("Dropping voice input from user %d: binding moved during transcription", user_id)
                 return
-            if self._voice_input_callback:
-                await self._voice_input_callback(
-                    guild_id=guild_id, user_id=user_id, transcript=transcript,
-                )
+            await self._dispatch_voice_transcript(guild_id, user_id, result.get("transcript", ""))
         except Exception as e:
             # Surface ffmpeg's captured stderr from CalledProcessError, else log just says "exit status N".
             _ff_err = getattr(e, "stderr", None)

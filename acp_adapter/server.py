@@ -819,7 +819,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 )
             except Exception as e:
                 logger.exception("Agent error in session %s", session_id)
-                return {"final_response": f"Error: {e}", "messages": state.history}
+                return {
+                    "final_response": f"Error: {e}", "messages": state.history,
+                    "failed": True,
+                }
 
     async def prompt(self, prompt: list[PromptBlock], session_id: str, **kwargs: Any) -> PromptResponse:
         """Run Hermes on the user's prompt and stream events back to the editor."""
@@ -879,12 +882,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             # Fresh context copy: concurrent sessions on the shared executor must not share ContextVars.
             ctx = contextvars.copy_context()
             result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
-        except Exception:
+        except Exception as e:
             logger.exception("Executor error for session %s", session_id)
-            with state.runtime_lock:
-                state.is_running = False
-                state.current_prompt_text = ""
-            return PromptResponse(stop_reason="end_turn")
+            return await self._finish_turn(
+                state, session_id, conn,
+                {"final_response": f"Error: {e}", "messages": state.history,
+                 "failed": True},
+                pre_turn_hermes_id, cbs.streamed,
+            )
 
         return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
 
@@ -981,8 +986,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
             interrupted = bool(result.get("interrupted")) or cancelled
             suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
-            # Send the final text unless already streamed — or if a plugin hook transformed it after.
-            if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
+            # Send the final text unless already streamed — except transformed replies and failures replace it.
+            if final_response and conn and not suppress and (
+                not streamed_message or result.get("response_transformed") or result.get("failed") is True
+            ):
                 update = acp.update_agent_message_text(final_response)
                 if state.message_ids is not None:
                     # A plugin-rewritten reply replaces the streamed bubble (same id); an
@@ -1009,7 +1016,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
         await self._send_usage_update(state)
-        return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
+        stop_reason = "cancelled" if cancelled else "refusal" if result.get("failed") is True else "end_turn"
+        return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> None:
         """Run queued prompts while the session is idle. Reached from ``_finish_turn`` and

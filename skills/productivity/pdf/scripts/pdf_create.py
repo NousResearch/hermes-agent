@@ -11,6 +11,7 @@ Spec format (UTF-8 JSON):
     {"type": "heading", "text": "Section 1", "level": 1},
     {"type": "paragraph", "text": "Body text..."},
     {"type": "table", "rows": [["H1", "H2"], ["a", "b"]], "header": true},
+    // cell text wraps; raw strings would widen the column off the page
     {"type": "image", "path": "chart.png", "width": 400},
     {"type": "pagebreak"}
   ]
@@ -21,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from xml.sax.saxutils import escape
 
 
 def _reconfigure_stdio() -> None:
@@ -65,16 +67,29 @@ def build_pdf(spec: dict, out_path: str) -> int:
             rows = el.get("rows", [])
             if not rows:
                 continue
-            table = Table(rows, repeatRows=1 if el.get("header", True) else 0)
+            # Plain strings never wrap; Paragraph cells do, and they need
+            # escaped text because reportlab treats cell content as XML.
+            header = el.get("header", True)
+            body_style = styles["BodyText"].clone("CellText")
+            body_style.fontSize = 9
+            body_style.leading = 11
+            head_style = styles["BodyText"].clone("HeadCell")
+            head_style.fontName = "Helvetica-Bold"
+            head_style.fontSize = 9.5
+            head_style.leading = 12
+            para_rows = []
+            for row_index, row in enumerate(rows):
+                cell_style = head_style if header and row_index == 0 else body_style
+                para_rows.append(
+                    [Paragraph(escape(str("" if cell is None else cell)), cell_style) for cell in row]
+                )
+            table = Table(para_rows, repeatRows=1 if header else 0)
             style = [
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ]
-            if el.get("header", True):
-                style += [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ]
+            if header:
+                style.append(("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey))
             table.setStyle(TableStyle(style))
             story.append(table)
             story.append(Spacer(1, 10))

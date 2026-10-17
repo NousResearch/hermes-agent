@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required for OAuth support")
 
@@ -80,6 +80,14 @@ PEER = textwrap.dedent('''
             emit(asyncio.run(probe()))
         elif cmd == "refresh":
             emit(asyncio.run(refresh_then_persist()))
+        elif cmd == "try_fence":
+            from pathlib import Path
+            from tools.mcp_oauth import hold_refresh_fence, RefreshFenceTimeout
+            try:
+                with hold_refresh_fence(Path(provider.context.storage.pool_path), timeout=0):
+                    emit({"acquired": True})
+            except RefreshFenceTimeout:
+                emit({"acquired": False})
         elif cmd == "quit":
             break
 ''')
@@ -241,7 +249,7 @@ def test_a_sibling_reauthorizing_does_not_fence_the_live_peer(estate):
     assert peer.send("probe") == {"ok": True, "authorization": "Bearer NEW_GRANT"}
 
 
-def test_revocation_waits_for_an_in_flight_refresh_and_is_not_resurrected(estate):
+def test_revocation_waits_for_an_in_flight_refresh_and_is_not_resurrected(estate, monkeypatch):
     """The peer holds the refresh fence with authority proven, then root revokes. Revocation must
     wait for the fence, then delete what the peer persisted: the rotated grant never outlives it."""
     import threading
@@ -254,10 +262,19 @@ def test_revocation_waits_for_an_in_flight_refresh_and_is_not_resurrected(estate
     assert peer.read() == {"fenced": True}
 
     activate(root)
+    from tools import mcp_oauth
+    advanced = threading.Event()
+    advance = mcp_oauth.advance_pool_epoch
+
+    def published(pool):
+        advance(pool)
+        advanced.set()
+
+    monkeypatch.setattr(mcp_oauth, "advance_pool_epoch", published)
     result = {}
     revoker = threading.Thread(target=lambda: result.setdefault("ok", _remove_mcp_server("team")))
     revoker.start()
-    time.sleep(0.5)
+    assert advanced.wait(timeout=10)
     assert revoker.is_alive(), "revocation must wait for the in-flight refresh generation"
 
     peer.proc.stdin.write("\n")  # let the peer persist its rotated grant and release the fence
@@ -339,7 +356,7 @@ def test_a_provider_that_sleeps_through_remove_and_readd_is_fenced(estate):
 def test_an_unreadable_root_config_fails_closed_without_detaching(estate):
     """Unknown is not revoked: while root's config.yaml cannot be read, B's requests fail closed,
     and B serves again as soon as it reads — no reconnect needed."""
-    root, _a, _b, peer, activate = estate
+    root, _a, _b, peer, _activate = estate
     cfg = root / "config.yaml"
     cfg.chmod(0)
     try:
@@ -364,3 +381,213 @@ def test_a_hand_edited_identity_change_fences_a_live_provider(estate):
         assert owner.send("probe") == {"ok": False, "error": "OAuthStorageDetachedError"}
     finally:
         owner.close()
+
+
+@pytest.mark.parametrize("entrypoint", ["cli", "dashboard", "connector"])
+def test_reauth_snapshot_and_clear_exclude_a_cross_process_refresh(estate, monkeypatch, entrypoint):
+    """At the exact snapshot/clear seam another process must be unable to take the refresh fence.
+    Its next successful rotation after the clear must also win over the failed attempt's rollback.
+    """
+    from hermes_cli import mcp_config
+    from tools.mcp_oauth import HermesTokenStorage
+
+    root, a, _b, peer, activate = estate
+    activate(a)
+    snapshot = HermesTokenStorage.snapshot
+    observed = []
+
+    def observe_snapshot(storage, **kwargs):
+        backup = snapshot(storage, **kwargs)
+        observed.append(peer.send("try_fence"))
+        return backup
+
+    def rotate_then_fail(*args, **kwargs):
+        assert _grant(root).exists() is (entrypoint == "connector")
+        assert peer.send("refresh") == {"fenced": True}
+        peer.proc.stdin.write("\n")
+        peer.proc.stdin.flush()
+        assert peer.read() == {"ok": True}
+        raise RuntimeError("the new login failed")
+
+    monkeypatch.setattr(HermesTokenStorage, "snapshot", observe_snapshot)
+    monkeypatch.setattr(mcp_config, "_probe_single_server", rotate_then_fail)
+    if entrypoint == "cli":
+        assert mcp_config._reauth_oauth_server("team", SERVER) is False
+    elif entrypoint == "dashboard":
+        from hermes_cli.web_server_mcp import _run_dashboard_mcp_oauth
+        from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+        flow = DashboardOAuthFlow("race", "team", "a", str(a), "http://127.0.0.1/callback")
+        _run_dashboard_mcp_oauth(flow, SERVER)
+    else:
+        from tools.connectors.mcp_oauth import probe_with_rollback
+        with pytest.raises(RuntimeError, match="new login failed"):
+            probe_with_rollback("team", SERVER, str(a), None, False)
+    assert observed == ([] if entrypoint == "connector" else [{"acquired": False}])
+    assert json.loads(_grant(root).read_text())["refresh_token"] == "ROTATED_REFRESH"
+
+
+@pytest.mark.parametrize("boundary", ["config", "epoch"])
+def test_fresh_process_cannot_load_old_bytes_while_owner_waits_for_refresh(estate, monkeypatch, boundary):
+    """The new epoch may already be visible, but the old identity's bearer stays quarantined."""
+    import threading
+    from hermes_cli.mcp_config import _OAuthPoolTransition, _save_mcp_server
+    from tools import mcp_oauth
+
+    root, _a, _b, peer, activate = estate
+    assert peer.send("refresh") == {"fenced": True}
+    activate(root)
+    published = threading.Event()
+    resume = threading.Event()
+    advance = mcp_oauth.advance_pool_epoch
+
+    def publish(pool):
+        advance(pool)
+        if boundary == "epoch":
+            published.set()
+
+    monkeypatch.setattr(mcp_oauth, "advance_pool_epoch", publish)
+    commit = _OAuthPoolTransition.commit
+
+    def after_config(transition):
+        if boundary == "config":
+            published.set()
+            assert resume.wait(timeout=15)
+        return commit(transition)
+
+    monkeypatch.setattr(_OAuthPoolTransition, "commit", after_config)
+    result = {}
+    new_url = "https://different.example.com/mcp"
+    revoker = threading.Thread(target=lambda: result.setdefault(
+        "ok", _save_mcp_server("team", {**EXPORT, "url": new_url})))
+    revoker.start()
+    try:
+        assert published.wait(timeout=10)
+        assert _grant(root).exists(), "the peer still owns the fence, so bytes cannot yet be deleted"
+        script = '''
+import asyncio, json, sys
+from tools.mcp_oauth import HermesTokenStorage, OAuthStorageDetachedError
+from tools.mcp_oauth_manager import get_manager
+s = HermesTokenStorage("team")
+try:
+    tokens = asyncio.run(s.get_tokens())
+    loaded = tokens is not None
+except OAuthStorageDetachedError:
+    loaded = False
+provider = get_manager().get_or_build_provider("team", sys.argv[1], {"share_with_profiles": True})
+print(json.dumps({"loaded": loaded, "cached": s.has_cached_tokens(), "built": provider is not None}))
+'''
+        probe = subprocess.run([sys.executable, "-c", script, new_url], cwd=REPO_ROOT,
+                               env={**os.environ, "HERMES_HOME": str(root)},
+                               capture_output=True, text=True, timeout=15, check=True)
+        assert json.loads(probe.stdout) == {"loaded": False, "cached": False, "built": False}
+    finally:
+        resume.set()
+        peer.proc.stdin.write("\n")
+        peer.proc.stdin.flush()
+        peer.read()
+        revoker.join(timeout=15)
+    assert result == {"ok": True}
+    assert not _grant(root).exists()
+    assert not (root / "mcp-tokens" / "team.quarantined").exists()
+
+
+@pytest.mark.parametrize("failure", ["cancel", "initialize", "save"])
+def test_connector_attempt_cannot_rollback_a_peer_rotation_after_mint(estate, monkeypatch, failure):
+    """Even after the new attempt minted a different client/token pair, R1 remains coherent."""
+    from types import SimpleNamespace
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+    from hermes_cli import mcp_config
+    from tools.connectors.mcp_oauth import probe_with_rollback
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
+
+    root, a, _b, peer, activate = estate
+    activate(a)
+    flow = SimpleNamespace(cancelled=failure == "cancel")
+
+    async def mint():
+        storage = HermesTokenStorage("team", requested=SERVER)
+        assert Path(storage.pool_path) == _grant(root)
+        assert storage._tokens_path() != _grant(root)
+        await storage.set_client_info(OAuthClientInformationFull(client_id="NEW_CLIENT"))
+        await storage.set_tokens(OAuthToken(access_token="NEW_ATTEMPT", token_type="Bearer",
+                                           refresh_token="NEW_REFRESH", expires_in=3600))
+
+    def probe(*args, details, **kwargs):
+        _ensure_mcp_loop()
+        _run_on_mcp_loop(mint)
+        assert peer.send("refresh") == {"fenced": True}
+        peer.proc.stdin.write("\n")
+        peer.proc.stdin.flush()
+        assert peer.read() == {"ok": True}
+        if failure == "initialize":
+            raise RuntimeError("initialize failed")
+        details["initialized"] = True
+        return []
+
+    monkeypatch.setattr(mcp_config, "_probe_single_server", probe)
+    if failure == "save":
+        def failed_save(config):
+            raise OSError("config write failed")
+        monkeypatch.setattr(mcp_config, "save_config", failed_save)
+    with pytest.raises((RuntimeError, OSError)):
+        probe_with_rollback("team", SERVER, str(a), flow, False)
+    assert json.loads(_grant(root).read_text())["refresh_token"] == "ROTATED_REFRESH"
+    assert json.loads((root / "mcp-tokens/team.client.json").read_text())["client_id"] == "cid"
+    assert not list((root / "mcp-tokens").glob(".reauth-*"))
+    assert not (root / "mcp-tokens/team.quarantined").exists()
+
+
+def test_config_publication_is_already_quarantined_and_failed_save_restores_access(estate, monkeypatch):
+    from hermes_cli import mcp_config
+    from tools.mcp_oauth import HermesTokenStorage
+
+    root, _a, _b, peer, activate = estate
+    activate(root)
+    original = _grant(root).read_bytes()
+
+    def failed_save(config):
+        storage = HermesTokenStorage("team", hermes_home=root)
+        assert storage.rebuild_blocked()
+        assert not storage.has_cached_tokens()
+        assert peer.send("probe") == {"ok": False, "error": "OAuthAuthorityUnavailableError"}
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mcp_config, "save_config", failed_save)
+    with pytest.raises(OSError, match="disk full"):
+        mcp_config._save_mcp_server("team", {**EXPORT, "url": "https://new.example.com"})
+    assert _grant(root).read_bytes() == original
+    assert peer.send("probe") == {"ok": True, "authorization": "Bearer ROOT_GRANT"}
+    assert not (root / "mcp-tokens/team.quarantined").exists()
+
+
+@pytest.mark.parametrize("change_identity", [False, True])
+def test_connector_publishes_coherent_staged_grant_and_updates_live_peer(estate, monkeypatch, change_identity):
+    import asyncio
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+    from hermes_cli import mcp_config
+    from tools.connectors.mcp_oauth import probe_with_rollback
+    from tools.mcp_oauth import HermesTokenStorage
+
+    root, _a, _b, peer, activate = estate
+    activate(root)
+    cfg = {**EXPORT, "url": "https://new.example.com/mcp"} if change_identity else EXPORT
+
+    def probe(*args, details, **kwargs):
+        storage = HermesTokenStorage("team", requested=cfg)
+        asyncio.run(storage.set_client_info(OAuthClientInformationFull(client_id="NEW_CLIENT")))
+        asyncio.run(storage.set_tokens(OAuthToken(access_token="NEW_GRANT", token_type="Bearer", expires_in=3600)))
+        storage._meta_path().write_bytes((root / "mcp-tokens/team.meta.json").read_bytes())
+        assert json.loads(_grant(root).read_text())["access_token"] == "ROOT_GRANT"
+        details["initialized"] = True
+        return []
+
+    monkeypatch.setattr(mcp_config, "_probe_single_server", probe)
+    probe_with_rollback("team", cfg, str(root), None, False)
+    assert json.loads(_grant(root).read_text())["access_token"] == "NEW_GRANT"
+    assert json.loads((root / "mcp-tokens/team.client.json").read_text())["client_id"] == "NEW_CLIENT"
+    assert not list((root / "mcp-tokens").glob(".reauth-*"))
+    assert not (root / "mcp-tokens/team.quarantined").exists()
+    assert peer.send("probe") == (
+        {"ok": False, "error": "OAuthStorageDetachedError"} if change_identity
+        else {"ok": True, "authorization": "Bearer NEW_GRANT"})

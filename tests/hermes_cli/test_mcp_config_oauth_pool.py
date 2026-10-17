@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required for OAuth support")
 
@@ -202,7 +202,7 @@ def test_toggling_the_export_flag_alone_revokes_nothing(estate):
     """``share_with_profiles`` decides WHERE the grant lives, not what it is for."""
     from hermes_cli.mcp_config import _save_mcp_server
 
-    root, a, b, activate = estate
+    root, _a, _b, activate = estate
     activate(root)
     assert _save_mcp_server("team", dict(SERVER)) is True  # export withdrawn, identity unchanged
     assert _grant(root).exists()
@@ -332,7 +332,7 @@ def test_readding_a_removed_server_lifts_the_rebuild_tombstone(local, monkeypatc
     from tools.mcp_oauth import HermesTokenStorage
     from tools.mcp_oauth_manager import get_manager
 
-    home, grant = local
+    home, _grant = local
     assert _remove_mcp_server("srv") is True
     assert HermesTokenStorage("srv", hermes_home=home).rebuild_blocked()
     # Interactive stdin so the only thing standing between us and a provider is the tombstone.
@@ -432,7 +432,7 @@ def test_authorizing_a_changed_endpoint_never_touches_the_shared_pool(estate):
     authorized is A's own — the root grant must be neither cleared nor overwritten."""
     from tools.mcp_oauth import HermesTokenStorage
 
-    root, a, b, activate = estate
+    root, a, _b, activate = estate
     activate(a)
     assert HermesTokenStorage("team").pool_path == str(_grant(root).resolve()), "precondition: A shares"
     storage = HermesTokenStorage("team", requested=CHANGED)
@@ -442,7 +442,7 @@ def test_authorizing_a_changed_endpoint_never_touches_the_shared_pool(estate):
 def test_authorizing_a_changed_oauth_client_never_touches_the_shared_pool(estate):
     from tools.mcp_oauth import HermesTokenStorage
 
-    root, a, b, activate = estate
+    _root, a, _b, activate = estate
     activate(a)
     edited = {**SERVER, "oauth": {"client_id": "someone-elses-client"}}
     assert HermesTokenStorage("team", requested=edited).pool_path == str((a / "mcp-tokens" / "team.json").resolve())
@@ -454,7 +454,7 @@ def test_authorizing_a_changed_transport_never_touches_the_shared_pool(estate):
     pending identity, not overlay url/oauth on the saved entry."""
     from tools.mcp_oauth import HermesTokenStorage
 
-    root, a, b, activate = estate
+    root, a, _b, activate = estate
     activate(a)
     assert HermesTokenStorage("team").pool_path == str(_grant(root).resolve()), "precondition: A shares"
     edited = {**SERVER, "transport": "sse"}
@@ -465,7 +465,7 @@ def test_dashboard_authorizing_a_transport_edit_lands_locally_and_saves_it(estat
     """End to end through the dashboard worker: a sharing profile authorizes a transport change
     before saving it. The grant lands in A's own pool, root and sibling state stay byte-identical,
     and the save keeps the grant it just minted."""
-    import hermes_cli.mcp_config as mcp_config
+    from hermes_cli import mcp_config
     from hermes_cli.web_server_mcp import _run_dashboard_mcp_oauth
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
@@ -498,7 +498,7 @@ def test_saving_an_authorized_edit_keeps_the_grant_it_just_minted(estate, monkey
     from hermes_cli.mcp_config import _save_mcp_server
     from tools.mcp_oauth import HermesTokenStorage
 
-    root, a, b, activate = estate
+    root, _a, b, activate = estate
     _write_config(b, {"team": dict(SERVER)})
     _write_config(root, {"team": dict(SERVER)})  # no export: B's pool is its own
     activate(b)
@@ -514,7 +514,7 @@ def test_saving_an_unauthorized_edit_still_revokes_the_old_identity(estate):
     """The inverse: without an authorization for the new identity, the old grant goes."""
     from hermes_cli.mcp_config import _save_mcp_server
 
-    root, a, b, activate = estate
+    root, _a, b, activate = estate
     _write_config(b, {"team": dict(SERVER)})
     _write_config(root, {"team": dict(SERVER)})
     activate(b)
@@ -527,7 +527,7 @@ def test_saving_an_unauthorized_edit_still_revokes_the_old_identity(estate):
 def test_failed_participant_login_cannot_restore_a_revoked_owner_grant(estate, monkeypatch, mutation):
     from hermes_cli.mcp_config import cmd_mcp_login, _remove_mcp_server, _save_mcp_server
 
-    root, a, b, activate = estate
+    root, _a, b, activate = estate
     activate(b)
 
     def owner_changes_identity_during_login(name, cfg, connect_timeout=30):

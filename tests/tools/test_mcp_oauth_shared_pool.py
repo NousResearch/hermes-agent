@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required for OAuth support")
 
@@ -97,7 +97,7 @@ class TestSharedPoolResolution:
             self, tmp_path, monkeypatch, root_entry, profile_entry, why):
         from tools.mcp_oauth import HermesTokenStorage
 
-        root, prof = _estate(tmp_path, root_entry=root_entry, profile_entry=profile_entry)
+        _root, prof = _estate(tmp_path, root_entry=root_entry, profile_entry=profile_entry)
         monkeypatch.setenv("HERMES_HOME", str(prof))
         monkeypatch.setenv("MCP_URL", URL)
         assert HermesTokenStorage("team")._tokens_path() == prof / "mcp-tokens" / "team.json", why
@@ -234,7 +234,7 @@ class TestManagerPools:
         assert not getattr(providers[root], "_hermes_detached", False)
 
     def test_owner_revocation_fences_every_participant(self, tmp_path, monkeypatch):
-        manager, root, a, b, providers = self._shared(tmp_path, monkeypatch)
+        manager, root, _a, _b, providers = self._shared(tmp_path, monkeypatch)
         manager.remove("team", hermes_home=root, block_rebuild=True)
         assert not any(k[1] == "team" for k in manager._entries)
         assert not (root / "mcp-tokens" / "team.json").exists()
@@ -257,7 +257,7 @@ class TestManagerPools:
     def test_remove_targets_the_pinned_pool_after_profile_config_changes(self, tmp_path, monkeypatch):
         """A's config drops the shared entry AFTER its provider was built on the root pool; removing
         A's OAuth state must hit the pool that provider actually used, not re-resolve a local one."""
-        manager, root, a, b, providers = self._shared(tmp_path, monkeypatch)
+        manager, root, a, _b, _providers = self._shared(tmp_path, monkeypatch)
         _write(a, {"team": {"url": "https://elsewhere.example/mcp", "auth": "oauth"}})
         _seed(a, "team", "LOCAL_A")
         manager.remove("team", hermes_home=a)
@@ -268,7 +268,7 @@ class TestManagerPools:
     def test_config_change_that_leaves_the_pool_keeps_the_root_grant(self, tmp_path, monkeypatch):
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        manager, root, a, b, providers = self._shared(tmp_path, monkeypatch)
+        manager, root, a, _b, providers = self._shared(tmp_path, monkeypatch)
         _write(a, {"team": {"url": "https://elsewhere.example/mcp", "auth": "oauth"}})
         tok = set_hermes_home_override(a)
         try:
@@ -346,7 +346,6 @@ def test_config_cache_sees_a_same_size_rewrite_with_a_pinned_mtime(tmp_path):
     cfg.write_text("mcp_servers:\n  team: {url: 'https://a.example/mcp', auth: oauth}\n")
     st = cfg.stat()
     assert _load_mcp_server_config(home, "team")["url"] == "https://a.example/mcp"
-    time.sleep(0.05)  # past the kernel's coarse timestamp tick, as any real edit is
     with open(cfg, "r+") as fh:  # in place: same inode, same size
         fh.write("mcp_servers:\n  team: {url: 'https://b.example/mcp', auth: oauth}\n")
     os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))

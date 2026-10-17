@@ -176,7 +176,7 @@ def hold_refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_
                 if fcntl is not None:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_NBLCK"), 1)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 else:  # pragma: no cover - no advisory locking primitive
                     raise RefreshFenceTimeout("refresh fence unsupported: no flock/msvcrt on this platform")
                 break
@@ -294,7 +294,7 @@ def _read_config_as_written(home: Path) -> Any:
     Uses the as-written primitive, not the profile-aware loaders: the export contract compares the
     entries verbatim, and an overlay, inherited value or ``${VAR}`` expansion would change what two
     profiles appear to agree on. This read decides credential sharing, not runtime behavior."""
-    import yaml
+    import hermes_yaml as yaml
 
     from hermes_cli.config import read_user_config_raw
     from utils import file_signature
@@ -464,6 +464,8 @@ class PoolAuthority:
         """``(reason, permanent)`` when this authority no longer holds, else None. ``permanent`` is
         False only when authority could not be read — the caller fails closed without detaching."""
         pool = Path(self.pool_path)
+        if _pool_sidecar(pool, ".quarantined").exists():
+            return "the pool's previous identity is being revoked", False
         if _pool_sidecar(pool, ".removed").exists():
             return "the server was removed by the pool's owner", True
         epoch = read_pool_epoch(pool)
@@ -498,7 +500,7 @@ def read_pool_epoch(pool: Path) -> str | None:
     Callers must reject the latter even when it was already unreadable at capture time."""
     path = _pool_sidecar(pool, ".epoch")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
@@ -737,6 +739,9 @@ class HermesTokenStorage:
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
         self._token_dir = (Path(token_dir) if token_dir is not None
                            else _get_token_dir(self._hermes_home, server_name=server_name, requested=requested))
+        from tools.mcp_oauth_transaction import staged_token_directory
+        self._logical_pool_path = str(self._tokens_path().resolve(strict=False))
+        self._token_dir = staged_token_directory(self._logical_pool_path) or self._token_dir
         # Issuer binding: ``loaded_issuer`` is what the token file on disk recorded (the authorization
         # server that granted the stored refresh token); ``_bound_issuer`` is stamped onto the next
         # ``set_tokens`` write. See ``tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
@@ -746,7 +751,7 @@ class HermesTokenStorage:
     @property
     def pool_path(self) -> str:
         """Resolved tokens-file path: the identity of the pool this storage reads and writes."""
-        return str(self._tokens_path().resolve(strict=False))
+        return self._logical_pool_path
 
     def _path(self, suffix: str) -> Path:
         return self._token_dir / f"{self._server_name}{suffix}"
@@ -756,6 +761,7 @@ class HermesTokenStorage:
     _meta_path = partialmethod(_path, ".meta.json")
     _cimd_rejected_path = partialmethod(_path, ".cimd-off")
     _removed_path = partialmethod(_path, ".removed")
+    _quarantine_path = partialmethod(_path, ".quarantined")
 
     def _state_paths(self) -> tuple[Path, Path, Path]:
         return self._tokens_path(), self._client_info_path(), self._meta_path()
@@ -812,6 +818,8 @@ class HermesTokenStorage:
 
     async def get_tokens(self) -> "OAuthToken | None":
         self.loaded_issuer = None
+        if self._quarantine_path().exists():
+            raise OAuthStorageDetachedError("The pool's previous identity is being revoked")
         return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
@@ -939,11 +947,67 @@ class HermesTokenStorage:
 
     def rebuild_blocked(self) -> bool:
         """True while a permanent-removal tombstone stands for this pool."""
-        return self._removed_path().exists()
+        return self._removed_path().exists() or self._quarantine_path().exists()
+
+    def quarantine(self, *, recoverable: bool = False, owner: str | None = None) -> str:
+        """Hide old bytes before publishing config. Concurrent writers retain independent claims."""
+        import secrets
+        owner = owner or secrets.token_hex(16)
+        with hold_refresh_fence(_pool_sidecar(self._tokens_path(), ".authority")):
+            current = _read_json(self._quarantine_path())
+            if current is None and not self._quarantine_path().exists():
+                current = {"owners": {}}
+            owners = current.get("owners") if isinstance(current, dict) else None
+            if not isinstance(owners, dict):
+                raise OAuthAuthorityUnavailableError("The pool quarantine is unreadable")
+            owners[owner] = recoverable
+            _write_json(self._quarantine_path(), current)
+        return owner
+
+    def cancel_quarantine(self, owner: str) -> None:
+        """Release only this writer's claim, atomically with respect to other claim writers."""
+        with hold_refresh_fence(_pool_sidecar(self._tokens_path(), ".authority")):
+            current = _read_json(self._quarantine_path())
+            owners = current.get("owners") if isinstance(current, dict) else None
+            if isinstance(owners, dict) and owner in owners:
+                del owners[owner]
+                if owners:
+                    _write_json(self._quarantine_path(), current)
+                else:
+                    self._quarantine_path().unlink(missing_ok=True)
+
+    def begin_reauthorization(self, *, keep_metadata: bool = False) -> dict[str, bytes]:
+        """Capture rollback state and clear it as ONE refresh-fenced transaction.
+
+        A peer that rotates before we acquire the fence supplies the snapshot's new generation;
+        a peer that rotates after the clear wins over rollback via ``only_if_absent``. Never put
+        a gap between snapshot and clear: it can discard the only valid rotating refresh token.
+        """
+        with hold_refresh_fence(self._tokens_path()):
+            if self.rebuild_blocked():
+                raise OAuthStorageDetachedError("The pool is removed or being revoked")
+            backup = self.snapshot(fence_held=True)
+            try:
+                self.remove(keep_metadata=keep_metadata)
+            except OSError:
+                self._restore_snapshot_files(backup)
+                raise
+            return backup
 
     def unblock_rebuild(self) -> None:
         """Clear the tombstone: the server was re-added or explicitly re-authorized. The epoch
         advances too, so a provider that slept through remove + re-add never serves the new pool."""
+        if self._quarantine_path().exists():
+            with hold_refresh_fence(self._tokens_path()), hold_refresh_fence(
+                    _pool_sidecar(self._tokens_path(), ".authority")):
+                if self._quarantine_path().exists():
+                    marker = _read_json(self._quarantine_path())
+                    owners = marker.get("owners") if isinstance(marker, dict) else None
+                    if not isinstance(owners, dict) or not owners or not all(v is True for v in owners.values()):
+                        raise OAuthAuthorityUnavailableError("The pool has a config transaction in progress")
+                    self.remove()
+                    advance_pool_epoch(self._tokens_path())
+                    self._quarantine_path().unlink()
         if self._removed_path().exists():
             advance_pool_epoch(self._tokens_path())
         self._removed_path().unlink(missing_ok=True)
@@ -955,7 +1019,7 @@ class HermesTokenStorage:
         with fence:
             snap = _TokenSnapshot(read_pool_epoch(self._tokens_path()))
             for p in (*self._state_paths(), self._cimd_rejected_path()):
-                with contextlib.suppress(OSError):
+                with contextlib.suppress(FileNotFoundError):
                     snap[p.name] = p.read_bytes()
             return snap
 
@@ -979,16 +1043,17 @@ class HermesTokenStorage:
                 logger.info("Skipping OAuth rollback for %s because a newer token exists", self._server_name)
                 return
             self.remove()
-            if not snapshot:
-                return
-            from hermes_constants import mkdir_under_hermes_home
+            self._restore_snapshot_files(snapshot)
 
-            mkdir_under_hermes_home(self._token_dir)
-            for fname, data in snapshot.items():
-                try:
-                    atomic_write_bytes(self._token_dir / fname, data, mode=0o600)
-                except OSError as exc:
-                    logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
+    def _restore_snapshot_files(self, snapshot: dict[str, bytes]) -> None:
+        """Restore bytes without another destructive clear (also used if the first clear failed)."""
+        if not snapshot:
+            return
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(self._token_dir)
+        for fname, data in snapshot.items():
+            atomic_write_bytes(self._token_dir / fname, data, mode=0o600)
 
     def poison_client_registration(self) -> bool:
         """Discard a dead DCR client (``invalid_client`` at the token endpoint) plus stale ``meta.json``
@@ -1012,7 +1077,7 @@ class HermesTokenStorage:
 
     def has_cached_tokens(self) -> bool:
         """True if we have tokens on disk (may be expired)."""
-        return self._tokens_path().exists()
+        return not self._quarantine_path().exists() and self._tokens_path().exists()
 
     def credential_stamp(self) -> tuple:
         """``stat()`` of the token and client files: what any re-authorization rewrites. No bytes read."""

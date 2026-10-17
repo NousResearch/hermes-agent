@@ -33,46 +33,27 @@ def probe_with_rollback(
     manager = get_manager()
     manager.unblock(server_name, hermes_home=hermes_home)  # an explicit authorization lifts a tombstone
     storage = HermesTokenStorage(server_name, requested=cfg)
-    # An attempt that replaced a still-running one starts from that one's half-written files, so
-    # it carries the older attempt's snapshot: the state from before either of them.
-    backup = getattr(flow, "inherited_backup", None) or storage.snapshot()
-    if flow is not None:
-        flow.backup = backup
-    previous_entry = None
+    from tools.mcp_oauth_transaction import OAuthAuthorization
     details: dict[str, Any] = {}
     tools: list = []
     discovery_error = ""
-
-    def undo() -> None:
-        # ``manager.remove`` cleared the pre-attempt tokens, so anything on disk now is this
-        # attempt's grant, and it is not being kept: put the snapshot back. A newer attempt for
-        # the same server owns the token files; an older one must not write over it.
-        if flow is not None and _ACTIVE.get((hermes_home, server_name)) not in (None, flow):
-            return
-        storage.restore(backup)
-        manager.restore_entry(server_name, previous_entry, hermes_home=hermes_home)
-
-    try:
-        previous_entry = manager.remove(server_name, hermes_home=hermes_home, pool_path=storage.pool_path)
-        tools = _probe_single_server(
-            server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
-        if not _oauth_tokens_present(server_name, cfg=cfg):
-            details["initialized"] = False
-            no_token = RuntimeError(
-                "The server responded, but no OAuth token was obtained — "
-                "this provider may require a manually-registered OAuth client.")
-            no_token.failure_class = "auth_required"  # type: ignore[attr-defined]
-            raise no_token
-    except Exception as exc:
-        if not details.get("initialized"):
-            undo()
-            raise
-        tools, discovery_error = [], exception_message(exc)
-    try:
-        _commit(server_name, cfg, on_commit, flow, authorized_pool=storage.pool_path)
-    except AttemptCanceled:
-        undo()
-        raise
+    with OAuthAuthorization(storage, hermes_home, server_name, cfg) as authorization:
+        try:
+            tools = _probe_single_server(
+                server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
+            if not _oauth_tokens_present(server_name, cfg=cfg):
+                details["initialized"] = False
+                no_token = RuntimeError(
+                    "The server responded, but no OAuth token was obtained — "
+                    "this provider may require a manually-registered OAuth client.")
+                no_token.failure_class = "auth_required"  # type: ignore[attr-defined]
+                raise no_token
+        except Exception as exc:
+            if not details.get("initialized"):
+                raise
+            tools, discovery_error = [], exception_message(exc)
+        _commit(server_name, cfg, on_commit, flow, authorized_pool=storage.pool_path,
+                authorization=authorization)
     if flow is not None:
         flow.tools = [{"name": t, "description": d} for t, d in tools]
         flow.discovery_error = discovery_error
@@ -109,14 +90,16 @@ def cancel_attempt(flow) -> bool:
 
 
 def _commit(server_name: str, cfg: dict, on_commit: Optional[Callable[[], None]], flow=None, *,
-            authorized_pool: str = "") -> None:
+            authorized_pool: str = "", authorization=None) -> None:
     from hermes_cli.mcp_config import _save_mcp_server
 
     with _COMMIT_GUARD:
         if flow is not None and getattr(flow, "cancelled", False):
             raise AttemptCanceled("canceled")
-        if not _save_mcp_server(server_name, cfg, authorized_pool=authorized_pool):
-            raise RuntimeError(f"'{server_name}' was rejected: suspicious command/args configuration")
+        from contextlib import nullcontext
+        with authorization.publish() if authorization is not None else nullcontext():
+            if not _save_mcp_server(server_name, cfg, authorized_pool=authorized_pool):
+                raise RuntimeError(f"'{server_name}' was rejected: suspicious command/args configuration")
         if on_commit is not None:
             on_commit()
         if flow is not None:
@@ -333,7 +316,6 @@ def start(
         older = _ACTIVE.get((hermes_home, server_name))
         _ACTIVE[(hermes_home, server_name)] = flow
     if older is not None and not older.worker_done:
-        flow.inherited_backup = getattr(older, "backup", None)
         cancel_attempt(older)
     httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
     mcp_oauth_sessions.register_flow(flow, httpd=httpd)

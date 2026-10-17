@@ -350,6 +350,17 @@ class MCPOAuthManager:
         requested_storage = HermesTokenStorage(server_name, hermes_home=key[0], requested=requested)
         requested_pool = requested_storage.pool_path
         requested_config = dict(oauth_config or {})
+        from tools.mcp_oauth_transaction import staged_token_directory
+        if staged_token_directory(requested_pool) is not None:
+            # A probe must never install its disposable storage in the live same-profile cache.
+            entry = _ProviderEntry(server_url=server_url, oauth_config=requested_config,
+                                   pool_path=requested_pool, transport=transport)
+            provider = self._build_provider(server_name, entry)
+            if provider is not None:
+                from tools.mcp_oauth import PoolAuthority
+                provider._hermes_home = key[0]
+                provider._hermes_authority = PoolAuthority.capture(requested_pool, key[0], server_name, requested)
+            return provider
         with self._entries_lock:
             if requested_storage.rebuild_blocked():
                 logger.info("MCP OAuth '%s': provider rebuild blocked after permanent removal", server_name)
@@ -392,7 +403,7 @@ class MCPOAuthManager:
         (a live session may keep the object until it reconnects; after a re-auth it must pick up
         the rotated grant rather than present the one it was built with)."""
         provider.context.clear_tokens()
-        provider._initialized = False  # noqa: SLF001 — private SDK API, stable across pinned versions
+        provider._initialized = False  # private SDK API, stable across pinned versions
 
     @staticmethod
     def _detach_provider(provider: Any) -> None:
@@ -430,7 +441,8 @@ class MCPOAuthManager:
             **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
 
     def remove(self, server_name: str, *, hermes_home: str | Path | None = None, pool_path: str | None = None,
-               block_rebuild: bool = False, detach_participants: bool = False) -> _ProviderEntry | None:
+               block_rebuild: bool = False, detach_participants: bool = False,
+               quarantine_owner: str | None = None) -> _ProviderEntry | None:
         """Evict this home's provider and delete its pool from disk. The pool is ``pool_path`` when the
         caller captured one, else the cached provider's, else the one the current config resolves.
 
@@ -471,14 +483,16 @@ class MCPOAuthManager:
             # is on disk, every provider re-checking authority fails closed — including one whose
             # in-flight refresh we are about to wait for, which re-checks under the fence. So even a
             # fence timeout below leaves no participant able to use or re-mint the grant.
+            quarantine_owner = storage.quarantine(recoverable=True, owner=quarantine_owner)
             advance_pool_epoch(Path(target))
             if block_rebuild:
                 storage.write_removal_tombstone()
             with hold_refresh_fence(Path(target)):
                 # Close the generation after taking the fence too: a snapshot captured after
                 # early withdrawal but before deletion must not label old bytes as current.
-                advance_pool_epoch(Path(target))
                 storage.remove(permanent=block_rebuild)
+                advance_pool_epoch(Path(target))
+                storage.cancel_quarantine(quarantine_owner)
         else:
             storage.remove(permanent=block_rebuild)
         logger.info("MCP OAuth '%s': removed disk state at %s (%d fenced participant provider(s))", server_name, target, fenced)

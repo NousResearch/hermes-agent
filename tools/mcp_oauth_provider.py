@@ -90,7 +90,7 @@ class HermesProviderMixin:
     _hermes_logger: logging.Logger = logger
     # ``(pool_path, hermes_home, server_name, requested)`` when the provider reads a pool it must keep
     # re-proving its right to (``tools.mcp_oauth.shared_pool_revocation``); None skips the check.
-    _hermes_authority: "PoolAuthority | None" = None
+    _hermes_authority: PoolAuthority | None = None
 
     def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -645,7 +645,7 @@ def enforce_refresh_token_issuer(context: Any) -> None:
 
 
 def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None, *,
-                         token_dir: "str | Path | None" = None) -> tuple[dict, "HermesTokenStorage"]:
+                         token_dir: str | Path | None = None) -> tuple[dict, HermesTokenStorage]:
     """Copy the ``oauth:`` block, apply provider defaults, open its token storage. The copy
     matters: later steps record ``_resolved_port`` / ``_cimd_url`` in the dict, which must
     never leak back into the caller's config. ``token_dir`` pins an already-resolved pool (the

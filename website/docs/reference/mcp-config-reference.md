@@ -369,6 +369,10 @@ Lifecycle follows ownership. A profile that edits or removes its own entry *leav
 
 Withdrawal reaches profiles that are already running, including ones in other processes (a separate gateway, cron, a CLI session), without a restart. Each connection re-checks the pool's authority on disk before every request and every token refresh, so a withdrawn participant's next request fails and it reconnects on its own pool. This applies whether the change was made with `hermes mcp`, the dashboard, or by editing `config.yaml` by hand. While a sibling is re-authorizing, the token file is briefly missing; that is not a withdrawal and does not disconnect anyone. If a `config.yaml` involved cannot be read, requests fail until it can, then resume without a reconnect.
 
+CLI and dashboard re-authorization capture and clear credentials under the same cross-process refresh lock. A failed attempt cannot restore a refresh token superseded by a peer. Connector authorization keeps its token, client registration and metadata in an isolated attempt directory; cancellation discards only that attempt, and successful authorization publishes the complete grant under the refresh lock.
+
+An owner identity change temporarily quarantines the old grant before publishing the new configuration. Fresh providers cannot use old credentials while revocation waits for an in-flight refresh. A failed configuration save releases its quarantine without deleting credentials. If revocation times out after the configuration was saved, an explicit login can finish deleting the obsolete state under the lock before starting a new authorization.
+
 ### Device-code login (RFC 8628)
 
 For an authorization server advertising `device_authorization_endpoint`, explicitly choose

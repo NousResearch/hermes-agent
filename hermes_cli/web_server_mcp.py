@@ -136,11 +136,11 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                 manager = get_manager()
                 manager.unblock(flow.server_name, hermes_home=flow.hermes_home)
                 storage = HermesTokenStorage(flow.server_name, requested=cfg)
-                backup = storage.snapshot()
+                backup = None
                 previous_entry = None
                 try:
-                    previous_entry = manager.remove(
-                        flow.server_name, hermes_home=flow.hermes_home, pool_path=storage.pool_path)
+                    previous_entry = manager.evict(flow.server_name, hermes_home=flow.hermes_home)
+                    backup = storage.begin_reauthorization()
                     tools = _probe_single_server(
                         flow.server_name, cfg, connect_timeout=login_connect_timeout(cfg)
                     )
@@ -157,7 +157,8 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
 
                         reconnect_mcp_server(flow.server_name)
                 except Exception:
-                    storage.restore(backup, only_if_absent=True)
+                    if backup is not None:
+                        storage.restore(backup, only_if_absent=True)
                     manager.restore_entry(flow.server_name, previous_entry, hermes_home=flow.hermes_home)
                     raise
         finally:

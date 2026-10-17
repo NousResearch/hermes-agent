@@ -675,6 +675,7 @@
   "pickers.session.draftModel",
   "pickers.session.errors.alreadyClosed",
   "pickers.session.errors.couldNotLoadResumable",
+  "pickers.session.errors.notAttached",
   "pickers.session.hint.close",
   "pickers.session.hint.delete",
   "pickers.session.hint.model",

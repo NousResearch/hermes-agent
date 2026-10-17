@@ -22,13 +22,22 @@ hosted-room driver still uses legacy TUI session handlers; the canonical surface
 therefore reports `driver: false` and does not advertise send, retry, approval,
 or peer-grant operations. It never imports that driver to execute a group turn.
 
-`profiles.list` requires `session:read` and returns only the authenticated
-profile, including its display metadata and avatar presence. `include_sessions`
-defaults to true: previews are limited to that actor's canonical local bindings,
-and `canonical_session` resolves the exact hidden `Bot Chat` title, not the most
-recent conversation. Discovery does not create, restore, or unarchive sessions,
-open sibling profile databases, or run inference. Cross-profile discovery requires
-a separately authenticated connection to the relevant owner.
+`profiles.list` requires `session:read` and returns the authenticated profile
+first, with its display metadata and avatar presence, then the served siblings and
+hosted-room destinations as discovery metadata. `include_sessions` defaults to
+true: `canonical_session` resolves the exact `Bot Chat` title, not the most recent
+conversation, and `last_session` is the newest visible local conversation (a hidden
+row never wins). Both count only local chats the actor owns or reads as an operator:
+minted `local-*` chats, and pre-upgrade chats adopted under their durable binding
+(they keep their old id). A sibling's row carries the same fields only when this
+connection already routes session verbs to it (a host-scoped grant: the Desktop's
+shared socket, the dashboard), read from that sibling's own authority with this
+connection's subject and capabilities. A profile-bound ticket gets metadata alone,
+and so does a sibling that is retiring, listed under a name that routes elsewhere,
+or whose store doesn't answer; a sibling still starting is not listed yet. Rows are
+reused while a profile's store has not moved. Discovery does not create, restore,
+or unarchive sessions, open a database handle of its own or reopen one an unserve
+closed, or run inference.
 
 ## Canonical ancillary reads
 

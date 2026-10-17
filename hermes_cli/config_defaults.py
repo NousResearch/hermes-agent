@@ -1718,8 +1718,10 @@ DEFAULT_CONFIG = {
         "hook_callback_timeout": 30,
         # Deadline (seconds) for one plugin's import + register() at load. A plugin that overruns it is
         # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
-        # abandoned. 0 = no deadline (load inline). Max 600.
-        "load_timeout_seconds": 10,
+        # abandoned. 0 = no deadline (load inline). Max 600. The default is generous to slow-but-legitimate
+        # imports: cold imports of bundled platform SDKs and dashboard auth providers exceed 10s on slow
+        # storage, and an auth provider that times out keeps a gated dashboard from starting (#140621).
+        "load_timeout_seconds": 30,
         # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
         # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
         # scan-gated by that same pipeline).

@@ -912,6 +912,9 @@ _UNKNOWN_FIELD_PHRASES = (
     "extra inputs are not permitted", "is unsupported", "no such field", "unknown field",
     "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
     "additional propert", "unknown key",
+    # Same class of wire rejection from an alias collision: a schema that treats `reasoning` as an alias of
+    # `reasoning_content` rejects a message carrying both with "duplicate field `reasoning_content`" (serde).
+    "duplicate field",
 )
 _NAMED_FIELD_RES = {
     RC: re.compile(r"(?<![\w])reasoning_content(?![\w])"),
@@ -919,15 +922,25 @@ _NAMED_FIELD_RES = {
     # The bare word is also a top-level request param; only a message-path mention counts.
     R: re.compile(r"messages[^\n]{0,80}?(?<![\w])reasoning(?![\w])"),
 }
+# The key a duplicate-field rejection NAMES, e.g. serde's "duplicate field `reasoning_content`".
+# `_NAMED_FIELD_RES[R]` is a proximity heuristic and ``named`` is not enough here: a body may name an
+# unrelated key and merely mention a carrier in passing.
+_DUPLICATE_FIELD_RE = re.compile(r"duplicate field[^A-Za-z0-9_]{0,4}([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
-    """Reasoning keys to drop after an unknown-field rejection that names one this request carried.
+    """Reasoning keys to drop after a schema rejection that names one this request carried.
 
     Strict schemas report one offending key per error, so the drop is widened to the keys the
     same schema will reject next: a rejected ``reasoning_details`` / ``reasoning`` takes the
     other non-standard carrier too (``reasoning_content`` still carries the text); a rejected
     ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
+
+    A ``duplicate field`` rejection is the opposite case and is handled by its own branch: the
+    key the body names is the one the schema READS, so that key is kept and only the aliases the
+    message carried alongside it are dropped. It is only read as such when the named duplicate is
+    a carrier this request actually sent — a duplicate complaint about an unrelated key (with a
+    carrier mentioned in passing) is not a schema that rejects a carrier, so nothing is learned.
     """
     body = str(error_body or "").lower()
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
@@ -939,6 +952,16 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
         return frozenset()
+    if "duplicate field" in body:
+        # Alias collision, not a schema that lacks the field: the named key is the one the schema
+        # READS and the carrier riding along under an alias is the duplicate. Keep ``reasoning_content``
+        # (the wire field) no matter which key the body names; drop only the alias carriers — and only
+        # when the duplicate the body names is a carrier this request sent. A body naming some other
+        # key as the duplicate (it still passes the phrase gate, that phrase is shared) is an unrelated
+        # uniqueness complaint, and stripping a carrier for it would 400 the retry.
+        if not {m.group(1) for m in _DUPLICATE_FIELD_RE.finditer(body)} & sent:
+            return frozenset()
+        return frozenset(sent & {R, RD})
     return frozenset(sent & (_ALL_CARRIERS if RC in named else {R, RD}))
 
 
@@ -987,7 +1010,9 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
     fields = rejected_reasoning_fields(error_body, sent_messages)
     if needs_reasoning_echo(getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", "")):
         # Must-echo routes 400 on any tool turn WITHOUT reasoning_content; a body naming it is a
-        # value complaint ("must not be empty"), never a schema that lacks the field.
+        # value complaint ("must not be empty"), never a schema that lacks the field. On the
+        # duplicate-field path this is a no-op (that branch keeps reasoning_content itself), so the
+        # protection there does not come from this subtraction.
         fields -= {RC}
     if not fields:
         return frozenset()

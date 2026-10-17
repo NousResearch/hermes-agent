@@ -91,6 +91,28 @@ for i in json.load(sys.stdin)['items']:
     print(f\"#{i['number']}  {i['state']:6}  {i['title']}\")"
 ```
 
+## 1.5. Check Repository Issue Templates
+
+**Before creating an issue**, look for the repository's own templates — many
+projects (Hermes included) require specific sections or YAML issue forms, and a
+free-form body gets bounced back.
+
+```bash
+# In a checkout: list and read them locally
+ls .github/ISSUE_TEMPLATE/ 2>/dev/null && cat .github/ISSUE_TEMPLATE/*
+
+# No checkout: fetch through the API
+gh api repos/$OWNER/$REPO/contents/.github/ISSUE_TEMPLATE --jq '.[].name' 2>/dev/null \
+  || echo "No issue templates"
+gh api repos/$OWNER/$REPO/contents/.github/ISSUE_TEMPLATE/bug_report.yml --jq '.content' | base64 -d
+```
+
+If templates exist, mirror their structure: every required section header or
+form field, in order, with the template's own labels. A YAML issue form
+(`*.yml`) maps each `id:` to a section — write the body as those sections rather
+than as free markdown. Pick the matching template with
+`gh issue create --template "<name>"` when the repo defines several.
+
 ## 2. Creating Issues
 
 **With gh:**

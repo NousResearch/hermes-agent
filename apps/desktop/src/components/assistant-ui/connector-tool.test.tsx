@@ -1,6 +1,7 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
@@ -76,6 +77,7 @@ function view(sessionId: string): SessionView {
     $model: atom(''),
     $provider: atom(''),
     $reasoningEffort: atom(''),
+    $reasoningEffortPending: atom(false),
     $reasoningEffortWire: atom(''),
     $runtimeId: atom(sessionId),
     $storedId: atom(sessionId),
@@ -118,19 +120,43 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('ConnectorTool operation card', () => {
-  it('does not call connectors.list or create a timer on mount', () => {
-    vi.useFakeTimers()
-    const request = vi.fn()
-    // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
-    $gateway.set({ request } as never)
+function Where() {
+  const { pathname, search } = useLocation()
 
-    renderOffer()
+  return <output data-testid="where">{`${pathname}${search}`}</output>
+}
 
-    expect(request).not.toHaveBeenCalledWith('connectors.list', expect.anything())
-    expect(vi.getTimerCount()).toBe(0)
+describe('ConnectorOffer named-account notice', () => {
+  it('says which name Hermes chose once the account connected, and Rename opens that account (by id) on the Connectors tab', () => {
+    const request = {
+      ...REQUEST,
+      settled: true,
+      targets: [{ ...GMAIL, alias: 'work', connectionId: 'ca_work', state: 'connected' as const }]
+    }
+
+    setConnectionRequest(request)
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <MemoryRouter initialEntries={['/chat']}>
+          <Routes>
+            <Route element={<ConnectorOffer owner={PRIMARY_OWNER} request={request} />} path="/chat" />
+            <Route element={<Where />} path="*" />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>
+    )
+
+    expect(screen.getAllByText('Hermes named this Gmail account work.')).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+
+    expect(screen.getByTestId('where').textContent).toBe(
+      '/capabilities?tab=connectors&connector=gmail&profile=default&rename=ca_work'
+    )
   })
+})
 
+describe('ConnectorTool operation card', () => {
   it('offers one verb per row and Continue below; nothing per row says no', () => {
     renderOffer({
       ...REQUEST,

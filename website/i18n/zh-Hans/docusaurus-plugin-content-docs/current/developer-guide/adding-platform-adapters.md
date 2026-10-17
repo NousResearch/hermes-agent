@@ -122,7 +122,7 @@ def register(ctx):
         check_fn=check_requirements,
         validate_config=validate_config,
         required_env=["MY_PLATFORM_TOKEN"],
-        install_hint="pip install my-platform-sdk",
+        install_hint="Declare my-platform-sdk in this plugin's Python dependencies, then retry hermes plugins enable my-platform",
         # 环境变量驱动的自动配置 — 在适配器构建前从环境变量
         # 填充 PlatformConfig.extra。参见下方"环境变量驱动的自动配置"章节。
         env_enablement_fn=_env_enablement,
@@ -680,7 +680,7 @@ async def disconnect(self):
 
 | 适配器 | 模式 | 复杂度 | 适合参考的场景 |
 |---------|---------|------------|-------------------|
-| `bluebubbles.py` | REST + webhook | 中 | 简单 REST API 集成 |
-| `weixin.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
+| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | 中 | 简单 REST API 集成 |
+| `plugins/platforms/weixin/adapter.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
 | `wecom_callback.py` | 回调/webhook | 中 | HTTP 服务器、AES 加密、多应用 |
 | `plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |

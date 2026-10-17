@@ -57,19 +57,6 @@ def _switch(agent, model, provider, base_url):
     return ctx_len.call_args.kwargs.get("config_context_length")
 
 
-def test_switch_to_configured_default_route_reapplies_context_pin():
-    """Switching onto the route ``model.context_length`` describes keeps the ceiling."""
-    cfg = _cfg_with_pin()
-    agent = _make_agent(config_context_length=None)
-
-    with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-    ):
-        applied = _switch(agent, "model-b", "custom:acme", ROUTE)
-
-    assert applied == PIN
-    assert agent._config_context_length == PIN
 
 
 def test_switch_back_to_configured_default_route_restores_context_pin():

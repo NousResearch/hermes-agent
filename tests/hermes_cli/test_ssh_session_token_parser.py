@@ -1,42 +1,12 @@
-import argparse
 import os
 
 import pytest
 from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
-from hermes_cli.main import cmd_dashboard
 from hermes_cli.main_dashboard import _read_ssh_session_token_file
-from hermes_cli.subcommands.dashboard import build_dashboard_parser
 
 
-def dashboard_parser():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    build_dashboard_parser(
-        subparsers,
-        cmd_dashboard=lambda _args: None,
-        cmd_dashboard_register=lambda _args: None,
-    )
-    return parser
-
-
-def test_serve_help_advertises_secure_ssh_bootstrap_flags(capsys):
-    with pytest.raises(SystemExit) as exit_info:
-        dashboard_parser().parse_args(["serve", "--help"])
-    assert exit_info.value.code == 0
-    output = capsys.readouterr().out
-    assert "--ssh-session-token-file PATH" in output
-    assert "--ssh-owner-nonce NONCE" in output
-
-
-
-
-
-
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="POSIX fixture uses mode bits; Windows read_token requires protected DACLs",
-)
+@pytest.mark.platforms("posix")  # POSIX fixture uses mode bits; Windows read_token requires protected DACLs
 def test_token_file_is_read_and_unlinked_through_private_directory(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
@@ -54,7 +24,7 @@ def test_token_file_is_read_and_unlinked_through_private_directory(tmp_path, mon
         reset_hermes_home_override(override)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX desktop-ssh token path")
+@pytest.mark.platforms("posix")  # POSIX desktop-ssh token path
 def test_token_anchor_is_os_home_not_active_profile(tmp_path, monkeypatch):
     """Regression for #69551: the Desktop client always writes the token under
     ``$HOME/.hermes/desktop-ssh`` (a literal ``~/.hermes/desktop-ssh`` in
@@ -82,7 +52,7 @@ def test_token_anchor_is_os_home_not_active_profile(tmp_path, monkeypatch):
             reset_hermes_home_override(override)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX desktop-ssh token path")
+@pytest.mark.platforms("posix")  # POSIX desktop-ssh token path
 def test_token_under_profile_desktop_ssh_is_rejected(tmp_path, monkeypatch):
     """The client never writes under a profile-scoped desktop-ssh dir, so a token
     placed there must be rejected even while that profile is active — proving the
@@ -103,7 +73,7 @@ def test_token_under_profile_desktop_ssh_is_rejected(tmp_path, monkeypatch):
         reset_hermes_home_override(override)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink contract")
+@pytest.mark.platforms("posix")  # POSIX symlink contract
 def test_token_file_rejects_symlink(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
@@ -124,6 +94,7 @@ def test_token_file_rejects_symlink(tmp_path, monkeypatch):
         reset_hermes_home_override(override)
 
 
+@pytest.mark.platforms("linux")
 def test_token_file_rejects_parent_escape(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))

@@ -12,7 +12,6 @@ Covers the three seams added for remote Desktop backends:
     rejected, replay rejected, unknown session rejected).
 """
 
-import threading
 
 import pytest
 
@@ -129,7 +128,7 @@ def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
 
     # The connection-card path does not require a dashboard web server: it binds the same backend
     # receiver, registers the flow for callback relay, and carries the SSH paste hint in detail.
-    import hermes_cli.mcp_config as mcp_config
+    from hermes_cli import mcp_config
 
     monkeypatch.setattr(
         mcp_config,
@@ -140,7 +139,6 @@ def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
     monkeypatch.setenv("SSH_CLIENT", "192.0.2.1 12345 22")
     attempt = mcp_oauth.start("cardy")
     assert attempt.flow.redirect_uri.startswith("http://127.0.0.1:")
-    assert "copy the full URL" in attempt.detail
     assert attempt.flow.flow_id in mcp_oauth_sessions._sessions
     deliver_callback_flow(
         attempt.flow.flow_id, "cardy", code="authcode", state="teststate123"

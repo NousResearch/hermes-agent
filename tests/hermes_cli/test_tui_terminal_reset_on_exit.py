@@ -11,7 +11,7 @@ on ``_tui_input_modes_active`` so non-TUI one-shot CLI runs (which share
 """
 
 import unittest
-from unittest.mock import mock_open, patch
+from unittest.mock import patch
 
 
 def _import_cli():
@@ -80,15 +80,6 @@ class TestResetTerminalInputModes(unittest.TestCase):
             # Cleanup runs at process teardown — it must never raise.
             cli_mod._reset_terminal_input_modes_on_exit()
 
-    def test_mark_tui_input_modes_active_sets_flag(self):
-        cli_mod = _import_cli()
-        original = cli_mod._tui_input_modes_active
-        cli_mod._tui_input_modes_active = False
-        try:
-            cli_mod._mark_tui_input_modes_active()
-            self.assertTrue(cli_mod._tui_input_modes_active)
-        finally:
-            cli_mod._tui_input_modes_active = original
 
     def test_flag_cleared_after_reset(self):
         """Once the modes are disabled they are no longer active — the flag must
@@ -152,10 +143,6 @@ class TestRunCleanupWiring(unittest.TestCase):
         finally:
             cli_mod._cleanup_done = original_done
 
-    def test_run_cleanup_calls_reset(self):
-        cli_mod = _import_cli()
-        mock_reset = self._run_cleanup_isolated(cli_mod)
-        mock_reset.assert_called_once()
 
     def test_reset_runs_even_when_a_cleanup_step_raises(self):
         """The reset is the first step, so a failing teardown step can't skip

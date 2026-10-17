@@ -95,6 +95,7 @@ export const ja: Translations = {
   status: {
     actionFailed: "アクションが失敗しました",
     actionFinished: "完了",
+    actionFinishedOwed: "更新済みですが未完了の処理があります（完了するには `hermes update` を再実行してください）",
     actions: "アクション",
     agent: "エージェント",
     activeSessions: "アクティブなセッション",
@@ -162,9 +163,14 @@ export const ja: Translations = {
     deleteSelectedConfirmMessage:
       "選択した{count}件のセッションとそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
     selectedSessionsDeleted: "{count}件のセッションを削除しました",
+    selectedSessionsSkippedActive: "{deleted}件を削除、実行中のターンがあるため{count}件を保持しました",
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
     newChat: "新しいチャット",
+    workspace: "ワークスペース",
+    workspaceDefault: "デフォルト",
+    workspaceRescan: "リポジトリを再スキャン",
+    workspaceCustom: "別のパス…",
     previousPage: "前のページ",
     nextPage: "次のページ",
     roles: {

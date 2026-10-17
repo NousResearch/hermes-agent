@@ -8,7 +8,7 @@ if unset). The bridge owns Raft message cursors/bodies; the agent uses the Raft 
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import functools
 import hmac
 import json
@@ -65,7 +65,7 @@ _MAX_SCALAR_LENGTH = 120
 _ACTIVITY_ALLOWED_FIELDS = set(
     "schema eventId sessionId hookEventName status occurredAt toolName toolInput toolOutput "
     "toolInputTruncated toolOutputTruncated truncated errorClass durationMs".split())
-_ACTIVE_ADAPTERS: "weakref.WeakSet[RaftAdapter]" = weakref.WeakSet()
+_ACTIVE_ADAPTERS: weakref.WeakSet[RaftAdapter] = weakref.WeakSet()
 _ACTIVE_ADAPTERS_LOCK = threading.Lock()
 _RAFT_CONTEXT_LOCK = threading.Lock()
 _RAFT_SESSION_IDS: set[str] = set()
@@ -120,11 +120,11 @@ def _duration_ms(value: Any) -> Optional[int]:
 
 def _make_activity_event(*, hook_event_name: str, session_id: Any, status: str = "ok", tool_name: Any = None,
                          tool_input: Any = None, tool_output: Any = None, error_class: Any = None,
-                         duration_ms: Any = None) -> Dict[str, Any]:
-    event: Dict[str, Any] = {"schema": ACTIVITY_EVENT_SCHEMA, "eventId": f"hermes-{uuid.uuid4()}",
+                         duration_ms: Any = None) -> dict[str, Any]:
+    event: dict[str, Any] = {"schema": ACTIVITY_EVENT_SCHEMA, "eventId": f"hermes-{uuid.uuid4()}",
                              "sessionId": _safe_scalar(session_id, "unknown") or "unknown",
                              "hookEventName": hook_event_name, "status": "error" if status == "error" else "ok",
-                             "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+                             "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z")}
     for key, raw in (("toolName", tool_name), ("errorClass", error_class)):
         if safe := _safe_scalar(raw):
             event[key] = safe
@@ -144,13 +144,13 @@ _OPTIONAL_FIELD_RULES = (  # checked in this order; first failure wins
     (("truncated", "toolInputTruncated", "toolOutputTruncated"), lambda v: isinstance(v, bool), "a boolean"))
 
 
-def _validate_activity_event(value: Any) -> Dict[str, Any]:
+def _validate_activity_event(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("activity event must be an object")
     if value.get("schema") != ACTIVITY_EVENT_SCHEMA:
         raise ValueError("unsupported activity event schema")
     if unknown := set(value) - _ACTIVITY_ALLOWED_FIELDS:
-        raise ValueError(f"activity event field {sorted(unknown)[0]} is not allowed")
+        raise ValueError(f"activity event field {min(unknown)} is not allowed")
     for key in ("eventId", "sessionId", "hookEventName", "occurredAt"):
         if not _safe_scalar(value.get(key)):
             raise ValueError(f"activity event {key} must be a safe non-empty string")
@@ -178,11 +178,11 @@ class ActivityQueue:
 
     def __init__(self, cap: int = DEFAULT_ACTIVITY_QUEUE_CAP):
         self._cap = max(1, int(cap or DEFAULT_ACTIVITY_QUEUE_CAP))
-        self._events: Deque[Dict[str, Any]] = deque()
+        self._events: deque[dict[str, Any]] = deque()
         self._dropped_since_drain = 0
         self._lock = threading.Lock()
 
-    def push(self, event: Dict[str, Any]) -> None:
+    def push(self, event: dict[str, Any]) -> None:
         validated = _validate_activity_event(event)
         with self._lock:
             self._events.append(validated)
@@ -190,7 +190,7 @@ class ActivityQueue:
                 self._events.popleft()
                 self._dropped_since_drain += 1
 
-    def drain(self, max_events: int = 200) -> Dict[str, Any]:
+    def drain(self, max_events: int = 200) -> dict[str, Any]:
         limit = max(1, int(max_events or 200))
         with self._lock:
             events = [self._events.popleft() for _ in range(min(limit, len(self._events)))]
@@ -228,7 +228,7 @@ def _is_raft_context(**kwargs: Any) -> bool:
                     or (safe_session_id and safe_session_id in _RAFT_SESSION_IDS))
 
 
-def _emit(hook_event_name: str, kwargs: Dict[str, Any], **fields: Any) -> None:
+def _emit(hook_event_name: str, kwargs: dict[str, Any], **fields: Any) -> None:
     """Build an activity event for the hook's session and fan it out to every live adapter."""
     event = _make_activity_event(hook_event_name=hook_event_name, session_id=kwargs.get("session_id"), **fields)
     with _ACTIVE_ADAPTERS_LOCK:
@@ -299,7 +299,7 @@ def _on_session_finalize(**kwargs: Any) -> None:
     _forget_raft_context(kwargs.get("session_id"), kwargs.get("turn_id"), forget_session=True)
 
 
-def _error_response(error: str, status: int) -> "web.Response":
+def _error_response(error: str, status: int) -> web.Response:
     return web.json_response({"ok": False, "error": error}, status=status)
 
 
@@ -313,7 +313,8 @@ class RaftAdapter(BasePlatformAdapter):
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         path = str(extra.get("path", DEFAULT_PATH) or DEFAULT_PATH).strip() or DEFAULT_PATH
         self._path: str = path if path.startswith("/") else f"/{path}"
-        self._bridge_token: str = str(extra.get("bridge_token", ""))
+        # `or ""`: a null YAML value must reach connect()'s auto-generated token, not become "None".
+        self._bridge_token: str = str(extra.get("bridge_token") or "").strip()
         self._runtime_session: str = str(extra.get("runtime_session", DEFAULT_RUNTIME_SESSION) or DEFAULT_RUNTIME_SESSION)
         self._max_body_bytes: int = int(extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES))
         self._runner = None
@@ -373,11 +374,14 @@ class RaftAdapter(BasePlatformAdapter):
             logger.warning("[raft] RAFT_PROFILE not set; bridge not spawned")
             return
         endpoint = f"http://{self._host}:{port}{self._path}"
-        cmd: List[str] = [raft_bin, "--profile", profile, "agent", "bridge", "--wake-adapter", "wake-channel",
+        cmd: list[str] = [raft_bin, "--profile", profile, "agent", "bridge", "--wake-adapter", "wake-channel",
                           "--wake-channel-endpoint", endpoint]
+        from tools.environments.local import hermes_subprocess_env
+        # The raft CLI needs its own profile and channel token, never Hermes' credentials.
+        env = {**hermes_subprocess_env(), "RAFT_PROFILE": profile, "RAFT_CHANNEL_TOKEN": self._bridge_token}
+        env["HOME"] = env["HERMES_REAL_HOME"]  # the raft CLI's own login lives under the user's HOME
         try:
-            self._bridge_process = subprocess.Popen(
-                cmd, env={**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}, stdin=subprocess.DEVNULL)
+            self._bridge_process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
             logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", self._bridge_process.pid, profile, endpoint)
         except Exception:
             logger.exception("[raft] Failed to spawn bridge")
@@ -397,24 +401,24 @@ class RaftAdapter(BasePlatformAdapter):
             logger.exception("[raft] Error stopping bridge")
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+                   metadata: Optional[dict[str, Any]] = None) -> SendResult:
         logger.debug("[raft] adapter send is a no-op; agent delivers via raft CLI")
         return SendResult(success=True)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": f"raft/{chat_id}", "type": "raft"}
 
-    async def _handle_health(self, request: "web.Request") -> "web.Response":
+    async def _handle_health(self, request: web.Request) -> web.Response:
         activity = {"queueSize": self._activity_queue.size, "endpoint": "/activity", "drainEndpoint": "/activity/drain"}
         return web.json_response(
             {"status": "ok", "platform": "raft", "runtimeSession": self._runtime_session, "activity": activity})
 
-    def _authorized(self, request: "web.Request") -> bool:
+    def _authorized(self, request: web.Request) -> bool:
         token = request.headers.get(BRIDGE_TOKEN_HEADER, "")
         # Compare as bytes: compare_digest raises TypeError on a non-ASCII str header.
         return bool(self._bridge_token and token) and hmac.compare_digest(token.encode(), self._bridge_token.encode())
 
-    async def _read_bridge_body(self, request: "web.Request", *, text: bool) -> tuple[Any, Optional["web.Response"]]:
+    async def _read_bridge_body(self, request: web.Request, *, text: bool) -> tuple[Any, Optional[web.Response]]:
         """Auth + size-capped body read for wake/activity -> ``(body, None)`` or ``(None, error)``.
         ``text=True``: ``request.text()``, utf-8 length check, exception text in the 400 body; else raw bytes."""
         if not self._authorized(request):
@@ -433,7 +437,7 @@ class RaftAdapter(BasePlatformAdapter):
             return None, _error_response("payload_too_large", 413)
         return body, None
 
-    async def _handle_wake(self, request: "web.Request") -> "web.Response":
+    async def _handle_wake(self, request: web.Request) -> web.Response:
         raw_body, error = await self._read_bridge_body(request, text=False)
         if error is not None:
             return error
@@ -464,7 +468,7 @@ class RaftAdapter(BasePlatformAdapter):
             return web.json_response(not_ready, status=503)
         return web.json_response({"ok": True, "runtimeSession": self._runtime_session}, status=202)
 
-    async def _handle_activity(self, request: "web.Request") -> "web.Response":
+    async def _handle_activity(self, request: web.Request) -> web.Response:
         raw_text, error = await self._read_bridge_body(request, text=True)
         if error is not None:
             return error
@@ -476,7 +480,7 @@ class RaftAdapter(BasePlatformAdapter):
             return _error_response(str(exc), 400)
         return web.json_response({"ok": True}, status=202)
 
-    async def _handle_activity_drain(self, request: "web.Request") -> "web.Response":
+    async def _handle_activity_drain(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return _error_response("unauthorized", 401)
         max_events = coerce_port(request.query.get("max", "200"), 200)  # int-or-default
@@ -497,7 +501,7 @@ class RaftAdapter(BasePlatformAdapter):
             return
         await super().handle_message(event)
 
-    def report_activity(self, event: Dict[str, Any]) -> None:
+    def report_activity(self, event: dict[str, Any]) -> None:
         try:
             self._activity_queue.push(event)
         except Exception:
@@ -571,11 +575,3 @@ def register(ctx) -> None:
                                 ("post_llm_call", _on_post_llm_call), ("on_session_end", _on_session_end),
                                 ("on_session_finalize", _on_session_finalize)):
         ctx.register_hook(hook_name, callback)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import asyncio  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

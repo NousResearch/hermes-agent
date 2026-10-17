@@ -1312,6 +1312,30 @@ def _systemd_cli_bits(system: bool) -> tuple[str, str, str]:
     return ("sudo ", " --system", "") if system else ("", "", "--user ")
 
 
+# Serial multi-adapter boots connect platforms one by one; each observed advance in
+# gateway_state.json buys the restart wait this much extra budget (#137995). A boot that
+# stops advancing still expires on the original deadline, so a wedged start is not waited out.
+_RESTART_BOOT_PROGRESS_WINDOW_S = 60.0
+
+
+def _boot_platform_progress(runtime_state: dict | None) -> tuple[int, int] | None:
+    """Monotone progress of a ``starting`` runtime record: ``(platform entries, connected)``.
+
+    Only counts that cannot decrease while a boot advances: a platform appearing in the record
+    and a platform reaching ``connected``. A ``connected``→``retrying`` flap must not read as
+    progress and re-arm the deadline forever, so transient states are not part of the tuple.
+    """
+    if not isinstance(runtime_state, dict) or runtime_state.get("gateway_state") != "starting":
+        return None
+    platforms = runtime_state.get("platforms")
+    if not isinstance(platforms, dict):
+        return (0, 0)
+    connected = sum(
+        1 for entry in platforms.values() if isinstance(entry, dict) and entry.get("state") == "connected"
+    )
+    return (len(platforms), connected)
+
+
 def _wait_for_systemd_service_restart(
     *,
     system: bool = False,
@@ -1326,6 +1350,8 @@ def _wait_for_systemd_service_restart(
         timeout = _systemd_restart_wait_timeout(system=system)
     deadline = time.monotonic() + timeout
     printed_runtime_wait = False
+    boot_progress: tuple[int, int] | None = None
+    printed_progress_wait = False
 
     while time.monotonic() < deadline:
         props = _read_systemd_unit_properties(system=system)
@@ -1370,6 +1396,21 @@ def _wait_for_systemd_service_restart(
             if not printed_runtime_wait:
                 print(f"⏳ {scope_label} service process started (PID {new_pid}); waiting for gateway runtime...")
                 printed_runtime_wait = True
+            progress = _boot_platform_progress(runtime_state)
+            if progress is not None:
+                if boot_progress is not None and progress > boot_progress:
+                    # The replacement is still starting but demonstrably advancing — platform entries
+                    # flip to connected one at a time in gateway_state.json. A serial multi-adapter
+                    # boot outlasts the supervisor-derived budget, and everything after this wait
+                    # treats a still-starting gateway as dead (#137995).
+                    deadline = max(deadline, time.monotonic() + _RESTART_BOOT_PROGRESS_WINDOW_S)
+                    if not printed_progress_wait:
+                        print(
+                            f"⏳ {scope_label} gateway is still starting; platform connections are advancing "
+                            f"(extending the readiness wait)..."
+                        )
+                        printed_progress_wait = True
+                boot_progress = max(boot_progress, progress) if boot_progress is not None else progress
 
         if active_state == "activating" and sub_state == "auto-restart":
             time.sleep(1)
@@ -3723,6 +3764,18 @@ def systemd_stop(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
 
+def _runtime_state_says_starting(pid: int) -> bool:
+    """True when gateway_state.json attributes a ``starting`` boot to ``pid``.
+
+    A serial multi-adapter boot can keep the loop too busy to answer the tick probe for
+    minutes; the probe then reads ``wedged`` while the gateway is healthy and its platform
+    connections keep advancing. The destructive wedge escalation must not fire then (#137995)
+    — the graceful restart path below still applies, just without the bounded kill.
+    """
+    state = _read_gateway_runtime_status()
+    return _runtime_state_pid(state) == pid and (state or {}).get("gateway_state") == "starting"
+
+
 def systemd_restart(system: bool = False):
     system = _systemd_scope_preamble("restart", system, preflight_user=True)
     # HERMES_HOME sync happens in refresh's systemd_unit_is_current gate; its os.environ mutation
@@ -3730,7 +3783,11 @@ def systemd_restart(system: bool = False):
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
     pid = get_running_pid() or _systemd_main_pid(system=system)
-    if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
+    if (
+        pid is not None
+        and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED
+        and not _runtime_state_says_starting(pid)
+    ):
         # Event loop provably dead: SIGUSR1 can't drain it, so bounded SIGTERM → SIGKILL and let systemd relaunch.
         print(
             # Health probe says the event loop is provably dead (#81642): SIGUSR1 can never drain it, so the

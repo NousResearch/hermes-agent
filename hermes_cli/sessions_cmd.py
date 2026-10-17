@@ -258,8 +258,13 @@ def _cmd_import(args):
 # -- handlers that receive an open SessionDB ----------------------------------
 
 def _default_exclude(args):
-    """Hide third-party tool sessions by default, but honour explicit --source."""
-    return None if getattr(args, "source", None) else ["tool"]
+    """Hide third-party tool and cron-run sessions by default, but honour explicit --source.
+
+    Cron runs mint a fresh session per tick, so a frequent scheduler drowns the recents page
+    in machine rows and buries the human ones. Explicit ``--source cron`` (or any
+    ``--source``) still returns them unfiltered.
+    """
+    return None if getattr(args, "source", None) else ["tool", "cron"]
 
 
 def _cmd_list(db, args):

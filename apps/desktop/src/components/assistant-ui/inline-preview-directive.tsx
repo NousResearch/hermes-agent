@@ -50,8 +50,8 @@ import { localPreviewTarget } from '@/lib/local-preview'
 const MIN_HEIGHT = 120
 const MAX_HEIGHT = 1200
 const DEFAULT_HEIGHT = 280
-/** The transcript column cap the frame renders inside (`max-w-160` = 40rem). */
-const MAX_COLUMN_WIDTH = 640
+/** Inline widgets may use the wider preview column, while max-w-full still protects narrow windows. */
+const MAX_PREVIEW_WIDTH = 960
 /** Ignore sub-pixel/rounding churn so a vh-sized page can't oscillate. */
 const RESIZE_TOLERANCE = 4
 
@@ -303,6 +303,11 @@ export interface FrameSizeReport {
   width: number
 }
 
+/** Keep fixed-size widgets at their measured width without shrinking a content-declared reading width. */
+export function inlinePreviewFrameWidth(contentWidth: number | null): number | undefined {
+  return contentWidth === null ? undefined : Math.min(contentWidth, MAX_PREVIEW_WIDTH)
+}
+
 /** Parse a size report from the frame. Null unless it is OUR message type,
  *  carries OUR token, and holds a sane finite height — anything inside the
  *  sandbox can postMessage, so everything is validated before it moves the
@@ -510,10 +515,10 @@ function InlineHtmlFrame({
   // Left-aligned in the message flow, like an image: the frame is only as
   // wide as its content (capped at the column). Fluid pages measure the
   // full viewport and stay full-bleed.
-  const width = contentWidth !== null ? Math.min(contentWidth, MAX_COLUMN_WIDTH) : undefined
+  const width = inlinePreviewFrameWidth(contentWidth)
 
   return (
-    <span className="my-2 block w-full max-w-160">
+    <span className="my-2 block w-full max-w-[60rem]">
       {framedDoc === null ? (
         <span
           className="block w-full animate-pulse rounded-md bg-[color-mix(in_srgb,currentColor_4%,transparent)]"

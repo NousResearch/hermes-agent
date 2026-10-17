@@ -12,7 +12,7 @@ import time
 import urllib.parse
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
-    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
+    REDACTED_CREDENTIAL_WRITE_DETAIL, config_scoped_to_thread, http_failure, is_redacted_credential_preview,
     redacted_credential_preview, scoped_to_thread,
 )
 from hermes_cli.web_deps import LateState, late
@@ -1040,12 +1040,19 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     url, auth = probe
     if key == "GEMINI_API_KEY":
         from agent.gemini_native_adapter import normalize_gemini_base_url
-        # Normalize guarantees the version segment; the key itself never decides the surface —
-        # AQ. keys exist for both AI Studio and Vertex express mode (#115306).
-        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0]) + "/models"
+        from agent.secret_scope import get_secret
+
+        # The selected profile's base decides the surface, never the key prefix or another
+        # profile's process environment. Empty configuration keeps the AI Studio default.
+        configured_base = await config_scoped_to_thread(
+            body.profile, lambda: get_secret("GEMINI_BASE_URL", "")
+        )
+        url = normalize_gemini_base_url(configured_base) + "/models"
     headers = {"Accept": "application/json"}
     params = {}
-    if auth == "bearer":
+    if key == "GEMINI_API_KEY":
+        headers["x-goog-api-key"] = value
+    elif auth == "bearer":
         headers["Authorization"] = f"Bearer {value}"
     else:
         params["key"] = value

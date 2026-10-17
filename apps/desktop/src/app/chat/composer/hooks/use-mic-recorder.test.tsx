@@ -188,3 +188,75 @@ describe('useMicRecorder level meter', () => {
     expect(recording).toMatchObject({ meterFailed: false })
   })
 })
+
+describe('useMicRecorder unmount recovery', () => {
+  // #136410: navigation tears the composer down mid-take. The unmount used to
+  // drop the take on the floor; it must stop through onstop and park the take
+  // so a late caller can still transcribe it.
+  it('parks the take when the component unmounts without an explicit stop', async () => {
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start()
+    })
+    expect(result.current.recording).toBe(true)
+
+    const handle = result.current.handle
+    cleanup()
+    await flush()
+
+    expect(handle.recoverTake()).toMatchObject({ durationMs: expect.any(Number) })
+    // Consume-once: a second recovery finds nothing.
+    expect(handle.recoverTake()).toBeNull()
+  })
+
+  it('resolves a stop that was still pending when the unmount happened', async () => {
+    // A recorder whose stop() defers its events (state flips immediately, the
+    // onstop lands later): the real API's contract while the take is closing.
+    let captured: DeferredStopRecorder | undefined
+
+    class DeferredStopRecorder extends FakeMediaRecorder {
+      constructor() {
+        super()
+        captured = this
+      }
+
+      stop() {
+        this.state = 'inactive'
+      }
+
+      flush() {
+        this.ondataavailable?.({ data: new Blob(['clip'], { type: 'audio/webm' }) })
+        this.onstop?.()
+      }
+    }
+
+    vi.stubGlobal('MediaRecorder', DeferredStopRecorder)
+
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start()
+    })
+
+    let stopped: Awaited<ReturnType<typeof result.current.handle.stop>> = null
+    act(() => {
+      void result.current.handle.stop().then(value => {
+        stopped = value
+      })
+    })
+    await flush()
+    expect(stopped).toBeNull()
+
+    // The take closes after the unmount: onstop still routes it to the
+    // waiting stop() caller instead of losing it.
+    cleanup()
+    await flush()
+    act(() => {
+      captured?.flush()
+    })
+    await flush()
+
+    expect(stopped).toMatchObject({ durationMs: expect.any(Number) })
+  })
+})

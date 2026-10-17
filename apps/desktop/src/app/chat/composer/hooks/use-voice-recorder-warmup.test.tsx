@@ -43,6 +43,18 @@ vi.mock('@/lib/stt-lease', () => ({
   VOICE_INPUT_LEASE: 'desktop:voice-input:test'
 }))
 
+const stashSessionDraftSpy = vi.fn(
+  (scope: null | string | undefined, text: string, attachments: never[]) => undefined
+)
+
+const takeSessionDraftSpy = vi.fn((_scope: null | string | undefined): { attachments: never[]; text: string } => ({ attachments: [], text: '' }))
+
+vi.mock('@/store/composer', () => ({
+  stashSessionDraft: (scope: null | string | undefined, text: string, attachments: never[]) =>
+    stashSessionDraftSpy(scope, text, attachments),
+  takeSessionDraft: (scope: null | string | undefined) => takeSessionDraftSpy(scope)
+}))
+
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
   notifyError: vi.fn()
@@ -89,6 +101,9 @@ describe('useVoiceRecorder STT readiness barrier', () => {
   beforeEach(() => {
     cleanup()
     recording = false
+    stashSessionDraftSpy.mockClear()
+    takeSessionDraftSpy.mockClear()
+    takeSessionDraftSpy.mockImplementation(() => ({ attachments: [], text: '' }))
     ambient.connectionId = 'gateway-a'
     ambient.profile = 'worker_alpha'
     micHandle.start.mockClear()
@@ -212,9 +227,10 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     ])
   })
 
-  // #128668 review (P1): a warm-up settling after unmount must not transcribe
-  // or insert text into a torn-down composer.
-  it('drops the dictation when the composer unmounts while the warm-up is settling', async () => {
+  // #136410: a warm-up settling after a navigation teardown no longer drops
+  // the take — the recovery finishes it and lands the transcript in the
+  // recording session's draft. It still never reaches a torn-down editor.
+  it('recovers the take when the composer unmounts while the warm-up is settling', async () => {
     let settleWarmup!: () => void
     syncSttLeaseSpy.mockImplementationOnce(
       () =>
@@ -241,13 +257,13 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     })
 
     hook.unmount()
-    // Unmount releases to the owner that acquired.
-    expect(syncSttLeaseSpy).toHaveBeenLastCalledWith('desktop:voice-input:test', false, OWNER_A)
-
     settleWarmup()
     await stopping
 
-    expect(transcribe).not.toHaveBeenCalled()
+    // The transcript goes to the draft, exactly once, and never to the
+    // torn-down editor.
+    await waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1))
+    expect(stashSessionDraftSpy).toHaveBeenCalledTimes(1)
     expect(onTranscript).not.toHaveBeenCalled()
   })
 

@@ -299,7 +299,7 @@ def _linked_worktree_repos(entry: Path) -> set[str]:
                 for child in it:
                     if child.name == ".git" and child.is_file(follow_symlinks=False):
                         try:
-                            line = Path(child.path).read_text(encoding="utf-8", errors="replace").strip()
+                            line = Path(child.path).read_text(encoding="utf-8-sig", errors="replace").strip()
                         except OSError:
                             continue
                         if line.startswith("gitdir:"):

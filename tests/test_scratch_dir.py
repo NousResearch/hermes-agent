@@ -422,7 +422,7 @@ def test_write_during_size_walk_is_rescued(tmp_path: Path) -> None:
 
     with patch("hermes_constants_scratch._tree_bytes", write_during_size_walk):
         assert prune_scratch_dir(scratch) == 0
-    assert payload.read_text(encoding="utf-8") == "FRESH", "write during size walk was destroyed"
+    assert payload.read_text(encoding="utf-8-sig") == "FRESH", "write during size walk was destroyed"
     log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
     assert f"rescued {str(entry)!r} " in log, log
 
@@ -484,7 +484,7 @@ def test_midprune_nested_overwrite_is_rescued_by_descending_recheck(tmp_path: Pa
 
     with patch("hermes_constants_scratch.reap_processes_rooted_in", overwrite_during_reap):
         assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
-    assert payload.read_text(encoding="utf-8") == "FRESH OVERWRITE, DEEP\n", (
+    assert payload.read_text(encoding="utf-8-sig") == "FRESH OVERWRITE, DEEP\n", (
         "deep mid-prune overwrite was destroyed"
     )
     assert entry.exists()
@@ -556,7 +556,7 @@ def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) 
          patch("hermes_constants_scratch.shutil.rmtree", rmtree_leaves_residue), \
          patch("hermes_constants_scratch.os.lstat", lstat):
         assert prune_scratch_dir(scratch) == 0  # unknown, not removed
-    assert entry.exists() and payload.read_text(encoding="utf-8") == "still here"
+    assert entry.exists() and payload.read_text(encoding="utf-8-sig") == "still here"
     log = log_file.read_text(encoding="utf-8-sig")
     assert f"removed {str(entry)!r} (" not in log, log
     assert "could not confirm removal" in log, log
@@ -585,7 +585,7 @@ def test_prune_keeps_entry_a_registered_hermes_process_works_in_but_reaps_orphan
                                 cwd=str(orphan_dir))
     def _lane_done():
         registry.poll(lane.id)
-        return lane.exited and pidfile.exists() and pidfile.read_text().strip()
+        return lane.exited and pidfile.exists() and pidfile.read_text(encoding="utf-8-sig").strip()
     orphan = int(wait_until(_lane_done, timeout=15, what="lane shell exits after forking its orphan"))
     ancient = time.time() - 30 * 3600
     for path in (owned_dir, orphan_dir):

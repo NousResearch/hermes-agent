@@ -39,6 +39,29 @@ def relay_turn(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_sync_execute_uses_callback_on_event_loop_thread(monkeypatch):
+    class UnexpectedManagedAttempt:
+        def run_managed(self, *_args, **_kwargs):
+            raise AssertionError("managed execution must not run on an event loop thread")
+
+    monkeypatch.setattr(
+        relay_llm._ManagedAttempt,
+        "resolve",
+        staticmethod(lambda *_args, **_kwargs: UnexpectedManagedAttempt()),
+    )
+
+    async def invoke():
+        return relay_llm.execute(
+            {"payload": "request"},
+            lambda request: {"payload": request["payload"]},
+            session_id="session-1",
+            name="test-provider",
+            model_name="test-model",
+        )
+
+    assert asyncio.run(invoke()) == {"payload": "request"}
+
+
 @pytest.mark.parametrize(
     "api_mode",
     ["chat_completions", "codex_responses", "anthropic_messages"],

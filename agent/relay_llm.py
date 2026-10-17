@@ -185,7 +185,9 @@ def execute(
     """Run one non-streaming physical provider attempt through Relay.
     ``session_id`` defaults to the inherited Hermes turn's session (unmanaged when there is none)."""
     attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
-    if attempt is None:
+    # A synchronous caller cannot drive Relay's coroutine while already on an event-loop thread.
+    # The unmanaged callback preserves the pre-Relay completion path, just as stream_current does.
+    if attempt is None or _has_running_event_loop():
         return callback(request)
     try:
         managed = _run_awaitable(attempt.run_managed(

@@ -20,7 +20,6 @@ _TAIL_BYTES = 16384
 _PROCESS_TAIL_CHARS = 32768  # main's dock tail view (cli_process_dock.process_tail)
 
 
-
 def handlers(connection):
     return {**{name: partial(read, connection, kind=kind) for name, kind in {
         'session.control.read': 'control', 'process.list': 'processes',

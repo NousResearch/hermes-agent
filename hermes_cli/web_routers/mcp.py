@@ -194,7 +194,23 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
                 raise HTTPException(
                     status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified",
                 )
-            return _remove_mcp_server(name)
+            removed = _remove_mcp_server(name)
+            if not removed:
+                return False
+            try:
+                from tools.mcp_oauth_manager import get_manager
+
+                get_manager().remove(name)
+            except Exception as exc:
+                _log.exception(
+                    "OAuth cleanup failed after removing MCP server '%s' from config",
+                    name,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Server '{name}' was removed from config, but OAuth cleanup raised an error: {exc}",
+                ) from exc
+            return True
 
     if not await asyncio.to_thread(_run):
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")

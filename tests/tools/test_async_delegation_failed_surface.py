@@ -61,3 +61,51 @@ def test_other_sessions_and_old_failures_stay_out():
 
     assert ad.failed_delegations_for_session("ui-1", "agent-1") == []
     assert ad.failed_delegations_for_session() == []
+
+
+@pytest.fixture
+def reconcile_calls(monkeypatch):
+    import hermes_state_schema
+
+    calls = []
+    real = hermes_state_schema.reconcile_state_schema
+
+    def counting(conn):
+        calls.append(1)
+        return real(conn)
+
+    monkeypatch.setattr(hermes_state_schema, "reconcile_state_schema", counting)
+    return calls
+
+
+def test_the_schema_is_reconciled_once_per_database_not_per_poll(reconcile_calls):
+    # subagent.list polls this every few seconds per open chat; replaying SCHEMA_SQL on every
+    # connection put an executescript (and a wait on state.db writers) on that path.
+    for ui in ("ui-a", "ui-b", "ui-c", "ui-d"):
+        assert ad.failed_delegations_for_session(ui) == []
+    assert len(reconcile_calls) == 1
+
+
+def test_a_replaced_database_is_reconciled_again(home, reconcile_calls):
+    assert ad.failed_delegations_for_session("ui-a") == []
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        (home / f"state.db{suffix}").unlink(missing_ok=True)
+    assert ad.failed_delegations_for_session("ui-b") == []
+    assert len(reconcile_calls) == 2
+
+
+def test_repeat_polls_are_cached_until_the_ledger_changes(monkeypatch):
+    _delegation("d-fail", status="error", goal="audit", result={"status": "error", "error": "boom"})
+    connects = []
+    real_connect = ad._connect
+    monkeypatch.setattr(ad, "_connect", lambda: connects.append(1) or real_connect())
+
+    first = ad.failed_delegations_for_session("ui-1")
+    assert ad.failed_delegations_for_session("ui-1") == first
+    assert len(connects) == 1
+
+    first[0]["goal"] = "mutated by a caller"
+    assert ad.failed_delegations_for_session("ui-1")[0]["goal"] == "audit"
+
+    _delegation("d-fail-2", status="timeout", goal="scan", result={"status": "timeout", "error": "slow"})
+    assert [r["delegation_id"] for r in ad.failed_delegations_for_session("ui-1")] == ["d-fail-2", "d-fail"]

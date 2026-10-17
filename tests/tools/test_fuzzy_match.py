@@ -423,6 +423,46 @@ class TestEscapeDriftGuard:
         assert count == 1
         assert strategy == "exact"
 
+    @pytest.mark.parametrize(
+        ("content", "expected_count", "expected_error"),
+        [
+            (
+                'def escaped():\n' + r'    pattern  = r"\\d+"' + '\n'
+                + 'def plain():\n' + r'    pattern = r"\d+"' + '\n',
+                1,
+                None,
+            ),
+            (
+                'def escaped_one():\n' + r'    pattern  = r"\\d+"' + '\n'
+                + 'def escaped_two():\n' + r'    pattern   = r"\\d+"' + '\n'
+                + 'def plain():\n' + r'    pattern = r"\d+"' + '\n',
+                0,
+                "Found 2 matches",
+            ),
+        ],
+        ids=["unique_escape_preserving_match", "ambiguous_escape_preserving_matches"],
+    )
+    def test_escape_drift_correction_does_not_preempt_original_anchor(
+        self, content, expected_count, expected_error,
+    ):
+        """Regression for #137428: preserve a viable escaped anchor's strategy result."""
+        old = r'pattern = r"\\d+"'
+        new = "pattern = None"
+
+        result, count, strategy, error = fuzzy_find_and_replace(content, old, new)
+
+        assert count == expected_count
+        if expected_error:
+            assert error is not None and error.startswith(expected_error)
+        else:
+            assert error is None
+        if expected_error:
+            assert result == content
+        else:
+            assert strategy == "whitespace_normalized"
+            assert "pattern = None" in result
+            assert r'pattern = r"\d+"' in result
+
 
     def test_no_drift_check_when_new_string_lacks_suspect_chars(self):
         """Fast-path: if new_string has no \\' or \\", guard must not

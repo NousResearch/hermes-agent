@@ -19,6 +19,8 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
+from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+
 logger = logging.getLogger(__name__)
 
 POLL_S = 30.0
@@ -84,6 +86,14 @@ async def runtime_downgrade_watcher(runner, *, poll_s: float = POLL_S, skew_fn=N
         if seen >= _CONFIRMATIONS:
             logger.error("%s", reason)
             runner._exit_reason = reason
+            # A confirmed downgrade past a free update lock means the tree on disk is
+            # the operator's settled choice. Exit with the service-restart code so the
+            # supervisor relaunches and the settled tree serves — systemd's
+            # Restart=always already does this on any exit; the launchd plist
+            # (KeepAlive SuccessfulExit=false) parks exit 0, which would leave the
+            # gateway down until a human notices. The stop itself stays a plain stop:
+            # the relaunch runs whatever release is on disk, not this process.
+            runner._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
             # Detached, strongly held: stop() cancels every background task, this watcher included,
             # and a stop awaited from here would be cancelled with it (the #12875 class).
             runner._runtime_downgrade_stop = asyncio.get_running_loop().create_task(_stop_or_exit(runner))

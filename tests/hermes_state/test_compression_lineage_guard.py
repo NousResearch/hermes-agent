@@ -158,6 +158,66 @@ def test_compression_lineage_includes_continuation_with_foreign_markers(
     ]
 
 
+@pytest.mark.parametrize("marker", ["_branched_from", "_delegate_from"])
+@pytest.mark.parametrize("view", ["lineage", "chain", "export"])
+def test_compressed_fork_keeps_its_own_continuation(db: SessionDB, marker, view) -> None:
+    """Fork provenance stops the ancestor walk, not that fork's own continuation."""
+    db.create_session("origin", source="cli")
+    db.append_message("origin", "user", "origin only")
+    db.end_session("origin", "compression")
+    provenance = {marker: "origin"}
+    db.create_session("fork", source="cli", parent_session_id="origin", model_config=provenance)
+    db.append_message("fork", "user", "branch question")
+    # An older explicit child must not win the chronological lineage walk.
+    db.create_session("sibling", source="cli", parent_session_id="fork", model_config={marker: "fork"})
+    db.append_message("sibling", "user", "sibling only")
+    assert db.try_acquire_compression_lock("fork", "audit")
+    db.publish_compression_child(
+        parent_session_id="fork", child_session_id="tip", source="cli",
+        model_config=provenance, messages=[{"role": "assistant", "content": "continued branch"}],
+        compression_lock_holder="audit",
+    )
+
+    if view == "lineage":
+        assert db.get_compression_lineage("fork") == db.get_compression_lineage("tip") == ["fork", "tip"]
+        assert db.get_compression_lineage("origin") == ["origin"]
+        assert db.get_compression_lineage("sibling") == ["sibling"]
+    elif view == "chain":
+        assert db.get_compression_chain("fork") == ["fork", "tip"]
+        assert db.get_compression_tip("fork") == db.get_compression_tip("tip") == "tip"
+        assert db.get_compression_chain("origin") == ["origin"]
+    else:
+        for session_id in ("fork", "tip"):
+            exported = db.export_session_lineage(session_id)
+            assert [m["content"] for m in exported["messages"]] == ["branch question", "continued branch"]
+
+
+@pytest.mark.parametrize("marker", ["_branched_from", "_delegate_from"])
+def test_resume_compressed_fork_follows_inherited_provenance(db: SessionDB, marker) -> None:
+    """Both the compression projection and legacy message-bearing walk stay in the fork."""
+    db.create_session("origin", source="cli")
+    provenance = {marker: "origin"}
+    db.create_session("fork", source="cli", parent_session_id="origin", model_config=provenance)
+    db.append_message("fork", "user", "branch question")
+    assert db.try_acquire_compression_lock("fork", "audit")
+    db.publish_compression_child(
+        parent_session_id="fork", child_session_id="tip", source="cli",
+        model_config=provenance, messages=[{"role": "assistant", "content": "continued branch"}],
+        compression_lock_holder="audit",
+    )
+    assert db.resolve_resume_session_id("fork") == db.resolve_resume_session_id("tip") == "tip"
+
+    # Legacy continuations can hold newer messages without a compression end stamp.
+    db.create_session("legacy-tip", source="cli", parent_session_id="tip", model_config=provenance)
+    db.append_message("legacy-tip", "user", "latest branch question")
+    for parent in ("fork", "tip", "legacy-tip"):
+        db.create_session(f"sibling-{parent}", source="cli", parent_session_id=parent,
+                          model_config={marker: parent})
+        db.append_message(f"sibling-{parent}", "user", "sibling only")
+    assert db.resolve_resume_session_id("fork") == db.resolve_resume_session_id("tip") == "legacy-tip"
+    assert db.resolve_resume_session_id("origin") == "origin"
+
+
 def test_reopen_orphaned_compression_session_fails_closed_with_active_lease(
     db: SessionDB,
 ) -> None:

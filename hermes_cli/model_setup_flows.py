@@ -869,19 +869,24 @@ _SPECIAL_MODEL_LISTS = {
 
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
-    """Model list for an API-key provider: models.dev registry (cached, agentic/tool-capable filter)
-    → curated static list (offline insurance) → provider-owned catalog (``ProviderProfile.fetch_models``
-    merged with ``fallback_models`` exactly like the ``/model`` picker's
-    ``models._profile_live_catalog``; generic /models probe for unregistered providers).
-    Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
+    """Authoritative profiles use their live catalog, with cached/curated outage fallbacks.
+
+    Other profiles prefer models.dev, then curated entries, then profile-owned discovery
+    merged with fallbacks. Providers in ``_SPECIAL_MODEL_LISTS`` own their resolution.
+    """
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, probe_profile_catalog
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+    from hermes_cli.models_profile_catalog import probe_profile_catalog
+    from providers import get_provider_profile
     curated = _PROVIDER_MODELS.get(provider_id, [])
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
     special = _SPECIAL_MODEL_LISTS.get(provider_id)
     if special is not None:
         return special(pconfig, curated, api_key_for_probe, effective_base)
+    profile = get_provider_profile(provider_id)
+    if profile is not None and profile.authoritative_model_catalog:
+        return probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base) or []
     # models.dev first (tool-capable, noise-filtered), merged with curated so newly added
     # models still appear.
     model_list = _models_dev_merged(provider_id, curated)
@@ -892,8 +897,6 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         # Substantial curated list — use it directly, skip live probe
         _show_curated(curated)
         return curated
-    from providers import get_provider_profile
-    profile = get_provider_profile(provider_id)
     if profile is not None:
         # The profile owns endpoint (models_url), headers and response shape. Same probe as the
         # ``/model`` picker; when neither live nor fallback_models yields rows, the curated
@@ -1167,7 +1170,7 @@ def _model_flow_plugin_provider(config, provider_id, current_model=""):
     """Generic ``hermes model`` flow for a registered plugin profile: credential step by auth_type,
     catalog via ``merge_profile_catalog`` (live ``fetch_models()`` ⊕ ``fallback_models``), persist."""
     from hermes_cli.auth_plugin_providers import plugin_profile
-    from hermes_cli.models import merge_profile_catalog
+    from hermes_cli.models_profile_catalog import merge_profile_catalog
     del config
     profile = plugin_profile(provider_id)
     creds = _PLUGIN_FLOW_CREDENTIALS[profile.auth_type](provider_id, profile)

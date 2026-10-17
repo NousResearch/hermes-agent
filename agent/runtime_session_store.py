@@ -44,6 +44,14 @@ class WorkerPersistenceError(RuntimeError):
     pass
 
 
+def _owner_stalled(exc):
+    """The owner gave no answer in time or was not ready (a stalled event loop, a restart), as
+    opposed to an answer it sent. A terminally absent owner also lands here; it costs one window."""
+    if isinstance(exc, WorkerPersistenceError):
+        return str(exc) == 'owner_unavailable'  # discovery not 'ready' within its 5 s
+    return isinstance(exc, (TimeoutError, ConnectionError))
+
+
 def _caller_summary(limit=8):
     """module:function:line of the frames above this store (its own frames skipped), never
     locals or argument values: best-effort callers swallow the guard's raise (#139029)."""
@@ -196,7 +204,8 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     """Synchronous durable results with a private byte-bounded retry journal.
 
     A failed write remains pending, and failure is sticky until explicit retry or
-    adoption. Local queue acceptance is never returned as canonical commit.
+    adoption; a write the owner does not answer in time is first resent for
+    ``owner_patience_s``. Local queue acceptance is never returned as canonical commit.
     Pending journals live outside age-pruned cache trees.
     """
     def __init__(self, rpc, scope, outbox_dir, adopted=None, *, max_bytes=4 * 1024 * 1024):
@@ -312,7 +321,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             try:
                 while self.journal['pending']:
                     entry = self.journal['pending'][0]
-                    result = self.rpc('worker.persist', **self.scope, **entry)
+                    result = self._persist(entry)
                     candidate = dict(self.journal, pending=self.journal['pending'][1:])
                     candidate = self._compression_receipt_journal(candidate, result)
                     self._save(candidate)
@@ -320,10 +329,33 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                     self.journal = candidate
                     results.append(result)
             except Exception as exc:
-                self.failure = str(exc)
+                self.failure = str(exc) or type(exc).__name__  # a bare TimeoutError() must stay sticky
                 raise
             self.failure = None
             return results
+
+    # Fixed window: covers owner loop stalls of 10-20 s (#139011). A write gives up after at most
+    # this plus one call's own timeouts (discovery, identify, connect, 20 s receipt).
+    owner_patience_s = 60.0
+
+    def _persist(self, entry):
+        """Send one journal entry, resending it while the owner gives no answer in time.
+
+        The owner returns the stored receipt for an exact (execution, sequence, digest) retry, so a
+        resend never applies twice. An answer the owner sent (an error included) is never retried.
+        """
+        import time
+        deadline, delay = time.monotonic() + self.owner_patience_s, 1.0
+        while True:
+            try:
+                return self.rpc('worker.persist', **self.scope, **entry)
+            except (WorkerPersistenceError, TimeoutError, ConnectionError) as exc:
+                if not _owner_stalled(exc) or time.monotonic() + delay > deadline:
+                    raise
+                logger.warning('worker persistence %s #%s: owner gave no answer (%s); resending in %.0fs',
+                               entry['operation'], entry['sequence'], str(exc) or type(exc).__name__, delay)
+            time.sleep(delay)
+            delay = min(delay * 2, 8.0)
 
     def adopt(self, epoch):
         """Install only a separately verified worker.adopt result; never self-adopt."""

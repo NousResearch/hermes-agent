@@ -32,6 +32,7 @@ def test_rotation_preserves_admission_identity_and_lost_ack_fifo(tmp_path):
                 raise TimeoutError('lost publication reply')
 
             store.rpc = lost_ack
+            store.owner_patience_s = 0  # every reply is lost: no resend window
             with pytest.raises(TimeoutError, match='lost publication reply'):
                 store.publish_compression_child(parent_session_id=parent, child_session_id=child,
                     source='cli', messages=[{'role': 'assistant', 'content': 'SUMMARY'}],

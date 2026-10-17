@@ -662,6 +662,18 @@ def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):
 def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = _job_profile(job_id, profile)
     job = _found(_call_cron_for_profile(selected, "resolve_job_ref", job_id))
+    from cron.jobs import _is_recoverable_error_job, is_terminal_job
+    import shlex
+
+    if is_terminal_job(job) and not _is_recoverable_error_job(job):
+        # A terminal refusal is not claim contention. Do not manufacture a
+        # failed execution attempt for a job that needs explicit new intent.
+        if (job.get("schedule") or {}).get("kind") == "once":
+            command = shlex.join(["hermes", "-p", selected, "cron", "resume", job["id"], "--run-now"])
+            recovery = f"To explicitly create one new occurrence, run: {command}"
+        else:
+            recovery = "This series has finished; create a new job to run it again."
+        raise HTTPException(status_code=409, detail=f"Job is {job['state']} (terminal). {recovery}")
     # Never expose the job as due before claiming it: the built-in ticker and
     # external/manual fire paths share one durable claim, so only one executes
     # this run even racing across processes. Active jobs keep the legacy call

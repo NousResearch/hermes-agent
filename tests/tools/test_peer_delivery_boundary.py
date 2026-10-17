@@ -2,6 +2,10 @@
 
 The mailbox keeps queued -> claimed -> settled on disk; anything surfaced to a
 sender says queued -> running -> delivered.
+
+Admission belongs to the profile authority (§5.2), so these tests seed the receipt the
+boundary reads instead of standing up a gateway: what §4.8 pins is the translation of the
+words already on disk, whoever wrote them.
 """
 from __future__ import annotations
 
@@ -19,6 +23,15 @@ def owner(tmp_path):
                 lease_id="lease", live_session_id="live")
 
 
+def _seed(tmp_path, delivery_id, status="queued", **fields):
+    """Write the mailbox receipt a delivery leaves behind, in the given storage state."""
+    record = dict(delivery_id=delivery_id, id=delivery_id, status=status, message="hello",
+                  created_at=1, sequence=1, **fields)
+    with mailbox._locked(tmp_path) as root:
+        mailbox._write(root / f"{delivery_id}.json", record)
+    return record
+
+
 def test_public_status_maps_only_the_storage_words():
     assert mailbox.public_delivery_status("claimed") == "running"
     assert mailbox.public_delivery_status("settled") == "delivered"
@@ -29,10 +42,11 @@ def test_public_status_maps_only_the_storage_words():
 
 def test_public_read_translates_without_touching_storage(tmp_path, owner):
     delivery_id = "b" * 32
-    mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id=delivery_id)
+    _seed(tmp_path, delivery_id, **owner)
     assert mailbox.read_public_delivery_result(tmp_path, delivery_id)["status"] == "queued"
 
-    assert mailbox.claim_pending_delivery(tmp_path, owner) is not None
+    # The turn that owns the conversation claims the record; the storage word stays "claimed".
+    _seed(tmp_path, delivery_id, status="claimed", **owner)
     assert mailbox.read_delivery_result(tmp_path, delivery_id)["status"] == "claimed"
     public = mailbox.read_public_delivery_result(tmp_path, delivery_id)
     assert public["status"] == "running" and public["message"] == "hello"
@@ -51,8 +65,10 @@ def test_wait_live_dm_prints_enum_b_while_disk_keeps_the_storage_word(
 ):
     delivery_id = "d" * 32
     monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
-    mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id=delivery_id)
-    mailbox.claim_pending_delivery(tmp_path, owner)
+    # No authority runs in this temp home: answer the owner lookup from the temp profile
+    # itself rather than paying discovery's timeout on every poll.
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: None)
+    _seed(tmp_path, delivery_id, status="claimed", **owner)
 
     assert bot_mode_dm._wait_live_dm(str(tmp_path), delivery_id) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -70,8 +86,7 @@ def test_wait_live_dm_prints_enum_b_while_disk_keeps_the_storage_word(
 def test_failed_delivery_keeps_its_own_word(tmp_path, owner, monkeypatch, capsys):
     delivery_id = "e" * 32
     monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
-    mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id=delivery_id)
-    mailbox.claim_pending_delivery(tmp_path, owner)
+    _seed(tmp_path, delivery_id, status="claimed", **owner)
     mailbox.complete_delivery(tmp_path, delivery_id, status="failed", error="boom")
     assert bot_mode_dm._wait_live_dm(str(tmp_path), delivery_id) == 1
     payload = json.loads(capsys.readouterr().out)

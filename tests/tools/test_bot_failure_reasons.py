@@ -48,6 +48,7 @@ def test_closed_vocabulary_contains_every_code():
         "context_overflow",
         "missing_config",
         "model_unavailable",
+        "target_scope_unresolved",
         "unknown",
     }
     # constants match their string values

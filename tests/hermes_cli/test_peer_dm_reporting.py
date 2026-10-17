@@ -34,6 +34,10 @@ def _run(monkeypatch, capsys, *, base="http://192.168.2.55:8642", raise_on_post=
     # under test - which failure shape reaches which report - stays fast.
     monkeypatch.setattr(peer_mod, "_DM_TIMEOUT_SLACK_S", 0.1)
     monkeypatch.setattr(peer_mod, "_DM_REPLAY_TIMEOUT_S", 0.1)
+    # The wait budget itself is not under test, and `peer.dm_wait_seconds` is a DEFAULT_CONFIG
+    # key — so the shipped 600 s would be resolved from config whatever DM_TIMEOUT_S says, and
+    # this suite would sit out the whole budget. Pin the resolved budget to the test's 0.5 s.
+    monkeypatch.setattr(peer_mod, "_resolve_wait_seconds", lambda _args: 0.5)
     if raise_on_post is not None:
         def _request(url, key, **kwargs):
             raise raise_on_post

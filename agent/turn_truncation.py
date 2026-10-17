@@ -436,6 +436,13 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             force=True, diagnostic=True,
         )
         _final_response = _TRUNCATED_FINAL
+    # This path never reaches finalize_turn, so without this line agent.log shows no end of the
+    # turn at all (#105771): the _vprint copy above only reaches stdout.
+    logger.error(
+        "Truncated tool call: giving up after %d retries (reason=%s stream_stub=%s max_output_tokens=%s) session=%s",
+        st.truncated_tool_call_retries, _failure, st.is_stub, agent._ephemeral_max_output_tokens,
+        getattr(agent, "session_id", None),
+    )
     agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)

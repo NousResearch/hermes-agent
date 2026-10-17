@@ -60,10 +60,10 @@ import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode 
 import {
   $fileBrowserOpen,
   $sidebarOpen,
+  closeFileBrowserPane,
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
-  fileBrowserSide,
   setFileBrowserOpen,
   setSidebarOpen,
   SIDEBAR_DEFAULT_WIDTH,
@@ -771,9 +771,7 @@ registerPaneOpener('sessions', () => {
     setSidebarOpen(true)
   }
 })
-registerPaneCloser('files', () =>
-  paneRootSide('files') === fileBrowserSide() ? setFileBrowserOpen(false) : dismissTreePane('files')
-)
+registerPaneCloser('files', closeFileBrowserPane)
 
 // ---------------------------------------------------------------------------
 

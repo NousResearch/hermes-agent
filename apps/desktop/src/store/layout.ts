@@ -2,11 +2,12 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { allPaneIds, type GroupNode } from '@/components/pane-shell/tree/model'
+import { allPaneIds, findGroupOfPane, type GroupNode } from '@/components/pane-shell/tree/model'
 import {
   $collapsedTreeSides,
   $hiddenTreePanes,
   $layoutTree,
+  activateTreePane,
   layoutHasRootSide,
   paneRootSide,
   restoreHiddenTreeSideTabs,
@@ -667,6 +668,32 @@ export function setFileBrowserOpen(open: boolean) {
   }
 
   revealNarrowPane(FILE_BROWSER_PANE_ID, open ? 'open' : 'close')
+}
+
+/** Close Files without folding a co-located plugin tab into the right rail.
+ * The Files toggle still owns the persisted open state. When another visible
+ * tab shares Files' root-side group, reopening that group makes Close apply
+ * to Files alone rather than its neighbouring plugin pane. */
+export function closeFileBrowserPane() {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, FILES_PANE_ID) : null
+  const keepSharedGroupVisible =
+    paneRootSide(FILES_PANE_ID) === fileBrowserSide() &&
+    Boolean(group && shownPanesInGroup(group).some(paneId => paneId !== FILES_PANE_ID))
+
+  setFileBrowserOpen(false)
+
+  if (keepSharedGroupVisible) {
+    setTreeSideCollapsed(fileBrowserSide(), false)
+
+    if (group) {
+      const nextPane = shownPanesInGroup(group).find(paneId => paneId !== FILES_PANE_ID)
+
+      if (nextPane) {
+        activateTreePane(group.id, nextPane)
+      }
+    }
+  }
 }
 
 // POSITIONAL right-side toggle. The titlebar button and ⌘J promise

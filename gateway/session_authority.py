@@ -32,6 +32,11 @@ _MARKER_RELEASE_WAIT_S = 60.0
 # True in the admitting task once ``admit_native``'s shielded ledger write began: a caller cancelled
 # after that may still see the row commit, so it must not release the media the write commits.
 native_write_started = ContextVar('native_write_started', default=False)
+# Set by the messaging ingress around ``admit_native``: True, or the busy caller's acceptance future.
+# Such an input is fenced by a later /stop or /new of its route (``fence_route``), and the future is
+# released once the input queues behind an earlier one of its chat, so a serial reader moves on
+# while acceptance itself still waits for the commit.
+messaging_admission = ContextVar('messaging_admission', default=None)
 
 
 @dataclass
@@ -123,6 +128,8 @@ class SessionAuthority:
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
         # that reserved it before the rotation commits on that key's current route instead.
         self.rotated_owners = {}
+        # Route key -> [lock, holder + waiters, stop fence] of the native admissions in flight (``_route_turn``).
+        self._route_turns = {}
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -384,10 +391,52 @@ class SessionAuthority:
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
         from gateway.session_ingress_media import capture_lease
-        with capture_lease():  # captured bytes are held from capture until commit or refusal
-            return await self._admit_native(event)
+        async with self._route_turn(event) as fence:
+            with capture_lease():  # captured bytes are held from capture until commit or refusal
+                return await self._admit_native(event, fence)
 
-    async def _admit_native(self, event):
+    @contextlib.asynccontextmanager
+    async def _route_turn(self, event):
+        """One route's inputs commit in the order they entered ``admit_native``: a photo's off-loop
+        capture must not let the chat's next text take the earlier FIFO position. asyncio's Lock is
+        FIFO and a cancelled waiter gives up only its own place, so a later input never overtakes an
+        earlier one still in flight. Other routes never wait; an unroutable event (refused by
+        ``prepare_native``) is not held. Yields the messaging input's fence check (else None)."""
+        ingress = messaging_admission.get()
+        messaging_admission.set(None)  # not inherited by the drain this admission schedules
+        try:
+            key = self.runner.session_store._generate_session_key(event.source)
+        except AttributeError:  # no source, or a duck-typed one without routing fields
+            key = None
+        if key is None:
+            yield None
+            return
+        entry = self._route_turns.setdefault(key, [asyncio.Lock(), 0, 0])
+        entry[1] += 1
+        arrived = entry[2]
+
+        def fence(_conn=None):
+            if entry[2] != arrived:
+                raise RuntimeStoreError('stale_generation', field='route',
+                                        detail='a /stop or /new of this chat came after this message')
+        if isinstance(ingress, asyncio.Future) and entry[1] > 1 and not ingress.done():
+            ingress.set_result(None)  # its FIFO position is fixed behind the earlier input
+        try:
+            async with entry[0]:
+                if ingress is not None:
+                    fence()
+                yield fence if ingress is not None else None
+        finally:
+            entry[1] -= 1
+            if not entry[1]:
+                del self._route_turns[key]
+
+    def fence_route(self, route):
+        """/stop and /new: the route's messaging input still capturing or waiting never commits."""
+        if (entry := self._route_turns.get(route)) is not None:
+            entry[2] += 1
+
+    async def _admit_native(self, event, fence=None):
         import json
         from gateway.session_envelope import prepare_native, restore_native_source
         self._require_admission_open()
@@ -415,7 +464,7 @@ class SessionAuthority:
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
             request_id=request_id, payload=payload,
-            authorize=session_retry_admission.compose(rewrite, self._admission_gate()),
+            authorize=session_retry_admission.compose(rewrite, self._admission_gate(fence)),
             raw=getattr(event, 'raw_message', None)),
             then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]))
 

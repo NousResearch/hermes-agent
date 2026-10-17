@@ -29,11 +29,15 @@ QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversat
 
 
 async def admit_message(authority, event):
+    from gateway.session_authority import messaging_admission
     accepted = busy_acceptance.get()
     busy_acceptance.set(None)  # the drain task this schedules must not inherit the busy caller's future
+    ingress = messaging_admission.set(True if accepted is None else accepted)
     try:
         receipt = await authority.admit_native(event)
     except RuntimeStoreError as exc:
+        if exc.reason == 'stale_generation' and exc.field == 'route':
+            return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
         if exc.reason == 'invalid_params' and exc.field:
             # Refused before commit (_validate_native): a refusal notice instead of a generic turn error.
             # The reply reaches the whole chat, so only content clauses are named; trust and provenance
@@ -45,6 +49,8 @@ async def admit_message(authority, event):
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
         return QUEUE_FULL_REPLY
+    finally:
+        messaging_admission.reset(ingress)
     if receipt.status == 'terminal':
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
@@ -384,7 +390,9 @@ async def deliver_response(adapter, event, session_key, response):
 
 async def dispatch_shared_busy(adapter, event, session_key):
     """Serial receive loops (IRC, Signal) await this before reading their next frame, so return
-    once the follow-up is committed to the FIFO; a tracked observer delivers its one reply."""
+    once the follow-up is committed to the FIFO, or queued behind an earlier input of its chat still
+    capturing (its position is then fixed; acceptance still waits for the commit); a tracked
+    observer delivers its one reply."""
     delivery_event = replace(event, source=replace(event.source))
     accepted = asyncio.get_running_loop().create_future()
 

@@ -41,6 +41,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
+from gateway.platforms.webhook_mcp_events import handle_mcp_event_control, mcp_event_delivery_id
 from gateway.response_filters import is_autonomous_silence_response
 
 logger = logging.getLogger(__name__)
@@ -665,6 +666,9 @@ class WebhookAdapter(BasePlatformAdapter):
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
+        mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile)
+        if mcp_control is not None:
+            return mcp_control
         headers = request.headers
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
@@ -694,8 +698,9 @@ class WebhookAdapter(BasePlatformAdapter):
             # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
             if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
+        delivery_id = mcp_event_delivery_id(route_config, payload) or headers.get(
+            "X-GitHub-Delivery", headers.get("svix-id", headers.get(
+                "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         coalesce = route_config.get("coalesce")

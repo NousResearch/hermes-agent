@@ -997,6 +997,53 @@ mcp_servers:
 
 The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
 
+## MCP Events (experimental)
+
+Some MCP servers can notify an agent when something happens upstream (a new email, an incident, a
+new item in a feed) through the `events/*` methods of the
+[MCP events design sketch](https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md).
+The proposal is still a working-group draft. Hermes implements its **webhook** delivery mode: the
+server POSTs each event to the gateway's [webhook listener](../messaging/webhooks.md), and every
+event starts an agent run like any other webhook route.
+
+Turn it on per server, and tell Hermes the public HTTPS address of the webhook listener (servers
+reject plain-HTTP callbacks, so put a TLS-terminating reverse proxy or tunnel in front of port 8644):
+
+```yaml
+mcp_servers:
+  ambush:
+    url: "https://example.com/mcp"
+    events: true          # registers the event utility tools for this server
+
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      public_url: "https://hermes.example.com"
+```
+
+The server then gets three more utility tools:
+
+- `list_events`: the event types the server offers, and your current subscriptions to them
+- `subscribe_event`: subscribe with the event's arguments, what to do when it arrives
+  (`instructions`) and where each run's result goes (`deliver`, `deliver_chat_id`); you are asked to
+  approve every subscription, since it starts unattended agent runs
+- `unsubscribe_event`: cancel a subscription
+
+Each subscription is stored as a dynamic webhook route (`hermes webhook list` shows it) with its own
+`whsec_` signing secret. Hermes answers the server's signed verification challenge, deduplicates
+events by `eventId`, and refreshes the subscription before the lifetime the server granted runs out
+while the MCP connection is up (and again whenever it reconnects). If the server ends a
+subscription, Hermes removes the route and tells the `deliver` target. Events only arrive while
+`hermes gateway run` is running. Event payloads are external data: event runs use the same
+constrained webhook toolset as other webhook routes.
+The listener's per-route rate limit (`platforms.webhook.extra.rate_limit`, 30 a minute by default)
+applies to event deliveries too; raise it for a busy event type, since a server may not retry a
+rejected delivery.
+
+Not supported yet: the `poll` and `push` delivery modes, and subscriptions made from a secondary
+profile under `gateway.multiplex_profiles`.
+
 ## Running Hermes as an MCP server
 
 In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.

@@ -76,9 +76,12 @@ class GatewayBackgroundMixin:
                 try:
                     enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
                 except Exception as e:
-                    logger.warning("Background task vision enrichment failed: %s", e)
+                    logger.warning("Background task vision enrichment failed: %s", e, exc_info=True)
 
             def run_sync():
+                from gateway.session_context import declare_stateless_channel
+                # This finite /bg session has no route for a completion after its final reply.
+                declare_stateless_channel()
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],

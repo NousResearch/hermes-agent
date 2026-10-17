@@ -213,7 +213,7 @@ async def test_captured_updates_through_build_message_event(monkeypatch):
     Service message with ``forum_topic_created`` followed by an adjacent thread-less opener:
     the event the runner sees must carry the created topic as its thread id.
     """
-    async with connected(monkeypatch) as (adapter, app, delivered):
+    async with connected(monkeypatch) as (adapter, app, _delivered):
         await adapter._handle_forum_topic_created(topic_created(app.bot), None)
         event = adapter._build_message_event(opener(app.bot).message, MessageType.TEXT, update_id=11)
 

@@ -581,7 +581,7 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
-        return None, {}, not_deferrable_error(name)
+        return None, {}, not_deferrable_error(name, raw_args)
     return name, raw_args, None
 
 

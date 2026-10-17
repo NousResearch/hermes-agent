@@ -210,16 +210,26 @@ def local_batch_error(entries: list[dict[str, Any]]) -> str:
     )
 
 
-def not_deferrable_error(name: str) -> str:
+def not_deferrable_error(name: str, arguments: Optional[dict[str, Any]] = None) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
     cited by its bare suffix instead of the full ``mcp__<server>__{tool}`` name. Telling
-    the second group 'call it directly' is the opposite of what they must do."""
+    the second group 'call it directly' is the opposite of what they must do.
+    When the caller has the entry's *arguments* (the bridge dispatch path does), the
+    directly-listed branch echoes them as a ready-to-reissue direct call — the retry then
+    costs no reasoning step (#137639); the unknown-name branch ignores them."""
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
+        retry = ""
+        if arguments is not None:
+            echo = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+            if len(echo) > _ECHO_ARGS_MAX_CHARS:
+                echo = "{...}"  # keep the correction readable; the model still has its own arguments
+            retry = (" Re-issue it directly with the same arguments: "
+                     f'{{"name":{json.dumps(name, ensure_ascii=False)},"arguments":{echo}}}')
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
-                "Call it directly instead of via tool_call.")
+                "Call it directly instead of via tool_call." + retry)
     suffix = f"__{name}"
     try:
         from tools.registry import registry

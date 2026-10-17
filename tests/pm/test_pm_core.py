@@ -19,7 +19,7 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, compose_env
 from pm.packages import BinaryPackage, Venv
 from pm.store import Store, current_target
-from tests.pm._fixtures import make_tar, served as served
+from tests.pm._fixtures import make_tar, served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 class FakeTool(BinaryPackage):
@@ -934,6 +934,9 @@ def test_store_path_dirs_include_node_npm_when_installed(tmp_path, monkeypatch):
     dirs = _store_path_dirs()
     assert any(d.endswith("node-1") for d in dirs), dirs
     assert any(d.endswith("npm-1") for d in dirs), dirs
+    # npm extends node, and node's dir also holds node's bundled npm: npm's dir must win.
+    npm_dir = next(i for i, d in enumerate(dirs) if d.endswith("npm-1"))
+    assert npm_dir < next(i for i, d in enumerate(dirs) if d.endswith("node-1")), dirs
 
     # And the split holds: uv, still internal, contributes nothing even
     # if a (fabricated) fact exists for it.

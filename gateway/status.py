@@ -429,6 +429,7 @@ def terminate_pid(
         result = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=10, creationflags=windows_hide_flags(),
+            check=False,
         )
     except FileNotFoundError:
         os.kill(pid, signal.SIGTERM)
@@ -528,6 +529,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
             result = subprocess.run(
                 ["ps", "-p", str(pid), "-o", "command="],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                check=False,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -567,8 +569,13 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
         return None
-    # Gateway-dedicated entrypoints carry no subcommand to inspect.
+    # Gateway-dedicated entrypoints carry no subcommand to inspect (``python -m gateway.run`` is the
+    # module spelling of the same script: its PID record renders argv as ``gateway/run.py``, and a
+    # liveness probe that read the live ``-m`` cmdline as "not a gateway" made every fixture-launched
+    # standalone owner invisible to the multiplex preflight).
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
+        return "run"
+    if any(tokens[i] == "-m" and tokens[i + 1] == "gateway.run" for i in range(len(tokens) - 1)):
         return "run"
     # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI; without this,
     # `gateway run --replace` does not recognise it as a running gateway, skips the
@@ -666,9 +673,9 @@ def _profile_name_for_home(profile_home: Path) -> Optional[str]:
 
 
 def profile_flag_value(command: str) -> Optional[str]:
-    """The ``-p``/``--profile`` argument of a command line, or None. Token equality is the only safe
-    profile match: a substring test lets ``-p ops`` claim (and ``gateway stop`` SIGTERM) ``-p ops-2``."""
-    tokens = command.split()
+    """Lowercased ``-p``/``--profile`` argument of a case-preserved command line (a bootstrap's interpreter
+    ``-P`` is no ``-p``, #127865), or None. Token equality: ``-p ops`` must not claim ``-p ops-2``."""
+    tokens = [t.lower() for t in inline_bootstrap_argv(command.split()) or command.split()]
     for i, tok in enumerate(tokens):
         if tok.startswith("--profile="):
             return tok.partition("=")[2]
@@ -713,7 +720,7 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     profile_name = _profile_name_for_home(profile_home)
     home_lc = str(profile_home).lower().replace("\\", "/").rstrip("/")
     if profile_name is not None and profile_name != "default":
-        if profile_flag_value(command_lc) == profile_name.lower():
+        if profile_flag_value(command) == profile_name.lower():
             return True
         return command_line_names_hermes_home(command_lc, home_lc)
     # Default profile: accept unless argv names ANOTHER profile (any spelling the CLI pre-parser
@@ -722,7 +729,7 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     # arrives via the env). ``--profile default`` names this profile: a hand-written launchd plist
     # mirrors the named-profile service shape, and rejecting it reported a live default gateway
     # as stopped (#100817).
-    if profile_flag_value(command_lc) not in (None, "default"):
+    if profile_flag_value(command) not in (None, "default"):
         return False
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
@@ -902,12 +909,14 @@ def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int
 def _cleanup_invalid_pid_path(
     pid_path: Path, *, cleanup_stale: bool, unlink_lock: bool = True
 ) -> None:
-    """Force-unlink a stale PID file + sibling lock (lock confirmed inactive, so no pid check).
-    ``unlink_lock=False`` drops only the PID file: the caller saw the lock HELD."""
+    """Force-unlink a stale PID file (lock confirmed inactive, so no pid check). The sibling lock
+    file is never unlinked, held or not (``unlink_lock`` is therefore moot): another contender may
+    already have opened that inode, and a fresh one would let two processes each hold "the" lock."""
     if not cleanup_stale:
         return
     _clear_running_pid_cache()
-    for path in (pid_path, _get_gateway_lock_path(pid_path)) if unlink_lock else (pid_path,):
+    # Keep the inode even when stale: another contender may already have opened it.
+    for path in (pid_path,):
         with contextlib.suppress(Exception):
             path.unlink(missing_ok=True)
 
@@ -972,53 +981,24 @@ def _release_file_lock(handle) -> None:
 
 
 def acquire_gateway_runtime_lock() -> bool:
-    """Claim the cross-process runtime lock; the OS releases it if the process dies."""
-    global _gateway_lock_handle
-    if _gateway_lock_handle is not None:
-        return True
-    path = _get_gateway_lock_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Reserve the launch profile without unlinking inaccessible lock inodes."""
+    from gateway.runtime_ownership import process_ownership, OwnershipConflict
     try:
-        handle = open(path, "a+", encoding="utf-8")
-    except PermissionError:
-        # Stale root-owned lock (launchd session that ran as root): the directory owner can
-        # unlink it; retry once with a fresh file.
-        try:
-            path.unlink()
-            handle = open(path, "a+", encoding="utf-8")
-        except OSError:
-            return False
-    if not _try_acquire_file_lock(handle):
-        handle.close()
+        process_ownership.reserve([_get_process_hermes_home()])
+    except (OwnershipConflict, OSError):
         return False
-    handle.seek(0)
-    handle.truncate()
-    json.dump(_build_pid_record(), handle)
-    handle.flush()
-    with contextlib.suppress(OSError):
-        os.fsync(handle.fileno())
-    _gateway_lock_handle = handle
     _clear_running_pid_cache()
     return True
 
-
 def release_gateway_runtime_lock() -> None:
-    """Release the gateway runtime lock when owned by this process."""
-    global _gateway_lock_handle
-    handle, _gateway_lock_handle = _gateway_lock_handle, None
-    if handle is None:
-        return
-    _release_file_lock(handle)
-    with contextlib.suppress(OSError):
-        handle.close()
+    """Release only this process's profile reservations, never their lock files."""
+    from gateway.runtime_ownership import process_ownership
+    process_ownership.close()
     _clear_running_pid_cache()
 
-
 def owns_gateway_runtime_lock() -> bool:
-    """True when THIS process holds the runtime lock. ``is_gateway_runtime_lock_active`` answers
-    "does anyone?"; re-probing our own flock succeeds on POSIX, so only the handle discriminates."""
-    return _gateway_lock_handle is not None
-
+    from gateway.runtime_ownership import process_ownership
+    return process_ownership.owns(_get_process_hermes_home())
 
 def _probe_lock_file(handle) -> bool:
     """True when another process holds the lock (a won probe is released); closes ``handle``."""
@@ -1035,16 +1015,15 @@ def _probe_lock_file(handle) -> bool:
 def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     """True when some process currently owns the gateway runtime lock."""
     resolved_lock_path = lock_path or _get_gateway_lock_path()
-    if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
+    if owns_gateway_runtime_lock() and resolved_lock_path == _get_gateway_lock_path():
         return True
     if not resolved_lock_path.exists():
         return False
     try:
         handle = open(resolved_lock_path, "a+", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock (see acquire_gateway_runtime_lock): report inactive.
-        _unlink_quietly(resolved_lock_path)
-        return False
+        # Unknown ownership is not permission to delete a potentially held inode.
+        return True
     return _probe_lock_file(handle)
 
 
@@ -1110,7 +1089,7 @@ def _prepare_runtime_status_update(
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    multiplex_standalone_reason: Any = _UNSET,
+    parked_profiles: Any = _UNSET, multiplex_standalone_reason: Any = _UNSET,
     platform_metrics: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
@@ -1148,6 +1127,8 @@ def _prepare_runtime_status_update(
             ("active_agents", active_agents, parse_active_agents),
             ("active_work", active_work, lambda v: list(v) if v else None),
             ("served_profiles", served_profiles, lambda v: list(v or [])),
+            # Profiles the multiplexer could not serve, name -> reason; clients fail fast on them.
+            ("parked_profiles", parked_profiles, lambda v: {str(k): str(r) for k, r in dict(v or {}).items()}),
             ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
             ("session_store", session_store, _coerce_session_store),
         ))
@@ -1277,8 +1258,8 @@ def derive_gateway_drainable(*, gateway_running: bool, gateway_state: Any) -> bo
 @dataclass(frozen=True)
 class GatewayLiveness:
     """Resolved gateway liveness for one dashboard surface. ``source``: which ladder rung answered
-    (logging/tests only -- never branch product behavior on it). ``probe_error``: a rung raised;
-    lets fail-open callers tell "down" from "unknown"."""
+    (logging/tests; product code reads it only via ``status_served.local_liveness_pid``).
+    ``probe_error``: a rung raised; lets fail-open callers tell "down" from "unknown"."""
 
     running: bool
     pid: Optional[int]
@@ -2063,9 +2044,12 @@ def get_running_pid(
                 resolved_pid_path, cleanup_stale=cleanup_stale, unlink_lock=not foreign_live_pid
             )
         return get_runtime_status_running_pid() if pid_path is None else None
-    # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.
+    # Lock inactive: the runtime-status fallback runs BEFORE cleanup here. A record naming THIS
+    # process is one we wrote earlier in our own boot (the multiplex verdict is persisted before
+    # the PID claim), not a rival: treating it as live skipped the stale gateway.pid cleanup after
+    # a SIGKILLed owner and the O_EXCL claim then lost the "PID file race" to itself.
     runtime_pid = get_runtime_status_running_pid() if pid_path is None else None
-    if runtime_pid is None:
+    if runtime_pid is None or runtime_pid == os.getpid():
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     return runtime_pid
 

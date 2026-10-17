@@ -306,7 +306,6 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
         host_cwd=host_cwd,
-        local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env
 
@@ -690,6 +689,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
+            from tools.tool_result_storage import expired_archive_fields
+            result_dict.update(expired_archive_fields(path))
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)

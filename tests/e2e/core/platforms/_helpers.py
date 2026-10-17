@@ -161,7 +161,7 @@ class GatewayUnderTest:
     def run_cli(self, *argv: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, "-m", "hermes_cli.main", *argv], cwd=str(self.home),
                               env=hermetic_env(self.home, dict(self._env)), stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=True, timeout=timeout, check=False)
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None

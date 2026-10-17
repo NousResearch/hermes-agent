@@ -236,7 +236,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 ### Service adapters: `trusted_inbound`, `display_tier`, `shared_env_prefixes`
 
 Three optional `ctx.register_platform(...)` / `PlatformEntry` fields exist for adapters that bridge a
-service rather than a chat network. The [Home Assistant plugin](https://github.com/NousResearch/hermes-homeassistant)
+service rather than a chat network. The [Home Assistant plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/homeassistant)
 is the reference consumer.
 
 | Field | Type / default | Effect |
@@ -838,7 +838,7 @@ async def disconnect(self):
 
 | Adapter | Pattern | Complexity | Good reference for |
 |---------|---------|------------|-------------------|
-| `bluebubbles.py` | REST + webhook | Medium | Simple REST API integration |
-| `weixin.py` | Long-poll + CDN | High | Media handling, encryption |
+| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | Medium | Simple REST API integration |
+| `plugins/platforms/weixin/adapter.py` | Long-poll + CDN | High | Media handling, encryption |
 | `plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
 | `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |

@@ -86,6 +86,7 @@ def test_setup_reads_pins_independent_of_indentation(tmp_path, served, indent, b
     result = subprocess.run(
         [bash, str(core / "setup-hermes.sh"), "--runtime-only"], cwd=tmp_path,
         env=env, capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (runtime / f"uv-{uv_version}-{target}" / "uv").read_text() == uv_script

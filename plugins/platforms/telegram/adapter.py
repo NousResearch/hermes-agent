@@ -248,7 +248,7 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
         if shutil.which("ffprobe"):
             proc = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
             if proc.returncode == 0:
                 return _coerce_duration_seconds(proc.stdout.strip())
     except Exception:
@@ -272,7 +272,7 @@ def _probe_video_geometry(path: str) -> dict[str, int]:
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-show_entries", "format=duration",
              "-of", "json", path],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False)
         if proc.returncode != 0:
             return {}
         blob = json.loads(proc.stdout or "{}")
@@ -308,7 +308,7 @@ def _video_thumbnail_jpeg(path: str, duration: Optional[int]) -> Optional[str]:
         proc = subprocess.run(
             ["ffmpeg", "-y", "-ss", str(seek), "-i", path, "-frames:v", "1",
              "-vf", "scale=320:-2", "-q:v", "6", out],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
         if proc.returncode != 0 or not os.path.getsize(out):
             with contextlib.suppress(OSError):
                 os.remove(out)
@@ -5193,7 +5193,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                         self.name, os.path.basename(audio_path))
             # Telegram drops duration for long clips (~5 min+, shows 0:00).
             _duration_secs = await asyncio.to_thread(_probe_voice_duration_seconds, audio_path)
-            with open(audio_path, "rb") as audio_file:
+            with open(audio_path, "rb") as audio_file:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 ext = os.path.splitext(audio_path)[1].lower()
                 if ext in {".ogg", ".opus"}:  # round playable voice bubble
                     msg = await self._send_voice_bubble(audio_file, chat_id, reply_to, metadata, caption, _duration_secs)
@@ -5260,7 +5260,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                         if compressed:
                             temp_paths.append(compressed)
                             local_path = compressed
-                        source = open(local_path, "rb")
+                        source = open(local_path, "rb")  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                         opened_files.append(source)
                     media.append(InputMediaPhoto(media=source, caption=self._caption_1024(alt_text)))
                 if not media:
@@ -5341,7 +5341,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         try:
             if not os.path.exists(path):
                 return SendResult(success=False, error=self._missing_media_path_error(label, path))
-            with open(path, "rb") as f:
+            with open(path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                 msg = await self._send_media(
                     getattr(self._bot, f"send_{media_key}"), chat_id, reply_to, metadata, media_key,
                     reset_media=lambda: f.seek(0), **build_kwargs(f))

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from utils import atomic_json_write
 
 if TYPE_CHECKING:
-    from gateway.session import SessionEntry
+    from gateway.session import SessionEntry, SessionSource
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
@@ -39,6 +39,16 @@ def _is_live_system_guard(exc: BaseException) -> bool:
 
 class SessionPersistenceMixin:
     """SessionStore storage plumbing: SessionDB handle resolution and routing-index load/save."""
+
+    def retire_runtime_sessions(self, session_ids):
+        """Publish committed retirement; durable fences reject delayed saves."""
+        with self._lock:
+            targets = set(session_ids)
+            for key, entry in list(self._entries.items()):
+                if entry.session_id in targets:
+                    del self._entries[key]
+            for sid in targets:
+                self._session_owner_hints.pop(sid, None)
 
     def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
         """SessionDB for the active profile scope. ``db_path`` pins the store; otherwise
@@ -234,6 +244,38 @@ class SessionPersistenceMixin:
         method = getattr(self._routing_db or None, name, None)
         return method if callable(method) else None
 
+    @staticmethod
+    def _chat_labels_meta_key(platform, scope_id, chat_id) -> str:
+        return f"gateway_chat_labels:{getattr(platform, 'value', platform)}:{scope_id or ''}:{chat_id}"
+
+    def record_chat_labels(self, source: SessionSource) -> bool:
+        """Persist *source*'s ``chat_name`` / ``chat_topic`` as the chat's current labels, at the
+        moment they are observed; True once written. A session origin cannot answer "what is this
+        chat called now": it is written when its session is created, which can be after a newer
+        observation (a delayed first turn), and a reset inherits it under a fresh ``created_at``.
+
+        False when there is no database handle right now (open failed, backoff, JSONL fallback):
+        nothing was written, so the caller must not treat these labels as recorded."""
+        setter = self._routing_db_method("set_meta")
+        if setter is None:
+            return False
+        setter(self._chat_labels_meta_key(source.platform, source.scope_id, source.chat_id),
+               json.dumps([source.chat_name, source.chat_topic]))
+        return True
+
+    def chat_labels(self, platform, scope_id, chat_id) -> Optional[tuple]:
+        """The ``(chat_name, chat_topic)`` last recorded for a chat, or None when none was. Raises
+        when the store cannot be read, including when there is no database handle right now:
+        "unreadable now" is not "never labelled"."""
+        getter = self._routing_db_method("get_meta")
+        if getter is None:
+            raise LookupError("session database unavailable")
+        raw = getter(self._chat_labels_meta_key(platform, scope_id, chat_id))
+        if not raw:
+            return None
+        chat_name, chat_topic = json.loads(raw)
+        return chat_name, chat_topic
+
     def _load_routing_rows_locked(self) -> bool:
         """Load state.db routing entries into ``_entries``; False when there is no loader or the
         load failed (warned). Lock held."""
@@ -303,6 +345,10 @@ class SessionPersistenceMixin:
                         type(entry_data).__name__)
                     continue
                 try:
+                    from hermes_state_mutation_retirement import retired_session
+                    db = self._routing_db
+                    if db is not None and retired_session(db, entry_data['session_id']):
+                        continue
                     self._entries[key] = SessionEntry.from_dict(entry_data)
                     imported += 1
                 except (ValueError, KeyError, TypeError) as e:

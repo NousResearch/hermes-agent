@@ -39,6 +39,7 @@ def _run_migration(hermes_home: Path, **env_overrides: str) -> subprocess.Comple
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
 
 

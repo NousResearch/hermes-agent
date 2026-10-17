@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    plugin_world as plugin_world,
-    isolated_python as isolated_python,
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 
@@ -54,7 +54,7 @@ def test_declaration_consent_admission_and_resync(plugin_world, monkeypatch, cap
     import subprocess
     python = world.selected() / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     result = subprocess.run([str(python), "-I", "-c", "import plugin_proof_dep; assert plugin_proof_dep.__version__ == '2.0'"],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
 
 

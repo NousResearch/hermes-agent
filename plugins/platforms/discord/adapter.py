@@ -1200,30 +1200,8 @@ class VoiceReceiver:
         )
 
 
-def _read_dm_role_auth_guild() -> Optional[int]:
-    """Return the guild ID opted-in for DM role-based auth, or None (secure default). Read from
-    config.yaml ``discord.dm_role_auth_guild`` only (behavioral, not a secret); int or numeric string."""
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config() or {}
-        discord_cfg = cfg.get("discord", {}) or {}
-        raw = discord_cfg.get("dm_role_auth_guild")
-    except Exception:
-        return None
-    if raw is None or raw == "":
-        return None
-    try:
-        guild_id = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return guild_id if guild_id > 0 else None
-
-
-# Default timeout for Discord button views when ``approvals.discord_prompt_timeout`` is unset;
-# Discord interaction tokens expire at ~15 minutes, so 900s is the practical ceiling.
-_DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
-_DISCORD_PROMPT_TIMEOUT_MIN = 30
-_DISCORD_PROMPT_TIMEOUT_MAX = 900
+from plugins.platforms.discord.adapter_config_readers import (
+    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1233,38 +1211,15 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"true", "1", "yes", "on"}
 
 
-def _read_discord_prompt_timeout() -> int:
-    """Timeout (seconds) for Discord button views from ``approvals.discord_prompt_timeout``
-    (default 300), clamped to [MIN, MAX] so a typo can't make prompts vanish or outlive tokens."""
-    raw: Any = None
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config() or {}
-        approvals_cfg = cfg.get("approvals", {}) or {}
-        raw = approvals_cfg.get("discord_prompt_timeout")
-    except Exception:
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    if raw is None or raw == "":
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    try:
-        seconds = int(raw)
-    except (TypeError, ValueError):
-        return _DISCORD_PROMPT_TIMEOUT_DEFAULT
-    if seconds < _DISCORD_PROMPT_TIMEOUT_MIN:
-        return _DISCORD_PROMPT_TIMEOUT_MIN
-    if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
-        return _DISCORD_PROMPT_TIMEOUT_MAX
-    return seconds
-
-
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
-                     BasePlatformAdapter):
+class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
+                     DiscordSlashAuthMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -5043,12 +4998,12 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             return snap[name] or default
         return _scoped_gate_env(name, default)
 
-    def _gate_raw(self, extra_key: str, env_key: str):
-        """Resolve one gate value: env/snapshot first (legacy precedence), then extra."""
-        val = self._gate_env(env_key)
+    def _gate_raw(self, extra_key: str, env_key: str, config=None):
+        """Resolve one gate value: env/snapshot first (legacy precedence), then extra; *config* = re-read extra."""
+        val = self._gate_env(env_key) if config is None else _scoped_gate_env(env_key)
         if val:
             return val
-        extra = getattr(getattr(self, "config", None), "extra", None)
+        extra = getattr(getattr(self, "config", None) if config is None else config, "extra", None)
         if isinstance(extra, dict):
             return extra.get(extra_key)
         return None
@@ -7209,11 +7164,10 @@ async def _standalone_send(
                         form.add_field("payload_json", payload_json, content_type="application/json")
                         try:
                             for idx, media_path in enumerate(valid_media):
-                                with open(media_path, "rb") as fh:
-                                    form.add_field(
-                                        f"files[{idx}]", fh.read(),
-                                        filename=os.path.basename(media_path),
-                                    )
+                                form.add_field(
+                                    f"files[{idx}]", await asyncio.to_thread(_Path(media_path).read_bytes),
+                                    filename=os.path.basename(media_path),
+                                )
                             async with session.post(thread_url, headers=auth_headers, data=form, **_req_kw) as resp:
                                 data, err = await _standalone_response_json_or_error(resp, "Discord forum thread creation error")
                                 if err:
@@ -7273,7 +7227,7 @@ async def _standalone_send(
                             content_type="application/json",
                         )
                         caption_pending = False
-                    with open(media_path, "rb") as f:
+                    with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
                         form.add_field("files[0]", f, filename=filename)
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord API error")

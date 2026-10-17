@@ -90,6 +90,7 @@ Your plugin implements the `MemoryProvider` abstract base class from `agent/memo
 
 ```python
 from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -98,7 +99,7 @@ class MyMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         """Check if this provider can activate. NO network calls."""
-        return bool(os.environ.get("MY_API_KEY"))
+        return bool(get_secret("MY_API_KEY"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Called once at agent startup.
@@ -106,7 +107,7 @@ class MyMemoryProvider(MemoryProvider):
         kwargs always includes:
           hermes_home (str): Active HERMES_HOME path. Use for storage.
         """
-        self._api_key = os.environ.get("MY_API_KEY", "")
+        self._api_key = get_secret("MY_API_KEY") or ""
         self._session_id = session_id
 
     # ... implement remaining methods

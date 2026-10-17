@@ -22,6 +22,7 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
+from agent.plugin_live_notes import pop_plugin_notices
 from agent.skills_index_delta import stage_skills_index_note
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
 from agent.model_metadata import (
@@ -641,6 +642,10 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
                     "issue — cleaned up automatically. Proceeding with fresh "
                     "connection."
                 )
+    # A stale streak against a local server that has since recovered must not fail this turn on arrival.
+    with suppress(Exception):
+        from agent.chat_completion_local import retry_recovered_local_server
+        retry_recovered_local_server(agent)
     # Replay compression warning through status_callback for gateway platforms.
     if agent._compression_warning:
         agent._replay_compression_warning()
@@ -851,11 +856,11 @@ def _merge_gateway_notes(
     agent: Any, messages: list[Any], current_turn_user_idx: int, plugin_user_context: str
 ) -> str:
     """Must-deliver per-turn notes ride the user-message injection channel (one-shot) so the
-    ephemeral system prompt stays byte-stable: the gateway's staged notes, then the
-    surface-switch correction. Multimodal (list) content can't take the string sidecar —
-    append a durable text part instead."""
+    ephemeral system prompt stays byte-stable: the gateway's staged notes, plugin go-live notices no
+    tool result carried, then the surface-switch correction. Multimodal (list) content can't take the
+    string sidecar — append a durable text part instead."""
     _turn_notes = "\n\n".join(
-        part for part in (consume_gateway_turn_context_notes(agent),
+        part for part in (consume_gateway_turn_context_notes(agent), pop_plugin_notices(agent),
                           consume_surface_switch_note(agent),
                           consume_skills_index_note(agent)) if part
     )
@@ -1304,12 +1309,10 @@ def build_api_messages(
             # and assistant rows may carry a sanitize-divergence sidecar.
             api_msg["content"] = _api_content
 
-        # Pass reasoning back to the API for ALL assistant messages so multi-turn
-        # reasoning context is preserved.
+        # Replay stored reasoning on every carrier the active route reads (and strip the
+        # rest): message_sanitization.reasoning_replay_route owns the decision.
         agent._copy_reasoning_content_for_api(msg, api_msg)
-        # 'reasoning' is trajectory-only (copied to 'reasoning_content' above);
         # finish_reason is rejected by strict APIs (e.g. Mistral).
-        api_msg.pop("reasoning", None)
         api_msg.pop("finish_reason", None)
         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
         # stops re-healing and flooding errors.log; durable history is untouched.
@@ -1323,11 +1326,17 @@ def build_api_messages(
         # reject unknown fields. New dicts keep the internal list intact for Codex.
         if agent._should_sanitize_tool_calls():
             agent._sanitize_tool_calls_for_strict_api(
-                api_msg, model=_sanitize_model_for(agent, moa_config)
+                api_msg, model=_sanitize_model_for(agent, moa_config),
+                base_url=agent.base_url, provider=agent.provider,
             )
-        # 'reasoning_details' is kept here; the chat-completions transport drops it on the
-        # wire for every route that does not replay it (OpenRouter/Nous do).
+        # 'reasoning_details' is shaped by the replay policy above on chat_completions and
+        # left intact for the native adapters (anthropic/bedrock rebuild signed blocks from it).
         api_messages.append(api_msg)
+
+    # Rows rebuilt from the session DB carry ``[screenshot]`` lines: re-attach the newest retained
+    # images on this wire copy (vision.replay_recent_images; native image input only).
+    from agent.image_replay import replay_for_agent
+    replay_for_agent(agent, api_messages)
 
     # A provider-rejected Anthropic signature is suppressed outside canonical history and
     # survives fresh request construction / process resume via session model_config.

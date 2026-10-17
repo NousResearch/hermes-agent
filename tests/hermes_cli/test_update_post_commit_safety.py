@@ -172,7 +172,7 @@ def _run_completion(tmp_path: Path, mode: str, *, sqlite: str | None = None) -> 
     child = tmp_path / "child.py"
     child.write_text(_CHILD, encoding="utf-8")
     done = subprocess.run([sys.executable, "-B", str(child), str(ROOT), str(cell), mode],
-                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240)
+                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240, check=False)
     assert done.returncode == 0, done.stdout + done.stderr
     summary = json.loads((cell / "summary.json").read_text(encoding="utf-8-sig"))
     summary["output"] = done.stdout + done.stderr
@@ -336,7 +336,7 @@ def test_zip_update_never_replays_a_refused_resume_after_the_commit_point(tmp_pa
     driver = tmp_path / "zip_parent.py"
     driver.write_text(_ZIP_PARENT, encoding="utf-8")
     done = subprocess.run([sys.executable, "-B", str(driver), str(ROOT), str(cell)],
-                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240)
+                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240, check=False)
     output = done.stdout + done.stderr
     assert done.returncode == 0, output
     assert (home / ".update_exit_code").read_text().strip() == "0", output
@@ -385,7 +385,7 @@ def test_old_schema_handoff_receipt_keeps_the_previous_runs_manual_serve_debt(tm
 
         def run(*args):
             done = subprocess.run([sys.executable, "-B", str(child), str(ROOT), *args],
-                                  env=env, capture_output=True, text=True, timeout=120)
+                                  env=env, capture_output=True, text=True, timeout=120, check=False)
             assert done.returncode == 0, done.stdout + done.stderr
 
         def owed():

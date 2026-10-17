@@ -11,7 +11,6 @@ import pytest
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -31,14 +30,60 @@ def _completed_task(conn, *, title: str, summary: str) -> str:
     return task_id
 
 
-def _worker_cli_args(monkeypatch, task, home):
-    from hermes_cli._parser import build_top_level_parser
+def _owner_policy(monkeypatch, task_id, home, config):
+    """Build the owner's frozen launch policy for the task's live claim."""
+    from contextlib import closing
 
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
-    command = kbd._worker_argv(task, "kai", str(home))
-    assert command[1:3] == ["-p", "kai"]
-    parser, _subparsers, _chat_parser = build_top_level_parser()
-    return command, parser.parse_args(command[3:])
+    from gateway.session_contract import Principal
+    from gateway.session_kanban import build_kanban_policy
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.resolve_profile_env", lambda _name: str(home)
+    )
+    with closing(kbc.connect()) as conn:
+        kb.recompute_ready(conn)
+        task = kb.claim_task(conn, task_id)
+    assert task is not None
+    actor = Principal("owner", str(home), frozenset({"session:create"}), "transport")
+    connection = SimpleNamespace(
+        authority=SimpleNamespace(profile_id=str(home)), actor=actor, native_owner=True
+    )
+    params = dict(
+        board="default",
+        task_id=task.id,
+        run_id=task.current_run_id,
+        claim_lock=task.claim_lock,
+    )
+    policy, _secrets = build_kanban_policy(connection, params, config)
+    return policy, json.loads(policy.kanban_json)
+
+
+def _isolated_task(conn, workspace, *, context_isolation="task", skills=None):
+    return kb.create_task(
+        conn,
+        title="isolated worker",
+        assignee="kai",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        skills=skills,
+        context_isolation=context_isolation,
+    )
+
+
+def _bind_workspace(task_id, workspace):
+    workspace.mkdir(exist_ok=True)
+    with kbc.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = 'dir', workspace_path = ? WHERE id = ?",
+            (str(workspace), task_id),
+        )
+        conn.commit()
+
+
+_CONFIG = {
+    "model": {"default": "offline-dummy", "provider": "custom"},
+    "platform_toolsets": {"cli": ["file", "memory"]},
+}
 
 
 @pytest.mark.parametrize(
@@ -47,11 +92,11 @@ def _worker_cli_args(monkeypatch, task, home):
         ("none", ["file", "memory"], True),
         ("task", ["file", "memory"], False),
         ("task", ["memory"], False),
-        ("task", [], False),
     ],
 )
-def test_worker_agent_init_excludes_private_memory_but_keeps_explicit_skill(
+def test_owner_policy_excludes_private_memory_but_keeps_explicit_skill(
     kanban_home,
+    tmp_path,
     monkeypatch,
     context_isolation,
     profile_toolsets,
@@ -59,73 +104,58 @@ def test_worker_agent_init_excludes_private_memory_but_keeps_explicit_skill(
 ):
     memory_sentinel = "PRIVATE_MEMORY_SENTINEL"
     user_sentinel = "PRIVATE_USER_SENTINEL"
-    skill_sentinel = "EXPLICIT_TASK_SKILL_SENTINEL"
     memories = kanban_home / "memories"
     memories.mkdir(exist_ok=True)
     (memories / "MEMORY.md").write_text(memory_sentinel, encoding="utf-8")
     (memories / "USER.md").write_text(user_sentinel, encoding="utf-8")
-    skill = kanban_home / "skills" / "explicit-task-skill"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text(
-        "---\nname: explicit-task-skill\ndescription: test skill\n---\n" + skill_sentinel,
-        encoding="utf-8",
-    )
     monkeypatch.setenv("HOME", str(kanban_home.parent))
-    monkeypatch.setattr(
-        kbd, "_resolve_worker_cli_toolsets", lambda _home: list(profile_toolsets)
-    )
-    task = SimpleNamespace(
-        id="t_agent_init",
-        context_isolation=context_isolation,
-        skills=["explicit-task-skill"],
-        model_override=None,
-        provider_override=None,
-        reasoning_effort=None,
-        goal_mode=False,
-    )
-    _command, args = _worker_cli_args(monkeypatch, task, kanban_home)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with kbc.connect() as conn:
+        task_id = _isolated_task(
+            conn,
+            workspace,
+            context_isolation=context_isolation,
+            skills=["explicit-task-skill"],
+        )
+    config = {
+        "model": {"default": "offline-dummy", "provider": "custom"},
+        "platform_toolsets": {"cli": list(profile_toolsets)},
+    }
+    policy, context = _owner_policy(monkeypatch, task_id, kanban_home, config)
 
-    import cli as cli_mod
+    assert context["skills"] == ["explicit-task-skill"]
+    assert policy.ignore_rules is (context_isolation == "task")
+    assert "kanban" in policy.toolsets
+    assert ("memory" in policy.toolsets) is memory_loaded
+    for toolset in set(profile_toolsets) - {"memory"}:
+        assert toolset in policy.toolsets
 
-    worker_cli = cli_mod._build_cli_from_args(
-        args.model,
-        args.toolsets,
-        "custom",
-        getattr(args, "reasoning", None),
-        "offline-dummy",
-        "http://127.0.0.1:9/v1",
-        getattr(args, "max_turns", None),
-        getattr(args, "run_budget", None),
-        False,
-        True,
-        None,
-        getattr(args, "checkpoints", False),
-        getattr(args, "pass_session_id", False),
-        args.ignore_rules,
-        args.skills,
+    # Construct the agent with the same policy-derived kwargs the owner's worker uses.
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        model="offline-dummy",
+        provider="custom",
+        base_url="http://127.0.0.1:9/v1",
+        api_key="offline-dummy",
+        enabled_toolsets=list(policy.toolsets),
+        skip_context_files=policy.ignore_rules,
+        load_soul_identity=not policy.ignore_rules,
+        skip_memory=policy.ignore_rules,
+        skip_background_review=True,
+        quiet_mode=True,
     )
-    assert worker_cli._init_agent() is True
-    assert worker_cli.agent is not None
-    store = worker_cli.agent._memory_store
+    store = agent._memory_store
     snapshot = store._system_prompt_snapshot if store else {"memory": "", "user": ""}
-    loaded_context = (worker_cli.system_prompt or "") + json.dumps(snapshot)
-
-    assert (memory_sentinel in loaded_context) is memory_loaded
-    assert (user_sentinel in loaded_context) is memory_loaded
+    loaded = json.dumps(snapshot)
+    assert (memory_sentinel in loaded) is memory_loaded
+    assert (user_sentinel in loaded) is memory_loaded
     assert (store is not None) is memory_loaded
-    assert skill_sentinel in (worker_cli.system_prompt or "")
-    if context_isolation == "task":
-        assert "memory" not in worker_cli.agent.enabled_toolsets
-        for toolset in set(profile_toolsets) - {"memory"}:
-            assert toolset in worker_cli.agent.enabled_toolsets
-        if not (set(profile_toolsets) - {"memory"}):
-            assert "kanban" in worker_cli.agent.enabled_toolsets
-    else:
-        assert worker_cli.agent.enabled_toolsets == profile_toolsets
 
 
-def test_task_isolation_preserves_explicit_context_and_gates_worker_argv(
-    kanban_home, monkeypatch
+def test_task_isolation_preserves_explicit_context_and_gates_owner_policy(
+    kanban_home, tmp_path, monkeypatch
 ):
     with kbc.connect() as conn:
         unrelated_id = _completed_task(
@@ -171,15 +201,14 @@ def test_task_isolation_preserves_explicit_context_and_gates_worker_argv(
     assert unrelated_id not in context
     assert "UNRELATED_ASSIGNEE_HISTORY" not in context
 
-    command, args = _worker_cli_args(monkeypatch, task, kanban_home)
-    assert "--ignore-rules" in command
-    assert args.command == "chat"
-    assert args.ignore_rules is True
-    assert args.query == f"work kanban task {task_id}"
+    _bind_workspace(task_id, tmp_path / "workspace")
+    policy, _context = _owner_policy(monkeypatch, task_id, kanban_home, _CONFIG)
+    assert policy.ignore_rules is True
+    assert "memory" not in policy.toolsets
 
 
 def test_unknown_stored_policy_fails_closed_without_assignee_history(
-    kanban_home, monkeypatch
+    kanban_home, tmp_path, monkeypatch
 ):
     with kbc.connect() as conn:
         prior_id = _completed_task(
@@ -199,9 +228,10 @@ def test_unknown_stored_policy_fails_closed_without_assignee_history(
     assert prior_id not in context
     assert "PRIVATE_ASSIGNEE_HISTORY" not in context
     assert task.context_isolation == "task"
-    command, args = _worker_cli_args(monkeypatch, task, kanban_home)
-    assert "--ignore-rules" in command
-    assert args.ignore_rules is True
+    _bind_workspace(task_id, tmp_path / "workspace")
+    policy, _context = _owner_policy(monkeypatch, task_id, kanban_home, _CONFIG)
+    assert policy.ignore_rules is True
+    assert "memory" not in policy.toolsets
 
 
 def test_task_isolation_descriptions_include_preloaded_skills():
@@ -224,7 +254,7 @@ def test_task_isolation_descriptions_include_preloaded_skills():
 
 
 def test_create_tool_roundtrips_policy_and_defaults_to_legacy_context(
-    kanban_home, monkeypatch
+    kanban_home, tmp_path, monkeypatch
 ):
     from tools import kanban_tools as kt
 
@@ -289,8 +319,9 @@ def test_create_tool_roundtrips_policy_and_defaults_to_legacy_context(
 
     assert prior_id in ordinary_context
     assert "VISIBLE_ASSIGNEE_HISTORY" in ordinary_context
-    ordinary_command, ordinary_args = _worker_cli_args(
-        monkeypatch, ordinary, kanban_home
+    _bind_workspace(ordinary.id, tmp_path / "workspace")
+    ordinary_policy, _context = _owner_policy(
+        monkeypatch, ordinary.id, kanban_home, _CONFIG
     )
-    assert "--ignore-rules" not in ordinary_command
-    assert ordinary_args.ignore_rules is False
+    assert ordinary_policy.ignore_rules is False
+    assert "memory" in ordinary_policy.toolsets

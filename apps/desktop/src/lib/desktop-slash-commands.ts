@@ -360,7 +360,7 @@ const REGISTRY_DESKTOP_SURFACE: Readonly<Record<string, string | null>> = deskto
 
 /**
  * Commands the Python registry has never heard of, so they cannot ride the
- * dump above. `/density`, `/details`, `/logs`, `/mouse` are Ink-process-local
+ * dump above. `/density`, `/details`, `/logs` are Ink-process-local
  * display toggles handled inside `ui-tui/src/app/slash/commands/core.ts`
  * (three are advertised through `tui_gateway/server.py::_TUI_EXTRA`); `/pets`
  * is the plural typo of the desktop's own `/pet` action and points at the
@@ -371,7 +371,7 @@ export const TS_ONLY_NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readon
   'composer-voice': [],
   messaging: [],
   settings: ['/pets'],
-  terminal: ['/density', '/details', '/logs', '/mouse']
+  terminal: ['/density', '/details', '/logs']
 }
 
 const LOCAL_SPEC_NAMES = new Set(DESKTOP_COMMAND_SPECS.flatMap(spec => [spec.name, ...(spec.aliases ?? [])]))

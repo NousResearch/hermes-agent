@@ -1583,6 +1583,74 @@ def _handle_todo(raw_args: str) -> str:
     return todo.read_text() if todo.exists() else "No TODO.md here."
 ```
 
+### Show live state in the CLI footer
+
+The classic CLI (`hermes chat`) paints a live-work footer under the composer: a summary pill plus
+one row per subagent and background process. A plugin can add its own part to the pill and its
+own selectable rows with `ctx.register_footer_item()`. It is **display only**: nothing it returns
+reaches the conversation, the transcript or the system prompt, so it never affects prompt caching.
+
+```python
+import time
+
+_cache = {"at": 0.0, "value": None}
+
+def snapshot(session):
+    """Called about once a second, off the render path. Return None to hide the item."""
+    if time.monotonic() - _cache["at"] < 2:          # keep it cheap: cache your own reads
+        return _cache["value"]
+    jobs = my_backend.jobs_for(session["session_id"])  # scope everything by the session
+    _cache.update(at=time.monotonic(), value=None if not jobs else {
+        "label": f"⛭ {len(jobs)} deploys",
+        "tone": "warn" if any(j.failed for j in jobs) else "ok",
+        "badge": f"⛭ {len(jobs)}",                    # optional: read-only status-bar segment
+        "rows": [{"key": j.id, "label": j.name, "detail": j.state} for j in jobs],
+        "actions": [{"id": "open", "label": "open", "key": "enter"},
+                    {"id": "cancel", "label": "cancel", "key": "c", "confirm": True}],
+    })
+    return _cache["value"]
+
+def on_action(action_id, session, row_key):
+    if action_id == "open":
+        return {"open_url": my_backend.url(row_key)}
+    my_backend.cancel(row_key)
+    return {"notice": f"cancelled {row_key}"}
+
+def register(ctx):
+    if hasattr(ctx, "register_footer_item"):           # older hosts lack it
+        ctx.register_footer_item("deploys", snapshot=snapshot, on_action=on_action)
+```
+
+**Signature:** `ctx.register_footer_item(name, *, snapshot, on_action=None, order=100) -> PluginRegistration`
+
+- `session` (both callbacks) is `{"session_id", "stored_session_id", "surface": "cli", "hermes_home", "profile"}`
+  for the CLI conversation the footer belongs to. Scope what you show to it.
+- `snapshot(session)` returns JSON-only data or `None`/`{}` to hide the item:
+  `label` (pill text), `tone` (`ok` | `warn` | `bad` | `dim`), `rows` (`key`, `label`, `detail`;
+  at most 8; a `key` longer than 128 characters skips its row, since it reaches `on_action` exactly
+  as given) and `actions` (`id`, `label`, `key` = `"enter"` or one lowercase letter, optional
+  `confirm: true` to require pressing the key twice). Text is painted as one line: newlines and
+  other whitespace runs become a space, control characters are dropped.
+- Optional `badge`: a short string (e.g. `"◈ 2 live"`) the classic CLI status bar shows as one
+  read-only segment, in the item's tone, while the item is visible. It is sanitised like labels
+  and clipped to 12 columns, shown in the medium and wide tiers (dropped below 52 columns like the
+  other optional counters), and hidden with `display.status_bar.fields` (field `plugin_badges`).
+  It is never clickable; rows and actions stay in the footer.
+- Each snapshot runs in its own worker thread, never while the footer paints. A snapshot that raises
+  keeps the item's last good value (logged once); a slow one keeps running while the footer shows
+  the last value. Cache inside the plugin if your read is not cheap.
+- Rows follow the agent and process rows. `Down` on an empty composer selects them; on a plugin
+  row `Enter` (or a click with `display.cli_mouse`) runs the `enter` action — or the first action —
+  and the listed letter keys run the others. The hint line shows the row's keys.
+- `on_action(action_id, session, row_key)` runs off the UI thread, one at a time per row (a repeat
+  while one is still running only shows a notice), and may return `None`, a string
+  (shown as the footer notice), or a dict with any of `notice`, `open_url` (an `http(s)` URL opened
+  in the user's browser, or shown when none is available) and `run_in_terminal` (a blocking callable
+  that gets the real terminal while the prompt UI is suspended — a full-screen viewer, say; what it
+  prints reaches the terminal as it runs — and may return a string notice; the chat returns when it
+  does). An exception becomes a short notice.
+- Lower `order` paints first. The registration is removed when the plugin unloads.
+
 ### Dispatch tools from slash commands
 
 Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.

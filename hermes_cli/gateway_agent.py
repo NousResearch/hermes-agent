@@ -691,6 +691,8 @@ class GatewayAgent:
         args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
         call_id = payload.get("tool_id") or payload.get("tool_call_id") or ""
         starts[call_id] = time.monotonic()
+        from hermes_cli.gateway_tools import note_tool
+        note_tool(name, started=True)  # the live dock lists a delegation's children while it runs
         if self._usage_stale:
             # Main's counters move right after each API call, before its tools run (the spinner's
             # `↓ N tok` beside a tool or approval); the gateway's next session.usage frame comes only
@@ -716,8 +718,9 @@ class GatewayAgent:
             self.tool_progress_callback("tool.completed", name, None, None, duration=duration,
                                         is_error=bool(payload.get("is_error")), result=result)
         self._usage_stale = True
-        from hermes_cli.gateway_tools import mark_dirty
+        from hermes_cli.gateway_tools import mark_dirty, note_tool
         mark_dirty()  # a terminal/process call may have started or stopped a background process
+        note_tool(name, started=False)
         if name == "todo":
             self._todo_from_result(result)
         diff = payload.get("inline_diff")

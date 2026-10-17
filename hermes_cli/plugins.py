@@ -45,7 +45,8 @@ from hermes_cli.plugins_discovery import (
     scan_directory,
 )
 from hermes_cli.plugins_loader import (
-    PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
+    PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _clear_plugin_submodules,
+    _evict_modules,
     _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
 )
 from hermes_cli.plugins_dispatch import (
@@ -57,6 +58,7 @@ from hermes_cli.plugins_dispatch import (
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
+from hermes_cli.plugins_footer import get_plugin_footer_items
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
@@ -1009,6 +1011,7 @@ class PluginContext:
         logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
 
     from hermes_cli.plugins_content import register_automation_blueprint, register_skill
+    from hermes_cli.plugins_footer import register_footer_item
 
 # -- scoped provider registrars ------------------------------------------------------------------
 # Every ``register_<category>_provider`` shares one body (:meth:`PluginContext._register_scoped_provider`):
@@ -1183,6 +1186,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._plugin_platform_names: set[str] = set()
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
+        self._footer_items: dict[str, dict] = {}  # "<plugin_id>:<name>" -> classic CLI footer item
         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}
         self._plugin_skills: dict[str, dict[str, Any]] = {}
         self._automation_blueprints: dict[str, Any] = {}  # "<plugin>:<key>" -> AutomationBlueprint
@@ -1613,22 +1617,6 @@ def _plugin_home_key() -> Path:
         return get_hermes_home().expanduser().resolve()
     except Exception:
         return get_hermes_home().expanduser()
-
-
-def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
-    """Purge ``sys.modules`` entries for this manager's directory plugins (package AND submodules —
-    otherwise a same-slug plugin in another profile reuses the previous profile's submodule state).
-    """
-    if manager is None:
-        return
-    for loaded in getattr(manager, "_plugins", {}).values():  # tolerates test-double managers
-        module_name = getattr(getattr(loaded, "module", None), "__name__", None)
-        if not module_name or not module_name.startswith(f"{_NS_PARENT}."):
-            continue
-        _evict_modules(module_name)
-        with _MODULE_NAMESPACE_LOCK:
-            if _BARE_MODULE_SCOPE.get(module_name) == manager.scope_key:
-                _BARE_MODULE_SCOPE.pop(module_name, None)
 
 
 def _known_plugin_managers() -> list[PluginManager]:

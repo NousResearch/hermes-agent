@@ -17,6 +17,8 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
+from tools.threat_patterns import DESTRUCTIVE_ROOT_RM
+
 
 SCANNER_VERSION = "skills-guard-v10"
 
@@ -275,18 +277,7 @@ THREAT_PATTERNS = [
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
-    # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
-    # test/smoke scripts and CI, and so is the package-cache cleanup that ends every Dockerfile
-    # install layer (`rm -rf /var/lib/apt/lists/*`, /var/cache/{apt,apk,yum,dnf}). A parent
-    # segment inside an exempted root can escape it, so it remains destructive along with every
-    # other path rooted at "/". Every operand is checked (`rm -rf /tmp/x /etc`,
-    # `rm -rf --no-preserve-root /`), not only the first. A later bare `//` token is a JS/JSONC
-    # comment opener (`"rm -rf dist", // clean`), not the root; operands after it are still
-    # checked (`rm -rf x // /etc` deletes /etc in a shell). A first-operand `//` is the root.
-    (r'rm\s+-rf\s+((?:[^\s;&|<>#][^\s;&|<>]*\s+)+?)?/(?(1)(?!/(?:\s|$)))(?:'
-     r'(?!(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))(?:\b|/))'
-     r'|(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
-     "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
+    (DESTRUCTIVE_ROOT_RM, "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     # ``rm`` / ``rmdir`` need a left boundary that excludes letters/digits: without it the ``rm`` in
     # English prose (``the platfoRM rOute to ~/.hermes/config.yaml``) matched a recursive home delete.
     (r'(?<![A-Za-z0-9])rm\s+(-[^\s]*)?r.*(?:\$HOME|~[/\s*]|~$)|(?<![A-Za-z0-9])rmdir\s+.*(?:\$HOME|~[/\s*]|~$)',

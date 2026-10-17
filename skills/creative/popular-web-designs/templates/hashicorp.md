@@ -1,7 +1,7 @@
 # Design System: HashiCorp
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `JetBrains Mono`
@@ -15,13 +15,13 @@
 
 ## 1. Visual Theme & Atmosphere
 
-HashiCorp's website is enterprise infrastructure made tangible — a design system that must communicate the complexity of cloud infrastructure management while remaining approachable. The visual language splits between two modes: a clean white light-mode for informational sections and a dramatic dark-mode (`#15181e`, `#0d0e12`) for hero areas and product showcases, creating a day/night duality that mirrors the "build in light, deploy in dark" developer workflow.
+HashiCorp's website is enterprise infrastructure made tangible: a design system that must communicate the complexity of cloud infrastructure management while remaining approachable. The visual language splits between two modes: a clean white light-mode for informational sections and a dramatic dark-mode (`#15181e`, `#0d0e12`) for hero areas and product showcases, creating a day/night duality that mirrors the "build in light, deploy in dark" developer workflow.
 
-The typography is anchored by a custom brand font (HashiCorp Sans, loaded as `__hashicorpSans_96f0ca`) that carries substantial weight — literally. Headings use 600–700 weights with tight line-heights (1.17–1.19), creating dense, authoritative text blocks that communicate enterprise confidence. The hero headline at 82px weight 600 with OpenType `"kern"` enabled is not decorative — it's infrastructure-grade typography.
+The typography is anchored by a custom brand font (HashiCorp Sans, loaded as `__hashicorpSans_96f0ca`) that carries substantial weight: literally. Headings use 600–700 weights with tight line-heights (1.17–1.19), creating dense, authoritative text blocks that communicate enterprise confidence. The hero headline at 82px weight 600 with OpenType `"kern"` enabled is not decorative, it's infrastructure-grade typography.
 
-What distinguishes HashiCorp is its multi-product color system. Each product in the portfolio has its own brand color — Terraform purple (`#7b42bc`), Vault yellow (`#ffcf25`), Waypoint teal (`#14c6cb`), Vagrant blue (`#1868f2`) — and these colors appear throughout as accent tokens via a CSS custom property system (`--mds-color-*`). This creates a design system within a design system: the parent brand is black-and-white with blue accents, while each child product injects its own chromatic identity.
+What distinguishes HashiCorp is its multi-product color system. Each product in the portfolio has its own brand color. Terraform purple (`#7b42bc`), Vault yellow (`#ffcf25`), Waypoint teal (`#14c6cb`), Vagrant blue (`#1868f2`): and these colors appear throughout as accent tokens via a CSS custom property system (`--mds-color-*`). This creates a design system within a design system: the parent brand is black-and-white with blue accents, while each child product injects its own chromatic identity.
 
-The component system uses the `mds` (Markdown Design System) prefix, indicating a systematic, token-driven approach where colors, spacing, and states are all managed through CSS variables. Shadows are remarkably subtle — dual-layer micro-shadows using `rgba(97, 104, 117, 0.05)` that are nearly invisible but provide just enough depth to separate interactive surfaces from the background.
+The component system uses the `mds` (Markdown Design System) prefix, indicating a systematic, token-driven approach where colors, spacing, and states are all managed through CSS variables. Shadows are remarkably subtle: dual-layer micro-shadows using `rgba(97, 104, 117, 0.05)` that are nearly invisible but provide just enough depth to separate interactive surfaces from the background.
 
 **Key Characteristics:**
 - Dual-mode: clean white sections + dramatic dark (`#15181e`) hero/product areas
@@ -29,7 +29,7 @@ The component system uses the `mds` (Markdown Design System) prefix, indicating 
 - Multi-product color system via `--mds-color-*` CSS custom properties
 - Product brand colors: Terraform purple, Vault yellow, Waypoint teal, Vagrant blue
 - Uppercase letter-spaced captions (13px, weight 600, 1.3px letter-spacing)
-- Micro-shadows: dual-layer at 0.05 opacity — depth through whisper, not shout
+- Micro-shadows: dual-layer at 0.05 opacity, depth through whisper, not shout
 - Token-driven `mds` component system with semantic variable names
 - Tight border radius: 2px–8px, nothing pill-shaped or circular
 - System-ui fallback stack for secondary text
@@ -71,7 +71,7 @@ The component system uses the `mds` (Markdown Design System) prefix, indicating 
 
 ### Shadows
 - **Micro Shadow** (`rgba(97, 104, 117, 0.05) 0px 1px 1px, rgba(97, 104, 117, 0.05) 0px 2px 2px`): Default card/button elevation
-- **Focus Outline**: `3px solid var(--mds-color-focus-action-external)` — systematic focus ring
+- **Focus Outline**: `3px solid var(--mds-color-focus-action-external)`, systematic focus ring
 
 ## 3. Typography Rules
 
@@ -99,10 +99,10 @@ The component system uses the `mds` (Markdown Design System) prefix, indicating 
 
 ### Principles
 - **Brand/System split**: HashiCorp Sans for headings and brand-critical text; system-ui for body, navigation, and functional text. The brand font carries the weight, system-ui carries the words.
-- **Kern always on**: All HashiCorp Sans text enables OpenType `"kern"` — letterfitting is non-negotiable.
-- **Tight headings**: Every heading uses 1.17–1.21 line-height, creating dense, stacked text blocks that feel infrastructural — solid, load-bearing.
+- **Kern always on**: All HashiCorp Sans text enables OpenType `"kern"`, letterfitting is non-negotiable.
+- **Tight headings**: Every heading uses 1.17–1.21 line-height, creating dense, stacked text blocks that feel infrastructural, solid, load-bearing.
 - **Relaxed body**: Body text uses 1.50–1.69 line-height (notably generous), creating comfortable reading rhythm beneath the dense headings.
-- **Uppercase labels as wayfinding**: 13px uppercase with 1.3px letter-spacing serves as the systematic category/section marker — always HashiCorp Sans weight 600.
+- **Uppercase labels as wayfinding**: 13px uppercase with 1.3px letter-spacing serves as the systematic category/section marker, always HashiCorp Sans weight 600.
 
 ## 4. Component Stylings
 
@@ -220,9 +220,9 @@ The component system uses the `mds` (Markdown Design System) prefix, indicating 
 |-------|-----------|-----|
 | Flat (Level 0) | No shadow | Default surfaces, text blocks |
 | Whisper (Level 1) | `rgba(97, 104, 117, 0.05) 0px 1px 1px, rgba(97, 104, 117, 0.05) 0px 2px 2px` | Cards, buttons, interactive surfaces |
-| Focus (Level 2) | `3px solid var(--mds-color-focus-action-external)` outline | Focus rings — color-matched to context |
+| Focus (Level 2) | `3px solid var(--mds-color-focus-action-external)` outline | Focus rings: color-matched to context |
 
-**Shadow Philosophy**: HashiCorp uses arguably the subtlest shadow system in modern web design. The dual-layer shadows at 5% opacity are nearly invisible — they exist not to create visual depth but to signal interactivity. If you can see the shadow, it's too strong. This restraint communicates the enterprise value of stability — nothing floats, nothing is uncertain.
+**Shadow Philosophy**: HashiCorp uses arguably the subtlest shadow system in modern web design. The dual-layer shadows at 5% opacity are nearly invisible. They exist not to create visual depth but to signal interactivity. If you can see the shadow, it's too strong. This restraint communicates the enterprise value of stability, nothing floats, nothing is uncertain.
 
 ## 7. Do's and Don'ts
 
@@ -238,13 +238,13 @@ The component system uses the `mds` (Markdown Design System) prefix, indicating 
 
 ### Don't
 - Don't use product brand colors outside their product context (no Terraform purple on Vault content)
-- Don't increase shadow opacity above 0.1 — the whisper level is intentional
-- Don't use pill-shaped buttons (>8px radius) — the sharp, minimal radius is structural
-- Don't skip the `"kern"` feature on headings — the font requires it
-- Don't use HashiCorp Sans for small body text — it's designed for 17px+ heading use
-- Don't mix product colors in the same component — each product has one color
-- Don't use pure black (`#000000`) for dark backgrounds — use `#15181e` or `#0d0e12`
-- Don't forget the asymmetric button padding — 9px 9px 9px 15px is intentional
+- Don't increase shadow opacity above 0.1: the whisper level is intentional
+- Don't use pill-shaped buttons (>8px radius): the sharp, minimal radius is structural
+- Don't skip the `"kern"` feature on headings: the font requires it
+- Don't use HashiCorp Sans for small body text: it's designed for 17px+ heading use
+- Don't mix product colors in the same component: each product has one color
+- Don't use pure black (`#000000`) for dark backgrounds: use `#15181e` or `#0d0e12`
+- Don't forget the asymmetric button padding: 9px 9px 9px 15px is intentional
 
 ## 8. Responsive Behavior
 
@@ -285,7 +285,7 @@ The component system uses the `mds` (Markdown Design System) prefix, indicating 
 ### Iteration Guide
 1. Always start with the mode decision: light (white) for informational, dark (#15181e) for hero/product
 2. HashiCorp Sans for headings only (17px+), system-ui for everything else
-3. Shadows are at whisper level (0.05 opacity) — if visible, reduce
-4. Product colors are sacred — each product owns exactly one color
+3. Shadows are at whisper level (0.05 opacity): if visible, reduce
+4. Product colors are sacred: each product owns exactly one color
 5. Focus rings are always 3px solid, color-matched to product context
-6. Uppercase labels are the systematic wayfinding pattern — 13px, 600, 1.3px tracking
+6. Uppercase labels are the systematic wayfinding pattern: 13px, 600, 1.3px tracking

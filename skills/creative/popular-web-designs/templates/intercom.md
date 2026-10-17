@@ -1,7 +1,7 @@
 # Design System: Intercom
 
 
-> **Hermes Agent — Implementation Notes**
+> **Hermes Agent: Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `system monospace stack`
@@ -15,18 +15,18 @@
 
 ## 1. Visual Theme & Atmosphere
 
-Intercom's website is a warm, confident customer service platform that communicates "AI-first helpdesk" through a clean, editorial design language. The page operates on a warm off-white canvas (`#faf9f6`) with off-black (`#111111`) text, creating an intimate, magazine-like reading experience. The signature Fin Orange (`#ff5600`) — named after Intercom's AI agent — serves as the singular vibrant accent against the warm neutral palette.
+Intercom's website is a warm, confident customer service platform that communicates "AI-first helpdesk" through a clean, editorial design language. The page operates on a warm off-white canvas (`#faf9f6`) with off-black (`#111111`) text, creating an intimate, magazine-like reading experience. The signature Fin Orange (`#ff5600`) (named after Intercom's AI agent) serves as the singular vibrant accent against the warm neutral palette.
 
-The typography uses Saans — a custom geometric sans-serif with aggressive negative letter-spacing (-2.4px at 80px, -0.48px at 24px) and a consistent 1.00 line-height across all heading sizes. This creates ultra-compressed, billboard-like headlines that feel engineered and precise. Serrif provides the serif companion for editorial moments, and SaansMono handles code and uppercase technical labels. MediumLL and LLMedium appear for specific UI contexts, creating a rich five-font ecosystem.
+The typography uses Saans: a custom geometric sans-serif with aggressive negative letter-spacing (-2.4px at 80px, -0.48px at 24px) and a consistent 1.00 line-height across all heading sizes. This creates ultra-compressed, billboard-like headlines that feel engineered and precise. Serrif provides the serif companion for editorial moments, and SaansMono handles code and uppercase technical labels. MediumLL and LLMedium appear for specific UI contexts, creating a rich five-font ecosystem.
 
-What distinguishes Intercom is its remarkably sharp geometry — 4px border-radius on buttons creates near-rectangular interactive elements that feel industrial and precise, contrasting with the warm surface colors. Button hover states use `scale(1.1)` expansion, creating a physical "growing" interaction. The border system uses warm oat tones (`#dedbd6`) and oklab-based opacity values for sophisticated color management.
+What distinguishes Intercom is its remarkably sharp geometry: 4px border-radius on buttons creates near-rectangular interactive elements that feel industrial and precise, contrasting with the warm surface colors. Button hover states use `scale(1.1)` expansion, creating a physical "growing" interaction. The border system uses warm oat tones (`#dedbd6`) and oklab-based opacity values for sophisticated color management.
 
 **Key Characteristics:**
 - Warm off-white canvas (`#faf9f6`) with oat-toned borders (`#dedbd6`)
 - Saans font with extreme negative tracking (-2.4px at 80px) and 1.00 line-height
 - Fin Orange (`#ff5600`) as singular brand accent
-- Sharp 4px border-radius — near-rectangular buttons and elements
-- Scale(1.1) hover with scale(0.85) active — physical button interaction
+- Sharp 4px border-radius: near-rectangular buttons and elements
+- Scale(1.1) hover with scale(0.85) active: physical button interaction
 - SaansMono uppercase labels with wide tracking (0.6px–1.2px)
 - Rich multi-color report palette (blue, green, red, pink, lime, orange)
 - oklab color values for sophisticated opacity management
@@ -132,7 +132,7 @@ Minimal shadows. Depth through warm border colors and surface tints.
 
 ### Do
 - Use Saans with 1.00 line-height and negative tracking on all headings
-- Apply 4px radius on buttons — sharp geometry is the identity
+- Apply 4px radius on buttons: sharp geometry is the identity
 - Use Fin Orange (#ff5600) for AI/brand accent only
 - Apply scale(1.1) hover on buttons
 - Use warm neutrals (#faf9f6, #dedbd6)
@@ -140,7 +140,7 @@ Minimal shadows. Depth through warm border colors and surface tints.
 ### Don't
 - Don't round buttons beyond 4px
 - Don't use Fin Orange decoratively
-- Don't use cool gray borders — always warm oat tones
+- Don't use cool gray borders: always warm oat tones
 - Don't skip the negative tracking on headings
 
 ## 8. Responsive Behavior

@@ -61,6 +61,6 @@ unset _remote_url
 echo "GitHub Auth: $GH_AUTH_METHOD"
 [ -n "$GH_USER" ]       && echo "User: $GH_USER"
 [ -n "$GH_OWNER_REPO" ] && echo "Repo: $GH_OWNER_REPO"
-[ "$GH_AUTH_METHOD" = "none" ] && echo "⚠ Not authenticated — see github-auth skill"
+[ "$GH_AUTH_METHOD" = "none" ] && echo "⚠ Not authenticated: see github-auth skill"
 
 export GH_AUTH_METHOD GITHUB_TOKEN GH_USER GH_OWNER GH_REPO GH_OWNER_REPO

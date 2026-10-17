@@ -31,7 +31,7 @@ If you haven't completed Phase 1, you cannot propose fixes.
 
 ## The Feedback Loop Rule
 
-The feedback loop is the debugging work. Before reading code to build a theory, create or identify a **tight** command that can go red on the user's exact symptom and green when the bug is fixed. A tight loop is fast, deterministic, agent-runnable, and specific enough to catch this bug — not merely "doesn't crash".
+The feedback loop is the debugging work. Before reading code to build a theory, create or identify a **tight** command that can go red on the user's exact symptom and green when the bug is fixed. A tight loop is fast, deterministic, agent-runnable, and specific enough to catch this bug: not merely "doesn't crash".
 
 When a clean repro is hard, spend disproportionate effort building the loop. Guessing without a red-capable loop is the failure mode this skill exists to prevent.
 
@@ -84,7 +84,7 @@ You MUST complete each phase before proceeding to the next.
 - Is it deterministic? For flaky bugs, can you raise the reproduction rate high enough to debug?
 - If not reproducible → gather more data, don't guess.
 
-**Ways to construct a loop — try in roughly this order:**
+**Ways to construct a loop: try in roughly this order:**
 
 1. **Failing test** at the seam that reaches the bug: unit, integration, or end-to-end.
 2. **HTTP script / curl** against a running dev server.
@@ -211,7 +211,7 @@ search_files("similar_pattern", path="src/", file_glob="*.py")
 ### 2. Compare Against References
 
 - If implementing a pattern, read the reference implementation COMPLETELY
-- Don't skim — read every line
+- Don't skim: read every line
 - Understand the pattern fully before applying
 
 ### 3. Identify Differences
@@ -288,11 +288,11 @@ If the user is present, show the ranked list before testing. They may have domai
 # Run the specific regression test
 pytest tests/test_module.py::test_regression -v
 
-# Run full suite — no regressions
+# Run full suite: no regressions
 pytest tests/ -q
 ```
 
-### 4. If Fix Doesn't Work — The Rule of Three
+### 4. If Fix Doesn't Work: The Rule of Three
 
 - **STOP.**
 - Count: How many fixes have you tried?
@@ -314,11 +314,11 @@ pytest tests/ -q
 
 **Discuss with the user before attempting more fixes.**
 
-This is NOT a failed hypothesis — this is a wrong architecture.
+This is NOT a failed hypothesis: this is a wrong architecture.
 
 ---
 
-## Red Flags — STOP and Follow Process
+## Red Flags: STOP and Follow Process
 
 If you catch yourself thinking:
 - "Quick fix for now, investigate later"
@@ -365,10 +365,10 @@ If you catch yourself thinking:
 
 Use these Hermes tools during Phase 1:
 
-- **`search_files`** — Find error strings, trace function calls, locate patterns
-- **`read_file`** — Read source code with line numbers for precise analysis
-- **`terminal`** — Run tests, check git history, reproduce bugs
-- **`web_search`/`web_extract`** — Research error messages, library docs
+- **`search_files`**: Find error strings, trace function calls, locate patterns
+- **`read_file`**: Read source code with line numbers for precise analysis
+- **`terminal`**: Run tests, check git history, reproduce bugs
+- **`web_search`/`web_extract`**: Research error messages, library docs
 
 ### With delegate_task
 
@@ -382,7 +382,7 @@ delegate_task(
     1. Read the error message carefully
     2. Reproduce the issue
     3. Trace the data flow to find root cause
-    4. Report findings — do NOT fix yet
+    4. Report findings: do NOT fix yet
 
     Error: [paste full error]
     File: [path to failing code]

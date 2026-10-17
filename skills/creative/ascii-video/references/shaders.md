@@ -8,7 +8,7 @@ Post-processing effects applied to the pixel canvas (`numpy uint8 array, shape (
 
 ## Design Philosophy
 
-The shader pipeline turns raw ASCII renders into cinematic output. The system is designed for **composability** — every shader, blend mode, and feedback transform is an independent building block. Combining them creates infinite visual variety from a small set of primitives.
+The shader pipeline turns raw ASCII renders into cinematic output. The system is designed for **composability**: every shader, blend mode, and feedback transform is an independent building block. Combining them creates infinite visual variety from a small set of primitives.
 
 Choose shaders that reinforce the mood:
 - **Retro terminal**: CRT + scanlines + grain + green/amber tint
@@ -142,7 +142,7 @@ fb_cfg = {"decay": 0.5, "blend": "add", "opacity": 0.2,
 
 ## ShaderChain
 
-Composable shader pipeline. Build chains of named shaders with parameters. Order matters — shaders are applied sequentially to the canvas.
+Composable shader pipeline. Build chains of named shaders with parameters. Order matters: shaders are applied sequentially to the canvas.
 
 ```python
 class ShaderChain:
@@ -171,9 +171,9 @@ class ShaderChain:
         return canvas
 ```
 
-### `_apply_shader_step()` — Full Dispatch Function
+### `_apply_shader_step()`: Full Dispatch Function
 
-Routes shader names to implementations. Some shaders have **audio-reactive scaling** — the dispatch function reads `f["bdecay"]` and `f["rms"]` to modulate parameters on the beat.
+Routes shader names to implementations. Some shaders have **audio-reactive scaling**: the dispatch function reads `f["bdecay"]` and `f["rms"]` to modulate parameters on the beat.
 
 ```python
 def _apply_shader_step(canvas, name, kwargs, f, t):
@@ -186,7 +186,7 @@ def _apply_shader_step(canvas, name, kwargs, f, t):
         f: audio features dict (keys: bdecay, rms, sub, etc.)
         t: current time in seconds (float)
     Returns:
-        canvas: uint8 (H,W,3) — processed
+        canvas: uint8 (H,W,3): processed
     """
     bd = f.get("bdecay", 0)    # beat decay (0-1, high on beat)
     rms = f.get("rms", 0.3)   # audio energy (0-1)
@@ -288,7 +288,7 @@ def _apply_shader_step(canvas, name, kwargs, f, t):
         return sh_data_bend(canvas, kwargs.get("offset", 1000), kwargs.get("chunk", 500))
 
     else:
-        return canvas  # unknown shader — passthrough
+        return canvas  # unknown shader: passthrough
 ```
 
 ### Audio-Reactive Shaders
@@ -297,9 +297,9 @@ Three shaders scale their parameters based on audio features:
 
 | Shader | Reactive To | Effect |
 |--------|------------|--------|
-| `chromatic` | `bdecay` | `amt * (0.4 + bdecay * 0.8)` — aberration kicks on beats |
-| `color_wobble` | `rms` | `amt * (0.5 + rms * 0.8)` — wobble intensity follows energy |
-| `grain` | `rms` | `amt * (0.5 + rms * 0.8)` — grain rougher in loud sections |
+| `chromatic` | `bdecay` | `amt * (0.4 + bdecay * 0.8)`: aberration kicks on beats |
+| `color_wobble` | `rms` | `amt * (0.5 + rms * 0.8)`: wobble intensity follows energy |
+| `grain` | `rms` | `amt * (0.5 + rms * 0.8)`: grain rougher in loud sections |
 | `glitch_bands` | `bdecay`, `sub` | Number of bands and displacement scale with beat energy |
 
 To make any shader beat-reactive, scale its parameter in the dispatch: `base_val * (low + bd * range)`.
@@ -316,10 +316,10 @@ To make any shader beat-reactive, scale its parameter in the dispatch: `base_val
 | `pixelate` | `block=4` | Reduce effective resolution |
 | `wave_distort` | `freq, amp, axis` | Sinusoidal row/column displacement |
 | `kaleidoscope` | `folds=6` | Radial symmetry via polar remapping |
-| `mirror_h` | — | Horizontal mirror |
-| `mirror_v` | — | Vertical mirror |
-| `mirror_quad` | — | 4-fold mirror |
-| `mirror_diag` | — | Diagonal mirror |
+| `mirror_h` | - | Horizontal mirror |
+| `mirror_v` | - | Vertical mirror |
+| `mirror_quad` | - | 4-fold mirror |
+| `mirror_diag` | - | Diagonal mirror |
 
 ### Channel Manipulation
 
@@ -334,7 +334,7 @@ To make any shader beat-reactive, scale its parameter in the dispatch: `base_val
 
 | Shader | Key Params | Description |
 |--------|-----------|-------------|
-| `invert` | — | Negate all colors |
+| `invert` | - | Negate all colors |
 | `posterize` | `levels=4` | Reduce color depth to N levels |
 | `threshold` | `thr=128` | Binary black/white |
 | `solarize` | `threshold=128` | Invert pixels above threshold |
@@ -441,7 +441,7 @@ def mkc(R, G, B, rows, cols):
 ### Geometry Shaders
 
 #### CRT Barrel Distortion
-Cache the coordinate remap — it never changes per frame:
+Cache the coordinate remap: it never changes per frame:
 ```python
 _crt_cache = {}
 def sh_crt(c, strength=0.05):
@@ -516,15 +516,15 @@ def sh_kaleidoscope(c, folds=6):
 #### Mirror Variants
 ```python
 def sh_mirror_h(c):
-    """Horizontal mirror — left half reflected to right."""
+    """Horizontal mirror: left half reflected to right."""
     w = c.shape[1]; c[:, w//2:] = c[:, :w//2][:, ::-1]; return c
 
 def sh_mirror_v(c):
-    """Vertical mirror — top half reflected to bottom."""
+    """Vertical mirror: top half reflected to bottom."""
     h = c.shape[0]; c[h//2:, :] = c[:h//2, :][::-1, :]; return c
 
 def sh_mirror_quad(c):
-    """4-fold mirror — top-left quadrant reflected to all four."""
+    """4-fold mirror: top-left quadrant reflected to all four."""
     h, w = c.shape[:2]; hh, hw = h//2, w//2
     tl = c[:hh, :hw].copy()
     c[:hh, hw:hw+tl.shape[1]] = tl[:, ::-1]
@@ -533,7 +533,7 @@ def sh_mirror_quad(c):
     return c
 
 def sh_mirror_diag(c):
-    """Diagonal mirror — top-left triangle reflected."""
+    """Diagonal mirror: top-left triangle reflected."""
     h, w = c.shape[:2]
     for y in range(h):
         x_cut = int(w * y / h)
@@ -581,7 +581,7 @@ def sh_channel_swap(c, order=(2,1,0)):
 #### RGB Split Radial
 ```python
 def sh_rgb_split_radial(c, strength=5):
-    """Chromatic aberration radiating from center — stronger at edges."""
+    """Chromatic aberration radiating from center: stronger at edges."""
     h, w = c.shape[:2]; cy, cx = h//2, w//2
     Y = np.arange(h, dtype=np.float32)[:, None]
     X = np.arange(w, dtype=np.float32)[None, :]
@@ -628,7 +628,7 @@ def sh_threshold(c, thr=128):
 #### Solarize
 ```python
 def sh_solarize(c, threshold=128):
-    """Invert pixels above threshold — classic darkroom effect."""
+    """Invert pixels above threshold: classic darkroom effect."""
     o = c.copy(); mask = c > threshold; o[mask] = 255 - c[mask]
     return o
 ```
@@ -739,7 +739,7 @@ def sh_soft_focus(c, strength=0.3):
 #### Radial Blur
 ```python
 def sh_radial_blur(c, strength=0.03, center=None):
-    """Zoom blur from center — motion blur radiating outward."""
+    """Zoom blur from center: motion blur radiating outward."""
     h, w = c.shape[:2]
     cy, cx = center if center else (h//2, w//2)
     Y = np.arange(h, dtype=np.float32)[:, None]
@@ -798,7 +798,7 @@ def sh_scanlines(c, intensity=0.08, spacing=3):
 #### Halftone
 ```python
 def sh_halftone(c, dot_size=6):
-    """Halftone dot pattern overlay — circular dots sized by local brightness."""
+    """Halftone dot pattern overlay: circular dots sized by local brightness."""
     h, w = c.shape[:2]
     gray = c.astype(np.float32).mean(axis=2) / 255.0
     out = np.zeros_like(c)
@@ -836,7 +836,7 @@ def sh_vignette(c, s=0.22):
 
 #### Reverse Vignette
 
-Inverted vignette: darkens the **center** and leaves edges bright. Useful when text is centered over busy backgrounds — creates a natural dark zone for readability without a hard-edged box.
+Inverted vignette: darkens the **center** and leaves edges bright. Useful when text is centered over busy backgrounds. Creates a natural dark zone for readability without a hard-edged box.
 
 Combine with `apply_text_backdrop()` (see composition.md) for per-frame glyph-aware darkening.
 
@@ -920,7 +920,7 @@ def sh_glitch_bands(c, f):
 #### Block Glitch
 ```python
 def sh_block_glitch(c, n_blocks=8, max_size=40):
-    """Random rectangular block displacement — copy blocks to random positions."""
+    """Random rectangular block displacement: copy blocks to random positions."""
     out = c.copy(); h, w = c.shape[:2]
     for _ in range(n_blocks):
         bw = random.randint(10, max_size); bh = random.randint(5, max_size//2)
@@ -964,7 +964,7 @@ def sh_pixel_sort(c, threshold=100, direction="h"):
 #### Data Bend
 ```python
 def sh_data_bend(c, offset=1000, chunk=500):
-    """Treat raw pixel bytes as data, copy a chunk to another offset — datamosh artifacts."""
+    """Treat raw pixel bytes as data, copy a chunk to another offset: datamosh artifacts."""
     flat = c.flatten().copy()
     n = len(flat)
     src = offset % n; dst = (offset + chunk*3) % n
@@ -1097,12 +1097,12 @@ For compositing ASCII art over other video or images. Uses RGBA canvas (4 channe
 
 ```python
 def create_rgba_canvas(H, W):
-    """Transparent canvas — alpha channel starts at 0 (fully transparent)."""
+    """Transparent canvas: alpha channel starts at 0 (fully transparent)."""
     return np.zeros((H, W, 4), dtype=np.uint8)
 
 def render_char_rgba(canvas, row, col, char_img, color_rgb, alpha=255):
     """Render a character with alpha. char_img = PIL glyph mask (grayscale).
-    Alpha comes from the glyph mask — background stays transparent."""
+    Alpha comes from the glyph mask: background stays transparent."""
     r, g, b = color_rgb
     y0, x0 = row * cell_h, col * cell_w
     mask = np.array(char_img)  # grayscale 0-255
@@ -1122,11 +1122,11 @@ def blend_onto_background(rgba_canvas, bg_rgb):
 
 RGBA output via ffmpeg (ProRes 4444 for editing, WebM VP9 for web):
 ```bash
-# ProRes 4444 — preserves alpha, widely supported in NLEs
+# ProRes 4444: preserves alpha, widely supported in NLEs
 ffmpeg -y -f rawvideo -pix_fmt rgba -s {W}x{H} -r {fps} -i pipe:0 \
     -c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le output.mov
 
-# WebM VP9 — alpha support for web/browser compositing
+# WebM VP9: alpha support for web/browser compositing
 ffmpeg -y -f rawvideo -pix_fmt rgba -s {W}x{H} -r {fps} -i pipe:0 \
     -c:v libvpx-vp9 -pix_fmt yuva420p -crf 30 -b:v 0 output.webm
 
@@ -1251,14 +1251,14 @@ def render_live(scene_fn, r, fps=24, duration=None):
             # Synthesize features from time (or connect to live audio via pyaudio)
             f = synthesize_features(t)
             
-            # Render scene — for terminal, use a small grid
+            # Render scene: for terminal, use a small grid
             g = r.get_grid("sm")
             # Option A: v2 scene → extract chars/colors from canvas (reverse render)
             # Option B: call effect functions directly for chars/colors
             canvas = scene_fn(r, f, t, S)
             
             # For terminal display, render chars+colors directly
-            # (bypassing the pixel canvas — terminal uses character cells)
+            # (bypassing the pixel canvas: terminal uses character cells)
             chars, colors = scene_to_terminal(scene_fn, r, f, t, S, g)
             
             frame_str = ANSI_CLEAR + frame_to_ansi(chars, colors)

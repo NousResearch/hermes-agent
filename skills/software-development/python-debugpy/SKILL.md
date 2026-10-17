@@ -63,7 +63,7 @@ Inside any pdb prompt (`(Pdb)`):
 | `interact` | drop into full Python REPL in current scope (Ctrl+D to exit) |
 | `q` | quit |
 
-The `interact` command is the most powerful — you can import anything, inspect complex objects, even call methods that mutate state. Locals are read-only by default; use `!x = 42` from the `(Pdb)` prompt to mutate.
+The `interact` command is the most powerful: you can import anything, inspect complex objects, even call methods that mutate state. Locals are read-only by default; use `!x = 42` from the `(Pdb)` prompt to mutate.
 
 ## Recipe 1: Local breakpoint
 
@@ -110,7 +110,7 @@ Recipe 5 (never a production generation):
 .venv/bin/python -m pytest tests/foo_test.py::test_bar --pdb
 ```
 
-This bypasses the hermetic-env guarantees — fine for debugging, but re-run under the wrapper to confirm before pushing.
+This bypasses the hermetic-env guarantees: fine for debugging, but re-run under the wrapper to confirm before pushing.
 
 ## Recipe 4: Post-mortem on any exception
 
@@ -147,7 +147,7 @@ For long-lived processes: Hermes gateway, tui_gateway, a daemon, a process that'
 For Hermes, use a separate development checkout and data home, not a live
 production generation. Follow the
 [PM developer workflow](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
-and activate that checkout — PowerShell: `. .\activate.ps1`. The declared `dev`
+and activate that checkout (PowerShell: `. .\activate.ps1`). The declared `dev`
 extra includes debugpy, which PM activation does not sync (`all` excludes it).
 Through `terminal`, build a fresh, caller-owned debug/test environment with the
 prepared checkout's Python:
@@ -166,7 +166,7 @@ through it. Do not add debugpy to a running production environment; reproduce
 there only with an already-prepared debug target or arrange a restart in the
 development environment.
 
-### Pattern A: Source-edit — process waits for debugger at launch
+### Pattern A: Source-edit: process waits for debugger at launch
 
 Add near the top of the entry point (or inside the function you want to debug):
 
@@ -180,7 +180,7 @@ debugpy.breakpoint()       # optional: pause immediately once attached
 
 Start the process; it blocks on `wait_for_client()`.
 
-### Pattern B: No source edit — launch with `-m debugpy`
+### Pattern B: No source edit: launch with `-m debugpy`
 
 ```bash
 .venv/bin/python -m debugpy --listen 127.0.0.1:5678 --wait-for-client your_script.py arg1
@@ -210,7 +210,7 @@ echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
 
 The easiest terminal-side DAP client is VS Code CLI or a small script. From inside Hermes you have two practical options:
 
-**Option 1: `debugpy`'s own CLI REPL** — not an official feature, but a tiny DAP client script:
+**Option 1: `debugpy`'s own CLI REPL**: not an official feature, but a tiny DAP client script:
 
 ```python
 # ~/.hermes/cache/scratch/dap_client.py
@@ -249,7 +249,7 @@ send({"type": "request", "command": "configurationDone"})
 
 This is fine for one-off automation but painful as an interactive UX.
 
-**Option 2: Attach from VS Code / Cursor / Zed** — if the user has one open, they can add a `launch.json`:
+**Option 2: Attach from VS Code / Cursor / Zed**: if the user has one open, they can add a `launch.json`:
 
 ```json
 {
@@ -264,7 +264,7 @@ This is fine for one-off automation but painful as an interactive UX.
 }
 ```
 
-**Option 3: Ditch DAP, use `remote-pdb`** — usually what you actually want from a terminal agent:
+**Option 3: Ditch DAP, use `remote-pdb`**: usually what you actually want from a terminal agent:
 
 For an independently owned Python project, declare `remote-pdb` in that
 project's development dependencies and prepare its debug environment through
@@ -292,7 +292,7 @@ nc 127.0.0.1 4444
 ### Tests
 See Recipe 3. The wrapper captures subprocess output, so run pytest directly for interactive pdb.
 
-### `run_agent.py` / CLI — one-shot
+### `run_agent.py` / CLI: one-shot
 In the prepared debug checkout, add `breakpoint()` near the suspect line, then
 run `python hermes`. Control returns to your terminal at the pause point.
 
@@ -316,7 +316,7 @@ set_trace(host="127.0.0.1", port=4444)   # in the RPC handler you want to trap
 Trigger the matching slash command from the TUI, then `nc 127.0.0.1 4444` in another terminal.
 
 ### `_SlashWorker` subprocess
-Same pattern — `remote-pdb` with `set_trace()` inside the worker's `exec` path. The worker is persistent across slash commands, so the first trigger blocks until you connect; subsequent slash commands pass through normally unless you re-arm.
+Same pattern: `remote-pdb` with `set_trace()` inside the worker's `exec` path. The worker is persistent across slash commands, so the first trigger blocks until you connect; subsequent slash commands pass through normally unless you re-arm.
 
 ### Gateway (`gateway/run.py`)
 Long-lived. Use `remote-pdb` at a handler, or `debugpy` with `--wait-for-client` if you're restarting the gateway anyway.

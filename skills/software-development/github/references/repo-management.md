@@ -43,7 +43,7 @@ REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
 
 ## 1. Cloning Repositories
 
-Cloning is pure `git` — works identically either way:
+Cloning is pure `git`: works identically either way:
 
 ```bash
 # Clone via HTTPS (works with credential helper or token-embedded URL)
@@ -170,7 +170,7 @@ git remote add upstream https://github.com/owner/repo-name.git
 ### Keeping a Fork in Sync
 
 ```bash
-# Pure git — works everywhere
+# Pure git: works everywhere
 git fetch upstream
 git checkout main
 git merge upstream/main
@@ -299,7 +299,7 @@ gh secret delete API_KEY
 
 **With curl:**
 
-Secrets require encryption with the repo's public key — more involved via API:
+Secrets require encryption with the repo's public key: more involved via API:
 
 ```bash
 # Get the repo's public key for encrypting secrets

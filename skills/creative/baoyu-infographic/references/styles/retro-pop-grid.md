@@ -5,7 +5,7 @@
 ## Color Palette
 
 - Background: Warm vintage cream/beige (#F5F0E6)
-- Flat accents: Salmon pink, sky blue, mustard yellow, mint green—all muted retro tones
+- Flat accents: Salmon pink, sky blue, mustard yellow, mint green, all muted retro tones
 - Contrast blocks: Solid pure black (#000000) and solid pure white (#FFFFFF) used strategically for extreme contrast
 - Line art and outlines: Solid thick black
 
@@ -18,7 +18,7 @@
 - Geometric fill patterns in empty cells: checkerboards, diagonal lines, dots
 - Flat abstract symbols, warning signs, keyholes, stars, arrows
 - Vintage comic-style smiley/frowny faces for quality indicators
-- Colored cells used for breathing room—some with minimal/no content
+- Colored cells used for breathing room: some with minimal/no content
 
 ## Typography
 
@@ -30,9 +30,9 @@
 ## Style Enforcement
 
 - Absolutely no gradients, shading, drop shadows, or 3D effects
-- Everything anchored in grid cells—no floating or unorganized elements
+- Everything anchored in grid cells: no floating or unorganized elements
 - Maintain 1970s retro pop art and underground comic illustration feel
-- Visual density balanced with rhythmic grid—some cells intentionally sparse for contrast
+- Visual density balanced with rhythmic grid: some cells intentionally sparse for contrast
 
 ## Avoid
 

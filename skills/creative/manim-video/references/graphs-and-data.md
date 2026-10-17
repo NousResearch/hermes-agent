@@ -90,7 +90,7 @@ label = Text("+167%", font_size=36, color=YELLOW).next_to(arrow, UP)
 self.play(GrowArrow(arrow), Write(label))
 ```
 
-## Graph / DiGraph — Graph Theory Visualization
+## Graph / DiGraph: Graph Theory Visualization
 
 Built-in graph mobjects with automatic layout:
 
@@ -123,7 +123,7 @@ self.play(g.animate.remove_vertices(3))
 
 Layout algorithms: `"spring"`, `"circular"`, `"kamada_kawai"`, `"planar"`, `"spectral"`, `"tree"` (for rooted trees, specify `root=`).
 
-## ArrowVectorField / StreamLines — Vector Fields
+## ArrowVectorField / StreamLines: Vector Fields
 
 ```python
 # Arrow field: arrows showing direction at each point

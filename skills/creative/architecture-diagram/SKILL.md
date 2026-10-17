@@ -14,7 +14,7 @@ metadata:
 
 # Architecture Diagram Skill
 
-Generate professional, dark-themed technical architecture diagrams as standalone HTML files with inline SVG graphics. No external tools, no API keys, no rendering libraries — just write the HTML file and open it in a browser.
+Generate professional, dark-themed technical architecture diagrams as standalone HTML files with inline SVG graphics. No external tools, no API keys, no rendering libraries: just write the HTML file and open it in a browser.
 
 ## Scope
 
@@ -32,7 +32,7 @@ Generate professional, dark-themed technical architecture diagrams as standalone
 - Hand-drawn whiteboard sketches (consider `excalidraw`)
 - Animated explainers (consider an animation skill)
 
-If a more specialized skill is available for the subject, prefer that. If none fits, this skill can also serve as a general SVG diagram fallback — the output will just carry the dark tech aesthetic described below.
+If a more specialized skill is available for the subject, prefer that. If none fits, this skill can also serve as a general SVG diagram fallback: the output will just carry the dark tech aesthetic described below.
 
 Based on [Cocoon AI's architecture-diagram-generator](https://github.com/Cocoon-AI/architecture-diagram-generator) (MIT).
 
@@ -41,7 +41,7 @@ Based on [Cocoon AI's architecture-diagram-generator](https://github.com/Cocoon-
 1. User describes their system architecture (components, connections, technologies)
 2. Generate the HTML file following the design system below
 3. Save with `write_file` to a `.html` file (e.g. `~/architecture-diagram.html`)
-4. User opens in any browser — works offline, no dependencies
+4. User opens in any browser: works offline, no dependencies
 
 ### Output Location
 
@@ -145,4 +145,4 @@ Load the full HTML template for the exact structure, CSS, and SVG component exam
 skill_view(name="architecture-diagram", file_path="templates/template.html")
 ```
 
-The template contains working examples of every component type (frontend, backend, database, cloud, security), arrow styles (standard, dashed, curved), security groups, region boundaries, and the legend — use it as your structural reference when generating diagrams.
+The template contains working examples of every component type (frontend, backend, database, cloud, security), arrow styles (standard, dashed, curved), security groups, region boundaries, and the legend: use it as your structural reference when generating diagrams.

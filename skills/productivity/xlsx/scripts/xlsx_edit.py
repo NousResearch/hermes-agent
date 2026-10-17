@@ -30,7 +30,7 @@ Operations (repeatable where noted, applied in the order listed below):
 
 WARNING: openpyxl does NOT shift merged-cell ranges, chart anchors, or
 formula references when rows/columns are inserted or deleted. Verify any
-sheet containing merges or formulas after structural edits — or use
+sheet containing merges or formulas after structural edits: or use
 xlsx_restructure.py, which rewrites references for you.
 
 Usage:
@@ -105,7 +105,7 @@ def table_append(ws, name, row_values):
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Edit an existing .xlsx workbook.",
-        epilog="Plain insert/delete does not shift merges/formula refs — "
+        epilog="Plain insert/delete does not shift merges/formula refs: "
                "use xlsx_restructure.py for reference-aware moves.")
     ap.add_argument("file", help="path to .xlsx file")
     ap.add_argument("--sheet", help="target sheet (default: active)")

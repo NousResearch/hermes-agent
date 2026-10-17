@@ -8,12 +8,12 @@
 
 ```python
 RESOLUTION_PRESETS = {
-    "landscape":  (1920, 1080),  # 16:9 — YouTube, default
-    "portrait":   (1080, 1920),  # 9:16 — TikTok, Reels, Stories
-    "square":     (1080, 1080),  # 1:1  — Instagram feed
-    "ultrawide":  (2560, 1080),  # 21:9 — cinematic
-    "landscape4k":(3840, 2160),  # 16:9 — 4K
-    "portrait4k": (2160, 3840),  # 9:16 — 4K portrait
+    "landscape":  (1920, 1080),  # 16:9: YouTube, default
+    "portrait":   (1080, 1920),  # 9:16: TikTok, Reels, Stories
+    "square":     (1080, 1080),  # 1:1: Instagram feed
+    "ultrawide":  (2560, 1080),  # 21:9: cinematic
+    "landscape4k":(3840, 2160),  # 16:9: 4K
+    "portrait4k": (2160, 3840),  # 9:16: 4K portrait
 }
 
 def get_resolution(preset="landscape", custom=None):
@@ -58,14 +58,14 @@ Pre-initialize multiple grid sizes. Switch per section for visual variety. Grid 
 | lg | 20 | 90x45 | Readable text |
 
 **Key differences in portrait mode:**
-- Fewer columns (90 at `lg` vs 160) — lines must be shorter or wrap
-- Many more rows (80 at `lg` vs 45) — vertical stacking is natural
+- Fewer columns (90 at `lg` vs 160): lines must be shorter or wrap
+- Many more rows (80 at `lg` vs 45): vertical stacking is natural
 - Aspect ratio correction flips: `asp = cw / ch` still works but the visual emphasis is vertical
 - Radial effects appear as tall ellipses unless corrected
 - Vertical effects (rain, embers, fire columns) are naturally enhanced
 - Horizontal effects (spectrum bars, waveforms) need rotation or compression
 
-**Grid sizing for text in portrait**: Use `lg` (20px) for 2-3 word lines. Max comfortable line length is ~25-30 chars. For longer quotes, break aggressively into many short lines stacked vertically — portrait has vertical space to spare. `xl` (24px) works for single words or very short phrases.
+**Grid sizing for text in portrait**: Use `lg` (20px) for 2-3 word lines. Max comfortable line length is ~25-30 chars. For longer quotes, break aggressively into many short lines stacked vertically. Portrait has vertical space to spare. `xl` (24px) works for single words or very short phrases.
 
 Grid dimensions: `cols = VW // cell_width`, `rows = VH // cell_height`.
 
@@ -433,7 +433,7 @@ def rgb_palette_map(val, mask, palette):
 
 ### OKLAB Color Space (Perceptually Uniform)
 
-HSV hue is perceptually non-uniform: green occupies far more visual range than blue. OKLAB / OKLCH provide perceptually even color steps — hue increments of 0.1 look equally different regardless of starting hue. Use OKLAB for:
+HSV hue is perceptually non-uniform: green occupies far more visual range than blue. OKLAB / OKLCH provide perceptually even color steps, hue increments of 0.1 look equally different regardless of starting hue. Use OKLAB for:
 - Gradient interpolation (no unwanted intermediate hues)
 - Color harmony generation (perceptually balanced palettes)
 - Smooth color transitions over time
@@ -515,7 +515,7 @@ Interpolating colors through OKLAB avoids the hue detours that HSV produces:
 def lerp_oklab(color_a, color_b, t_array):
     """Interpolate between two sRGB colors through OKLAB.
     color_a, color_b: (R, G, B) tuples 0-255
-    t_array: float32 array [0,1] — interpolation parameter per pixel.
+    t_array: float32 array [0,1]: interpolation parameter per pixel.
     Returns (R, G, B) uint8 arrays."""
     La, aa, ba = rgb_to_oklab(
         np.full_like(t_array, color_a[0], dtype=np.uint8),
@@ -732,7 +732,7 @@ subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_path,
 
 ### v2 Protocol (Current)
 
-Every scene function: `(r, f, t, S) -> canvas_uint8` — where `r` = Renderer, `f` = features dict, `t` = time float, `S` = persistent state dict
+Every scene function: `(r, f, t, S) -> canvas_uint8`, where `r` = Renderer, `f` = features dict, `t` = time float, `S` = persistent state dict
 
 ```python
 def fx_example(r, f, t, S):
@@ -769,7 +769,7 @@ def fx_simple(r, f, t, S):
 
 ### Persistent State
 
-Effects that need state across frames (particles, rain columns) use the `S` dict parameter (which is `r.S` — same object, but passed explicitly for clarity):
+Effects that need state across frames (particles, rain columns) use the `S` dict parameter (which is `r.S`: same object, but passed explicitly for clarity):
 
 ```python
 def fx_with_state(r, f, t, S):

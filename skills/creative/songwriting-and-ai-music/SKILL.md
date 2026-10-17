@@ -25,7 +25,7 @@ Use what serves the song. Ignore what doesn't.
 
 ## 1. Song Structure (Pick One or Invent Your Own)
 
-Common skeletons — mix, modify, or throw out as needed:
+Common skeletons: mix, modify, or throw out as needed:
 
 ```
 ABABCB  Verse/Chorus/Verse/Chorus/Bridge/Chorus    (most pop/rock)
@@ -35,12 +35,12 @@ AAA     Verse/Verse/Verse (strophic, no chorus)     (folk, storytelling)
 ```
 
 The six building blocks:
-- Intro      — set the mood, pull the listener in
-- Verse      — the story, the details, the world-building
-- Pre-Chorus — optional tension ramp before the payoff
-- Chorus     — the emotional core, the part people remember
-- Bridge     — a detour, a shift in perspective or key
-- Outro      — the farewell, can echo or subvert the rest
+- Intro: set the mood, pull the listener in
+- Verse: the story, the details, the world-building
+- Pre-Chorus: optional tension ramp before the payoff
+- Chorus: the emotional core, the part people remember
+- Bridge: a detour, a shift in perspective or key
+- Outro: the farewell, can echo or subvert the rest
 
 You don't need all of these. Some great songs are just one section
 that evolves. Structure serves the emotion, not the other way around.
@@ -61,7 +61,7 @@ All slant rhymes can sound lazy. The blend is where it lives.
 
 INTERNAL RHYME: Rhyming within a line, not just at the ends.
   "We pruned the lies from bleeding trees / Distilled the storm
-   from entropy" — "lies/flies," "trees/entropy" create internal echoes.
+   from entropy": "lies/flies," "trees/entropy" create internal echoes.
 
 METER: The rhythm of stressed vs unstressed syllables.
 - Matching syllable counts between parallel lines helps singability
@@ -85,7 +85,7 @@ The most powerful dynamic trick: CONTRAST.
 - The drop only works because of the buildup
 - Silence is an instrument
 
-"Whisper to roar to whisper" — start intimate, build to full power,
+"Whisper to roar to whisper": start intimate, build to full power,
 strip back to vulnerability. Works for ballads, epics, anthems.
 
 ---
@@ -103,7 +103,7 @@ THE HOOK:
 - Works best when melody + lyric + emotion all align
 - Place it where it lands hardest (often first/last line of chorus)
 
-PROSODY — lyrics and music supporting each other:
+PROSODY: lyrics and music supporting each other:
 - Stable feelings (resolution, peace) pair with settled melodies,
   perfect rhymes, resolved chords
 - Unstable feelings (longing, doubt) pair with wandering melodies,
@@ -115,7 +115,7 @@ AVOID (unless you're doing it on purpose):
 - Cliches on autopilot ("heart of gold" without earning it)
 - Forcing word order to hit a rhyme ("Yoda-speak")
 - Same energy in every section (flat dynamics)
-- Treating your first draft as sacred — revision is creation
+- Treating your first draft as sacred: revision is creation
 
 ---
 
@@ -137,7 +137,7 @@ FITTING NEW WORDS:
    better than "LIFE")
 - Monosyllabic swaps in key spots keep rhythm intact
   (Crime -> Code, Snake -> Noose)
-- Sing your new words over the original — if you stumble, revise
+- Sing your new words over the original: if you stumble, revise
 
 CONCEPT:
 - Pick a concept strong enough to sustain the whole song
@@ -176,7 +176,7 @@ DESCRIBE THE JOURNEY, not just the genre:
 ```
 
 TIPS:
-- V4.5+ supports up to 1,000 chars in Style field — use them
+- V4.5+ supports up to 1,000 chars in Style field: use them
 - NO artist names or trademarks. Describe the sound instead.
   "1960s Cold War spy thriller brass" not "James Bond style"
   "90s grunge" not "Nirvana-style"
@@ -218,24 +218,24 @@ SFX:
   [Vinyl Crackle] [Rain] [Applause] [Static] [Thunder]
 
 Put tags in BOTH style field AND lyrics for reinforcement.
-Keep to 5-8 tags per section max — too many confuses the AI.
+Keep to 5-8 tags per section max: too many confuses the AI.
 Don't contradict yourself ([Calm] + [Aggressive] in same section).
 
 ### Custom Mode
 - Always use Custom Mode for serious work (separate Style + Lyrics)
 - Lyrics field limit: ~3,000 chars (~40-60 lines)
-- Always add structural tags — without them Suno defaults to
+- Always add structural tags: without them Suno defaults to
   flat verse/chorus/verse with no emotional arc
 
 ---
 
 ## 7. Phonetic Tricks for AI Singers
 
-AI vocalists don't read — they pronounce. Help them:
+AI vocalists don't read: they pronounce. Help them:
 
 PHONETIC RESPELLING:
 - Spell words as they SOUND: "through" -> "thru"
-- Proper nouns are highest failure rate — test early
+- Proper nouns are highest failure rate: test early
 - "Nous" -> "Noose" (forces correct pronunciation)
 - Hyphenate to guide syllables: "Re-search", "bio-engineering"
 
@@ -249,25 +249,25 @@ ALWAYS:
 - Spell out numbers: "24/7" -> "twenty four seven"
 - Space acronyms: "AI" -> "A I" or "A-I"
 - Test proper nouns/unusual words in a short 30-second clip first
-- Once generated, pronunciation is baked in — fix in lyrics BEFORE
+- Once generated, pronunciation is baked in: fix in lyrics BEFORE
 
 ---
 
 ## 8. Workflow
 
-1. Write the concept/hook first — what's the emotional core?
+1. Write the concept/hook first: what's the emotional core?
 2. If adapting, map the original structure (syllables, rhyme, stress)
-3. Generate raw material — brainstorm freely before structuring
+3. Generate raw material: brainstorm freely before structuring
 4. Draft lyrics into the structure
-5. Read/sing aloud — catch stumbles, fix meter
-6. Build the Suno style description — paint the dynamic journey
+5. Read/sing aloud: catch stumbles, fix meter
+6. Build the Suno style description: paint the dynamic journey
 7. Add metatags to lyrics for performance direction
-8. Generate 3-5 variations minimum — treat them like recording takes
+8. Generate 3-5 variations minimum: treat them like recording takes
 9. Pick the best, use Extend/Continue to build on promising sections
 10. If something great happens by accident, keep it
 
 EXPECT: ~3-5 generations per 1 good result. Revision is normal.
-Style can drift in extensions — restate genre/mood when extending.
+Style can drift in extensions: restate genre/mood when extending.
 
 ---
 
@@ -277,7 +277,7 @@ Style can drift in extensions — restate genre/mood when extending.
   than just listing genres. "Whisper to roar to whisper" gives
   Suno a performance map.
 - Keeping some original lines intact in a parody adds recognizability
-  and emotional weight — the audience feels the ghost of the original.
+  and emotional weight: the audience feels the ghost of the original.
 - The bridge slot in a song is where you can transform imagery.
   Swap the original's specific references for your theme's metaphors
   while keeping the emotional function (reflection, shift, revelation).
@@ -296,13 +296,13 @@ Style can drift in extensions — restate genre/mood when extending.
 For local, GPU-based generation instead of Suno, two optional skills
 cover this (heavy dependencies, so not installed by default):
 
-- **heartmula** — full songs with vocals from lyrics + tags
+- **heartmula**: full songs with vocals from lyrics + tags
   (open-source Suno alternative, 8-16GB VRAM):
   `hermes skills install official/creative/heartmula`
-- **audiocraft** — Meta's MusicGen (instrumental text-to-music) and
+- **audiocraft**: Meta's MusicGen (instrumental text-to-music) and
   AudioGen (sound effects):
   `hermes skills install official/creative/audiocraft-audio-generation`
 
 The lyric-writing and prompting craft in this skill applies to
-heartmula too — its input format is lyrics with bracketed structure
+heartmula too: its input format is lyrics with bracketed structure
 tags plus comma-separated style tags.

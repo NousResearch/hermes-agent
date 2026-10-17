@@ -336,7 +336,7 @@ def update_flow_particles(S, g, f, flow_field, n=500, speed=1.0,
                           char_set=None):
     """Particles steered by a value field gradient.
 
-    flow_field: float32 (rows, cols) — the field particles follow.
+    flow_field: float32 (rows, cols): the field particles follow.
                 Particles flow from low to high values (uphill) or along
                 the gradient direction.
     """
@@ -698,7 +698,7 @@ class LayerStack(EffectNode):
 
 # Usage:
 stack = LayerStack()
-stack.add(bg_effect)           # base — fills screen
+stack.add(bg_effect)           # base: fills screen
 stack.add(main_effect)         # overlay on top (space chars = transparent)
 stack.add(particle_effect)     # sparse overlay on top of that
 ch, co = stack.render(g, f, t, S)
@@ -734,7 +734,7 @@ for each frame:
                       transform="zoom", transform_amt=0.015, hue_shift=0.02)
 ```
 
-### Effect Nodes — Uniform Interface
+### Effect Nodes: Uniform Interface
 
 In the v2 protocol, effect nodes are used **inside** scene functions. The scene function itself returns a canvas. Effect nodes produce intermediate `(chars, colors)` that are rendered to canvas via the grid's `.render()` method or `_render_vf()`.
 
@@ -806,14 +806,14 @@ def vf_spiral(g, f, t, S, n_arms=3, tightness=2.5):
     return val
 
 def vf_tunnel(g, f, t, S, speed=3.0, complexity=6):
-    """Tunnel depth effect — infinite zoom feeling."""
+    """Tunnel depth effect: infinite zoom feeling."""
     tunnel_d = 1.0 / (g.dist_n + 0.1)
     v1 = np.sin(tunnel_d*2 - t*speed) * 0.45 + 0.55
     v2 = np.sin(g.angle*complexity + tunnel_d*1.5 - t*2) * 0.35 + 0.55
     return np.clip(v1*0.5 + v2*0.5, 0, 1)
 
 def vf_vortex(g, f, t, S, twist=3.0):
-    """Twisting radial pattern — distance modulates angle."""
+    """Twisting radial pattern: distance modulates angle."""
     twisted = g.angle + g.dist_n * twist * np.sin(t * 0.5)
     val = np.sin(twisted * 4 - t * 2) * 0.5 + 0.5
     return np.clip(val * (0.5 + f.get("bass",0.3)*0.8), 0, 1)
@@ -862,13 +862,13 @@ def vf_diamond(g, f, t, S, freq=0.15):
     return np.clip(val * (0.6 + f.get("rms",0.3)*0.8), 0, 1)
 
 def vf_noise_static(g, f, t, S, density=0.4):
-    """Random noise — different each frame. Non-deterministic."""
+    """Random noise: different each frame. Non-deterministic."""
     return np.random.random((g.rows, g.cols)).astype(np.float32) * density * (0.5 + f.get("rms",0.3)*0.5)
 ```
 
 #### Noise-Based Fields (organic, non-periodic)
 
-These produce qualitatively different textures from sine-based fields — organic, non-repeating, without visible axis alignment. They're the foundation of high-end generative art.
+These produce qualitatively different textures from sine-based fields: organic, non-repeating, without visible axis alignment. They're the foundation of high-end generative art.
 
 ```python
 def _hash2d(ix, iy):
@@ -915,7 +915,7 @@ def vf_noise(g, f, t, S, freq=0.08, speed=0.3, bri=0.7):
 
 def vf_fbm(g, f, t, S, octaves=5, freq=0.06, lacunarity=2.0, gain=0.5,
            speed=0.2, bri=0.8):
-    """Fractal Brownian Motion — octaved noise with lacunarity/gain control.
+    """Fractal Brownian Motion: octaved noise with lacunarity/gain control.
     The standard building block for clouds, terrain, smoke, organic textures.
 
     octaves: number of noise layers (more = finer detail, more cost)
@@ -942,7 +942,7 @@ def vf_fbm(g, f, t, S, octaves=5, freq=0.06, lacunarity=2.0, gain=0.5,
 
 def vf_domain_warp(g, f, t, S, base_fn=None, warp_fn=None,
                    warp_strength=15.0, freq=0.06, speed=0.2):
-    """Domain warping — feed one noise field's output as coordinate offsets
+    """Domain warping: feed one noise field's output as coordinate offsets
     into another noise field. Produces flowing, melting organic distortion.
     Signature technique of high-end generative art (Inigo Quilez).
 
@@ -983,7 +983,7 @@ def vf_voronoi(g, f, t, S, n_cells=20, speed=0.3, edge_width=1.5,
 
     mode: "distance" (bright at center, dark at edges),
           "edge" (bright at cell boundaries),
-          "cell_id" (flat color per cell — use with discrete palette)
+          "cell_id" (flat color per cell: use with discrete palette)
     edge_width: thickness of edge highlight (for "edge" mode)
     """
     rng = np.random.RandomState(seed)
@@ -1170,7 +1170,7 @@ def vf_strange_attractor(g, f, t, S, attractor="clifford",
         "de_jong":   sin(a*y) - cos(b*x), sin(c*x) - cos(d*y)
         "bedhead":   sin(x*y/b) + cos(a*x - y), x*sin(a*y) + cos(b*x - y)
 
-    params: (a, b, c, d) floats — each attractor has different sweet spots.
+    params: (a, b, c, d) floats: each attractor has different sweet spots.
             If None, uses time-varying defaults for animation.
     """
     key = "attr_" + attractor
@@ -1243,7 +1243,7 @@ def sdf_render(dist, edge_width=1.5, invert=False):
     return np.clip(val, 0, 1)
 
 def sdf_glow(dist, falloff=0.05):
-    """Render SDF as glowing outline — bright at boundary, fading both directions."""
+    """Render SDF as glowing outline: bright at boundary, fading both directions."""
     return np.clip(np.exp(-np.abs(dist) * falloff), 0, 1)
 
 # --- Primitives ---
@@ -1293,7 +1293,7 @@ def sdf_triangle(g, cx=0.5, cy=0.5, size=0.25):
     return -np.sqrt(px2**2 + py2**2) * np.sign(py2) * size
 
 def sdf_star(g, cx=0.5, cy=0.5, n_points=5, outer_r=0.25, inner_r=0.12):
-    """Star polygon SDF — n-pointed star."""
+    """Star polygon SDF: n-pointed star."""
     px = (g.cc / g.cols - cx) * (g.cols / g.rows)
     py = g.rr / g.rows - cy
     angle = np.arctan2(py, px)
@@ -1318,25 +1318,25 @@ def sdf_heart(g, cx=0.5, cy=0.45, size=0.25):
 # --- Combinators ---
 
 def sdf_union(d1, d2):
-    """Boolean union — shape is wherever either SDF is inside."""
+    """Boolean union: shape is wherever either SDF is inside."""
     return np.minimum(d1, d2)
 
 def sdf_intersect(d1, d2):
-    """Boolean intersection — shape is where both SDFs overlap."""
+    """Boolean intersection: shape is where both SDFs overlap."""
     return np.maximum(d1, d2)
 
 def sdf_subtract(d1, d2):
-    """Boolean subtraction — d1 minus d2."""
+    """Boolean subtraction: d1 minus d2."""
     return np.maximum(d1, -d2)
 
 def sdf_smooth_union(d1, d2, k=0.1):
-    """Smooth minimum (polynomial) — blends shapes with rounded join.
+    """Smooth minimum (polynomial): blends shapes with rounded join.
     k: smoothing radius. Higher = more rounding."""
     h = np.clip(0.5 + 0.5 * (d2 - d1) / k, 0, 1)
     return d2 * (1 - h) + d1 * h - k * h * (1 - h)
 
 def sdf_smooth_subtract(d1, d2, k=0.1):
-    """Smooth subtraction — d1 minus d2 with rounded edge."""
+    """Smooth subtraction: d1 minus d2 with rounded edge."""
     return sdf_smooth_union(d1, -d2, k)
 
 def sdf_repeat(g, sdf_fn, spacing_x=0.25, spacing_y=0.25, **sdf_kwargs):
@@ -1345,7 +1345,7 @@ def sdf_repeat(g, sdf_fn, spacing_x=0.25, spacing_y=0.25, **sdf_kwargs):
     mod_cc = (g.cc / g.cols) % spacing_x - spacing_x / 2
     mod_rr = (g.rr / g.rows) % spacing_y - spacing_y / 2
     # Create modified grid-like arrays for the SDF
-    # This is a simplified approach — build a temporary namespace
+    # This is a simplified approach: build a temporary namespace
     class ModGrid:
         pass
     mg = ModGrid()
@@ -1380,7 +1380,7 @@ def hf_fixed(hue):
     return fn
 
 def hf_angle(offset=0.0):
-    """Hue mapped to angle from center — rainbow wheel."""
+    """Hue mapped to angle from center: rainbow wheel."""
     def fn(g, f, t, S):
         return (g.angle / (2 * np.pi) + offset + t * 0.05) % 1.0
     return fn
@@ -1398,7 +1398,7 @@ def hf_time_cycle(speed=0.1):
     return fn
 
 def hf_audio_cent():
-    """Hue follows spectral centroid — timbral color shifting."""
+    """Hue follows spectral centroid: timbral color shifting."""
     def fn(g, f, t, S):
         return np.full((g.rows, g.cols), f.get("cent", 0.5) * 0.3, dtype=np.float32)
     return fn
@@ -1409,7 +1409,7 @@ def hf_gradient_h(start=0.0, end=1.0):
         h = np.broadcast_to(
             start + (g.cc / g.cols) * (end - start),
             (g.rows, g.cols)
-        ).copy()  # .copy() is CRITICAL — see troubleshooting.md
+        ).copy()  # .copy() is CRITICAL: see troubleshooting.md
         return h % 1.0
     return fn
 
@@ -1424,7 +1424,7 @@ def hf_gradient_v(start=0.0, end=1.0):
     return fn
 
 def hf_plasma(speed=0.3):
-    """Plasma-style hue field — organic color variation."""
+    """Plasma-style hue field: organic color variation."""
     def fn(g, f, t, S):
         return (np.sin(g.cc*0.02 + t*speed)*0.5 + np.sin(g.rr*0.015 + t*speed*0.7)*0.5) % 1.0
     return fn
@@ -1441,7 +1441,7 @@ UV-space transforms applied **before** effect evaluation. Any `vf_*` function ca
 ```python
 def uv_rotate(g, angle):
     """Rotate UV coordinates around grid center.
-    Returns (rotated_cc, rotated_rr) arrays — use in place of g.cc, g.rr."""
+    Returns (rotated_cc, rotated_rr) arrays: use in place of g.cc, g.rr."""
     cx, cy = g.cols / 2.0, g.rows / 2.0
     cos_a, sin_a = np.cos(angle), np.sin(angle)
     dx = g.cc - cx
@@ -1600,11 +1600,11 @@ def ease_in_out_cubic(t):
 def ease_in_expo(t): return np.where(t == 0, 0, 2**(10*(t-1)))
 def ease_out_expo(t): return np.where(t == 1, 1, 1 - 2**(-10*t))
 def ease_elastic(t):
-    """Elastic ease-out — overshoots then settles."""
+    """Elastic ease-out: overshoots then settles."""
     return np.where(t == 0, 0, np.where(t == 1, 1,
         2**(-10*t) * np.sin((t*10 - 0.75) * (2*np.pi) / 3) + 1))
 def ease_bounce(t):
-    """Bounce ease-out — bounces at the end."""
+    """Bounce ease-out: bounces at the end."""
     t = np.asarray(t, dtype=np.float64)
     result = np.empty_like(t)
     m1 = t < 1/2.75
@@ -1735,7 +1735,7 @@ def vf_sequence(g, f, t, S, fields, durations, crossfade=1.0,
 
 ### Temporal Noise
 
-3D noise sampled at `(x, y, t)` — patterns evolve smoothly in time without per-frame discontinuities:
+3D noise sampled at `(x, y, t)`: patterns evolve smoothly in time without per-frame discontinuities:
 
 ```python
 def vf_temporal_noise(g, f, t, S, freq=0.06, t_freq=0.3, octaves=4,
@@ -1744,7 +1744,7 @@ def vf_temporal_noise(g, f, t, S, freq=0.06, t_freq=0.3, octaves=4,
     two 2D noise lookups combined with temporal interpolation.
 
     Unlike vf_fbm which scrolls noise (creating directional motion),
-    this morphs the pattern in-place — cells brighten and dim without
+    this morphs the pattern in-place: cells brighten and dim without
     the field moving in any direction."""
     # Two noise samples at floor/ceil of temporal coordinate
     t_scaled = t * t_freq
@@ -1788,7 +1788,7 @@ combined = vf_rings(g,f,t,S) * (0.3 + 0.7 * vf_plasma(g,f,t,S))
 combined = np.maximum(vf_spiral(g,f,t,S), vf_aurora(g,f,t,S))
 ```
 
-### Full Scene Example (v2 — Canvas Return)
+### Full Scene Example (v2: Canvas Return)
 
 A v2 scene function composes effects internally and returns a pixel canvas:
 
@@ -1829,15 +1829,15 @@ Vary the **value field combo**, **hue field**, **palette**, **blend modes**, **f
 
 ---
 
-## Combining Effects — Creative Guide
+## Combining Effects: Creative Guide
 
 The catalog above is vocabulary. Here's how to compose it into something that looks intentional.
 
 ### Layering for Depth
 Every scene should have at least two layers at different grid densities:
 - **Background** (sm or xs): dense, dim texture that prevents flat black. fBM, smooth noise, or domain warp at low brightness (bri=0.15-0.25).
-- **Content** (md): the main visual — rings, voronoi, spirals, tunnel. Full brightness.
-- **Accent** (lg or xl): sparse highlights — particles, text stencil, glow pulse. Screen-blended on top.
+- **Content** (md): the main visual, rings, voronoi, spirals, tunnel. Full brightness.
+- **Accent** (lg or xl): sparse highlights, particles, text stencil, glow pulse. Screen-blended on top.
 
 ### Interesting Effect Pairs
 | Pair | Blend | Why it works |

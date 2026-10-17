@@ -34,7 +34,7 @@ DATA_SOURCE = "OpenStreetMap/Nominatim"
 NOMINATIM_SEARCH  = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
 # Public Overpass endpoints. We try them in order so a single server
-# outage doesn't break the skill — kumi.systems is a well-known mirror.
+# outage doesn't break the skill: kumi.systems is a well-known mirror.
 OVERPASS_URLS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -282,7 +282,7 @@ def overpass_query(query):
         try:
             return http_post(url, post_data, retries=1)
         except SystemExit:
-            # error_exit inside http_post — keep trying the next mirror.
+            # error_exit inside http_post: keep trying the next mirror.
             last_error = f"mirror {url} exhausted retries"
             continue
         except Exception as exc:
@@ -598,7 +598,7 @@ def cmd_nearby(args):
 
     Accepts either explicit coordinates (``lat``/``lon``) or a free-form
     address via ``--near`` (auto-geocoded through Nominatim). Supports
-    multiple categories in one call — results are merged, deduplicated
+    multiple categories in one call: results are merged, deduplicated
     by ``osm_type+osm_id``, sorted by distance.
     """
     # Resolve the center point. --near takes precedence if provided so the
@@ -1160,7 +1160,7 @@ def build_parser():
     p_nearby.add_argument(
         "--category", action="append", dest="category_list", default=[],
         metavar="CAT",
-        help="POI category (repeatable — adds a type to the search).",
+        help="POI category (repeatable: adds a type to the search).",
     )
     p_nearby.add_argument(
         "--radius", "-r",

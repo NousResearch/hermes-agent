@@ -243,7 +243,7 @@ def duplicate_slide(prs, index):
     Copies the shape tree XML and re-creates image/media relationships on
     the new slide part, remapping rIds. Charts are refused: each chart
     relationship embeds a separate XLSX workbook part, and cloning that
-    graph reliably is not supported — better to refuse than corrupt.
+    graph reliably is not supported: better to refuse than corrupt.
     """
     source = prs.slides[int(index)]
     if any(sh.has_chart for sh in source.shapes):
@@ -315,7 +315,7 @@ def _copy_layout_placeholder(slide, ph_idx):
 
     Slide-number (idx 12) and footer (idx 11) placeholders exist on the
     layout but are not inherited by a slide until the slide carries its
-    own copy — this enables them. Returns the new shape, or None when the
+    own copy: this enables them. Returns the new shape, or None when the
     layout does not provide that placeholder.
     """
     for ph in slide.slide_layout.placeholders:

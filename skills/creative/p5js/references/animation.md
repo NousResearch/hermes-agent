@@ -7,9 +7,9 @@
 ```javascript
 function draw() {
   // Called ~60 times/sec by default
-  // frameCount — integer, starts at 1
-  // deltaTime — ms since last frame (use for framerate-independent motion)
-  // millis() — ms since sketch start
+  // frameCount: integer, starts at 1
+  // deltaTime: ms since last frame (use for framerate-independent motion)
+  // millis(): ms since sketch start
 }
 ```
 
@@ -44,7 +44,7 @@ let t = raw <= 1 ? raw : 2 - raw;
 ### Built-in Lerp
 
 ```javascript
-// Linear interpolation — smooth but mechanical
+// Linear interpolation: smooth but mechanical
 let x = lerp(startX, endX, t);
 
 // Map for non-0-1 ranges
@@ -86,7 +86,7 @@ function easeOutBounce(t) {
   else { t -= 2.625/2.75; return 7.5625 * t * t + 0.984375; }
 }
 
-// Smooth step (Hermite interpolation — great default)
+// Smooth step (Hermite interpolation: great default)
 function smoothstep(t) { return t * t * (3 - 2 * t); }
 
 // Smoother step (Ken Perlin)
@@ -108,7 +108,7 @@ let x = easedValue(100, 700, animStartTime, 2000, easeOutCubic);
 
 ## Spring Physics
 
-More natural than easing — responds to force, overshoots, settles.
+More natural than easing: responds to force, overshoots, settles.
 
 ```javascript
 class Spring {
@@ -341,7 +341,7 @@ function draw() {
   let t = frameCount / TOTAL_FRAMES;  // 0 to 1 over full duration
   if (t > 1) { noLoop(); return; }
 
-  // Use t for all animation timing — deterministic
+  // Use t for all animation timing: deterministic
   renderFrame(t);
 
   // Export

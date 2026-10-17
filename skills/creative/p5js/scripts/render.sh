@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# p5.js Skill — Headless Render Pipeline
+# p5.js Skill: Headless Render Pipeline
 # Renders a p5.js sketch to MP4 video via Puppeteer + ffmpeg
 #
 # Usage:

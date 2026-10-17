@@ -53,7 +53,7 @@ memo notes -a                     # Add a note (opens your $EDITOR)
 memo notes -a -f "Folder Name"    # Add a note into a specific folder
 ```
 
-`-a`/`--add` is a bare flag — it opens your `$EDITOR` to compose the note; it does
+`-a`/`--add` is a bare flag: it opens your `$EDITOR` to compose the note; it does
 not take a title argument. Use `-f/--folder` to target a folder. Set `$EDITOR`
 first (e.g. `export EDITOR=vim`).
 
@@ -85,7 +85,7 @@ memo notes -ex                    # Export to HTML/Markdown
 
 - Cannot edit notes containing images or attachments
 - Interactive prompts require terminal access (use pty=true if needed)
-- macOS only — requires Apple Notes.app
+- macOS only: requires Apple Notes.app
 
 ## Rules
 

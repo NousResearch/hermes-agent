@@ -66,18 +66,18 @@ After fetching the transcript, format it based on what the user asks for:
 - **Chapters**: Group by topic shifts, output timestamped chapter list
 - **Summary**: Concise 5-10 sentence overview of the entire video
 - **Chapter summaries**: Chapters with a short paragraph summary for each
-- **Thread**: Twitter/X thread format — numbered posts, each under 280 chars
+- **Thread**: Twitter/X thread format, numbered posts, each under 280 chars
 - **Blog post**: Full article with title, sections, and key takeaways
 - **Quotes**: Notable quotes with timestamps
 
-### Example — Chapters Output
+### Example: Chapters Output
 
 ```
-00:00 Introduction — host opens with the problem statement
-03:45 Background — prior work and why existing solutions fall short
-12:20 Core method — walkthrough of the proposed approach
-24:10 Results — benchmark comparisons and key takeaways
-31:55 Q&A — audience questions on scalability and next steps
+00:00 Introduction: host opens with the problem statement
+03:45 Background: prior work and why existing solutions fall short
+12:20 Core method: walkthrough of the proposed approach
+24:10 Results: benchmark comparisons and key takeaways
+31:55 Q&A: audience questions on scalability and next steps
 ```
 
 ## Workflow

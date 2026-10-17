@@ -21,7 +21,7 @@ Use when users request: animated explanations, math animations, concept visualiz
 
 This is educational cinema. Every frame teaches. Every animation reveals structure.
 
-**Before writing a single line of code**, articulate the narrative arc. What misconception does this correct? What is the "aha moment"? What visual story takes the viewer from confusion to understanding? The user's prompt is a starting point — interpret it with pedagogical ambition.
+**Before writing a single line of code**, articulate the narrative arc. What misconception does this correct? What is the "aha moment"? What visual story takes the viewer from confusion to understanding? The user's prompt is a starting point: interpret it with pedagogical ambition.
 
 **Geometry before algebra.** Show the shape first, the equation second. Visual memory encodes faster than symbolic memory. When the viewer sees the geometric pattern before the formula, the equation feels earned.
 
@@ -66,12 +66,12 @@ Single Python script per project. No browser, no Node.js, no GPU required.
 PLAN --> CODE --> RENDER --> STITCH --> AUDIO (optional) --> REVIEW
 ```
 
-1. **PLAN** — Write `plan.md` with narrative arc, scene list, visual elements, color palette, voiceover script
-2. **CODE** — Write `script.py` with one class per scene, each independently renderable
-3. **RENDER** — `manim -ql script.py Scene1 Scene2 ...` for draft, `-qh` for production
-4. **STITCH** — ffmpeg concat of scene clips into `final.mp4`
-5. **AUDIO** (optional) — Add voiceover and/or background music via ffmpeg. See `references/rendering.md`
-6. **REVIEW** — Render preview stills, verify against plan, adjust
+1. **PLAN**: Write `plan.md` with narrative arc, scene list, visual elements, color palette, voiceover script
+2. **CODE**: Write `script.py` with one class per scene, each independently renderable
+3. **RENDER**: `manim -ql script.py Scene1 Scene2 ...` for draft, `-qh` for production
+4. **STITCH**: ffmpeg concat of scene clips into `final.mp4`
+5. **AUDIO** (optional): Add voiceover and/or background music via ffmpeg. See `references/rendering.md`
+6. **REVIEW**: Render preview stills, verify against plan, adjust
 
 ## Project Structure
 
@@ -135,9 +135,9 @@ Minimum `font_size=18` for readability.
 
 Never use identical config for all scenes. For each scene:
 - **Different dominant color** from the palette
-- **Different layout** — don't always center everything
-- **Different animation entry** — vary between Write, FadeIn, GrowFromCenter, Create
-- **Different visual weight** — some scenes dense, others sparse
+- **Different layout**: don't always center everything
+- **Different animation entry**: vary between Write, FadeIn, GrowFromCenter, Create
+- **Different visual weight**: some scenes dense, others sparse
 
 ## Workflow
 
@@ -172,7 +172,7 @@ Key patterns:
 - **Subtitles** on every animation: `self.add_subcaption("text", duration=N)` or `subcaption="text"` on `self.play()`
 - **Shared color constants** at file top for cross-scene consistency
 - **`self.camera.background_color`** set in every scene
-- **Clean exits** — FadeOut all mobjects at scene end: `self.play(FadeOut(Group(*self.mobjects)))`
+- **Clean exits**: FadeOut all mobjects at scene end: `self.play(FadeOut(Group(*self.mobjects)))`
 
 ### Step 3: Render
 
@@ -247,7 +247,7 @@ Always iterate at `-ql`. Only render `-qh` for final output.
 | `references/troubleshooting.md` | LaTeX errors, animation errors, common mistakes, debugging |
 | `references/animation-design-thinking.md` | When to animate vs show static, decomposition, pacing, narration sync |
 | `references/updaters-and-trackers.md` | ValueTracker, add_updater, always_redraw, time-based updaters, patterns |
-| `references/paper-explainer.md` | Turning research papers into animations — workflow, templates, domain patterns |
+| `references/paper-explainer.md` | Turning research papers into animations: workflow, templates, domain patterns |
 | `references/decorations.md` | SurroundingRectangle, Brace, arrows, DashedLine, Angle, annotation lifecycle |
 | `references/production-quality.md` | Pre-code, pre-render, post-render checklists, spatial layout, color, tempo |
 
@@ -257,16 +257,16 @@ Always iterate at `-ql`. Only render `-qh` for final output.
 
 If the user asks for creative, experimental, or unconventional explanatory approaches, select a strategy and reason through it BEFORE designing the animation.
 
-- **SCAMPER** — when the user wants a fresh take on a standard explanation
-- **Assumption Reversal** — when the user wants to challenge how something is typically taught
+- **SCAMPER**: when the user wants a fresh take on a standard explanation
+- **Assumption Reversal**: when the user wants to challenge how something is typically taught
 
 ### SCAMPER Transformation
 Take a standard mathematical/technical visualization and transform it:
 - **Substitute**: replace the standard visual metaphor (number line → winding path, matrix → city grid)
 - **Combine**: merge two explanation approaches (algebraic + geometric simultaneously)
-- **Reverse**: derive backward — start from the result and deconstruct to axioms
+- **Reverse**: derive backward, start from the result and deconstruct to axioms
 - **Modify**: exaggerate a parameter to show why it matters (10x the learning rate, 1000x the sample size)
-- **Eliminate**: remove all notation — explain purely through animation and spatial relationships
+- **Eliminate**: remove all notation, explain purely through animation and spatial relationships
 
 ### Assumption Reversal
 1. List what's "standard" about how this topic is visualized (left-to-right, 2D, discrete steps, formal notation)

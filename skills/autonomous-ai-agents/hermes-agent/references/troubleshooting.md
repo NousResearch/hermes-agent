@@ -6,13 +6,13 @@
 3. In gateway: `/restart`. In CLI: exit and relaunch.
 
 ### Tool not available
-1. `hermes tools` — check if toolset is enabled for your platform
+1. `hermes tools`: check if toolset is enabled for your platform
 2. Some tools need env vars (check `.env`)
 3. `/reset` after enabling tools
 
 ### Model/provider issues
-1. `hermes doctor` — check config and dependencies
-2. `hermes auth` — re-authenticate OAuth providers (or `hermes auth add <provider>`)
+1. `hermes doctor`: check config and dependencies
+2. `hermes auth`: re-authenticate OAuth providers (or `hermes auth add <provider>`)
 3. Check `.env` has the right API key
 4. **Copilot 403**: `gh auth login` tokens do NOT work for Copilot API. You must use the Copilot-specific OAuth device code flow via `hermes model` → GitHub Copilot.
 
@@ -22,7 +22,7 @@
 - **Code changes:** Restart the CLI or gateway process
 
 ### web_extract shows a stale page (result caching)
-`web_search`/`web_extract` cache results for 20 minutes (PR #94618) — a
+`web_search`/`web_extract` cache results for 20 minutes (PR #94618): a
 repeat fetch of the same URL within the TTL is served from cache, which
 can look like "my website changes aren't showing up."
 
@@ -35,7 +35,7 @@ Automatic carveouts (always fetched live, never cached):
 
 Developing a site tested over the PUBLIC internet (Vercel/Netlify
 preview, ngrok/cloudflared tunnel, staging domain)? Public DNS isn't
-auto-carved-out — list the host in config.yaml:
+auto-carved-out: list the host in config.yaml:
 
 ```yaml
 web:
@@ -49,8 +49,8 @@ Blunt instruments: `web.cache_ttl_minutes: 1` (min) or
 `web.cache_enabled: false` disables both caches entirely.
 
 ### Skills not showing
-1. `hermes skills list` — verify installed
-2. `hermes skills config` — check platform enablement
+1. `hermes skills list`: verify installed
+2. `hermes skills config`: check platform enablement
 3. Load explicitly: `hermes -s name` (or the skill's own `/<name>` slash command)
 
 ### Gateway issues
@@ -77,5 +77,5 @@ hermes config set auxiliary.vision.model <model_name>
 ```
 
 ### "Reset permissions" / auto-approving everything
-See `references/security-privacy.md` — wipe the "Always allow" stores, don't touch yolo mode.
+See `references/security-privacy.md`: wipe the "Always allow" stores, don't touch yolo mode.
 

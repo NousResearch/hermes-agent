@@ -11,7 +11,7 @@ Behavior:
     recalculates all formulas) and replaces the original (or writes
     --out). Prints {"recalculated": true, ...} and exits 0.
   * soffice absent: prints {"recalculated": false, "reason": ...} with
-    installation guidance and STILL exits 0 — callers can branch on the
+    installation guidance and STILL exits 0: callers can branch on the
     JSON instead of the exit code.
 
 Note: LibreOffice recalculates .xlsx on load per its default

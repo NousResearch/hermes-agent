@@ -199,7 +199,7 @@ def _flatten_doc_tabs(doc: dict) -> list[dict]:
 def _resolve_write_tab(doc: dict, tab_arg: str | None) -> tuple[str | None, dict]:
     """Pick exactly one tab body for a write; never merge index spaces.
 
-    Legacy docs (no ``tabs``) return (None, body) — the write carries no tabId.
+    Legacy docs (no ``tabs``) return (None, body): the write carries no tabId.
     A multi-tab doc requires an explicit --tab; an unknown ID errors instead of
     quietly falling back to the first tab.
     """

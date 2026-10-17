@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * p5.js Skill — Headless Frame Export
+ * p5.js Skill: Headless Frame Export
  *
  * Captures frames from a p5.js sketch using Puppeteer (headless Chrome).
  * Uses noLoop() + redraw() for DETERMINISTIC frame-by-frame control.
@@ -160,7 +160,7 @@ async function main() {
     if (i % 30 === 0 || i === opts.frames - 1) {
       const pct = ((i + 1) / opts.frames * 100).toFixed(1);
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      process.stdout.write(`\r  Frame ${i + 1}/${opts.frames} (${pct}%) — ${elapsed}s`);
+      process.stdout.write(`\r  Frame ${i + 1}/${opts.frames} (${pct}%): ${elapsed}s`);
     }
 
     // In timed mode, wait between frames

@@ -1,6 +1,6 @@
 # Animation Design Thinking
 
-How to decide WHAT to animate and HOW to structure it — before writing any code.
+How to decide WHAT to animate and HOW to structure it: before writing any code.
 
 ## Should I animate this?
 
@@ -19,16 +19,16 @@ Not everything benefits from animation. Motion adds cognitive load. Bad animatio
 - The viewer needs to study it carefully (dense table, reference chart)
 - The concept is already intuitive from a well-labeled figure
 
-**Rule of thumb:** If you'd explain it with "first X, then Y, then Z" — animate it. If you'd explain it by pointing at parts of one picture — show it static.
+**Rule of thumb:** If you'd explain it with "first X, then Y, then Z", animate it. If you'd explain it by pointing at parts of one picture, show it static.
 
 ## Decomposing a concept into animation
 
 ### Step 1: Write the narration first
 
 Before any code, write what the narrator would say. This determines:
-- **Order** — what concept comes first
-- **Duration** — how long each idea gets
-- **Visuals** — what the viewer must SEE when they HEAR each sentence
+- **Order**: what concept comes first
+- **Duration**: how long each idea gets
+- **Visuals**: what the viewer must SEE when they HEAR each sentence
 
 A scene where the narration says "the gradient points uphill" must show a gradient arrow at that moment. If the visual doesn't match the audio, the viewer's brain splits attention and both tracks are lost.
 
@@ -89,7 +89,7 @@ Monotonous pacing feels like a lecture. Vary the tempo:
 
 ### The "see then hear" principle
 
-The visual should appear slightly BEFORE the narration describes it. When the viewer sees a circle appear and THEN hears "consider a circle," the visual primes their brain for the concept. The reverse — hearing first, seeing second — creates confusion because they're searching the screen for something that isn't there yet.
+The visual should appear slightly BEFORE the narration describes it. When the viewer sees a circle appear and THEN hears "consider a circle," the visual primes their brain for the concept. The reverse (hearing first, seeing second) creates confusion because they're searching the screen for something that isn't there yet.
 
 ### Practical timing
 

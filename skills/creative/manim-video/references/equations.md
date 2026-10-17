@@ -83,7 +83,7 @@ MathTex(r"\begin{vmatrix} a & b \\ c & d \end{vmatrix}")
 MathTex(r"\begin{matrix} x_1 \\ x_2 \\ x_3 \end{matrix}")
 ```
 
-For matrices you need to animate element-by-element or color individual entries, use the `IntegerMatrix`, `DecimalMatrix`, or `MobjectMatrix` mobjects instead — see `mobjects.md`.
+For matrices you need to animate element-by-element or color individual entries, use the `IntegerMatrix`, `DecimalMatrix`, or `MobjectMatrix` mobjects instead: see `mobjects.md`.
 
 ## Cases and Piecewise Functions
 
@@ -135,12 +135,12 @@ class DerivationScene(Scene):
 For dense equations where manually splitting into parts is impractical, use `substrings_to_isolate` to tell Manim which substrings to track as individual elements:
 
 ```python
-# Without isolation — the whole expression is one blob
+# Without isolation: the whole expression is one blob
 lagrangian = MathTex(
     r"\mathcal{L} = \bar{\psi}(i \gamma^\mu D_\mu - m)\psi - \tfrac{1}{4}F_{\mu\nu}F^{\mu\nu}"
 )
 
-# With isolation — each named substring is a separate submobject
+# With isolation: each named substring is a separate submobject
 lagrangian = MathTex(
     r"\mathcal{L} = \bar{\psi}(i \gamma^\mu D_\mu - m)\psi - \tfrac{1}{4}F_{\mu\nu}F^{\mu\nu}",
     substrings_to_isolate=[r"\psi", r"D_\mu", r"\gamma^\mu", r"F_{\mu\nu}"]
@@ -150,7 +150,7 @@ lagrangian.set_color_by_tex(r"\psi", BLUE)
 lagrangian.set_color_by_tex(r"F_{\mu\nu}", YELLOW)
 ```
 
-Essential for `TransformMatchingTex` on complex equations — without isolation, matching fails on dense expressions.
+Essential for `TransformMatchingTex` on complex equations: without isolation, matching fails on dense expressions.
 
 ## Multi-Line Complex Equations
 
@@ -162,7 +162,7 @@ maxwell = MathTex(
     r"\nabla \times \mathbf{B} = \mu_0\mathbf{J} + \mu_0\epsilon_0\frac{\partial \mathbf{E}}{\partial t}"
 ).arrange(DOWN)
 
-# Each line is a separate submobject — animate independently
+# Each line is a separate submobject: animate independently
 self.play(Write(maxwell[0]))
 self.wait(1)
 self.play(Write(maxwell[1]))
@@ -183,7 +183,7 @@ self.play(TransformMatchingTex(
 ))
 ```
 
-## set_color_by_tex — Color by Substring
+## set_color_by_tex: Color by Substring
 
 ```python
 eq = MathTex(r"E = mc^2")

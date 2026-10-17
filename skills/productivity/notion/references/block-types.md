@@ -90,22 +90,22 @@ When reading blocks from `GET /v1/blocks/{page_id}/children`, each block has a `
 
 | Type | Text location | Extra fields |
 |------|--------------|--------------|
-| `paragraph` | `.paragraph.rich_text` | — |
-| `heading_1/2/3` | `.heading_N.rich_text` | — |
-| `bulleted_list_item` | `.bulleted_list_item.rich_text` | — |
-| `numbered_list_item` | `.numbered_list_item.rich_text` | — |
+| `paragraph` | `.paragraph.rich_text` | - |
+| `heading_1/2/3` | `.heading_N.rich_text` | - |
+| `bulleted_list_item` | `.bulleted_list_item.rich_text` | - |
+| `numbered_list_item` | `.numbered_list_item.rich_text` | - |
 | `to_do` | `.to_do.rich_text` | `.to_do.checked` (bool) |
 | `toggle` | `.toggle.rich_text` | has children |
 | `code` | `.code.rich_text` | `.code.language` |
-| `quote` | `.quote.rich_text` | — |
+| `quote` | `.quote.rich_text` | - |
 | `callout` | `.callout.rich_text` | `.callout.icon.emoji` |
-| `divider` | — | — |
+| `divider` | - | - |
 | `image` | `.image.caption` | `.image.file.url` or `.image.external.url` |
 | `bookmark` | `.bookmark.caption` | `.bookmark.url` |
-| `child_page` | — | `.child_page.title` |
-| `child_database` | — | `.child_database.title` |
+| `child_page` | - | `.child_page.title` |
+| `child_database` | - | `.child_database.title` |
 
-Rich text arrays contain objects with `.plain_text` — concatenate them for readable output.
+Rich text arrays contain objects with `.plain_text`: concatenate them for readable output.
 
 ---
 

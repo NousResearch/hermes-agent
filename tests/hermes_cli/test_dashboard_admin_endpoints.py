@@ -76,6 +76,47 @@ class TestMcpEndpoints:
         assert "Bearer ${MCP_BEARER_SERVER_API_KEY}" in config_text
         assert f"MCP_BEARER_SERVER_API_KEY={secret}" in env_text
 
+    def test_http_query_token_separates_secret_from_config(
+        self, _isolate_hermes_home
+    ):
+        from hermes_constants import get_hermes_home
+
+        secret = "dashboard-query-secret"
+        response = self.client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "Query Server",
+                "url": "https://windmill.example/mcp",
+                "auth": "query",
+                "bearer_token": secret,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["auth"] == "query"
+        assert "bearer_token" not in response.json()
+
+        hermes_home = get_hermes_home()
+        config_text = (hermes_home / "config.yaml").read_text()
+        env_text = (hermes_home / ".env").read_text()
+        assert secret not in config_text
+        assert "auth: query" in config_text
+        assert "token: ${MCP_QUERY_SERVER_API_KEY}" in config_text
+        assert f"MCP_QUERY_SERVER_API_KEY={secret}" in env_text
+
+    def test_embedded_query_secret_is_redacted_on_create_and_read(self):
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        url = "https://example.test/mcp?TOKEN=saved-secret&foo=bar"
+        response = self.client.post("/api/mcp/servers", json={"name": "embedded-token", "url": url})
+        assert response.status_code == 200, response.text
+        assert "saved-secret" not in response.text
+        servers = self.client.get("/api/mcp/servers")
+        assert servers.status_code == 200
+        stored = next(server for server in servers.json()["servers"] if server["name"] == "embedded-token")
+        assert "saved-secret" not in stored["url"] and "foo=bar" in stored["url"]
+        assert _get_mcp_servers()["embedded-token"]["url"] == url
+
     def test_http_oauth_mode_is_persisted_for_existing_auth_flow(self):
         response = self.client.post(
             "/api/mcp/servers",
@@ -113,6 +154,10 @@ class TestMcpEndpoints:
                 "Bearer token is required",
             ),
             (
+                {"name": "bad", "url": "https://x/mcp", "auth": "query"},
+                "Bearer token is required",
+            ),
+            (
                 {
                     "name": "bad",
                     "url": "https://x/mcp",
@@ -123,7 +168,7 @@ class TestMcpEndpoints:
             ),
             (
                 {"name": "bad", "url": "https://x/mcp", "bearer_token": "secret"},
-                "requires header authentication",
+                "requires header or query authentication",
             ),
             (
                 {"name": "bad", "url": "https://x/mcp", "command": "npx"},

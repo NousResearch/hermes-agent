@@ -49,6 +49,26 @@ describe("buildMcpServerCreate", () => {
     });
   });
 
+  it("builds a URL-query-token request without stdio fields", () => {
+    const server = buildMcpServerCreate({
+      ...emptyMcpServerDraft(),
+      name: "Windmill",
+      url: "https://windmill.example/mcp",
+      httpAuth: "query",
+      bearerToken: "windmill-secret",
+      command: "ignored",
+      args: "--ignored",
+      env: "IGNORED=value",
+    });
+
+    expect(server).toEqual({
+      name: "Windmill",
+      url: "https://windmill.example/mcp",
+      auth: "query",
+      bearer_token: "windmill-secret",
+    });
+  });
+
   it("parses stdio arguments and environment assignments", () => {
     const server = buildMcpServerCreate({
       ...emptyMcpServerDraft(),

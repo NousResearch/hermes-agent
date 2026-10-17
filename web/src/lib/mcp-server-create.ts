@@ -54,13 +54,20 @@ export function buildMcpServerCreate(draft: McpServerDraft): McpServerCreate {
   if (draft.transport === "http") {
     const url = draft.url.trim();
     if (!url) throw new Error("URL required");
-    if (draft.httpAuth === "header" && !draft.bearerToken.trim()) {
-      throw new Error("Bearer token required");
+    if (
+      (draft.httpAuth === "header" || draft.httpAuth === "query") &&
+      !draft.bearerToken.trim()
+    ) {
+      throw new Error(
+        draft.httpAuth === "query"
+          ? "URL query token required"
+          : "Bearer token required",
+      );
     }
 
     const server: McpServerCreate = { name, url };
     if (draft.httpAuth !== "none") server.auth = draft.httpAuth;
-    if (draft.httpAuth === "header") {
+    if (draft.httpAuth === "header" || draft.httpAuth === "query") {
       server.bearer_token = draft.bearerToken;
     }
     return server;

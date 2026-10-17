@@ -663,7 +663,7 @@ async function pidIsOurDashboard(
   }
 
   const script =
-    'import os,shlex,subprocess,sys\n' +
+    'import ast,os,shlex,subprocess,sys\n' +
     `pid=${Number(pid)}\n` +
     `expected=os.path.expanduser(${shq(hermesPath)})\n` +
     // The installer-facing launcher is intentionally preserved for invocation
@@ -687,6 +687,25 @@ async function pidIsOurDashboard(
     '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
     '  print("FOREIGN");sys.exit(0)\n' +
     ' args=shlex.split(line)\n' +
+    // A self-managed venv can re-exec as `python -I -c <program>`, where the
+    // program restores the original launcher argv before runpy executes it.
+    // The ownership flags are then data in that one program argument rather
+    // than OS argv entries. Accept only one literal `sys.argv = [...]` shape;
+    // the nonce, token path, profile, and ordering checks below still bind it
+    // to this Desktop-owned spawn.
+    'embedded=[]\n' +
+    'for i,arg in enumerate(args[:-1]):\n' +
+    ' if arg!="-c":continue\n' +
+    ' try: tree=ast.parse(args[i+1])\n' +
+    ' except (SyntaxError,ValueError):continue\n' +
+    ' for node in ast.walk(tree):\n' +
+    '  if not (isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Attribute) and isinstance(node.targets[0].value,ast.Name) and node.targets[0].value.id=="sys" and node.targets[0].attr=="argv" and isinstance(node.value,(ast.List,ast.Tuple))):continue\n' +
+    '  values=[]\n' +
+    '  for value in node.value.elts:\n' +
+    '   if not isinstance(value,ast.Constant) or not isinstance(value.value,str):values=[];break\n' +
+    '   values.append(value.value)\n' +
+    '  if values:embedded.append(values)\n' +
+    'if len(embedded)==1:args=embedded[0]\n' +
     'ok=False\n' +
     'try:\n' +
     // A profile literally named "serve" puts the value token before the

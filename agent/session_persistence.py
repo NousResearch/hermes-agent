@@ -157,11 +157,13 @@ def adopt_unanswered_turn(history: list[dict[str, Any]], query: Any, agent: Any)
     A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already persisted
     instead of appending it again. Rows loaded from the store are born durable (``_rows_to_conversation``),
     so handing the tail row back as ``agent._pending_cli_user_message`` makes ``_stage_turn_user_message``
-    reuse it as this turn's user dict and the flush writes no second row. The one caller is
-    ``gateway.platforms.api_server`` (``resume_unanswered_turn``): the peer-DM lane re-runs the turn
-    in-process and calls this on the agent it just built for the re-run (#115325). The owner-side Bot
-    Chat retry (``gateway.session_bot._maybe_retry``) does not adopt: its failed turn is already closed
-    by the durable failed-turn boundary, which this function declines by design.
+    reuse it as this turn's user dict and the flush writes no second row. The one user is the peer-DM
+    lane's re-run (``resume_unanswered_turn`` in ``gateway.platforms.api_server``, #115325): in process it
+    calls this on the agent it just built for the re-run; under the session authority the admission
+    carries ``resume_unanswered`` and ``gateway.run_turn_runner`` calls it on the admitted history
+    when its tail is that bare user row (a tool suffix there keeps the completed work in view).
+    The owner-side Bot Chat retry (``gateway.session_bot._maybe_retry``) does not adopt: its failed
+    turn is already closed by the durable failed-turn boundary, which this function declines by design.
 
     The DM is not always the literal tail: a turn that died mid-way persisted its tool scaffolding — assistant
     ``tool_calls`` rows and their ``tool`` results — behind the DM before the failure text was built, and the

@@ -54,7 +54,8 @@ def check_api_turn(authority, ref, payload):
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
         if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'browser_control',
-                         'relay_metadata'}
+                         'relay_metadata', 'resume_unanswered'}
+                or data.get('resume_unanswered', True) is not True
                 or not {'history', 'settings'} <= set(data)
                 or not isinstance(data.get('relay_metadata', {}), dict)
                 or (data['history'] is not None and not isinstance(data['history'], list))
@@ -222,6 +223,10 @@ def admit_api_steps(adapter, **kwargs):
         if author is None:
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
+    if kwargs.get('resume_unanswered_turn'):
+        # The session-chat door's one policy-gated re-run (#115325): its failed attempt left this text as
+        # the transcript's unanswered tail, which the turn adopts instead of appending it again.
+        payload['api_turn_v1']['resume_unanswered'] = True
     if kwargs.get('relay_metadata'):
         # The request's Relay metadata rides the admission to the turn it describes (main passed it
         # to ``run_conversation``); it is client JSON, so it is part of the exact-retry identity.
@@ -465,6 +470,7 @@ def prepare_api_execution(authority, ref, payload):
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
             'content': content, 'turn_author': data.get('turn_author') if data else None,
             'relay_metadata': data.get('relay_metadata') if data else None,
+            'resume_unanswered': bool(data and data.get('resume_unanswered')),
             'browser_control': _rebind_browser_control(adapter, data)}
 
 

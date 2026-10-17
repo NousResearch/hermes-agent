@@ -319,6 +319,12 @@ class GatewayTurnPersistenceMixin:
                 "session intact; the next message retries normally.",
                 session_entry.session_id if session_entry else "?",
             )
+        elif agent_result.get("compression_exhausted") and getattr(source, "platform", None) == Platform.API_SERVER:
+            # The caller addresses an API conversation by its id and every API door re-validates that
+            # binding (``restore_api_session``): a rotated entry would refuse each later request to it
+            # (``admission_conflict``). The caller gets the typed ``compression_exhausted`` result instead.
+            logger.info("Keeping API session %s after compression exhaustion.",
+                        session_entry.session_id if session_entry else "?")
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
             from gateway.session_automation import move_route_wakes, reset_and_rehome_messages

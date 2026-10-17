@@ -1046,6 +1046,15 @@ def _status_404(c: _Ctx) -> Verdict:
     # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    # OpenRouter-wrapped upstream 404 (e.g. Meta's transient ``model_not_found`` on a
+    # slug that served calls moments earlier, #134122): the route exists and the key is
+    # healthy — the upstream lost the deployment for a moment. Retry in place before any
+    # model fallback, mirroring the 429 twin in _status_429; the retry budget's exhaustion
+    # path still activates the fallback chain.
+    if _is_openrouter_upstream_error(c.body, c.provider_slug):
+        upstream = _extract_upstream_provider_name(c.body)
+        ctx = {"upstream_provider": upstream} if upstream else {}
+        return _v(_R.server_error, error_context=ctx)
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict

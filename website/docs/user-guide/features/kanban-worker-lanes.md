@@ -76,17 +76,19 @@ arbitrary code from deliberately erasing lineage metadata or opening SQLite dire
 Every claim must end in exactly one of:
 
 - `kanban_complete(summary=..., metadata=...)` — task succeeds, status flips to `done`.
-- `kanban_request_review(summary=..., metadata=..., reviewer=...)` — same-card implementation is complete and enters first-class review; status flips to `review`. The dispatcher loads the bundled `sdlc-review` skill unless `kanban.review_dispatch` is disabled. A reviewer approves with `kanban_complete`, returns actionable rework with `kanban_request_changes`, or escalates a genuine external blocker with `kanban_block`.
+- `kanban_request_review(summary=..., metadata=..., reviewer=...)` — same-card implementation is complete and enters first-class review; status flips to `review`. The dispatcher injects the `kanban.review_skills` skills (default `sdlc-review`) when they resolve for the assigned profile, unless `kanban.review_dispatch` is disabled; a name that does not resolve is recorded on the card and skipped, never handed to the worker. A reviewer approves with `kanban_complete`, returns actionable rework with `kanban_request_changes`, or escalates a genuine external blocker with `kanban_block`.
 - `kanban_block(reason=...)` — task waits for human input, status flips to `blocked`. The dispatcher respawns when `kanban_unblock` runs.
 - The worker process exits without a tool call. The kernel reaps it and emits `crashed` (PID died) or `gave_up` (consecutive-failure breaker tripped) or `timed_out` (max_runtime exceeded). This is the failure path; healthy workers don't end here.
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
+**Unresolvable skill names never kill a run.** A name the assignee's profile cannot resolve — a card's own `skills` entry, or a skill the harness injects (`kanban.injected_skills` into every lane's worker, plus `kanban.review_skills` on a review run) — is recorded on the card (`card_skill_unresolved` for a card-declared name, `injected_skill_skipped` for a harness-injected one) and treated as advisory: the worker warns and continues instead of dying at INIT with `Unknown skill(s)`, which parked the card after two crashed attempts. Card-named skills stay on the worker's command line (a workspace-tier copy can still load them); injected ones are skipped at spawn.
+
 ## Outputs and the review handoff
 
 For code-changing tasks, pick the review model encoded by the task graph:
 
-- **Same-card review:** call `kanban_request_review(summary=..., metadata=..., reviewer=...)`. The task enters `review` without touching block recurrence accounting. The dispatcher claims it with the bundled `sdlc-review` skill by default. The reviewer approves with `kanban_complete`, calls `kanban_request_changes(reason=...)` to close the review run and route the task back to its original implementer, or blocks only for a genuine external escalation.
+- **Same-card review:** call `kanban_request_review(summary=..., metadata=..., reviewer=...)`. The task enters `review` without touching block recurrence accounting. The dispatcher claims it with the `kanban.review_skills` skills (default `sdlc-review`) by default — each name must resolve for the assignee's profile, and an unresolved one is recorded on the card and skipped rather than crashing the run. The reviewer approves with `kanban_complete`, calls `kanban_request_changes(reason=...)` to close the review run and route the task back to its original implementer, or blocks only for a genuine external escalation.
 - **Pre-created downstream review/QA/release card:** `kanban_show` lists child IDs; inspect those cards with `kanban_show(task_id=...)` before choosing the terminal action. When a child is the downstream review/QA/release phase, call `kanban_complete` on the implementation phase. It cannot promote until this parent is `done`/`archived`. Do not additionally request same-card review and never sticky-block the parent with `review-required:` — either choice strands or duplicates the downstream lane.
 - **Human-only boards:** set `kanban.review_dispatch: false`. A task can then remain in `review` until a human approves it or uses `reopen-review`/the dashboard to return it to `ready`/`todo`.
 

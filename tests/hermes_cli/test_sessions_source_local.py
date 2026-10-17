@@ -32,6 +32,25 @@ def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_pa
         "chain-tip", input_tokens=2, output_tokens=1, model="m", api_call_count=1, source="cli")
     assert [db.get_session(sid)["created_source"] for sid in ("chain-root", "chain-mid", "chain-tip")] == [
         "cli", "cli", "cli"]
+    # Mixed chain: a NULL root behind a mid segment already on the same surface is still
+    # stamped; an ancestor on another surface stops the walk.
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id=?", ("chain-root",))
+        db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id=?", ("chain-tip",))
+        db._conn.commit()
+    db.update_token_counts("chain-tip", input_tokens=1, model="m", api_call_count=1, source="cli")
+    assert db.get_session("chain-root")["created_source"] == "cli"
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id=?", ("chain-root",))
+        db._conn.execute("UPDATE sessions SET created_source='tui' WHERE id=?", ("chain-mid",))
+        db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id=?", ("chain-tip",))
+        db._conn.commit()
+    db.update_token_counts("chain-tip", input_tokens=1, model="m", api_call_count=1, source="cli")
+    assert [db.get_session(sid)["created_source"] for sid in ("chain-root", "chain-mid", "chain-tip")] == [
+        None, "tui", "cli"]
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET created_source='cli' WHERE id IN ('chain-root', 'chain-mid')")
+        db._conn.commit()
     capsys.readouterr()
     _cmd_list(db, Namespace(limit=20, source="cli", workspace=None))
     listed = capsys.readouterr().out

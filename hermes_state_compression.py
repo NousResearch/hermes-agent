@@ -113,7 +113,8 @@ def stamp_compression_ancestors(conn, session_id: str) -> None:
     knows the surface, so the turn's usage write stamps only the tip. Stamping the chain here,
     in that same transaction, keeps the root matchable without a list-time chain walk. Each hop
     must be the parent's preferred continuation (``_CHAIN_STEP_SQL``); ``unknown`` counts as
-    unset, as in the creator upsert.
+    unset, as in the creator upsert. An ancestor already on the same surface is walked through
+    (a NULL root behind a stamped mid segment still gets stamped); another surface stops it.
     """
     row = conn.execute("SELECT parent_session_id, created_source FROM sessions WHERE id = ?",
                        (session_id,)).fetchone()
@@ -124,12 +125,13 @@ def stamp_compression_ancestors(conn, session_id: str) -> None:
     for _ in range(_CHAIN_CAP):
         parent = parent_id and conn.execute(
             "SELECT parent_session_id, created_source FROM sessions WHERE id = ?", (parent_id,)).fetchone()
-        if not parent or parent["created_source"] not in (None, "unknown"):
+        if not parent or parent["created_source"] not in (None, "unknown", surface):
             return
         step = conn.execute(_CHAIN_STEP_SQL, (parent_id,)).fetchone()
         if step is None or step["id"] != current:
             return
-        conn.execute("UPDATE sessions SET created_source = ? WHERE id = ?", (surface, parent_id))
+        if parent["created_source"] != surface:
+            conn.execute("UPDATE sessions SET created_source = ? WHERE id = ?", (surface, parent_id))
         current, parent_id = parent_id, parent["parent_session_id"]
 
 

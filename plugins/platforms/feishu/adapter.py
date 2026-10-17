@@ -321,6 +321,7 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    thread_reply: bool = False  # group-chat replies answer inside a Feishu topic (reply_in_thread)
 
 
 @dataclass
@@ -1417,6 +1418,7 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            thread_reply=_to_boolean(extra.get("thread_reply", _get_scoped_secret("FEISHU_THREAD_REPLY", "false"))),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -3695,7 +3697,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 payload = json.dumps(key_payload, ensure_ascii=False)
                 thread_msg_id = (metadata or {}).get("reply_to_message_id")
                 if not thread_msg_id:
-                    thread_msg_id = await self._fetch_last_message_in_thread((metadata or {}).get("thread_id"))
+                    from plugins.platforms.feishu.feishu_thread_reply import fetch_last_message_in_thread
+                    thread_msg_id = await fetch_last_message_in_thread(self, (metadata or {}).get("thread_id"))
                 if thread_msg_id:
                     logger.info("[Feishu] Audio: retrying via reply API in thread")
                     message_response = await self._feishu_send_with_retry(
@@ -3726,30 +3729,19 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
         )
 
-    async def _fetch_last_message_in_thread(self, thread_id: str) -> Optional[str]:
-        """Fetch the last message_id in a thread for reply-based routing."""
-        if not self._client or not thread_id:
-            return None
-        try:
-            from lark_oapi.api.im.v1 import ListMessageRequest
-            request = ListMessageRequest.builder().container_id_type("thread").container_id(thread_id).page_size(1).build()
-            response = await self._run_blocking(self._client.im.v1.message.list, request)
-            if self._response_succeeded(response):
-                items = getattr(getattr(response, "data", None), "items", None)
-                if items and len(items) > 0:
-                    return getattr(items[0], "message_id", None)
-        except Exception as exc:
-            logger.debug("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc)
-        return None
-
     async def _send_raw_message(
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
     ) -> Any:
+        from plugins.platforms.feishu.feishu_thread_reply import wants_thread_reply
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
         if effective_reply_to:
+            # Outside an existing topic the thread_reply toggle upgrades the quoted reply to a
+            # topic reply: Feishu spawns a thread on the FIRST reply_in_thread=true reply to a
+            # threadless group message; continuation chunks anchored on the same message join it.
+            reply_in_thread = bool(thread_id) or await wants_thread_reply(self, chat_id)
             body = self._build_reply_message_body(
-                content=payload, msg_type=msg_type, reply_in_thread=bool(thread_id), uuid_value=str(uuid.uuid4()),
+                content=payload, msg_type=msg_type, reply_in_thread=reply_in_thread, uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
@@ -4446,6 +4438,14 @@ def interactive_setup() -> None:
     )
     save_env_value("FEISHU_GROUP_POLICY", "open" if group_idx == 0 else "disabled")
     print_info("Group chats enabled (bot must be @mentioned)." if group_idx == 0 else "Group chats disabled.")
+
+    if group_idx == 0:
+        thread_idx = prompt_choice(
+            "How should the bot answer in group chats?",
+            ["Quote-reply in the main chat (default)", "Reply inside a topic thread — each question spawns its own topic"],
+            0,
+        )
+        save_env_value("FEISHU_THREAD_REPLY", str(bool(thread_idx)).lower())
 
     print_info("Leave blank to clear a previously saved home channel (cron / notifications).")
     home_channel = prompt("Home chat ID (optional, for cron/notifications)", password=False).strip()

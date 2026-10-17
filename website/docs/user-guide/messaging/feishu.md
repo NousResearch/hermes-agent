@@ -252,6 +252,28 @@ FEISHU_REQUIRE_MENTION=false
 
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
+### Topic (Thread) Replies in Group Chats
+
+By default Hermes answers group messages as a quote-reply in the main chat flow. Set `FEISHU_THREAD_REPLY=true` to have replies land inside a Feishu topic instead: the bot's first answer quotes the triggering message with `reply_in_thread`, which spawns a fresh topic (话题) rooted on that message; every continuation chunk of the same answer joins that topic. The next question spawns its own topic, so group chatter stays tidy.
+
+```bash
+FEISHU_THREAD_REPLY=true
+```
+
+Or in `config.yaml` under the platform block:
+
+```yaml
+platforms:
+  feishu:
+    thread_reply: true
+```
+
+Notes:
+- Applies to **group chats only**. Direct messages, `ou_…` open-id sends, and replies already inside an existing topic behave exactly as before.
+- Long answers are chunked; all chunks of one reply land in the same topic.
+- If the triggering message is withdrawn before the reply goes out, Hermes falls back to a normal top-level message (never a stray second topic).
+- `hermes setup feishu` asks for this preference during group-chat configuration.
+
 ### Bot Identity
 
 Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:
@@ -559,6 +581,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
+| `FEISHU_THREAD_REPLY` | — | `false` | Answer group messages inside a topic thread (`reply_in_thread`) |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |

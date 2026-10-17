@@ -581,7 +581,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         else:
             logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)", evt_type, origin, key)
         return True
-    if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
+    if evt_type == "completion" and (registry.is_completion_consumed(evt.get("session_id", ""))
+                                      or registry.is_completion_delivered(evt.get("session_id", ""))):
         return True
     text = fmt(evt)
     if not text:
@@ -601,6 +602,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     if evt_type != "async_delegation" and _background_notifications_off(session):
         # The user opted out of process-driven agent wakes: the status row above is the whole
         # delivery. Subagent results are not process notifications and still land.
+        if evt_type == "completion":
+            registry.mark_completion_delivered(evt.get("session_id", ""))
         return True
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
@@ -613,6 +616,14 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         return True
     _notif_dispatch_event(sid, session, evt, text)
     return True
+
+
+def _notif_retry_completions(notifications, registry, deferred):
+    """Keep an unaccepted notice for its owner, backing off a live retry."""
+    for event, _text in notifications:
+        (deferred.append if deferred is not None else registry.completion_queue.put)(event)
+    if deferred is None:
+        time.sleep(0.25)
 
 
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
@@ -628,10 +639,13 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
             time.sleep(0.25)
         return
     claimed: list = []
+    unclaimed: list = []
     try:
         for event, event_text in notifications:
             if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None:
                 claimed.append((event, event_text, claim))
+            else:
+                unclaimed.append((event, event_text))
         batch = ProcessNotificationBatch(tuple((event, event_text) for event, event_text, _claim in claimed))
         text = batch.render(registry)
     except Exception as exc:
@@ -639,7 +653,10 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         _notif_release_turn(session)
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
+        _notif_retry_completions(notifications, registry, deferred)
         return
+    if unclaimed:
+        _notif_retry_completions(unclaimed, registry, deferred)
     if text is None:
         _notif_release_turn(session)
     try:
@@ -650,13 +667,17 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
                 for event, _text, claim in claimed:
                     _notif_defer_event(event, claim,
                         deferred.append if deferred is not None else registry.completion_queue.put)
+                if deferred is None:
+                    time.sleep(0.25)
                 return
     except Exception:
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
+        _notif_retry_completions([(event, text) for event, text, _claim in claimed], registry, deferred)
         return
     for event, _text, claim in claimed:
         complete_event_delivery(event, claim)
+        registry.mark_completion_delivered(event.get("session_id", ""))
 
 
 def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False):

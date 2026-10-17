@@ -12,9 +12,11 @@ from tools.process_registry_notifications import (
 from tui_gateway import server
 
 def _registry(events):
+    delivered = set()
     return SimpleNamespace(
         drain_notifications=lambda **kw: [(e, format_process_notification(e)) for e in events],
-        completion_queue=queue.Queue(), is_completion_consumed=lambda sid: False)
+        completion_queue=queue.Queue(), is_completion_consumed=lambda sid: False,
+        is_completion_delivered=delivered.__contains__, mark_completion_delivered=delivered.add)
 
 def _event(sid, exit_code, command="cd /tmp && bash long-build.sh"):
     return {"type": "completion", "session_id": sid, "session_key": "display-session", "command": command,
@@ -118,7 +120,7 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     # TUI gateway: the status line and the persisted turn carry the same compact title.
     emitted, submitted = [], []
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
-    monkeypatch.setattr(server, "_notif_submit", lambda *args, **kw: submitted.append((args, kw)))
+    monkeypatch.setattr(server, "_notif_submit", lambda *args, **kw: submitted.append((args, kw)) or True)
     monkeypatch.setattr(server, "_notif_claim_turn", lambda session: True)
     session = {"session_key": "display-session", "history_lock": threading.RLock()}
     server._notif_handle_ready("ui-session", session, events, set(), registry, format_process_notification, None,

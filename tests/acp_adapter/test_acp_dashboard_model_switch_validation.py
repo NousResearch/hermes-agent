@@ -37,7 +37,7 @@ def _state(**agent_attrs):
     import threading
     return types.SimpleNamespace(
         session_id="s1", cwd=".", model="claude-sonnet-5",
-        is_running=False, command_op=False, queued_prompts=[], runtime_lock=threading.Lock(),
+        is_running=False, command_op=False, queued_prompts=[], runtime_lock=threading.Lock(), reasoning_effort=None,
         agent=types.SimpleNamespace(
             provider="anthropic", base_url="https://api.anthropic.com", api_key="k", **agent_attrs))
 

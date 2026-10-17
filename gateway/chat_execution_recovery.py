@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Callable
 
 VERSION = "chat-execution/v1"
+# Detached work (a background delegate unit) is admitted by its dispatching worker but outlives it.
+DETACHED_RESOURCE_KINDS = frozenset({"async_delegation_thread"})
+_RESOURCE_KINDS = frozenset({
+    "concurrent_tool_thread", "sequential_tool_thread", "prepared_terminal_tool_thread",
+    "middleware_tool_continuation", "memory_prefetch_thread", "terminal_local_process",
+}) | DETACHED_RESOURCE_KINDS
 
 
 class ChatExecutionStore:
@@ -118,8 +124,21 @@ class ChatExecutionStore:
             db.commit()
             return True
 
-    def reserve_concurrent_tool_resource(self, session_key, generation, resource_id, kind="concurrent_tool_thread"):
-        if kind not in {"concurrent_tool_thread", "sequential_tool_thread", "prepared_terminal_tool_thread", "middleware_tool_continuation", "memory_prefetch_thread", "terminal_local_process"}:
+    @staticmethod
+    def _detached_admits(db, session_key, generation, under):
+        """A started detached resource ``(resource_id, session_id)`` still admits its own subtree after its
+        dispatching worker settles or a successor generation starts; a fence admits nothing."""
+        if under is None:
+            return False
+        fence = db.execute("SELECT state FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
+        if fence and fence["state"] == "fenced":
+            return False
+        row = db.execute("SELECT kind FROM concurrent_tool_resources WHERE session_key=? AND generation=? AND resource_id=? AND session_id=? AND state='started'",
+                         (session_key, generation, *under)).fetchone()
+        return row is not None and row["kind"] in DETACHED_RESOURCE_KINDS
+
+    def reserve_concurrent_tool_resource(self, session_key, generation, resource_id, kind="concurrent_tool_thread", under=None):
+        if kind not in _RESOURCE_KINDS:
             return False
         if not session_key or not self._valid_generation(generation) or not resource_id:
             return False
@@ -128,8 +147,11 @@ class ChatExecutionStore:
             parent = db.execute("SELECT session_id, worker, worker_started FROM executions WHERE session_key=? AND generation=?", (session_key, generation)).fetchone()
             latest = db.execute("SELECT MAX(generation) FROM executions WHERE session_key=?", (session_key,)).fetchone()[0]
             fence = db.execute("SELECT state FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
-            if (not parent or not parent["session_id"] or parent["worker"] != "pending" or not parent["worker_started"]
-                    or latest != generation or (fence and fence["state"] == "fenced")):
+            live = parent and parent["worker"] == "pending" and latest == generation
+            # Detached authority never mints more detached authority: only a live worker reserves one.
+            inherited = kind not in DETACHED_RESOURCE_KINDS and self._detached_admits(db, session_key, generation, under)
+            if (not parent or not parent["session_id"] or not parent["worker_started"] or (fence and fence["state"] == "fenced")
+                    or not (live or inherited)):
                 db.rollback()
                 return False
             try:
@@ -142,8 +164,8 @@ class ChatExecutionStore:
             db.commit()
             return True
 
-    def start_concurrent_tool_resource(self, session_key, generation, resource_id, session_id, kind="concurrent_tool_thread"):
-        if kind not in {"concurrent_tool_thread", "sequential_tool_thread", "prepared_terminal_tool_thread", "middleware_tool_continuation", "memory_prefetch_thread", "terminal_local_process"}:
+    def start_concurrent_tool_resource(self, session_key, generation, resource_id, session_id, kind="concurrent_tool_thread", under=None):
+        if kind not in _RESOURCE_KINDS:
             return False
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -151,8 +173,11 @@ class ChatExecutionStore:
             parent = db.execute("SELECT worker FROM executions WHERE session_key=? AND generation=?", (session_key, generation)).fetchone()
             latest = db.execute("SELECT MAX(generation) FROM executions WHERE session_key=?", (session_key,)).fetchone()[0]
             fence = db.execute("SELECT state FROM session_fences WHERE session_key=?", (session_key,)).fetchone()
+            # Detached work was admitted at reservation by its pending, current worker; a queued pool
+            # thread starting after that worker settles is not stale.
+            live = parent and ((parent["worker"] == "pending" and latest == generation) or kind in DETACHED_RESOURCE_KINDS)
             if (not row or row["session_id"] != session_id or row["kind"] != kind or row["state"] != "reserved" or not parent
-                    or parent["worker"] != "pending" or latest != generation or (fence and fence["state"] == "fenced")):
+                    or (fence and fence["state"] == "fenced") or not (live or self._detached_admits(db, session_key, generation, under))):
                 db.rollback()
                 return False
             db.execute("UPDATE concurrent_tool_resources SET state='started' WHERE session_key=? AND generation=? AND resource_id=?", (session_key, generation, resource_id))
@@ -163,7 +188,7 @@ class ChatExecutionStore:
         # Process identity/direct-child unwind is not a process-tree settlement witness.
         if kind == "terminal_local_process":
             return False
-        if kind not in {"concurrent_tool_thread", "sequential_tool_thread", "prepared_terminal_tool_thread", "middleware_tool_continuation", "memory_prefetch_thread", "terminal_local_process"}:
+        if kind not in _RESOURCE_KINDS:
             return False
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -240,15 +265,20 @@ class ChatExecutionStore:
     def observe_tool(self, session_key, generation):
         return self._mutate(session_key, generation, "UPDATE executions SET tool_observed=1, effects='unknown' WHERE session_key=? AND generation=? AND worker_started=1")
 
-    def observe_started_worker_tool(self, session_key, generation):
-        """Durably mark a tool from an already-started worker, even after fencing."""
+    def observe_started_worker_tool(self, session_key, generation, under=None):
+        """Durably mark a tool from an already-started worker, even after fencing. With ``under``, mark one
+        from the subtree of that started detached resource instead, whatever its worker's state; not fenced."""
         if not session_key or not self._valid_generation(generation):
             return False
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
+            if under is not None and not self._detached_admits(db, session_key, generation, under):
+                db.rollback()
+                return False
             result = db.execute(
                 "UPDATE executions SET tool_observed=1, effects='unknown' "
-                "WHERE session_key=? AND generation=? AND session_id!='' AND worker_started=1 AND worker='pending'",
+                "WHERE session_key=? AND generation=? AND session_id!='' AND worker_started=1"
+                + ("" if under is not None else " AND worker='pending'"),
                 (session_key, generation),
             )
             if result.rowcount != 1:

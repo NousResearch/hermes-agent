@@ -324,7 +324,9 @@ def _run_task_turns(agent, frame, history, context):
     # carrier is this frame's bound claim, never the owner process's environment.
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
     recover_failed_kanban_turns(recover, lambda: result, task_id=context['task_id'],
-                                claim_check=lambda: _bound_claim_is_live(context))
+                                claim_check=lambda: _bound_claim_is_live(context),
+                                terminal_tools=getattr(agent, 'kanban_terminal_tool_names', None),
+                                terminal_guidance=getattr(agent, 'kanban_terminal_tool_guidance', None))
     from hermes_cli.turn_exit import turn_exit_code
     # Only a settled turn may continue the goal loop: an exhausted or denied recovery reaches
     # the honest exit path without re-entering the model under an unprovable claim.

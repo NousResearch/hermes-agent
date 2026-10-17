@@ -14,20 +14,27 @@ from typing import Any, Iterable, Optional
 from agent.delegation_context import owned_kanban_task
 
 
-# Every tool that ends this worker's responsibility for the card, not just the two that
-# close it out: ``kanban_request_review`` moves it to ``review`` (goals.py's continuation /
-# finalize prompts tell builders to call it) and ``kanban_request_changes`` returns it to
-# ``ready`` (the sdlc-review skill tells reviewers to). Nudging after either asks a worker
-# that did the right thing to ``kanban_complete`` a card it must not close.
-_TERMINAL_KANBAN_TOOLS = frozenset({
-    "kanban_complete",
-    "kanban_block",
-    "kanban_schedule",
-    "kanban_request_review",
-    "kanban_request_changes",
-})
-
+# Every tool that ends this worker's responsibility for the card, including review hand-offs.
 _DEFAULT_MAX_ATTEMPTS = 2
+
+
+def kanban_terminal_tool_names(tool_names: Iterable[str] | None = None) -> frozenset[str]:
+    """Resolve terminal hand-off metadata, optionally restricted to this agent's surface."""
+    return frozenset(kanban_terminal_tool_guidance(tool_names))
+
+
+def kanban_terminal_tool_guidance(tool_names: Iterable[str] | None = None) -> dict[str, str]:
+    """Resolve hand-off guidance for marked tools, restricted to this agent's surface."""
+    from tools.registry import registry
+
+    allowed = None if tool_names is None else set(tool_names)
+    guidance = registry.kanban_terminal_tool_guidance(allowed)
+    # Tests and lightweight callers may use this guard before model_tools discovery. Importing
+    # the built-in module registers its declarative metadata; a supplied surface still filters it.
+    if not guidance and allowed is None:
+        import tools.kanban_tools
+        guidance = registry.kanban_terminal_tool_guidance()
+    return guidance
 
 
 def kanban_stop_nudge_enabled() -> bool:
@@ -48,15 +55,19 @@ def _tool_call_name(tc: Any) -> str:
     return str((getattr(fn, "name", "") if fn is not None else getattr(tc, "name", "")) or "")
 
 
-def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
+def session_called_kanban_terminal(
+    messages: Iterable[dict] | None, *, terminal_tools: Iterable[str] | None = None,
+) -> bool:
     """True if this conversation already invoked a terminal kanban tool."""
+    terminal_tools = (frozenset(terminal_tools) if terminal_tools is not None
+                      else kanban_terminal_tool_names())
     for msg in filter(lambda m: isinstance(m, dict), messages or ()):
         role = msg.get("role")
         if role == "assistant" and any(
-            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []
+            _tool_call_name(tc) in terminal_tools for tc in msg.get("tool_calls") or []
         ):
             return True
-        if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
+        if role == "tool" and str(msg.get("name") or "") in terminal_tools:
             return True
     return False
 
@@ -67,35 +78,48 @@ def build_kanban_stop_nudge(
     attempts: int = 0,
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
     task_id: Optional[str] = None,
+    terminal_tools: Iterable[str] | None = None,
+    terminal_guidance: dict[str, str] | None = None,
 ) -> Optional[str]:
     """Synthetic follow-up when a kanban worker exits without a terminal tool; ``None`` when
     the guard should not fire (not a kanban worker, already completed/blocked, budget exhausted)."""
     if (
         not kanban_stop_nudge_enabled()
         or attempts >= max_attempts
-        or session_called_kanban_terminal(messages)
+        or session_called_kanban_terminal(messages, terminal_tools=terminal_tools)
     ):
         return None
 
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
+    terminal_tools = sorted(terminal_tools if terminal_tools is not None else kanban_terminal_tool_names())
+    if terminal_guidance is None:
+        terminal_guidance = kanban_terminal_tool_guidance(terminal_tools)
+    handoff_instruction = (
+        "2. Use an available terminal board tool that matches the result and follow its schema:\n"
+        + "\n".join(
+            f"   - `{name}`: {terminal_guidance.get(name) or 'Use this hand-off when appropriate.'}"
+            for name in terminal_tools
+        ) + "\n\n"
+        if terminal_tools else
+        "2. No terminal board hand-off tool is marked as available. Do not invent a tool call; "
+        "state that the task cannot be handed off with the current tool surface.\n\n"
+    )
     # The transcript is the status source: this text is only reached when the session made no
     # handoff call, so it never tells a worker to close a card it already sent to review.
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"
-        f"Task `{tid}` has not been handed off: this session made no terminal board "
-        "call (`kanban_complete` / `kanban_request_review` / `kanban_block`). Ending now "
-        "causes a protocol violation (clean exit with the card still `running`).\n\n"
+        f"Task `{tid}` has not been handed off: this session made no terminal board call. "
+        "Ending now causes a protocol violation (clean exit with the card still `running`).\n\n"
         "Do this immediately in your next response — do not narrate intent:\n"
         "1. Finish any remaining deliverable (write the required file(s) now).\n"
-        "2. Call `kanban_complete(summary=..., artifacts=[...])` if the work is done "
-        "and needs no review, `kanban_request_review(summary=...)` if it is a code "
-        "change that needs same-card review, OR `kanban_block(reason=...)` if you are "
-        "blocked. Reviewers approve with `kanban_complete` or send the card back with "
-        "`kanban_request_changes(reason=...)`.\n\n"
-        "Never end a turn with only a promise of future action. Repeated "
+        + handoff_instruction
+        + "Never end a turn with only a promise of future action. Repeated "
         "protocol violations will block this task and require manual intervention.]"
     )
 
 
-__all__ = ["build_kanban_stop_nudge", "kanban_stop_nudge_enabled", "session_called_kanban_terminal"]
+__all__ = [
+    "build_kanban_stop_nudge", "kanban_stop_nudge_enabled",
+    "kanban_terminal_tool_guidance", "kanban_terminal_tool_names", "session_called_kanban_terminal",
+]

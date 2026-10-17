@@ -1124,14 +1124,8 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         agent.tools = [t for t in agent.tools if t["function"]["name"] not in drops]
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
-    # expose kanban_show interactively, and children/cron runs inherit the env var, without
-    # owning a task.
-    from agent.delegation_context import owned_kanban_task
-    from agent.prompt_builder import KANBAN_GUIDANCE
-    agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
-    )
+    from agent.agent_init_kanban import configure_kanban_tool_surface
+    configure_kanban_tool_surface(agent)
     if agent.quiet_mode:
         return
     if agent.tools:

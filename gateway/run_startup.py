@@ -1208,6 +1208,7 @@ class GatewayStartupMixin:
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
         from gateway.run import _platform_has_bot_credential
         from gateway.run_adapters import _adapter_unavailable_message
+        from gateway.platform_registry import platform_registry
         enabled_platform_count = 0
         _multiplex_on = self._multiplex_on()
         _multiplex_skipped_platforms: list[Platform] = []
@@ -1232,6 +1233,15 @@ class GatewayStartupMixin:
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
+            # Provision the platform's deps OFF the loop before building the adapter. The ACTIVE
+            # installer (pm sync_venv) blocks for minutes on a slow disk, and a loop parked that
+            # long trips the loop-liveness watchdog (probe 10s, 3 strikes, exit 75) — the
+            # supervisor then restarts the gateway into the same install (#140619). Best-effort:
+            # a failed hop leaves create_adapter() to provision inline, i.e. today's behaviour.
+            if platform_registry.is_registered(platform.value):
+                with _log_suppressed(logging.DEBUG, "Off-loop platform dependency provisioning failed: %s"):
+                    await self._run_in_executor_with_context(
+                        platform_registry.ensure_dependencies, platform.value)
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin

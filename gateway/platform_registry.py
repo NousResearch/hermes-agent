@@ -483,12 +483,28 @@ class PlatformRegistry:
             entries, _deferred = self._scope_maps(scope)
             return name in entries or name in self._entries or self._load_pending(scope, name)
 
-    def create_adapter(self, name: str, config: Any) -> Optional[Any]:
-        """Create an adapter instance for *name*; None when no entry exists, deps are missing
-        and cannot be installed, ``validate_config`` fails, or the factory raises."""
+    def ensure_dependencies(self, name: str) -> bool:
+        """Provision a registered platform's dependencies: passive probe first, then the ACTIVE
+        installer (``pm.sync_venv``) when they are missing.  True once they are importable.
+
+        ``create_adapter()`` runs the same work inline, which is right for every caller already
+        off the event loop.  A startup path that creates adapters ON the loop calls this first
+        through the runner's executor hop (#140619): a cold install on a slow disk takes minutes,
+        and a loop parked that long trips the loop-liveness watchdog (probe 10s, 3 strikes,
+        exit 75), which restarts the gateway into the very same install.  ``create_adapter()``
+        then finds the deps present and skips the installer.
+        """
         entry = self.get(name)
         if entry is None:
-            return None
+            return False
+        return self._provision_dependencies(entry)
+
+    def _provision_dependencies(self, entry: PlatformEntry) -> bool:
+        """Probe the deps and, when they are missing, run the ACTIVE installer.
+
+        The ONE place the active installer runs: the platform is enabled+configured and about
+        to be brought up, so an install is what the user wants.
+        """
         def _probe(fn: Callable[[], Any], failure_msg: str) -> bool:
             try:
                 return bool(fn())
@@ -497,10 +513,17 @@ class PlatformRegistry:
                 return False
         deps_ok = _probe(entry.check_fn, "Platform '%s' check_fn raised: %s")
         if not deps_ok and entry.ensure_deps_fn is not None:
-            # The ONE place the active installer runs: the platform is enabled+configured
-            # and about to connect, so an install is what the user wants.
             logger.info("Platform '%s' dependencies missing — attempting install...", entry.label)
             deps_ok = _probe(entry.ensure_deps_fn, "Platform '%s' dependency install raised: %s")
+        return deps_ok
+
+    def create_adapter(self, name: str, config: Any) -> Optional[Any]:
+        """Create an adapter instance for *name*; None when no entry exists, deps are missing
+        and cannot be installed, ``validate_config`` fails, or the factory raises."""
+        entry = self.get(name)
+        if entry is None:
+            return None
+        deps_ok = self._provision_dependencies(entry)
         if not deps_ok:
             hint = f" ({entry.install_hint})" if entry.install_hint else ""
             logger.warning("Platform '%s' requirements not met%s", entry.label, hint)

@@ -1,6 +1,6 @@
 name: git-tasks
 repo: https://github.com/meviusisback/git-tasks
-sha: e0f7c350adcb4ca97366ca821a47c1dcadf8e230
+sha: ef8b8da83a30bf8da57585f69a0bdfaedae7555b
 description: Multi-repo GitHub issues & PRs in an Orca-style Tasks view for Hermes Desktop. Disclosure — data via your logged-in gh CLI; creates git worktrees and opens seeded Hermes sessions from the detail view.
 maintainer: meviusisback
 tier: community

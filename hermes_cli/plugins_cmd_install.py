@@ -145,9 +145,12 @@ def _consent_python_deps(
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         console.print(
             "[dim]Non-interactive install — skipping dependency install. "
-            "Run `hermes plugins enable` when ready to prepare them.[/dim]\n"
+            "Run `hermes plugins enable` when ready to prepare them, or retry "
+            "with `--yes-deps` to answer this gate here.[/dim]\n"
         )
-        return False, _ConsentRefusal("dependency install skipped (non-interactive)", "non_interactive")
+        return False, _ConsentRefusal(
+            "dependency install skipped (non-interactive); retry the install with `--yes-deps` "
+            "to consent from a non-interactive context", "non_interactive")
     if not _ask_yes_no(("python", plugin_name, deps), "  Prepare these with Hermes through PM now? [y/N]: ", console):
         console.print(
             "[dim]Skipped — run `hermes plugins enable` when ready "

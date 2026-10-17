@@ -43,6 +43,7 @@ def test_install_only_requests_relevant_python_consent(admission_env, monkeypatc
         assert 'sidecar-plugin' not in enabled
         assert config_path.read_bytes() == before
         assert 'dependency install skipped (non-interactive)' in output
+        assert '--yes-deps' in output
 
 
 def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):

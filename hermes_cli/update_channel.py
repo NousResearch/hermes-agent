@@ -244,7 +244,7 @@ def set_install_channel(
 
 
 def handle_metadata_args(args, project_root: Path) -> bool:
-    """Handle metadata-only update commands before any update side effect."""
+    """Persist channel metadata and stop only when no update action was requested."""
     if getattr(args, "install_id", False):
         print(install_id(project_root))
         return True
@@ -261,7 +261,14 @@ def handle_metadata_args(args, project_root: Path) -> bool:
         print("Canary builds can write forward-incompatible state. Back up your data before switching.")
     elif channel == CHANNEL_STABLE:
         print("Switching to an older stable release may not read state written by canary. Back up your data first.")
-    return True
+    return not any(
+        getattr(args, name, False)
+        for name in (
+            "gateway", "check", "plan", "list_venv_holders", "no_backup", "backup",
+            "yes", "keep_stash", "branch", "switch_branch", "force", "force_venv",
+            "channel", "no_gateway_restart",
+        )
+    )
 
 
 @contextmanager

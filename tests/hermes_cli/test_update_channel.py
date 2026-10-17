@@ -370,6 +370,28 @@ class TestSetChannelCLI:
         assert "older stable release" in out
         assert "Wait" not in out
 
+    def test_set_channel_continues_to_update_when_backup_is_requested(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression for #139428: --set-channel must not swallow --backup."""
+        import hermes_yaml as yaml
+        from hermes_cli import main, update_cmd
+
+        home = self._home(tmp_path, monkeypatch)
+        _stamp(tmp_path, "self")
+        seen = []
+
+        def run_update(args, *, gateway_mode):
+            seen.append((args.backup, gateway_mode))
+            written = yaml.safe_load((home / "config.yaml").read_text())
+            assert resolve_update_channel(written, tmp_path) == "stable"
+
+        monkeypatch.setattr(update_cmd, "_cmd_update_impl", run_update)
+
+        main.cmd_update(self._args(set_channel="stable", backup=True))
+
+        assert seen == [(True, False)]
+
 
 
 @pytest.mark.parametrize('kind,expected', [('missing', 'missing'), ('replaced', 'replaced'),

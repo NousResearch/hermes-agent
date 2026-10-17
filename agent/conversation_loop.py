@@ -22,6 +22,7 @@ from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
+from agent.reasoning_params import ollama_num_ctx_for_route
 from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
 from agent.prompt_caching import (
     build_prompt_cache_plan,
@@ -421,7 +422,7 @@ def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
-    runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
+    runtime_ctx = ollama_num_ctx_for_route(agent)
     if (
         not getattr(agent, "tools", None)
         or not isinstance(runtime_ctx, int)

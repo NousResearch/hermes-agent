@@ -125,6 +125,57 @@ class TestDetectLocalServerTypeBlackhole:
         assert client.get.call_count > 1
         assert _endpoint_blackholed(self.URL) is False
 
+    def test_read_timeout_stops_waterfall_but_only_caches_in_memory(self, monkeypatch, tmp_path):
+        """An accepted connection that stops answering must cost one probe per TTL."""
+        from agent import model_metadata
+
+        url = "http://10.0.0.93:30080/v1"
+        requests = []
+
+        def respond(request):
+            requests.append(request.url.path)
+            raise httpx.ReadTimeout("server did not answer", request=request)
+
+        real_client = httpx.Client
+        transport = httpx.MockTransport(respond)
+        monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(transport=transport, **kwargs))
+        monkeypatch.setattr(model_metadata, "_local_probe_disk_cache_path", lambda: tmp_path / "probes.json")
+
+        assert model_metadata.detect_local_server_type(url) is None
+        assert requests == ["/api/v1/models"]
+        assert model_metadata._endpoint_blackholed(url) is False
+        assert not (tmp_path / "probes.json").exists()
+
+        assert model_metadata.detect_local_server_type(url) is None
+        assert requests == ["/api/v1/models"]
+        model_metadata._endpoint_probe_path_cache["http://10.0.0.93:30080"] = (
+            None,
+            model_metadata.time.monotonic() - model_metadata._ENDPOINT_PROBE_FAILURE_TTL_SECONDS - 1,
+        )
+        assert model_metadata.detect_local_server_type(url) is None
+        assert requests == ["/api/v1/models", "/api/v1/models"]
+        assert model_metadata._endpoint_blackholed(url) is False
+
+    def test_not_found_responses_still_try_all_waterfall_paths(self, monkeypatch, tmp_path):
+        """A fast 404 is not a reason to stop looking for the next server type."""
+        from agent import model_metadata
+
+        url = "http://10.0.0.94:30080/v1"
+        requests = []
+
+        def respond(request):
+            requests.append(request.url.path)
+            return httpx.Response(404, request=request)
+
+        real_client = httpx.Client
+        transport = httpx.MockTransport(respond)
+        monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(transport=transport, **kwargs))
+        monkeypatch.setattr(model_metadata, "_local_probe_disk_cache_path", lambda: tmp_path / "probes.json")
+
+        assert model_metadata.detect_local_server_type(url) is None
+        assert requests == ["/api/v1/models", "/api/tags", "/v1/props", "/props", "/version"]
+        assert model_metadata._endpoint_blackholed(url) is False
+
     def test_read_timeout_does_not_blackhole(self):
         """A read timeout means the connection was accepted — not a blackhole."""
         from agent.model_metadata import _endpoint_blackholed, detect_local_server_type

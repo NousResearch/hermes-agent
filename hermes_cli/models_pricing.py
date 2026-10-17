@@ -32,14 +32,17 @@ _pricing_cache_retry_after: dict[str, float] = {}
 
 
 def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
-    """The cached catalog for *cache_key*, or None to go fetch it."""
+    """The cached catalog for *cache_key*, or None to go fetch it. An expired non-empty entry is
+    kept (stale) for ``_cached_only_pricing`` — the picker must keep rendering the last-known
+    prices — only the "go fetch it" answer expires, so live readers still revalidate on time."""
     cached = _pricing_cache.get(cache_key)
     if cached is None:
         return None
     retry_after = _pricing_cache_retry_after.get(cache_key)
     if retry_after is not None and time.monotonic() >= retry_after:
-        _pricing_cache.pop(cache_key, None)
-        _pricing_cache_retry_after.pop(cache_key, None)
+        if not cached:
+            _pricing_cache.pop(cache_key, None)
+            _pricing_cache_retry_after.pop(cache_key, None)
         return None
     return cached
 
@@ -51,7 +54,15 @@ def _cache_catalog(
 ) -> dict[str, dict[str, Any]]:
     """Cache a catalog result, giving an empty one an expiry. *ttl_seconds* expires a non-empty
     result too — only for a catalog whose contents depend on server-side state the client cannot
-    observe (an org's model policy can change while a long-lived process holds the entry)."""
+    observe (an org's model policy can change while a long-lived process holds the entry).
+    A failed fetch does not evict the last known catalog: the empty result keeps its failure
+    window (live readers stop re-dialing) while cached-only reads keep showing the old prices
+    instead of silently dropping every badge in the picker (#136655)."""
+    if not result and _pricing_cache.get(cache_key):
+        _pricing_cache_retry_after[cache_key] = (
+            time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
+        )
+        return result
     _pricing_cache[cache_key] = result
     if not result:
         _pricing_cache_retry_after[cache_key] = time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
@@ -611,7 +622,15 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
     cache_key = _pricing_provider_cache_keys.get((_pricing_profile_key(), normalized))
     if cache_key is None and normalized in ("openrouter", "ai-gateway", "fireworks"):
         cache_key = _STATIC_PRICING_SCOPES[normalized]()
-    return (_cached_catalog(cache_key) or {}) if cache_key else {}
+    if not cache_key:
+        return {}
+    # Stale-while-revalidate for the picker (#136655): an entry past its TTL is still served here
+    # (it stays resident for exactly this read) while live readers revalidate — so opening the
+    # picker cold never renders a provider row without its free/price badges.
+    stale = _pricing_cache.get(cache_key)
+    if stale:
+        return stale
+    return _cached_catalog(cache_key) or {}
 
 
 def get_pricing_for_provider(

@@ -27,6 +27,9 @@ def _init_fallback_chain(agent, fallback_model):
 
     # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
     agent._fallback_chain = _fallback_entries(fallback_model)
+    # Reserve uses the same Codex OAuth account but its own quota window.
+    from agent.agent_runtime_helpers import _prepend_codex_reserve_entry
+    _prepend_codex_reserve_entry(agent)
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)

@@ -1143,6 +1143,19 @@ def _oversized_message_content_rejection(body: Any) -> bool:
 def _classify_400(c: _Ctx) -> Verdict:
     """400 Bad Request — image/tool shapes, request-shape rejections, overflow, or generic."""
     msg, code = c.msg, c.code
+    # OpenCode Go can return a transient, message-less relay envelope for an HTTP 400.
+    # Treat only that provider-specific shape like a server error; ordinary 400s stay terminal.
+    if (
+        c.provider_slug == "opencode-go"
+        and c.body.get("object") == "error"
+        and isinstance(c.body.get("model"), str)
+        and c.body["model"].strip()
+        and not any(
+            isinstance(candidate, str) and candidate.strip()
+            for candidate in _body_message_candidates(c.body)
+        )
+    ):
+        return _V_SERVER_ERROR
     # A size cap reported *through* a message content field must beat the keyword
     # multimodal rule, which would otherwise claim "input should be a valid string".
     if _oversized_message_content_rejection(c.body):

@@ -90,7 +90,7 @@ _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 
 def _extract_json_blob(raw: str, fence_re: re.Pattern = _FENCE_RE) -> Optional[dict]:
     """Lenient JSON object extraction: strip code fences, take the first ``{``
-    to the last ``}``. None if nothing parses to a dict."""
+    to the last ``}``, tolerate raw newlines inside strings. None if nothing parses to a dict."""
     if not raw:
         return None
     stripped = fence_re.sub("", raw.strip())
@@ -99,7 +99,7 @@ def _extract_json_blob(raw: str, fence_re: re.Pattern = _FENCE_RE) -> Optional[d
     if first == -1 or last == -1 or last <= first:
         return None
     try:
-        val = json.loads(stripped[first : last + 1])
+        val = json.loads(stripped[first : last + 1], strict=False)
     except (ValueError, json.JSONDecodeError):
         return None
     return val if isinstance(val, dict) else None
@@ -214,6 +214,9 @@ def specify_task(
         # Whole reply becomes the body; the user can edit afterward.
         if not raw:
             return SpecifyOutcome(task_id, False, "LLM returned an empty response")
+        if _FENCE_RE.sub("", raw).startswith("{"):
+            # Malformed or truncated JSON must never be written verbatim as the task body.
+            return SpecifyOutcome(task_id, False, "LLM reply looked like JSON but did not parse")
         new_title, new_body = None, raw
     else:
         new_title, new_body = _title_body(parsed)

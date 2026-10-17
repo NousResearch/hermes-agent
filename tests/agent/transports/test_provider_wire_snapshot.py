@@ -227,3 +227,41 @@ def test_snapshot_covers_every_provider():
     recorded, current = set(_load()), {c[0] for c in CELLS} | set(BASE_URL_ONLY)
     assert current <= recorded, f"providers without a recorded wire: {sorted(current - recorded)}"
     assert recorded <= current, f"snapshot entries for providers that no longer exist: {sorted(recorded - current)}"
+
+
+def test_request_middleware_repaired_tool_call_arguments_before_send(offline, monkeypatch):
+    """A request rewrite must not leave replayed OpenAI tool calls invalid (#137028)."""
+    from agent.turn_api_request import build_api_request
+    from agent.turn_context import _PER_TURN_RESET_STATE
+    from types import SimpleNamespace
+    from run_agent import AIAgent
+
+    with patch("model_tools.get_tool_definitions", return_value=TOOLS), \
+         patch("model_tools.check_toolset_requirements", return_value={}):
+        agent = AIAgent(
+            provider="ollama-cloud", model="gpt-oss:120b",
+            base_url="https://ollama.com/v1", api_key="sk-test-0000000000",
+            quiet_mode=True, skip_context_files=True, skip_memory=True,
+        )
+    for name, value in _PER_TURN_RESET_STATE:
+        setattr(agent, name, value)
+    messages = json.loads(json.dumps(MESSAGES))
+
+    def corrupt_arguments(request, **_context):
+        replacement = json.loads(json.dumps(request))
+        replacement["messages"][2]["tool_calls"][0]["function"]["arguments"] = (
+            '{"command":"echo \\[redacted]"}'
+        )
+        return SimpleNamespace(payload=replacement, original_payload=request, changed=True, trace=[])
+
+    monkeypatch.setattr("hermes_cli.middleware.apply_llm_request_middleware", corrupt_arguments)
+    built = build_api_request(
+        agent, api_messages=messages, _moa_prepared_request=None, tools_for_api=agent.tools,
+        system_message=messages[0]["content"], messages=messages,
+        original_user_message=messages[-1]["content"], approx_tokens=0, total_chars=0,
+        retry_count=0, api_call_count=1, api_request_id="req-1", api_start_time=0.0,
+        effective_task_id="task-1", turn_id="turn-1",
+    )
+
+    arguments = built.api_kwargs["messages"][2]["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(arguments) == {}

@@ -108,6 +108,19 @@ def _walk_compression_chain(session_id: str, step) -> list[str]:
 # created_source values the creator upsert treats as unset (NULLIF(..., 'unknown')).
 _UNSET_CREATED_SOURCES = (None, "unknown")
 _CREATED_ROW_SQL = "SELECT parent_session_id, created_source FROM sessions WHERE id = ?"
+# Is any ancestor unset, walking up parent_session_id through ancestors on the same surface?
+# One query, so a fully stamped chain is skipped without the per-hop validated walk below.
+_UNSET_ANCESTOR_SQL = """
+    WITH RECURSIVE up(pid, n) AS (
+        SELECT parent_session_id, 1 FROM sessions WHERE id = ?
+        UNION ALL
+        SELECT s.parent_session_id, up.n + 1 FROM up JOIN sessions s ON s.id = up.pid
+        WHERE s.created_source = ? AND up.n < ?
+    )
+    SELECT 1 FROM up JOIN sessions s ON s.id = up.pid
+    WHERE NULLIF(s.created_source, 'unknown') IS NULL
+    LIMIT 1
+"""
 
 
 def stamp_compression_ancestors(conn, session_id: str) -> None:
@@ -120,10 +133,13 @@ def stamp_compression_ancestors(conn, session_id: str) -> None:
     must be the parent's preferred continuation (``_CHAIN_STEP_SQL``); ``unknown`` counts as
     unset, as in the creator upsert. An ancestor already on the same surface is walked through
     (a NULL root behind a stamped mid segment still gets stamped); another surface stops it.
+    A chain with no unset ancestor returns after one query (``_UNSET_ANCESTOR_SQL``).
     """
     row = conn.execute(_CREATED_ROW_SQL, (session_id,)).fetchone()
     surface = row["created_source"] if row else None
     if surface in _UNSET_CREATED_SOURCES:
+        return
+    if conn.execute(_UNSET_ANCESTOR_SQL, (session_id, surface, _CHAIN_CAP)).fetchone() is None:
         return
     current, parent_id = session_id, row["parent_session_id"]
     for _ in range(_CHAIN_CAP):

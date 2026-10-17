@@ -67,3 +67,18 @@ def test_project_interpreter_keeps_runtime_dependencies_out(runtime_dependency, 
     ))
     assert result["status"] == "success", result
     assert "True user-dependency" in result["output"]
+
+
+def test_cell_subprocesses_do_not_inherit_kernel_pythonpath(runtime_dependency, tmp_path, monkeypatch):
+    """A different interpreter started from a cell must not import the kernel's packages."""
+    monkeypatch.setattr(code_execution_tool, "_load_config", lambda: {"mode": "strict", "timeout": 15})
+    result = json.loads(code_execution_tool.execute_code(
+        "import subprocess, sys\nimport pm_fixture_dependency\n"
+        "out = subprocess.run([sys.executable, '-c', 'import os; print(os.environ.get(\"PYTHONPATH\", \"\"))'],"
+        " capture_output=True, text=True).stdout.strip()\nprint('CHILD=' + out)",
+        task_id="pm-child-pythonpath",
+    ))
+    assert result["status"] == "success", result
+    child_entries = result["output"].split("CHILD=", 1)[1].strip().split(os.pathsep)
+    assert str(runtime_dependency) not in child_entries
+    assert child_entries[-1] == str(tmp_path / "user-lib")

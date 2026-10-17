@@ -91,7 +91,7 @@ token). Other sessions do not see it.
 
 ## `feishu_doc` toolset
 
-Scoped to the Feishu document-comment intelligent-reply handler (`gateway/platforms/feishu_comment.py`). Not exposed on `hermes-cli` or the regular Feishu chat adapter.
+Scoped to the Feishu document-comment intelligent-reply handler (`plugins/platforms/feishu/feishu_comment.py`). Also exposed on `hermes-feishu`: in chat/DM sessions the gateway's lark client is used; in comment threads the handler injects the comment-scoped client.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
@@ -99,7 +99,7 @@ Scoped to the Feishu document-comment intelligent-reply handler (`gateway/platfo
 
 ## `feishu_drive` toolset
 
-Scoped to the Feishu document-comment handler. Drives comment read/write operations on drive files.
+Available on `hermes-feishu` (the regular Feishu chat adapter) and in the Feishu document-comment handler. Drives comment read/write operations on drive files.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|

@@ -39,6 +39,7 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  registryScopeRemoteProfile,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
@@ -72,6 +73,29 @@ test('resolveRemoteSshDashboardProfile never sends a conn: pool key to the remot
   assert.equal(resolveRemoteSshDashboardProfile('', 'default'), '')
   assert.equal(resolveRemoteSshDashboardProfile('writer', 'conn:mac-mini::default'), 'writer')
   assert.equal(resolveRemoteSshDashboardProfile('default', 'mac-mini'), '')
+})
+
+test('registryScopeRemoteProfile keeps a named scope on its own remote profile', () => {
+  // #134809: a connection configured `remoteProfile: "default"` pinned EVERY
+  // (connection, profile) scope's serve to that one home, so opening another
+  // profile's listed sessions 404'd on the default home's state.db. The pool
+  // key's profile must win; the configured value pins only the default scope.
+  assert.equal(registryScopeRemoteProfile('default', 'admin'), 'admin')
+  assert.equal(registryScopeRemoteProfile('default', 'default'), 'default')
+  assert.equal(registryScopeRemoteProfile('', 'admin'), 'admin')
+  assert.equal(registryScopeRemoteProfile('', 'default'), '')
+  // An explicit alias still steers the connection's default scope (and a scope
+  // literally named after the alias), but no longer captures sibling scopes.
+  assert.equal(registryScopeRemoteProfile('writer_2', 'default'), 'writer_2')
+  assert.equal(registryScopeRemoteProfile('writer_2', 'writer_2'), 'writer_2')
+  assert.equal(registryScopeRemoteProfile('writer_2', 'admin'), 'admin')
+  // Blank/missing inputs normalize to the default scope either way.
+  assert.equal(registryScopeRemoteProfile(undefined, ''), '')
+  assert.equal(registryScopeRemoteProfile('default', ''), 'default')
+  // End to end: the resolved value feeds the dashboard profile resolver, so
+  // the reporter's admin scope now spawns `--profile admin` on the remote.
+  assert.equal(resolveRemoteSshDashboardProfile(registryScopeRemoteProfile('default', 'admin'), ''), 'admin')
+  assert.equal(resolveRemoteSshDashboardProfile(registryScopeRemoteProfile('default', 'default'), ''), '')
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {

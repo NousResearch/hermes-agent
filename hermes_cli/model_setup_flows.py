@@ -51,9 +51,33 @@ def _report_live_models(model_list, source: str) -> None:
         print(f"  Found {len(model_list)} model(s) from {source}")
 
 
+def _prompt_openrouter_endpoint(config) -> str | None:
+    """Ask which OpenRouter endpoint to use. Returns the base URL, or None if the user cancels."""
+    from hermes_constants import OPENROUTER_ENDPOINTS, openrouter_endpoint_url
+
+    section = config.get("openrouter") if isinstance(config, dict) else None
+    current = openrouter_endpoint_url((section or {}).get("endpoint") if isinstance(section, dict) else None)
+    print("\nOpenRouter endpoint:")
+    for i, (key, url, note) in enumerate(OPENROUTER_ENDPOINTS, start=1):
+        marker = " (current)" if url == current else ""
+        print(f"  {i}. {url}{marker}")
+        print(f"     {note}")
+    default_idx = next((i for i, (_k, url, _n) in enumerate(OPENROUTER_ENDPOINTS, start=1) if url == current), 1)
+    choice = _ask(f"Endpoint [{default_idx}]: ", on_cancel=None)
+    if choice is None:
+        print("\nCancelled.")
+        return None
+    if not choice:
+        return current
+    if choice.isdigit() and 1 <= int(choice) <= len(OPENROUTER_ENDPOINTS):
+        return OPENROUTER_ENDPOINTS[int(choice) - 1][1]
+    print(f"  Invalid choice — keeping {current}")
+    return current
+
+
 def _model_flow_openrouter(config, current_model=""):
-    """OpenRouter provider: ensure API key, then pick model."""
-    from hermes_constants import OPENROUTER_BASE_URL
+    """OpenRouter provider: ensure API key, pick the inference endpoint, then pick a model."""
+    from hermes_constants import OPENROUTER_ENDPOINTS
     from hermes_cli.auth import ProviderConfig, _prompt_model_selection
 
     # OpenRouter isn't in PROVIDER_REGISTRY so we synthesize a minimal pconfig.
@@ -63,16 +87,30 @@ def _model_flow_openrouter(config, current_model=""):
     if abort:
         return
 
+    base_url = _prompt_openrouter_endpoint(config)
+    if not base_url:
+        return
+    endpoint_key = next((key for key, url, _note in OPENROUTER_ENDPOINTS if url == base_url), "global")
+
     from hermes_cli.models import model_ids
     from hermes_cli.models_pricing import get_pricing_for_provider
     openrouter_models = model_ids(force_refresh=True)
-    # Live pricing is non-blocking — empty dict on failure.
+    # Live pricing is non-blocking — empty dict on failure. The regional catalog is the same
+    # model list with a smaller eligible subset; inference itself is pinned by base_url.
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
     selected = _prompt_model_selection(
         openrouter_models, current_model=current_model, pricing=pricing, confirm_provider="openrouter",
-        confirm_base_url=OPENROUTER_BASE_URL, confirm_api_key=_resolved or existing_key)
-    _finish_model(selected, "openrouter", f"Default model set to: {selected} (via OpenRouter)",
-                  base_url=OPENROUTER_BASE_URL, api_mode="chat_completions")
+        confirm_base_url=base_url, confirm_api_key=_resolved or existing_key)
+
+    def _save_endpoint(cfg, _model):
+        section = _ensure_dict_section(cfg, "openrouter")
+        section["endpoint"] = endpoint_key
+
+    _finish_model(
+        selected, "openrouter",
+        f"Default model set to: {selected} (via OpenRouter {endpoint_key}, {base_url})",
+        base_url=base_url, api_mode="chat_completions", finish=_save_endpoint,
+    )
 
 
 def _model_flow_ai_gateway(config, current_model=""):

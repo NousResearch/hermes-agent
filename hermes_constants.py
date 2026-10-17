@@ -1289,6 +1289,31 @@ FINISH_REASON_LENGTH = "length"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 
+# In-region routing (Business+): the region is the host, not a request field.
+# https://openrouter.ai/docs/guides/features/in-region-routing
+OPENROUTER_ENDPOINTS: tuple[tuple[str, str, str], ...] = (
+    ("global", "https://openrouter.ai/api/v1", "Route inference to the Global endpoint."),
+    ("eu", "https://eu.openrouter.ai/api/v1",
+     "Route inference to providers in the European Union. (requires Business+ plan)"),
+    ("us", "https://us.openrouter.ai/api/v1",
+     "Route inference to providers in the United States. (requires Business+ plan)"),
+)
+
+
+def openrouter_endpoint_url(endpoint: str | None) -> str:
+    """Map an endpoint key (``global``/``eu``/``us``) or a known OpenRouter base URL to its URL.
+
+    Unknown or empty values fall back to the Global endpoint — current behaviour.
+    """
+    raw = (endpoint or "").strip().rstrip("/")
+    if not raw:
+        return OPENROUTER_BASE_URL
+    lowered = raw.lower()
+    for key, url, _note in OPENROUTER_ENDPOINTS:
+        if lowered in {key, url.lower(), url.lower().removesuffix("/api/v1")}:
+            return url
+    return OPENROUTER_BASE_URL
+
 # OpenRouter request-time routing variants (docs: guides/routing/model-variants).
 # These suffixes are per-request routing modifiers valid on ANY model id —
 # ":nitro" sorts the endpoint pool by throughput and admits priority-tier

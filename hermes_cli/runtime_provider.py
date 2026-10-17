@@ -453,6 +453,35 @@ def _pool_entry_base_url(entry: Any) -> str:
     return getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or ""
 
 
+def _openrouter_region_base_url(base_url: str, model_cfg: dict[str, Any]) -> str:
+    """Apply ``openrouter.endpoint`` when ``base_url`` is an official OpenRouter host.
+
+    Env-seeded pool rows always carry the global host. That row is selected before
+    the OpenRouter fallback resolver, so a US/EU-only workspace 403s unless the
+    region is applied here too. A non-official URL (proxy, mirror, per-credential
+    endpoint) is left alone.
+    """
+    from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_ENDPOINTS, openrouter_endpoint_url
+
+    current = (base_url or "").strip().rstrip("/")
+    official = {url.rstrip("/") for _key, url, _note in OPENROUTER_ENDPOINTS}
+    official.add(OPENROUTER_BASE_URL.rstrip("/"))
+    if current and current not in official:
+        return current
+    try:
+        full_cfg = load_config()
+    except Exception:
+        full_cfg = {}
+    section = full_cfg.get("openrouter") if isinstance(full_cfg, dict) else None
+    chosen = section.get("endpoint") if isinstance(section, dict) else None
+    if chosen:
+        return openrouter_endpoint_url(str(chosen))
+    configured = _config_base_url_for_provider(model_cfg, "openrouter")
+    if configured.rstrip("/") in official:
+        return configured.rstrip("/")
+    return current or OPENROUTER_BASE_URL
+
+
 def _nous_entry_key_usable(entry: Any, min_ttl: int) -> bool:
     return _agent_key_is_usable({k: getattr(entry, k, None) for k in ("agent_key", "agent_key_expires_at", "scope")}, min_ttl)
 
@@ -595,6 +624,11 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             canonical = (PROVIDER_REGISTRY["xai"].inference_base_url or "").rstrip("/")
             if base_url.rstrip("/") in ("", canonical):
                 base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+        if provider == "openrouter":
+            # Env-seeded rows are stamped with the global host and win the ladder before
+            # _resolve_openrouter_runtime, so openrouter.endpoint never reached chat.
+            # Rewrite only official hosts; a mirror or per-credential URL stays put.
+            base_url = _openrouter_region_base_url(base_url, model_cfg)
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL

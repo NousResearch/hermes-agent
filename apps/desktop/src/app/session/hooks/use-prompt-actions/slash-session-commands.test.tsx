@@ -78,6 +78,12 @@ const canonical = () => $connection.set({ mode: 'local', wsUrl: 'ws://localhost/
 // The shared owner's typed refusal of a rewind while a turn runs, as the wire delivers it.
 const BUSY = new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
 
+// The same refusal while another writer holds the compression lock: Stop does not end it.
+const COMPRESSING = new JsonRpcGatewayError('session_busy', {
+  code: 4001,
+  data: { field: 'compression', reason: 'session_busy' }
+})
+
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
   window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
@@ -251,6 +257,32 @@ describe('/retry on a canonical session', () => {
     expect(callsOf(requestGateway, 'session.interrupt')).toEqual([])
     expect(queuedTexts()).toEqual([])
   })
+})
+
+describe('/undo and /retry while a compression holds the session', () => {
+  beforeEach(canonical)
+
+  for (const command of ['undo', 'retry'] as const) {
+    it(`/${command} says to wait for the compression instead of pressing Stop`, async () => {
+      const requestGateway = gateway(method => {
+        if (method === 'session.resume') {
+          return SNAPSHOT
+        }
+
+        if (method === 'session.rewind') {
+          throw COMPRESSING
+        }
+      })
+
+      const handle = await mount(requestGateway)
+      await handle.submitText(`/${command}`)
+
+      expect(renderedText(handle)).toContain(`a /compress is running; run /${command} when it finishes`)
+      expect(renderedText(handle)).not.toContain('Stop the current reply first')
+      expect(callsOf(requestGateway, 'session.interrupt')).toEqual([])
+      expect(callsOf(requestGateway, 'prompt.submit')).toEqual([])
+    })
+  }
 })
 
 describe('/steer', () => {

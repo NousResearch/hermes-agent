@@ -678,7 +678,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     _SHELL_NOISE_SUBSTRINGS = (
         "no job control in this shell", "cannot set terminal process group",
-        "tcsetattr: Inappropriate ioctl for device")
+        "tcsetattr: Inappropriate ioctl for device", "can't change option: zle")
 
     # Class default so registries built via __new__ (tests) still restore on first drain.
     _completions_restored = False

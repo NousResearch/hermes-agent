@@ -33,6 +33,7 @@ from hermes_cli.doctor_config import (
     _check_xai_retirement,
     _check_retired_session_reset,
 )
+from hermes_cli.doctor_cli_perf import _check_cli_startup_cost
 from hermes_cli.doctor_platform import (
     _check_certificates,
     _check_command_installation,
@@ -111,7 +112,8 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.
 DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
-    ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
+    ('Python Environment', _check_python_environment), ('CLI Startup Cost', _check_cli_startup_cost),
+    ('SSL / CA Certificates', _check_certificates),
     ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
     ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),

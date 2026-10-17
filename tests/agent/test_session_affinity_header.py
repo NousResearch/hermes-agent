@@ -46,7 +46,11 @@ def test_configured_header_carries_one_value_per_conversation_on_every_path():
     with _providers(True):
         chat = build_api_kwargs(_agent("sess-A"), _MSGS)["extra_headers"][_HEADER]
         anthropic = build_api_kwargs(_agent("sess-A", api_mode="anthropic_messages"), _MSGS)["extra_headers"][_HEADER]
-        assert chat == anthropic == _aux_headers("sess-A")[_HEADER] == "sess-A"
+        assert chat == anthropic == "sess-A"
+        # Summaries/titles are independent one-shot histories, not main-loop turns.
+        first_aux = _aux_headers("sess-A")[_HEADER]
+        assert first_aux != chat
+        assert _aux_headers("sess-A")[_HEADER] != first_aux
         assert build_api_kwargs(_agent("sess-B"), _MSGS)["extra_headers"][_HEADER] == "sess-B"
         # A caller-pinned value is preserved.
         pinned = _agent("sess-A")

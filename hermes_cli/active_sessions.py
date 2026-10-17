@@ -127,6 +127,10 @@ class ActiveSessionRefusal(str):
         obj.reason = reason
         return obj
 
+    def __getnewargs_ex__(self) -> tuple[tuple[str, str], dict[str, Any]]:
+        """Preserve the required reason when copy or pickle reconstructs the string."""
+        return (str(self), self.reason), {}
+
 
 def format_refusal_stderr(message: str) -> str:
     """Keep the refusal contract across the one-shot CLI subprocess boundary."""

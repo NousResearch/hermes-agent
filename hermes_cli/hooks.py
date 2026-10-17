@@ -11,7 +11,7 @@ def hooks_command(args) -> None:
     """Entry point for ``hermes hooks`` — dispatches to the requested action."""
     sub = getattr(args, "hooks_action", None)
     if not sub:
-        print("Usage: hermes hooks {list|test|revoke|doctor}")
+        print("Usage: hermes hooks {list|test|accept|revoke|doctor}")
         print("Run 'hermes hooks --help' for details.")
         return
     handler = _ACTIONS.get(sub)
@@ -247,8 +247,48 @@ def _truncate(s: str, n: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# revoke / doctor
+# accept / revoke / doctor
 # ---------------------------------------------------------------------------
+
+def _cmd_accept(args) -> None:
+    """Non-interactive counterpart of the first-run TTY prompt (#138413): the allowlist
+    write used to happen only as a side effect of agent-session startup, so cron / script /
+    gateway operators had no supported way to land an approval."""
+    from hermes_cli.config import load_config
+    from agent import shell_hooks
+
+    specs = shell_hooks.iter_configured_hooks(load_config())
+    if not specs:
+        print("No shell hooks configured in ~/.hermes/config.yaml — nothing to accept.")
+        return
+    wanted = list(getattr(args, "commands", None) or [])
+    if getattr(args, "all", False):
+        targets, unknown = specs, []
+    else:
+        known = {s.command for s in specs}
+        targets = [s for s in specs if s.command in wanted]
+        unknown = [c for c in wanted if c not in known]
+    for command in unknown:
+        print(f"✗ not declared in ~/.hermes/config.yaml (nothing to accept): {command}")
+    if not targets:
+        print("Nothing matched. Pass --all, or command string(s) exactly as declared in config.yaml.")
+        pending = [s for s in specs if not shell_hooks.allowlist_entry_for(s.event, s.command)]
+        if pending:
+            print("Pending (✗ not allowlisted):")
+            for spec in pending:
+                print(f"  [{spec.event}] {spec.command}")
+        return
+    already = 0
+    for spec in targets:
+        if shell_hooks.allowlist_entry_for(spec.event, spec.command):
+            already += 1
+            continue
+        entry = shell_hooks.accept(spec.event, spec.command)
+        print(f"✓ allowlisted [{spec.event}] {spec.command} (approved {entry.get('approved_at', '?')})")
+    if already:
+        print(f"{already} already allowlisted — unchanged. To refresh a stale script-mtime "
+              "baseline, `hermes hooks revoke <command>` first, then accept again.")
+
 
 def _cmd_revoke(args) -> None:
     from agent import shell_hooks
@@ -347,6 +387,7 @@ def _doctor_one(spec, shell_hooks) -> int:
 _ACTIONS = {
     "list": _cmd_list, "ls": _cmd_list,
     "test": _cmd_test,
+    "accept": _cmd_accept,
     "revoke": _cmd_revoke, "remove": _cmd_revoke, "rm": _cmd_revoke,
     "doctor": _cmd_doctor,
 }

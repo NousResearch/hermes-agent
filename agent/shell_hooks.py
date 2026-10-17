@@ -764,6 +764,15 @@ def _record_approval(event: str, command: str) -> None:
         data["approvals"] = [e for e in data.get("approvals", []) if not _entry_matches(e, event, command)] + [entry]
 
 
+def accept(event: str, command: str) -> dict[str, Any]:
+    """Record an approval for ``(event, command)`` and return the stored entry — the
+    non-interactive counterpart of the first-run TTY prompt, backing ``hermes hooks accept``
+    (#138413: without it, the allowlist write only happened as a side effect of agent-session
+    startup, so unattended environments had no supported approval path)."""
+    _record_approval(event, command)
+    return allowlist_entry_for(event, command) or {}
+
+
 def revoke(command: str) -> int:
     """Remove every allowlist entry for ``command``; returns the count. A gateway unregisters it at its
     next local session open (``sync_from_config``) unless an opt-in approves every hook; other live

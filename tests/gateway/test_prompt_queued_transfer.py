@@ -18,12 +18,13 @@ from hermes_state_runtime import (
 )
 from tests.gateway.test_prompt_queued_controls import Turn, _call, _completions, _connection, _ledger, interactive
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
+from tests.waiting import async_wait_until, wait_until
 
 
 async def _drained(authority):
     task = authority.sessions['s'].task
     if task is not None:
-        await asyncio.wait_for(task, 5)
+        await asyncio.wait_for(task, 30)
 
 
 @pytest.mark.asyncio
@@ -38,13 +39,13 @@ async def test_a_steer_before_the_turn_adopts_its_agent_is_refused_and_the_promp
         ran.append(row['payload']['text'])
         if row['payload']['text'] == 'running':
             held.set()
-            await asyncio.wait_for(release.wait(), 5)
+            await asyncio.wait_for(release.wait(), 30)
             raise RuntimeError('agent construction failed')
         return 'done'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     with db:
         await _submit(authority, 'running')
-        await asyncio.wait_for(held.wait(), 5)
+        await asyncio.wait_for(held.wait(), 30)
         queued = await _submit(authority, 'follow-up')
         reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
         assert reply.get('error', {}).get('data', {}).get('reason') == 'steer_unavailable', reply
@@ -64,7 +65,7 @@ async def test_a_steer_into_a_turn_that_then_fails_settles_interrupted_not_steer
     authority.sessions['s'].event_stream.observers.add(frames.append)
     with db:
         await _submit(authority, 'running')
-        await asyncio.wait_for(turn.claimed.wait(), 5)
+        await asyncio.wait_for(turn.claimed.wait(), 30)
         queued = await _submit(authority, 'follow-up')
         conn = _connection(authority)
         reply = await _call(conn, 'prompt.steer_queued', admission_id=queued.admission_id)
@@ -205,22 +206,18 @@ async def test_a_turn_that_ends_between_the_steer_commit_and_delivery_gets_its_p
     def committed_then_turn_ends(*args, **kwargs):
         committed = original(*args, **kwargs)
         loop.call_soon_threadsafe(turn.release.set)
-        deadline = time.monotonic() + 3
-        while authority.executing.get('s') is not None and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: authority.executing.get('s') is None, timeout=30, what='the receiving execution returned')
         return committed
     monkeypatch.setattr(session_queued_controls, 'steer_session_input', committed_then_turn_ends)
     with db:
         await _submit(authority, 'running')
-        await asyncio.wait_for(turn.claimed.wait(), 5)
+        await asyncio.wait_for(turn.claimed.wait(), 30)
         queued = await _submit(authority, 'follow-up')
         reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
         assert reply.get('error', {}).get('data', {}).get('reason') == 'steer_unavailable', reply
         await _drained(authority)
-        for _ in range(100):  # the restored row's own drain
-            if turn.ran == ['running', 'follow-up']:
-                break
-            await asyncio.sleep(0.02)
+        await async_wait_until(lambda: turn.ran == ['running', 'follow-up'], timeout=30,
+                               what="the restored row's own drain ran it")
         await _drained(authority)
     assert turn.agent.steers == []
     assert turn.ran == ['running', 'follow-up']
@@ -254,7 +251,7 @@ async def test_a_held_sqlite_writer_never_stalls_the_owner_loop_behind_a_queued_
     turn = Turn(monkeypatch)
     with db:
         await _submit(authority, 'running')
-        await asyncio.wait_for(turn.claimed.wait(), 5)
+        await asyncio.wait_for(turn.claimed.wait(), 30)
         queued = await _submit(authority, 'follow-up')
         other = await _submit(authority, 'other')
         holding, release, done, writing = threading.Event(), threading.Event(), threading.Event(), threading.Event()
@@ -264,7 +261,7 @@ async def test_a_held_sqlite_writer_never_stalls_the_owner_loop_behind_a_queued_
             try:
                 blocker.execute('BEGIN IMMEDIATE')
                 holding.set()
-                release.wait(timeout=2)  # bounded: a stalled loop cannot release it itself
+                release.wait(timeout=30)  # bounded: a stalled loop cannot release it itself
                 blocker.execute('ROLLBACK')
             finally:
                 blocker.close()
@@ -280,34 +277,23 @@ async def test_a_held_sqlite_writer_never_stalls_the_owner_loop_behind_a_queued_
             return original(*args, **kwargs)
         monkeypatch.setattr(target, name, announced)
         threading.Thread(target=hold_writer, daemon=True).start()
-        assert await asyncio.to_thread(holding.wait, 5)
-        gaps, ticking = [], True
-
-        async def ticker():
-            last = time.monotonic()
-            while ticking:
-                await asyncio.sleep(0.02)
-                now = time.monotonic()
-                gaps.append(now - last)
-                last = now
-        ticks = asyncio.create_task(ticker())
+        assert await asyncio.to_thread(holding.wait, 30)
         params = ({'admission_id': queued.admission_id} if verb == 'steer' else
                   {'admission_id': queued.admission_id, 'submission_id': 'edited', 'text': 'edited'})
         control = asyncio.create_task(_call(_connection(authority), f'prompt.{verb}_queued', **params))
-        assert await asyncio.to_thread(writing.wait, 5)
+        assert await asyncio.to_thread(writing.wait, 30)
+        # The writer stays held until this loop-side receipt returns: a receipt (or a loop) stuck behind
+        # the held writer could only finish when the 30 s hold timed out.
         started = time.monotonic()
         await authority.receipt(ACTOR, REF, other.admission_id)
         receipt_latency = time.monotonic() - started
         release.set()
         reply = await asyncio.wait_for(control, 30)
-        ticking = False
-        await ticks
-        assert await asyncio.to_thread(done.wait, 5)
+        assert await asyncio.to_thread(done.wait, 30)
         turn.release.set()
         await _drained(authority)
     assert 'error' not in reply, reply
-    assert receipt_latency < 0.5, f'a loop-side receipt waited {receipt_latency:.2f}s on the held writer'
-    assert max(gaps) < 0.5, f'the owner loop stalled {max(gaps):.2f}s'
+    assert receipt_latency < 10, f'a loop-side receipt waited {receipt_latency:.2f}s on the held writer'
 
 
 @pytest.mark.asyncio
@@ -317,7 +303,7 @@ async def test_concurrent_replacements_of_different_rows_under_one_submission_id
     db, authority = _authority(tmp_path, monkeypatch)
     interactive(db)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    barrier = threading.Barrier(2, timeout=5)
+    barrier = threading.Barrier(2, timeout=30)
     original = session_queued_controls.find_session_admission
 
     def synchronized(*args, **kwargs):

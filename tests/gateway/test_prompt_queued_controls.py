@@ -39,7 +39,7 @@ class Turn:
             self.ran.append(row['payload']['text'])
             authority.adopt_agent(ref.session_id, row['generation'], self.agent)
             self.claimed.set()
-            await asyncio.wait_for(self.release.wait(), 5)
+            await asyncio.wait_for(self.release.wait(), 30)
             if row['payload']['text'] == fail:
                 raise RuntimeError('the receiving turn failed')
             return 'done'
@@ -81,7 +81,7 @@ async def test_steer_queued_delivers_the_queued_text_into_the_running_turn_exact
     authority.sessions['s'].event_stream.observers.add(frames.append)
     with db:
         await _submit(authority, 'running')
-        await asyncio.wait_for(turn.claimed.wait(), 5)
+        await asyncio.wait_for(turn.claimed.wait(), 30)
         queued = await _submit(authority, 'follow-up')
         conn = _connection(authority)
 
@@ -98,7 +98,7 @@ async def test_steer_queued_delivers_the_queued_text_into_the_running_turn_exact
         assert turn.agent.steers == ['follow-up']
 
         turn.release.set()
-        await asyncio.wait_for(authority.sessions['s'].task, 5)
+        await asyncio.wait_for(authority.sessions['s'].task, 30)
         settled = await _call(conn, 'prompt.steer_queued', admission_id=queued.admission_id)
         assert (settled['result']['status'], settled['result']['outcome']) == ('terminal', 'steered'), settled
         assert (queued.admission_id, 'steered') in _completions(frames)
@@ -224,13 +224,13 @@ async def test_a_queued_admission_survives_an_owner_restart_and_is_steered_by_th
         after.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
         turn = Turn(monkeypatch)
         after._schedule(REF)
-        await asyncio.wait_for(turn.claimed.wait(), 5)
+        await asyncio.wait_for(turn.claimed.wait(), 30)
 
         reply = await _call(_connection(after), 'prompt.steer_queued', admission_id=follower.admission_id)
         assert 'error' not in reply, reply
         assert turn.agent.steers == ['follower']
         turn.release.set()
-        await asyncio.wait_for(after.sessions['s'].task, 5)
+        await asyncio.wait_for(after.sessions['s'].task, 30)
     assert turn.ran == ['head']
     assert _ledger(db) == [('head', 'terminal', 'completed'), ('follower', 'terminal', 'steered')]
 

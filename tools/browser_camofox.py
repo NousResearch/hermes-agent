@@ -543,15 +543,6 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
     return _with_tab(task_id, "extract page images", body)
 
 
-def _vision_llm_settings() -> tuple[float, float]:
-    """``auxiliary.vision`` ``(timeout, temperature)``; defaults 120s / 0.1 on any config error."""
-    try:
-        cfg = cfg_get(load_config(), "auxiliary", "vision", default={})
-        return float(cfg.get("timeout", 120)), float(cfg.get("temperature", 0.1))
-    except Exception:
-        return 120.0, 0.1
-
-
 def _save_screenshot(content: bytes) -> str:
     """Write PNG bytes under ``$HERMES_HOME/browser_screenshots`` and return the path."""
     from hermes_constants import get_hermes_home
@@ -580,13 +571,10 @@ def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # sent alongside it must not leak secret values.
         from agent.redact import redact_sensitive_text
         from agent.auxiliary_client import call_llm
+        from tools.vision_tools import _aux_call_kwargs, _media_messages
         vision_prompt = f"Analyze this browser screenshot and answer: {question}{redact_sensitive_text(annotation_context)}"
-        timeout, temperature = _vision_llm_settings()
-        response = call_llm(
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": vision_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}]}],
-            task="vision", temperature=temperature, timeout=timeout)
+        response = call_llm(**_aux_call_kwargs(
+            _media_messages(vision_prompt, "image_url", f"data:image/png;base64,{img_b64}"), None, 120.0))
         analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
         # Redact secrets the vision LLM may have read from the screenshot.
         return json.dumps({"success": True, "analysis": redact_sensitive_text(analysis), "screenshot_path": screenshot_path})

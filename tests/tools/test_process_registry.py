@@ -2729,6 +2729,27 @@ class TestSystemdCgroupIsolation:
         assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
     @pytest.mark.platforms("linux")
+    def test_owned_runtime_dir_without_session_bus_still_derives_xdg_runtime_dir(
+        self, monkeypatch, request
+    ):
+        """``systemd-run --user`` reaches the manager via ``$XDG_RUNTIME_DIR/systemd/private``,
+        so a live user manager with no session bus must still get ``XDG_RUNTIME_DIR``; only the
+        bus address stays conditional on the bus socket (#139300)."""
+        import tempfile
+
+        import tools.process_registry as pr
+
+        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
+        runtime_dir.chmod(0o700)
+        request.addfinalizer(runtime_dir.rmdir)
+        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: runtime_dir)
+
+        derived = pr.systemd_user_bus_env({})
+
+        assert derived["XDG_RUNTIME_DIR"] == str(runtime_dir)
+        assert "DBUS_SESSION_BUS_ADDRESS" not in derived
+
+    @pytest.mark.platforms("linux")
     def test_scoped_spawn_lost_user_bus_honours_configured_runtime_dir(self, monkeypatch, request):
         """The lost-bus check must derive from the env the worker was spawned with: when the bus
         lives under a configured ``XDG_RUNTIME_DIR`` (not ``/run/user/<uid>``), an unrelated wrapper

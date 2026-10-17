@@ -9,6 +9,8 @@ The pet wire predates the snake_case rule and travels camelCase (``displayName``
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result
@@ -144,6 +146,50 @@ class ActiveIdResult(Result):
 
 method("projects.set_active", params=ProjectsSetActiveParams, result=ActiveIdResult,
        doc="Switch (or clear) the active project for the profile.")
+
+
+# ── projects: handover record ─────────────────────────────────────────────────────────────────
+
+
+class ProjectState(Result):
+    """``hermes_cli/projects_db.py::get_project_state`` — one handover record (the newest is current)."""
+
+    project_id: str
+    goal: str | None = None
+    now: str | None = None
+    next: str | None = None
+    blockers: str | None = None
+    updated_at: int
+    updated_by: Literal["user", "agent"]
+
+
+class ProjectsStateSetParams(ProjectIdParams):
+    """Absent fields keep their previous value; ``''`` clears one. The author is always ``user``."""
+
+    goal: str | None = None
+    now: str | None = None
+    next: str | None = None
+    blockers: str | None = None
+
+
+class ProjectsStateHistoryParams(ProjectIdParams):
+    limit: int | None = None
+
+
+class ProjectStateResult(Result):
+    state: ProjectState | None = None
+
+
+class ProjectStateHistoryResult(Result):
+    history: list[ProjectState]
+
+
+method("projects.state.get", params=ProjectIdParams, result=ProjectStateResult,
+       doc="A project's current handover record (goal / now / next / blockers), or null.")
+method("projects.state.set", params=ProjectsStateSetParams, result=ProjectStateResult,
+       doc="Record a handover as the user (partial update); archived projects and empty records answer 5063.")
+method("projects.state.history", params=ProjectsStateHistoryParams, result=ProjectStateHistoryResult,
+       doc="Past handover records, newest first (bounded retention).")
 
 
 class ProjectsForCwdParams(ProfileParams):

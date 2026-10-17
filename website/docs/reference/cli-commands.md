@@ -915,7 +915,7 @@ Common failure modes + recovery are covered in [Egress proxy → Troubleshooting
 ## `hermes project`
 
 ```bash
-hermes project <create|list|show|add-folder|remove-folder|rename|set-primary|use|archive|restore|bind-board>
+hermes project <create|list|show|add-folder|remove-folder|rename|set-primary|use|archive|restore|bind-board|state>
 ```
 
 Projects are human-named workspaces that can span multiple folders / repos. They anchor desktop session grouping and, when bound to a kanban board, give tasks a deterministic worktree + branch convention. State is per-profile.
@@ -933,6 +933,28 @@ Projects are human-named workspaces that can span multiple folders / repos. They
 | `archive` | Archive a project (recoverable). |
 | `restore` | Restore an archived project. |
 | `bind-board` | Bind a kanban board to this project. |
+| `state` | Show or record the project's handover record (goal / now / next / blockers). |
+
+### `hermes project state`
+
+```bash
+hermes project state <project> [--json]
+hermes project state <project> --set [--goal TEXT] [--now TEXT] [--next TEXT] [--blockers TEXT] [--by user|agent] [--json]
+hermes project state <project> --history [--limit N] [--json]
+```
+
+A short handover record that answers "where is this project at?" after a restart, a context compaction or a new session. Each `--set` appends a record: fields you omit keep their previous value, and `--blockers ""` clears one field. Nothing is injected into the agent's prompt; an agent reads the record on demand (the bundled `project-handover` skill runs `hermes project state <slug> --json` through `terminal` and writes with `--by agent`).
+
+| Option | Description |
+|--------|-------------|
+| `--set` | Record a handover. At least one field must end up non-empty. |
+| `--goal` / `--now` / `--next` / `--blockers` | Field values (only with `--set`); each is capped at 2000 characters. |
+| `--by` | Who is recording it (only with `--set`): `user` (default) or `agent`. `--by` is a self-declared label for filtering, not authentication; each saved version carries one author, including carried-over fields. |
+| `--history` | List past records, newest first. The 50 newest per project are kept. |
+| `--limit` | How many history records to show (only with `--history`; default and maximum 50). |
+| `--json` | Machine-readable output: `{"project": {...}, "state": {...} \| null}` or `{"project": {...}, "history": [...]}`. |
+
+Records live in the profile's `projects.db` (other profiles never see them) and are deleted with their project. An archived project's record stays readable but refuses writes until it is restored. The desktop backend exposes the same record as `projects.state.get`, `projects.state.set` and `projects.state.history`; writes through it are always attributed to `user`.
 
 ## `hermes webhook`
 

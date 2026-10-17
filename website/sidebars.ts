@@ -299,6 +299,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
                     'user-guide/skills/bundled/software-development/software-development-inspecting-hermes-desktop-dom',
                     'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
+                    'user-guide/skills/bundled/software-development/software-development-project-handover',
                     'user-guide/skills/bundled/software-development/software-development-python-debugpy',
                     'user-guide/skills/bundled/software-development/software-development-requesting-code-review',
                     'user-guide/skills/bundled/software-development/software-development-simplify-code',

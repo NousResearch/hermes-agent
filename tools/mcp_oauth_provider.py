@@ -608,7 +608,7 @@ def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict |
     matters: later steps record ``_resolved_port`` / ``_cimd_url`` in the dict, which must
     never leak back into the caller's config."""
     from tools import mcp_oauth as mo
-    cfg = dict(oauth_config or {})
+    cfg = mo.drop_unresolved_client_refs(dict(oauth_config or {}), server_name)
     mo.apply_oauth_provider_defaults(cfg, server_name=server_name, server_url=server_url)
     return cfg, mo.HermesTokenStorage(server_name)
 

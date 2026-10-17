@@ -3,6 +3,7 @@ include/exclude filtering, trust-tier metadata capture, utility-tool selection, 
 resolution and the schema-cache write-through. Both entry points (``_register_server_tools``
 live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_register_candidates``."""
 
+import copy
 import hashlib
 import json
 import logging
@@ -509,7 +510,9 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     A shared live connection remains owned by the profile that opened it, but a profile with the
     same route must still receive its callable tool entries. The current profile's config is the
     allowlist, and route fingerprints prevent borrowing a differently-authenticated connection.
-    Missing or changed config entries remove only this profile's overlay.
+    Missing or changed config entries remove only this profile's overlay; a lazy (schema-cache)
+    registration, which has no connection to judge, is kept while its entry is unchanged and
+    forgotten with its overlay otherwise.
     """
     from tools.registry import registry
 
@@ -541,7 +544,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                         if name in foreign and config is not None and mcp_server_enabled(config)}
 
     with _core._lock:
-        stale = []
+        stale, stale_lazy = [], []
         for key, scopes in _core._server_tool_scopes.items():
             if scope not in scopes:
                 continue
@@ -551,12 +554,25 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(key)
             config = judged[name]
             cross_profile = _key_scope(key) != scope
-            if (config is None or not mcp_server_enabled(config) or server is None
+            if server is None and key in _core._lazy_server_configs:
+                # A lazy (schema-cache) registration has no connection by design and is never
+                # shared, so its saved config stands in for the route check: it stays while this
+                # profile's entry is unchanged; otherwise its markers go with the overlay, or
+                # ``_select_new_servers`` would keep counting the name as registered with no tools.
+                if (config is not None and mcp_server_enabled(config)
+                        and _core._lazy_server_configs[key] == config):
+                    continue
+                stale_lazy.append(key)
+            elif (config is None or not mcp_server_enabled(config) or server is None
                     or getattr(server, "session", None) is None
                     or not _same_server_route(server, config, cross_profile=cross_profile,
                                               resolved_identity=resolved_ids.get(name))):
                 stale.append(key)
-    for key in stale:
+    if stale_lazy:
+        from tools.mcp_tool_discovery import _forget_lazy_server
+        for key in stale_lazy:
+            _forget_lazy_server(key)
+    for key in stale + stale_lazy:
         _remove_server_scope(key, scope)
 
     registered_servers = 0
@@ -615,7 +631,10 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> list[str]
     if registered:
         with _core._lock:
             key = _server_key(name)
-            _core._lazy_server_configs[key] = dict(config)
+            # The saved config is what the first-use connect opens with AND what the scoped
+            # reconcile compares the profile's entry against: a shallow copy would alias the
+            # caller's nested args/env/headers, hiding an in-place edit from that comparison.
+            _core._lazy_server_configs[key] = copy.deepcopy(config)
             _core._lazy_server_fingerprints[key] = config_fingerprint(config)
             _core._lazy_server_tool_names[key] = list(registered)
         logger.info("MCP server '%s' (lazy): registered %d tool(s) from schema cache", name, len(registered))

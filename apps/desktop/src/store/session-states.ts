@@ -86,6 +86,7 @@ import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
+import { $removedSessionIds } from './session-removal'
 import {
   isSessionOwnerRoute,
   requestForSessionProfile,
@@ -1121,7 +1122,7 @@ export const $attentionSessionIds = computed(
 // binding its runtime and loading its transcript, and calling that a draft
 // would flash the wrong mark on a conversation with years of history in it.
 let draftIds: readonly string[] = []
-export const $draftSessionIds = computed([$sessionStates, $sessions], (states, sessions) => {
+export const $draftSessionIds = computed([$sessionStates, $sessions, $removedSessionIds], (states, sessions, removed) => {
   const unsent = (state: ClientSessionState) => {
     if (state.busy || state.messages.length > 0) {
       return false
@@ -1134,6 +1135,13 @@ export const $draftSessionIds = computed([$sessionStates, $sessions], (states, s
     // an empty lineage root.
     if (!storedId) {
       return true
+    }
+
+    // An archived/deleted row is evicted from `sessions`, which would read as
+    // `!row`: not unsent, just gone. Claiming it as a draft lets the keep set
+    // re-admit it as a ghost row.
+    if (removed.has(storedId)) {
+      return false
     }
 
     const row = sessions.find(session => sessionMatchesStoredId(session, storedId))

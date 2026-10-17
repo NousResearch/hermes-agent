@@ -79,6 +79,7 @@ import {
 import { tombstoneSessions, untombstoneSessions } from './session-removal'
 import {
   $attentionSessionIds,
+  $draftSessionIds,
   clearAllSessionStates,
   getRecentlySettledSessionIds,
   publishSessionState
@@ -374,6 +375,21 @@ describe('computed $attentionSessionIds', () => {
   it('falls back to the runtime id for a session with no storedSessionId', () => {
     publishSessionState('rt1', { ...createClientSessionState(null), needsInput: true })
     expect($attentionSessionIds.get()).toEqual(['rt1'])
+  })
+})
+
+describe('computed $draftSessionIds', () => {
+  afterEach(() => {
+    untombstoneSessions(['s1'])
+    clearAllSessionStates()
+  })
+
+  it('does not claim an archived session whose row was evicted', () => {
+    publishSessionState('rt1', createClientSessionState('s1'))
+    expect($draftSessionIds.get()).toEqual(['s1'])
+
+    tombstoneSessions(['s1'])
+    expect($draftSessionIds.get()).toEqual([])
   })
 })
 

@@ -120,7 +120,22 @@ database:
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal size in bytes
+
+  # Byte cap on the main-image copy inside a retired-WAL capture artifact.
+  # Above it the artifact keeps the 100-byte SQLite header only, and the log
+  # and manifest.json (main.mode: header_only) say so. Unset = 512 MiB, a cap
+  # a long-lived state.db passes; raise it to keep the capture self-contained.
+  # retired_generation_max_bytes: 2147483648
 ```
+
+When a writer's WAL generation is deleted or replaced underneath it, Hermes
+captures the retired generation into `<db>.retired-wal-<ts>-<pid>/`. While the
+main image is at most `database.retired_generation_max_bytes` (512 MiB unless
+you raise it) that artifact holds a copy of the whole image; above it the copy
+is reduced to the 100-byte SQLite header, the run logs a warning naming the
+image size and the cap, and `manifest.json` reports `main.mode: header_only`.
+Raise the cap on a long-lived store if you want the capture to stay
+self-contained.
 
 Hermes also warns (once per process per database) when an existing
 database's on-disk journal mode is silently flipped to WAL on open — for

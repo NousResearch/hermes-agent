@@ -47,6 +47,10 @@ DEFAULT_CONFIG = {
         # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
+        # Byte cap on the main-image copy inside a retired-WAL capture artifact (hermes_state_dbfile):
+        # above it the artifact keeps only the 100-byte SQLite header, and says so in the log and in
+        # manifest.json's main.mode. None = the shipped 512 MiB, which a long-lived store outgrows.
+        "retired_generation_max_bytes": None,
     },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},

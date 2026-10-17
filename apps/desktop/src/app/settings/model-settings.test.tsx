@@ -1047,3 +1047,30 @@ describe('ModelSettings code-skew 503', () => {
     await waitFor(() => expect(getGlobalModelOptions.mock.calls.length).toBeGreaterThan(1))
   })
 })
+
+describe('ModelSettings failed initial load', () => {
+  // #99843: a failed initial catalog fetch parked the panel on a '—' provider
+  // row with inline error text and no recovery path — the panel stays mounted,
+  // so the stale error view survived even after the backend was healthy again.
+  it('surfaces a retry that refetches after the initial fetch fails', async () => {
+    // Every read that can populate the main-model row must fail: refresh()
+    // degrades per call and falls back to the auxiliary config read for the
+    // main assignment, so a lone getGlobalModelOptions rejection still paints
+    // a usable panel.
+    const failure = new Error('model backend unavailable')
+    getGlobalModelInfo.mockRejectedValueOnce(failure)
+    getGlobalModelOptions.mockRejectedValueOnce(failure)
+    getAuxiliaryModels.mockRejectedValueOnce(failure)
+
+    renderModelSettings()
+
+    expect(await screen.findByText('Settings failed to load')).toBeTruthy()
+    expect(screen.getByText(/model backend unavailable/)).toBeTruthy()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('Vision')).toBeTruthy()
+    expect(screen.queryByText('Settings failed to load')).toBeNull()
+  })
+})

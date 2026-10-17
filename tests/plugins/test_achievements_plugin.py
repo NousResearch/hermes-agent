@@ -1,10 +1,12 @@
 """Tests for the bundled hermes-achievements dashboard plugin.
 
-These target the two behaviors that matter for official integration:
+These target the three behaviors that matter for official integration:
 
 * The 200-session scan cap is removed — the plugin now walks the entire
   session history by default. Lifetime badges (tens of thousands of
   tool calls) were unreachable before this fix on long-running installs.
+* Archived sessions are scanned too. ``archived`` only hides a session from
+  the sidebar; archiving old work must not shrink lifetime badge totals.
 * First-ever scans run in a background thread so the dashboard request
   path never blocks, even on 8000+ session databases where a cold scan
   takes minutes.
@@ -78,6 +80,7 @@ class _FakeSessionDB:
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
+        **_kwargs: Any,
     ) -> list[dict[str, Any]]:
         if self.scan_delay:
             time.sleep(self.scan_delay)
@@ -333,3 +336,33 @@ def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, m
     assert result.get("error") is None
     assert [s["session_id"] for s in result["sessions"]] == ["s1"]
     assert writable_opens == [], "the achievements scan must attach read-only"
+
+
+def test_scan_sessions_counts_archived_sessions_in_lifetime_totals(plugin_api, tmp_path, monkeypatch):
+    """Regression for #138310: archiving a session must not remove it from lifetime totals.
+
+    ``archived`` only hides a session from the sidebar, but the scan inherited the session
+    list's ``include_archived=False`` default, so archived work silently dropped out of the
+    lifetime sums while earned badges stayed sticky in ``state.json``. Real store, no fakes.
+    """
+    import hermes_state
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    seed = SessionDB(db_path=tmp_path / "state.db")
+    for sid in ("kept", "archived"):
+        seed.create_session(sid, source="cli")
+        seed.append_message(sid, "user", "run it")
+        seed.append_message(sid, "assistant", tool_calls=[
+            {"id": f"call-{sid}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}])
+        seed.append_message(sid, "tool", "ok", tool_name="terminal", tool_call_id=f"call-{sid}")
+    before = plugin_api.scan_sessions()
+    assert seed.set_session_archived("archived", True)
+    seed.close()
+
+    after = plugin_api.scan_sessions()
+
+    assert after.get("error") is None
+    assert sorted(s["session_id"] for s in after["sessions"]) == ["archived", "kept"]
+    assert after["aggregate"]["total_tool_calls"] == before["aggregate"]["total_tool_calls"] > 0

@@ -490,6 +490,17 @@ class TestSearchFilesIncludesDirectories:
         assert set(combined.files) == {str(empty_dir), str(regular_file)}
 
 
+@pytest.mark.platforms("macos")
+def test_directory_supplement_never_lists_pruned_hidden_dirs(tmp_path):
+    """BSD find has no -printf; its fallback needs an explicit -print, or the
+    implicit one also prints every pruned hidden directory."""
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / "notes.txt").mkdir()
+    ops = ShellFileOperations(LocalEnvironment("/"))
+    dirs, _reason = ops._search_directories_with_find("*.txt", str(tmp_path), 50)
+    assert dirs == [str(tmp_path / "notes.txt")]
+
+
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
         return LocalEnvironment("/")
@@ -532,6 +543,40 @@ class TestSearchFilesFallbackHiddenPaths:
 
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+    def test_rg_preserves_directory_components_in_glob(self, tmp_path, monkeypatch):
+        root = tmp_path / "workspace"
+        wanted = root / "reference-alpha" / "audit-report.md"
+        other = root / "target-gamma" / "audit-report.md"
+        for file_path in (wanted, other):
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text("x", encoding="utf-8")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "rg")
+        result = ops._search_files(
+            "**/reference-alpha/**", str(root), limit=50, offset=0
+        )
+
+        assert result.error is None
+        assert result.files == [str(wanted)]
+
+
+    def test_find_fallback_rejects_path_glob_instead_of_matching_everything(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "workspace"
+        root.mkdir()
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files(
+            "**/reference-alpha/**", str(root), limit=50, offset=0
+        )
+
+        assert result.error is not None
+        assert "Set `path`" in result.error
+
 
 
 class TestShellFileOpsWriteDenied:

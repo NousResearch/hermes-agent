@@ -20,7 +20,7 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $newProjectDropPlacement,
   $projectDialog,
@@ -30,6 +30,7 @@ import {
   createProject,
   enterProject,
   generateProjectIdea,
+  moveSessionToProject,
   pickProjectFolders,
   renameProject
 } from '@/store/projects'
@@ -175,9 +176,29 @@ export function ProjectDialog() {
           use: true
         })
 
-        if (created) {
-          enterProject(created.id)
+        if (!created) {
+          return
         }
+
+        // Opened from a session row's "Move to project" submenu: the point of
+        // the create was to give that session somewhere to go, so hand it over
+        // rather than dropping the user into a fresh project. The move is a
+        // second write — a failure there must not read as a failed create (the
+        // project exists), so it reports on its own.
+        const move = state?.moveSession
+
+        if (move) {
+          try {
+            await moveSessionToProject(move.sessionId, created.id, move.profile)
+            notify({ durationMs: 2_000, kind: 'success', message: p.movedTo(created.name || created.id) })
+          } catch (err) {
+            notifyError(err, p.moveFailed)
+          }
+
+          return
+        }
+
+        enterProject(created.id)
       }, clearNewProjectDropPlacement)
     }
   }

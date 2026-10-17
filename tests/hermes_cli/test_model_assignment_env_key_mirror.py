@@ -61,11 +61,12 @@ def test_env_ref_key_carries_template_not_plaintext(_hermes_home, monkeypatch):
     assert model_cfg.get("api_key") == "${MY_LOCAL_KEY}"
 
 
-def test_key_env_entry_carries_pointer(_hermes_home, monkeypatch):
+@pytest.mark.parametrize("credential_field", ["key_env", "api_key_env"])
+def test_key_env_entry_carries_pointer(_hermes_home, monkeypatch, credential_field):
     monkeypatch.setenv("MYLOCAL_API_KEY", "sk-keyenv-secret")
     _write_config(
         _hermes_home,
-        {"mylocal": {"base_url": "http://localhost:1234/v1", "key_env": "MYLOCAL_API_KEY"}},
+        {"mylocal": {"base_url": "http://localhost:1234/v1", credential_field: "MYLOCAL_API_KEY"}},
     )
     _apply("mylocal")
     raw = (_hermes_home / "config.yaml").read_text()

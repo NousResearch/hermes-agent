@@ -2336,9 +2336,13 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
 
 def _record_run_outcome(
     job: dict[str, Any], success: bool, error: Optional[str], delivery_error: Optional[str],
-    status: Optional[str], now: str,
+    status: Optional[str], now: str, *, neutral_no_change: bool = False,
 ) -> None:
-    """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
+    """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims.
+
+    ``neutral_no_change``: this run was a monitor no_change tick — recorded as a success, but
+    it says nothing about the job's real work, so it is NOT a recovery: ``failure_streak`` and
+    the alert-once markers are left alone (neither reset nor advanced, #140178)."""
     job["last_run_at"] = now
     job.pop("manual_run_at", None)
     # The transient manual-run context is single-fire: the run that just completed consumed it.
@@ -2347,9 +2351,10 @@ def _record_run_outcome(
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
     job["last_error"] = None if success else error
-    if success:
+    if success and not neutral_no_change:
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
-        # the forward-failure stamp so it only describes CURRENT auto-fire health.
+        # the forward-failure stamp so it only describes CURRENT auto-fire health. A no_change
+        # monitor tick skips this: an unchanged output is not evidence the job's work recovered.
         job.pop("preflight_alerted", None)
         job.pop("last_fire_error", None)
         job["failure_streak"] = 0
@@ -2435,6 +2440,7 @@ def mark_job_run(
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
+    neutral_no_change: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2443,6 +2449,10 @@ def mark_job_run(
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
     explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
     can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
+
+    ``neutral_no_change``: this run was a monitor no_change tick (agent suppressed, output
+    unchanged). It is stamped as a success but is NOT a recovery — ``failure_streak`` and the
+    alert-once markers keep their values (#140178).
 
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
@@ -2468,7 +2478,8 @@ def mark_job_run(
                     job_id)
                 return False
         now = _hermes_now().isoformat()
-        _record_run_outcome(job, success, error, delivery_error, status, now)
+        _record_run_outcome(
+            job, success, error, delivery_error, status, now, neutral_no_change=neutral_no_change)
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]

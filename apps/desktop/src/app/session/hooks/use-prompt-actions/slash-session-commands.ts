@@ -31,7 +31,7 @@ interface SnapshotRow {
 interface RewindReceipt {
   rewound_count?: number
   status?: string
-  target_message?: { content?: unknown } | null
+  target_message?: { content?: unknown; id?: unknown } | null
 }
 
 interface SlashOutput {
@@ -154,11 +154,12 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       }
     }
 
-    const rowId = target.row_id as number
-
+    // A derived target: while an earlier rewind's reply is lost, the protocol re-sends that rewind
+    // (its original target) instead of this one, so the owner answers with the original receipt.
     const receipt = await requestGateway<RewindReceipt>('session.rewind', {
       session_id: sessionId,
-      target_message_id: rowId
+      target_message_id: target.row_id,
+      derived_target: true
     })
 
     const count = Number(receipt?.rewound_count ?? 0)
@@ -166,6 +167,10 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     if (receipt?.status === 'nothing' || count <= 0) {
       return void render(nothing)
     }
+
+    // The receipt names the row the owner rewound; a replayed receipt's row is not this snapshot's.
+    const receiptRowId = receipt?.target_message?.id
+    const rowId = Number.isSafeInteger(receiptRowId) ? (receiptRowId as number) : (target.row_id as number)
 
     updateSessionState(
       sessionId,

@@ -276,9 +276,13 @@ export class CanonicalDesktopProtocol {
     return POLICY_EDIT_METHODS.has(method) && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
-  private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
+  // `derived`: the payload was derived from a snapshot (a typed /undo or /retry names the Nth newest user
+  // turn). Keyed by operation alone, as Ink's mutateCanonical and the classic PreparedMutations do: a
+  // retry after a lost reply re-presents the original target, never one re-derived from a transcript the
+  // first attempt already rewound.
+  private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean, derived = false): Record<string, unknown> {
     const owner = canonicalSessionKey(sessionId, profile)
-    const key = JSON.stringify([owner, operation, payload])
+    const key = JSON.stringify([owner, operation, derived ? null : payload])
     this.retireMutations(owner, key)
     const retained = this.mutations.get(key)
 
@@ -366,7 +370,12 @@ export class CanonicalDesktopProtocol {
       'session.rewind': () => ({ operation: 'rewind', payload: { target_message_id: params.target_message_id } })
     } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
 
-    if (fenced) { return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true) }
+    if (fenced) {
+      // An edit / regenerate / restore names its target explicitly; a typed /undo or /retry derives it.
+      const derived = method === 'session.rewind' && params.derived_target === true
+
+      return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true, derived)
+    }
 
     if (method === 'session.model') {
       const payload = { ...(params.payload as Record<string, unknown>), ...(typeof params.confirm === 'string' ? { confirm: params.confirm } : {}) }

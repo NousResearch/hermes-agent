@@ -1235,7 +1235,7 @@ def build_converse_kwargs(
     model: str, messages: list[dict], tools: Optional[list[dict]] = None, max_tokens: Optional[int] = 4096,
     temperature: Optional[float] = None, top_p: Optional[float] = None,
     stop_sequences: Optional[list[str]] = None, guardrail_config: Optional[dict] = None,
-    reasoning_config: Optional[dict] = None,
+    reasoning_config: Optional[dict] = None, prompt_cache: bool = True,
 ) -> dict[str, Any]:
     """Build kwargs for ``bedrock-runtime.converse()`` / ``converse_stream()``. ``max_tokens=None`` omits
     ``maxTokens`` (model maximum; default stays 4096). cachePoint markers go on system, tools and the
@@ -1243,7 +1243,7 @@ def build_converse_kwargs(
     model supports caching and Bedrock has not rejected that placement. ``reasoning_config`` becomes the
     model's ``additionalModelRequestFields`` reasoning switch (Claude ``thinking``, Nova 2 ``reasoningConfig``)."""
     system_prompt, converse_messages = convert_messages_to_converse(messages, model=model)
-    cache_at = {p for p in CACHE_POINT_PLACEMENTS if cache_point_allowed(model, p)} if _model_supports_prompt_cache(model) else set()
+    cache_at = {p for p in CACHE_POINT_PLACEMENTS if cache_point_allowed(model, p)} if prompt_cache and _model_supports_prompt_cache(model) else set()
     inference_config: dict[str, Any] = {} if max_tokens is None else {"maxTokens": max_tokens}
     kwargs: dict[str, Any] = {"modelId": model, "messages": converse_messages, "inferenceConfig": inference_config}
     if system_prompt:
@@ -1282,8 +1282,11 @@ def call_converse(
 ) -> SimpleNamespace:
     """Non-streaming Converse call → OpenAI-compatible response. Retries once without a rejected cachePoint
     placement; evicts the cached client on stale-connection errors."""
+    from agent.prompt_caching import is_one_shot_request
     client = _get_bedrock_runtime_client(region)
-    kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config)
+    # Auxiliary-only entry point: a one-shot's cachePoint is a write no later call reads.
+    kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config,
+                                   prompt_cache=not is_one_shot_request(messages, tools))
     try:
         response = client.converse(**kwargs)
     except Exception as exc:

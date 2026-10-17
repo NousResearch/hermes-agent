@@ -157,8 +157,29 @@ def test_ensure_import_syncs_when_missing(monkeypatch, synced, tmp_path):
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(extras, "available", lambda e: False)
+    # Inert carry: no payload venv to build on, so exactly the requested
+    # extra reaches the sync (the recorded-selection path never consults it).
+    monkeypatch.setattr(extras, "legacy_selection", lambda root: [])
     extras.ensure_import("fal")
     assert synced == [["fal"]]
+
+
+def test_ensure_import_first_generation_carries_the_payload_venvs_extras(
+    monkeypatch, synced, tmp_path
+):
+    """A lazy install that builds the FIRST PM generation must carry the
+    payload venv's features (the Docker image's mcp), or features a config
+    depends on silently vanish once processes boot from it (#136015)."""
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # No facts.json under the patched path: the next sync creates the first
+    # writable generation, which replaces the payload venv wholesale.
+    monkeypatch.setattr("pm.paths.runtime_facts_path", lambda: tmp_path / "facts.json")
+    monkeypatch.setattr(extras, "legacy_selection", lambda root: ["all", "mcp"])
+    monkeypatch.setattr(extras, "available", lambda e: False)
+    extras.ensure_import("telegram")
+    assert synced == [["all", "mcp", "telegram"]]
 
 
 def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch, synced):

@@ -74,6 +74,7 @@ platforms:
       app_id: "your-app-id"
       client_secret: "your-secret"
       markdown_support: true       # enable QQ markdown (msg_type 2). Config-only; no env-var equivalent.
+      at_sender: true              # mention triggering user (<qqbot-at-user id="..." />) in group replies (default: true).
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"

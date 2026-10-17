@@ -18,6 +18,7 @@ capabilities:
     - aside_repl
     - aside_session
     - aside_memory
-  provides_hooks: []
+  provides_hooks:
+    - pre_tool_call
   provides_middleware: []
   requires_env: []

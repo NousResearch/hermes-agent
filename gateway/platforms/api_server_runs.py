@@ -481,6 +481,18 @@ def _resolve_conversation_history(
     return conversation_history, instructions, stored_session_id, None
 
 
+async def _resolve_chained_history(self, body: dict, raw_input: Any, *, _openai_error):
+    """``_resolve_conversation_history`` with the chain's live session: a deleted chain moves to
+    its next generation (an explicit body ``session_id`` still wins in the caller), and a store
+    that cannot answer is the retryable store verdict (``continued_session``)."""
+    from gateway.platforms.api_server_authority_runs import continued_session
+    history, instructions, stored_session_id, error = _resolve_conversation_history(
+        self, body, raw_input, _openai_error=_openai_error)
+    if error is None:
+        stored_session_id, error = await continued_session(self, stored_session_id)
+    return history, instructions, stored_session_id, error
+
+
 def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool) -> web.Response:
     """202 admission response; replays are flagged via ``Idempotency-Replayed``."""
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
@@ -734,14 +746,11 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:
         return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
-    conversation_history, instructions, stored_session_id, history_err = (
-        _resolve_conversation_history(self, body, raw_input, _openai_error=_openai_error))
+    conversation_history, instructions, stored_session_id, history_err = await _resolve_chained_history(
+        self, body, raw_input, _openai_error=_openai_error)
     if history_err is not None:
         return history_err
     previous_response_id = body.get("previous_response_id")
-    # A deleted chain moves to its next generation (an explicit body session_id still wins below).
-    from gateway.session_api import continued_api_session
-    stored_session_id = await asyncio.to_thread(continued_api_session, self.gateway_runner, stored_session_id)
     session_id = body.get("session_id") or stored_session_id
     route = self._resolve_route(body.get("model"))
     agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)

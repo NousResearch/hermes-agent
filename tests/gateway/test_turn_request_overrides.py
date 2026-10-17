@@ -138,3 +138,28 @@ def test_session_override_absent_is_noop():
     model, out = runner._apply_session_model_override("nope", "keepme", rk)
     assert model == "keepme"
     assert out["request_overrides"] == PROVIDER_OVERRIDES
+
+
+def test_reused_agent_held_on_fallback_does_not_regain_primary_fast_speed():
+    """#122010: the turn route pins /fast for the PRIMARY route. A cached agent held on a local
+    fallback (primary still in 429 cooldown) must not get that ``speed`` back on the next turn:
+    the chat-completions transport passes it as a kwarg the OpenAI SDK rejects."""
+    from types import SimpleNamespace
+
+    from gateway.run_turn_runner import TurnRunner
+
+    turn_route = {"request_overrides": {"speed": "fast"}}
+    agent = SimpleNamespace(
+        service_tier="priority", model="Hermes-3-Llama-3.1-8B-4bit", provider="custom",
+        base_url="http://127.0.0.1:8080/v1", api_mode="chat_completions", request_overrides={},
+        _gateway_turn_request_overrides={"speed": "fast"}, _fallback_activated=True,
+        _primary_runtime={"request_overrides": {"speed": "fast"}},
+    )
+    TurnRunner._merge_turn_request_overrides(agent, turn_route)
+    assert "speed" not in agent.request_overrides
+
+    # On the primary route the turn's /fast value still applies.
+    agent.model, agent.provider, agent.base_url = "claude-opus-4-8", "anthropic", "https://api.anthropic.com"
+    agent.api_mode, agent._fallback_activated = "anthropic_messages", False
+    TurnRunner._merge_turn_request_overrides(agent, turn_route)
+    assert agent.request_overrides == {"speed": "fast"}

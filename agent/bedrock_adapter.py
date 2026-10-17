@@ -864,12 +864,14 @@ def _assistant_blocks(msg: dict, content, claude: bool = True, own: bool = False
 #              the signature and all previous messages"; Bedrock ignores older turns server-side for free).
 #   strip    — DeepSeek-R1 (AWS's multi-turn sample removes reasoningContent) and Kimi K3 (Converse raises
 #              InternalServerException "when reasoning content from earlier turns is included"): prior turns
-#              lose reasoning, the in-flight loop replays the model's own blocks as captured.
+#              lose reasoning, the in-flight loop replays the model's own blocks as captured. Also OpenAI's
+#              reasoning GPTs (gpt-6 family): they reject readable reasoningText in assistant history too
+#              ("This model doesn't support the reasoningContent.reasoningText.text field").
 #   unsigned — every other model: prior turns carry readable reasoningText only, since their signatures and
 #              redacted blobs may be another model's (a /model switch from Claude) and non-Claude models
 #              reject them ("This model doesn't support the reasoningContent.reasoningText.signature field");
 #              the in-flight loop was produced by the model now answering and replays as captured.
-_CONVERSE_REPLAY_STRIP_PATTERNS = ("deepseek.r1", "deepseek-r1", "moonshotai.kimi-k3")
+_CONVERSE_REPLAY_STRIP_PATTERNS = ("deepseek.r1", "deepseek-r1", "moonshotai.kimi-k3", "openai.gpt-6")
 
 
 # reasoning_details record naming the model that minted a turn's Converse reasoning: its signatures are that

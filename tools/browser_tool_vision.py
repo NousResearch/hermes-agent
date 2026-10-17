@@ -85,11 +85,16 @@ def _native_vision_result(
 def _analyze_screenshot_with_aux_llm(screenshot_path: Path, question: str) -> str:
     """One-shot aux vision-LLM analysis (not baked into history), secret-redacted.
 
-    Full resolution first; on a size-related provider rejection the image is
-    downscaled once and retried. ``auxiliary.vision.timeout/temperature`` — local
-    vision models can take well over 30s, so the default timeout is generous.
+    Apply the shared image budget and long-edge cap before the first provider
+    request. On a size-related provider rejection it is downscaled once and
+    retried. ``auxiliary.vision.timeout/temperature`` — local vision models can
+    take well over 30s, so the default timeout is generous.
     """
-    import base64
+    from tools.vision_tools import (
+        _EMBED_MAX_DIMENSION,
+        _resize_image_for_vision,
+    )
+    from tools.vision_tools_history_budget import resolve_embed_target_bytes
 
     vision_prompt = (
         f"You are analyzing a screenshot of a web browser.\n\n"
@@ -99,11 +104,15 @@ def _analyze_screenshot_with_aux_llm(screenshot_path: Path, question: str) -> st
         f"or CAPTCHAs, describe what type they are and what action might be needed. "
         f"Focus on answering the user's specific question."
     )
-    _screenshot_bytes = screenshot_path.read_bytes()
-    _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
-    data_url = f"data:image/png;base64,{_screenshot_b64}"
+    data_url = _resize_image_for_vision(
+        screenshot_path,
+        mime_type="image/png",
+        max_base64_bytes=resolve_embed_target_bytes(),
+        max_dimension=_EMBED_MAX_DIMENSION,
+        force_jpeg=True,
+    )
     vision_model = _bt._get_vision_model()
-    _bt.logger.debug("browser_vision: analysing screenshot (%d bytes)", len(_screenshot_bytes))
+    _bt.logger.debug("browser_vision: analysing screenshot (%d bytes)", screenshot_path.stat().st_size)
 
     vision_timeout = 120.0
     vision_temperature = 0.1

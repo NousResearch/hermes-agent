@@ -193,6 +193,33 @@ class TestBrowserVisionConfig:
         # provider uses its full output budget (max-tokens-knob policy).
         assert "max_tokens" not in mock_llm.call_args.kwargs
 
+    def test_browser_vision_aux_path_caps_initial_screenshot_payload(self, tmp_path):
+        """The first auxiliary request uses the shared vision image limits."""
+        pytest.importorskip("PIL")
+        import base64
+        from io import BytesIO
+
+        from PIL import Image
+
+        from tools.browser_tool_vision import _analyze_screenshot_with_aux_llm
+        from tools.vision_tools import _EMBED_MAX_DIMENSION
+        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES
+
+        screenshot = tmp_path / "oversized.png"
+        Image.new("RGB", (400, _EMBED_MAX_DIMENSION + 500), (0, 100, 0)).save(
+            screenshot, format="PNG"
+        )
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="Screenshot analysis"))]
+
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_llm:
+            assert _analyze_screenshot_with_aux_llm(screenshot, "what is on the page?") == "Screenshot analysis"
+
+        data_url = mock_llm.call_args.kwargs["messages"][0]["content"][1]["image_url"]["url"]
+        assert len(data_url) <= _DEFAULT_EMBED_TARGET_BYTES
+        with Image.open(BytesIO(base64.b64decode(data_url.partition(",")[2]))) as image:
+            assert max(image.size) <= _EMBED_MAX_DIMENSION
+
     def test_browser_vision_native_fast_path_returns_multimodal(self, tmp_path):
         """supports_vision override → screenshot attached natively, no aux call."""
         from agent.auxiliary_client import clear_runtime_main, set_runtime_main

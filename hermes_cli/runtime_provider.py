@@ -571,13 +571,16 @@ _POOL_ENTRY_SIMPLE_MODES: dict[str, tuple] = {
 }
 
 
-def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_url) -> tuple:
+def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_url, explicit_base_url=None) -> tuple:
     """(api_mode, base_url) for a pool entry of ``provider``."""
     if provider == "actual" and str(getattr(entry, "source", "")).startswith("env:"):
         base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
     if provider in _POOL_ENTRY_SIMPLE_MODES:
         api_mode, default_url = _POOL_ENTRY_SIMPLE_MODES[provider]
         if provider == "openai-codex":
+            # A canonical explicit endpoint keeps pooled auth, not profile proxy routing.
+            if explicit_base_url:
+                return api_mode, str(explicit_base_url).strip().rstrip("/")
             # Pool entries retain the canonical ChatGPT URL, but the profile-wide
             # HERMES_CODEX_BASE_URL override must apply consistently to every
             # credential source, including pooled OAuth credentials.
@@ -620,10 +623,10 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
 
 def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, requested_provider: str,
                                      model_cfg: Optional[dict[str, Any]] = None, pool: Optional[CredentialPool] = None,
-                                     target_model: Optional[str] = None) -> dict[str, Any]:
+                                     target_model: Optional[str] = None, explicit_base_url: Optional[str] = None) -> dict[str, Any]:
     model_cfg = model_cfg or _get_model_config()
     api_mode, base_url = _pool_entry_mode_and_url(provider, entry, model_cfg, _effective_model(model_cfg, target_model),
-                                                  _pool_entry_base_url(entry).rstrip("/"))
+                                                  _pool_entry_base_url(entry).rstrip("/"), explicit_base_url)
     base_url = _finalize_base_url(provider, api_mode, base_url)
     return _runtime(provider, api_mode, base_url, _pool_entry_api_key(entry), source=getattr(entry, "source", "pool"),
                     credential_pool=pool, requested_provider=requested_provider)
@@ -707,9 +710,10 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
         pool_api_key = _exchange_copilot_pool_entry(entry, pool_api_key)
     if not has_usable_secret(pool_api_key):
         return None
-    if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
+    if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=explicit_base_url or _pool_entry_base_url(entry)):
         return _resolve_runtime_from_pool_entry(provider=provider, entry=entry, requested_provider=requested_provider,
-                                                model_cfg=model_cfg, pool=pool, target_model=target_model)
+                                                model_cfg=model_cfg, pool=pool, target_model=target_model,
+                                                explicit_base_url=explicit_base_url)
     return None
 
 
@@ -800,6 +804,14 @@ def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_c
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
     if not explicit_api_key and not explicit_base_url:
         return None
+    # The canonical endpoint alone is not an auth override: keep pool rotation.
+    if (provider == "openai-codex" and not explicit_api_key
+            and explicit_base_url == DEFAULT_CODEX_BASE_URL.rstrip("/")):
+        pooled = _resolve_from_pool(provider, requested_provider, model_cfg, explicit_api_key,
+                                    explicit_base_url, target_model)
+        if pooled is not None:
+            return pooled
+        # Preserve the explicit endpoint even when only singleton auth is available.
     resolver = _EXPLICIT_RESOLVERS.get(provider)
     if resolver is not None:
         return resolver(requested_provider, model_cfg, explicit_api_key, explicit_base_url, target_model)

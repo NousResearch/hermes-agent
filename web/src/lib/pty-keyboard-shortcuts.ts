@@ -6,6 +6,8 @@ export type PtyKeyboardShortcut =
   | "copy"
   | "delete-word-backward"
   | "delete-word-forward"
+  | "insert-newline-shift"
+  | "insert-newline-ctrl"
   | "pass";
 
 export function resolvePtyKeyboardShortcut(
@@ -20,6 +22,16 @@ export function resolvePtyKeyboardShortcut(
 
   if (copyPressed && key === "c" && hasTerminalSelection) {
     return "copy";
+  }
+
+  // xterm.js sends Shift+Enter as an ordinary Return and Ctrl+J as a bare LF.
+  // The TUI can distinguish both when we forward its supported CSI u chords.
+  if (key === "enter" && ev.shiftKey && !ev.altKey && !ev.ctrlKey && !ev.metaKey) {
+    return "insert-newline-shift";
+  }
+
+  if (key === "j" && ev.ctrlKey && !ev.altKey && !ev.shiftKey && !ev.metaKey) {
+    return "insert-newline-ctrl";
   }
 
   if (

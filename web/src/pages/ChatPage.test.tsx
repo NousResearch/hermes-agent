@@ -30,7 +30,9 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
   options: Record<string, unknown>;
+  keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
   rows = 24;
   cols = 80;
   parser = {
@@ -40,10 +42,11 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
-  attachCustomKeyEventHandler() {
-    return true;
+  attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
+    this.keyHandler = handler;
   }
 
   attachCustomWheelEventHandler() {
@@ -213,6 +216,7 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  FakeTerminal.instances = [];
   FakeWebSocket.instances = [];
   webglInstances.length = 0;
   maybeReloadForLoopbackWsAuthFailure.mockClear();
@@ -279,6 +283,35 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("forwards dashboard newline keys and leaves plain Enter to xterm", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+    socket.send.mockClear();
+    const handler = FakeTerminal.instances[0].keyHandler;
+    expect(handler).not.toBeNull();
+
+    for (const [key, modifier, sequence] of [
+      ["Enter", "shiftKey", "\x1b[13;2u"],
+      ["j", "ctrlKey", "\x1b[13;5u"],
+    ] as const) {
+      const event = new KeyboardEvent("keydown", { key, [modifier]: true, cancelable: true });
+      expect(handler!(event)).toBe(false);
+      expect(event.defaultPrevented).toBe(true);
+      expect(socket.send).toHaveBeenLastCalledWith(sequence);
+    }
+    expect(socket.send).toHaveBeenCalledTimes(2);
+    expect(handler!(new KeyboardEvent("keydown", { key: "Enter" }))).toBe(true);
+    expect(handler!(new KeyboardEvent("keydown", { key: "Enter", altKey: true }))).toBe(true);
+    expect(socket.send).toHaveBeenCalledTimes(2);
+  });
+
   it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
     vi.useFakeTimers();
     try {

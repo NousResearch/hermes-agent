@@ -15,11 +15,12 @@ import { HostedNotice } from '@/app/capabilities/connectors/hosted-notice'
 import type { ConnectorCardModel } from '@/app/capabilities/connectors/types'
 import { useSessionView } from '@/app/chat/session-view'
 import { sessionRoute } from '@/app/routes'
+import { orderConnectorPicks } from '@/components/assistant-ui/connector-order'
+import { CARD_ACTION_CLASS, CARD_CHIP_CLASS, CARD_LABEL_CLASS } from '@/components/assistant-ui/setup-beat/card-type'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
-import { Chip } from '@/components/onboarding-chat/chip'
-import { orderConnectorPicks } from '@/components/onboarding-chat/options'
 import { Button } from '@/components/ui/button'
+import { Chip } from '@/components/ui/chip'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { FadeScroll } from '@/components/ui/fade-scroll'
 import { SearchField } from '@/components/ui/search-field'
@@ -50,8 +51,6 @@ export interface DirectorySections {
 
 // The onboarding apps step showed search from this many apps on.
 const SEARCH_THRESHOLD = 12
-
-const LABEL_CLASS = 'text-[0.6875rem] leading-4 text-(--ui-text-tertiary)'
 
 const matches = (card: ConnectorCardModel, needle: string): boolean =>
   !needle || card.name.toLowerCase().includes(needle) || card.slug.includes(needle)
@@ -180,7 +179,7 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
 
     return (
       <Chip
-        className="w-full"
+        className={cn('w-full', CARD_CHIP_CLASS)}
         icon={
           <ConnectorLogo
             className="size-7 rounded-full text-sm"
@@ -212,14 +211,14 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
         )}
       >
         <div className="flex items-start gap-2">
-          <span className={cn('flex-1', LABEL_CLASS)}>{copy.title}</span>
+          <span className={cn('flex-1', CARD_LABEL_CLASS)}>{copy.title}</span>
           <Plug aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
         </div>
 
         <HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />
 
         {hosted.phase === 'failed' ? (
-          <p className="flex items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
+          <p className={cn('flex items-center gap-1.5', CARD_LABEL_CLASS)}>
             {t.connectorsPage.page.hostedFailedTitle}
             <Button onClick={hosted.refetch} size="xs" variant="text">
               {t.connectorsPage.page.retry}
@@ -242,24 +241,25 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
           <>
             {pinned ? (
               <section className="grid gap-1.5">
-                <span className={LABEL_CLASS}>{copy.directory.suggested}</span>
+                <span className={CARD_LABEL_CLASS}>{copy.directory.suggested}</span>
                 <div className="grid grid-cols-3 gap-2 p-1">{sections.suggested.map(tile)}</div>
               </section>
             ) : null}
             {sections.rest.length > 0 ? (
               <section className="grid gap-1.5">
-                {pinned ? <span className={LABEL_CLASS}>{copy.directory.allApps}</span> : null}
+                {pinned ? <span className={CARD_LABEL_CLASS}>{copy.directory.allApps}</span> : null}
                 <FadeScroll className="grid grid-cols-3 gap-2 p-1" fade="1.5rem" maxHeight="18rem" pad="1.5rem">
                   {sections.rest.map(tile)}
                 </FadeScroll>
               </section>
             ) : null}
-            {nothingMatches ? <p className="text-xs text-(--ui-text-tertiary)">{copy.empty}</p> : null}
+            {nothingMatches ? <p className={CARD_LABEL_CLASS}>{copy.empty}</p> : null}
           </>
         )}
       </div>
       <div className="px-3.5">
-        <Button onClick={finish} size="xs" variant="textStrong">
+        {/* Continue reports the apps connected; while the list loads it would report none. */}
+        <Button className={CARD_ACTION_CLASS} disabled={hosted.phase === 'loading'} onClick={finish} size="sm">
           {t.common.continue}
         </Button>
       </div>

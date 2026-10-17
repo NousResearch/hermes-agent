@@ -42,7 +42,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
         "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
         "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
-        "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-3.1-pro-preview",
+        "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-4-argon",
+        "google/gemini-3.1-pro-preview",
         "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.7", "x-ai/grok-4.6",
         "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-flash-0731",
@@ -187,7 +188,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro",
     ],
     "gemini": [
-        "gemini-3.8-flash", "gemini-3.7-flash",
+        # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
+        "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
@@ -197,7 +199,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "xai": list(_XAI_MODELS),
     # Nemotron flagships, then third-party agentic models hosted on build.nvidia.com.
     "nvidia": [
-        "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/nemotron-3.5-lightning-30b-a3b", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         "z-ai/glm-5.3", "z-ai/glm-5.2", "moonshotai/kimi-k2.6", "minimaxai/minimax-m3",
     ],
@@ -296,7 +298,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
-        "google/gemini-3.8-flash", "google/gemini-3.7-flash",
+        "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3.7-flash",  # [0] = silent default
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
         "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",

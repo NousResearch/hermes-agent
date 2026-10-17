@@ -293,7 +293,9 @@ _CATALOG_URL = ("https://raw.githubusercontent.com/NousResearch/hermes-agent"
 _SCHEMA_VERSION = 2  # bump when an older app would read a newer catalog but launch its entries wrongly
 _REFRESH_TTL_S = 6 * 3600
 _refresh_lock = threading.Lock()
-_last_refresh_attempt = 0.0
+# None = never attempted: monotonic() counts from boot, so a 0.0 sentinel read as "refreshed at
+# boot" and suppressed the first fetch for the first six awake hours after every reboot.
+_last_refresh_attempt: float | None = None
 
 
 def _asset_from(d: dict | None) -> AssetFile | None:
@@ -355,7 +357,7 @@ def refresh_catalog(force: bool = False) -> bool:
 
     now = time.monotonic()
     with _refresh_lock:
-        if not force and now - _last_refresh_attempt < _REFRESH_TTL_S:
+        if not force and _last_refresh_attempt is not None and now - _last_refresh_attempt < _REFRESH_TTL_S:
             return False
         _last_refresh_attempt = now
     try:
@@ -374,7 +376,8 @@ def refresh_catalog(force: bool = False) -> bool:
 def refresh_catalog_soon() -> None:
     """TTL-gated background refresh; returns immediately. The current request serves the catalog
     it already has — the refresh lands for the next one."""
-    if time.monotonic() - _last_refresh_attempt < _REFRESH_TTL_S:
+    last = _last_refresh_attempt
+    if last is not None and time.monotonic() - last < _REFRESH_TTL_S:
         return
     threading.Thread(target=refresh_catalog, daemon=True, name="catalog-refresh").start()
 

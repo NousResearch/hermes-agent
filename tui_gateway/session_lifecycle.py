@@ -61,9 +61,9 @@ _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "
 
 
 def _lease_metadata(live_session_id: str) -> dict:
-    """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``; the delivery flag is
-    what Bot Chat gates live delivery on (session_notifications)."""
-    return {"live_session_id": live_session_id, "bot_live_delivery_consumer": True}
+    """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``. Bot Chat delivery is
+    admitted by the session authority (gateway/session_bot), never gated on a lease flag."""
+    return {"live_session_id": live_session_id}
 
 
 def _claim_active_session_slot(
@@ -123,6 +123,8 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
     inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
+    if (canonical := _canonical_ledger_refusal(session)) is not None:
+        return canonical
     if session.get("active_session_lease") is not None:
         return None
     key = str(session.get("session_key") or "")
@@ -135,6 +137,43 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
         return None
     return limit_message
+
+
+_CANONICAL_PENDING_SQL = """SELECT status FROM session_admissions WHERE target_session_id=? AND status!='terminal'
+    UNION ALL SELECT status FROM worker_executions WHERE session_id=? AND status!='terminal' LIMIT 1"""
+
+
+def _canonical_ledger_refusal(session: dict):
+    """Refusal when the gateway's durable ledger still holds work for this stored session, else None.
+
+    The registry lease only fences other legacy backends. A session a gateway once owned can carry
+    an ``unknown`` admission (outcome lost across an owner restart: never replayed, only Discard
+    resolves it), queued input or a running worker; a legacy turn would run past that barrier
+    and write the transcript beside the canonical FIFO. Checked on every turn, not only at the
+    first claim, because a gateway may admit work while this backend still holds its lease."""
+    import sqlite3
+    from hermes_cli.active_sessions import (
+        ActiveSessionRefusal, SESSION_COORDINATION_UNAVAILABLE, SESSION_NOT_OWNED)
+    key = str(session.get("session_key") or "")
+    if not key:
+        return None
+    try:
+        with _session_db(session) as db:
+            read_ctx = getattr(db, "_read_ctx", None)
+            if read_ctx is None:
+                return None
+            with read_ctx() as conn:
+                row = next(iter(conn.execute(_CANONICAL_PENDING_SQL, (key, key))), None)
+    except sqlite3.Error:
+        logger.warning("canonical ledger read failed for %s", key, exc_info=True)
+        return ActiveSessionRefusal(_SESSION_OWNERSHIP_UNAVAILABLE, SESSION_COORDINATION_UNAVAILABLE)
+    if row is None:
+        return None
+    logger.info("Refusing legacy turn for %s: canonical ledger holds %s work", key, row[0])
+    return ActiveSessionRefusal(
+        f"Session {key} has {'outcome-unknown' if row[0] == 'unknown' else 'pending'} work in the gateway's "
+        "durable queue. Resume it through the gateway (hermes chat --resume, Desktop or the TUI) to "
+        "resolve it; nothing was run here.", SESSION_NOT_OWNED)
 
 
 def _attach_lease(session: dict, lease) -> None:

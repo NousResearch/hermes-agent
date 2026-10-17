@@ -195,6 +195,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseBackendScopeKey,
+  primaryReadOwnerConnectionId,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
@@ -474,6 +475,7 @@ import {
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
+  tagOwnerlessRowsWithConnection,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -16215,6 +16217,15 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
   const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)) as any
+  const primaryOwner = primaryReadOwnerConnectionId(readDesktopConnectionsRegistry())
+
+  // The direct primary read has no registry request pin, so preserve its
+  // actual owner before merging rows fetched from other registry gateways.
+  // When the registry cannot prove a primary owner, leave the rows untagged
+  // instead of routing them through the active window connection.
+  if (primaryOwner) {
+    tagOwnerlessRowsWithConnection(rowsOf(base), primaryOwner)
+  }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.

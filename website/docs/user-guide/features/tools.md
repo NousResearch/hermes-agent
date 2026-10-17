@@ -235,6 +235,12 @@ process(action="write", session_id="proc_abc123", data="y")  # Send input
 
 PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
 
+Input sent with `process(action="write" | "submit")` passes the same dangerous-command
+approval as a `terminal` command: a running shell or interpreter is a second execution
+channel, so `rm -rf ~` typed into a background `bash` is blocked at the hardline floor and
+recoverable patterns prompt exactly as they would for `terminal`. Ordinary input (`y`,
+`print('hello')`) never prompts.
+
 Completed background commands retain their exit status and captured output in the
 active profile. Resume the conversation that launched the command (or its
 compressed continuation), then use the original `session_id` with

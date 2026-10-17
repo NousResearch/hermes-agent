@@ -38,4 +38,7 @@ class TelegramForumTopicsMixin:
         event.allow_gateway_control = False
         event.source.chat_topic = name
         event.metadata["telegram_forum_topic_name"] = name
-        await self.handle_message(event)
+        if self._drop_unresolved(event) or self._message_handler is None:
+            return
+        # Metadata must not join the active turn's pending input or interrupt its owner.
+        await self._dispatch_inline_reply(event)

@@ -47,13 +47,15 @@ async def test_authorized_topic_create_and_edit_update_one_canonical_session_tit
     adapter: Any = object.__new__(TelegramAdapter)
     adapter._build_message_event = MagicMock(return_value=event)
     adapter._is_user_authorized_from_message = MagicMock(return_value=True)
-    adapter.handle_message = AsyncMock()
+    adapter._drop_unresolved = MagicMock(return_value=False)
+    adapter._message_handler = object()
+    adapter._dispatch_inline_reply = AsyncMock()
 
     await adapter._handle_forum_topic_name_update(
         _update(created_name="Hermes: updates"), SimpleNamespace()
     )
 
-    adapter.handle_message.assert_awaited_once_with(event)
+    adapter._dispatch_inline_reply.assert_awaited_once_with(event)
     assert event.text == ""
     assert event.allow_gateway_control is False
     assert event.source.chat_topic == "Hermes: updates"
@@ -92,14 +94,14 @@ async def test_authorized_topic_create_and_edit_update_one_canonical_session_tit
         for call in get_or_create.await_args_list
     )
 
-    adapter.handle_message.reset_mock()
+    adapter._dispatch_inline_reply.reset_mock()
     await adapter._handle_forum_topic_name_update(
         _update(edited_name="Automatic title", is_bot=True), SimpleNamespace()
     )
     await adapter._handle_forum_topic_name_update(
         _update(edited_name=""), SimpleNamespace()
     )
-    adapter.handle_message.assert_not_awaited()
+    adapter._dispatch_inline_reply.assert_not_awaited()
 
 
 @pytest.mark.asyncio

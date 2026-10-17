@@ -185,8 +185,10 @@ class CLIStreamMixin:
             f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
             if getattr(self, "show_timestamps", False) else "")
         lines = user_input.split("\n")
+        from hermes_cli.cli_modern_layout import is_modern, prompt_glyph
+        mark = _escape(prompt_glyph()) if is_modern(self) else "●"
         if len(lines) <= 1:
-            return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
+            return f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
 
         first_lines = max(1, int(getattr(self, "user_message_preview_first_lines", 2)))
         last_lines = max(0, int(getattr(self, "user_message_preview_last_lines", 2)))
@@ -198,7 +200,7 @@ class CLIStreamMixin:
             hidden_middle_count = 0
             tail = []
 
-        preview_lines = [f"[bold {_accent_hex()}]●[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
+        preview_lines = [f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(head[0])}[/]{ts_suffix}"]
         preview_lines.extend(f"[bold]{_escape(line)}[/]" for line in head[1:])
         if hidden_middle_count > 0:
             key = "cli.stream.preview_more_lines_one" if hidden_middle_count == 1 else "cli.stream.preview_more_lines_other"
@@ -235,10 +237,15 @@ class CLIStreamMixin:
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        modern = getattr(self, "_modern_layout", False)
+        if not modern:
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
         if "\n" in text:
-            ChatConsole().print(self._format_submitted_user_message_preview(text))
+            ChatConsole().print(("\n" if modern else "") + self._format_submitted_user_message_preview(text))
+        elif modern:
+            from hermes_cli.cli_modern_layout import user_echo_markup
+            ChatConsole().print(user_echo_markup(text, _accent_hex()))
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
@@ -254,6 +261,11 @@ class CLIStreamMixin:
             return
         self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):
+            return
+        if getattr(self, "_modern_layout", False):
+            if not getattr(self, "_reasoning_box_opened", False):
+                self._reasoning_box_opened, self._reasoning_started_at, self._reasoning_buf = True, time.monotonic(), ""
+            self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
             return
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
@@ -295,6 +307,17 @@ class CLIStreamMixin:
         """Close the live reasoning box if it's open (renders the buffered reasoning tail)."""
         from cli import _DIM, _RST, _cprint
         if not getattr(self, "_reasoning_box_opened", False):
+            return
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import thought_body, thought_line
+            text = getattr(self, "_reasoning_buf", "")
+            started = getattr(self, "_reasoning_started_at", 0.0)
+            _cprint(thought_line(time.monotonic() - started if started else None, text))
+            for line in thought_body(text) if self.reasoning_full else []:
+                _cprint(line)
+            self._reasoning_buf, self._reasoning_box_opened = "", False
+            if not getattr(self, "_stream_box_live", False):
+                self._release_held_status_lines()
             return
         buf = getattr(self, "_reasoning_buf", "")
         if buf:
@@ -451,9 +474,14 @@ class CLIStreamMixin:
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
-            w = self._scrollback_box_width()
-            fill = w - 2 - HermesCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            if getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import answer_label
+                _cprint(answer_label(datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))
+                                     if self.show_timestamps else ""))
+            else:
+                w = self._scrollback_box_width()
+                fill = w - 2 - HermesCLI._status_bar_display_width(label)
+                _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         # Turn-level record of what actually reached the screen; survives _reset_stream_state at
         # tool-call boundaries so an interrupted reply isn't re-rendered as a Panel (#65666).
@@ -519,7 +547,7 @@ class CLIStreamMixin:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
-        if self._stream_box_opened and getattr(self, "_stream_box_live", False):
+        if self._stream_box_opened and getattr(self, "_stream_box_live", False) and not getattr(self, "_modern_layout", False):
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
         self._stream_box_live = False
@@ -661,6 +689,10 @@ class CLIStreamMixin:
         announced.add(tool_name)
         from agent.display import bridge_generating_phrase, get_tool_emoji
         what = bridge_generating_phrase(tool_name) or tool_name
+        if getattr(self, "_modern_layout", False):  # the composer rule shows it; scrollback stays quiet
+            self._spinner_text = t("cli.modern.preparing", what=what)
+            self._invalidate()
+            return
         _cprint(f"  ┊ {t('cli.stream.tool_preparing', emoji=get_tool_emoji(tool_name, default='⚡'), what=what)}")
 
     def _on_tool_progress(self, event_type: str, function_name: str | None = None, preview: str | None = None, function_args: dict | None = None, **kwargs):
@@ -731,9 +763,9 @@ class CLIStreamMixin:
                     return
                 self._last_scrollback_tool = function_name
                 try:
-                    from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    from hermes_cli.cli_modern_layout import completed_tool_line
+                    _cprint(completed_tool_line(self, function_name, stored_args, duration, kwargs.get("result"),
+                                                kwargs.get("is_error", False)))
                 except Exception:
                     pass
                 # One-time /verbose hint on the first long tool in the noisiest mode; latched
@@ -800,8 +832,9 @@ class CLIStreamMixin:
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
         try:
             from agent.display import render_edit_diff_with_delta
+            from hermes_cli.cli_modern_layout import diff_printer
             render_edit_diff_with_delta(
                 function_name, function_result, function_args=function_args, snapshot=snapshot,
-                print_fn=_cprint)
+                print_fn=diff_printer(_cprint))
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)

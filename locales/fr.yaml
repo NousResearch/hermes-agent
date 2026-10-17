@@ -1935,6 +1935,21 @@ slash:
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
+  modern:
+    thought_for: "Réflexion pendant {seconds}s"
+    thought: "Réflexion"
+    working: "En cours…"
+    preparing: "Préparation de {what}…"
+    hint_steer: "orienter"
+    hint_queue: "mettre en file"
+    hint_interrupt: "interrompre"
+    hint_stop: "arrêter"
+    hint_commands: "commandes"
+    hint_files: "fichiers"
+    hint_shell: "shell"
+    placeholder_busy_steer: "tapez pour orienter ce tour · Tab le met en file pour après"
+    placeholder_busy_interrupt: "tapez pour rediriger ce tour · Tab le met en file pour après"
+    placeholder_busy_queue: "tapez pour mettre un message en file après ce tour"
   billing:
     load_failed: "{label} : {error}"
     load_failed_label: "Facturation indisponible"

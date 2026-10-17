@@ -1683,6 +1683,21 @@ slash:
   quit:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
+  modern:
+    thought_for: "Smaoinigh ar feadh {seconds}s"
+    thought: "Smaoinigh"
+    working: "Ag obair…"
+    preparing: "{what} á ullmhú…"
+    hint_steer: "stiúir"
+    hint_queue: "cuir sa scuaine"
+    hint_interrupt: "cuir isteach air"
+    hint_stop: "stop"
+    hint_commands: "orduithe"
+    hint_files: "comhaid"
+    hint_shell: "blaosc"
+    placeholder_busy_steer: "clóscríobh chun an seal seo a stiúradh · cuireann Tab sa scuaine é"
+    placeholder_busy_interrupt: "clóscríobh chun an seal seo a atreorú · cuireann Tab sa scuaine é"
+    placeholder_busy_queue: "clóscríobh chun teachtaireacht a chur sa scuaine don tréimhse ina dhiaidh"
   billing:
     load_failed: "{label}: {error}"
     load_failed_label: "Níorbh fhéidir an bhilleáil a lódáil"

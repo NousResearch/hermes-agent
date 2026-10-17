@@ -521,3 +521,26 @@ def test_saving_an_unauthorized_edit_still_revokes_the_old_identity(estate):
     old = _seed_tokens(b, "team", "FOR_OLD_ENDPOINT")
     assert _save_mcp_server("team", dict(CHANGED)) is True
     assert not old.exists()
+
+
+@pytest.mark.parametrize("mutation", ["identity", "remove_readd"])
+def test_failed_participant_login_cannot_restore_a_revoked_owner_grant(estate, monkeypatch, mutation):
+    from hermes_cli.mcp_config import cmd_mcp_login, _remove_mcp_server, _save_mcp_server
+
+    root, a, b, activate = estate
+    activate(b)
+
+    def owner_changes_identity_during_login(name, cfg, connect_timeout=30):
+        activate(root)
+        if mutation == "remove_readd":
+            assert _remove_mcp_server("team")
+            assert _save_mcp_server("team", {**SERVER, "oauth": {"share_with_profiles": True}})
+        else:
+            assert _save_mcp_server("team", dict(CHANGED))
+        activate(b)
+        raise RuntimeError("authorization failed after owner revoked the pool")
+
+    monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", owner_changes_identity_during_login)
+    cmd_mcp_login(_args("team"))
+    assert not _grant(root).exists(), "rollback must never resurrect the owner's revoked grant"
+    assert not (root / "mcp-tokens" / "team.client.json").exists()

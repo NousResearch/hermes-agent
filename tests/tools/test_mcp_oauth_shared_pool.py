@@ -386,3 +386,52 @@ def test_abandoning_the_auth_flow_mid_refresh_releases_the_fence_now(tmp_path, m
             pass
 
     asyncio.run(abandon_mid_refresh())
+
+
+@pytest.mark.parametrize("contents", ["not-json", "{}", '{"epoch": null}'])
+def test_unreadable_epoch_never_authorizes_a_new_participant(tmp_path, contents):
+    from tools.mcp_oauth import HermesTokenStorage, PoolAuthority
+
+    root, prof = _estate(tmp_path, root_entry=EXPORT, profile_entry=MATCH)
+    _seed(root, "team", "ROOT_GRANT")
+    (root / "mcp-tokens" / "team.epoch").write_text(contents)
+    storage = HermesTokenStorage("team", hermes_home=prof)
+    authority = PoolAuthority.capture(storage.pool_path, prof, "team", MATCH)
+    verdict = authority.revocation()
+    assert verdict is not None, "an unreadable epoch cannot establish a provider's authority"
+    assert verdict[1] is False, "a transient unreadable epoch should be retryable"
+
+
+def test_snapshot_during_owner_revocation_cannot_resurrect_the_grant(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    from tools import mcp_oauth
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    root, _prof = _estate(tmp_path, root_entry=EXPORT, profile_entry=MATCH)
+    grant = _seed(root, "team", "ROOT_GRANT")
+    storage = mcp_oauth.HermesTokenStorage("team", hermes_home=root)
+    advanced, resume = threading.Event(), threading.Event()
+    real_advance = mcp_oauth.advance_pool_epoch
+
+    def pause_after_first_advance(pool):
+        real_advance(pool)
+        if not advanced.is_set():
+            advanced.set()
+            assert resume.wait(10)
+
+    monkeypatch.setattr(mcp_oauth, "advance_pool_epoch", pause_after_first_advance)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        revocation = executor.submit(MCPOAuthManager().remove, "team", hermes_home=root,
+                                     detach_participants=True)
+        try:
+            assert advanced.wait(10)
+            snapshot = storage.snapshot()
+            assert snapshot, "the old bytes still exist while revocation waits to delete"
+        finally:
+            resume.set()
+        revocation.result(timeout=10)
+    assert not grant.exists()
+    storage.restore(snapshot)
+    assert not grant.exists(), "a snapshot captured mid-revocation must not restore the revoked grant"

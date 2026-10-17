@@ -263,6 +263,32 @@ def gateway_lifecycle_block(
     return None
 
 
+def child_workdir_containment_block(
+    *,
+    workdir: Optional[str],
+    task_id: Optional[str] = None,
+) -> Optional[str]:
+    """Goal A containment: a worktree-isolated delegated child may not run a
+    command with an explicit ``workdir`` outside its approved worktree.
+
+    Also denies (Goal B) any explicit workdir for a child whose isolation
+    FAILED and was recorded as downgraded. Opt-in via the parent-side registry:
+    task ids with no entry keep historical behavior.
+    Returns the JSON error string when blocked, else None. Runs before the
+    command executes, so nothing has mutated.
+    """
+    if not workdir:
+        return None
+    from tools.child_containment import check_terminal_workdir
+
+    denial = check_terminal_workdir(workdir=workdir, task_id=task_id)
+    if denial:
+        logger.warning("Blocked delegated-child workdir escape: %s (workdir: %s)",
+                       _safe_command_preview(workdir), workdir[:200])
+        return _blocked_json(denial, "blocked")
+    return None
+
+
 def self_repo_block(
     *,
     command: str,

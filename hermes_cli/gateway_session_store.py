@@ -34,6 +34,7 @@ _READS = frozenset({
     "is_kanban_owned_session", "list_sessions_rich", "search_sessions", "get_next_title_in_lineage",
     "get_handoff_state", "get_meta", "get_compression_tip", "resolve_session_by_title", "get_messages",
     "session_count", "sanitize_title", "session_yolo_enabled",
+    "get_session_model_config_value",
 })
 # Writes the gateway already performs itself (persistence, accounting, maintenance).
 _GATEWAY_OWNED = frozenset({

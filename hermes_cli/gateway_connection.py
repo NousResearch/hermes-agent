@@ -71,6 +71,12 @@ class SessionState:
         if self.info.get("title"):
             self.title = self.info["title"]
 
+    def runs_route(self, model, provider=""):
+        """Whether the session runs ``model`` (and ``provider``, when both sides name one)."""
+        current, current_provider = self.info.get("model"), self.info.get("provider")
+        return bool(current) and model == current and not (
+            provider and current_provider and provider != current_provider)
+
     def apply_event(self, kind, payload):
         if kind in ("session.info", "session.updated") and isinstance(payload, dict):
             self.info.update({k: v for k, v in payload.items() if k != "session_id"})

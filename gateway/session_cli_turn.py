@@ -100,13 +100,24 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
     if not result.success:
         raise RuntimeError(result.error_message or f"model {override['model']!r} could not be resolved")
     runtime = dict(runtime_kwargs)
-    if result.target_provider != runtime_kwargs.get('provider'):
-        # The previous provider's pool and ACP command belong to that provider only.
-        runtime.update(credential_pool=None, command=None, args=[])
-    runtime.update(provider=result.target_provider, requested_provider=result.target_provider,
-                   api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode or None,
-                   request_overrides=dict(result.request_overrides or {}),
-                   capabilities=dict(result.runtime_capabilities or {}))
+    current_provider = runtime_kwargs.get('provider') or ''
+    same_provider = (result.target_provider or '').strip().lower() == current_provider.strip().lower()
+    if same_provider:
+        # The explicit provider on a one-turn override re-resolves the provider's default endpoint
+        # and key. The session already has both, so keep them. The wire follows the target, as a
+        # session /model writes it: Copilot, Nous Portal and OpenCode pick it per model.
+        from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+        api_mode = result.api_mode or runtime.get('api_mode')
+        runtime['api_mode'] = api_mode or None
+        if runtime.get('base_url') and opencode_provider_family(result.target_provider):
+            runtime['base_url'] = normalize_opencode_base_url(result.target_provider, api_mode, runtime['base_url'])
+    else:
+        # A different provider does not keep this session's pool, endpoint, or key.
+        runtime.update(credential_pool=None, command=None, args=[],
+                       api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode or None,
+                       request_overrides=dict(result.request_overrides or {}),
+                       capabilities=dict(result.runtime_capabilities or {}))
+    runtime.update(provider=result.target_provider, requested_provider=result.target_provider)
     return result.new_model, runtime
 
 

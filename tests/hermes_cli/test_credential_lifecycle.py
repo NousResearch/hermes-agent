@@ -115,6 +115,56 @@ def _write_config(home, text):
     home.joinpath("config.yaml").write_text(text, encoding="utf-8")
 
 
+def test_config_mirror_scrub_preserves_concurrent_update(
+    hermes_home, monkeypatch
+):
+    """Credential mirror cleanup must share the config transaction lock."""
+    import threading
+    import yaml
+    import utils
+    import hermes_cli.config as config_module
+    from hermes_cli.credential_lifecycle import _scrub_config_yaml_mirrors
+
+    old = "sk-old-" + "x" * 24
+    new = "sk-new-" + "y" * 24
+    _write_config(hermes_home, f"model:\n  api_key: {old}\n")
+    config_path = hermes_home / "config.yaml"
+    writer_at_commit = threading.Event()
+    release_writer = threading.Event()
+    # Instrument upstream's chokepoint writer (see _atomic_config_write_unlocked).
+    original_atomic_yaml_write = utils.atomic_roundtrip_yaml_save
+
+    def paused_write(path, data, **kwargs):
+        if threading.current_thread().name == "mirror-writer":
+            writer_at_commit.set()
+            assert release_writer.wait(timeout=5)
+        return original_atomic_yaml_write(path, data, **kwargs)
+
+    monkeypatch.setattr(utils, "atomic_roundtrip_yaml_save", paused_write)
+    mirror_writer = threading.Thread(
+        name="mirror-writer",
+        target=lambda: _scrub_config_yaml_mirrors(old, new),
+    )
+    mirror_writer.start()
+    assert writer_at_commit.wait(timeout=5)
+
+    concurrent = threading.Thread(
+        target=lambda: config_module.atomic_config_update(
+            config_path,
+            lambda config: config.__setitem__("concurrent", "landed"),
+        )
+    )
+    concurrent.start()
+    concurrent.join(timeout=0.5)
+    release_writer.set()
+    mirror_writer.join(timeout=5)
+    concurrent.join(timeout=5)
+
+    written = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert written["model"]["api_key"] == new
+    assert written["concurrent"] == "landed"
+
+
 def test_update_rotates_config_yaml_model_mirror(hermes_home):
     old = "sk-oe-" + "f" * 24
     new = "sk-oe-" + "g" * 24

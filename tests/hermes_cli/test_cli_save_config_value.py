@@ -1,6 +1,8 @@
 """Tests for save_config_value() in cli.py — atomic write behavior."""
 
 from pathlib import Path
+import threading
+from unittest.mock import MagicMock
 
 import hermes_yaml as yaml
 
@@ -51,6 +53,48 @@ class TestSaveConfigValueAtomic:
 
         assert result is False
         assert config_env.read_text() == original_content
+
+    def test_roundtrip_writer_preserves_concurrent_narrow_update(
+        self, config_env, monkeypatch
+    ):
+        """CLI model/settings persistence must share the config transaction."""
+        import utils
+        from hermes_cli.config import atomic_config_update
+        from cli import save_config_value
+
+        writer_at_commit = threading.Event()
+        release_writer = threading.Event()
+        original_replace = utils.atomic_replace
+
+        def paused_replace(src, dst):
+            if threading.current_thread().name == "legacy-roundtrip-writer":
+                writer_at_commit.set()
+                assert release_writer.wait(timeout=5)
+            return original_replace(src, dst)
+
+        monkeypatch.setattr(utils, "atomic_replace", paused_replace)
+        writer = threading.Thread(
+            name="legacy-roundtrip-writer",
+            target=lambda: save_config_value("legacy", "landed"),
+        )
+        writer.start()
+        assert writer_at_commit.wait(timeout=5)
+
+        narrow = threading.Thread(
+            target=lambda: atomic_config_update(
+                config_env,
+                lambda latest: latest.__setitem__("narrow", "landed"),
+            )
+        )
+        narrow.start()
+        narrow.join(timeout=0.5)
+        release_writer.set()
+        writer.join(timeout=5)
+        narrow.join(timeout=5)
+
+        written = yaml.safe_load(config_env.read_text(encoding="utf-8"))
+        assert written["legacy"] == "landed"
+        assert written["narrow"] == "landed"
 
 
 class TestSaveConfigValueTargetsUserConfig:

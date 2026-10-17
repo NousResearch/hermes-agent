@@ -63,6 +63,11 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // conversations: every editor wake mints an auto-titled row, so they would
 // bury local chats — and they were never ended before #118216, which also
 // kept prune/archive away from them.
+// The recents slice excludes the platforms the backend knows to name; a
+// platform the list doesn't carry (a plugin adapter, a custom `--source` tag)
+// still arrives in that page, so the client re-files those rows into the
+// messaging slice at ingest (see refreshSessions) — every gateway session
+// gets its own section, not just the whitelisted ones (#67794).
 const SIDEBAR_EXCLUDED_SOURCES = [
   'acp',
   'cron',
@@ -429,7 +434,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             // the keep set once the tombstone prune has cleared membership).
             const next = dropRemovalRaced(mergeSessionPage(prev, incoming, sessionsToKeep()), removalSnapshot)
 
-            return sameCronSignature(prev, next) ? prev : next
+            // Same post-merge spot for the platform re-file: a platform the
+            // recents SQL exclusion didn't name (plugin adapter, custom
+            // `--source`) arrives in this page too, and the keep set can hold
+            // one over from a previous refresh. The messaging slice ingests
+            // the same row into its own section, so dropping it here keeps
+            // the Sessions list local-only without hiding the session (#67794).
+            const localOnly = next.filter(session => !isMessagingSource(session.source))
+
+            return sameCronSignature(prev, localOnly) ? prev : localOnly
           })
           // "Is there another page?" instead of an exact total: the backend
           // reports which profiles filled their window, which costs nothing on
@@ -472,9 +485,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             return sameCronSignature(prev, incoming) ? prev : incoming
           })
 
-          // Messaging sections: drop any non-messaging source the broad exclude
-          // didn't catch (custom sources stay in local recents), then split per
-          // platform in the UI.
+          // Messaging sections: the broad backend exclude drops cron + local
+          // sources; the isMessagingSource pass is the belt-and-braces mirror
+          // of the recents re-file (an internal source that slipped through
+          // both excludes must not grow a platform section), then rows split
+          // per platform in the UI — unknown platforms included (#67794).
           const messagingErrors = result.messaging.errors ?? result.errors
 
           const messagingRows = publishMessagingRows(

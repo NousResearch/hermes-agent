@@ -42,6 +42,15 @@ def test_memory_has_no_diff_like_the_cli(tmp_path, monkeypatch):
     assert command_verdict('memory', 'diff x') == 'refused'
 
 
+@pytest.mark.parametrize(('arg', 'reach'), [
+    ("pending it's", 'read'), ('pending "unclosed', 'read'), ("approve it's", 'control'),
+    ("drop 'all", 'control'), ("approval on'", 'control'), ("it's pending", 'refused')])
+def test_memory_reads_only_its_first_word_like_the_cli(arg, reach):
+    """Main's CLI and messaging handler split /memory on whitespace: an apostrophe or an unclosed
+    quote later in the line is the argument's business, never a parse failure of the command."""
+    from gateway.session_commands import command_verdict
+    assert command_verdict('memory', arg) == reach
+
 def _stage(home, pending_id, content):
     folder = home / 'pending' / 'memory'
     folder.mkdir(parents=True, exist_ok=True)

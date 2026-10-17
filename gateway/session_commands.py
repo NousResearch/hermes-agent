@@ -60,13 +60,20 @@ def _first_token(arg):
     return ''
 
 
+def _first_word(arg):
+    """The first whitespace-separated word, as main's CLI and messaging /memory handler split it:
+    a quote later in the line belongs to the argument (`/memory pending it's`)."""
+    words = arg.split(None, 1)
+    return words[0].lower() if words else ''
+
+
 # The read-only argument forms of a read command whose other subcommands write: ``/usage reset``
 # redeems a credit, ``/suggestions accept|catalog`` schedules cron jobs delivering to this
 # (non-messaging) chat. The review queues read like main's CLI: only the first word counts.
 _READ_ARGUMENTS = {
     'skills': lambda arg: _first_token(arg) in {'', 'pending', 'diff'},
     'usage': lambda arg: not arg.strip(),
-    'memory': lambda arg: _first_token(arg) in {'', 'pending'},
+    'memory': lambda arg: _first_word(arg) in {'', 'pending'},
     'suggestions': lambda arg: not arg.strip(),
     'kanban': lambda arg: _first_token(arg) in _KANBAN_READS,
 }
@@ -77,7 +84,7 @@ _READ_ARGUMENTS = {
 # `approval` updates their config.yaml switch, as main's CLI wrote it).
 _CONTROL_ARGUMENTS = {
     'skills': lambda arg: _first_token(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
-    'memory': lambda arg: _first_token(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
+    'memory': lambda arg: _first_word(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
 }
 
 

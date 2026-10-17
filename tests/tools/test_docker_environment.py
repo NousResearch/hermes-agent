@@ -778,6 +778,56 @@ def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tm
     assert third._labels["hermes-environment"] != first._labels["hermes-environment"]
 
 
+def _fingerprint(*mount_args: str, image: str = "python:3.11", hermes_home: str = "/h") -> str:
+    return docker_env._reuse_environment_fingerprint(
+        image=image, mount_args=list(mount_args), hermes_home=hermes_home)
+
+
+@pytest.fixture
+def stable_host_paths(monkeypatch, tmp_path):
+    """Keep profile-like mount sources outside the process temp directory."""
+    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(tmp_path / "process-temp"))
+
+
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+def test_file_bind_fingerprint_changes_after_atomic_rewrite(stable_host_paths, tmp_path, monkeypatch, relative):
+    config = tmp_path / "config.yaml"
+    config.write_text("version: 1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    source = "./config.yaml" if relative else str(config)
+    spec = f"{source}:/app/conf.yaml:ro"
+    before = _fingerprint("-v", spec)
+
+    config.write_text("version: 2-inplace\n", encoding="utf-8")
+    assert _fingerprint("-v", spec) == before
+
+    pending = tmp_path / "config.pending"
+    pending.write_text("version: 3-renamed\n", encoding="utf-8")
+    pending.replace(config)
+    assert _fingerprint("-v", spec) != before
+
+
+@pytest.mark.parametrize("source_kind", ["directory", "named_volume"])
+def test_non_file_bind_fingerprint_ignores_contents(stable_host_paths, tmp_path, monkeypatch, source_kind):
+    source = tmp_path / "skills"
+    if source_kind == "directory":
+        source.mkdir()
+        content = source / "SKILL.md"
+        mount_source = str(source)
+    else:
+        monkeypatch.chdir(tmp_path)
+        content = source
+        mount_source = "skills"
+    content.write_text("# version 1\n", encoding="utf-8")
+    spec = f"{mount_source}:/root/.hermes/skills:ro"
+    before = _fingerprint("-v", spec)
+
+    pending = tmp_path / "content.pending"
+    pending.write_text("# version 2\n", encoding="utf-8")
+    pending.replace(content)
+    assert _fingerprint("-v", spec) == before
+
+
 def test_labels_attribute_populated_after_init(monkeypatch):
     """``self._labels`` must be set to the same key/value pairs that went onto
     docker run, so subsequent reuse / reaper paths can match without re-running

@@ -9,8 +9,11 @@ checkout — the same trust level as the terminal tool.
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +32,72 @@ _SUBPROCESS_KW: dict[str, Any] = dict(
     shell=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     text=True, errors="replace",
 )
+
+
+# Interpreter-steering variables a Hermes process exports for its OWN generation venv
+# (pm.environments puts the generation site-packages on PYTHONPATH). Inherited by a
+# project's ``pip install``, they make pip treat the generation as the target
+# environment and uninstall/replace Hermes' own packages (mcp 2.x -> a project's mcp<2).
+_PYTHON_ENV_DROP = ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "__PYVENV_LAUNCHER__")
+_PROJECT_VENV_DIRS = (".venv", "venv")
+_USES_PIP_RE = re.compile(r"(?:^|[\s;&|(])(?:pip3?|python3?\s+-m\s+pip)\s")
+_PIP_INSTALL_RE = re.compile(r"(^|&&|\|\||;)(\s*)(?:pip3?|python3?\s+-m\s+pip)\s+install\b")
+
+
+def _venv_python(venv: Path) -> Path:
+    return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _find_project_venv(root: Path) -> Path | None:
+    for name in _PROJECT_VENV_DIRS:
+        venv = root / name
+        if (venv / "pyvenv.cfg").is_file() and _venv_python(venv).exists():
+            return venv
+    return None
+
+
+def _clean_child_env(venv: Path | None = None) -> dict[str, str]:
+    """Environment for project commands: no Hermes interpreter steering, the running
+    Hermes venv's bin dropped from PATH, and the project's own venv (if any) first."""
+    env = {k: v for k, v in os.environ.items() if k not in _PYTHON_ENV_DROP}
+    drop: set[str] = set()
+    if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+        drop.add(os.path.normcase(os.path.abspath(Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin"))))
+    parts = [p for p in env.get("PATH", "").split(os.pathsep)
+             if p and os.path.normcase(os.path.abspath(p)) not in drop]
+    if venv is not None:
+        parts.insert(0, str(_venv_python(venv).parent))
+        env["VIRTUAL_ENV"] = str(venv)
+    env["PATH"] = os.pathsep.join(parts)
+    return env
+
+
+def _ensure_project_venv(root: Path, timeout: float) -> tuple[Path | None, str]:
+    """The project's own venv (``.venv``/``venv``), created as ``.venv`` when absent.
+    Never falls back to the interpreter Hermes runs from."""
+    existing = _find_project_venv(root)
+    if existing is not None:
+        return existing, ""
+    venv = root / ".venv"
+    base = getattr(sys, "_base_executable", None) or sys.executable
+    try:
+        proc = subprocess.run(
+            [base, "-I", "-m", "venv", str(venv)], cwd=str(root), env=_clean_child_env(),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="replace", timeout=timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"could not create project venv {venv}: {exc}"
+    if proc.returncode != 0 or not _venv_python(venv).exists():
+        return None, f"could not create project venv {venv} (exit {proc.returncode}): {_tail(proc.stdout or '')}"
+    return venv, ""
+
+
+def _isolate_pip(command: str, venv: Path) -> str:
+    """Route ``pip install`` through the project venv's interpreter with ``--isolated``
+    (ignores PIP_* env vars and user/global pip config)."""
+    python = shlex.quote(str(_venv_python(venv)))
+    return _PIP_INSTALL_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{python} -m pip install --isolated", command)
 
 
 @dataclass
@@ -92,11 +161,11 @@ def _tail(text: str, limit: int = _TAIL_CHARS) -> str:
 
 def _run_phase_command(
     phase: str, command: str, root: Path, timeout: float,
-    on_output: Callable[[str], None] | None = None,
+    on_output: Callable[[str], None] | None = None, env: dict[str, str] | None = None,
 ) -> PhaseResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW, check=False)
+        proc = subprocess.run(command, cwd=str(root), timeout=timeout, env=env, **_SUBPROCESS_KW, check=False)
         output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
@@ -166,14 +235,15 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
 
 def _run_start_phase(
-    recipe: Recipe, root: Path, ready_timeout: float, port_override: int | None = None
+    recipe: Recipe, root: Path, ready_timeout: float, port_override: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> ReadinessResult:
     assert recipe.start is not None
     port = port_override or recipe.port or 8000
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
     # start_new_session: own process group for clean teardown.
-    proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
+    proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, env=env, **_SUBPROCESS_KW)
     output = ""
     try:
         ready, status, error = _poll_readiness(url, ready_timeout)
@@ -246,15 +316,29 @@ def run_verify(
             ))
             return result
 
+    # Project commands never see the Hermes interpreter's environment. Any pip use runs
+    # inside the project's own venv so it cannot touch Hermes' generation site-packages.
+    commands = [(phase, c) for phase in PHASE_ORDER if phase in selected for c in getattr(recipe, phase)]
+    venv = _find_project_venv(root)
+    if venv is None and any(_USES_PIP_RE.search(c) for _, c in commands):
+        venv, error = _ensure_project_venv(root, phase_timeout)
+        if venv is None:
+            phase, command = next((p, c) for p, c in commands if _USES_PIP_RE.search(c))
+            result.phases.append(PhaseResult(phase, command, 1, 0.0, f"Refusing to run pip outside a project venv: {error}"))
+            return result
+    env = _clean_child_env(venv)
+
     for phase in PHASE_ORDER:
         if phase not in selected:
             continue
         for command in getattr(recipe, phase):
-            phase_result = _run_phase_command(phase, command, root, phase_timeout, on_output)
+            if venv is not None:
+                command = _isolate_pip(command, venv)
+            phase_result = _run_phase_command(phase, command, root, phase_timeout, on_output, env)
             result.phases.append(phase_result)
             if not phase_result.ok and stop_on_failure:
                 return result
 
     if not skip_start and "start" in selected and recipe.start and all(p.ok for p in result.phases):
-        result.readiness = _run_start_phase(recipe, root, ready_timeout, port_override)
+        result.readiness = _run_start_phase(recipe, root, ready_timeout, port_override, env)
     return result

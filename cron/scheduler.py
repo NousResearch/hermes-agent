@@ -4164,6 +4164,13 @@ def _maybe_reap_dead_owners() -> None:
                 "Reclaimed %d cron execution(s) whose owner process died "
                 "before reaching a terminal state (marked unknown)",
                 _reclaimed)
+        from cron.session_settlement import close_interrupted_run_sessions
+
+        _settled = close_interrupted_run_sessions()
+        if _settled:
+            logger.warning(
+                "Closed %d quiet cron session row(s) whose scheduler owner died: %s",
+                len(_settled), ", ".join(_settled))
     except Exception as _reap_exc:
         logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
 

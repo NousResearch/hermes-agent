@@ -868,8 +868,9 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     if not auxiliary:
         # ``source`` is the worker platform (turn_usage._agent_session_source). A Desktop
         # managed worker passes ``gui``; created_surface maps that to ``desktop``. The row
-        # is usually stamped at admission. A compression child can still be NULL, and this
-        # worker never create_session's it, so fill only that NULL.
+        # is usually stamped at admission. A compression child can still be NULL (or an
+        # auxiliary-usage ``unknown``), and this worker never create_session's it, so fill
+        # only an unset column, as the creator upsert does.
         raw = payload.get('source')
         source = raw if isinstance(raw, str) else None
         payload = {k: v for k, v in payload.items() if k != 'source'}
@@ -899,7 +900,8 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         surfaced = created_surface(source)
         if surfaced:
             conn.execute(
-                "UPDATE sessions SET created_source=? WHERE id=? AND created_source IS NULL",
+                "UPDATE sessions SET created_source=? WHERE id=? "
+                "AND (created_source IS NULL OR created_source = 'unknown')",
                 (surfaced, session_id))
             from hermes_state_compression import stamp_compression_ancestors
             stamp_compression_ancestors(conn, session_id)

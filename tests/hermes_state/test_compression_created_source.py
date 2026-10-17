@@ -3,6 +3,8 @@
 Automatic compression does not create the child again, so the worker's ``usage.main``
 is the write that fills the column, and it carries the surface to the NULL root.
 """
+import pytest
+
 from hermes_state import SessionDB
 
 
@@ -23,15 +25,19 @@ def _created(db, sid):
     return db.get_session(sid)["created_source"]
 
 
-def test_desktop_worker_heals_gui_to_desktop(tmp_path):
+@pytest.mark.parametrize("child_created", [None, "unknown"])
+def test_desktop_worker_heals_gui_to_desktop(tmp_path, child_created):
     """A managed Desktop worker's platform is the policy label ``gui``. The healed
-    column is ``desktop``, the same surface the in-process agent and the insert stamp."""
+    column is ``desktop``, the same surface the in-process agent and the insert stamp.
+    An auxiliary-usage ``unknown`` placeholder is unset too, as in the creator upsert."""
     import hermes_state_runtime as rt
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
         child = _compress(db, None, "desktop-child")
-        assert _created(db, child) is None
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (child_created, child))
+            db._conn.commit()
         epoch = rt.begin_runtime_epoch(db, instance_id="owner")
         scope = dict(epoch=epoch, execution_id="w", session_id=child, generation=0)
         rt.register_worker_execution(db, **scope, kind="compute", adoption_secret="private")

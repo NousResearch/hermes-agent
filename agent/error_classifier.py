@@ -196,7 +196,7 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # is used because the bare class name also appears when Jackson caps a *token* length.
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
-    "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
+    "image base64 size", "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
     "patches after processing", "make sure your payload is below", "streamreadconstraints.getmaxstringlength",
 )
 

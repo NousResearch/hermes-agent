@@ -30,7 +30,7 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
+import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers, isSelfChatIdentity } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -378,6 +378,24 @@ function rememberSentId(id) {
 let sock = null;
 let connectionState = 'disconnected';
 
+// After a WhatsApp number change, the "Message yourself" self-chat can stay
+// bound to the PREVIOUS number's LID, so matching only sock.user.id/lid
+// silently drops the user's own inbound messages. The account's own identities
+// are sock.user plus the operator's declaration in WHATSAPP_ALLOWED_USERS
+// (self-chat onboarding seeds it with the paired number, so an operator who
+// changed numbers keeps the previous one there). The session's
+// lid-mapping-*.json files are NOT a source of "self": they map every known
+// contact, so matching them here would accept any stranger's DM and reopen the
+// #8389 pairing-code reply.
+function isSelfChatId(id) {
+  return isSelfChatIdentity(id, {
+    accountId: sock?.user?.id,
+    accountLid: sock?.user?.lid,
+    selfIdentifiers: ALLOWED_USERS,
+    sessionDir: SESSION_DIR,
+  });
+}
+
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
   try {
@@ -603,10 +621,9 @@ async function startSocket() {
           // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
           // AND classic format: 34652029134@s.whatsapp.net
           // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const chatNumber = chatId.replace(/@.*/, '');
-          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          // isSelfChatId also recognizes a self-chat bound to a PREVIOUS
+          // number/LID after a number change (see helper above).
+          const isSelfChat = isSelfChatId(chatId);
           emitDebugEvent({
             stage: 'self_chat_check',
             matched: !!isSelfChat,
@@ -633,15 +650,22 @@ async function startSocket() {
       // to arbitrary incoming messages (#8389).
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
-          try {
-            writeJsonLine({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            });
-          } catch {}
-          continue;
+          // After a number change, the user's own messages arrive as !fromMe
+          // under the migrated LID; accept the identities the account owns
+          // (sock.user plus the operator's declaration in the allowlist) but
+          // keep rejecting genuine strangers, whose chatId AND senderId are
+          // both unknown to the account.
+          if (!isSelfChatId(senderId) && !isSelfChatId(chatId)) {
+            try {
+              writeJsonLine({
+                event: 'ignored',
+                reason: 'self_chat_mode_rejects_non_self',
+                chatId,
+                senderId,
+              });
+            } catch {}
+            continue;
+          }
         }
         const intakeAllowed = isGroup
           ? matchesInboundWhatsAppGroup({

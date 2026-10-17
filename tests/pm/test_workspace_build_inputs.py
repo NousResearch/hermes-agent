@@ -282,3 +282,31 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def test_snapshot_excludes_runtime_store_entries_inside_a_package_root(tmp_path, monkeypatch):
+    """Docker's PM store can share the ``tools`` package root with source files."""
+    core = tmp_path / "core"
+    package = core / "tools"
+    package.mkdir(parents=True)
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["tools"]\n',
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "image_generation_tool.py").write_text("SOURCE = True\n", encoding="utf-8")
+    (package / "facts.json").write_text(
+        '{"schema": 1, "packages": {"python": {"entry": "python-3.14"}}}',
+        encoding="utf-8",
+    )
+    (package / "python-3.14").mkdir()
+    (package / "python-3.14" / "large-runtime-file").write_text("runtime", encoding="utf-8")
+    monkeypatch.setattr(workspace.paths, "store_root", lambda: package)
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "tools/image_generation_tool.py").is_file()
+    assert not (destination / "tools/facts.json").exists()
+    assert not (destination / "tools/python-3.14").exists()

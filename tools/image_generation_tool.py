@@ -538,8 +538,7 @@ def check_image_generation_requirements() -> bool:
     """True if FAL or the explicitly configured image backend is available."""
     try:
         if check_fal_api_key():
-            # Lazy import doubles as the SDK presence check: ImportError falls through to plugins.
-            _load_fal_client()
+            # The SDK is installed lazily by the handler, after the user requests generation.
             return True
     except ImportError:
         pass

@@ -74,14 +74,32 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
     return reasons, waiting
 
 
+def _refuse_ineffective_eviction(home: Path, config: dict, names: list[str]) -> None:
+    """Never publish reduced dependencies while administrator policy still enables them."""
+    import copy
+    from pm.plugins_state import effective_selection, _enabled_from_config, _provider_from_config
+
+    effective = effective_selection(home, copy.deepcopy(config))
+    selected = set(_enabled_from_config(effective))
+    provider = _provider_from_config(home, effective)
+    if provider:
+        selected.add(provider)
+    blocked = selected.intersection(names)
+    if blocked:
+        raise ValueError("managed configuration prevents disabling incompatible plugins: "
+                         + ", ".join(sorted(blocked)))
+
+
 class PluginEviction:
     """Config edits disabling the plugins in *reasons*; published like a plugin selection."""
 
-    def __init__(self, entries: list[Entry], reasons: dict[Path, str]):
+    def __init__(self, entries: list[Entry], reasons: dict[Path, str], *, configs=None):
         from hermes_yaml import roundtrip_yaml
         from pm.publication import selection_snapshot
 
-        self.configs = selection_snapshot()
+        self.configs = selection_snapshot() if configs is None else configs
+        if selection_snapshot() != self.configs:
+            raise ValueError("plugin configuration changed while preparing publication; retry")
         by_home: dict[Path, list[str]] = {}
         for plugins_dir, name, plugin_dir in entries:
             if plugin_dir.resolve() in reasons:
@@ -106,6 +124,7 @@ class PluginEviction:
                 # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
                 if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
                     memory["provider"] = ""
+            _refuse_ineffective_eviction(home, config, names)
             output = io.StringIO()
             yaml.dump(config, output)
             self.edits.append((path, previous, output.getvalue().encode("utf-8")))
@@ -115,6 +134,8 @@ class PluginEviction:
 
         if selection_snapshot() != self.configs:
             raise ValueError("plugin configuration changed while preparing publication; retry")
+        if not self.edits:
+            return
         row = {"configs": [{"config": str(path),
                             "previous": base64.b64encode(previous).decode() if previous is not None else None,
                             "config_after": hashlib.sha256(proposed).hexdigest()}
@@ -151,7 +172,9 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
     from pm.install import _commit_selection, _runtime_state_matches, _target_selection
     from pm.plugins_state import dependency_homes, read_home_selection
     from pm.workspace import _is_member_candidate, enabled_plugin_entries
+    from pm.publication import selection_snapshot
 
+    configs = selection_snapshot()
     notices: list[str] = []
     for home in dependency_homes()[1:]:
         try:
@@ -170,7 +193,7 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
         enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs={"plugin_dirs": members()},
                                                    repair=False, shipped=shipped, frozen=frozen)
         receipt.record_feature_list(enabled)
-        _commit_selection(package, facts, PluginEviction(entries, reasons) if reasons else None,
+        _commit_selection(package, facts, PluginEviction(entries, reasons, configs=configs),
                           enabled=enabled, stamp=stamp, inputs=inputs,
                           current=_runtime_state_matches(fact, stamp), repair=False, explicit=explicit,
                           skip_invalid_secondary=True)

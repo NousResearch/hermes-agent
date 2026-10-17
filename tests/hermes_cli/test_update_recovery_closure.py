@@ -247,3 +247,58 @@ def test_the_closure_is_pres_committed_bytes_read_in_one_cat_file_spawn(tmp_path
     for rel in RECOVERY_CLOSURE:
         assert (closure / rel).read_bytes() == f"# {rel} at pre\n".encode()
     assert spawns == ["ls-tree", "cat-file"]
+
+
+def test_the_batch_reader_feeds_the_request_from_a_file_not_a_pipe(tmp_path, monkeypatch):
+    """``cat-file --batch`` streams blob bodies into its stdout while the request is still being
+    written; ``subprocess``'s ``input=`` path writes PIPE_BUF-sized chunks on a possibly-blocking
+    fd, and a write that lands with under 512 bytes free in the stdin pipe parks the updater
+    inside ``write()`` where ``timeout=`` can never fire — the "Fetching updates..." hang (#138672).
+    The reader must hand the request over as a file, leaving the parent only reading."""
+    from hermes_cli import update_cmd_commit as commit
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "f.txt").write_bytes(b"body\n")
+    env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+    for args in (("init", "-q", "-b", "main"), ("add", "-A"),
+                 ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "pre")):
+        subprocess.run(["git", "-C", str(root), *args], env=env, check=True)
+    pre = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    seen = {}
+    real = commit.run_git
+
+    def spy(git_cmd, args, **kwargs):
+        seen.update(kwargs)
+        feed = kwargs.get("stdin")
+        if feed is not None and "input" not in kwargs:
+            seen["fed"] = os.pread(feed.fileno(), 1 << 16, 0)  # the temp file closes on return
+        return real(git_cmd, args, **kwargs)
+
+    monkeypatch.setattr(commit, "run_git", spy)
+
+    assert commit.read_target_files(["git"], root, pre, ["f.txt"]) == {"f.txt": b"body\n"}
+
+    assert "input" not in seen, "the parent must never write the child's stdin pipe (#138672)"
+    assert seen["stdin"] is not None
+    assert seen["fed"] == f"{pre}:f.txt\n".encode()
+
+
+def test_the_batch_reader_survives_a_child_that_floods_stdout_before_answering(tmp_path, monkeypatch):
+    """Whatever the child does with its pipes — a blobless clone lazily fetching, a slow batch
+    reader — the parent's role is read-only: a stand-in ``git`` that floods stdout to many times
+    the pipe buffer before draining stdin still completes, with the request intact."""
+    from hermes_cli import update_cmd_commit as commit
+
+    sink = tmp_path / "received.txt"
+    monkeypatch.setenv("_STAND_IN_SINK", str(sink))
+    stand_in = tmp_path / "git_stand_in.py"
+    stand_in.write_text(
+        "import os, sys\n"
+        "sys.stdout.buffer.write(b'0' * 262144)\n"
+        "with open(os.environ['_STAND_IN_SINK'], 'wb') as handle:\n"
+        "    handle.write(sys.stdin.buffer.read())\n")
+    git_cmd = [sys.executable, str(stand_in)]
+
+    assert commit.read_target_files(git_cmd, tmp_path, "pre", ["a", "b"]) == {"a": None, "b": None}
+    assert sink.read_bytes() == b"pre:a\npre:b\n"

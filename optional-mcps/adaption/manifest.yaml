@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: adaption
+connector_slug: adaption
+description: >-
+  Datasets, adaptation, synthetic data generation, and AutoScientist fine-tuning runs in Adaption.
+source: https://docs.adaptionlabs.ai
+
+# Vendor-hosted remote MCP (Streamable HTTP). OAuth 2.1 + PKCE with a
+# pre-registered public client; Adaption has no Dynamic Client Registration.
+# The client accepts any loopback port, so the CLI listener and the Desktop
+# callback bridge both work without pinning redirect_port.
+transport:
+  type: http
+  url: https://api.prod.adaptionlabs.ai/api/v1/mcp
+
+auth:
+  type: oauth
+  oauth:
+    client_id: adaption-hermes-plugin
+
+suggest:
+  keywords:
+    - adaption
+  hosts:
+    - adaptionlabs.ai
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Adaption (or run
+  `hermes mcp login adaption`). Choose the organization, click Authorize,
+  then restart the session so tools load. Install the skills with
+  `hermes plugins install adaption`.

@@ -267,6 +267,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**reddit-reading**](../user-guide/skills/optional/social-media/social-media-reddit-reading.md) | Read Reddit: subreddits, search, threads, users. No browser. |
+| [**twittrapi**](../user-guide/skills/optional/social-media/social-media-twittrapi.md) | Read public X data: profiles, tweets, search, followers. |
 
 ## software-development
 

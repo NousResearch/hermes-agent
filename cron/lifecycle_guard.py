@@ -560,6 +560,18 @@ def _budget_exhausted(budget: _LifecycleScanBudget, what: str, depth: int) -> bo
     return True
 
 
+def is_budget_exhaustion_refusal(refusal: Optional[str]) -> bool:
+    """Return True if *refusal* indicates scan-budget exhaustion (not a lifecycle command).
+
+    The budget-exhaustion refusal is produced by :func:`_budget_exhausted` and has the
+    fixed prefix ``"the scan budget was exhausted"``.  This helper separates budget
+    exhaustion (a *work-bound* verdict that may be escalated to an approval prompt in
+    interactive sessions) from genuine lifecycle-command verdicts and other fail-closed
+    reasons (oversized, binary, live SQLite, cloud placeholder) which stay hard-blocked.
+    """
+    return bool(refusal) and refusal.startswith("the scan budget was exhausted")
+
+
 def _unreadable_reason(path: Path) -> str:
     """Name why an *executed* script failed closed without being scanned (live SQLite, device,
     oversized). Message-only: the fail-closed verdict itself came from the bounded reader."""

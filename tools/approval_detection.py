@@ -389,6 +389,43 @@ DANGEROUS_PATTERNS = [
     # binary are allowed so a flag can't slip past.
     (r'\bdocker(?:-compose|\s+compose)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
     (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    # Same verbs through the canonical `container` subcommand (`docker container stop web`). These
+    # rules are new, so they read _GLOBAL_FLAGS like every other tool here instead of the
+    # single-space grammar the older docker rules pinned: `docker --log-level  warn container rm web`
+    # must not slip past rules added precisely to close that class (#130511). The older docker rules
+    # and their #130511 decision test are left untouched, so no existing verdict moves.
+    (r'\b(?:docker|podman)\s+' + _GLOBAL_FLAGS + r'container\s+(?:stop|kill|restart)\b', "docker/podman container stop/kill/restart (container lifecycle)"),
+    # Container/VM and dataset destruction. The lifecycle rules above gate stop/kill/restart;
+    # removing the object itself is strictly more destructive (a stopped container can be
+    # restarted, a removed one is gone), yet no rule covered the destruction verbs of the
+    # hypervisors and runtimes agents actually drive: Proxmox (`pct`/`qm`), libvirt, LXC/Incus,
+    # Docker/Podman and ZFS. `ssh root@pve2 'pct destroy 101'` looked local and ran with no card
+    # at all (#100532). Word-boundary anchored rather than _CMDPOS on purpose: the indirect form
+    # carries the verb inside a quoted remote payload, which a command-position anchor would
+    # miss — an echoed mention of the phrase costs one approval card, a missed remote destroy
+    # costs a container. The option run before the verb goes through the shared flag grammars
+    # (#129281): _GLOBAL_FLAGS where the tool's own rules take a value after a whitespace run,
+    # _CONTAINER_GLOBAL_FLAGS for docker/podman, whose sibling rules deliberately take a value
+    # only after exactly one whitespace character. Following each tool's existing parse adds no
+    # new decision on flags, and keeps a long flag run that never reaches the verb linear
+    # instead of holding the GIL. `virsh destroy` is deliberately NOT listed: it is a forced
+    # power-off (the libvirt spelling of `qm stop`), not a destruction.
+    (r'\b(?:pct|qm)\s+' + _GLOBAL_FLAGS + r'destroy\b', "pct/qm destroy (Proxmox container/VM destruction)"),
+    (r'\bvirsh\s+' + _GLOBAL_FLAGS + r'undefine\b', "virsh undefine (removes the domain definition; --remove-all-storage also deletes its disks)"),
+    (r'\bvirsh\s+' + _GLOBAL_FLAGS + r'vol-delete\b', "virsh vol-delete (removes a libvirt storage volume)"),
+    (r'\b(?:lxc|incus)\s+' + _GLOBAL_FLAGS + r'delete\b', "lxc/incus delete (container destruction)"),
+    (r'\blxc-destroy\b', "lxc-destroy (container destruction)"),
+    (r'\b(?:docker|podman)(?:-compose|\s+compose)?\s+' + _CONTAINER_GLOBAL_FLAGS + r'rm\b', "docker/podman rm (container destruction)"),
+    (r'\b(?:docker|podman)\s+' + _CONTAINER_GLOBAL_FLAGS + r'volume\s+(rm|prune)\b', "docker/podman volume rm/prune (volume data destruction)"),
+    # Canonical `container` subcommand spellings and the prunes that remove every stopped container.
+    # Reported by @webtecnica in #132483 (branch commit 8df31c8d) and folded in here rather than run
+    # as a second patch on the same rule block. Their boundary is kept and now pinned by a test:
+    # `docker image rm` / `docker rmi` / `docker network rm` stay ungated, because a pull or a
+    # recreate brings the object back. These read _GLOBAL_FLAGS so a whitespace run cannot hide the
+    # verb (#130511).
+    (r'\b(?:docker|podman)\s+' + _GLOBAL_FLAGS + r'container\s+(?:rm|prune)\b', "docker/podman container rm/prune (container destruction; prune removes every stopped container)"),
+    (r'\b(?:docker|podman)\s+' + _GLOBAL_FLAGS + r'system\s+prune\b', "docker/podman system prune (removes every stopped container and unused volume/image data)"),
+    (r'\b(?:zfs|zpool)\s+' + _GLOBAL_FLAGS + r'destroy\b', "zfs/zpool destroy (dataset/pool destruction)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),

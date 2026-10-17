@@ -406,6 +406,37 @@ describe('refreshOnboarding', () => {
     })
   })
 
+  it.each([undefined, { connectionId: 'gateway-a', profile: 'beta' }])(
+    'shows the provider and model confirmation before completing a preconfigured first launch (scope: %j)',
+    async scope => {
+      const model = 'custom/local-model'
+      const api = vi.fn(async ({ path }: { path: string }) => {
+        if (path.startsWith('/api/model/options')) {
+          return { model, provider: 'custom', providers: [{ name: 'Custom endpoint', slug: 'custom', models: [model] }] }
+        }
+
+        if (path.startsWith('/api/model/recommended-default')) {
+          return { model }
+        }
+
+        throw new Error(`unexpected API path: ${path}`)
+      })
+      installApiMock(api)
+      $desktopOnboarding.set(baseState({ configured: null }))
+
+      const ready = await refreshOnboarding({ ...onboardingContext(keylessCustomGateway()), scope })
+
+      expect(ready).toBe(false)
+      expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+      expect($desktopOnboarding.get()).toMatchObject({ configured: false, flow: { status: 'confirming_model' } })
+      expect($desktopOnboarding.get().flow).toMatchObject({ currentModel: model, label: 'Custom endpoint' })
+
+      if (scope) {
+        expect(api).toHaveBeenCalledWith(expect.objectContaining(scope))
+      }
+    }
+  )
+
   it('does not preserve configured when onboarding was explicitly requested', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path === '/api/providers/oauth') {

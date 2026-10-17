@@ -237,6 +237,11 @@ class CommandsCatalogResult(Result):
     skills: dict[str, SkillCatalogEntry] = Field(default_factory=dict)
     skill_count: int = 0
     warning: str = ""
+    # Non-empty when plugin command discovery failed: the plugin list is unknown, not empty.
+    plugin_discovery_error: str = ""
+    # Every plugin command (name without ``/`` -> description), also one a display row such as Ink's
+    # ``/logs`` hides from ``categories``: route on this, not on the display list.
+    plugin_commands: dict[str, str] = Field(default_factory=dict)
 
 
 method("commands.catalog", params=CommandsCatalogParams, result=CommandsCatalogResult,

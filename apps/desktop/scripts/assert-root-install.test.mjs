@@ -182,3 +182,74 @@ test('checkRootInstall keeps the floor when the manifest is unreadable', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+// A workspace member declared `file:../shared` is not a registry package: npm links
+// it and `vite.config.ts` aliases it to the workspace source, so an untraversable
+// `node_modules/@hermes/shared` (a reparse point an SSH token refuses to follow on
+// Windows) must not be reported as a partial install — the tree can build.
+test('checkRootInstall accepts a file: workspace member with no hoisted copy', () => {
+  const { tempRoot, appDir } = makeTree({
+    manifest: { dependencies: { '@hermes/shared': 'file:../shared' } }
+  })
+  const workspace = path.join(tempRoot, 'apps', 'shared')
+  fs.mkdirSync(workspace, { recursive: true })
+  fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ name: '@hermes/shared' }), 'utf8')
+  try {
+    assert.deepEqual(checkRootInstall(appDir, tempRoot), { ok: true })
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+// The exact Windows shape: the hoisted entry EXISTS but cannot be traversed (a
+// reparse point this token may not follow). A dangling symlink models that on
+// POSIX — existsSync() answers false for the package.json inside it, which is the
+// false negative that produced the misleading "partial install" verdict.
+test('checkRootInstall accepts a file: member whose hoisted link is untraversable', () => {
+  const { tempRoot, appDir } = makeTree({
+    manifest: { dependencies: { '@hermes/shared': 'file:../shared' } }
+  })
+  const workspace = path.join(tempRoot, 'apps', 'shared')
+  fs.mkdirSync(workspace, { recursive: true })
+  fs.writeFileSync(path.join(workspace, 'package.json'), JSON.stringify({ name: '@hermes/shared' }), 'utf8')
+  const hoisted = path.join(tempRoot, 'node_modules', '@hermes', 'shared')
+  fs.mkdirSync(path.dirname(hoisted), { recursive: true })
+  fs.symlinkSync(path.join(tempRoot, 'no-such-target'), hoisted)
+  try {
+    assert.equal(fs.existsSync(path.join(hoisted, 'package.json')), false)
+    assert.deepEqual(checkRootInstall(appDir, tempRoot), { ok: true })
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+// A `file:` spec whose target workspace is genuinely absent is still a broken
+// tree; skipping the check for local specifiers must not skip this.
+test('checkRootInstall still fails when a file: dependency target is absent', () => {
+  const { tempRoot, appDir } = makeTree({
+    manifest: { dependencies: { '@hermes/shared': 'file:../missing' } }
+  })
+  try {
+    const result = checkRootInstall(appDir, tempRoot)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /@hermes\/shared/)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+// The hoisted copy is preferred when it is readable: a workspace member that IS
+// installed keeps passing through the normal path, so the fallback cannot mask an
+// install that lost its link while the workspace source is also gone.
+test('checkRootInstall fails when a file: member is neither hoisted nor present', () => {
+  const { tempRoot, appDir } = makeTree({
+    manifest: { dependencies: { '@hermes/shared': 'file:../shared' } }
+  })
+  try {
+    const result = checkRootInstall(appDir, tempRoot)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /@hermes\/shared/)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

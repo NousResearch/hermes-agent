@@ -1907,9 +1907,11 @@ def route_classified_error(
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
-    # escalate to the fallback chain once; False -> terminal handling.
+    # escalate to the fallback chain once; False -> terminal handling. A verdict that opts out
+    # (a missing CLI login no other provider can fix, #132337) fails closed instead.
     if (
         classified.is_auth
+        and classified.should_fallback
         and not _retry.auth_failover_attempted
         and agent._fallback_index < len(agent._fallback_chain)
     ):

@@ -198,6 +198,58 @@ def _register_capturing_resolver(session_key: str, result):
     return seen
 
 
+
+def test_guard_blocks_obvious_config_mutation_before_approval_bypasses(monkeypatch):
+    monkeypatch.setattr(A, "_yolo_active", lambda: True)
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+
+    result = A.check_execute_code_guard(
+        "open('/home/example/.hermes/config.yaml', 'w').write('approvals: {}')",
+        "vercel_sandbox",
+    )
+
+    assert result["approved"] is False
+    assert result["pattern_key"] == "execute_code_config_mutation"
+    assert result["description"] == "modify Hermes security-sensitive configuration"
+
+
+def test_guard_blocks_path_open_mutation_before_approval_bypasses(monkeypatch):
+    monkeypatch.setattr(A, "_yolo_active", lambda: True)
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+
+    result = A.check_execute_code_guard(
+        "Path('/home/example/.hermes/config.yaml').open('w').write('approvals: {}')",
+        "vercel_sandbox",
+    )
+
+    assert result["approved"] is False
+    assert result["pattern_key"] == "execute_code_config_mutation"
+    assert result["description"] == "modify Hermes security-sensitive configuration"
+
+
+def test_guard_blocks_io_open_mutation_before_approval_bypasses(monkeypatch):
+    monkeypatch.setattr(A, "_yolo_active", lambda: True)
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+
+    result = A.check_execute_code_guard(
+        "import io as fileio\n"
+        "fileio.open('/home/example/.hermes/config.yaml', 'w')",
+        "vercel_sandbox",
+    )
+
+    assert result["approved"] is False
+    assert result["pattern_key"] == "execute_code_config_mutation"
+    assert result["description"] == "modify Hermes security-sensitive configuration"
+
+
+def test_guard_keeps_benign_code_allowed_through_approval_bypasses(monkeypatch):
+    monkeypatch.setattr(A, "_yolo_active", lambda: True)
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+
+    result = A.check_execute_code_guard("sum(range(10))", "vercel_sandbox")
+
+    assert result["approved"] is True
+
 def test_guard_isolated_backend_approved():
     # Container backends already sandbox the child — no-op approve.
     assert A.check_execute_code_guard("import os", "docker")["approved"] is True

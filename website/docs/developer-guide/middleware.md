@@ -33,6 +33,7 @@ Plugins register middleware from `register(ctx)`:
 def register(ctx):
     ctx.register_middleware("llm_request", on_llm_request)
     ctx.register_middleware("llm_execution", on_llm_execution)
+    ctx.register_middleware("auxiliary_execution", on_auxiliary_execution)
     ctx.register_middleware("tool_request", on_tool_request)
     ctx.register_middleware("tool_execution", on_tool_execution)
 ```
@@ -52,6 +53,7 @@ Supported middleware kinds:
 | `llm_request` | `request`, `original_request` | `{"request": {...}}` | Replace effective provider kwargs before provider execution. |
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
+| `auxiliary_execution` | `request`, `original_request`, `next_call`, `aux_task`, `provider`, `model`, `api_mode` | Any provider response | Wrap or replace one auxiliary provider attempt (see below). |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
 
 Request middleware can return optional trace fields:
@@ -101,6 +103,26 @@ Request middleware sees the full provider kwargs, including `messages` or
 Responses API `input`, model settings, tool definitions, stream options, and
 provider-specific options. Execution middleware receives the same effective
 request plus `next_call`.
+
+### Auxiliary Calls
+
+Auxiliary calls (titles, compression, vision, MoA advisors, the goal judge, ...) never run through
+`llm_execution`, so plugins that wrap main-loop dispatches do not see them. A plugin that must gate
+them registers `auxiliary_execution` instead. For each non-streaming auxiliary provider attempt,
+Hermes emits `pre_auxiliary_call`, runs the attempt through `auxiliary_execution` middleware, then
+emits `post_auxiliary_call` with whatever response the chain produced.
+
+- The payload carries `aux_task`, `provider`, `model`, `api_mode`, `api_request_id`, `retry_count`
+  and the parent turn's `session_id`, `task_id`, `turn_id` and `platform` (empty outside a turn,
+  for example cron).
+- Return a replacement response without calling `next_call` to refuse the attempt. Auxiliary
+  consumers receive that object as the provider answer, so a refusal must have the shape callers
+  of that task already accept, and should carry a marker the consumer can recognise.
+- The request cannot be rewritten: the payload `next_call` receives is not applied to the call.
+- Streaming attempts are not gated, because a synthetic non-stream refusal would break stream
+  reassembly. On the async path `next_call` returns an awaitable; a replacement response is
+  returned as is.
+- Like the other kinds, failures inside a callback are fail-open.
 
 ### Tool Calls
 

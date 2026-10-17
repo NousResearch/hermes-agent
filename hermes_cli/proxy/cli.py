@@ -38,16 +38,19 @@ def cmd_proxy_start(args: Any) -> int:
 
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT
+    allow_hosts = [h for h in (getattr(args, "allow_host", None) or []) if h and h.strip()]
+    extra_line = f"  Extra Hosts:  {', '.join(allow_hosts)}\n" if allow_hosts else ""
     _err(
         f"Starting Hermes proxy for {adapter.display_name}\n"
         f"  Listening on:  http://{format_url_host(host)}:{port}/v1\n"
+        f"{extra_line}"
         f"  Forwarding to: (resolved per-request from your subscription)\n"
         f"  Use any bearer token in the client — the proxy attaches your real credential.\n"
         f"\n"
         f"Press Ctrl+C to stop."
     )
     try:
-        asyncio.run(run_server(adapter, host=host, port=port))
+        asyncio.run(run_server(adapter, host=host, port=port, extra_hosts=allow_hosts))
     except KeyboardInterrupt:
         _err("\nproxy: stopped")
     except OSError as exc:
@@ -102,7 +105,7 @@ def cmd_proxy(args: Any) -> int:
         "OAuth-authenticated provider credentials to outbound requests.\n"
         "\n"
         "Subcommands:\n"
-        "  hermes proxy start [--provider nous|xai] [--host 127.0.0.1] [--port 8645]\n"
+        "  hermes proxy start [--provider nous|xai] [--host 127.0.0.1] [--port 8645] [--allow-host HOST]\n"
         "      Run the proxy in the foreground.\n"
         "  hermes proxy status\n"
         "      Show which upstream adapters are ready.\n"

@@ -418,6 +418,106 @@ def test_bare_python3_keeps_the_managed_hit_when_the_user_has_none(tmp_path, mon
     assert command == str(managed_exe)
 
 
+@pytest.mark.platforms("posix")
+def test_bare_python3_steps_past_the_venv_to_the_python_it_was_built_on(tmp_path, monkeypatch):
+    """A POSIX venv's ``python`` is a symlink into the base interpreter's dir: ``/usr/bin``
+    for a venv on the system Python (distro packages, ``python3 -m venv`` checkouts). The
+    venv's bin is the managed dir; the base dir is the user's and holds their ``python3``."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = tmp_path / "home"
+    store_bin = home / "tools" / "python" / "bin"
+    store_bin.mkdir(parents=True)
+    _bare_exe(store_bin, "python3")
+    system_bin = tmp_path / "usr" / "bin"
+    system_bin.mkdir(parents=True)
+    system_python = _bare_exe(system_bin, "python3")
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(system_python)
+    (venv_bin / "python3").symlink_to("python")
+    monkeypatch.setattr(sys, "executable", str(venv_bin / "python"))
+    monkeypatch.setattr(sys, "prefix", str(venv_bin.parent))
+    monkeypatch.setattr(sys, "base_prefix", str(system_bin.parent))
+    token = set_hermes_home_override(home)
+    try:
+        command, _env = _resolve_stdio_command("python3", {
+            "PATH": os.pathsep.join([str(venv_bin), str(store_bin), str(system_bin)])})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert command == str(system_python)
+
+
+@pytest.mark.platforms("posix")
+def test_bare_python3_keeps_the_user_dir_a_bare_interpreter_is_linked_from(tmp_path, monkeypatch):
+    """Outside a venv the running interpreter is the user's own: Hermes started from a
+    Homebrew-style ``/usr/local/bin/python3`` link into the interpreter's prefix. Its dir on
+    PATH stays the user's."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home = tmp_path / "home"
+    store_bin = home / "tools" / "python" / "bin"
+    store_bin.mkdir(parents=True)
+    _bare_exe(store_bin, "python3")
+    prefix_bin = tmp_path / "opt" / "python" / "bin"
+    prefix_bin.mkdir(parents=True)
+    real_python = _bare_exe(prefix_bin, "python3.14")
+    user_bin = tmp_path / "usr" / "local" / "bin"
+    user_bin.mkdir(parents=True)
+    (user_bin / "python3").symlink_to(real_python)
+    monkeypatch.setattr(sys, "executable", str(user_bin / "python3"))
+    monkeypatch.setattr(sys, "prefix", str(prefix_bin.parent))
+    monkeypatch.setattr(sys, "base_prefix", str(prefix_bin.parent))
+    token = set_hermes_home_override(home)
+    try:
+        command, _env = _resolve_stdio_command("python3", {
+            "PATH": os.pathsep.join([str(store_bin), str(user_bin)])})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert command == str(user_bin / "python3")
+
+
+@pytest.mark.parametrize("layout", ["runtime-dir", "profile-store", "bundled-store", "profile-generation",
+                                    "payload-venv"])
+def test_bare_python3_steps_past_pm_dirs_outside_the_active_home(tmp_path, monkeypatch, layout):
+    """PM's trees are managed wherever they live. A stamped ``runtimeDir`` or a sealed
+    payload's store and venv sit beside the tree. A profile's home lies below the root whose
+    ``tools/`` and ``installs/`` (dependency generations) it uses. A bundled store
+    (``manifest.json`` beside it) sends optional tools to that root's ``tools/``.
+    ``HERMES_RUNTIME_DIR`` pins PM's store per layout."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    root = tmp_path / "hermes"
+    sealed = tmp_path / "opt" / "tools"
+    sealed.mkdir(parents=True)
+    profile = root / "profiles" / "work"
+    home, store, managed_bin = {
+        "runtime-dir": (root, sealed, sealed / "python" / "bin"),
+        "profile-store": (profile, root / "tools", root / "tools" / "python" / "bin"),
+        "bundled-store": (profile, sealed, root / "tools" / "python" / "bin"),
+        "profile-generation": (profile, root / "tools", root / "installs" / "key" / "venv" / "bin"),
+        "payload-venv": (root, sealed, sealed.parent / "venv" / "bin"),
+    }[layout]
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+    if layout == "bundled-store":
+        (sealed.parent / "manifest.json").write_text("{}", encoding="utf-8")
+    if layout == "payload-venv":
+        monkeypatch.setattr("pm.environments.payload_venv", lambda _root: sealed.parent / "venv")
+    managed_bin.mkdir(parents=True)
+    _bare_exe(managed_bin, "python3")
+    user_bin = tmp_path / "user-bin"
+    user_bin.mkdir()
+    user_exe = _bare_exe(user_bin, "python3")
+    token = set_hermes_home_override(home)
+    try:
+        command, _env = _resolve_stdio_command("python3", {
+            "PATH": os.pathsep.join([str(managed_bin), str(user_bin)])})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert command == str(user_exe)
+
+
 def test_first_user_which_hit_follows_the_child_env_pathext(tmp_path):
     """Candidate extensions come from the child env's PATHEXT (``shutil.which`` reads the
     PARENT's), so a user install that only ships a ``.bat`` wrapper — the usual

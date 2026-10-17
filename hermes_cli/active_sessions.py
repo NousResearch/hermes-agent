@@ -116,6 +116,19 @@ SESSION_COORDINATION_UNAVAILABLE = "SESSION_COORDINATION_UNAVAILABLE"
 # enforcement without this file changing.
 PER_SESSION_EXCLUSIVE_SUBMIT = True
 
+# The DELIVERY flag (§5.2/P12): a delivery turn -- one whose payload the receiver's durable
+# queue has already accepted and will re-offer -- reports a live-owner hold as a RECEIPT
+# instead of the plain refusal. Only delivery turns set this marker (the delivery transport
+# sets it on the child's environment), so ordinary turns keep the refusal vocabulary.
+DELIVERY_TURN_ENV = "HERMES_DELIVERY_TURN"
+
+
+def is_delivery_turn(explicit: Optional[bool] = None) -> bool:
+    """Whether this turn is a DELIVERY turn: the explicit flag, else the env marker."""
+    if explicit is not None:
+        return bool(explicit)
+    return os.environ.get(DELIVERY_TURN_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 class ActiveSessionRefusal(str):
     """Refusal message (a ``str``, so callers are untouched) with a machine-readable ``reason``."""
@@ -132,6 +145,36 @@ def format_refusal_stderr(message: str) -> str:
     """Keep the refusal contract across the one-shot CLI subprocess boundary."""
     reason = getattr(message, "reason", "")
     return f"hermes-refusal-reason: {reason}\n{message}" if reason else str(message)
+
+
+class DeliveryHold(str):
+    """A DELIVERY turn's live-owner HOLD (a ``str``, so callers are untouched) — not a failure.
+
+    It keeps the refusal vocabulary (``reason`` is still ``SESSION_NOT_OWNED``, so the one-shot
+    CLI contract and every existing caller are unchanged) while marking itself as a hold: the
+    delivery layer maps it to a RECEIPT (§5.2/P12) — the payload is accepted and retained, this
+    turn did not run, and the sender must not resend.
+    """
+
+    reason: str
+    delivery = True
+
+    def __new__(cls, message: str, *, reason: str, session_id: str = "",
+                owner_surface: str = "", owner_pid: Any = None) -> "DeliveryHold":
+        obj = super().__new__(cls, message)
+        obj.reason = reason
+        obj.session_id = session_id
+        obj.owner_surface = owner_surface
+        obj.owner_pid = owner_pid
+        return obj
+
+
+def delivery_hold_message(key: str, existing: dict[str, Any]) -> str:
+    """Wording for a delivery retained behind a live owner (§5.2 — held, never refused)."""
+    surface = str(existing.get("surface") or "another surface")
+    return (f"Session {key} is held live by {surface}. This delivery is ACCEPTED and retained "
+            "for that owner: it is queued behind the live session and runs when the slot frees. "
+            "Do not resend — a receipt is retained.")
 
 
 def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -> bool:
@@ -482,6 +525,7 @@ def _lease_entry(
 def try_acquire_active_session(
     *, session_id: str, surface: str, config: Any, metadata: Optional[dict[str, Any]] = None,
     registry_home: str | Path | None = None, track_liveness: bool = False,
+    delivery: Optional[bool] = None,
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot: ``(lease, None)`` or ``(None, ActiveSessionRefusal)``.
 
@@ -554,6 +598,23 @@ def try_acquire_active_session(
                     entries[index] = entry
                     _write_entries(state_path, entries)
                     return lease, None
+                if is_delivery_turn(delivery):
+                    # §5.2/P12: for a DELIVERY turn this live owner is not a refusal — the
+                    # payload is durably queued and will be re-offered, so report a HOLD that
+                    # the delivery layer turns into a receipt. Non-delivery callers fall through
+                    # to the unchanged SESSION_NOT_OWNED refusal below.
+                    _write_entries(state_path, entries)
+                    logger.info(
+                        "Delivery held behind live owner of %s: pid=%s surface=%s",
+                        key, existing.get("pid"), existing.get("surface"),
+                    )
+                    return None, DeliveryHold(
+                        delivery_hold_message(key, existing),
+                        reason=SESSION_NOT_OWNED,
+                        session_id=key,
+                        owner_surface=str(existing.get("surface") or ""),
+                        owner_pid=existing.get("pid"),
+                    )
                 return refuse(
                     session_already_owned_message(key, existing), SESSION_NOT_OWNED,
                     "Refused active session %s: already held by pid=%s surface=%s",

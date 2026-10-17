@@ -5,6 +5,7 @@ canonical Bot Chat session on a Bot-Mode-managed install, and must refuse to
 deliver from anywhere else even if a schema leaks.
 """
 
+import hashlib
 import json
 import os
 import shlex
@@ -336,6 +337,13 @@ def test_local_delivery_admits_canonically_and_acks(tmp_path, monkeypatch):
     assert result["status"] == "queued"
     assert result["to"] == "@researcher"
     assert result["process_id"] == "proc_test1234"
+    # P9(a)/§1.2: the ack is a RECEIPT — additive to upstream's dispatch acknowledgement
+    # (``queued`` + ``delivery_id``): accepted and retained, so the sender must not resend.
+    assert result["result"] == "receipt"
+    assert len(result["delivery_id"]) == 64  # content-addressed, never a send_id
+    assert "do NOT wait" in result["detail"]
+    assert "not a delivery receipt" in result["detail"]
+    assert "queue_position" in result
 
     # Exactly one canonical admission, on the target profile's own authority.
     assert [h for h, _p in authority.calls] == [target.resolve()]
@@ -356,6 +364,8 @@ def test_local_delivery_admits_canonically_and_acks(tmp_path, monkeypatch):
     assert mode == "query-file"
     assert Path(profile_home) == target.resolve()
     assert transport_argv[:3] == ["hermes", "-p", "researcher"]
+    # §1.2/P9(a): the runner's id is content-addressed, never a send_id.
+    assert result["delivery_id"] == hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
     # message body rides the temp file, never the command line
     assert "PAYLOAD_SENTINEL_7A91" not in command
     assert "$(" not in command
@@ -771,7 +781,9 @@ def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypa
         settling.join(timeout=2)
     notice = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert (notice["status"], notice["reply"]) == ("settled", "PONG")
+    # §4.8/P11 (ENUM B): the sender sees the public word for the stored status, never the
+    # transport's storage word ("settled").
+    assert (notice["status"], notice["reply"]) == ("delivered", "PONG")
 
 
 @pytest.mark.parametrize("lookup", ["raises", "holds"])

@@ -28,7 +28,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(server, "_served_profile_homes", set())
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
     db = SessionDB(db_path=home / "state.db")
     other = SessionDB(db_path=secondary / "state.db")

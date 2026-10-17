@@ -5,35 +5,8 @@ stays fenced even when its crash marker is absent. It is not permission to resum
 """
 
 import contextlib
-from typing import TYPE_CHECKING
 
 from .method_ctx import HandlerRegistry, bind_module
-
-if TYPE_CHECKING:
-    # Runtime binding is performed by method_ctx, like the other method siblings.
-    from .server import (
-        _canonical_profile_request,
-        _db_unavailable_error,
-        _default_session_cwd,
-        _deferred_session_record,
-        _err,
-        _hermes_home,
-        _live_profile_matches,
-        _ok,
-        _profile_db,
-        _profile_home,
-        _response_profile_name,
-        _session_lookup_key,
-        _session_resume_lock,
-        _sessions,
-        _sessions_lock,
-        _stdio_transport,
-        current_transport,
-    )
-    from .methods_session import _new_runtime_ids
-    from .session_lifecycle import _reattach_refusal, _rebind_live_transport
-    from .model_switch import _session_profile_runtime_scope
-    from .session_reaper import _transport_is_dead
 
 _registry = HandlerRegistry()
 method = _registry.method

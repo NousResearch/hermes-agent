@@ -175,9 +175,14 @@ export function useComposerSubmit({
 
           const queueKey = activeQueueSessionKeyRef.current
 
-          // External requests contain only text; the unsent draft and its attachments stay in the composer.
+          // External fallback is not an explicit user Queue/Resume gesture.
+          // Preserve a pending one-shot Send now and an existing park.
           const enqueue = () =>
-            void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
+            void enqueueQueuedPrompt(
+              queueKey,
+              { text, attachments: [], ...(displayKind ? { displayKind } : {}) },
+              { resumeQueue: false }
+            )
 
           // A hidden note never becomes a user turn: it rides session.steer into
           // the model's next tool result, and keeps its kind if it has to queue.

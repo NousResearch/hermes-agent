@@ -50,7 +50,7 @@ export interface ChatBarProps {
   /** The tile's routed profile: scopes the slash palette while a draft has no session yet. */
   profile?: string | null
   cwd?: string | null
-  onCancel: () => Promise<void> | void
+  onCancel: (options?: { throwOnFailure?: boolean }) => Promise<void> | void
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void
   onAddUrl?: (url: string) => void
   onAttachImageBlob?: (blob: Blob, isCurrent?: () => boolean) => Promise<boolean | void> | boolean | void

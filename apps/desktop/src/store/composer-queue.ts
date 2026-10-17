@@ -321,7 +321,8 @@ export const withQueueDrainClaim = <T>(sid: string, task: (queue: QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: EnqueueQueuedPromptPayload
+  payload: EnqueueQueuedPromptPayload,
+  options?: { resumeQueue?: boolean }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -349,10 +350,11 @@ export const enqueueQueuedPrompt = (
   // write from another window that has not fired its storage event yet
   // is merged, not clobbered (#123249).
   mutateSession(sid, queue => [...queue.map(e => (e.drainFailures ? { ...e, drainFailures: undefined } : e)), entry])
-  // A fresh prompt explicitly resumes the queue. Use the same revisioned
-  // transition as Resume so any older pending one-shot is invalidated rather
-  // than racing the newly unparked queue's automatic drain.
-  unparkQueuedPrompts(sid)
+  // User-driven queueing resumes the queue as before. Internal fallback
+  // enqueue must not supersede a pending one-shot Send now.
+  if (options?.resumeQueue !== false) {
+    unparkQueuedPrompts(sid)
+  }
 
   return entry
 }
@@ -663,8 +665,8 @@ export interface AutoDrainInput {
  * saying HALT, and immediately firing the next queued prompt contradicts the
  * instruction they just gave. Parked entries stay in the panel until the user
  * resumes, sends, edits, or deletes them. Interrupts that exist to reach the
- * queue faster (send-now-while-busy) never park, so they keep draining through
- * this same gate.
+ * queue faster (per-entry Send now) park the remaining entries and bypass
+ * this auto-drain gate only for the explicitly selected entry.
  */
 export const shouldAutoDrain = ({ isBusy, parked, queueLength }: AutoDrainInput): boolean =>
   !isBusy && !parked && queueLength > 0

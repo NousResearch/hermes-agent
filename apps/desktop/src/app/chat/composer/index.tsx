@@ -363,9 +363,8 @@ export function ChatBar({
   // wrapper, which parks the queue first — an explicit halt must not roll
   // straight into the next queued prompt (that read as Stop not working; the
   // queued text also seemed to vanish, since the collapsed panel row was its
-  // only trace). Interrupts that exist to advance the queue (send-now-while-
-  // busy) call the raw onCancel and keep draining on settle. Parked entries
-  // stay in the panel until resumed, sent, edited, or deleted.
+  // only trace). A one-shot Send now uses raw onCancel but parks the other
+  // entries until explicitly resumed. Parked entries remain visible.
   const haltRun = useCallback(() => {
     parkQueuedPrompts(activeQueueSessionKeyRef.current)
 
@@ -422,7 +421,6 @@ export function ChatBar({
     onSubmit,
     queueCurrentDraft,
     queueEdit,
-    queuedPrompts,
     sessionId,
     setComposerText,
     stashAt

@@ -17,7 +17,16 @@ import {
 } from '@/components/assistant-ui/directive-text'
 import { referenceKind, referenceRe, unwrapReferenceValue } from '@/components/assistant-ui/reference-kinds'
 
+import {
+  attachmentNamesForEditor,
+  attachmentReferenceElement,
+  attachmentReferenceMatches
+} from './attachment-references'
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
+
+interface ComposerContentOptions extends SlashCommandScanOptions {
+  attachmentNames?: readonly string[]
+}
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
@@ -183,7 +192,7 @@ function appendTextWithBreaks(target: DocumentFragment | HTMLElement, text: stri
 }
 
 /** Every span of `text` that renders as a chip, in source order. */
-function chipSpans(text: string, options: SlashCommandScanOptions) {
+function chipSpans(text: string, options: ComposerContentOptions) {
   REF_RE.lastIndex = 0
 
   const refs = Array.from(text.matchAll(REF_RE)).map(match => {
@@ -198,7 +207,12 @@ function chipSpans(text: string, options: SlashCommandScanOptions) {
     start: match.start
   }))
 
-  return [...refs, ...commands].sort((a, b) => a.start - b.start)
+  const attachments = attachmentReferenceMatches(text, options.attachmentNames ?? []).map(match => ({
+    ...match,
+    node: () => attachmentReferenceElement(match.text)
+  }))
+
+  return [...refs, ...commands, ...attachments].sort((a, b) => a.start - b.start)
 }
 
 /** Build the chip/text DOM for `text`. Directives hydrate back to their pills —
@@ -208,7 +222,7 @@ function chipSpans(text: string, options: SlashCommandScanOptions) {
 export function appendComposerContents(
   target: DocumentFragment | HTMLElement,
   text: string,
-  options: SlashCommandScanOptions = {}
+  options: ComposerContentOptions = {}
 ) {
   let cursor = 0
 
@@ -228,13 +242,13 @@ export function appendComposerContents(
   appendTextWithBreaks(target, text.slice(cursor))
 }
 
-export function renderComposerContents(target: HTMLElement, text: string, options?: SlashCommandScanOptions) {
+export function renderComposerContents(target: HTMLElement, text: string, options?: ComposerContentOptions) {
   target.replaceChildren()
 
   // Defaults to live editing, where a token ending the text is still being
   // typed (`/wor`) and must stay editable. Callers repainting inert text (a
   // restored draft, a sent message opened for edit) pass `trailingCommitted`.
-  appendComposerContents(target, text, options)
+  appendComposerContents(target, text, { attachmentNames: attachmentNamesForEditor(target), ...options })
 
   // The other writer that reshapes the editor root: painting a restored draft
   // in clears the marker, clearing back to '' sets it.
@@ -328,6 +342,7 @@ export function insertComposerContentsAtCaret(editor: HTMLElement, text: string,
   }
 
   appendComposerContents(fragment, text, {
+    attachmentNames: attachmentNamesForEditor(editor),
     boundaryBefore: atTokenBoundary(editor, hit?.range ?? null),
     trailingCommitted: true
   })
@@ -704,9 +719,14 @@ export function caretOffsetInEditor(editor: HTMLElement): number {
     return composerPlainText(editor).length
   }
 
-  const before = range.cloneRange()
+  return composerTextBefore(editor, range.startContainer, range.startOffset).length
+}
+
+/** Text coordinates used by drafts/undo, including each chip's full wire text. */
+export function composerTextBefore(editor: HTMLElement, node: Node, offset: number): string {
+  const before = document.createRange()
   before.selectNodeContents(editor)
-  before.setEnd(range.startContainer, range.startOffset)
+  before.setEnd(node, offset)
 
   // The scratch container must carry the editor's slot marker: composerPlainText
   // appends a trailing "\n" to any other block element, which would inflate
@@ -715,7 +735,7 @@ export function caretOffsetInEditor(editor: HTMLElement): number {
   container.dataset.slot = RICH_INPUT_SLOT
   container.append(before.cloneContents())
 
-  return composerPlainText(container).length
+  return composerPlainText(container)
 }
 
 /** Place the caret `offset` characters into the editor, in the same

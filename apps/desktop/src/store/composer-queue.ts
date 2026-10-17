@@ -103,8 +103,11 @@ export const resetFrozenQueuedTransportsForTests = (): void => {
   frozenQueuedTransportById.clear()
 }
 
-export const queuedEntryHasTerminalChips = (entry: Pick<QueuedPromptEntry, 'displayText' | 'text'>): boolean =>
-  draftHasTerminalChips(entry.displayText ?? '') || draftHasTerminalChips(entry.text)
+export const queuedEntryHasTerminalChips = (
+  entry: Pick<QueuedPromptEntry, 'displayText' | 'text' | 'attachments'>
+): boolean =>
+  draftHasTerminalChips(entry.displayText ?? '', entry.attachments) ||
+  draftHasTerminalChips(entry.text, entry.attachments)
 
 export const resolveQueuedPromptTransport = (entry: QueuedPromptEntry): ResolvedQueuedPromptTransport => {
   if (!queuedEntryHasTerminalChips(entry)) {
@@ -293,8 +296,7 @@ const mutateSession = (sid: string, op: (queue: QueuedPromptEntry[]) => null | Q
 
 /** Replace one session's queue wholesale (canonical receipt reconciliation),
  *  through the same live-merge path as every other mutation. */
-export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]): boolean =>
-  mutateSession(sid, () => queue)
+export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]): boolean => mutateSession(sid, () => queue)
 
 if (typeof window !== 'undefined') {
   // Cross-window sync (#46732): every desktop window boots the queue atom from
@@ -542,7 +544,7 @@ export const updateQueuedPrompt = (
         } else {
           clearFrozenQueuedTransport(entry.id)
         }
-      } else if (!queuedEntryHasTerminalChips({ text: update.text, displayText: nextDisplay })) {
+      } else if (!queuedEntryHasTerminalChips({ text: update.text, displayText: nextDisplay, attachments })) {
         clearFrozenQueuedTransport(entry.id)
       }
 

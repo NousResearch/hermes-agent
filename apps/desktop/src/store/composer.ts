@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { attachmentReferenceMatches, attachmentReferenceName } from '@/app/chat/composer/attachment-references'
 import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
 import { persistString, storedString } from '@/lib/storage'
@@ -62,6 +63,8 @@ export interface ComposerAttachment {
   occurrenceId?: string
   kind: 'file' | 'folder' | 'image' | 'terminal' | 'url'
   label: string
+  /** Original wire filename used by positional references, even if staging renames an image. */
+  referenceName?: string
   detail?: string
   refText?: string
   /** Legacy/on-demand full source. New local image chips omit this and read
@@ -117,6 +120,7 @@ export const takeVoiceConversationStart = (current: number): boolean => {
 export interface ComposerAttachmentScope {
   $attachments: ReturnType<typeof atom<ComposerAttachment[]>>
   add(attachment: ComposerAttachment): void
+  onAdd(listener: (attachment: ComposerAttachment) => void): () => void
   clear(options?: ClearAttachmentsOptions): void
   remove(id: string): ComposerAttachment | null
   removeOccurrences(attachments: readonly ComposerAttachment[]): void
@@ -134,12 +138,29 @@ function attachmentOccurrenceIndex(attachments: ComposerAttachment[], expected: 
 }
 
 export function createComposerAttachmentScope($attachments = atom<ComposerAttachment[]>([])): ComposerAttachmentScope {
+  const addListeners = new Set<(attachment: ComposerAttachment) => void>()
+
   return {
     $attachments,
+    onAdd(listener) {
+      addListeners.add(listener)
+
+      return () => {
+        addListeners.delete(listener)
+      }
+    },
     add(attachment) {
       const previous = $attachments.get()
       const next = upsertAttachment(previous, attachment)
       $attachments.set(next)
+
+      // Restoring a draft uses the atom directly; only a new explicit attach
+      // inserts a positional reference into the owning editor.
+      if (next.length > previous.length) {
+        for (const listener of addListeners) {
+          listener(attachment)
+        }
+      }
 
       if (next.length > previous.length && attachment.kind !== 'url') {
         triggerHaptic('selection')
@@ -571,8 +592,24 @@ export function migrateSessionDraft(fromKey: string | null | undefined, toKey: s
  */
 let announcedNewSessionDraftKey: string | null = null
 
+const newSessionDraftListeners = new Set<(fromKey: string, toKey: string) => void>()
+
+export function onNewSessionDraftAssigned(listener: (fromKey: string, toKey: string) => void) {
+  newSessionDraftListeners.add(listener)
+
+  return () => {
+    newSessionDraftListeners.delete(listener)
+  }
+}
+
 export function announceNewSessionDraftKey(toKey: string | null | undefined): void {
   announcedNewSessionDraftKey = toKey?.trim() || null
+
+  if (announcedNewSessionDraftKey) {
+    for (const listener of newSessionDraftListeners) {
+      listener(freshDraftScope(), announcedNewSessionDraftKey)
+    }
+  }
 }
 
 /** Consume the announcement; move the `__new__` draft when it names `toKey`.
@@ -742,11 +779,35 @@ function unquoteRefValue(raw: string) {
   return (quoted ? raw.slice(1, -1) : raw).replace(/[,.;!?]+$/, '').trim()
 }
 
-function terminalLabelsFromDraft(draft: string) {
+function terminalRefMatches(draft: string, attachments: readonly ComposerAttachment[] = []) {
+  const names = attachments.map(attachmentReferenceName).filter((name): name is string => name !== null)
+  const references: { start: number; end: number }[] = attachmentReferenceMatches(draft, names)
+  // References remain ordinary bracketed text after an attachment is removed.
+  // Their literal meaning must not depend on the current attachment list.
+  const openings: number[] = []
+
+  for (let index = 0; index < draft.length; index++) {
+    if (draft[index] === '[') {
+      openings.push(index)
+    } else if (draft[index] === ']') {
+      const start = openings.pop()
+
+      if (start !== undefined) {
+        references.push({ start, end: index + 1 })
+      }
+    }
+  }
+
+  return [...draft.matchAll(TERMINAL_REF_RE)].filter(
+    match => !references.some(reference => match.index >= reference.start && match.index < reference.end)
+  )
+}
+
+function terminalLabelsFromDraft(draft: string, attachments: readonly ComposerAttachment[] = []) {
   const labels: string[] = []
   const seen = new Set<string>()
 
-  for (const match of draft.matchAll(TERMINAL_REF_RE)) {
+  for (const match of terminalRefMatches(draft, attachments)) {
     const label = unquoteRefValue(match[1] || '')
 
     if (!label || seen.has(label)) {
@@ -761,8 +822,8 @@ function terminalLabelsFromDraft(draft: string) {
 }
 
 /** True when the draft still carries `@terminal:` chips (not already-frozen transport). */
-export function draftHasTerminalChips(draft: string): boolean {
-  return terminalLabelsFromDraft(draft).length > 0
+export function draftHasTerminalChips(draft: string, attachments: readonly ComposerAttachment[] = []): boolean {
+  return terminalLabelsFromDraft(draft, attachments).length > 0
 }
 
 export function setComposerTerminalSelection(label: string, text: string) {
@@ -810,9 +871,14 @@ function terminalFence(text: string) {
   return `\`\`\`terminal\n${text}\n\`\`\``
 }
 
-function stripTerminalRefTokens(draft: string) {
-  return draft
-    .replace(new RegExp(TERMINAL_REF_RE.source, 'g'), '')
+function stripTerminalRefTokens(draft: string, attachments: readonly ComposerAttachment[]) {
+  let remainder = draft
+
+  for (const match of terminalRefMatches(draft, attachments).reverse()) {
+    remainder = remainder.slice(0, match.index) + remainder.slice(match.index + match[0].length)
+  }
+
+  return remainder
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
@@ -838,9 +904,10 @@ export interface ComposerTransportPayload {
  */
 export function freezeComposerTransportPayload(
   draft: string,
-  selections: Record<string, string> = $composerTerminalSelections.get()
+  selections: Record<string, string> = $composerTerminalSelections.get(),
+  attachments: readonly ComposerAttachment[] = []
 ): ComposerTransportPayload {
-  const labels = terminalLabelsFromDraft(draft)
+  const labels = terminalLabelsFromDraft(draft, attachments)
 
   if (labels.length === 0) {
     return { transportText: draft, displayText: draft, missingLabels: [] }
@@ -870,7 +937,7 @@ export function freezeComposerTransportPayload(
     }
   }
 
-  const remainder = stripTerminalRefTokens(draft)
+  const remainder = stripTerminalRefTokens(draft, attachments)
   const transportText = [...fences, remainder].filter(Boolean).join('\n\n')
 
   return { transportText, displayText: draft, missingLabels: [] }

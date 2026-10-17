@@ -80,6 +80,26 @@ class _AsyncCM:
 class TestFormatMessage:
     """WhatsApp markdown conversion."""
 
+    def test_a11y_plain_output_strips_markdown_and_emoji(self):
+        """Regression for #137477: opted-in delivery must not speak formatting chrome."""
+        adapter = _make_adapter()
+        adapter.config.extra = {"a11y_plain_output": True}
+
+        assert adapter.format_message("# **Status** ✅\n\n*Done* — [details](https://example.test)") == (
+            "Status\n\nDone — details\nhttps://example.test"
+        )
+
+    def test_a11y_plain_output_is_opt_in(self):
+        adapter = _make_adapter()
+
+        assert adapter.format_message("**Status** ✅") == "*Status* ✅"
+
+    def test_a11y_plain_output_can_be_enabled_with_environment(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("WHATSAPP_A11Y_PLAIN_OUTPUT", "true")
+
+        assert adapter.format_message("**Status** ✅") == "Status"
+
     def test_strikethrough(self):
         adapter = _make_adapter()
         assert adapter.format_message("~~deleted~~") == "~deleted~"

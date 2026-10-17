@@ -23,11 +23,13 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_wsecret
 )
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from gateway.platforms.helpers import strip_markdown
 
 
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"true", "1", "yes", "on"}
+_A11Y_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\u20E3]")
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
@@ -265,12 +267,25 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         )
 
     # ------------------------------------------------------------------ formatting
+    def _whatsapp_a11y_plain_output(self) -> bool:
+        """Whether this channel opts into screen-reader-friendly plain text."""
+        configured = _extra_or_wsecret(
+            self.config.extra, "a11y_plain_output", "WHATSAPP_A11Y_PLAIN_OUTPUT",
+        )
+        if isinstance(configured, str):
+            return configured.lower() in _TRUTHY
+        return bool(configured)
+
     def format_message(self, content: str) -> str:
         """Convert markdown to WhatsApp syntax (*bold*, _italic_, ~strike~); fenced and
         inline code are protected via placeholder substitution."""
         if not content:
             return content
-        result, fences = _stash(r"```[\s\S]*?```", self._sanitize_outbound_text(content), "FENCE")
+        sanitized = self._sanitize_outbound_text(content)
+        if self._whatsapp_a11y_plain_output():
+            plain = _A11Y_EMOJI_RE.sub("", strip_markdown(sanitized, keep_link_targets=True))
+            return re.sub(r"[ \t]+(?=\n|$)", "", plain)
+        result, fences = _stash(r"```[\s\S]*?```", sanitized, "FENCE")
         result, codes = _stash(r"`[^`\n]+`", result, "CODE")
         # Italic *text* → _text_ BEFORE bold so **bold** doesn't become italic;
         # lookarounds skip list bullets and bold delimiters.

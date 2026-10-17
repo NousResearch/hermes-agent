@@ -1212,6 +1212,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("group_policy", "WHATSAPP_GROUP_POLICY", "lower"), ("mention_patterns", "WHATSAPP_MENTION_PATTERNS", "json"),
     ("free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS", "csv"), ("allow_from", "WHATSAPP_ALLOWED_USERS", "csv"),
     ("group_allow_from", "WHATSAPP_GROUP_ALLOWED_USERS", "csv"),
+    ("a11y_plain_output", "WHATSAPP_A11Y_PLAIN_OUTPUT", "lower"),
 )
 
 

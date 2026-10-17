@@ -36,6 +36,10 @@ def test_fallback_rebuild_preserves_rotating_and_static_credentials(mode, dynami
 
 
 def test_anthropic_fallback_keeps_callable_without_treating_it_as_oauth_text():
+    # The 'anthropic' extra is optional (only native-provider installs carry it); the Anthropic
+    # Messages branch builds a real SDK client, so without the guard this test fails with
+    # "the 'anthropic' package is required" on every install that did not install the extra.
+    pytest.importorskip("anthropic")
     source = lambda: "fixture-token"
     client = OpenAI(api_key=source, base_url="http://localhost:1234/v1")
     agent = SimpleNamespace()

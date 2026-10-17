@@ -12,6 +12,7 @@ the tests run identically on Linux, macOS, and (with minor quoting
 differences) Windows.
 """
 
+import io
 import json
 import os
 import shlex
@@ -111,14 +112,10 @@ class TestCommandTtsEnv:
 
         captured = {}
 
-        class _Stream:
-            def read(self, size):
-                return ""
-
         class Proc:
             returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
 
             def wait(self, timeout=None):
                 return 0
@@ -132,6 +129,7 @@ class TestCommandTtsEnv:
         result = _run_command_tts("echo hi", timeout=1)
 
         assert result.returncode == 0
+        assert (Proc.stdout.closed, Proc.stderr.closed) == (True, True)
         env = captured["env"]
         assert "AUXILIARY_VISION_API_KEY" not in env
         assert "GATEWAY_RELAY_SECRET" not in env
@@ -444,22 +442,49 @@ class TestTextToSpeechToolWithCommandProvider:
         assert data["voice_compatible"] is True
         assert data["media_tag"].startswith("[[audio_as_voice]]")
 
-    def test_missing_command_falls_through_to_builtin(self, tmp_path):
-        """A provider entry with an empty command is not a command
-        provider; the tool should not raise a "command not configured"
-        error but fall through to the built-in resolution path."""
+    def test_missing_command_falls_through_to_builtin(self, tmp_path, monkeypatch):
+        """An empty command falls through to the built-in engine."""
+        from tools.tts_tool_delivery import _resolve_audio_delivery_profile
+
         cfg = {
             "provider": "broken",
             "providers": {
                 "broken": {"type": "command", "command": "   "},
             },
         }
-        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
-            result = text_to_speech_tool(text="hi", output_path=str(tmp_path / "x.mp3"))
-        data = json.loads(result)
-        # The response should not carry the command-provider error text.
-        err = (data.get("error") or "").lower()
-        assert "tts.providers.broken.command is not configured" not in err
+        out = tmp_path / "x.mp3"
+        calls = []
+
+        async def generate_edge(text: str, output_path: str, tts_config: dict) -> str:
+            calls.append((text, output_path, tts_config))
+            Path(output_path).write_bytes(b"ID3fixture-audio")
+            return output_path
+
+        monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: cfg)
+        monkeypatch.setattr("tools.tts_tool._import_edge_tts", lambda: object())
+        monkeypatch.setattr("tools.tts_tool._generate_edge_tts", generate_edge)
+        monkeypatch.setattr("tools.tts_tool._session_platform", lambda: ("cli", False))
+
+        data = json.loads(text_to_speech_tool(text="hi", output_path=str(out)))
+        profile = _resolve_audio_delivery_profile("cli", cfg)
+        assert calls == [("hi", str(out), cfg)]
+        assert data == {
+            "success": True,
+            "file_path": str(out),
+            "file_paths": [str(out)],
+            "media_tag": f"MEDIA:{out}",
+            "provider": "broken",
+            "voice_compatible": False,
+            "chunk_count": 1,
+            "delivery_file_count": 1,
+            "combined_chunks": False,
+            "delivery_profile": {
+                "platform": profile.platform,
+                "max_file_bytes": profile.max_file_bytes,
+                "target_file_bytes": profile.target_file_bytes,
+            },
+        }
+        assert out.read_bytes() == b"ID3fixture-audio"
 
 
 class TestCheckTtsRequirements:
@@ -481,14 +506,10 @@ class TestCommandTtsEnvPassthrough:
 
         captured = {}
 
-        class _Stream:
-            def read(self, size):
-                return ""
-
         class Proc:
             returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
 
             def wait(self, timeout=None):
                 return 0
@@ -504,6 +525,7 @@ class TestCommandTtsEnvPassthrough:
         )
 
         assert result.returncode == 0
+        assert (Proc.stdout.closed, Proc.stderr.closed) == (True, True)
         env = captured["env"]
         assert env["MY_TTS_API_KEY"] == "sk-provider"
         assert "OPENAI_API_KEY" not in env
@@ -562,14 +584,10 @@ class TestCommandProviderSpawnGroupKwargs:
     def test_popen_kwargs_hide_console_window_windows(self, monkeypatch):
         captured = {}
 
-        class _Stream:
-            def read(self, size):
-                return ""
-
         class Proc:
             returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
 
             def wait(self, timeout=None):
                 return 0
@@ -583,6 +601,7 @@ class TestCommandProviderSpawnGroupKwargs:
         result = _run_command_tts("echo hi", timeout=1)
 
         assert result.returncode == 0
+        assert (Proc.stdout.closed, Proc.stderr.closed) == (True, True)
         # Own process group (tree-kill on idle timeout) AND a hidden console.
         assert captured["creationflags"] & 0x08000000, "CREATE_NO_WINDOW missing"
         assert captured["creationflags"] & 0x00000200, "CREATE_NEW_PROCESS_GROUP missing"
@@ -592,14 +611,10 @@ class TestCommandProviderSpawnGroupKwargs:
     def test_popen_kwargs_start_new_session_posix(self, monkeypatch):
         captured = {}
 
-        class _Stream:
-            def read(self, size):
-                return ""
-
         class Proc:
             returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
 
             def wait(self, timeout=None):
                 return 0
@@ -613,6 +628,7 @@ class TestCommandProviderSpawnGroupKwargs:
         result = _run_command_tts("echo hi", timeout=1)
 
         assert result.returncode == 0
+        assert (Proc.stdout.closed, Proc.stderr.closed) == (True, True)
         assert captured["start_new_session"] is True
         assert "creationflags" not in captured
 

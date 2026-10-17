@@ -72,7 +72,8 @@ def _signal_user_tts_provider(name: str, tts_config: dict[str, Any], hook: str) 
                 try:
                     tts_command_provider.run_command_provider(
                         command, _get_command_tts_timeout(cfg),
-                        env_passthrough=_command_provider_env_passthrough(cfg))
+                        env_passthrough=_command_provider_env_passthrough(cfg),
+                        keep_children=hook == "warm")
                 except Exception as exc:
                     logger.debug("[TTS] %s_command for %s failed: %s", hook, name, exc)
             # ctx_bound: env_passthrough resolves through the caller's profile secret scope.

@@ -291,6 +291,22 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         return result
 
 
+def _fetch_with_transient_retry(fetch, *, sleep=None):
+    """Retry a failed fetch a few times, returning the final result unchanged.
+
+    A fetch can fail while a roaming connection, VPN, or remote edge is briefly
+    unavailable.  The caller retains its existing failure reporting after the
+    bounded attempts, including the final git stderr.
+    """
+    result = fetch()
+    for delay in (5, 10, 15):
+        if result.returncode == 0:
+            return result
+        (sleep or _time.sleep)(delay)
+        result = fetch()
+    return result
+
+
 def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
     """Unshallow a shallow checkout before the bounded fetch (#123254). Non-fatal: on failure the
     update proceeds with the fetch it always ran."""
@@ -1910,8 +1926,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             fetch_result = subprocess.CompletedProcess([], 0)
         else:
             print("→ Fetching updates...")
-            fetch_result = fetch_with_partial_clone_recovery(
-                lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
+            fetch_result = _fetch_with_transient_retry(
+                lambda: fetch_with_partial_clone_recovery(
+                    lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT))
         if fetch_result.returncode != 0:
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"

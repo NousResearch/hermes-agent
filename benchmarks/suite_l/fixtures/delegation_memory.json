@@ -1,0 +1,74 @@
+[
+  {
+    "id": "dm_01",
+    "description": "Child agent returns deployment region decision",
+    "delegation_task": "Investigate where production should be deployed.",
+    "delegation_result": "Recommendation: production region is us-east-1 because latency and tooling are best there.",
+    "query": "What region did the delegated deployment investigation recommend?",
+    "gold_answer": "us-east-1",
+    "difficulty": "easy"
+  },
+  {
+    "id": "dm_02",
+    "description": "Child agent returns chosen database stack",
+    "delegation_task": "Compare database options for the new service.",
+    "delegation_result": "Conclusion: use PostgreSQL 16 as the primary database and keep Redis only for caching.",
+    "query": "What primary database did the delegated comparison choose?",
+    "gold_answer": "PostgreSQL 16",
+    "difficulty": "easy"
+  },
+  {
+    "id": "dm_03",
+    "description": "Child agent returns security rule",
+    "delegation_task": "Review admin account security policy.",
+    "delegation_result": "Policy check result: all admin accounts must require MFA before production access is granted.",
+    "query": "What did the delegated security review say about admin accounts?",
+    "gold_answer": "require MFA",
+    "difficulty": "medium"
+  },
+  {
+    "id": "dm_04",
+    "description": "Child agent returns backup cadence",
+    "delegation_task": "Audit backup operations and summarize key settings.",
+    "delegation_result": "Backup audit summary: database backups run every 6 hours and restore drills happen quarterly.",
+    "query": "How often do backups run according to the delegated audit?",
+    "gold_answer": "every 6 hours",
+    "difficulty": "medium"
+  },
+  {
+    "id": "dm_05",
+    "description": "Child agent returns endpoint from infra inspection",
+    "delegation_task": "Inspect internal vector infrastructure and report the endpoint.",
+    "delegation_result": "Infra inspection result: the internal vector service is at http://qdrant.internal:6333.",
+    "query": "What endpoint did the delegated infra inspection report for the vector service?",
+    "gold_answer": "qdrant.internal:6333",
+    "difficulty": "medium"
+  },
+  {
+    "id": "dm_06",
+    "description": "Child agent returns retention policy detail",
+    "delegation_task": "Summarize privacy and retention decisions.",
+    "delegation_result": "Retention summary: application logs are retained for 30 days and deleted accounts are anonymized after 30 days.",
+    "query": "How long are logs retained according to the delegated summary?",
+    "gold_answer": "30 days",
+    "difficulty": "medium"
+  },
+  {
+    "id": "dm_07",
+    "description": "Child agent returns nuanced authorization result",
+    "delegation_task": "Analyze the authorization model in use.",
+    "delegation_result": "Authorization analysis: the system uses role-based access control, and editors cannot delete production resources.",
+    "query": "What authorization model did the delegated analysis find?",
+    "gold_answer": "role-based access control",
+    "difficulty": "hard"
+  },
+  {
+    "id": "dm_08",
+    "description": "Child agent returns updated pool setting from ops investigation",
+    "delegation_task": "Investigate the current connection pool settings.",
+    "delegation_result": "Ops investigation result: primary write pool is 200, read replica pool remains 50, and cache TTL is 900 seconds.",
+    "query": "What primary write pool size did the delegated ops investigation report?",
+    "gold_answer": "200",
+    "difficulty": "hard"
+  }
+]

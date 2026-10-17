@@ -153,32 +153,42 @@ export function groupEntriesByRecency(
   return rows
 }
 
-// Split into two runs — still busy, and everything else — under the same
-// dividers the date grouping uses. Branch children ride with their parent, as
-// they do there. Entries arrive already ordered, so each run is contiguous.
+// The four status lanes, loudest first. Working is a live turn (or child /
+// background work the turn left running); Blocked is a turn parked on the
+// user — a clarifying question or an approval; Ready is finished work nobody
+// has looked at yet — an unread reply, or a branch whose PR is open and
+// awaiting review; Inactive is everything else. Devin's sidebar draws the
+// same four lines, and for the same reason: "is it done?" and "does it need
+// me?" are different questions, and a two-way Working / Done split answers
+// neither for a session that is waiting on an approval or has a PR up.
+export const STATUS_LANES = ['working', 'blocked', 'ready', 'inactive'] as const
+export type StatusLane = (typeof STATUS_LANES)[number]
+
+// Split into up to four contiguous runs — Working / Blocked / Ready /
+// Inactive — under the same dividers the date grouping uses. Branch children
+// ride with their parent, as they do there. Entries arrive already ordered, so
+// each run keeps the caller's order; a lane with no sessions emits no divider.
 export function groupEntriesByStatus(
   entries: readonly SidebarSessionEntry[],
-  isWorking: (entry: SidebarSessionEntry) => boolean,
-  labels: { done: string; working: string }
+  laneOf: (entry: SidebarSessionEntry) => StatusLane,
+  labels: Record<StatusLane, string>
 ): SidebarListRow[] {
-  const working: SidebarSessionEntry[] = []
-  const done: SidebarSessionEntry[] = []
-  let cluster = done
+  const lanes: Record<StatusLane, SidebarSessionEntry[]> = { blocked: [], inactive: [], ready: [], working: [] }
+  let cluster = lanes.inactive
 
   for (const entry of entries) {
     if (!entry.branchStem) {
-      cluster = isWorking(entry) ? working : done
+      cluster = lanes[laneOf(entry)]
     }
 
     cluster.push(entry)
   }
 
-  return [
-    ...(working.length ? [{ key: 'status:working', kind: 'divider' as const, label: labels.working }] : []),
-    ...toSessionRows(working),
-    ...(done.length ? [{ key: 'status:done', kind: 'divider' as const, label: labels.done }] : []),
-    ...toSessionRows(done)
-  ]
+  return STATUS_LANES.flatMap(lane =>
+    lanes[lane].length
+      ? [{ key: `status:${lane}`, kind: 'divider' as const, label: labels[lane] }, ...toSessionRows(lanes[lane])]
+      : []
+  )
 }
 
 // Wrap entries as plain session rows (no dividers) so the ungrouped path shares

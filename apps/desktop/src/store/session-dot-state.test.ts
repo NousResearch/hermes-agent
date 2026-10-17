@@ -18,6 +18,7 @@ import {
   $sessionDotStateById,
   $unreadSessionCount,
   hasLiveTurn,
+  sessionStatusLane,
   showsRunningArc,
   unreadSessionCount
 } from './session-dot-state'
@@ -56,6 +57,25 @@ describe('hasLiveTurn', () => {
   it('excludes work that outlived the turn', () => {
     expect(hasLiveTurn('background')).toBe(false)
     expect(hasLiveTurn('unread')).toBe(false)
+  })
+})
+
+describe('sessionStatusLane', () => {
+  it('parks a turn waiting on the user under Blocked, not Working', () => {
+    expect(sessionStatusLane('needs-input')).toBe('blocked')
+    expect(sessionStatusLane('needs-input', true)).toBe('blocked')
+  })
+
+  it('keeps child and background work Working, and files unread or PR-up sessions under Ready', () => {
+    for (const state of ['working', 'stalled', 'background'] as const) {
+      expect(sessionStatusLane(state)).toBe('working')
+    }
+
+    expect(sessionStatusLane('unread')).toBe('ready')
+    expect(sessionStatusLane('idle', true)).toBe('ready')
+    expect(sessionStatusLane('draft', true)).toBe('ready')
+    expect(sessionStatusLane('idle')).toBe('inactive')
+    expect(sessionStatusLane(undefined)).toBe('inactive')
   })
 })
 

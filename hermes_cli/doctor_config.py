@@ -555,6 +555,24 @@ def _check_xai_retirement(should_fix: bool, f: Finding) -> None:
     f.manual_issues.append(f"Update {len(retired_refs)} retired xAI model reference(s) in config.yaml — see {MIGRATION_GUIDE_URL}")
 
 
+@doctor_check("Primary-model retirement check skipped", "({e})")
+def _check_primary_model_retirement(should_fix: bool, f: Finding) -> None:
+    """Report a retired configured primary; never guess or apply a replacement."""
+    from hermes_cli.config import load_config
+    from hermes_cli.model_retirement import (
+        find_retired_primary_model,
+        format_retirement_notice,
+    )
+
+    issue = find_retired_primary_model(load_config())
+    if issue is None:
+        check_ok("Configured primary model is not in the retirement registry")
+        return
+    notice = format_retirement_notice(issue)
+    check_warn(notice)
+    f.manual_issues.append(notice)
+
+
 @doctor_check("Session reset check skipped", "({e})")
 def _check_retired_session_reset(should_fix: bool, f: Finding) -> None:
     from hermes_cli.config_effective import load_user_config_effective

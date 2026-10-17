@@ -29,7 +29,7 @@ def test_model_gpt_resolves_flagship_across_gpt6_tiers():
     assert models.index("gpt-6-luna") < models.index("gpt-5.6-sol")
 
 def test_gpt6_tiers_share_the_codex_900k_contract_with_56():
-    ids = _finalize_codex_models(["gpt-5.5"])  # forward-compat synthesizes the tiers from 5.5
+    ids = _finalize_codex_models(["gpt-5.6-sol", "gpt-5.6-luna"])
     for base in GPT6_TIERS:
         assert ids.index(f"{base}-900k") == ids.index(base) + 1, base
         assert f"{base}-pro-900k" not in ids

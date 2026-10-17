@@ -290,6 +290,8 @@ class GatewaySessionStore:
             try:
                 # Hung up: redial first, so the detach names the subscription the reconnect resumed.
                 self.connection.start()
+                if state.gaps != state.attached_gaps:  # a replay gap retired it: re-attach, so the detach lands
+                    self.connection.reattach(session_id)
             except GatewayClientError as exc:
                 logger.debug("redial for session.detach failed: %s", exc)
                 reachable = False

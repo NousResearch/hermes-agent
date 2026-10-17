@@ -178,6 +178,107 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([msg]) < 5_000
 
 
+class TestAnthropicInterleavedThinkingShadowDedup:
+    """``_wire_message_shadow`` must charge an interleaved Anthropic turn's thinking exactly once.
+
+    The real producer (``chat_completion_helpers.build_assistant_message``) lifts the ordered
+    ``anthropic_content_blocks`` channel — the one the converters replay — onto the stored row
+    while ``reasoning``/``reasoning_content``/``reasoning_details`` hold the SAME thinking text.
+    The shadow dropped the legacy ``_anthropic_content_blocks`` (underscore, a tool-result image
+    stash) but not the real channel, so the generic estimator charged the thinking twice
+    (measured ~1.9x on a producer row). Mirrors ``native_anthropic_accounting_projection``: the
+    ordered channel displaces the generic thinking keys because no converter ships both.
+    """
+
+    THINKING = "reason " * 4000  # ~7K tokens — dominant, so any dup roughly doubles the row
+
+    @staticmethod
+    def _producer_row(thinking: str, text: str = "answer") -> dict:
+        """The exact persisted assistant shape for an interleaved thinking+text+tool_use turn."""
+        from types import SimpleNamespace
+
+        from agent.chat_completion_helpers import build_assistant_message
+        from agent.transports.anthropic import AnthropicTransport
+
+        agent = SimpleNamespace(reasoning_callback=None, verbose_logging=False)
+        agent._extract_reasoning = lambda m: getattr(m, "reasoning", None)
+        agent._needs_thinking_reasoning_pad = lambda: False
+        agent._strip_think_blocks = lambda t: t
+        agent._split_responses_tool_id = lambda raw: (None, None)
+        agent._deterministic_call_id = lambda name, args, i: f"call_{i}"
+        agent._derive_responses_function_call_id = lambda c, r: c
+        agent._emit_warning = agent._vprint = lambda *a, **k: None
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking=thinking, signature="sig-" + "a" * 64),
+                SimpleNamespace(type="text", text=text),
+                SimpleNamespace(type="tool_use", id="toolu_1", name="read_file", input={"path": "a"}),
+            ],
+            stop_reason="tool_use", stop_details=None,
+        )
+        normalized = AnthropicTransport().normalize_response(response)
+        return build_assistant_message(agent, normalized, normalized.finish_reason)
+
+    def test_producer_row_carries_ordered_channel_and_duplicates(self):
+        """Pin the shape the dedup keys on (the bug hides behind a producer, not a hand-built dict)."""
+        row = self._producer_row(self.THINKING)
+        assert row["anthropic_content_blocks"], "ordered replay channel expected on interleaved turn"
+        assert row["reasoning_content"] == self.THINKING
+        assert row["reasoning"] == self.THINKING
+        assert row["reasoning_details"]
+
+    def test_interleaved_row_charges_thinking_once(self):
+        row = self._producer_row(self.THINKING)
+        only_text = {"role": "assistant", "content": row["content"]}
+        blocks_only = {
+            "role": "assistant", "content": row["content"],
+            "tool_calls": row.get("tool_calls"),
+            "anthropic_content_blocks": row["anthropic_content_blocks"],
+        }
+        full = estimate_messages_tokens_rough([row])
+        single = estimate_messages_tokens_rough([blocks_only])
+        # Duplicated carriers must not materially grow the estimate: the same thinking rides the
+        # ordered channel once -> the full row is within tolerance of the blocks-only shadow.
+        assert full <= single * 1.15, (full, single)
+        # ...and the ordered channel is still the single COUNTED copy (not accidentally dropped).
+        assert single >= (
+            estimate_messages_tokens_rough([only_text])
+            + estimate_tokens_rough(self.THINKING) * 0.9
+        )
+
+    def test_reasoning_details_without_ordered_channel_still_charged(self):
+        """No ordered channel -> the generic carriers are the only copy and stay counted."""
+        msg = {"role": "assistant", "content": "answer",
+               "reasoning": self.THINKING, "reasoning_content": self.THINKING}
+        base = estimate_messages_tokens_rough([{"role": "assistant", "content": "answer"}])
+        assert estimate_messages_tokens_rough([msg]) > base + estimate_tokens_rough(self.THINKING) * 0.9
+
+    def test_reasoning_content_alone_still_charged(self):
+        """A non-Anthropic row with only reasoning_content is unaffected by the ordered-channel rule."""
+        msg = {"role": "assistant", "content": "answer", "reasoning_content": self.THINKING}
+        base = estimate_messages_tokens_rough([{"role": "assistant", "content": "answer"}])
+        assert estimate_messages_tokens_rough([msg]) > base + estimate_tokens_rough(self.THINKING) * 0.9
+
+    def test_legacy_underscore_tool_stash_unaffected(self):
+        """``_anthropic_content_blocks`` (underscore) is a tool-result image stash, not the channel."""
+        msg = {"role": "assistant", "content": "answer", "reasoning_content": self.THINKING,
+               "_anthropic_content_blocks": [{"type": "image"}]}
+        base = estimate_messages_tokens_rough([{"role": "assistant", "content": "answer"}])
+        assert estimate_messages_tokens_rough([msg]) > base + estimate_tokens_rough(self.THINKING) * 0.9
+
+    def test_parity_with_native_anthropic_projection(self):
+        """The generic estimate matches the dedicated native-Anthropic accounting seam."""
+        from agent.model_metadata import estimate_native_anthropic_messages_tokens_rough
+
+        row = self._producer_row(self.THINKING)
+        history = [{"role": "user", "content": "Q1"}, row,
+                   {"role": "tool", "tool_call_id": "toolu_1", "content": "result"},
+                   {"role": "user", "content": "continue"}]
+        generic = estimate_messages_tokens_rough(history)
+        native = estimate_native_anthropic_messages_tokens_rough(history)
+        assert generic <= native * 1.10, (generic, native)
+
+
 class TestResponsesItemImageAccounting:
     """Responses ``function_call_output`` items carry tool-result images under
     ``output`` (the converter moves chat ``content`` there); the estimator must

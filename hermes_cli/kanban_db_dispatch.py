@@ -2045,6 +2045,38 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _warn_self_review_respawn(conn: sqlite3.Connection, task: Task) -> None:
+    """Flag a review respawn that reuses the implementer's own route (#138109).
+
+    A ``review_requested`` with no reviewer (or a reviewer equal to the
+    implementer) leaves the card on the implementer's assignee and its
+    ``model_override``/``provider_override``, so the review phase runs on the
+    same model that did the work — indistinguishable on the board from a
+    genuine separate-reviewer dispatch. The event makes the self-review
+    visible to operators and dashboards without changing the dispatch.
+    """
+    last = _kb._latest_event(conn, task.id, "review_requested")
+    if last is None:
+        return
+    payload = _kb._json_dict(last["payload"])
+    reviewer = payload.get("reviewer")
+    # request_review() reassigns the card to the reviewer, so a respawn's
+    # assignee IS the reviewer; a never-claimed card records no implementer
+    # and falls back to that same assignee.
+    implementer = payload.get("implementer") or task.assignee
+    if reviewer and reviewer != implementer:
+        return
+    try:
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task.id, "self_review_respawn", {
+                "assignee": task.assignee,
+                "model_override": task.model_override,
+                "provider_override": task.provider_override,
+            })
+    except Exception:
+        _kb._log.debug("kanban dispatch: self-review event for %s skipped", task.id, exc_info=True)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2143,6 +2175,7 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        _warn_self_review_respawn(conn, claimed)
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:

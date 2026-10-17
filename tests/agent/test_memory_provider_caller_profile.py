@@ -143,9 +143,10 @@ _REFUSAL_CODE = "memory_caller_profile_unresolved"
 
 
 def _assert_generic_refusal(result, caplog, *homes):
-    """The model/chat sees a generic refusal; gateway.log keeps the check's code and the homes."""
+    """The model/chat sees a generic refusal pointing at a log every host writes (errors.log; gateway.log
+    too on a gateway); the log keeps the check's code and the homes."""
     error = result.get("error", "")
-    assert "refused" in error and "gateway.log" in error, result
+    assert "refused" in error and "hermes logs errors" in error, result
     assert _REFUSAL_CODE not in error and not any(str(home) in error for home in homes), result
     logged = "\n".join(r.getMessage() for r in caplog.records if r.name == "agent.memory_caller_scope")
     assert _REFUSAL_CODE in logged, logged
@@ -335,8 +336,18 @@ def test_multiplexed_lifecycle_hook_without_a_caller_scope_is_refused(homes, hoo
 def test_refused_checkpoint_compression_fails_closed(homes):
     alpha_home, beta_home = homes
     alpha = _manager(alpha_home)
-    with _Scope(beta_home), pytest.raises(RuntimeError):
+    with _Scope(beta_home), pytest.raises(RuntimeError, match="hermes logs errors"):
         alpha.on_pre_compress([{"role": "user", "content": "x"}], require_checkpoint=True)
+
+
+def test_refusals_are_written_to_gateway_log():
+    # gateway.log keeps only the gateway component's loggers; the refusals must be among them.
+    import logging
+
+    from agent import memory_caller_scope
+    from hermes_logging import COMPONENT_PREFIXES, _ComponentFilter
+    record = logging.LogRecord(memory_caller_scope.logger.name, logging.WARNING, __file__, 1, "refused", (), None)
+    assert _ComponentFilter(COMPONENT_PREFIXES["gateway"]).filter(record)
 
 
 def test_background_hook_runs_under_the_owning_profile_explicitly(homes, multiplexed):

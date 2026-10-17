@@ -670,7 +670,7 @@ class MemoryManager:
         """
         if not self._owner_allows("on_pre_compress"):
             if require_checkpoint:  # the caller keeps the uncompressed transcript
-                raise RuntimeError("Memory pre-compress checkpoint refused; see gateway.log")
+                raise RuntimeError("Memory pre-compress checkpoint refused; see `hermes logs errors`")
             return ""
         parts = []
         checkpoint_succeeded = False

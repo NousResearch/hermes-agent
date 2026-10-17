@@ -11,7 +11,8 @@ the rule is the multiplexing contract in ``agent/memory_provider.py``. The manag
 - one provider instance serves one profile: a plugin that hands several agents the same instance is
   refused for every profile after the first, instead of being rebound to it.
 
-Refusals log the check's code and both homes; the model/chat only ever sees a generic refusal.
+Refusals log the check's code and both homes (errors.log on every host, gateway.log on a gateway); the
+model/chat only ever sees a generic refusal.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ _claims_lock = threading.RLock()  # reentrant: a weakref callback can fire from 
 
 def refused_tool_message(tool_name: str) -> str:
     """What the model/chat sees for a refused memory tool call: no check name, no home paths."""
-    return f"Memory tool '{tool_name}' refused. Ask the operator to check gateway.log."
+    return f"Memory tool '{tool_name}' refused. Ask the operator to check `hermes logs errors`."
 
 
 def _home_key(home: Any) -> Optional[str]:

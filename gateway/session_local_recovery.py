@@ -56,6 +56,11 @@ def restore_local_session(authority, sid):
             raise ValueError('route mismatch')
         policy = restore_policy(receipt['policy'])
         entry = SessionEntry.from_dict(receipt['entry'])
+        # Older local receipts omitted the served profile from the origin. The receipt's
+        # home and route already matched this authority; fill only that absent field,
+        # never accept an explicitly different profile or change the durable route.
+        if 'profile' not in receipt['entry']['origin']:
+            entry.origin.profile = source.profile
         target = entry.session_id
         if (entry.session_key != route
                 or entry.origin.to_dict() != source.to_dict()):

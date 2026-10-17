@@ -1356,3 +1356,17 @@ class TestExecHybridPrivateUrlRouting:
         assert daemons == [want for _, want in steps]
         assert self.cloud_keys == ["t"]
         assert [k for k, *_ in self.local_keys] == ["t::local", "t::local"]
+
+    def test_long_named_sessions_get_distinct_bounded_sidecar_daemons(self):
+        """A sidecar daemon latches its endpoint, so valid session names must not collide here."""
+        first = "a" * 57 + "x"
+        second = "a" * 57 + "y"
+
+        daemon_names = [
+            json.loads(bu_cli.browser_exec(f'new_tab("{self.LAN}")', session=name, task_id="t"))["output"]
+            for name in (first, second)
+        ]
+
+        assert all(len(name) <= 64 for name in daemon_names)
+        assert daemon_names[0] != daemon_names[1]
+        assert bu_cli._sidecar_daemon_name("short") == "_local_short"

@@ -3202,6 +3202,11 @@ _SCALAR_WORDS = {
     # ``config set X null`` stored the truthy string "null" and the feature could never be cleared.
     'null': None, 'none': None, '~': None}
 
+# This mode is now string-valued, but its documented compatibility contract accepts
+# YAML booleans. Keep CLI writes for those legacy tokens typed so config files do
+# not misleadingly present them as mode strings.
+_LEGACY_BOOLEAN_CONFIG_KEYS = frozenset({"updates.pre_update_backup"})
+
 
 def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
@@ -3211,8 +3216,9 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     Bare ``model`` is the exception: its string default is the model-id shorthand, so a structured
     literal there is parsed for the section guard to gate instead of riding into model.default
     as a bogus id (#131435)."""
-    if isinstance(_default_value_for_key(key), str) and not (
-            key == "model" and _looks_structured_value(value)):
+    if (isinstance(_default_value_for_key(key), str)
+            and key not in _LEGACY_BOOLEAN_CONFIG_KEYS
+            and not (key == "model" and _looks_structured_value(value))):
         return value
     stripped = value.strip()
     lower = stripped.lower()

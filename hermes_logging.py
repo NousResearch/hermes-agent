@@ -1,4 +1,4 @@
-"""Centralized logging setup for Hermes Agent.
+﻿"""Centralized logging setup for Hermes Agent.
 
 Log files: agent.log (INFO+, everything), errors.log (WARNING+), gateway.log (INFO+,
 gateway components; ``mode="gateway"``), gui.log (INFO+, dashboard/TUI-gateway;
@@ -29,7 +29,7 @@ _logging_initialized = False
 
 # True only when CLH was rejected at import because portalocker cannot take a
 # lock on this Windows box; file handlers then use stdlib rotation (rollover
-# disabled — see the module-header comment) and setup_logging() warns once.
+# disabled ΓÇö see the module-header comment) and setup_logging() warns once.
 _WINDOWS_CLH_FALLBACK = False
 _WINDOWS_CLH_FALLBACK_REASON = ""
 _fallback_warned = False
@@ -41,7 +41,7 @@ def _portalocker_probe() -> bool:
     concurrent-log-handler locks every write through portalocker, which on
     Windows instantiates Win32Locker and imports pywintypes. Bundled payloads
     have shipped with that import broken (the venv's .pth files were never
-    processed), and portalocker 3.x gives no msvcrt fallback — every emit then
+    processed), and portalocker 3.x gives no msvcrt fallback ΓÇö every emit then
     dies with the ImportError, CLH retries 20x, and the suppressed "Cannot
     acquire lock" RuntimeError below hides it completely. Probe a scratch file
     once at import so we can fall back to stdlib rotation instead of silently
@@ -74,8 +74,8 @@ def _portalocker_probe() -> bool:
 
 # Windows-ONLY swap (#44873): stdlib ``RotatingFileHandler.doRollover()`` calls
 # ``os.rename()``, which fails with ``PermissionError [WinError 32]`` whenever
-# another process holds an append handle on ``agent.log`` — essentially always
-# in Hermes (TUI, gateway, hy_memory, MCP servers, CLI commands all log) —
+# another process holds an append handle on ``agent.log`` ΓÇö essentially always
+# in Hermes (TUI, gateway, hy_memory, MCP servers, CLI commands all log) ΓÇö
 # pinning the file at the size threshold and spamming stderr on every emit.
 # ``concurrent-log-handler`` serializes rollover with a cross-process lock.
 # POSIX keeps stdlib: renames of open files work, and managed mode (NixOS)
@@ -114,31 +114,61 @@ _line_buffered_stdout = None
 
 
 def _line_buffer_piped_stdout() -> None:
-    """Best-effort line buffering for a piped stdout (#92281).
+    """Best-effort line buffering for a piped stdout (#92281, #139687).
 
     Python block-buffers stdout when it isn't a TTY, so an agent loop
     driving ``print()`` into a supervisor's pipe delivers its output in
-    large delayed bursts — a headless run looks stalled for minutes while
-    the work is actually progressing (only stderr, which we already give
-    ``line_buffering=True`` in ``_safe_stderr()``, shows up on time).
-    Reconfigure the interpreter's own stdout for line buffering when it is
-    piped; interactive TTY stdout is already line-buffered. ACP reaches this
-    too (its AIAgent calls ``setup_logging``) with stdout as its protocol
-    channel — harmless, since line buffering only adds flushes at newlines.
+    large delayed bursts. Reconfigure the interpreter's own stdout for line
+    buffering when it is piped; interactive TTY stdout is already
+    line-buffered. Unwrap known proxy wrappers first so a deep chain
+    (thread-scoped routing, redacting stdio) cannot make attribute probes
+    recurse. Never crash setup_logging over any of this.
     """
     global _line_buffered_stdout
     stream = sys.stdout
+    # Unwrap known proxy wrappers so a deep chain cannot make attribute
+    # probes recurse (#139687).
+    _seen = set()
+    while stream is not None and id(stream) not in _seen:
+        _seen.add(id(stream))
+        unwrapped = None
+        if hasattr(stream, "_passthrough"):
+            cand = getattr(stream, "_passthrough", None)
+            if cand is not None and cand is not stream:
+                unwrapped = cand
+        if unwrapped is None and hasattr(stream, "_stream"):
+            cand = getattr(stream, "_stream", None)
+            if cand is not None and cand is not stream:
+                unwrapped = cand
+        if unwrapped is None:
+            target = getattr(stream, "_target", None)
+            if callable(target):
+                try:
+                    cand = target()
+                except Exception:
+                    cand = None
+                if cand is not None and cand is not stream:
+                    unwrapped = cand
+        if unwrapped is None:
+            break
+        stream = unwrapped
     if stream is None or stream is _line_buffered_stdout:
         return
-    if getattr(stream, "line_buffering", False) is True:
-        _line_buffered_stdout = stream
+    try:
+        if getattr(stream, "line_buffering", False) is True:
+            _line_buffered_stdout = stream
+            return
+    except (RecursionError, OSError, ValueError, AttributeError):
         return
-    reconfigure = getattr(stream, "reconfigure", None)
+    reconfigure = None
+    try:
+        reconfigure = getattr(stream, "reconfigure", None)
+    except (RecursionError, OSError, ValueError, AttributeError):
+        return
     if reconfigure is None:
         return
-    # A closed/detached stream raises ValueError / io.UnsupportedOperation (an OSError);
-    # buffering is observability, not correctness — never crash setup_logging over it.
-    with contextlib.suppress(OSError, ValueError):
+    # A closed/detached stream raises ValueError / io.UnsupportedOperation.
+    with contextlib.suppress(OSError, ValueError, RecursionError, AttributeError):
         if not stream.isatty():
             reconfigure(line_buffering=True)
             _line_buffered_stdout = stream
@@ -213,7 +243,7 @@ def _warn_windows_lock_timeout_once() -> None:
     stderr noise it replaces. CLH does not chain the underlying cause (the
     RuntimeError is raised outside the except, from the retry loop's else
     clause), so the message cannot include it; a constantly repeating timeout
-    means file logging is degraded — the startup portalocker probe in this
+    means file logging is degraded ΓÇö the startup portalocker probe in this
     module should have caught a dead portalocker and fallen back already.
     """
     global _windows_lock_timeout_warned
@@ -373,8 +403,8 @@ def setup_logging(
     # reaches this function gets it; a no-op once this stdout is line-buffered.
     _line_buffer_piped_stdout()
 
-    # A second Hermes home in a process that already logs for another one — a dashboard or
-    # ``hermes serve`` backend building agents for several profiles, a multiplexed gateway —
+    # A second Hermes home in a process that already logs for another one ΓÇö a dashboard or
+    # ``hermes serve`` backend building agents for several profiles, a multiplexed gateway ΓÇö
     # gets routed by record home. Stacking another file handler here would hand it EVERY
     # profile's records (the handlers carry no home filter), and a duplicate writer on top of
     # an existing router.
@@ -390,7 +420,7 @@ def setup_logging(
 
     root = logging.getLogger()
 
-    # (filename, level, max_bytes, backup_count, component) — a component gates
+    # (filename, level, max_bytes, backup_count, component) ΓÇö a component gates
     # the file on ``mode`` and restricts it to that component's logger prefixes.
     handler_specs = (
         ("agent.log", level, max_bytes, backups, None),
@@ -409,7 +439,7 @@ def setup_logging(
 
     if _WINDOWS_CLH_FALLBACK and not _fallback_warned:
         # One-shot, and the file handlers above are already live, so this lands
-        # in errors.log/agent.log — the fallback must never be invisible again.
+        # in errors.log/agent.log ΓÇö the fallback must never be invisible again.
         _fallback_warned = True
         logging.getLogger("hermes_logging").warning(
             "concurrent-log-handler unavailable on this Windows install (%s); "
@@ -450,7 +480,7 @@ def setup_verbose_logging() -> None:
 
 
 def _quietly(fn) -> None:
-    """Call *fn* (a ``close``/``stop`` bound method) swallowing errors — teardown must never raise."""
+    """Call *fn* (a ``close``/``stop`` bound method) swallowing errors ΓÇö teardown must never raise."""
     try:
         fn()
     except Exception:
@@ -520,7 +550,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             self._reopen_stream()  # rotated/unlinked underneath us: recreate at the path
             return
         except OSError:
-            return  # transient — try again on the next emit
+            return  # transient ΓÇö try again on the next emit
 
         if self._stat_dev is None or self._stat_ino is None:
             self._record_stream_stat(st)
@@ -543,7 +573,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             return
         super().emit(record)
         # A record actually reached the file: only now has the destination recovered. Resetting
-        # in _open() is wrong — open() succeeds on a device whose write/flush still raise EIO,
+        # in _open() is wrong ΓÇö open() succeeds on a device whose write/flush still raise EIO,
         # which re-armed the report and printed the path once per record.
         if self.stream is not None:
             self._unavailable_reported = False
@@ -820,7 +850,7 @@ def flush_log_queue() -> None:
     """Block until all queued records have been written, then resume.
 
     Stops the listener (which processes every pending record before joining) and
-    restarts it. ``stop()`` joins the worker thread — do NOT call this on a hard-exit
+    restarts it. ``stop()`` joins the worker thread ΓÇö do NOT call this on a hard-exit
     path where the listener may be wedged on the rotation lock; use
     ``drain_log_queue()`` there, which bounds the wait.
     """
@@ -834,8 +864,8 @@ def flush_log_queue() -> None:
 def drain_log_queue(timeout: float = 1.0) -> None:
     """Best-effort, time-bounded drain for hard-exit paths (no restart).
 
-    If the listener's worker is wedged on the cross-process rotation lock — the very
-    failure async logging exists to survive — an unbounded join would re-freeze shutdown.
+    If the listener's worker is wedged on the cross-process rotation lock ΓÇö the very
+    failure async logging exists to survive ΓÇö an unbounded join would re-freeze shutdown.
     """
     listener = _queue_listener
     if listener is None:
@@ -947,7 +977,7 @@ def _add_rotating_handler(
     """Register a queued ``RotatingFileHandler`` for *path*; idempotent per resolved path."""
     resolved = path.resolve()
     for existing in _queued_file_handlers:
-        # Already attached directly, or already covered by the profile router — for its default
+        # Already attached directly, or already covered by the profile router ΓÇö for its default
         # home or any profile home it routes (a bare handler beside it would take every record).
         if getattr(existing, "_hermes_routed_log_path", None) == resolved or (
             isinstance(existing, RotatingFileHandler)
@@ -963,8 +993,8 @@ def _add_rotating_handler(
     )
     if log_filter is not None:
         handler.addFilter(log_filter)
-    # Routing already on (a second home adopted earlier): a component log added now —
-    # ``mode="gateway"`` after the fact — must route too, or it takes every home's records.
+    # Routing already on (a second home adopted earlier): a component log added now ΓÇö
+    # ``mode="gateway"`` after the fact ΓÇö must route too, or it takes every home's records.
     routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
     if routers:
         homes: set[Path] = set()

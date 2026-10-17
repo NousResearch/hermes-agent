@@ -1944,6 +1944,20 @@ wheels = [
 ]
 
 [[package]]
+name = "g2pw"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "onnxruntime" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/26/34/16dacd28c9797276e2149ce95196844561a8b8e3585c478dcd5d593c40fc/g2pw-0.1.1.tar.gz", hash = "sha256:1bc11692347d6a2daa54b238aa1cf71c4da45c18ee280ba7ac0425f83dc10a6a", size = 267115, upload-time = "2022-09-01T10:08:27.33Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d0/5d/12ab1e62f4d9bc2dcd4dfaf599047eacd87988f5c2f1b011fbfacb19673d/g2pw-0.1.1-py3-none-any.whl", hash = "sha256:de85b86773ad30f77320da1859e1f6c9a46ccf1c2ede24b35c9b9cfb2c7a197b", size = 283181, upload-time = "2022-09-01T10:08:25.176Z" },
+]
+
+[[package]]
 name = "google-api-core"
 version = "2.34.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2408,7 +2422,7 @@ parallel-web = [
     { name = "parallel-web" },
 ]
 piper = [
-    { name = "piper-tts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
+    { name = "piper-tts", extra = ["zh"], marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
 ]
 silk = [
     { name = "pilk" },
@@ -2620,7 +2634,7 @@ requires-dist = [
     { name = "pilk", marker = "extra == 'silk'", specifier = "==0.2.4" },
     { name = "pillow", marker = "python_full_version >= '3.14'", specifier = "==12.3.0" },
     { name = "pillow-heif", marker = "python_full_version >= '3.14'", specifier = ">=1.4.0,<2" },
-    { name = "piper-tts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'piper') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'piper') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'piper')", specifier = "==1.8.0" },
+    { name = "piper-tts", extras = ["zh"], marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'piper') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'piper') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'piper')", specifier = "==1.8.0" },
     { name = "playwright", marker = "extra == 'google-meet'", specifier = "==1.62.0" },
     { name = "prompt-toolkit", marker = "python_full_version >= '3.14'", specifier = "==3.0.52" },
     { name = "psutil", marker = "python_full_version >= '3.14' and sys_platform == 'android'", git = "https://github.com/giampaolo/psutil.git?rev=380bd2b59c67b0e1b04bbf3a90b11744f4f96644" },
@@ -4555,6 +4569,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/12/9c/c736d1961cf9ce0655278731b9430df41892ca2ded7b09dabcb340612158/piper_tts-1.8.0-cp39-abi3-win_amd64.whl", hash = "sha256:5da9bfdb05dfe15da3536859d422e605483ffa6d2b3ec2c5b9593bae6b5aa6a4", size = 34119688, upload-time = "2026-09-04T16:47:28.339Z" },
 ]
 
+[package.optional-dependencies]
+zh = [
+    { name = "g2pw" },
+    { name = "sentence-stream" },
+    { name = "transformers" },
+    { name = "unicode-rbnf" },
+]
+
 [[package]]
 name = "playwright"
 version = "1.62.0"
@@ -5835,6 +5857,18 @@ wheels = [
 ]
 
 [[package]]
+name = "sentence-stream"
+version = "1.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "regex" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/69/f3d048692aac843f41102507f6257138392ec841c16718f0618d27051caf/sentence_stream-1.3.0.tar.gz", hash = "sha256:b06261d35729de97df9002a1cc708f9a888f662b80d5d6d008ee69c51f36041b", size = 10049, upload-time = "2026-01-08T16:25:06.873Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/b6/48339c109bab6f54ff608800773b9425464c6cbf7fd3f2ba01294d78be3d/sentence_stream-1.3.0-py3-none-any.whl", hash = "sha256:7448d131315b85eefdf238e5edd9caa62899acf609145d5e0e10c09812eb8a1d", size = 8707, upload-time = "2026-01-08T16:25:05.918Z" },
+]
+
+[[package]]
 name = "sentencepiece"
 version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
@@ -6612,6 +6646,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/81/5b/879b2f932adfa7a053c360d50bc896c977fa6426109185f7c12ebdd0cb9d/tzlocal-5.4.4.tar.gz", hash = "sha256:8dbb8660838688a7b6ba4fed31d18dedf842afb4d47ca050d6d891c2c15f3be4", size = 31170, upload-time = "2026-06-29T08:03:40.026Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/a4/017a7a6cbe387d961a688ec31364ae60a5c4e22c96ae9921b79a947c855d/tzlocal-5.4.4-py3-none-any.whl", hash = "sha256:aae09f0126a8a86fa736be266eb4a471380d26a0de3bc14844e7821fee3e2a15", size = 18115, upload-time = "2026-06-29T08:03:38.666Z" },
+]
+
+[[package]]
+name = "unicode-rbnf"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/1f/d952ba97832647e608700c36b22d1c4476016076c9ed1ce74ae814bea55a/unicode_rbnf-2.4.0.tar.gz", hash = "sha256:6d2f12a7581c69ea6218ee61fafcd2da46e1f9986bdcd0964c5151f7c2a938ac", size = 89069, upload-time = "2025-10-07T20:59:41.3Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/21/82f5d435808cba330668a8b69efb180e3ef9739d4998e8cd0381e8c9cb23/unicode_rbnf-2.4.0-py3-none-any.whl", hash = "sha256:0176b30ac9b7b84008d7dc0f23078055dc10d2671fdadfab5747943243e20e2d", size = 141691, upload-time = "2025-10-07T20:59:40.139Z" },
 ]
 
 [[package]]

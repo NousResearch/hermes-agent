@@ -29,6 +29,21 @@ def test_core_and_optional_speech_dependencies():
     }
 
 
+def test_piper_extra_ships_the_chinese_phonemization_stack():
+    # Without [zh] (g2pW, unicode-rbnf, sentence-stream) zh_* voices synthesize
+    # zero chunks and die on the wave module instead ("# channels not
+    # specified"), and any manual "piper-tts[zh]" install is dropped again on
+    # the next PM re-resolution (#139082).
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    piper = [req for req in map(Requirement, project["optional-dependencies"]["piper"])
+             if req.name == "piper-tts"]
+    assert len(piper) == 1 and "zh" in piper[0].extras, piper
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    entry = next(package for package in lock["package"] if package["name"] == "piper-tts")
+    zh = {item["name"] for item in entry["optional-dependencies"]["zh"]}
+    assert {"g2pw", "sentence-stream", "unicode-rbnf"} <= zh, zh
+
+
 def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     # BadHost's reviewed fixed boundary is independent of today's exact pin.
     floor = Version("1.0.1")

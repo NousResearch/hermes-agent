@@ -59,10 +59,14 @@ async def _check_profile_scope(request, profile_id):
     # Existing handlers select body.profile OR query.profile. Check every value,
     # including repeated query keys, rather than normalizing away a disagreement.
     path = request.url.path.rstrip('/')
-    current = not path.startswith(('/api/profiles/', '/api/cron/jobs', '/api/sessions',
-                                   '/api/fs/download', '/api/fs/read-data-url'))
+    # Query/body selectors are IMPLICIT: ``''`` and ``current`` mean "the request's own scope" —
+    # the ticket's home, which the handler resolves through the home override — and can never name
+    # another profile. Refusing them on the ``/api/profiles/...`` namespace made Desktop's
+    # per-profile SOUL/config reads answer 403 ``profile_scope_mismatch``: its ambient scope sends
+    # exactly that sentinel beside a path that already names the profile. The PATH selector below
+    # stays strict — a path segment is always a profile NAME.
     for value in request.query_params.getlist('profile'):
-        _own_profile(value, profile_id, current=current)
+        _own_profile(value, profile_id, current=True)
     content_type = request.headers.get('content-type', '').split(';', 1)[0].strip().lower()
     if not content_type or content_type == 'application/json' or (
             content_type.startswith('application/') and content_type.endswith('+json')):
@@ -71,7 +75,7 @@ async def _check_profile_scope(request, profile_id):
         except (ValueError, UnicodeError):
             body = None  # Route validation still owns malformed JSON.
         if isinstance(body, dict) and 'profile' in body:
-            _own_profile(body['profile'], profile_id, current=current)
+            _own_profile(body['profile'], profile_id, current=True)
     if path.startswith('/api/cron/jobs') and not request.query_params.get('profile'):
         # Job-id discovery and the default list scan other profiles. Require an
         # explicit, verified named profile instead of silently changing defaults.

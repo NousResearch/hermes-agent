@@ -66,12 +66,22 @@ async def _queued(connection, ref, admission_id):
 
 def steer_transfers(authority, session_id, generation):
     """``{admission_id: delivered}`` handed to this claim; the caller holds the stream lock. Read by
-    the claim's settlement after its execution returned, when no transfer can still be delivered."""
+    the claim's settlement after its execution returned, when no transfer can still be delivered.
+    A text its agent still buffers (accepted after the turn's last drain) never reached the claim: it
+    is withdrawn and reads undelivered, so its admission goes back to its queue place."""
     entry = authority.steer_transfers.get(session_id)
-    return dict(entry[1]) if entry is not None and entry[0] == generation else None
+    if entry is None or entry[0] != generation:
+        return None
+    adopted_generation, agent = authority.adopted.get(session_id, (None, None))
+    withdraw = getattr(agent, 'withdraw_steer', None) if adopted_generation == generation else None
+    for admission_id, delivered in entry[1].items():
+        if delivered and callable(withdraw) and withdraw(delivered):
+            entry[1][admission_id] = False
+    return {admission_id: bool(delivered) for admission_id, delivered in entry[1].items()}
 
 
 def _register(authority, session_id, generation, admission_id):
+    """``{admission_id: False | accepted text}`` for the claim ``generation``."""
     entry = authority.steer_transfers.get(session_id)
     if entry is None or entry[0] != generation:
         entry = authority.steer_transfers[session_id] = (generation, {})
@@ -102,8 +112,9 @@ def _deliver(authority, session_id, generation, agent, admission_id, text):
             or _receiving_agent(authority, session_id, generation) is not agent):
         return False
     if not entry[1][admission_id]:
-        entry[1][admission_id] = bool(agent.steer(text))
-    return entry[1][admission_id]
+        # The accepted text itself: settlement withdraws it if no drain of the turn consumed it.
+        entry[1][admission_id] = text if agent.steer(text) else False
+    return bool(entry[1][admission_id])
 
 
 async def steer_queued(connection, ref, params):

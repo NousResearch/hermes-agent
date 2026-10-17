@@ -80,6 +80,23 @@ class TestSteerDrain:
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
 
+    def test_withdraw_takes_back_one_unconsumed_steer_and_keeps_the_rest(self):
+        agent = _bare_agent()
+        for text in ("first", "  two\nlines  ", "last"):
+            agent.steer(text)
+        assert agent.withdraw_steer("two\nlines") is True
+        assert agent._pending_steer == "first\nlast"
+        assert agent.withdraw_steer("missing") is False
+        assert agent.withdraw_steer("first") is True
+        assert agent.withdraw_steer("last") is True
+        assert agent._pending_steer is None
+
+    def test_withdraw_after_a_drain_took_the_text_is_refused(self):
+        agent = _bare_agent()
+        agent.steer("hello")
+        assert agent._drain_pending_steer() == "hello"
+        assert agent.withdraw_steer("hello") is False
+
 
 
 class TestActiveTurnRedirect:

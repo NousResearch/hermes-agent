@@ -358,3 +358,17 @@ class InterruptControlMixin:
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = None
         return text
+
+    def withdraw_steer(self, text: str) -> bool:
+        """Take one earlier ``steer(text)`` back out of the buffer while no drain has consumed it (the
+        gateway returns a queued prompt's unconsumed steer to its queue). Other buffered steers stay."""
+        cleaned = (text or "").strip()
+        with _ic_lock(self, "_pending_steer_lock"):
+            pending = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
+            framed = "\n" + (pending or "") + "\n"
+            index = framed.find("\n" + cleaned + "\n") if cleaned else -1
+            if index < 0:
+                return False
+            rest = (framed[:index] + framed[index + 1 + len(cleaned):]).strip("\n")
+            self._pending_steer = rest or None
+        return True

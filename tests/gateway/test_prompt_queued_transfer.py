@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from agent.interrupt_control import InterruptControlMixin
 from gateway import session_finite, session_queued_controls
 from gateway.session_contract import SessionRef
 from hermes_state_runtime import (
@@ -77,6 +78,55 @@ async def test_a_steer_into_a_turn_that_then_fails_settles_interrupted_not_steer
     assert (receipt['result']['status'], receipt['result']['outcome']) == ('terminal', 'interrupted'), receipt
     assert (queued.admission_id, 'steered') not in _completions(frames)
     assert turn.ran == ['running'], 'a steered prompt is never replayed on its own'
+
+
+class BufferedAgent(InterruptControlMixin):
+    """The real steer seam (``agent/interrupt_control.py``): ``steer`` only buffers the text, and the turn
+    takes it at its drains. A text no drain took is still buffered when the turn ends."""
+
+    def __init__(self):
+        self._pending_steer, self._pending_steer_lock = None, threading.Lock()
+
+    def clear_interrupt(self, *args, **kwargs):
+        return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('consumed', [True, False])
+async def test_a_steer_settles_steered_only_when_a_drain_of_the_turn_took_it(tmp_path, monkeypatch, consumed):
+    """Reviewer repro (late steer): the text entered the agent's buffer after the turn's last drain. That
+    claim never ran it, so it is not steered: the admission goes back to its FIFO place and runs once as
+    its own turn, and the cached agent no longer holds it for an unrelated later turn."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    agent, claimed, release, ran, taken, frames = BufferedAgent(), asyncio.Event(), asyncio.Event(), [], [], []
+
+    async def execute(authority, ref, row):
+        ran.append(row['payload']['text'])
+        authority.adopt_agent(ref.session_id, row['generation'], agent)
+        claimed.set()
+        await asyncio.wait_for(release.wait(), 30)
+        if consumed:
+            taken.append(agent._drain_pending_steer())  # the turn's next drain takes the text
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    authority.sessions['s'].event_stream.observers.add(frames.append)
+    with db:
+        await _submit(authority, 'running')
+        await asyncio.wait_for(claimed.wait(), 30)
+        queued = await _submit(authority, 'follow-up')
+        reply = await _call(_connection(authority), 'prompt.steer_queued', admission_id=queued.admission_id)
+        assert 'error' not in reply, reply
+        release.set()
+        await _drained(authority)
+    assert agent._pending_steer is None, 'an unconsumed steer must not wait for an unrelated later turn'
+    if consumed:
+        assert (taken, ran) == (['follow-up'], ['running'])
+        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'steered')]
+    else:
+        assert (queued.admission_id, 'steered') not in _completions(frames)
+        assert _ledger(db) == [('running', 'terminal', 'completed'), ('follow-up', 'terminal', 'completed')]
+        assert ran == ['running', 'follow-up'], 'the returned prompt runs once, as its own turn'
 
 
 @pytest.mark.asyncio

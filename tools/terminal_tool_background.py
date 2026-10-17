@@ -141,7 +141,8 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
-    session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
+    session_key: str, cwd_session_key: Optional[str] = None,
+    workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
@@ -153,6 +154,8 @@ def spawn_background_process(
 
     Never inline-polls ``is_interrupted()``: the spawn detaches and returns
     exit_code 0 immediately, so the stale-interrupt kill cannot occur here.
+    ``session_key`` routes completion notifications; ``cwd_session_key`` (defaults
+    to ``session_key``) anchors the durable cwd record (#140395).
     """
     from tools.process_registry import process_registry
     from tools.terminal_tool import (
@@ -160,7 +163,7 @@ def spawn_background_process(
     )
 
     effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        workdir=workdir, default_cwd=cwd, session_key=cwd_session_key or session_key, env_type=env_type,
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )

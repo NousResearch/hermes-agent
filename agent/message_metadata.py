@@ -119,6 +119,23 @@ def is_compaction_scaffolding(msg: Mapping[str, Any]) -> bool:
     return bool(scaffolding_replay_fields(msg))
 
 
+def unstamped_replay_fields(msg: Mapping[str, Any]) -> dict:
+    """Provenance of a row the live turn sent without a timestamp, else ``{}``: compaction scaffolding and a mid-turn
+    /steer row (``agent.prompt_builder.steer_user_row``, persisted with no api_content sidecar). Gateway replay keeps
+    these fields on the entry, since a proactive prune re-persists that view and the next reload must still know."""
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
+    fields = scaffolding_replay_fields(msg)
+    if msg.get("display_kind") == STEER_DISPLAY_KIND:
+        fields["display_kind"] = STEER_DISPLAY_KIND
+    return fields
+
+
+def replays_unstamped(msg: Mapping[str, Any]) -> bool:
+    """Gateway replay must not stamp a row the live turn sent unstamped: a stamp would break the cached prefix."""
+    return bool(unstamped_replay_fields(msg))
+
+
 _IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
 
 

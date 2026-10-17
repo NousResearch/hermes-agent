@@ -198,6 +198,14 @@ def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None
     return GatewayDiscovery("inaccessible", reason_code="profile_parked", detail=str(reason)[:500] or None)
 
 
+def _refused_owner_verdict(exc: PermissionError) -> GatewayDiscovery | None:
+    """The named refusal when the client proved the boundary from the control pipe, else None."""
+    from gateway.runtime_bootstrap_windows import RefusedOwner
+    if isinstance(exc, RefusedOwner):
+        return GatewayDiscovery("inaccessible", reason_code=exc.reason_code, detail=str(exc))
+    return None
+
+
 def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | None:
     """A served secondary has no socket of its own: the default multiplexer's control socket
     answers for it, and its ``identify`` lists the home under ``served_profiles``. Only the
@@ -209,7 +217,10 @@ def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | 
         return None
     try:
         payload = query_identify(root, timeout=timeout)
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError, PermissionError,
+    except PermissionError as exc:
+        # The multiplexer's pipe proved the boundary: name it for the secondary too (#140706).
+        return _refused_owner_verdict(exc)
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError,
             OSError, ValueError, TypeError):
         return None
     result = _endpoint(payload, home, control_home=root)
@@ -296,10 +307,8 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
         # The code stays bounded; the detail names the local node, its owner or mode, and the fix.
         return GatewayDiscovery("inaccessible", reason_code=exc.reason, detail=exc.bounded_detail(500))
     except PermissionError as exc:
-        from gateway.runtime_bootstrap_windows import RefusedOwner
-        if isinstance(exc, RefusedOwner):  # the client proved the boundary from the control pipe (#140706)
-            return GatewayDiscovery("inaccessible", reason_code=exc.reason_code, detail=str(exc))
-        return _refused(home)
+        named = _refused_owner_verdict(exc)  # the client proved the boundary from the control pipe (#140706)
+        return named if named is not None else _refused(home)
     except (OSError, ValueError, TypeError):
         # Raw peer data, paths and URLs may contain secrets; report bounded codes.
         return GatewayDiscovery("inaccessible", reason_code="invalid_control_peer")

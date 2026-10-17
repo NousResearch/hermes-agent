@@ -14,6 +14,7 @@ this client's token. ``test_runtime_bootstrap.py`` reads a real pipe's facts on 
 elevated-server / standard-user-client attach.
 """
 import ctypes
+from pathlib import Path
 
 import pytest
 
@@ -126,6 +127,72 @@ def test_discovery_reports_the_named_refusal_without_any_owner_record(pipe, monk
     assert (result.state, result.reason_code) == ("inaccessible", "gateway_elevated")
     assert result.detail == native.refused_owner_remedy("gateway_elevated", SERVER_PID, 1)
     assert ensure_exit_code(result) == 4
+
+
+@pytest.fixture()
+def served_secondary(pipe, monkeypatch, tmp_path):
+    """A named profile the default multiplexer serves: no pipe of its own, so discovery asks the
+    multiplexer's pipe. *root_refusal* is what that query raises. Every way ensure could start a
+    gateway is recorded instead of run."""
+    from hermes_cli import gateway_runtime_discovery as discovery
+    from hermes_cli import gateway_runtime_multiplex as multiplex
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli import gateway_runtime_start as start
+    root = tmp_path / "root"
+    home = root / "profiles" / "work"
+    home.mkdir(parents=True)
+    starts = []
+
+    def install(root_refusal):
+        def query_identify(target, **_k):
+            if Path(target) != root:
+                raise FileNotFoundError(target)  # the secondary's own pipe is absent
+            root_refusal()
+        monkeypatch.setattr(discovery, "query_identify", query_identify)
+        monkeypatch.setattr(multiplex, "multiplexer_root_for", lambda _home: root)
+        monkeypatch.setattr(multiplex, "implied_host_root", lambda _home: None)
+        monkeypatch.setattr(multiplex, "multiplexer_serves_home", lambda _home: None)
+        monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *_a, **_k: None)
+
+        def record(*args, **_k):
+            starts.append(args)
+            raise TimeoutError  # ends ensure as a deadline instead of a real start
+        monkeypatch.setattr(service, "start_existing_gateway_service", record)
+        monkeypatch.setattr(start, "spawn_unmanaged_gateway", record)
+        return home, starts
+    pipe(process_sid=None, owner=ADMINS)
+    return install
+
+
+def test_a_served_secondary_discovers_its_elevated_multiplexer_by_name(served_secondary):
+    """The refusal from the multiplexer's pipe is the secondary's discovery verdict, with the
+    same reason and remedy direct discovery reports."""
+    from hermes_cli import gateway_runtime as runtime
+    home, _starts = served_secondary(lambda: native._peer_subject(HANDLE, server=True))
+    found = runtime.discover_gateway_endpoint(home, timeout=1)
+    assert (found.state, found.reason_code, found.detail) == (
+        "inaccessible", "gateway_elevated", native.refused_owner_remedy("gateway_elevated", SERVER_PID, 1))
+
+
+def test_ensuring_a_served_secondary_returns_the_named_refusal_and_starts_nothing(served_secondary):
+    """Ensure answers at once instead of waiting out the deadline, and never starts a gateway."""
+    import time
+    from hermes_cli import gateway_runtime as runtime
+    home, starts = served_secondary(lambda: native._peer_subject(HANDLE, server=True))
+    began = time.monotonic()
+    ensured = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (ensured.state, ensured.reason_code, ensured.detail) == (
+        "inaccessible", "gateway_elevated", native.refused_owner_remedy("gateway_elevated", SERVER_PID, 1))
+    assert starts == []
+    assert time.monotonic() - began < 2
+
+
+def test_a_served_secondary_keeps_ignoring_any_other_multiplexer_refusal(served_secondary):
+    """Unchanged: a generic refusal from the multiplexer is not service, so the secondary's own
+    (absent) state answers."""
+    from hermes_cli import gateway_runtime as runtime
+    home, _starts = served_secondary(lambda: (_ for _ in ()).throw(PermissionError("no token")))
+    assert runtime.discover_gateway_endpoint(home, timeout=1).state == "absent"
 
 
 # -- what must stay refused, never attached and never named -------------------------------------

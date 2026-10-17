@@ -57,6 +57,34 @@ class CredentialPoolAdminMixin:
                 self._persist(status_cleared_ids=list(stale_ids))
             return len(stale)
 
+    def clear_model_cooldowns(self, credential_id: str) -> Optional[PooledCredential]:
+        """Drop the target's per-model rate-limit windows, keeping entitlement benches.
+
+        ``hermes auth refresh`` rotates the grant but leaves ``model_cooldowns``
+        behind, contradicting the command's own help text (#135873). A rotation
+        clears the per-model 429 windows — the refreshed models' limits are live
+        again — but not a Codex entitlement bench: that is a plan property of the
+        account behind the token pair, so dropping it would only re-bench on the
+        next turn with the same entitlement 400. Benches stay until the explicit
+        ``hermes auth reset`` path (#71970). Like the reset paths, the persist
+        declares the cleared id so the disk-recency merge cannot copy the
+        still-binding window back over the cleared row.
+        """
+        from agent.credential_pool_model_cooldowns import MODEL_ENTITLEMENT_BENCH_SECONDS
+
+        with self._lock:
+            entry = self._find(lambda e: e.id == credential_id)
+            if entry is None or not entry.model_cooldowns:
+                return entry
+            now = time.time()
+            kept = {model: until for model, until in entry.model_cooldowns.items()
+                    if not isinstance(until, (int, float))
+                    or float(until) - now >= MODEL_ENTITLEMENT_BENCH_SECONDS / 2}
+            cleared = replace(entry, model_cooldowns=(kept or None))
+            self._replace_entry(entry, cleared)
+            self._persist(status_cleared_ids=[cleared.id])
+            return cleared
+
     def remove_index(self, index: int) -> Optional[PooledCredential]:
         with self._lock:
             if index < 1 or index > len(self._entries):

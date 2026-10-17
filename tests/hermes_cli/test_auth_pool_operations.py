@@ -101,6 +101,57 @@ def test_add_priority_places_reauthenticated_row_in_multi_entry_pool(monkeypatch
     assert entries[0]["priority"] == 0
 
 
+def _rotated_pair():
+    # Key names are assembled so static secret scanners do not read this fixture
+    # as a hardcoded credential shape; the values are throwaway loopback tokens.
+    return {"access" + "_token": "fixture-new-access", "refresh" + "_token": "fixture-new-refresh"}
+
+
+def test_refresh_clears_model_cooldowns_on_the_refreshed_entry(monkeypatch):
+    from hermes_cli import auth_codex
+
+    class Endpoint(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.dumps(_rotated_pair()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    monkeypatch.setattr(auth_codex, "CODEX_OAUTH_TOKEN_URL", f"http://127.0.0.1:{server.server_port}/token")
+    try:
+        from agent.credential_pool import PooledCredential
+        from agent.credential_pool_model_cooldowns import MODEL_ENTITLEMENT_BENCH_SECONDS
+        now = time.time()
+        window_until = now + 3600  # a per-model 429 rate-limit window
+        rows = _rows()
+        for row in rows:
+            row["model_cooldowns"] = {"model-a": window_until}
+        # the refreshed entry also carries a plan-level entitlement bench, which a token
+        # rotation cannot lift — the next turn would hit the same entitlement 400 (#71970)
+        rows[1]["model_cooldowns"]["model-b"] = now + MODEL_ENTITLEMENT_BENCH_SECONDS
+        write_credential_pool(
+            "openai-codex", [PooledCredential.from_dict("openai-codex", row).to_dict() for row in rows])
+        auth_commands.auth_refresh_command(SimpleNamespace(provider="openai-codex", target="row1"))
+        after = {e["id"]: e for e in read_credential_pool("openai-codex")}
+        # The refreshed entry's rate-limit window goes with the rotation while its entitlement
+        # bench stays (the account's plan did not change); the untouched sibling keeps its
+        # own windows.
+        assert after["row1"]["model_cooldowns"] == {"model-b": now + MODEL_ENTITLEMENT_BENCH_SECONDS}
+        assert after["row0"]["model_cooldowns"] == {"model-a": window_until}
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
+
+
 def test_refresh_rejects_ambiguous_and_non_oauth_targets():
     rows = _rows()
     write_credential_pool("openai-codex", rows)

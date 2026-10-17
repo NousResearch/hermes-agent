@@ -136,7 +136,7 @@ def build_models_payload(
 
     # A local proxy serving a model also in an aggregator's catalog would show under both, and picking
     # the aggregator row silently breaks the call — aggregators only list models no specific provider has.
-    _strip_aggregator_overlaps(rows)
+    _strip_aggregator_overlaps(rows, allow_network=not non_blocking_catalogs)
 
     if include_unconfigured:
         rows = list(rows) + _without_slug(_append_unconfigured_rows(rows, ctx), "moa")
@@ -160,7 +160,7 @@ def build_models_payload(
     if capabilities:
         _apply_capabilities(rows, metadata_config=metadata_config)
     if featured:
-        _apply_featured(rows, metadata_config=metadata_config)
+        _apply_featured(rows, metadata_config=metadata_config, allow_network=not non_blocking_catalogs)
     _apply_custom_aliases(rows)
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
@@ -169,7 +169,7 @@ def build_models_payload(
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
 
-def _strip_aggregator_overlaps(rows: list[dict]) -> None:
+def _strip_aggregator_overlaps(rows: list[dict], *, allow_network: bool = True) -> None:
     """Drop models from TRUE routing aggregators (OpenRouter, custom:* proxies) that a user-defined
     provider also serves. The is_user_defined guard matters: is_routing_aggregator() is True for every
     custom:* slug, so without it the dedup would empty a user's own custom row. Flat-namespace
@@ -179,9 +179,14 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
     except Exception:
         return
 
+    def _is_routing_aggregator(slug: str) -> bool:
+        # Provider classification is presentation-local: on a cache-only picker read it must not
+        # probe the models.dev registry (a cold cache just classifies fewer slugs as aggregators).
+        return is_routing_aggregator(slug, allow_network=allow_network)
+
     builtin_aggregators = {
         _slug(row) for row in rows
-        if not row.get("is_user_defined") and is_routing_aggregator(_slug(row))
+        if not row.get("is_user_defined") and _is_routing_aggregator(_slug(row))
     }
 
     def _duplicates_builtin_aggregator(row: dict) -> bool:
@@ -209,7 +214,7 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
     if not user_models:
         return
     for row in rows:
-        if row.get("is_user_defined") or not is_routing_aggregator(row.get("slug", "")):
+        if row.get("is_user_defined") or not _is_routing_aggregator(row.get("slug", "")):
             continue
         # Only strip overlaps from TRUE routing aggregators (OpenRouter, custom:* proxies). Flat-namespace
         # resellers (opencode-go / opencode-zen) serve every listed model as a first-party model, so their
@@ -592,12 +597,15 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
 _FEATURED_PER_LAB = 5
 
 
-def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) -> None:
+def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None,
+                    allow_network: bool = True) -> None:
     """Attach a ``featured_models`` shortlist to each routing-aggregator row: newest
     ``_FEATURED_PER_LAB`` per vendor by models.dev ``release_date`` (ranked within the row, never vs.
     today, so it is stable); ties keep curated order. Non-aggregators — including every user-defined
     row, whose ``models:`` list is an explicit allow-list — get an empty list and keep top-N
-    behaviour (#120217)."""
+    behaviour (#120217). ``allow_network=False`` classifies rows from the memory/disk models.dev
+    cache only, like ``_strip_aggregator_overlaps()``, so a cache-only picker read never probes the
+    registry to decide whether a row gets a shortlist."""
     try:
         from agent.models_dev import get_model_info
     except Exception:
@@ -616,7 +624,9 @@ def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) ->
         slug = str(row.get("slug") or "").strip().lower()
         models = row.get("models") or []
 
-        if row.get("is_user_defined") or not (is_routing_aggregator and is_routing_aggregator(slug)):
+        if row.get("is_user_defined") or not (
+            is_routing_aggregator and is_routing_aggregator(slug, allow_network=allow_network)
+        ):
             row["featured_models"] = []
             continue
 

@@ -844,6 +844,12 @@ class OpenAICompatRoutesMixin:
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        # X-Hermes-Deliver binds the final assistant text to a whitelisted destination, so
+        # routing is a property of the request instead of the prompt's prose. Validated
+        # before the run: an unauthorised destination costs a 403, not a wasted turn.
+        deliver_target, deliver_err = self._parse_deliver_header(request)
+        if deliver_err is not None:
+            return deliver_err
         # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
         # requires a configured API key or any client could read history by guessing ids.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
@@ -1008,6 +1014,12 @@ class OpenAICompatRoutesMixin:
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg and not presentation_muted:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
+        if deliver_target:
+            # Deliver the RAW final text, not ``final_response`` (which has media resolved to
+            # data: URLs): a chat platform wants the prose, not embedded base64 attachments.
+            # Best effort by contract — the header reports the outcome, the body is unaffected.
+            response_headers["X-Hermes-Delivered"] = await self.deliver_final_response(
+                deliver_target, result.get("final_response") or "")
         return web.json_response(response_data, headers=response_headers)
 
     async def _run_idempotent(

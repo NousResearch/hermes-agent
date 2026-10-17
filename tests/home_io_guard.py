@@ -92,7 +92,8 @@ class HomeIOGuard:
             if metadata:
                 path = os.environ.get("PATH", "")
                 cwd = os.getcwd() if self._relative_path_entries(path) else None
-                if os.path.dirname(absolute) in self._path_entries(path, cwd):
+                if (absolute in self._path_entries(path, cwd)
+                        or os.path.dirname(absolute) in self._path_entries(path, cwd)):
                     return
             # The interpreter's own installation (a PM-managed python under ~/.hermes/tools):
             # stdlib source reads (linecache, traceback) are not Hermes state either, nor is

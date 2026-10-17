@@ -70,6 +70,13 @@ class TestEarlyRecovery:
 
 
 class TestLaunchRecovery:
+    def test_interrupted_pull_probe_skips_live_checkout_before_git_metadata(self, monkeypatch):
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("interrupted-pull probe touched the live checkout")
+
+        monkeypatch.setattr(er, "interrupted_pull_marker", _boom)
+        assert er.restore_interrupted_pull(project_root=CHECKOUT_ROOT) is False
+
     def test_recover_if_needed_noops_on_live_checkout(self, monkeypatch):
         # PROJECT_ROOT is the live checkout in-suite. Startup recovery must
         # return before touching markers, locks, or repair dependencies.

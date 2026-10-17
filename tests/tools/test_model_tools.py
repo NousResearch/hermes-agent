@@ -55,6 +55,30 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_gateway_session_key_reaches_pre_and_post_tool_hooks(self, monkeypatch):
+        """Gateway-backed calls keep their durable key across both hook phases."""
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: True)
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *_args, **_kwargs: '{"ok":true}')
+
+        handle_function_call(
+            "web_search",
+            {"q": "test"},
+            task_id="task-1",
+            session_id="rotated-session",
+            tool_call_id="tool-1",
+            gateway_session_key="agent:default:discord:dm:fixture",
+        )
+
+        hook_kwargs = {name: kwargs for name, kwargs in hook_calls}
+        for hook_name in ("pre_tool_call", "post_tool_call"):
+            assert hook_kwargs[hook_name]["gateway_session_key"] == "agent:default:discord:dm:fixture"
+            assert hook_kwargs[hook_name]["session_id"] == "rotated-session"
+
     def test_terminal_nonzero_exit_is_reported_as_error(self):
         result = json.dumps({"output": "", "exit_code": 1, "error": None})
         with (
@@ -491,8 +515,13 @@ class TestBridgeDispatch:
             result = json.loads(handle_function_call("tool_call", {}))
         assert result.get("error")
 
-    def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
+    def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self, monkeypatch):
         import tools.tool_search as ts
+        hook_calls = []
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook",
+                            lambda phase, **kwargs: hook_calls.append((phase, kwargs)) or [])
+        monkeypatch.setattr("hermes_cli.plugins.has_hook",
+                            lambda phase: phase in {"pre_tool_call", "post_tool_call"})
         with patch("model_tools.get_tool_definitions", return_value=[]), \
              patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
@@ -504,9 +533,20 @@ class TestBridgeDispatch:
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
              patch.object(ts, "validate_deferred_call_args", return_value=None), \
              patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
-            out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
+            hook_calls.clear()
+            out = handle_function_call(
+                "tool_call", {"name": "mcp_x"}, task_id="t", session_id="transcript",
+                tool_call_id="bridge-call", gateway_session_key="agent:default:discord:dm:fixture",
+            )
         assert json.loads(out) == {"ok": True}
         assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
+        assert [phase for phase, _ in hook_calls] == ["pre_tool_call", "post_tool_call"]
+        for _, kwargs in hook_calls:
+            assert kwargs["tool_name"] == "mcp_x"
+            assert kwargs["gateway_session_key"] == "agent:default:discord:dm:fixture"
+            assert (kwargs["session_id"], kwargs["task_id"], kwargs["tool_call_id"]) == (
+                "transcript", "t", "bridge-call",
+            )
 
 
 # ==================================================================

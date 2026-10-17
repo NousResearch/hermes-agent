@@ -256,15 +256,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free",
     ],
-    # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
-    # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"
-    # — the Go-subscription twin of Zen's Ox Alpha — was delisted 2026-09-09.
+    # Mirrors opencode's own catalog (models.dev ``opencode-go``, minus ``status: deprecated`` — the
+    # rows opencode hides). Live GET /zen/go/v1/models leads in the picker; this is the no-key floor.
     "opencode-go": [
-        "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "gpt-5.6-luna", "grok-4.5", "glm-5.3",
-        "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro",
-        "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "deepseek-v4-pro",
-        "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
-        "qwen3.5-plus", "hy3", "hy3-preview", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
+        "kimi-k3", "kimi-k2.7-code", "claude-haiku-5-5", "gpt-6-luna", "gpt-5.6-luna", "grok-4.7",
+        "grok-4.6", "glm-5.3", "glm-5.3-flash", "glm-5.2", "mimo-v2.6-pro", "mimo-v2.6-flash",
+        "mimo-v2.5-pro", "mimo-v2.5", "minimax-m3", "minimax-m2.7", "deepseek-v4.1-flash",
+        "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "qwen3.8-max",
+        "qwen3.8-flash", "qwen3.7-plus", "longcat-2.0", "longcat-2.5-preview-free", "hy4-preview", "hy3",
+        "space-bunny", "step-5-preview-free", "muse-spark-1.3-contributor", "muse-spark-1.2-contributor",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4",

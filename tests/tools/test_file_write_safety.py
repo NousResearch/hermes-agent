@@ -654,10 +654,12 @@ class TestProtectedInstructionFiles:
     # ---- core behavior -------------------------------------------------
 
     @pytest.mark.parametrize(
-        "name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules"]
+        "name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules",
+                 "GEMINI.md", ".clinerules", ".windsurfrules", ".github/copilot-instructions.md"]
     )
     def test_deny_blocks_write(self, tmp_path, approvals, name):
         target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
         approvals["answer"] = "deny"
         res = self._write(target)
         assert res.get("error"), res

@@ -98,3 +98,40 @@ def test_keyless_row_readiness_follows_registry_availability(monkeypatch):
     assert {provider_readiness_status(p, {"web": {}}) for p in free_rows} == {"ready"}
     monkeypatch.setattr(native, "has_codex_credentials", lambda: True)
     assert provider_readiness_status(native_row, {"web": {}}) == "ready"
+
+
+def test_managed_web_row_is_ready_for_free_search_identity(monkeypatch):
+    """Managed Perplexity fast search accepts any usable Nous identity, even when the account has no
+    paid Tool Gateway entitlement. Extract remains entitlement-gated, and a missing token is not ready."""
+    from hermes_cli.tools_config import TOOL_CATEGORIES
+    from hermes_cli.tools_config_providers import provider_readiness_status
+
+    row = next(p for p in TOOL_CATEGORIES["web"]["providers"] if p.get("managed_nous_feature") == "web")
+    account = types.SimpleNamespace(
+        logged_in=True,
+        tool_gateway_entitled=False,
+        tool_gateway_entitled_for=lambda category: False,
+    )
+    features = types.SimpleNamespace(nous_auth_present=True, account_info=account)
+    monkeypatch.setattr("tools.managed_tool_gateway.peek_nous_access_token", lambda: "nous-token")
+
+    assert provider_readiness_status(
+        row,
+        {"web": {"search_backend": "nous", "extract_backend": "nous"}},
+        features=features,
+        is_active=False,
+    ) == "ready"
+    assert provider_readiness_status(
+        row,
+        {"web": {"search_backend": "perplexity", "extract_backend": "nous"}},
+        features=features,
+        is_active=False,
+    ) == "needs_auth"
+
+    monkeypatch.setattr("tools.managed_tool_gateway.peek_nous_access_token", lambda: None)
+    assert provider_readiness_status(
+        row,
+        {"web": {"search_backend": "nous"}},
+        features=features,
+        is_active=False,
+    ) == "needs_auth"

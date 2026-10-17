@@ -170,6 +170,10 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = (
     "try again", "retry", "resets at", "reset in", "resets in", "reset after", "available in",
     "wait", "requests remaining", "periodic", "window", "per minute", "per second",
 )
+# "tpm"/"rpm" (tokens/requests per minute) name a rolling per-minute window even when
+# the body is typed as a quota error — "tpm exhausted (type=quota_exceeded_error)" is
+# a 60 s throttle, not a plan wall (port of can1357/oh-my-pi#13256).
+_PER_MINUTE_ABBREV_RE = re.compile(r"\b[tr]pm\b")
 
 # 413 detected from message text (proxies embed the status or re-wrap
 # Anthropic's "request_too_large" type without one).
@@ -1241,7 +1245,7 @@ _RESET_HEADERS = ("retry-after", "Retry-After", "x-ratelimit-reset", "X-RateLimi
 
 def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_headers) -> bool:
     """Whether a usage-limit response identifies a reset window (message, body fields, or headers)."""
-    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS) or _PER_MINUTE_ABBREV_RE.search(error_msg):
         return True
     payloads = [p for p in (body, _error_obj(body)) if isinstance(p, dict)]
     if any(payload.get(f) not in (None, "") for payload in payloads for f in _RESET_FIELDS):

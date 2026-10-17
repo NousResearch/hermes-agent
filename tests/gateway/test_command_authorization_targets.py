@@ -25,7 +25,9 @@ def _rewrite(runner, tmp_path, target):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('listed,denied', [('safe_cmd', 'safe-cmd'), ('safe-cmd', 'safe_cmd')])
+@pytest.mark.parametrize('listed,denied', [
+    ('safe_cmd', 'safe-cmd'), ('safe-cmd', 'safe_cmd'), ('quit', 'exit'), ('exit', 'quit'),
+])
 @pytest.mark.parametrize('chat_type', ['dm', 'group'])
 async def test_exec_quick_command_grants_keep_exact_keys(tmp_path, listed, denied, chat_type):
     prefix = '' if chat_type == 'dm' else 'group_'
@@ -140,10 +142,8 @@ async def test_exec_quick_key_takes_precedence_over_plugin_alias(
 @pytest.mark.parametrize('listed', ['reload-mcp', 'reload_mcp'])
 @pytest.mark.parametrize('typed', ['reload-mcp', 'reload_mcp'])
 def test_builtin_allowlist_resolves_registered_aliases(listed, typed):
-    from gateway.slash_access import policy_from_extra
-
     extra = {'allow_admin_from': ['owner'], 'user_allowed_commands': [listed]}
     runner = _runner(extra)
-    policy = policy_from_extra(extra, 'dm')
-    assert policy.can_run('reader', typed, command_key=runner._hm_command_key) is True
-    assert policy.can_run('reader', 'restart', command_key=runner._hm_command_key) is False
+    source = _make_source(user_id='reader')
+    assert runner._check_slash_access(source, typed) is None
+    assert '/restart is admin-only here' in runner._check_slash_access(source, 'restart')

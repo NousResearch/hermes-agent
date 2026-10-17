@@ -116,10 +116,12 @@ class GatewayInboundHooksMixin:
         return qc if isinstance(qc, dict) else {}
 
     def _hm_command_key(self, command: str) -> tuple[str, str]:
-        from hermes_cli.commands import _iter_plugin_command_entries, resolve_command
+        from hermes_cli.commands import (
+            GATEWAY_KNOWN_COMMANDS, _iter_plugin_command_entries, resolve_command,
+        )
 
         builtin = resolve_command(command)
-        if builtin is not None:
+        if builtin is not None and builtin.name in GATEWAY_KNOWN_COMMANDS:
             return "builtin", builtin.name
         if command in self._hm_quick_commands():
             return "quick", command

@@ -25,6 +25,7 @@ from typing import Callable, Dict, Any, List, Optional
 import copy
 
 from hermes_constants import display_hermes_home
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -464,17 +465,50 @@ def text_to_speech_tool(
     separate valid files and no over-limit artifact is ever returned."""
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
-    try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
-        from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
-    except Exception:
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    command_provider_config = _resolve_command_provider_config(provider, tts_config)
+    # Resolve the command-provider config BEFORE normalizing, so an SSML-aware
+    # command CLI that sets ``skip_markdown_strip`` receives the raw markup
+    # untouched. Otherwise prepare_spoken_text (markdown/SSML rewrite) would
+    # mangle the text before the opt-out is even consulted.
+    # Shared boolean semantics (same as the adjacent ``voice_compatible``
+    # opt-in): a quoted false-like value ("false", "0", "no") stays DISABLED
+    # — plain truthiness would silently enable the opt-out for it.
+    skip_strip = bool(command_provider_config) and is_truthy_value(
+        command_provider_config.get("skip_markdown_strip", False)
+    )
+    # shared cleaner: markdown, emoji, think blocks, verifier footer, units,
+    # newlines. Skipped for opted-out command providers, which want the raw
+    # markup preserved.
+    if not skip_strip:
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            text = prepare_spoken_text(text, max_chars=None)
+        except Exception:
+            text = text.strip()
+    else:
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
-    command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
-    chunks = _split_text_for_tts(text, max_len)
+    if skip_strip:
+        # Raw-markup contract: the whole point of the opt-out is that the
+        # provider receives the markup EXACTLY as passed. The plain-text
+        # splitter is not XML-aware — splitting SSML produces fragments that
+        # are not valid XML — so raw input is never chunked. Over-limit raw
+        # markup is refused with a descriptive error instead of being
+        # dispatched as malformed pieces.
+        if len(text) > max_len:
+            return tool_error(
+                f"Raw markup is {len(text)} chars but the provider's "
+                f"max_text_length is {max_len}; splitting would break the "
+                "markup (skip_markdown_strip providers receive text "
+                "unsplit). Shorten the input or raise max_text_length.",
+                success=False,
+            )
+        chunks = [text]
+    else:
+        chunks = _split_text_for_tts(text, max_len)
     if not chunks:
         return tool_error("Text is required", success=False)
     if len(chunks) > 1:

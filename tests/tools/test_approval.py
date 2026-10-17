@@ -1511,6 +1511,50 @@ class TestEtcPatternsUnaffectedByRefactor:
             assert dangerous is False, cmd
 
 
+class TestRuleScopeStaysInsideOneCommand:
+    """A rule's `.*` must not run past `;`/`&&`/`|` into a later command, and /etc as the SOURCE of
+    cp/install is not a write into /etc. Otherwise the prompt names the wrong thing, and approving
+    it for the session also pre-approves real writes that share the key."""
+
+    def test_a_rule_does_not_match_across_commands_or_on_a_source_path(self):
+        for cmd in (
+            "cp /etc/nginx/nginx.conf ./nginx.conf.bak",
+            "sudo cp /etc/resolv.conf /tmp/resolv.conf",
+            "cp dist/app.js public/ && cat /etc/os-release",
+            "find . -type f | xargs wc -l; rm -f out.txt",
+            "git ls-files | xargs wc -l && git rm --cached build.log",
+            "pkill -f webpack && tail -f logs/gateway.log",
+            "pkill node; hermes status",
+            "cp /etc/hosts backup -v",
+            "cp -v /etc/hosts ./hosts.bak",
+            "cp /etc/hosts -S bak ./hosts.bak",
+        ):
+            assert detect_dangerous_command(cmd) == (False, None, None), cmd
+
+    def test_the_same_rules_still_catch_their_command(self):
+        for cmd in (
+            "cp evil.conf /etc/nginx/nginx.conf",
+            "cp -t /etc/nginx evil.conf",
+            "cp evil /etc/hosts 2>/dev/null",
+            "mv /etc/hosts /tmp/hosts",
+            "cp evil.pub ~/.ssh/authorized_keys 2>/dev/null",
+            "cp evil.pub ~/.ssh/authorized_keys | cat",
+            "find . -name '*.tmp' | xargs rm -f",
+            "xargs -I{} sh -c 'cd {}; rm -f x' < dirs.txt",
+            "pkill -f 'node|hermes'",
+            "pkill -f vite; pkill hermes",
+            # coreutils options may follow the destination; `$( ... )` / backticks may be spaced
+            "cp a.conf /etc/hosts -v",
+            "cp a.conf /etc/sudoers.d/x -v 2>/dev/null",
+            "install a /etc/nginx/x.so -m 644",
+            "cp a /etc/hosts --preserve=mode",
+            "cp payload ~/.ssh/authorized_keys -v",
+            "echo $( cp a.conf /etc/hosts )",
+            "echo ` cp a.conf /etc/hosts `",
+        ):
+            assert detect_dangerous_command(cmd)[0] is True, cmd
+
+
 # =========================================================================
 # Gateway approval timeout = deny, NOT consent (#24912)
 #

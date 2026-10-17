@@ -198,6 +198,25 @@ own schemas document the current contract. Reserve `computer_use` for browser
 *chrome* (the address bar, permission prompts, extension popups, native
 dialogs) and anything else on screen that isn't page content.
 
+### Reliable browser-chrome navigation
+
+Treat address-bar navigation as a dependent sequence, not a batch of independent
+inputs:
+
+1. Capture the current Chrome window and verify the target window is still live.
+2. Activate the address bar with the platform shortcut (`cmd+l` on macOS,
+   `ctrl+l` on Windows/Linux) when pixel focus is uncertain.
+3. Use select-all before typing the full URL; this prevents accidental
+   concatenation with `about:blank` or the previous address.
+4. Type the URL and press Enter in separate calls.
+5. Capture the resulting window and verify the URL/page before continuing.
+
+If an action reports `No window matched`, `target window could not be focused`,
+or another stale-window condition, stop input immediately. Refresh the window
+list, select the current exact Chrome window, and capture it before retrying.
+Never reuse a window identifier across a relaunch, first-run dialog, or
+navigation that changed the window.
+
 ### Key shortcuts vary per platform
 
 Use the host's idiomatic modifier:

@@ -745,6 +745,19 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
+        review_handoffs = (kb.list_events(conn, tid) if task else [])
+        builder_work = bool(
+            task and (task.assignee == "builder" or any(
+                event.kind == "review_requested"
+                and isinstance(event.payload, dict)
+                and event.payload.get("implementer") == "builder"
+                for event in review_handoffs
+            ))
+        )
+        if builder_work and os.environ.get("HERMES_PROFILE") == "builder":
+            return tool_error(
+                "kanban_complete refused for builder work before independent review. "
+                "Hand off with kanban_request_review; the reviewer must issue a verdict first.")
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
             ok = kb.complete_task(

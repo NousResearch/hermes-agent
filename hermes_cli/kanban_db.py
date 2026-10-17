@@ -1214,6 +1214,7 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -1223,6 +1224,11 @@ def create_task(
             project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
         except Exception:
             pass
+    if assignee == "builder" and workspace_kind is None and not project_id:
+        raise ValueError(
+            "Tasks assigned to builder require an explicit workspace_kind "
+            "(dir/worktree with a path, an explicit scratch, or a project)."
+        )
     if workspace_kind is None:
         workspace_kind = "scratch"
     if workspace_kind not in VALID_WORKSPACE_KINDS:

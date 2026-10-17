@@ -20,7 +20,7 @@ from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
-    _truncate_mcp_text_result)
+    _summarize_mcp_image, _truncate_mcp_text_result)
 from tools.mcp_tool_errors import (
     _auth_error_detail, _is_auth_error, _is_session_expired_error, _mcp_call_failed_message)
 
@@ -439,14 +439,16 @@ def _error_result_text(result) -> str:
     return "".join(str(t) for t in texts if t)
 
 
-def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str]]:
+async def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str]]:
     """Text passes through; image/audio blocks are cached (MEDIA: tags); resource blocks are
     materialized rather than silently dropped; unsupported blocks become an inline drop notice
-    (kimi-code#3227). Returns ``(text, usable_parts, image_paths)``: ``usable_parts`` counts REAL
-    rendered blocks (whitespace-only text and drop notices excluded) for the structuredContent
-    arbitration; ``image_paths`` are the files THIS call's image blocks were cached to — never
-    parsed back out of the text, where a server-written ``MEDIA:`` line could name any local file."""
-    parts: list[str] = []
+    (kimi-code#3227). Image blocks additionally get a best-effort auxiliary-vision text summary
+    (``_summarize_mcp_image``) so text-only main models can "see" the image. Returns
+    ``(text, usable_parts, image_paths)``: ``usable_parts`` counts REAL rendered blocks
+    (whitespace-only text and drop notices excluded) for the structuredContent arbitration;
+    ``image_paths`` are the files THIS call's image blocks were cached to — never parsed back
+    out of the text, where a server-written ``MEDIA:`` line could name any local file."""
+    parts: List[str] = []
     usable_parts = 0
     image_paths: list[str] = []
     # MCP tool results can also include ImageContent blocks (screenshot / Blockbench / Playwright etc.);
@@ -468,6 +470,14 @@ def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str
         if rendered:
             parts.append(rendered)
             usable_parts += 1
+            if rendered.startswith("MEDIA:"):
+                # MEDIA pixel bridge: when an auxiliary vision model is
+                # configured, append a text summary so pure-text providers
+                # can "see" the image. Fail-open — the MEDIA: tag above
+                # always survives even if summarization fails.
+                summary = await _summarize_mcp_image(rendered)
+                if summary:
+                    parts.append(summary)
             continue
         block_type = getattr(block, "type", None) or type(block).__name__
         if block_type in {"text", "resource", "audio", "image"}:  # benign empty render
@@ -522,8 +532,8 @@ def _content_dual_emits_structured(result, structured) -> bool:
     return False
 
 
-def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
+async def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None) -> str:
+    """Async: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
     call's image blocks were cached to). ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
     (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
@@ -536,7 +546,7 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[lis
     (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
-    text_result, usable_parts, cached_images = _render_content_blocks(result, server_name)
+    text_result, usable_parts, cached_images = await _render_content_blocks(result, server_name)
     if image_paths is not None:
         image_paths.extend(cached_images)
     structured = _capped_structured_content(result)
@@ -593,7 +603,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
             image_paths.clear()
-            return _render_call_tool_result(result, server_name, image_paths)
+            return await _render_call_tool_result(result, server_name, image_paths)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)

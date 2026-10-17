@@ -731,6 +731,22 @@ def _codex_usage_probe_url(base_url: Optional[str]) -> str:
     return prefix + "/usage"
 
 
+def _record_codex_quota_exhausted(entry: Any) -> None:
+    """Pin a pool entry's probe verdict to "not restored" for the throttle window after a live 429.
+
+    The 429 is first-hand and newer than any cached probe; a "restored" verdict cached minutes
+    before the account hit its cap would otherwise lift the fresh bench on the next selection.
+    """
+    from hermes_cli.auth import _codex_quota_probe_cache
+    token = _stripped(getattr(entry, "access_token", None))
+    if not token or not _is_codex_rate_limit_shaped(
+            getattr(entry, "last_error_code", None), getattr(entry, "last_error_reason", None),
+            getattr(entry, "last_error_message", None)):
+        return
+    with _codex_quota_probe_lock:
+        _codex_quota_probe_cache[_codex_quota_probe_cache_key(token)] = (time.monotonic(), False)
+
+
 def _probe_codex_quota_restored(
     access_token: Any, *, base_url: Optional[str] = None,
     min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS) -> Optional[bool]:
@@ -752,7 +768,8 @@ def _probe_codex_quota_restored(
         if cached is not None and (now - cached[0]) < min_interval_seconds:
             return cached[1]
         # Reserve the slot immediately so concurrent selectors don't stampede the endpoint.
-        _codex_quota_probe_cache[cache_key] = (now, None)
+        reservation = (now, None)
+        _codex_quota_probe_cache[cache_key] = reservation
     result: Optional[bool] = None
     try:
         # Account/residency headers from the JWT (required for some account shapes).
@@ -784,6 +801,10 @@ def _probe_codex_quota_restored(
         logger.debug("Codex quota probe failed", exc_info=True)
         result = None
     with _codex_quota_probe_lock:
+        current = _codex_quota_probe_cache.get(cache_key)
+        if current is not reservation:
+            # A newer 429 (or probe) replaced our slot during the network call.
+            return current[1] if current is not None else None
         _codex_quota_probe_cache[cache_key] = (now, result)
     return result
 

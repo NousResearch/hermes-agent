@@ -90,6 +90,7 @@ import {
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
+import { createComputerUseBridge } from './computer-use-bridge'
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -5426,6 +5427,25 @@ function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
   })
 }
 
+/**
+ * Desktop's managed Computer Use bridge, for when the agent runs elsewhere.
+ *
+ * Lives in ./computer-use-bridge so it can be tested without an Electron app;
+ * everything main.ts owns (runtime resolution, child spawning, the log ring,
+ * WS tickets) is handed to it here.
+ */
+const computerUseBridge = createComputerUseBridge({
+  resolveHermesBackend,
+  ensureRuntime,
+  resolveHermesCwd,
+  hiddenWindowsChildOptions,
+  stopBackendChild,
+  rememberLog,
+  mintGatewayWsTicket,
+  spawn,
+  hermesHome: HERMES_HOME
+})
+
 function fetchPublicJson(url, options: any = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
   // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
@@ -9748,6 +9768,10 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     // Echo the scope back so the UI knows which profile (if any) this reflects.
     profile: key,
     remoteAuthMode: authMode,
+    remoteComputerUseBridge: mode === 'remote' && block.computerUseBridge !== false,
+    // A Desktop with no local agent runtime cannot run the bridge sidecar. Say
+    // that in Settings rather than letting the toggle look like it worked.
+    remoteComputerUseBridgeUnavailable: computerUseBridge.unsupported(),
     remoteOauthConnected,
     remoteUrl,
     // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
@@ -9833,6 +9857,12 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
+  const computerUseBridge =
+    typeof input.remoteComputerUseBridge === 'boolean'
+      ? input.remoteComputerUseBridge
+      : typeof input.computerUseBridge === 'boolean'
+        ? input.computerUseBridge
+        : existingBlock.computerUseBridge !== false
 
   const remoteHeaders =
     input.remoteHeaders && typeof input.remoteHeaders === 'object' ? input.remoteHeaders : existingBlock.headers
@@ -12418,6 +12448,20 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     // awaiting connectionPromise, which may still be pending for a sibling.
     entry.remoteBaseUrl = remote.baseUrl
 
+    // This profile's agent now runs on another machine, so give it a way back
+    // to this one's screen. Ownership is recorded while the entry is still
+    // pooled, so an eviction racing the handshake reaches onEvict and cancels
+    // it (see computer-use-bridge-lifecycle); the sidecar is shared by scopes.
+    if (remote.computerUseBridge && backendPool.get(poolKey) === entry) {
+      entry.computerUseBridgeOwner = `pool:${poolKey}`
+      entry.computerUseBridgeRemoteKey = computerUseBridge.acquire(remote, profile, entry.computerUseBridgeOwner)
+      await computerUseBridge
+        .ensure(remote, profile)
+        .catch(error =>
+          rememberLog(`[computer-use-bridge] setup failed for profile "${profile}": ${error.message || error}`)
+        )
+    }
+
     return {
       ...remote,
       profile,
@@ -12645,8 +12689,18 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 const poolStopper = createPoolStopper({
   pool: backendPool,
   stopChild: child => stopBackendChild(child),
-  waitForExit: child => waitForBackendExit(child)
+  waitForExit: child => waitForBackendExit(child),
+  onEvict: (_key, entry) => releasePoolBridgeOwnership(entry)
 })
+
+/** Hand back a pooled profile's claim on the shared Computer Use bridge. */
+function releasePoolBridgeOwnership(entry: any): void {
+  const { computerUseBridgeRemoteKey: remoteKey, computerUseBridgeOwner: owner } = entry || {}
+
+  if (remoteKey && owner) {
+    computerUseBridge.release(remoteKey, owner)
+  }
+}
 
 async function stopPoolBackend(profile: string) {
   const entry = backendPool.get(profile)
@@ -12667,6 +12721,7 @@ async function stopAllPoolBackends() {
 const backendShutdown = createBackendShutdownCoordinator(async () => {
   const primary = backendConnectionState.invalidate()
 
+  computerUseBridge.stopAll()
   stopBackendChild(primary)
   const pooledStops = stopAllPoolBackends()
 
@@ -12831,8 +12886,15 @@ async function startHermes() {
         error: null
       })
 
+      // The window's own agent is on another machine now. Offer it this one's
+      // screen; a Desktop with no local runtime declines and says so once.
+      await computerUseBridge.ensurePrimary(remote, primaryProfileKey())
+
       return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
     }
+
+    // Local backend: computer_use already drives this machine directly.
+    await computerUseBridge.ensurePrimary(null)
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote

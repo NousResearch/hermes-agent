@@ -666,10 +666,19 @@ async def select_terminal_backend(
 @router.get("/api/tools/computer-use/status")
 async def get_computer_use_status(profile: Optional[str] = None):
     """Computer Use readiness for the desktop card (payload shape: see
-    ``tools.computer_use.permissions.computer_use_status``)."""
+    ``tools.computer_use.permissions.computer_use_status``). Answered by the configured provider, so the card
+    describes the machine the agent will actually drive — reporting the gateway's own Accessibility grants while
+    a tunnelled bridge points at somebody's Mac would send the user to fix permissions on the wrong computer."""
     from tools.computer_use.permissions import computer_use_status
+    from tools.computer_use.tool import active_computer_use_provider
 
-    return await scoped_to_thread(profile, computer_use_status)
+    def _read():
+        try:
+            return active_computer_use_provider().get_status()
+        except Exception:
+            return computer_use_status()
+
+    return await scoped_to_thread(profile, _read)
 
 
 @router.post("/api/tools/computer-use/permissions/grant")

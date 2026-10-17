@@ -204,7 +204,8 @@ def test_wrapper_defers_managed_local_auto(monkeypatch):
     assert len(calls["enqueued"]) == 1
     assert calls["spawned"] == []
     key, kwargs = calls["enqueued"][0]
-    assert key == "sess-x"
+    from hermes_constants import get_hermes_home
+    assert key == str(get_hermes_home()) + "::sess-x"
     assert kwargs["review_memory"] is True
 
 

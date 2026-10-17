@@ -73,14 +73,14 @@ def custom_entry_for_endpoint(
 def load_runtime_pool(provider: Optional[str], base_url: Optional[str], requested_provider: Optional[str] = None) -> Any:
     """The pool for a runtime snapshot's identity. A custom runtime (``custom`` or ``custom:<name>``)
     is the entry's, so it gets the entry-scoped view; a built-in identity loads its whole pool.
-    Ownership comes from the runtime identity, never from the pool slug, which both share."""
-    from agent.credential_pool import CUSTOM_POOL_PREFIX, load_pool, resolve_runtime_pool_key
-    key = resolve_runtime_pool_key(provider, base_url)
-    if not key:
-        return None
+    Ownership and the pool key come from the runtime identity, never from the pool slug, which both
+    share: a ``custom:<name>`` identity keys on its own entry, not the first entry on its URL."""
+    from agent.credential_pool import CUSTOM_POOL_PREFIX, _pool_keys_for_custom_entry, load_pool, resolve_runtime_pool_key
     identities = [str(v or "").strip().lower() for v in (provider, requested_provider)]
     if not any(v == "custom" or v.startswith(CUSTOM_POOL_PREFIX) for v in identities):
-        return load_pool(key)
+        key = resolve_runtime_pool_key(provider, base_url)
+        return load_pool(key) if key else None
     name = next((v for v in identities if v.startswith(CUSTOM_POOL_PREFIX)), None)
     match = custom_entry_for_endpoint(base_url, name)
-    return entry_scoped_pool(load_pool(key), key, match[1] if match else None)
+    key = (_pool_keys_for_custom_entry(*match) or [""])[0] if name and match else resolve_runtime_pool_key(provider, base_url)
+    return entry_scoped_pool(load_pool(key), key, match[1] if match else None) if key else None

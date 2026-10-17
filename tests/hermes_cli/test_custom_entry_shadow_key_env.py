@@ -310,3 +310,43 @@ def test_persisting_the_entry_view_keeps_the_builtin_rows_and_writes_no_secret(t
     assert {r["id"] for r in after} == before
     assert any(r["source"] == "env:DEEPSEEK_API_KEY" for r in after)
     assert BUILTIN_KEY not in text and ENTRY_KEY not in text
+
+
+# ── review round 2 ──────────────────────────────────────────────────────────────────────────────
+
+SIBLING_KEY = "sibling-key-C-0123456789"
+
+
+def _two_entries_on_one_url(tmp_path, monkeypatch):
+    """``alpha`` (with a ``hermes auth add alpha`` row) and ``beta`` share ENDPOINT; beta is the primary."""
+    home = _home(tmp_path, monkeypatch, "alpha", "ALPHA_KEY_VAR", entry_extra={"key_env": "ALPHA_KEY_VAR"},
+                 pool={"alpha": [{"id": "m1", "label": "manual", "auth_type": "api_key", "priority": 0,
+                                  "source": "manual", "access_token": MANUAL_KEY}]})
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["providers"]["beta"] = {**cfg["providers"]["alpha"], "name": "beta", "key_env": "ENTRY_KEY_VAR"}
+    cfg["model"]["provider"] = "custom:beta"
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    monkeypatch.setenv("ALPHA_KEY_VAR", SIBLING_KEY)
+    return home
+
+
+def test_restoring_a_named_entry_never_resumes_on_a_sibling_sharing_its_url(tmp_path, monkeypatch):
+    _two_entries_on_one_url(tmp_path, monkeypatch)
+    from agent.custom_entry_pool import load_runtime_pool
+    from hermes_cli import runtime_provider as rp
+
+    pool = load_runtime_pool("custom", ENDPOINT, "custom:beta")
+    assert pool is None or not {e.access_token for e in pool.entries()} & {MANUAL_KEY, SIBLING_KEY}
+    initial = rp.resolve_runtime_provider(requested="custom:beta")
+    assert initial["api_key"] == ENTRY_KEY
+    agent = _restorable_agent({"provider": initial["provider"], "requested_provider": "custom:beta",
+                               "base_url": ENDPOINT, "api_key": ENTRY_KEY})
+    assert agent._restore_primary_runtime() is True
+    assert (agent.api_key, agent.base_url) == (ENTRY_KEY, ENDPOINT)
+
+
+def test_a_genuinely_bare_custom_snapshot_still_takes_the_first_entry_on_its_url(tmp_path, monkeypatch):
+    _two_entries_on_one_url(tmp_path, monkeypatch)
+    from agent.custom_entry_pool import load_runtime_pool
+
+    assert MANUAL_KEY in {e.access_token for e in load_runtime_pool("custom", ENDPOINT).entries()}

@@ -676,6 +676,15 @@ hermes sessions archive --title "dry run" --dry-run
 hermes sessions archive --title "dry run" --yes
 ```
 
+Archive matches ended sessions by default. Desktop and other gateway-owned
+local sessions are never "ended", so the command tells you how many matching
+sessions it skipped as still open; add `--include-open` to archive them too
+(`prune` never deletes open sessions):
+
+```bash
+hermes sessions archive --title "Review Hermes" --include-open --yes
+```
+
 At least one filter is required — a bare `hermes sessions archive` refuses to
 archive your entire history. A compacted conversation is archived as a unit
 through its live tip: an old compression segment never matches on its own age,

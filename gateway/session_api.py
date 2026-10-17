@@ -16,7 +16,13 @@ def declared_api_session(db, key):
     with db._read_ctx() as conn:
         row = conn.execute('SELECT value FROM state_meta WHERE key=?',
                            (_DECLARED_PREFIX + key,)).fetchone()
-    return row[0] if row else None
+    if row:
+        return row[0]
+    # Earlier releases kept no declared-key registry: the declared key itself sat in
+    # ``sessions.session_key`` (#139835). The pre-binding lookup finds that conversation, and
+    # ``bind_api_steps`` adopts it under the same key, so later requests hit the registry.
+    legacy = db.find_latest_gateway_session_for_peer(source='api_server', session_key=key)
+    return legacy['id'] if legacy else None
 
 
 def _served_profile(authority):
@@ -86,14 +92,19 @@ async def run_steps_off_loop(authority, steps, *, orphaned=None):
         raise
 
 
-def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None):
+def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None, caller_key=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
     return run_steps(bind_api_steps(authority, session_id, hosted_dispatch=hosted_dispatch,
-                                    declared_key=declared_key))
+                                    declared_key=declared_key, caller_key=caller_key))
 
 
-def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=None):
-    """``bind_api_session`` as write steps (``run_steps``): the binding transaction is yielded."""
+def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=None, caller_key=None):
+    """``bind_api_session`` as write steps (``run_steps``): the binding transaction is yielded.
+
+    ``caller_key`` is this request's validated ``X-Hermes-Session-Key`` even when an explicit
+    session id selected the conversation (``declared_key`` is set only when the key selected it).
+    It is used only to adopt a row an earlier release stamped with that same key, and is then
+    registered as that session's declared key (and stamped into its binding receipt)."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
         raise RuntimeStoreError('invalid_params')
@@ -160,8 +171,23 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                 raise RuntimeStoreError('admission_conflict')
             if conn.execute('SELECT 1 FROM sessions WHERE title=? AND id!=?', (title, session_id)).fetchone():
                 raise RuntimeStoreError('admission_conflict')
+        # Earlier API releases stored the caller-declared key directly on the session row
+        # (#139835). A caller presenting that exact key adopts the row onto the canonical route;
+        # the declared-key registry above already refused a key owned by another session, and any
+        # other stored key (another conversation's, a foreign route) still conflicts.
+        legacy_key = declared_key or caller_key
         if row is not None and row['session_key'] not in (None, '', route):
-            raise RuntimeStoreError('admission_conflict')
+            if not legacy_key or row['session_key'] != legacy_key:
+                raise RuntimeStoreError('admission_conflict')
+            # The rewrite below replaces the stamped key with the route: the registry keeps it,
+            # so a later request selecting the conversation by that key still finds this row.
+            owner = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                                 (_DECLARED_PREFIX + legacy_key,)).fetchone()
+            if owner is not None and owner[0] != session_id:
+                raise RuntimeStoreError('admission_conflict')
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
+                         (_DECLARED_PREFIX + legacy_key, session_id))
+            receipt['declared_key'] = legacy_key
         existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
                                 (route,)).fetchone()
         if existing is not None and json.loads(existing[0])['session_id'] != session_id:

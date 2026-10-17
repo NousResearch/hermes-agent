@@ -1,7 +1,6 @@
 """Responses retries observe their original admission before resolving mutable conversation names."""
 from functools import partial
 import hashlib
-import json
 import uuid
 
 from hermes_state_runtime import RuntimeStoreError
@@ -16,15 +15,11 @@ def request_binding(adapter, request, durable_key):
 
 def _request_admission_rows(db, request_id):
     """A lost derivative pointer cannot erase accepted identity on retirement."""
-    from hermes_state_terminal import ADMISSION_PREFIX
+    from hermes_state_terminal import terminal_api_admissions
     with db._read_ctx() as conn:
         rows = [dict(row) for row in conn.execute(
             "SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (request_id,))]
-        retired = conn.execute(
-            "SELECT value FROM state_meta WHERE key GLOB ? "
-            "AND json_extract(value, '$.principal_id')='api' AND json_extract(value, '$.request_id')=?",
-            (ADMISSION_PREFIX + '*', request_id))
-        rows.extend(json.loads(row[0]) for row in retired)
+        rows.extend(terminal_api_admissions(conn, request_id))
     return rows
 
 
@@ -45,7 +40,8 @@ def find_admission(adapter, durable_key, request_id):
     if admission_id:
         row = get_session_admission(authority.db, admission_id=admission_id)
         if row is None:
-            raise RuntimeStoreError('storage_unavailable')
+            # The admission's deletion tombstone aged out: the key is spent, never a new request.
+            raise RuntimeStoreError('admission_conflict')
     else:
         rows = _request_admission_rows(authority.db, request_id)
         if len(rows) > 1:
@@ -153,6 +149,10 @@ async def prepare_context(adapter, request, body, gateway_session_key, durable_k
             return None, _error_response(f'Previous response not found: {previous}', 404)
         history = list(stored.get('conversation_history', []))
         stored_session_id = await asyncio.to_thread(_stored_owner, adapter, stored.get('session_id'))
+        from gateway.platforms.api_server_authority_runs import continued_session
+        stored_session_id, error = await continued_session(adapter, stored_session_id, request_id)
+        if error is not None:
+            return None, error
         if instructions is None:
             instructions = stored.get('instructions')
     history.extend(messages[:-1])

@@ -25,6 +25,46 @@ def declared_api_session(db, key):
     return legacy['id'] if legacy else None
 
 
+def implicit_api_session(db, session_id, request_id=None):
+    """The session a header-less Chat Completions turn lands on. Its id is derived from the
+    conversation's opening, and a deleted id stays retired for good, so a NEW conversation that
+    opens like a deleted one moves to the next generation of that opening, the way a deleted Bot
+    Chat is replaced: the first ``api-<digest(id, n)>`` that is not retired. Read from durable rows
+    only, so every later turn of that conversation (same opening) lands on the same session. An
+    exact retry stays on the generation holding its request id's terminal identity; explicit ids
+    never come here."""
+    from hermes_state_mutation_retirement import first_generation
+    from hermes_state_terminal import identity_key
+    pinned = None if not request_id else lambda conn, sid: conn.execute(
+        'SELECT 1 FROM state_meta WHERE key=?', (identity_key('api', sid, request_id),)).fetchone() is not None
+    derive = lambda n: session_id if n == 0 else 'api-' + hashlib.sha256(f'{session_id}\0{n}'.encode()).hexdigest()[:16]
+    return first_generation(db, derive, pinned=pinned)[1]
+
+
+def continued_api_session(runner, session_id, request_id=None):
+    """The session a new turn on a retained chain (``previous_response_id``, a named conversation)
+    lands on: its stored id, or that id's next generation once the user deleted it (the history
+    comes from the response store). An exact retry stays on the generation holding its identity."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner) if session_id else None
+    return implicit_api_session(authority.db, session_id, request_id) if authority is not None else session_id
+
+
+def room_session_id(identity, generation=0):
+    """``room_<digest>`` of a hosted room member's identity (home install, room, member, target
+    profile); a later generation folds its number into the digest."""
+    seed = '\0'.join(identity) + (f'\0{generation}' if generation else '')
+    return 'room_' + hashlib.sha256(seed.encode()).hexdigest()[:32]
+
+
+def hosted_member_session(db, identity):
+    """``(generation, session_id)`` of the hidden session a hosted room member's dispatches land on:
+    a deleted one stays retired, so the room's next task moves to the next generation. A room
+    retry is replayed by the run's Idempotency-Key, never by this id, so nothing pins it."""
+    from hermes_state_mutation_retirement import first_generation
+    return first_generation(db, lambda n: room_session_id(identity, n))
+
+
 def _served_profile(authority):
     """Name of the profile *authority* serves; None for the launch profile (and for bare runners
     without a registry), which is what ``SessionSource.profile`` means on the wire."""
@@ -108,12 +148,12 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
         raise RuntimeStoreError('invalid_params')
-    storage_source, title, room_identity = 'api_server', None, None
+    storage_source, title, room_identity, room_generation = 'api_server', None, None, 0
     if hosted_dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch
         dispatch = HostedMemberDispatch.from_mapping(hosted_dispatch)
         room_identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
-        expected = 'room_' + hashlib.sha256('\0'.join(room_identity).encode()).hexdigest()[:32]
+        room_generation, expected = hosted_member_session(authority.db, room_identity)
         if expected != session_id:
             raise RuntimeStoreError('admission_conflict')
         storage_source, title = 'bot_room', f'Group: {dispatch.room_id}'
@@ -140,6 +180,8 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         receipt['declared_key'] = declared_key
     if room_identity is not None:
         receipt.update(storage_source=storage_source, room_identity=room_identity)
+        if room_generation:
+            receipt['room_generation'] = room_generation
 
     def write(conn):
         _epoch(conn, authority.epoch)
@@ -237,7 +279,7 @@ def restore_api_session(authority, session_id):
         raise RuntimeStoreError('admission_conflict')
     if receipt.get('storage_source') == 'bot_room':
         identity = receipt['room_identity']
-        expected = 'room_' + hashlib.sha256('\0'.join(identity).encode()).hexdigest()[:32]
+        expected = room_session_id(identity, receipt.get('room_generation', 0))
         if expected != session_id or row['title'] != 'Group: ' + identity[1] or not row['hidden']:
             raise RuntimeStoreError('admission_conflict')
     store = authority.runner.session_store

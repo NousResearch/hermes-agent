@@ -1178,6 +1178,10 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     await asyncio.to_thread(recover_session_inputs, db, epoch=epoch)
     await asyncio.to_thread(backfill_legacy_session_owners, db)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
+    # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
+    # authority is published, so the recovery below only reads.
+    from gateway.session_local_adoption import adopt_local_compressions
+    await adopt_local_compressions(authority)
     if register:
         runner.session_authority = authority
     from gateway.session_cron import bind_owner

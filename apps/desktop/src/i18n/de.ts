@@ -1032,6 +1032,12 @@ export const deOverrides = {
       sessionDensityCompact: 'Kompakt',
       sessionDensityComfortable: 'Komfortabel',
       sessionDensityDetailed: 'Detailreich',
+      projectLabelTitle: 'Projektbezeichnungen',
+      projectLabelDesc: 'Automatisch erkannte Projekte in der Seitenleiste nach Ordnername oder vollständigem Pfad anzeigen.',
+      projectLabelShort: 'Kurz',
+      projectLabelFull: 'Vollständiger Pfad',
+      showEmptyWorktreeLanesTitle: 'Leere Worktree-Zeilen anzeigen',
+      showEmptyWorktreeLanesDesc: 'Verknüpfte Worktrees ohne Sitzungen in der Projektseitenleiste anzeigen.',
       tabStripTitle: 'Tab-Leiste',
       tabStripDesc:
         'Zeigt Tabs über einer Zone. Blendet sie automatisch aus, wenn eine Zone nur einen einzelnen Bereich enthält.',

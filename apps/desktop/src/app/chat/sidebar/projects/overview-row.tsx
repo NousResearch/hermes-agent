@@ -10,6 +10,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
 import { fetchProjectSessions, projectProfile } from '@/store/projects'
+import { $projectLabelMode } from '@/store/sidebar-project-display'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
@@ -34,7 +35,7 @@ import {
   useWorkspaceNodeOpen
 } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
-import { excludeProjectSessions, type SidebarProjectTree } from './workspace-groups'
+import { excludeProjectSessions, projectSidebarLabel, type SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton, WorkspaceShowMoreRow } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
@@ -127,6 +128,8 @@ export function ProjectOverviewRow({
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
   const showAllSessions = useStore($sidebarShowAllSessions)
+  const projectLabelMode = useStore($projectLabelMode)
+  const projectLabel = projectSidebarLabel(project, projectLabelMode)
   // The tree payload previews only the most-recent few sessions per project
   // (kept light on purpose); "Show all" hydrates THIS project's lanes on demand
   // rather than widening every project's preview window.
@@ -198,7 +201,7 @@ export function ProjectOverviewRow({
       labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
       onClick={() => onEnter?.(project.id)}
     >
-      {project.label}
+      {projectLabel}
     </SidebarRowLink>
   )
 

@@ -1037,6 +1037,12 @@ export const frOverrides = {
       sessionDensityCompact: 'Compacte',
       sessionDensityComfortable: 'Confortable',
       sessionDensityDetailed: 'Détaillée',
+      projectLabelTitle: 'Libellés des projets',
+      projectLabelDesc: 'Affiche les projets détectés automatiquement par nom de dossier ou chemin complet dans la barre latérale.',
+      projectLabelShort: 'Court',
+      projectLabelFull: 'Chemin complet',
+      showEmptyWorktreeLanesTitle: 'Afficher les lignes de worktree vides',
+      showEmptyWorktreeLanesDesc: 'Conserve les worktrees liés sans session dans la barre latérale des projets.',
       tabStripTitle: "Barre d'onglets",
       tabStripDesc:
         "Affiche les onglets au-dessus d'une zone. Le mode automatique les masque lorsqu'une zone ne contient qu'un seul panneau.",

@@ -1035,6 +1035,12 @@ export const esOverrides = {
       sessionDensityCompact: 'Compacta',
       sessionDensityComfortable: 'Cómoda',
       sessionDensityDetailed: 'Detallada',
+      projectLabelTitle: 'Etiquetas de proyecto',
+      projectLabelDesc: 'Muestra proyectos detectados automáticamente por nombre de carpeta o ruta completa en la barra lateral.',
+      projectLabelShort: 'Corta',
+      projectLabelFull: 'Ruta completa',
+      showEmptyWorktreeLanesTitle: 'Mostrar líneas de worktree vacías',
+      showEmptyWorktreeLanesDesc: 'Mantiene visibles los worktrees vinculados sin sesiones en la barra lateral de proyectos.',
       tabStripTitle: 'Barra de pestañas',
       tabStripDesc:
         'Muestra pestañas encima de una zona. Auto las oculta si hay un solo panel, salvo que haya otra zona de chat o de mosaico abierta.',

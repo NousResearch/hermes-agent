@@ -524,6 +524,12 @@ export const jaOverrides = {
       sessionDensityCompact: 'コンパクト',
       sessionDensityComfortable: '標準',
       sessionDensityDetailed: '詳細',
+      projectLabelTitle: 'プロジェクトラベル',
+      projectLabelDesc: '自動検出したプロジェクトを、サイドバーにフォルダー名またはフルパスで表示します。',
+      projectLabelShort: '短い名前',
+      projectLabelFull: 'フルパス',
+      showEmptyWorktreeLanesTitle: '空のワークツリー列を表示',
+      showEmptyWorktreeLanesDesc: 'セッションのないリンク済みワークツリーをプロジェクトのサイドバーに残します。',
       tabStripTitle: 'タブバー',
       tabStripDesc:
         'ゾーンの上にタブを表示します。自動では、他にチャットやタイルのゾーンがない限り、ペインが1つのときに隠します。',

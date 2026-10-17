@@ -86,6 +86,12 @@ export const SETTINGS_MANIFEST = {
       ['sidebar', 'sessions', 'compact', 'comfortable', 'density'],
       'sessionDensity'
     ),
+    projectLabel: appearanceSetting('window-layout', ['sidebar', 'projects', 'folder', 'path', 'full path'], 'projectLabel'),
+    showEmptyWorktreeLanes: appearanceSetting(
+      'window-layout',
+      ['sidebar', 'projects', 'worktree', 'branch', 'empty'],
+      'showEmptyWorktreeLanes'
+    ),
     tabStrip: appearanceSetting('window-layout', ['tabs', 'tab bar', 'strip'], 'tabStrip'),
     appActions: appearanceSetting(
       'window-layout',

@@ -524,6 +524,12 @@ export const ruOverrides = {
       sessionDensityCompact: 'Компактно',
       sessionDensityComfortable: 'Комфортно',
       sessionDensityDetailed: 'Подробно',
+      projectLabelTitle: 'Подписи проектов',
+      projectLabelDesc: 'Показывать автоматически обнаруженные проекты по имени папки или полному пути на боковой панели.',
+      projectLabelShort: 'Кратко',
+      projectLabelFull: 'Полный путь',
+      showEmptyWorktreeLanesTitle: 'Показывать пустые строки worktree',
+      showEmptyWorktreeLanesDesc: 'Сохранять связанные worktree без сеансов на панели проектов.',
       tabStripTitle: 'Панель вкладок',
       tabStripDesc:
         'Показывать вкладки над зоной. Автоматически скрываются для одной панели, если не открыта другая зона чата или плитки.',

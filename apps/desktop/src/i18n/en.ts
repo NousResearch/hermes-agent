@@ -1000,6 +1000,12 @@ export const en: Translations = {
       sessionDensityCompact: 'Compact',
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
+      projectLabelTitle: 'Project Labels',
+      projectLabelDesc: 'Show auto-discovered projects by folder name or full path in the sidebar.',
+      projectLabelShort: 'Short',
+      projectLabelFull: 'Full path',
+      showEmptyWorktreeLanesTitle: 'Show empty worktree lanes',
+      showEmptyWorktreeLanesDesc: 'Keep linked worktrees without sessions visible in the Projects sidebar.',
       tabStripTitle: 'Tab Strip',
       tabStripDesc:
         'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',

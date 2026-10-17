@@ -2,6 +2,8 @@ import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $defaultProfileRoute } from '@/store/default-profile'
 import { notifyError } from '@/store/notifications'
 import {
+  $activeGatewayProfile,
+  $newChatConnectionId,
   $newChatProfile,
   $newChatRoute,
   type AgentProfileRoute,
@@ -30,19 +32,49 @@ export function defaultNewSessionTarget(): { profile: string; route: AgentProfil
   // An ordinary New Window inherits its opener only for boot. Reusing that
   // seed here would undo a later device/profile selection. Only an explicit
   // "Open profile in new window" makes the peer's launch route a default.
+  // An explicit profile window stays pinned. Otherwise a newer captured
+  // gateway/profile selection outranks the app-wide default.
   const profile = !isPeerInstanceWindow() || isProfilePinnedWindow() ? windowProfileOverride() : null
-  const saved = profile ? { connectionId: windowConnectionOverride(), profile } : $defaultProfileRoute.get()
 
-  if (!saved) {
-    return null
+  if (profile) {
+    const saved = { connectionId: windowConnectionOverride(), profile }
+
+    return {
+      profile: saved.profile,
+      route: saved.connectionId === null ? null : { connectionId: saved.connectionId, profile: saved.profile }
+    }
   }
 
-  // A captured target can explicitly choose the legacy profile door (null
-  // route), distinct from no default and from the override-bypassing `local`.
-  return {
-    profile: saved.profile,
-    route: saved.connectionId === null ? null : { connectionId: saved.connectionId, profile: saved.profile }
+  // A new-chat owner captured by a profile/gateway selection is newer than
+  // the app-wide default. The default still routes generic drafts when there
+  // is no newer owner intent (including the initial boot restore).
+  const saved = $defaultProfileRoute.get()
+  const selectedProfile = $newChatProfile.get()
+  const selectedConnectionId = $newChatConnectionId.get()
+  const hasSelectedOwner = selectedProfile !== null || selectedConnectionId !== null
+
+  if (hasSelectedOwner) {
+    const selected = {
+      profile: selectedProfile ?? $activeGatewayProfile.get(),
+      route:
+        selectedConnectionId === null
+          ? null
+          : { connectionId: selectedConnectionId, profile: selectedProfile ?? $activeGatewayProfile.get() }
+    }
+
+    if (!saved || saved.connectionId !== selected.route?.connectionId || saved.profile !== selected.profile) {
+      return selected
+    }
   }
+
+  if (saved) {
+    return {
+      profile: saved.profile,
+      route: saved.connectionId === null ? null : { connectionId: saved.connectionId, profile: saved.profile }
+    }
+  }
+
+  return null
 }
 
 export function prepareDefaultNewSession(): void {

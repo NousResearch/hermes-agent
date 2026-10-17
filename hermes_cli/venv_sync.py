@@ -462,13 +462,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path | None:
     """Launch a checkout that another data root owns (#123238).
 
-    Dependency state is per data root, so a borrowing root -- a test's temporary
-    ``HERMES_HOME``, a per-task home -- still gets an environment of its own, synced exactly
-    as a process spawned under a live update syncs. The rest is the checkout's, and so the
-    owner's: launchers, product builds, post-update maintenance, the install stamp and the
-    owner's own update markers. None of it is armed, run or published from here, so a
-    borrowing launch cannot rebind the shared launchers, rebuild products another root is
-    serving, or race the owner's tail under a lock that lives in a different home.
+    A borrowing root without its own plugins reuses the owner's dependency generation. Per-task
+    homes therefore retain their data isolation without rebuilding the same checkout's venv.
+    A root that has plugins keeps its own generation: its dependency selection can differ from
+    the owner's. The checkout's launchers, product builds, post-update maintenance, install
+    stamp and update markers remain the owner's in either case.
     """
     import os
     import sys
@@ -476,6 +474,8 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     from hermes_cli._launchers import resolve_store_python
     from hermes_cli.update_lock import UpdateLock
 
+    if not current and _owner_dependencies_are_current(root, owner):
+        current = True
     if not current:
         lock = UpdateLock(install_root=root, checkout_first=False)  # R6, as in prepare_launch
         if not lock.acquire():
@@ -492,6 +492,23 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")
     same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
     return python if not current or not same else None
+
+
+def _owner_dependencies_are_current(root: Path, owner: Path) -> bool:
+    """Whether a plugin-free borrower can safely use its checkout owner's venv."""
+    import pm
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from pm.environments import dependency_home_root
+
+    # Plugin members are part of the venv stamp. Do not make a task's own plugin selection
+    # disappear just to avoid the sync; it needs an environment scoped to that task home.
+    if (dependency_home_root() / "plugins").is_dir():
+        return False
+    token = set_hermes_home_override(owner)
+    try:
+        return pm.venv_is_current(project_root=root)
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:

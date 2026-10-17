@@ -133,7 +133,7 @@ class TestSubdirectoryHintTracker:
             result = tracker.check_tool_call("read_file", {"path": str(sub / "file.py")})
         assert result is not None
         assert "HEAD-MARKER" in result and "TAIL-MARKER" in result
-        assert "truncated AGENTS.md" in result and str(Path("bigdir") / "AGENTS.md") in result
+        assert "truncated AGENTS.md" in result and "bigdir/AGENTS.md" in result
         assert len(result) < len(body)
         assert any("TRUNCATED" in r.message and "AGENTS.md" in r.message for r in caplog.records)
         # A preview capped by a constant is not a context_file_max_chars problem: no chat status warning is

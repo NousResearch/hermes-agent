@@ -168,3 +168,47 @@ def test_one_shot_aggregate_moa_context_passes_slot_extra_body(monkeypatch):
     agg_calls = [c for c in captured_calls if c.get("task") == "moa_aggregator"]
     assert len(agg_calls) == 1
     assert agg_calls[0]["extra_body"] == {"enable_thinking": False}
+
+def test_aggregator_keeps_slot_extra_body_on_a_cached_runtime(tmp_path, monkeypatch):
+    """The resolved slot runtime is cached for a TTL. A call must not strip ``extra_body``
+    from the cached copy, or every later call inside the TTL goes out without it."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: closed
+  presets:
+    closed:
+      enabled: true
+      reference_models: []
+      aggregator:
+        provider: dashscope
+        model: qwen3.7-max
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent import moa_loop
+
+    captured = []
+    monkeypatch.setattr(moa_loop, "_runtime_cache", {})
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: captured.append(kwargs) or _response("acted"))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kw: {
+            "base_url": "https://dashscope.example/v1",
+            "api_key": "test-key",
+            "request_overrides": {"extra_body": {"enable_thinking": False}},
+        },
+    )
+
+    facade = moa_loop.MoAChatCompletions("closed")
+    for _ in range(2):
+        facade.create(model="closed", messages=[{"role": "user", "content": "hello"}])
+
+    # Reference and aggregator slots share the cache key (same provider/model), so every
+    # call of both turns must carry the slot's extra_body.
+    assert [c["task"] for c in captured].count("moa_aggregator") == 2
+    assert all(c.get("extra_body") == {"enable_thinking": False} for c in captured), captured

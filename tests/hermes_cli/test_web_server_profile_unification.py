@@ -636,6 +636,36 @@ class TestProfileScopedChatPty:
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
         assert "HERMES_TUI_GATEWAY_URL" not in env
 
+    def test_chat_argv_serving_profile_name_attaches_to_in_memory_gateway(
+        self, isolated_profiles, monkeypatch
+    ):
+        """Regression for #122365: naming the dashboard's own profile must attach.
+
+        The dashboard's serving profile is sent by name (``default``). That name is
+        not the process home's own alias, so the chat used to set a profile scope,
+        skip the in-memory gateway attach URL and spawn a second writer backend.
+        """
+        monkeypatch.setattr(
+            _web_server_chat,
+            "_build_gateway_ws_url",
+            lambda: "ws://127.0.0.1:9/api/ws?token=t",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+        # Not under test; keeps shutil.which off the real ~/.hermes PATH entries.
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._apply_tui_python_env", lambda env: None
+        )
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="default")
+
+        assert env is not None
+        assert env.get("HERMES_TUI_GATEWAY_URL") == "ws://127.0.0.1:9/api/ws?token=t"
+        assert env["HERMES_HOME"] == str(isolated_profiles["default"])
+
     def test_chat_argv_bridges_selected_profile_terminal_config(
         self, isolated_profiles, monkeypatch
     ):

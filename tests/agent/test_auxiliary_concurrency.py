@@ -3,6 +3,7 @@
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
@@ -224,6 +225,56 @@ class TestSyncCallEnforcesLimit:
             "include_usage": True
         }
 
+
+class _IterableCompleted:
+    """A completed SDK-ish response that is also iterable: SDK models iterate their fields."""
+
+    def __init__(self):
+        self.choices = [SimpleNamespace(message=SimpleNamespace(content="hi"))]
+
+    def __iter__(self):
+        yield "field"
+
+
+@pytest.mark.parametrize(
+    "make_completed",
+    [lambda: SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))]), _IterableCompleted],
+    ids=["object", "iterable-object"],
+)
+def test_completed_response_is_never_wrapped_as_a_stream(make_completed):
+    """An adapter may return a completed response despite ``stream=True`` — the codex Responses
+    shim MoA converts with ``_completed_response_as_stream_chunk`` does. The concurrency wrapper
+    must keep that response a response (not a generator without ``choices``) and release its permit
+    with the call: the discriminator is ``choices``, never generic iterability."""
+    completed = make_completed()
+    client = MagicMock()
+    client.base_url = "https://example.test/v1"
+    client.chat.completions.create.return_value = completed
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openrouter", "test-model", None, None, None),
+        ),
+        patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "test-model"),
+        ),
+        patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"max_concurrency": 1},
+        ),
+    ):
+        response = call_llm(
+            task="moa_aggregator",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+
+        assert response is completed
+        assert hasattr(response, "choices")
+        # The permit is free again: it was released by the call, not handed to a stream wrapper.
+        assert _acquire_sync_aux_semaphore("moa_aggregator").acquire(blocking=False) is True
 
 
 class TestAsyncCallEnforcesLimit:

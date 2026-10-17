@@ -60,6 +60,8 @@ def completion_payload(row, settled, response, captured):
             complete['billing'] = captured_result['billing_block']
         if isinstance(captured_result.get('failure_reason'), str) and captured_result['failure_reason']:
             complete['failure_reason'] = captured_result['failure_reason']
+        if isinstance(captured_result.get('last_reasoning'), str) and captured_result['last_reasoning'].strip():
+            complete['reasoning'] = captured_result['last_reasoning'].strip()
     # The committed row addresses of the turn: a viewer binds the streamed reply to
     # its stored row, so a transcript read racing this frame never paints it twice.
     # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic

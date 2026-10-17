@@ -809,6 +809,13 @@ class SessionPortabilityMixin:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}
 
         def _do(conn):
+            from hermes_state_mutation_retirement import retired_in
+            # A user-deleted id stays fenced for good: its row restored beside the fence would list
+            # fine and refuse every turn, so the import is refused by name and writes nothing.
+            ids = [str(item["session"].get("id") or "").strip() for item in normalized]
+            if deleted := [sid for sid in ids if retired_in(conn, sid)]:
+                return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": [
+                    f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted]}
             imported_ids: list[str] = []
             skipped_ids: list[str] = []
             parent_updates: list[tuple[str, str]] = []

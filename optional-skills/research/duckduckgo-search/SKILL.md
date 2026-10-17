@@ -1,6 +1,6 @@
 ---
 name: duckduckgo-search
-description: Free keyless web, news, and image search via ddgs.
+description: Free keyless web, news, and image search via ddgs, with no API key required. Use when web_search is unavailable or a keyless path is needed. Prefer the built-in web_search tool for ordinary lookups; reach for this skill when web_search fails or when DuckDuckGo results specifically are wanted.
 version: 1.3.0
 author: gamedevCloudy
 license: MIT

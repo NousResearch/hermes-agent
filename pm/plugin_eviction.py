@@ -21,6 +21,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,8 @@ from pm.environment import BuildFailure, ResolutionConflict
 from pm.environments import install_state_dir, runtime_facts_path
 from pm.filesystem import durable_write_bytes, file_digest, native, read_bytes_or_none
 from pm.package import InstallError
+
+logger = logging.getLogger(__name__)
 
 Entry = tuple[Path, str, Path]  # (home plugins dir, selection key, plugin dir)
 
@@ -74,6 +77,36 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
     return reasons, waiting
 
 
+def _discover_plugins() -> list | None:
+    """One scan of the plugin tree for alias lookup, or None when it cannot be read."""
+    try:
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        return _discover_all_plugins()
+    except (ImportError, OSError) as exc:
+        # Discovery only adds manifest-name aliases; the key and its bare leaf are always known.
+        # Anything else is a real bug in the plugin tree and should surface, not be hidden.
+        logger.warning("Could not discover plugin aliases: %s", exc)
+        return None
+
+
+def _spellings(name: str, discovered: list | None) -> set[str]:
+    """Every spelling a config list may hold for plugin *name* (key, bare leaf, manifest name).
+    *discovered* is the shared scan from :func:`_discover_plugins`; None means the scan failed."""
+    if discovered is None:
+        return {name, name.split("/")[-1]}
+    from hermes_cli.plugins_cmd import _plugin_aliases
+
+    return _plugin_aliases(name, discovered)
+
+
+def _discard_aliases(names: list, aliases: set[str]) -> None:
+    """Remove *aliases* from the round-tripped list in place, so order and comments survive."""
+    for index in reversed(range(len(names))):
+        if names[index] in aliases:
+            del names[index]
+
+
 class PluginEviction:
     """Config edits disabling the plugins in *reasons*; published like a plugin selection."""
 
@@ -87,6 +120,8 @@ class PluginEviction:
             if plugin_dir.resolve() in reasons:
                 by_home.setdefault(plugins_dir.parent, []).append(name)
         self.edits: list[tuple[Path, bytes | None, bytes]] = []
+        discovered: list | None = None
+        scanned = False  # scan once for every evicted plugin, and only if an enabled list needs it
         for home, names in by_home.items():
             path = home / "config.yaml"
             previous = read_bytes_or_none(path)
@@ -99,10 +134,17 @@ class PluginEviction:
             disabled = plugins.get("disabled")
             if disabled is None:
                 disabled = plugins["disabled"] = []
+            enabled = plugins.get("enabled")
             memory = config.get("memory")
             for name in names:
                 if name not in disabled:
                     disabled.append(name)
+                # Keep the two lists consistent: a plugin that is disabled must not stay enabled
+                # under any spelling the loader matches, or `plugins enable` has nothing to repair.
+                if isinstance(enabled, list):
+                    if not scanned:
+                        discovered, scanned = _discover_plugins(), True
+                    _discard_aliases(enabled, _spellings(name, discovered))
                 # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
                 if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
                     memory["provider"] = ""
@@ -198,7 +240,8 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
     for plugins_dir, name, plugin_dir in entries:
         key = plugin_dir.resolve()
         if key in reasons:
-            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}")
+            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}; "
+                           f"once it fits this Hermes again, run `hermes plugins enable {name}`")
         elif key in waiting:
             notices.append(f"Left plugin '{name}' in {plugins_dir.parent} out of this update: {waiting[key]}; "
                            "it stays enabled and rejoins once Hermes reports a version it accepts")

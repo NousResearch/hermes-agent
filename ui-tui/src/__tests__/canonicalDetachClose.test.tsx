@@ -55,7 +55,7 @@ function fixture() {
 
   function Harness() {
     lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: vi.fn() },
-      gw: { isCanonical: true, request }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
+      gw: { isCanonical: true, request, detachPolicyParams: () => ({}) }, rpc: request, scrollRef: { current: null }, panel: vi.fn(), sys: vi.fn(),
       setHistoryItems: vi.fn(), setLastUserMsg: vi.fn(), setSessionStartedAt: vi.fn(), setStickyPrompt: vi.fn(),
       setVoiceProcessing: vi.fn(), setVoiceRecording: vi.fn() } as any)
 

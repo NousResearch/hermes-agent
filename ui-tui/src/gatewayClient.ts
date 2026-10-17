@@ -153,6 +153,20 @@ export class GatewayClient extends EventEmitter {
   private localGeneration = 0
   private recoveryAttempts: number[] = []
   isCanonical = false
+
+  /** The connected gateway advertised ``detach_policy`` support (gateway.ready). A remote-attach
+   * TUI sends ``session.create/resume {detach_policy: "park"}`` only when this is true — an older
+   * gateway rejects unknown params (4000) at admission. */
+  gatewayDetachPolicy = false
+
+  /** Params asking a supporting gateway to keep this session alive across disconnects
+   * (``detach_policy: "park"``). Sent ONLY on a plain remote attach to a tui_gateway that
+   * advertised the capability: a spawned/local TUI's lifecycle is tied to this process (the
+   * session must die with it), and a canonical ``session_authority`` attach fronts the authority
+   * store whose strict param validation predates the field. Empty object everywhere else. */
+  detachPolicyParams(): Record<string, unknown> {
+    return this.gatewayDetachPolicy && this.attachUrl && !this.isCanonical ? { detach_policy: 'park' } : {}
+  }
   private creationContract?: CreationContract
   private describedSkin?: Record<string, unknown>
   private describeFlight?: Promise<void>
@@ -186,6 +200,12 @@ export class GatewayClient extends EventEmitter {
    * `gateway.ready` itself after `runtime.describe`, so the listener's ready would be a
    * second one) while still negotiating the transport's heartbeat capability. */
   private publishWire(ev: AnyGatewayEvent) {
+    // Wire truth for the detach_policy capability: the canonical branch below consumes the
+    // listener's ready frame (the client re-publishes its own after runtime.describe, without
+    // this field), so capture it here — every path, before any branch returns.
+    if (ev.type === 'gateway.ready') {
+      this.gatewayDetachPolicy = (ev as GatewayEvent<'gateway.ready'>).payload?.detach_policy === true
+    }
     if (!this.isCanonical && ev.type === 'gateway.ready' && this.attachUrl !== null &&
         (ev as { payload?: { session_authority?: boolean } }).payload?.session_authority === true) {
       // An explicit HERMES_TUI_GATEWAY_URL endpoint whose session verbs belong to an authority:

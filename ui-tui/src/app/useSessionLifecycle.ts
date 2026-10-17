@@ -375,8 +375,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         const r = await rpc<SessionCreateResponse>(
           'session.create',
           gw.isCanonical
-            ? { request_id: randomUUID(), ...localCreationOptions(), ...workspaceCwd }
-            : { cols: colsRef.current, ...workspaceCwd }
+            ? { request_id: randomUUID(), ...localCreationOptions(), ...workspaceCwd, ...gw.detachPolicyParams() }
+            : { cols: colsRef.current, ...workspaceCwd, ...gw.detachPolicyParams() }
         )
 
         if (flight !== attachmentFlight.current) {
@@ -503,10 +503,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const request = pendingDetach
         ? pendingDetach.then(() =>
             flight === attachmentFlight.current
-              ? gw.request<SessionActivateResponse>('session.activate', { session_id: id })
+              ? gw.request<SessionActivateResponse>('session.activate', { session_id: id, ...gw.detachPolicyParams() })
               : null
           )
-        : gw.request<SessionActivateResponse>('session.activate', { session_id: id })
+        : gw.request<SessionActivateResponse>('session.activate', { session_id: id, ...gw.detachPolicyParams() })
 
       request
         .then(raw => {
@@ -619,10 +619,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           const request = pendingDetach
             ? pendingDetach.then(() =>
                 flight === attachmentFlight.current
-                  ? gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+                  ? gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id, ...gw.detachPolicyParams() })
                   : null
               )
-            : gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+            : gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id, ...gw.detachPolicyParams() })
 
           return request
             .then(raw => {

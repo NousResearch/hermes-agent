@@ -452,17 +452,30 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile:
     }
 
 
+def _normalize_detach_policy(params: dict | None, close_on_disconnect: bool) -> str:
+    """Resolve the session's disconnect policy: ``close`` == ``close_on_disconnect=true`` (kept for
+    older clients), ``park`` skips the orphan-reap timer entirely, default ``grace`` is the historical
+    sentinel-park + grace-window reap. An unknown value falls back to ``grace`` — never to ``close``,
+    which would turn a disconnect into a teardown."""
+    raw = str((params or {}).get("detach_policy") or "").strip().lower()
+    if raw in ("park", "grace", "close"):
+        return raw
+    return "close" if close_on_disconnect else "grace"
+
+
 def _deferred_session_record(
     session_key: str, *, cols: int, cwd: str, history: list, lease, source: str = "tui",
     close_on_disconnect: bool = False, display_history_prefix: list | None = None,
     profile_home: Path | None = None, lazy: bool = False, model_override=None,
     resume_runtime_overrides: dict | None = None, todo_state: dict | None = None,
-    explicit_cwd: bool = False) -> dict:
+    explicit_cwd: bool = False, detach_policy: str | None = None) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
     now = time.time()
     return {
         "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
-        "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
+        "close_on_disconnect": detach_policy == "close" or close_on_disconnect,
+        "detach_policy": detach_policy or ("close" if close_on_disconnect else "grace"),
+        "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
         "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,
         "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,

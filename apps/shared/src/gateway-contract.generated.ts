@@ -3058,6 +3058,7 @@ export interface SessionCreateParams {
   fast?: boolean | null
   service_tier?: string | null
   close_on_disconnect?: boolean
+  detach_policy?: 'grace' | 'park' | 'close' | null
   hidden?: boolean
   room_plumbing?: boolean
   follow_profile_config?: boolean
@@ -3133,6 +3134,7 @@ export interface SessionResumeParams {
   omit_messages?: boolean
   eager_build?: boolean
   close_on_disconnect?: boolean
+  detach_policy?: 'grace' | 'park' | 'close' | null
   inline_images?: boolean
 }
 export interface SessionResumeResult {
@@ -3209,6 +3211,7 @@ export interface SessionActivateParams {
   profile?: string | null
   cols?: number | null
   omit_messages?: boolean
+  detach_policy?: 'grace' | 'park' | 'close' | null
 }
 export interface SessionActivateResult {
   session_id: string
@@ -5495,6 +5498,7 @@ export interface GatewayReadyPayload {
   replay_epoch: string
   heartbeat?: boolean | null
   session_authority?: boolean | null
+  detach_policy?: boolean | null
 }
 /** ``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress. ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered; ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted. */
 export interface OnboardingEndedPayload {

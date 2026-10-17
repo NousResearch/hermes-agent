@@ -19,7 +19,7 @@ function mountLifecycle(answer: (method: string) => unknown) {
     const lifecycle = useSessionLifecycle({
       colsRef: { current: 80 },
       composerActions: { setComposerTokens: vi.fn() } as any,
-      gw: { isCanonical: true, request } as any,
+      gw: { isCanonical: true, request, detachPolicyParams: () => ({}) } as any,
       panel: vi.fn(),
       rpc: request as any,
       scrollRef: { current: null },

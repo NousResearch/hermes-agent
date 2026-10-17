@@ -548,6 +548,16 @@ _URL_BARE_TOKEN_RE = re.compile(
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
+# Inline base64 media payloads (``data:<mime>;base64,…``). The payload is binary, not free text:
+# secret patterns (the JWT ``eyJ…`` gate, the assignment pass over ``=`` padding) match arbitrary
+# spans inside it with no false-negative-free fix, and one masked span bricks every later image
+# request with a non-retryable 400 (#136388). Capturing group: re.split yields payloads at odd
+# indices so the passes below can skip them (same intent as the CDP exemption, #94138, and the
+# memory egress ``data:`` passthrough in memory_manager._redact_for_provider).
+_INLINE_BASE64_DATA_URL_RE = re.compile(
+    r"(data:[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=_-]+)"
+)
+
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
@@ -936,6 +946,20 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # ``secret_file`` is authoritative: a caller that classified the source as secret-bearing must not
     # be silently fail-open because another flag (code_file, or file_read implying it) was also set.
     code_file = (code_file or file_read) and not secret_file
+
+    # Inline base64 media payloads pass through byte-identical (#136388): split them out, redact the
+    # surrounding text, re-join. The recursion terminates — the split fragments contain no further
+    # ``data:…;base64,`` match — and the vault scrub above already ran over the full text.
+    parts = _INLINE_BASE64_DATA_URL_RE.split(text)
+    if len(parts) > 1:
+        return "".join(
+            part if idx % 2 else redact_sensitive_text(
+                part, force=force, code_file=code_file, file_read=file_read,
+                secret_file=secret_file,
+                redact_url_credentials=redact_url_credentials,
+            )
+            for idx, part in enumerate(parts)
+        )
 
     # Control/zero-width chars can split a token body so _PREFIX_RE alone misses it.
     if _has_known_prefix_substring(text):

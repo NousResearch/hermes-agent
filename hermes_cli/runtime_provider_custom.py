@@ -663,7 +663,14 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         base_url, "custom", custom_provider.get("api_mode"),
         provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
     )
+    # Pool ownership uses the configured URL; normalize the selected wire's SDK path afterward.
+    if explicit_api_mode:
+        from hermes_cli.models import normalize_opencode_base_url
+        base_url = normalize_opencode_base_url(
+            _opencode_family_for_custom(requested_provider, base_url), explicit_api_mode, base_url,
+            preserve_relay=True)
     if pool_result:
+        pool_result["base_url"] = base_url
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
         return pool_result

@@ -124,3 +124,49 @@ def test_registry_entry_mode_precedes_endpoint_normalization(tmp_path, monkeypat
     assert (runtime["api_mode"], runtime["base_url"], runtime["api_key"]) == (mode, expected_url, key)
     if source == "pool":
         assert runtime["credential_pool"] is pool
+
+
+@pytest.mark.parametrize("surface", ["shared", "cli", "cron", "tui"])
+@pytest.mark.parametrize("source", ["config", "pool"])
+@pytest.mark.parametrize("provider", ["opencode-go-bridge", "opencode-zen-bridge"])
+@pytest.mark.parametrize("model, mode, path", [
+    ("grok-4.5", "codex_responses", "responses"),
+    ("deepseek-v4-flash", "chat_completions", "chat/completions"),
+])
+def test_named_opencode_entry_keeps_normalized_request_path(
+    tmp_path, monkeypatch, surface, source, provider, model, mode, path,
+):
+    import httpx
+    from openai import OpenAI
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    key = f"fixture-{source}-key"
+    credentials = [PooledCredential(
+        provider=provider, id="fixture", label="fixture", auth_type="api_key", priority=0,
+        source="fixture-pool", access_token=key)] if source == "pool" else []
+    pool = CredentialPool(provider, credentials)
+    monkeypatch.setattr(runtime_provider, "load_pool", lambda provider: pool)
+    config = {
+        "model": {"provider": "openai-codex", "default": "primary-model"},
+        "providers": {provider: {"base_url": "https://opencode.ai/zen/go", "api_key": "fixture-config-key"}},
+        "fallback_providers": [{"provider": provider, "model": model, "api_mode": mode}],
+    }
+    runtime = _resolve_startup(config, surface, tmp_path, monkeypatch)
+    assert (runtime["api_mode"], runtime["api_key"]) == (mode, key)
+    if source == "pool":
+        assert runtime["credential_pool"] is pool
+    requests = []
+
+    def reply(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    with OpenAI(
+        api_key=runtime["api_key"], base_url=runtime["base_url"],
+        http_client=httpx.Client(transport=httpx.MockTransport(reply)),
+    ) as client:
+        if mode == "codex_responses":
+            client.responses.create(model=model, input="offline fixture")
+        else:
+            client.chat.completions.create(model=model, messages=[{"role": "user", "content": "offline fixture"}])
+    assert requests == [f"https://opencode.ai/zen/go/v1/{path}"]

@@ -81,3 +81,31 @@ def test_explicit_switch_replaces_fallback_and_cancel_restores_it(fallback_shell
     expected = ("chat_completions", result.base_url, "manual-key") if accepted else (
         "codex_responses", entry["base_url"], "fallback-key")
     assert (shell.api_mode, shell.base_url, shell.api_key) == expected
+
+
+@pytest.mark.parametrize("reset_success", [True, False])
+def test_new_session_refresh_follows_the_adopted_route(fallback_shell, monkeypatch, reset_success):
+    import cli
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    shell, entry = fallback_shell
+    assert shell._ensure_runtime_credentials()
+    shell.__dict__.update(
+        conversation_history=[], session_id="old", _session_db=None,
+        _pending_title=None, _resumed=False, _new_session_id=lambda now: "new")
+    default_route = ModelSwitchResult(
+        success=reset_success, new_model="primary-model", target_provider=entry["provider"],
+        api_key="renewed-default-key", base_url="https://primary.openai.azure.com/openai/v1",
+        api_mode="chat_completions")
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {
+        "provider": default_route.target_provider, "default": default_route.new_model})
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kwargs: default_route)
+
+    shell.new_session(silent=True)
+    monkeypatch.setenv("FIXTURE_FALLBACK_KEY", "rotated-fallback-key")
+    assert shell._ensure_runtime_credentials()
+    expected = (
+        default_route.new_model, default_route.api_mode, default_route.base_url, default_route.api_key
+    ) if reset_success else (
+        entry["model"], entry["api_mode"], entry["base_url"], "rotated-fallback-key")
+    assert (shell.model, shell.api_mode, shell.base_url, shell.api_key) == expected

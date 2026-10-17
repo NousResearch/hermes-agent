@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
+import { KbdGroup } from '@/components/ui/kbd'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 
@@ -123,6 +124,7 @@ export function ScreenshotSettings() {
         checked={status?.enabled ?? false}
         description={s.enabledDesc}
         disabled={!status || busy}
+        hint={<KbdGroup keys={[s.leftCommand, s.rightCommand]} />}
         id={settingElementId(SETTING_IDS.keybinds.screenshot)}
         label={s.enabledTitle}
         onChange={enabled => void refresh(enabled)}

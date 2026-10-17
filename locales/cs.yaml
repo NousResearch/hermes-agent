@@ -75,6 +75,8 @@ gateway:
     next_turn_only: '    (pouze pro další tah — obnoví se po jedné odpovědi)'
     switch_cancelled: '🟡 Přepnutí modelu zrušeno. Aktuální model se nezměnil ({model}).'
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Náhradní text: odpovězte `{prefix}approve` pro přepnutí nebo `{prefix}cancel` pro zachování aktuálního modelu._"
+    err_once_local: '`--once` není v této relaci dostupné; použijte `/model <name>` a po skončení tahu se přepněte zpět.'
+    local_next_turn: 'Použije se od vaší další zprávy.'
   agents:
     header: '🤖 **Aktivní agenti a úkoly**'
     active_agents: '**Aktivní agenti:** {count}'
@@ -437,7 +439,6 @@ gateway:
     last_activity: '**Poslední aktivita:** {timestamp}'
     model: '**Model:** `{model}`'
     model_provider: '**Model:** `{model}` ({provider})'
-    free_tier: 'Nous · tarif zdarma · nous/welcome · přihlaste se přes /login'
     context: '**Kontext:** {used} / {total} ({pct} %)'
     context_used: '**Kontext:** přibližně {used} tokenů'
     tokens: '**Kumulativní počet účtovaných tokenů:** {tokens} _(nejde o aktuální velikost kontextu; použijte `/context`)_'
@@ -843,7 +844,6 @@ gateway:
   startup:
     handoff_thread_title: 'Hermes — {title}'
     restarted: '♻ Brána úspěšně restartována. Vaše relace pokračuje.'
-    free_tier_line: 'Inference: bezplatný tarif Nous (nous/welcome). Přihlaste se a získejte další možnosti: /login'
     online: '♻️ Brána online — Hermes je zpět a připraven.'
     db_corrupt: "⚠️ Zjištěno poškození databáze relací. Zprávy se možná neukládají. Možnosti obnovy:\n1. Spusťte `hermes {profile_arg}doctor --fix`\n2. Zastavte bránu a poté obnovte pomocí:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (pokud nástroj oznámí, že lze data obnovit) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — obnova nejprve vytvoří snímek poškozeného souboru; NESPOUŠTĚJTE `sqlite3 ... \".recover\"` proti živému state.db, zranitelné sqlite3 CLI ho může dále poškodit\n3. Obnovte ze zálohy v {backups_dir}/\nSpusťte `hermes {profile_arg}doctor` pro diagnostické údaje s odstraněnými citlivými informacemi."
     db_fts_corrupt: '⚠️ Databáze relací nahlásila chybu poškození omezenou na vyhledávací index (FTS5); tabulky zpráv nejsou poškozeny. Zprávy se možná neukládají, dokud nebude opraven vyhledávací index: spusťte `hermes {profile_arg}doctor --fix` a poté restartujte bránu. Nespouštějte nástroje pro obnovu ani neobnovujte ze zálohy, dokud `hermes {profile_arg}doctor` nepotvrdí poškození.'
@@ -1981,6 +1981,7 @@ cli:
     restored_from_session: 'Model obnoven z relace: {model}'
     could_not_load_config: '❌ nepodařilo se načíst konfiguraci: {error}'
     tip_reset_new_session: 'Tip: `/reset` okamžitě spustí novou relaci.'
+    confirm_choice_prompt: 'Volba [1/2]: '
   single_query:
     query_label: 'Dotaz:'
     kanban_run_reclaimed: 'kanban: běh tohoto pracovníka byl převzat před jeho spuštěním; ukončuji'
@@ -2278,6 +2279,7 @@ cli:
     authorized_no_tools: 'Autorizováno. Nástroje nejsou dostupné.'
     connected: 'Připojeno'
     waiting: 'Čekání…'
+    named_account: 'Hermes pojmenoval tento účet {name} jako {alias}. Kdykoli ho můžete přejmenovat.'
   editor:
     only_interactive: 'Externí editor je dostupný jen v interaktivním CLI.'
     wait_for_command: 'Před otevřením editoru počkejte, až doběhne aktuální příkaz.'

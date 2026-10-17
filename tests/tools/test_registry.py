@@ -125,6 +125,27 @@ class TestRegisterAndDispatch:
             "underscore",
         }
 
+class TestUiCard:
+    def test_default_is_none(self):
+        reg = ToolRegistry()
+        reg.register(name="plain", toolset="x", schema=_make_schema("plain"), handler=_dummy_handler)
+        assert reg.get_ui_card("plain") is None
+        assert reg.get_ui_card("missing") is None
+
+    def test_declared_card_is_returned(self):
+        reg = ToolRegistry()
+        reg.register(name="fan", toolset="x", schema=_make_schema("fan"), handler=_dummy_handler,
+                     ui_card="delegate")
+        assert reg.get_ui_card("fan") == "delegate"
+
+    def test_unknown_card_kind_rejected(self):
+        reg = ToolRegistry()
+        with pytest.raises(ValueError, match="ui_card must be one of"):
+            reg.register(name="bad", toolset="x", schema=_make_schema("bad"), handler=_dummy_handler,
+                         ui_card="banner")
+        assert reg.get_entry("bad") is None
+
+
 class TestGetDefinitions:
     def test_returns_openai_format(self):
         reg = ToolRegistry()

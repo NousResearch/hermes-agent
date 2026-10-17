@@ -499,10 +499,26 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
     sync with `_TOOL_LIFECYCLE_UI_TOOLS`): clarify / connection cards are
     consent surfaces, image_generate / manage_catalog / delegate_task draw the
     thing the user asked for, and file edits are the diff the user reviews.
-    The start and complete guards both consult this set, so a card's
+    A plugin tool joins the set by declaring `ui_card` at registration. The
+    start and complete guards both consult this, so a card's
     `tool.complete` can never arrive without its `tool.start`.
     """
-    return name in _TOOL_LIFECYCLE_UI_TOOLS
+    if name in _TOOL_LIFECYCLE_UI_TOOLS:
+        return True
+    return _tool_ui_card(name) is not None
+
+
+def _tool_ui_card(name: str) -> str | None:
+    """Card kind a tool declared via ``register(ui_card=...)`` (``"delegate"``), else None.
+
+    The registry import is lazy and guarded: a lookup failure must never break the gateway, so
+    any exception reads as "no card".
+    """
+    try:
+        from tools.registry import registry
+        return registry.get_ui_card(name)
+    except Exception:  # health: allow BLE001 -- display lookup must never break the gateway
+        return None
 
 def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _RuntimeFallbackResolution:
     """Resolve the primary runtime or one complete provider/model fallback. Provider-only fallback entries

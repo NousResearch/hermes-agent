@@ -72,6 +72,18 @@ describe('delegateRowsFromCall', () => {
     expect(rows.map(r => r.status)).toEqual(['completed', 'failed', 'failed', 'failed'])
   })
 
+  // Plugin fan-out tools settle rows as succeeded/running/failed/cancelled/unknown.
+  it('reads succeeded as completed and a still-running row as parked, not failed', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }, { goal: 'C' }, { goal: 'D' }] },
+      {
+        results: [{ status: 'succeeded' }, { status: 'running' }, { status: 'cancelled' }, { status: 'unknown' }]
+      }
+    )
+
+    expect(rows.map(r => r.status)).toEqual(['completed', 'dispatched', 'failed', 'failed'])
+  })
+
   it('still lists a background dispatch whose goals only survive in the result', () => {
     expect(delegateRowsFromCall({}, { status: 'dispatched', goals: ['A', 'B'] }).map(r => r.goal)).toEqual(['A', 'B'])
   })

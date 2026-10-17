@@ -1,10 +1,12 @@
 import { fromThreadMessageLike, getAutoStatus } from '@assistant-ui/core/internal'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
+import { _resetToolCardsForTests, cardToolName } from '@/lib/tool-render-class'
+import type { SessionMessage } from '@/types/hermes'
 
-import { upsertToolPart } from './tool-parts'
+import { applyStoredToolResultToParts, storedToolMessagePart, upsertToolPart } from './tool-parts'
 import type { ChatMessagePart } from './types'
 
 describe('live tool result evidence', () => {
@@ -85,5 +87,65 @@ describe('live tool result evidence', () => {
     expect(buildToolView(missing, '').status).toBe('warning')
     expect(empty.result).toBe('')
     expect(buildToolView(empty, '').status).toBe('success')
+  })
+})
+
+describe('gateway-declared tool cards', () => {
+  afterEach(() => {
+    _resetToolCardsForTests()
+  })
+
+  it('learns the card from a live tool.start payload', () => {
+    expect(cardToolName('agents_run')).toBeUndefined()
+
+    upsertToolPart(
+      [],
+      { name: 'agents_run', tool_id: 'c1', card: 'delegate', args: { tasks: [{ goal: 'x' }] } },
+      'running',
+      1
+    )
+
+    expect(cardToolName('agents_run')).toBe('delegate_task')
+  })
+
+  it('learns the card from a stored tool row, paired or unpaired', () => {
+    const row = {
+      role: 'tool',
+      tool_name: 'agents_run',
+      tool_call_id: 'c1',
+      card: 'delegate',
+      content: '{}'
+    } as SessionMessage
+
+    storedToolMessagePart(row, 0)
+    expect(cardToolName('agents_run')).toBe('delegate_task')
+
+    _resetToolCardsForTests()
+
+    const parts = upsertToolPart([], { name: 'agents_run', tool_id: 'c1' }, 'running', 1)
+
+    applyStoredToolResultToParts(parts, row)
+    expect(cardToolName('agents_run')).toBe('delegate_task')
+  })
+
+  it('learns the card stamped with the result on a cold REST load', () => {
+    // The REST transcript prefetch carries no `card`; the stamp lives in display_metadata.
+    const row = {
+      role: 'tool',
+      tool_name: 'agents_run',
+      tool_call_id: 'c1',
+      content: '{}',
+      display_metadata: JSON.stringify({ tool_result_metadata: { card: 'delegate' } })
+    } as SessionMessage
+
+    storedToolMessagePart(row, 0)
+    expect(cardToolName('agents_run')).toBe('delegate_task')
+  })
+
+  it('leaves a tool without a card unclassified', () => {
+    upsertToolPart([], { name: 'terminal', tool_id: 'c2' }, 'running', 1)
+    storedToolMessagePart({ role: 'tool', tool_name: 'terminal', content: '' } as SessionMessage, 0)
+
+    expect(cardToolName('terminal')).toBeUndefined()
   })
 })

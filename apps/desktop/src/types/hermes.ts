@@ -690,6 +690,8 @@ export interface SessionMessage {
    * the full call from this field. Absent on a backend older than this app.
    */
   args?: unknown
+  /** Gateway-stamped card kind for a tool row (`ui_card=` on the tool), e.g. 'delegate'. */
+  card?: string
   codex_reasoning_items?: unknown
   labels?: ToolLabel[]
   tool_call_labels?: StoredToolCallLabels

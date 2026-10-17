@@ -32,7 +32,7 @@ import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
-import { type CardToolName, isCardTool, isCardToolName } from '@/lib/tool-render-class'
+import { type CardToolName, cardToolName, isCardTool } from '@/lib/tool-render-class'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { onboardingChatStore } from '@/store/onboarding-session'
@@ -169,8 +169,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return null
   }
 
-  if (isCardToolName(props.toolName)) {
-    const ToolCard = TOOL_CARDS[props.toolName]
+  const cardName = cardToolName(props.toolName)
+
+  if (cardName) {
+    const ToolCard = TOOL_CARDS[cardName]
 
     return <ToolCard {...props} />
   }

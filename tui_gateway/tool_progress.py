@@ -299,6 +299,8 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             payload["args"] = args
         if _session_verbose(sid) and (args_text := _tool_args_text(args)):
             payload["args_text"] = args_text
+        if (card := _tool_ui_card(name)) is not None:
+            payload["card"] = card
         _emit_tool_lifecycle("tool.start", sid, name, args, payload)
 
 
@@ -316,6 +318,10 @@ def _prepare_tool_result_metadata(sid: str, tool_call_id: str, name: str, args: 
         rendered: list[str] = []
         if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
             metadata["inline_diff"] = "\n".join(rendered)
+    # The card kind is stored with the row, not looked up on read: a cold transcript load (REST
+    # prefetch, another process, a profile whose plugin is not loaded) must render the same card.
+    if (card := _tool_ui_card(name)) is not None:
+        metadata["card"] = card
     if session is not None:
         session.setdefault("tool_result_metadata", {})[tool_call_id] = metadata
     return {"tool_result_metadata": metadata} if metadata else {}
@@ -359,6 +365,8 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or is_todo_tool_name(name) or _connector_tool_lifecycle(name, args)
             or _tool_result_needs_user(result)):
+        if (card := _tool_ui_card(name)) is not None:
+            payload["card"] = card
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.

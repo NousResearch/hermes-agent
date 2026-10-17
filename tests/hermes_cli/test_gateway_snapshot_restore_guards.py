@@ -37,6 +37,7 @@ def _restore_error(sid):
     ("satellite-not-reserved", lambda sid: True, "manual", "is not served again yet: host operation is still pending"),
     ("invalid-id", lambda sid: False, "manual", "Snapshot not found: ../outside"),
     ("other-pid-paused", None, "manual", "Gateway refused the snapshot maintenance handoff"),
+    ("satellite-unserve-error", None, "manual", "Gateway refused the snapshot maintenance handoff"),
 ])
 def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch, capsys,
                                                           case, restore, supervisor, expected):
@@ -50,7 +51,7 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
     store = GatewaySessionStore(old)
     cli = SimpleNamespace(_session_db=store, _gateway_session_open=True, session_id="kept",
                           agent=object(), conversation_history=[])
-    satellite = case == "satellite-not-reserved"
+    satellite = case.startswith("satellite-")
     control_home = str(tmp_path) if satellite else str(home)
     endpoint = GatewayEndpoint(str(home), "owner", 5, 1, "http://127.0.0.1:1", "none",
                                frozenset({"session-authority-v1"}), control_home)
@@ -64,7 +65,8 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
                         lambda *a, **kw: paused.append(a) or {"pausing": True,
                                                               "pid": 99 if case == "other-pid-paused" else 4321})
     monkeypatch.setattr("gateway.control_socket.request_unserve_profile",
-                        lambda *a: {"unserved": home.name})
+                        lambda *a: {"unserved": home.name, "error": "teardown failed"}
+                        if case == "satellite-unserve-error" else {"unserved": home.name})
     monkeypatch.setattr("gateway.control_socket.request_serve_profile_hot", lambda *a: {"pending": True})
     monkeypatch.setattr("hermes_cli.profiles_remove.wait_profile_unowned", lambda home: True)
     monkeypatch.setattr("hermes_cli.backup.restore_quick_snapshot",

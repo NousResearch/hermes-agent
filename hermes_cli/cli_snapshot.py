@@ -58,9 +58,11 @@ def restore_snapshot_command(cli, parts):
 
 def _pause_owner(home, control_home, identity):
     from gateway.control_socket import pause_gateway_for_update, request_unserve_profile
+    from hermes_cli.gateway_profile_lifecycle import _confirmed
     if control_home != home:
         ack = request_unserve_profile(control_home, home.name)
-        accepted = ack is not None and (ack.get("unserved") == home.name or ack.get("pending"))
+        accepted = _confirmed(ack, "unserved", home.name) or (
+            isinstance(ack, dict) and ack.get("pending") and not ack.get("error"))
     else:
         ack = pause_gateway_for_update(control_home, timeout=8)
         accepted = (ack is not None and (ack.get("pausing") or ack.get("already_stopping"))

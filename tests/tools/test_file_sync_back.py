@@ -354,6 +354,52 @@ class TestSyncBackSIGINT:
         assert len(signal_called) == 0
 
 
+class TestSyncBackOff:
+    """``terminal.sync_back: false`` keeps an untrusted sandbox's writes off the host."""
+
+    def test_off_is_read_from_the_owning_home_at_creation(self, tmp_path, monkeypatch):
+        """Two homes through the real config loader, A→B→A: a sandbox created under A
+        (``terminal.sync_back: false`` in A's config.yaml) neither downloads the remote tree nor
+        rewrites a synced skill nor adds a new one, even when its teardown runs while B — default
+        config, as on the idle reaper's thread — is the active home; B's own sandbox keeps the
+        default sync-back; a later sandbox under A is off again."""
+        import hermes_yaml as yaml
+
+        home_a, home_b = tmp_path / "a", tmp_path / "b"
+        for home in (home_a, home_b):
+            home.mkdir()
+        (home_a / "config.yaml").write_text(yaml.safe_dump({"terminal": {"sync_back": False}}))
+
+        def build(host_root: Path):
+            host_skill = _write_file(host_root / "skills" / "s" / "SKILL.md", b"original")
+            download = MagicMock(side_effect=_make_download_fn({
+                "root/.hermes/skills/s/SKILL.md": b"from sandbox",
+                "root/.hermes/skills/s/new.md": b"new from sandbox",
+            }))
+            mgr = _make_manager(host_root, file_mapping=[(host_skill, "/root/.hermes/skills/s/SKILL.md")],
+                                bulk_download_fn=download)
+            return mgr, download, Path(host_skill)
+
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        mgr_a, download_a, skill_a = build(tmp_path / "host_a")
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        mgr_b, download_b, skill_b = build(tmp_path / "host_b")
+
+        mgr_a.sync_back(hermes_home=home_b)
+        mgr_b.sync_back(hermes_home=home_b)
+
+        download_a.assert_not_called()
+        assert skill_a.read_bytes() == b"original"
+        assert not (skill_a.parent / "new.md").exists()
+        download_b.assert_called_once()
+        assert skill_b.read_bytes() == b"from sandbox"
+
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        mgr_a2, download_a2, _ = build(tmp_path / "host_a2")
+        mgr_a2.sync_back(hermes_home=home_a)
+        download_a2.assert_not_called()
+
+
 class TestSyncBackSizeCap:
     """The size cap refuses to extract tars above the configured limit."""
 

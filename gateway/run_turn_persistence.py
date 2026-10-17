@@ -184,6 +184,12 @@ class GatewayTurnPersistenceMixin:
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
         (display.runtime_footer.enabled=false)."""
+        if agent_result.get("runtime_footer_already_delivered"):
+            return ""
+        # A queued terminal reply must never inherit the whole chain's elapsed time. Ordinary
+        # paths without a local worker (for example proxy turns) retain the caller's measurement.
+        if "turn_seconds" in agent_result or "queued_terminal_inbound_id" in agent_result:
+            _turn_seconds = agent_result.get("turn_seconds")
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         try:
             from gateway.runtime_footer import build_footer_line as _bfl

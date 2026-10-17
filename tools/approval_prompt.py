@@ -82,7 +82,12 @@ _CLI_CHOICE_I18N = {
 
 
 def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
-    """Read one answer on a daemon thread; None when the user never answered."""
+    """Read one answer on a daemon thread; None when the user never answered.
+    ``timeout_seconds <= 0`` means unlimited (never auto-deny while the user is
+    still deciding) — same convention as the gateway wait path
+    (``tools/approval_gateway_wait.py::_poll_event``) and the CLI modal path
+    (``hermes_cli/cli_modal_mixin.py``). ``Thread.join(timeout=None)`` blocks
+    forever, which is what we want here."""
     result = {"choice": ""}
 
     def get_input():
@@ -93,7 +98,7 @@ def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
 
     thread = threading.Thread(target=get_input, daemon=True)
     thread.start()
-    thread.join(timeout=timeout_seconds)
+    thread.join(timeout=None if timeout_seconds <= 0 else timeout_seconds)
     return None if thread.is_alive() else result["choice"]
 
 

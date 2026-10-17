@@ -54,8 +54,14 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     fail-closed: the command does not run. Who caused it is read from the
     per-thread interrupt-cause channel (``get_interrupt_reason()``, a trusted fixed
     category), never inferred from message text, so the caller can report a
-    withdrawn prompt without inventing a user refusal."""
-    deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
+    withdrawn prompt without inventing a user refusal.
+
+    ``approvals.timeout <= 0`` means unlimited (never auto-deny while the user is
+    still deciding) — same convention as the CLI modal path's ``_approval_deadline``
+    / ``_poll_modal_queue`` (``hermes_cli/cli_modal_mixin.py``). ``deadline`` is
+    ``None`` in that case and the ``remaining <= 0`` check below is skipped."""
+    timeout = _ctx._get_approval_timeout()
+    deadline = None if timeout <= 0 else time.monotonic() + timeout
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
         while True:
@@ -65,9 +71,12 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
             if is_interrupted():
                 logger.info(interrupt_log, session_key)
                 return "interrupted"
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return "timeout"
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return "timeout"
+            else:
+                remaining = 1.0  # unlimited: just cap the event wait so heartbeats still fire
             if event.wait(timeout=min(1.0, remaining)):
                 return "set"
             heartbeat()

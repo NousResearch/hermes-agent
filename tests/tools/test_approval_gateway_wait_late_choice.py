@@ -7,6 +7,8 @@ choice committed under the approval lock — the client was acked ``ok`` for it 
 
 from tools import approval as mod
 from tools import approval_gateway_wait as wait_mod
+import threading
+import time
 
 
 SESSION_KEY = "approval-late-choice"
@@ -90,3 +92,61 @@ def test_withdrawn_entry_settles_with_a_wire_reason(monkeypatch):
     decision = wait_mod._await_gateway_decision(SESSION_KEY, lambda data: None, APPROVAL)
     assert decision["choice"] is None and decision["cancelled"]
     assert reasons == ["session_closed"]
+
+
+class TestPollEventZeroTimeoutUnlimited:
+    """Regression: approvals.timeout <= 0 must mean unlimited on the gateway wait path too,
+    not just the CLI modal path (hermes_cli/cli_modal_mixin.py). Before this fix, _poll_event
+    computed `deadline = monotonic() + max(timeout, 0)`, so timeout=0 produced a deadline equal
+    to "now" and the very first loop iteration returned "timeout" — the gateway surface
+    (terminal guard, execute_code guard, plugin escalation, MCP elicitation) auto-denied
+    instantly instead of waiting forever."""
+
+    def test_zero_timeout_never_times_out(self, monkeypatch):
+        monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 0)
+        monkeypatch.setattr(wait_mod, "is_interrupted", lambda: False)
+        event = threading.Event()
+        result = {}
+
+        def _poll():
+            result["value"] = wait_mod._poll_event(event, SESSION_KEY, interrupt_log="unused %s")
+
+        t = threading.Thread(target=_poll, daemon=True)
+        t.start()
+        time.sleep(0.3)  # several poll ticks; old code would already have returned "timeout"
+        assert t.is_alive(), "_poll_event returned despite an unlimited (timeout<=0) deadline"
+        event.set()
+        t.join(timeout=2)
+        assert result["value"] == "set"
+
+    def test_negative_timeout_also_never_times_out(self, monkeypatch):
+        monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: -5)
+        monkeypatch.setattr(wait_mod, "is_interrupted", lambda: False)
+        event = threading.Event()
+        result = {}
+
+        def _poll():
+            result["value"] = wait_mod._poll_event(event, SESSION_KEY, interrupt_log="unused %s")
+
+        t = threading.Thread(target=_poll, daemon=True)
+        t.start()
+        time.sleep(0.3)
+        assert t.is_alive()
+        event.set()
+        t.join(timeout=2)
+        assert result["value"] == "set"
+
+    def test_positive_timeout_still_times_out(self, monkeypatch):
+        monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 0.2)
+        monkeypatch.setattr(wait_mod, "is_interrupted", lambda: False)
+        event = threading.Event()  # never set
+        result = {}
+
+        def _poll():
+            result["value"] = wait_mod._poll_event(event, SESSION_KEY, interrupt_log="unused %s")
+
+        t = threading.Thread(target=_poll, daemon=True)
+        t.start()
+        t.join(timeout=3)
+        assert not t.is_alive(), "a positive timeout must still expire"
+        assert result["value"] == "timeout"

@@ -1546,7 +1546,7 @@ class TestApprovalTimeoutIsNotConsent:
             else:
                 os.environ[k] = v
 
-    def _force_short_timeout(self, monkeypatch, seconds=0.05):
+    def _force_short_timeout(self, monkeypatch, seconds=1):
         monkeypatch.setattr(
             approval_context, "_get_approval_config",
             lambda: {"mode": "manual", "timeout": seconds},

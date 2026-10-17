@@ -333,7 +333,9 @@ DANGEROUS_PATTERNS = [
     # xxd uses -r for decode, not -d.
     (rf'\bxxd\s+-r\b.*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe xxd-decoded content to shell (possible command obfuscation)"),
     # `echo 'eq -pe v/' | tr 'eqv' 'rmf' | bash` decodes to `rm -rf /`.
-    (rf'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
+    # Bounded to separator-free segments: a pipeline gap cannot contain ;/& or newline, so
+    # [^|] → [^|;&\n] keeps coverage while eliminating O(n²) on separator-rich input.  #108451
+    (rf'\becho\b[^|;&\n]*\|\s*\btr\b[^|;&\n]*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
     (rf'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
     # Credential exfiltration: a curl/wget request BODY (not a header — `-H "Authorization: Bearer $KEY"` is

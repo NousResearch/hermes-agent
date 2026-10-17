@@ -358,6 +358,23 @@ class TestBuiltinDiscovery:
         assert imported == ["tools.alpha"]
         mock_import.assert_called_once_with("tools.alpha")
 
+    def test_skips_undecodable_file_instead_of_crashing(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        # macOS AppleDouble sidecar (``._alpha.py``): binary, 0xa3 is not valid UTF-8
+        (tools_dir / "._alpha.py").write_bytes(b"\x00\x05\x16\x07\x00\x02\x00\x00Mac OS X" + b"\xa3" * 8)
+        (tools_dir / "alpha.py").write_text(
+            "from tools.registry import registry\nregistry.register(name='alpha', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+
+        with patch("tools.registry.importlib.import_module") as mock_import:
+            imported = discover_builtin_tools(tools_dir)
+
+        assert imported == ["tools.alpha"]
+        mock_import.assert_called_once_with("tools.alpha")
+
 
 _REGISTERING_SOURCE = (
     "from tools.registry import registry\n"

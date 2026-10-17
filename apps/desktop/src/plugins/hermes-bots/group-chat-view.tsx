@@ -36,7 +36,7 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 import type { ClipboardEvent, DragEvent, ReactNode } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -1022,14 +1022,36 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // (live) to send with the removed Bot still seated. Same derivation the
   // main-tab wrapper paints from; the prop is the fallback when the roster
   // has not been fetched yet.
-  const memberDescriptors = () => {
+  const memberDescriptors = useCallback(() => {
     const seated = groupChatMemberBots(group, $lastRoster.get(), $botMeta.get())
 
     return (seated.length ? seated : members).map(b => ({
       ...b,
       title: botRosterMeta(b, allMeta)?.title || b.title || ''
     }))
-  }
+  }, [allMeta, group, members])
+
+  useEffect(() => {
+    const onInlinePreviewIntent = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail
+
+      if (typeof detail !== 'object' || detail === null) {
+        return
+      }
+
+      const request = detail as { delivered?: unknown; group?: unknown; prompt?: unknown; thread?: unknown }
+
+      if (request.group !== group || typeof request.prompt !== 'string' || typeof request.thread !== 'string') {
+        return
+      }
+
+      request.delivered = sendToGroupChat(group, memberDescriptors(), request.prompt, request.thread) !== null
+    }
+
+    window.addEventListener('hermes:inline-preview-intent', onInlinePreviewIntent)
+
+    return () => window.removeEventListener('hermes:inline-preview-intent', onInlinePreviewIntent)
+  }, [group, memberDescriptors])
 
   // Activity disclosure: quiet, collapsed by default. The collapsed row shows
   // the latest event; expanding lists the current run's events newest-first.
@@ -1398,6 +1420,8 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           <div
             className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
+            data-group-chat-name={group}
+            data-group-chat-thread={groupThreadOf(entry)}
             data-selectable-text="true"
             data-slot="group-chat-message-content"
           >

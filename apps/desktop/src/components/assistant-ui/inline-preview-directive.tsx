@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
@@ -69,6 +69,15 @@ export function directiveFrameHeight(raw: string | undefined): number | null {
   return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, parsed))
 }
 
+/** The group room that owns a preview frame, when it is rendered in one. */
+export function groupWidgetIntentTarget(frame: HTMLIFrameElement | null): { group: string; thread: string } | null {
+  const owner = frame?.closest<HTMLElement>('[data-group-chat-name][data-group-chat-thread]')
+  const group = owner?.dataset.groupChatName
+  const thread = owner?.dataset.groupChatThread
+
+  return group && thread ? { group, thread } : null
+}
+
 const SIZE_MESSAGE_TYPE = 'hermes-inline-preview-size'
 const INTENT_MESSAGE_TYPE = 'hermes-inline-preview-intent'
 const INTENT_ACK_MESSAGE_TYPE = 'hermes-inline-preview-intent-ack'
@@ -123,7 +132,7 @@ export function intentScript(token: string): string {
     '};' +
     'addEventListener("click",function(e){var el=e.target&&e.target.closest?' +
     'e.target.closest("[data-hermes-send]"):null;' +
-    'if(el)send(el.getAttribute("data-hermes-send")||"")},true)})()</script>'
+    'if(el)send(el.getAttribute("data-hermes-send")||"").then(function(a){if(!a.ok){el.setAttribute("data-hermes-send-state","failed");el.setAttribute("title","Widget action was not delivered")}})},true)})()</script>'
   )
 }
 
@@ -380,6 +389,7 @@ function InlineHtmlFrame({
   const [failed, setFailed] = useState(false)
   const [measured, setMeasured] = useState<number | null>(null)
   const [contentWidth, setContentWidth] = useState<number | null>(null)
+  const frameRef = useRef<HTMLIFrameElement | null>(null)
 
   // One token per mount: the message listener only trusts reports from the
   // document THIS mount injected, so two previews in one transcript (or a
@@ -439,14 +449,22 @@ function InlineHtmlFrame({
           ack = decision.ack
         } else {
           lastIntentAt = Date.now()
-          // Off-screen: the prompt reaches the agent as a normal user turn
-          // through the composer's own send path (steer/queue rules apply),
-          // but the row is typed hidden — no bubble, no UI space. The widget
-          // updating IS the visible response. `false` means no visible
-          // composer surface took it; the widget is told instead of assuming.
-          ack = requestComposerSubmit(decision.prompt, { target: 'active', displayKind: 'hidden' })
-            ? { ok: true }
-            : { error: 'undelivered', ok: false }
+          const groupTarget = groupWidgetIntentTarget(frameRef.current)
+
+          // Group-room cards continue the thread that rendered them; all
+          // other cards stay off-screen through the composer's send path.
+          // `false` means no owner took the prompt, and the widget is told
+          // instead of assuming delivery.
+          if (groupTarget) {
+            const detail = { delivered: false, prompt: decision.prompt, ...groupTarget }
+
+            window.dispatchEvent(new CustomEvent('hermes:inline-preview-intent', { detail }))
+            ack = detail.delivered ? { ok: true } : { error: 'undelivered', ok: false }
+          } else {
+            ack = requestComposerSubmit(decision.prompt, { target: 'active', displayKind: 'hidden' })
+              ? { ok: true }
+              : { error: 'undelivered', ok: false }
+          }
         }
 
         // Reply only to the sender that proved it holds this mount's token.
@@ -527,6 +545,7 @@ function InlineHtmlFrame({
           <iframe
             className="absolute inset-0 size-full border-0 bg-transparent"
             loading="lazy"
+            ref={frameRef}
             sandbox="allow-scripts"
             srcDoc={framedDoc}
             style={{ colorScheme }}

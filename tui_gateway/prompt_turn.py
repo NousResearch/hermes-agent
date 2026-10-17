@@ -179,22 +179,30 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
     """Write the durable crash marker; returns the session key it was written under (compression
     can rotate session_key mid-turn).  A surviving marker means the process died mid-turn.
     The key is published before the disk write so an interrupt racing startup can retire
-    it; the post-write cancel check closes the inverse race (Stop landed first, no file)."""
+    it; the post-write cancel check closes the inverse race (Stop landed first, no file).
+
+    Every turn that can run records a marker, BLANK prompt text included: a turn with no text (an
+    attachment-only composer send, a raw RPC client) still runs, and the same marker is what proves
+    "a turn is in flight" to a sibling Desktop backend's lease takeover
+    (``session_lifecycle._holder_turn_in_flight``). ``read_turn_marker`` keeps its non-empty-prompt
+    contract, so a blank marker is never auto-continued.
+    """
     marker_home = _session_home(session)
     marker_key = str(session.get("session_key") or "")
     marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
     marker_text = session.pop("_auto_continue_prompt", None) or text
-    if isinstance(marker_text, str) and marker_text.strip():
-        with session["history_lock"]:
-            session["_active_turn_marker_key"] = marker_key
-        record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
-                          auto_continue=auto_continue,
-                          **({"notification_category": "diagnostic"}
-                             if notification_category == "diagnostic" else {}))
-        with session["history_lock"]:
-            marker_cancelled = bool(session.get("_turn_cancel_requested"))
-        if marker_cancelled:
-            clear_turn_marker(marker_home, marker_key)
+    if not isinstance(marker_text, str):
+        marker_text = ""  # structured content the client sent instead of text: record a blank marker
+    with session["history_lock"]:
+        session["_active_turn_marker_key"] = marker_key
+    record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
+                      auto_continue=auto_continue,
+                      **({"notification_category": "diagnostic"}
+                         if notification_category == "diagnostic" else {}))
+    with session["history_lock"]:
+        marker_cancelled = bool(session.get("_turn_cancel_requested"))
+    if marker_cancelled:
+        clear_turn_marker(marker_home, marker_key)
     return marker_key
 
 

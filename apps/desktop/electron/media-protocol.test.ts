@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -9,6 +10,7 @@ import {
   isStreamableMediaPath,
   type MediaProtocolDependencies,
   mediaRequestHeaders,
+  REMOTE_MEDIA_CHUNK_BYTES,
   remoteMediaEndpoint
 } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
@@ -339,6 +341,111 @@ describe('createMediaProtocolHandler', () => {
     expect((fetchRemoteWithCookies.mock.calls[0]?.[1] as Headers).get('authorization')).toBeNull()
     expect(fetchRemoteWithCookies.mock.calls[0]?.[2]).toBe('HEAD')
     expect(deps.fetchRemote).not.toHaveBeenCalled()
+  })
+
+  // A <video> pauses reading once its buffer is full but keeps the request
+  // open. Remote media shares Chromium's 6-per-host HTTP/1.1 pool with REST and
+  // WS-ticket minting, so a few paused or abandoned clips starved the pool and
+  // the app could no longer reach the gateway. The renderer must still see one
+  // response for the range it asked for (a short 206 makes Chromium treat the
+  // file as truncated), while every gateway fetch is a bounded range read to
+  // completion, issued only when the renderer reads on.
+  function rangeGateway(file: Uint8Array) {
+    const responses: Response[] = []
+
+    const fetchRemote = vi.fn(async (_url: string, headers: Headers) => {
+      const [, from, to] = /^bytes=(\d+)-(\d+)$/.exec(headers.get('range') ?? '') ?? []
+
+      if (from === undefined) {
+        throw new Error(`unbounded gateway request: ${headers.get('range')}`)
+      }
+
+      const start = Number(from)
+      const end = Math.min(Number(to), file.length - 1)
+
+      const response = new Response(file.slice(start, end + 1), {
+        headers: { 'content-range': `bytes ${start}-${end}/${file.length}`, 'content-type': 'video/mp4' },
+        status: 206
+      })
+
+      responses.push(response)
+
+      return response
+    })
+
+    return { fetchRemote, responses }
+  }
+
+  const clip = Uint8Array.from({ length: REMOTE_MEDIA_CHUNK_BYTES * 2 + 1234 }, (_, i) => i % 251)
+
+  it('serves the full requested range through bounded, fully-read gateway fetches', async () => {
+    const gateway = rangeGateway(clip)
+    const handler = createMediaProtocolHandler(dependencies({ fetchRemote: gateway.fetchRemote }))
+
+    for (const asked of [undefined, 'bytes=0-', `bytes=${REMOTE_MEDIA_CHUNK_BYTES + 7}-`]) {
+      gateway.fetchRemote.mockClear()
+      const start = asked ? Number(/\d+/.exec(asked)?.[0]) : 0
+      const response = await handler(request('hermes-media://remote/%2Ftmp%2Fclip.mp4', asked ? { Range: asked } : {}))
+
+      expect(response.status).toBe(206)
+      expect(response.headers.get('content-range')).toBe(`bytes ${start}-${clip.length - 1}/${clip.length}`)
+      expect(response.headers.get('content-length')).toBe(String(clip.length - start))
+      expect(Buffer.from(await response.arrayBuffer()).equals(clip.subarray(start))).toBe(true)
+
+      for (const [, headers] of gateway.fetchRemote.mock.calls) {
+        const [from, to] = (/^bytes=(\d+)-(\d+)$/.exec(headers.get('range') ?? '') ?? []).slice(1).map(Number)
+        expect(to - from + 1).toBeLessThanOrEqual(REMOTE_MEDIA_CHUNK_BYTES)
+      }
+    }
+  })
+
+  it('holds no gateway request while the renderer is not reading', async () => {
+    const gateway = rangeGateway(clip)
+    const handler = createMediaProtocolHandler(dependencies({ fetchRemote: gateway.fetchRemote }))
+
+    const response = await handler(request('hermes-media://remote/%2Ftmp%2Fclip.mp4', { Range: 'bytes=0-' }))
+
+    expect(gateway.fetchRemote).toHaveBeenCalledOnce()
+    expect(gateway.responses[0].bodyUsed).toBe(true)
+
+    const reader = response.body!.getReader()
+    await reader.read()
+    expect(gateway.fetchRemote).toHaveBeenCalledOnce()
+    await reader.read()
+    expect(gateway.fetchRemote).toHaveBeenCalledTimes(2)
+    expect(gateway.responses[1].bodyUsed).toBe(true)
+    await reader.cancel()
+  })
+
+  it('forwards a small closed range as a single gateway fetch', async () => {
+    const gateway = rangeGateway(clip)
+    const handler = createMediaProtocolHandler(dependencies({ fetchRemote: gateway.fetchRemote }))
+
+    const response = await handler(request('hermes-media://remote/%2Ftmp%2Fclip.mp4', { Range: 'bytes=10-1033' }))
+
+    expect(gateway.fetchRemote).toHaveBeenCalledOnce()
+    expect(gateway.fetchRemote.mock.calls[0][1].get('range')).toBe('bytes=10-1033')
+    expect(response.headers.get('content-range')).toBe(`bytes 10-1033/${clip.length}`)
+    expect(Buffer.from(await response.arrayBuffer()).equals(clip.subarray(10, 1034))).toBe(true)
+  })
+
+  it('keeps streaming when the gateway ignores Range instead of buffering the whole file', async () => {
+    let pulled = false
+
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled = true
+        controller.enqueue(new TextEncoder().encode('whole-file'))
+        controller.close()
+      }
+    }, { highWaterMark: 0 })
+
+    const deps = dependencies({ fetchRemote: vi.fn(async () => new Response(upstreamBody, { status: 200 })) })
+    const response = await createMediaProtocolHandler(deps)(request('hermes-media://remote/%2Ftmp%2Fclip.mp4'))
+
+    expect(pulled).toBe(false)
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('whole-file')
   })
 
   it('fails closed for unsupported extensions and missing remote auth', async () => {

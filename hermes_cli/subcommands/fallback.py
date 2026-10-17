@@ -16,9 +16,17 @@ def build_fallback_parser(subparsers) -> None:
     fallback_subparsers = fallback_parser.add_subparsers(dest="fallback_command")
     fallback_subparsers.add_parser(
         "list", aliases=["ls"], help="Show the current fallback chain (default when no subcommand)")
-    fallback_subparsers.add_parser(
+    fallback_add = fallback_subparsers.add_parser(
         "add",
-        help="Pick a provider + model (same picker as `hermes model`) and append to the chain")
+        help="Pick a provider + model, or pass --provider and --model, then append to the chain")
+    fallback_add.add_argument("--provider", dest="fallback_provider", metavar="PROVIDER",
+                              help="Provider for a non-interactive fallback entry")
+    fallback_add.add_argument("--model", dest="fallback_model", metavar="MODEL",
+                              help="Model for a non-interactive fallback entry")
+    fallback_add.add_argument("--base-url", dest="fallback_base_url", metavar="URL",
+                              help="Optional endpoint URL for a non-interactive fallback entry")
+    fallback_add.add_argument("--api-mode", dest="fallback_api_mode", metavar="MODE",
+                              help="Optional API mode for a non-interactive fallback entry")
     fallback_subparsers.add_parser(
         "remove", aliases=["rm"], help="Pick an entry to delete from the chain")
     fallback_subparsers.add_parser("clear", help="Remove all fallback entries")

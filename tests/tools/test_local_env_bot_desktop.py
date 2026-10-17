@@ -20,12 +20,14 @@ def test_running_bot_desktop_display_rides_along(monkeypatch):
     )
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     env = _make_run_env({})
     assert env["DISPLAY"] == ":20"
     assert env["XAUTHORITY"] == "/run/hermes/bot-desktop/xauth"
     assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/hermes/bot-desktop/bus"
-    # X11 desktop: a leaked Wayland socket flips GTK/Chromium backends
+    # X11 desktop: a Wayland socket or session type makes Chromium fail "Failed to initialize Wayland platform"
     assert "WAYLAND_DISPLAY" not in env
+    assert env["XDG_SESSION_TYPE"] == "x11"
 
 
 def test_running_bot_desktop_beats_the_session_snapshot(monkeypatch):

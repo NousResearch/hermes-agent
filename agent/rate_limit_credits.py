@@ -42,6 +42,8 @@ class RateLimitCreditsMixin:
             state = parse_rate_limit_headers(headers, provider=self.provider)
             if state is not None:
                 self._rate_limit_state = state
+                from agent.llm_concurrency import note_rate_limit_state
+                note_rate_limit_state(self.provider, state)
         except Exception:
             pass  # Never let header parsing break the agent loop
 

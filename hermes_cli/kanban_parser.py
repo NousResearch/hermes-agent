@@ -273,6 +273,11 @@ _SPECS = [
     ], aliases=["diag"], help="List active diagnostics on the current board"),
     _cmd("link", [_arg("parent_id"), _arg("child_id")], help="Add a parent->child dependency"),
     _cmd("unlink", [_arg("parent_id"), _arg("child_id")], help="Remove a parent->child dependency"),
+    _cmd("merged", [
+        _TASK_ID,
+        _arg("--pr", help="URL of the merged pull request (recorded on the event)"),
+        _arg("--sha", help="Merge commit SHA (recorded on the event)"),
+    ], help="Record that a task's PR landed on the base branch; children gated on it may start"),
     _cmd("claim", [
         _TASK_ID,
         _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS, help="Claim TTL in seconds (default: 900)"),

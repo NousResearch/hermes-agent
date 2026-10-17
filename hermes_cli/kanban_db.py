@@ -1586,7 +1586,7 @@ def link_tasks(
         _link(conn, parent_id, child_id)
         # If child was ready but parent is not yet terminal, demote child to todo
         # (archived counts as terminal, matching _parents_satisfied/recompute_ready).
-        if _task_status(conn, parent_id) not in ("done", "archived"):
+        if not _parent_is_terminal(conn, parent_id):  # the claim's predicate, not status alone
             cur = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -2078,12 +2078,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2117,24 +2112,23 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
+    """Return whether every direct parent is terminal for dependency gating (see ``kanban_db_parent_gate``)."""
     return conn.execute(
         "SELECT 1 FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
         "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
+        f"AND NOT ({_parent_terminal_sql(conn)}) LIMIT 1", (task_id,),
     ).fetchone() is None
 
 
 def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
     """``(parent_id, status)`` for every direct parent :func:`_parents_satisfied`
-    still counts as open (``done`` / ``archived`` release the child), in id
-    order, so a refusal or a board view can name the blockers instead of the
-    caller guessing. Read-only."""
+    still counts as open (the claim's own predicate), in id order, so a refusal or
+    a board view can name the blockers instead of the caller guessing. Read-only."""
     rows = conn.execute(
         "SELECT p.id, p.status FROM task_links l "
         "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+        f"WHERE l.child_id = ? AND NOT ({_parent_terminal_sql(conn)}) "
         "ORDER BY p.id", (task_id,),
     ).fetchall()
     return [(row["id"], row["status"]) for row in rows]
@@ -3429,7 +3423,8 @@ def request_changes(
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
     back to the implementer from the latest ``review_requested`` event, parent
-    gating reapplied. Returns ``(ok, implementer | reason)``."""
+    gating reapplied. Returns ``(ok, implementer | reason)``. No such event degrades to
+    ``implementer_from_run_history``; one with no valid implementer still fails closed."""
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
@@ -3451,13 +3446,16 @@ def request_changes(
         if claimed_payload.get("source_status") != "review":
             return False, "active run was not claimed from review"
 
+        reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
         requested_event = _latest_event(conn, task_id, "review_requested")
         if requested_event is None:
-            return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
-        if implementer is None:
-            return False, "review handoff has no valid implementer provenance"
-        reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+            implementer = _implementer_from_run_history(conn, task_id, exclude_run_id=current_run_id, exclude_profile=reviewer)
+            provenance = "inferred_from_run_history" if implementer else None
+        else:
+            implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+            if implementer is None:
+                return False, "review handoff has no valid implementer provenance"
+            provenance = "review_requested"
 
         new_status = _landing_status_after_parents(conn, task_id)
         # consecutive_failures deliberately PRESERVED: a review transition is
@@ -3479,18 +3477,10 @@ def request_changes(
         run_id = _end_run(
             conn, task_id, outcome="changes_requested", status=new_status, summary=reason,
         )
-        _append_event(
-            conn,
-            task_id,
-            "changes_requested",
-            {
-                "reason": reason,
-                "implementer": implementer,
-                "reviewer": reviewer,
-                "status": new_status,
-            },
-            run_id=run_id,
-        )
+        payload: dict[str, Any] = {"reason": reason, "implementer": implementer, "reviewer": reviewer, "status": new_status}
+        if provenance != "review_requested":
+            payload["implementer_provenance"] = provenance
+        _append_event(conn, task_id, "changes_requested", payload, run_id=run_id)
     return True, implementer
 
 
@@ -4242,6 +4232,8 @@ from hermes_cli.kanban_db_workspace import (
     _managed_scratch_path_info,
     _scratch_workspace,
 )
+from hermes_cli.kanban_db_parent_gate import _parent_gate_cache, _parent_is_terminal, _parent_terminal_sql, record_merged
+from hermes_cli.kanban_db_parent_gate import implementer_from_run_history as _implementer_from_run_history
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,

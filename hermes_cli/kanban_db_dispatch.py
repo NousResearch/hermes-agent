@@ -1624,13 +1624,13 @@ def check_respawn_guard(
         return None
 
     # 3. Completed run within guard window. Exception: an explicit re-queue
-    #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
-    #    a deliberate "run it again" — otherwise a manual done→ready would sit
-    #    silently held until the window elapses.
+    #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim,
+    #    review rejection of a card promoted into review) is a deliberate "run
+    #    it again" — otherwise it would sit silently held until the window elapses.
     success = max((t for t, _ in _rows_since(
         conn, "task_runs", task_id, now - _RESPAWN_GUARD_SUCCESS_WINDOW, "AND outcome = 'completed'")), default=None)
-    if success is not None and not any(_rows_since(
-            conn, "task_events", task_id, success, "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed')")):
+    if success is not None and not any(_rows_since(conn, "task_events", task_id, success,
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed', 'changes_requested')")):
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.

@@ -151,6 +151,172 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed.block_recurrences == 0
 
 
+def test_request_changes_degrades_when_card_entered_review_without_request_review(
+    conn,
+) -> None:
+    """#t_1e569887: a card that reaches ``review`` by promotion (the
+    ``recompute_ready`` ``promoted {"status": "review"}`` path, or a raw
+    reconciler ``UPDATE``) never calls ``request_review``, so no
+    ``review_requested`` event exists. Before this fix ``request_changes``
+    refused outright — the reviewer could approve but never reject, and
+    ``kanban_block`` was the only exit (t_e73592ff). It must now degrade the
+    same way ``reopen_review_task`` already degrades: infer the implementer
+    from run history and still hand the card back for rework.
+    """
+    task_id = kb.create_task(conn, title="Promoted without request_review", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    # Implementer's run ends as a plain completion — never request_review —
+    # reproducing the exact state `_end_run` leaves before a bare status
+    # promotion (recompute_ready / reconcile-done.py's raw UPDATE).
+    kb._end_run(conn, task_id, outcome="completed", summary="implemented")
+    conn.commit()
+    conn.execute(
+        "UPDATE tasks SET status = 'review', assignee = 'reviewer', claim_lock = NULL WHERE id = ?",
+        (task_id,),
+    )
+    conn.commit()
+    events_before = kb.list_events(conn, task_id)
+    assert not any(e.kind == "review_requested" for e in events_before)
+
+    review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+
+    ok, implementer = kb.request_changes(
+        conn,
+        task_id,
+        reason="Rejecting a card that never went through request_review.",
+        expected_run_id=review.current_run_id,
+    )
+    assert ok is True
+    assert implementer == "builder"
+
+    reworked = kb.get_task(conn, task_id)
+    assert reworked is not None
+    assert reworked.status == "ready"
+    assert reworked.assignee == "builder"
+    assert reworked.current_run_id is None
+
+    changes = _event(kb.list_events(conn, task_id), "changes_requested")
+    assert changes.payload is not None
+    assert changes.payload["implementer"] == "builder"
+    assert changes.payload["implementer_provenance"] == "inferred_from_run_history"
+
+
+@pytest.mark.parametrize("reviewer_first_outcome", ["blocked", "reclaimed"])
+def test_request_changes_degrades_without_electing_the_reviewer(
+    conn, reviewer_first_outcome: str,
+) -> None:
+    """#t_1e569887 review round 1 (changes_requested, run 600): the naive
+    degradation — skip only a run whose ``metadata`` has ``review_outcome`` —
+    elects the REVIEWER, not the implementer, whenever the reviewer's own
+    review attempt ends WITHOUT approving (blocked / reclaimed / crashed /
+    timed_out all close with ``metadata=NULL``, same as a plain completion).
+    Only the ``sdlc-review`` skill's APPROVAL path writes ``review_outcome``,
+    so that first attempt is the most recently ENDED run and would outrank
+    the implementer's own closing run — landing the rework right back on the
+    reviewer, exactly the mix-up the review-lane guard family exists to
+    prevent (the ``ready`` lane would then dispatch ``profile=reviewer``).
+
+    Reproduces the incident shape: implementer's run ends plain
+    ``completed`` (never ``request_review``, so the card enters ``review``
+    by promotion), the reviewer's FIRST attempt ends non-approval
+    (``blocked``/``reclaimed``, no ``review_outcome``), and only the
+    reviewer's SECOND attempt is the one actually rejecting the card.
+    ``request_changes`` must still resolve ``implementer == "builder"``, not
+    ``"reviewer"``.
+    """
+    task_id = kb.create_task(conn, title="Promoted, reviewer stumbles first", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    # Implementer's run ends as a plain completion — never request_review —
+    # reproducing the promoted-without-provenance entry into `review`.
+    kb._end_run(conn, task_id, outcome="completed", summary="implemented")
+    conn.commit()
+    conn.execute(
+        "UPDATE tasks SET status = 'review', assignee = 'reviewer', claim_lock = NULL WHERE id = ?",
+        (task_id,),
+    )
+    conn.commit()
+
+    # Reviewer's FIRST attempt: claims review, then the run ends WITHOUT
+    # ever writing `review_outcome` (blocked mid-review, or reclaimed after
+    # a crash/timeout) — the exact shape that elected the reviewer before
+    # this fix.
+    first_attempt = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert first_attempt is not None
+    kb._end_run(
+        conn, task_id, outcome=reviewer_first_outcome, summary="reviewer did not finish",
+    )
+    conn.commit()
+    conn.execute(
+        "UPDATE tasks SET status = 'review', claim_lock = NULL WHERE id = ?", (task_id,),
+    )
+    conn.commit()
+    events_before = kb.list_events(conn, task_id)
+    assert not any(e.kind == "review_requested" for e in events_before)
+
+    # Reviewer's SECOND attempt is the one that actually rejects the card.
+    second_attempt = kb.claim_review_task(conn, task_id, claimer="reviewer:2")
+    assert second_attempt is not None
+
+    ok, implementer = kb.request_changes(
+        conn,
+        task_id,
+        reason="Rejecting after a stumbled first review attempt.",
+        expected_run_id=second_attempt.current_run_id,
+    )
+    assert ok is True
+    assert implementer == "builder"
+
+    reworked = kb.get_task(conn, task_id)
+    assert reworked is not None
+    assert reworked.status == "ready"
+    assert reworked.assignee == "builder"
+
+    changes = _event(kb.list_events(conn, task_id), "changes_requested")
+    assert changes.payload is not None
+    assert changes.payload["implementer"] == "builder"
+    assert changes.payload["implementer_provenance"] == "inferred_from_run_history"
+
+    # The consequence the review demanded: no run may open with
+    # profile=<reviewer> via the `ready` lane after this request_changes —
+    # claim_task's run row is stamped with the row's own `assignee`
+    # (`_claim_and_open_run`), so a wrong assignee here is exactly the bug.
+    dispatched = kb.claim_task(conn, task_id, claimer="dispatcher:1")
+    assert dispatched is not None
+    latest_run = kb.list_runs(conn, task_id)[-1]
+    assert latest_run.profile == "builder"
+    assert latest_run.profile != "reviewer"
+
+
+def test_request_changes_without_run_history_leaves_assignee_untouched(conn) -> None:
+    """Degradation floor: with no ``review_requested`` event AND no prior
+    ended run to infer from, ``request_changes`` still succeeds (never falls
+    back to refusing) and simply does not touch ``assignee`` — the same
+    no-op-on-assignee degradation ``reopen_review_task`` applies when its own
+    event carries no implementer.
+    """
+    task_id = kb.create_task(conn, title="No run history at all", assignee="reviewer")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,),
+        )
+    review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+
+    ok, implementer = kb.request_changes(
+        conn, task_id, reason="No evidence at all.", expected_run_id=review.current_run_id,
+    )
+    assert ok is True
+    assert implementer is None
+
+    reworked = kb.get_task(conn, task_id)
+    assert reworked is not None
+    assert reworked.status == "ready"
+    assert reworked.assignee == "reviewer"  # unchanged: nothing to route to
+
+
 @pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])
 def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     conn,

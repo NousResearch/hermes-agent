@@ -91,6 +91,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     _flag(cron_create, "--paused", default=False,
         help="Create disabled in one write; resume to schedule, or explicitly run now.")
     cron_create.add_argument("--paused-reason", help="Auditable reason; requires --paused.")
+    cron_create.add_argument("--force", action="store_true",
+        help="Bypass the cron.required_skills gate for this one job. Human-only: "
+            "the agent's cronjob tool cannot pass this flag.")
 
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")
@@ -151,6 +154,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--interpreter",
         help="Absolute or ~ path to a Python for a .py script / monitor script. "
             "Pass empty string to clear (back to Hermes' Python).")
+    cron_edit.add_argument("--force", action="store_true",
+        help="Bypass the cron.required_skills gate for this one edit. Human-only: "
+            "the agent's cronjob tool cannot pass this flag.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

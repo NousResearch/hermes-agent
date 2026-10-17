@@ -75,6 +75,20 @@ def test_reader_sizes_mxfp4_tensor_blocks(tmp_path):
     assert header.embd_table_bytes == header.tensor_bytes
 
 
+def test_reader_sizes_upstream_ternary_tensor_blocks(tmp_path):
+    """TQ1_0 / TQ2_0 (ggml-common.h) pack 256 elements into 54 / 66 bytes."""
+    for ggml_type, block_bytes in ((34, 54), (35, 66)):
+        gguf = tmp_path / f"bitnet-{ggml_type}.gguf"
+        gguf.write_bytes(
+            b"GGUF"
+            + struct.pack("<IQQ", 3, 1, 0)
+            + _gguf_str("token_embd.weight")
+            + struct.pack("<IQIQ", 1, 512, ggml_type, 0)
+        )
+
+        assert read_gguf_header(gguf).tensor_bytes == 2 * block_bytes
+
+
 @pytest.mark.parametrize(("ggml_type", "elems", "expected"), [
     (40, 128, 72),  # NVFP4: 64 elements per block, 4 E4M3 scales + 32 bytes of 4-bit values
     (41, 256, 36),  # Q1_0: 128 elements per block, an f16 scale + 16 bytes of bits

@@ -398,6 +398,29 @@ def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypat
     assert result is not None and str(new_python) in result.read_text(encoding="utf-8-sig")
 
 
+def test_cmd_fallback_offloads_the_bootstrap_from_the_command_line(tmp_path, monkeypatch):
+    """cmd.exe caps a line at 8191 characters (KB830473), and the bootstrap
+    long outgrew that inline, so a nested `call` tore the launcher apart and
+    reported a false failure (#134560). The fallback must keep every .cmd
+    line short by running the bootstrap as its own file."""
+    repo = tmp_path / "repo"
+    out = tmp_path / "commands"
+    out.mkdir()
+    monkeypatch.setattr(_launchers, "_is_windows", lambda: True)
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    python = Path(sys.executable)
+    for name in _launchers.ENTRY_POINTS:
+        launcher = _launchers.mint_launcher(name, repo, out, python, None)
+        assert launcher == out / f"{name}.cmd"
+        body = launcher.read_text(encoding="utf-8-sig")
+        assert max(len(line) for line in body.splitlines()) < 8191  # cmd.exe's cap (KB830473)
+        payload = out / f"{name}-launcher.py"
+        assert payload.is_file()
+        assert payload.read_text(encoding="utf-8-sig") == _launchers._launcher_script(name, repo, None)
+        command = next(line for line in body.splitlines()[1:] if line.strip())
+        assert command == f'"{python}" -I "{payload}" %*'
+
+
 @pytest.mark.platforms("windows")
 def test_windows_repair_upgrades_healthy_old_pm_external_launchers(tmp_path, monkeypatch):
     from hermes_cli._install_repair import ensure_windows_bin_launchers

@@ -9,7 +9,7 @@ export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
-  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id } })
+  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id, roomName: room.name } })
 
   return key
 }

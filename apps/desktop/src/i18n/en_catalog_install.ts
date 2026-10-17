@@ -32,5 +32,7 @@ export const enCatalogInstall: CatalogInstallTranslations = {
   serverNotConnected: (server, reason) => `MCP server ${server} not connected${reason ? `: ${reason}` : ''}`,
   notEnabled: 'Installed but not turned on',
   missingEnv: names => `Set ${names} to finish setup`,
+  updatePending: name =>
+    `Still waiting for ${name}. The update may finish in the background. Refresh to check its installed version.`,
   alreadyInstalled: 'Already installed; left as it is'
 }

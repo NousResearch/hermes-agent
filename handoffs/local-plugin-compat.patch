@@ -1,0 +1,30 @@
+--- a/typesafe-skill-router/__init__.py
++++ b/typesafe-skill-router/__init__.py
+@@ -110 +110,2 @@
+-        return ctx.get_config(key, DEFAULTS[key])
++        setting_key = "router_model" if key == "model" else key
++        return ctx.get_config(setting_key, DEFAULTS[key])
+--- a/typesafe-skill-router/plugin.yaml
++++ b/typesafe-skill-router/plugin.yaml
+@@ -41 +41 @@
+-  model:
++  router_model:
+--- a/toolaria/__init__.py
++++ b/toolaria/__init__.py
+@@ -328,10 +328,2 @@
+-    # Availability symmetry: the rescue hook above fires UNGATED in every
+-    # session, so its inverse (rescuer_fetch) must be reachable in every
+-    # session too, or a rescued result becomes an unredeemable handle. Mark
+-    # the rescuer toolset ambient so the host always surfaces rescuer_fetch
+-    # regardless of a session's enabled_toolsets scope. Safe to expose
+-    # broadly because fetch() stays session-scoped at the data layer (a
+-    # session can only read blobs it rescued). On a host without ambient
+-    # support, fail LOUD rather than silently emit dead handles in
+-    # toolset-restricted sessions.
+-    _mark_rescuer_ambient()
++    # Rescue only when this call advertises its session-scoped retrieval tool.
++    # Explicit toolset restrictions remain authoritative.
+@@ -536,0 +529,3 @@
++    available_tools = kwargs.get("available_tools")
++    if available_tools is None or "rescuer_fetch" not in available_tools:
++        return None  # Never replace content with a handle this session cannot redeem.

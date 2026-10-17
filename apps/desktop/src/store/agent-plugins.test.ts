@@ -7,7 +7,8 @@ import {
   installAgentPlugin,
   isDesktopRelevantPlugin,
   normalizeAgentPluginRow,
-  saveAgentPluginSettings
+  saveAgentPluginSettings,
+  updateAgentPlugin
 } from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
@@ -19,12 +20,18 @@ afterEach(() => {
 })
 
 describe('installAgentPlugin', () => {
-  it('waits for a slow successful install instead of reporting the generic 30s timeout', async () => {
+  it.each(['install', 'update'])('waits for a slow successful %s instead of reporting a 30s failure', async action => {
     vi.useFakeTimers()
 
     const request = vi.fn(
       <T>(_method: string, _params?: Record<string, unknown>, timeoutMs = 30_000): Promise<T> =>
         new Promise((resolve, reject) => {
+          if (_params?.action === 'list') {
+            resolve({ ok: true, plugins: [] } as T)
+
+            return
+          }
+
           const deadline = setTimeout(
             () => reject(new Error(`request timed out after ${timeoutMs / 1000}s: plugins.manage`)),
             timeoutMs
@@ -32,32 +39,37 @@ describe('installAgentPlugin', () => {
 
           setTimeout(() => {
             clearTimeout(deadline)
-            resolve({ ok: true, plugin_name: 'demo' } as T)
+            resolve({ ok: true, plugin_name: 'demo', plugins: [] } as T)
           }, 45_000)
         })
     )
 
-    const install = installAgentPlugin(request as never, { identifier: 'demo', profile: 'research' })
+    const install =
+      action === 'install'
+        ? installAgentPlugin(request as never, { identifier: 'demo', profile: 'research' })
+        : updateAgentPlugin(request as never, 'demo', 'failed', 'research')
 
     await vi.advanceTimersByTimeAsync(45_000)
 
-    expect(await install).toMatchObject({ ok: true, pluginName: 'demo' })
+    expect(await install).toMatchObject(action === 'install' ? { ok: true, pluginName: 'demo' } : { kind: 'applied' })
     expect(request).toHaveBeenCalledWith(
       'plugins.manage',
-      expect.objectContaining({ action: 'install', profile: 'research' }),
+      expect.objectContaining({ action, profile: 'research' }),
       expect.any(Number)
     )
   })
 
-  it('marks a client timeout as an unknown install outcome', async () => {
+  it.each(['install', 'update'])('marks a client timeout as an unknown %s outcome', async action => {
     const request = vi.fn(async () => {
       throw new Error('request timed out after 120s: plugins.manage')
     })
 
-    expect(await installAgentPlugin(request as never, { identifier: 'demo' })).toMatchObject({
-      ok: false,
-      timedOut: true
-    })
+    const result =
+      action === 'install'
+        ? await installAgentPlugin(request as never, { identifier: 'demo' })
+        : await updateAgentPlugin(request as never, 'demo', 'failed')
+
+    expect(result).toMatchObject(action === 'install' ? { ok: false, timedOut: true } : { kind: 'unknown' })
   })
 })
 

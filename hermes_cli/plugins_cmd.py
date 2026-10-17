@@ -846,6 +846,8 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
         logger.warning("Skipping unreadable plugin directory %s: %s", base, exc)
         return
     for d in children:
+        if d.name.startswith(".") or (d.name.startswith("__") and d.name.endswith("__")):
+            continue
         try:
             if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
                 continue

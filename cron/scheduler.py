@@ -1929,7 +1929,9 @@ def _open_cron_session_db(job: dict):
     except Exception as e:
         if owner is not None:
             raise
-        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+        # Same outcome as the timeout above — the run continues with no store, so its
+        # transcript never reaches state.db. Surface it above DEBUG so that is visible.
+        logger.warning("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
     return None
 
 

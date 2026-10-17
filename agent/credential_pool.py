@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
-from hermes_cli.config_providers import _entries_for_route, custom_provider_route_matches
+from hermes_cli.config_providers import custom_provider_route_matches
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
@@ -586,10 +586,9 @@ def _keyed_custom_pool_matches(
             if provider_key:
                 aliases.add(f"{CUSTOM_POOL_PREFIX}{provider_key}")
             configured_url = _norm_url(entry.get("base_url"))
-            if provider_norm == "custom":
-                return custom_provider_route_matches(configured_url, runtime_url)
             runtime_aliases = _requested_custom_name_aliases(provider_norm)
-            return bool(runtime_aliases & aliases) and custom_provider_route_matches(configured_url, runtime_url)
+            return (provider_norm == "custom" or bool(runtime_aliases & aliases)) and custom_provider_route_matches(
+                configured_url, runtime_url)
     except Exception:
         return False
     return False

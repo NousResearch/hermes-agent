@@ -105,6 +105,10 @@ def build_api_request(
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None
+    # fallback.no_first_byte_budget_seconds: armed once per request, kept across retries and
+    # fallback restarts until a real byte arrives.
+    from agent.first_byte_budget import arm as _arm_first_byte_budget
+    _arm_first_byte_budget(agent)
     # api_messages was built for the primary; a fallback (DeepSeek / Kimi / MiMo) may
     # require reasoning_content — re-apply the echo-back pad (idempotent) and re-render
     # the prompt-cache decoration for the current provider.

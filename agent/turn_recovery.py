@@ -1906,6 +1906,15 @@ def route_classified_error(
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
 
+    # fallback.no_first_byte_budget_seconds cut the attempt: the budget already covered the in-place
+    # retries, so move to the next chain entry now (the monitor only cuts with one pending).
+    from agent.first_byte_budget import FirstByteBudgetExceeded
+    if isinstance(api_error, FirstByteBudgetExceeded) and agent._has_pending_fallback():
+        agent._buffer_diagnostic_status(
+            f"⚠️ No first byte from {model} for {api_error.elapsed_s or 0:.0f}s — switching to fallback provider...")
+        if agent._try_activate_fallback(reason=classified.reason):
+            return _fallback_break()
+
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
     # escalate to the fallback chain once; False -> terminal handling.
     if (

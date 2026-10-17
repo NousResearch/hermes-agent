@@ -419,6 +419,9 @@ def settle_unrecovered_error(
     )
     if _interrupted is not None:
         return _verdict("return", _interrupted)
+    # Our own backoff is not provider silence: keep it off the no-first-byte budget.
+    from agent.first_byte_budget import note_excused_wait
+    note_excused_wait(agent, wait_time)
     if _retry.restart_with_redirected_messages:
         # Leave the retry loop — the caller rebuilds this iteration from the correction
         # instead of re-firing the stale request.

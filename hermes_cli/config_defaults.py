@@ -37,7 +37,10 @@ DEFAULT_CONFIG = {
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
     # of switching the turn to a fallback model.
-    "fallback": {"min_switch_reset_seconds": 0},
+    # no_first_byte_budget_seconds: opt-in (0 = off). Total time a request may go without a first
+    # byte, across its in-place retries, before the attempt is cut and the next
+    # fallback_providers entry is tried. Only acts when a fallback entry is pending.
+    "fallback": {"min_switch_reset_seconds": 0, "no_first_byte_budget_seconds": 0},
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

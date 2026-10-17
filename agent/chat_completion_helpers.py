@@ -2727,6 +2727,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
         self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
+        self._first_byte_budget_cut = None  # FirstByteBudgetExceeded once the monitor cut the attempt
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
@@ -2859,6 +2860,9 @@ class _StreamingCall(StreamingWaitMonitor):
         """Stamp liveness for a real chunk; diagnostics are best-effort."""
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("receiving stream response")
+        if getattr(self.agent, "_first_byte_budget", None) is not None:
+            from agent.first_byte_budget import disarm
+            disarm(self.agent)
         with contextlib.suppress(Exception):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
             if diag.get("first_chunk_at") is None:
@@ -3877,6 +3881,28 @@ class _StreamingCall(StreamingWaitMonitor):
             _join_worker_for_relay_teardown(self.worker, label="Streaming")
         self._monitor_interrupted["yes"] = True
 
+    def _cut_for_first_byte_budget(self) -> None:
+        """``fallback.no_first_byte_budget_seconds`` is spent and a fallback entry is pending:
+        abort this attempt like an interrupt (no in-place retry) and let ``run`` raise
+        ``FirstByteBudgetExceeded`` so the error path moves to the next entry."""
+        from agent.first_byte_budget import FirstByteBudgetExceeded, elapsed
+        waited = elapsed(self.agent) or 0.0
+        provider, model = self.agent.provider, self.api_kwargs.get("model", "unknown")
+        logger.warning("No first byte from %s/%s within fallback.no_first_byte_budget_seconds (%.0fs waited); "
+                       "cutting the attempt.", provider, model, waited)
+        self._first_byte_budget_cut = FirstByteBudgetExceeded(
+            f"no first byte from {model} via {provider} after {waited:.0f}s "
+            "(fallback.no_first_byte_budget_seconds); moving to the next fallback provider",
+            provider=provider, elapsed_s=waited)
+        self._request_cancelled["value"] = True
+        _killed_response = self._attempt_stream_response
+        with contextlib.suppress(Exception):
+            self._cancel_current_stream_attempt("first_byte_budget_cut")
+            self.clients.close_once("first_byte_budget_cut")
+        self._shutdown_stale_attempt_socket(_killed_response)
+        if self.worker is not None:
+            _join_worker_for_relay_teardown(self.worker, label="Streaming")
+
     # ── orchestration ───────────────────────────────────────────────────
 
     def _resolve_stale_timeout(self) -> None:
@@ -3974,6 +4000,8 @@ class _StreamingCall(StreamingWaitMonitor):
             self.worker = threading.Thread(target=_context_thread_target(self._run_call), daemon=True)
             self.worker.start()
             self._monitor_loop()
+        if self._first_byte_budget_cut is not None:
+            raise self._first_byte_budget_cut
         if self._monitor_interrupted["yes"]:
             raise InterruptedError("Agent interrupted during streaming API call")
         if self.agent._interrupt_requested:  # worker returned early before the monitor saw the flag

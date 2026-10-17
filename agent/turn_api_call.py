@@ -144,6 +144,9 @@ def perform_api_call(
                 bool(agent._pending_redirect) if _redirect_lock is not None
                 else agent._has_pending_redirect()
             )
+    # A response came back: this request's no-first-byte wait is over (the next one arms afresh).
+    from agent.first_byte_budget import disarm as _disarm_first_byte_budget
+    _disarm_first_byte_budget(agent)
     if _redirect_crossed_response:
         # Response and redirect can cross threads: discard the now-stale
         # response and rebuild from the correction rather than lose it.

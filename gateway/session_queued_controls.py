@@ -16,7 +16,7 @@ from functools import partial
 
 from hermes_state_runtime import (
     STEERING, RuntimeStoreError, check_replaced_input, find_session_admission, get_session_admission,
-    replacement_binding, retire_replaced_input, revert_steer_input, steer_session_input,
+    replacement_binding, retire_replaced_input, revert_steer_input, steer_replayed, steer_session_input,
 )
 
 # A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
@@ -136,7 +136,7 @@ async def steer_queued(connection, ref, params):
     authority, admission_id = connection.authority, params['admission_id']
     authority.authorize(connection.actor, ref, 'session:control')
     receipt, row = await _queued(connection, ref, admission_id)
-    if row['status'] == 'terminal' and row['outcome'] in (STEERING, 'steered'):
+    if steer_replayed(row):
         if row['outcome'] == STEERING:
             # A transfer committed under an uncertain failure is still fenced to its claim: deliver it.
             with authority.sessions[ref.session_id].event_stream.lock:

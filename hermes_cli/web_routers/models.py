@@ -305,6 +305,7 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
         from hermes_cli import config as config_mod
+        from hermes_cli.config_worker_save import merge_partial_save
         from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
         # Serialize the full RMW with dashboard autosaves and with non-HTTP
@@ -361,9 +362,9 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     existing_active = existing_moa.get("active_preset")
                     if isinstance(existing_active, str) and existing_active in existing_presets:
                         normalized["active_preset"] = existing_active
-            updated = config_mod._merge_partial_save(raw_cfg, {"moa": normalized})
+            updated = merge_partial_save(raw_cfg, {"moa": normalized})
             if not legacy_flat_update:
-                # ``_merge_partial_save`` retains undeclared metadata on surviving presets;
+                # ``merge_partial_save`` retains undeclared metadata on surviving presets;
                 # filter after that merge so omitted names are authoritative deletions.
                 merged_presets = updated["moa"]["presets"]
                 updated["moa"]["presets"] = {

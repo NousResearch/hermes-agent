@@ -474,6 +474,77 @@ class TestPersistence:
 # Client tools (HTTP mocked)
 # --------------------------------------------------------------------------
 
+class TestOutboundAuth:
+    def test_auth_header_reads_token_from_environment(self, monkeypatch):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "environment-token")
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {"Authorization": "Bearer environment-token"}
+
+    def test_auth_header_reads_token_env_from_active_profile_scope(self, monkeypatch, multiplex_scope):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "launch-profile-token")
+        multiplex_scope({"A2A_TOKEN_RESEARCHER": "secondary-profile-token"})
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {"Authorization": "Bearer secondary-profile-token"}
+
+    def test_auth_header_does_not_fall_back_to_launch_profile_on_scoped_miss(self, monkeypatch, multiplex_scope):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "launch-profile-token")
+        multiplex_scope({})
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {}
+
+    def test_auth_header_prefers_literal_token_over_environment(self, monkeypatch):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "environment-token")
+
+        assert tools._auth_header({
+            "type": "bearer", "token": "literal-token",
+            "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {"Authorization": "Bearer literal-token"}
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_auth_header_omits_missing_or_blank_environment_token(self, monkeypatch, value):
+        monkeypatch.delenv("A2A_TOKEN_RESEARCHER", raising=False)
+        if value is not None:
+            monkeypatch.setenv("A2A_TOKEN_RESEARCHER", value)
+
+        assert tools._auth_header({
+            "type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER",
+        }) == {}
+
+    @pytest.mark.parametrize("mode", ["all", "first", "best"])
+    def test_orchestrate_copies_active_profile_scope_to_each_worker(self, monkeypatch, multiplex_scope, mode):
+        monkeypatch.setenv("A2A_TOKEN_RESEARCHER", "launch-profile-token")
+        multiplex_scope({"A2A_TOKEN_RESEARCHER": "secondary-profile-token"})
+        monkeypatch.setattr(tools, "_configured_peers", lambda: {
+            "one": {"url": "http://one.example", "capabilities": ["research"],
+                    "auth": {"type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER"}},
+            "two": {"url": "http://two.example", "capabilities": ["research"],
+                    "auth": {"type": "bearer", "token_env": "A2A_TOKEN_RESEARCHER"}},
+        })
+        active_auth_header = tools._auth_header
+        barrier = threading.Barrier(2)
+        seen_headers = []
+
+        def fake_send_task(_agent, peer, _message, context_id):
+            seen_headers.append(active_auth_header(peer["auth"]))
+            barrier.wait(timeout=5)
+            return "ok", context_id or "ctx", protocol.STATE_COMPLETED
+
+        monkeypatch.setattr(tools, "_send_task", fake_send_task)
+
+        tools.a2a_orchestrate({"capability": "research", "message": "hello", "mode": mode})
+
+        assert seen_headers == [
+            {"Authorization": "Bearer secondary-profile-token"},
+            {"Authorization": "Bearer secondary-profile-token"},
+        ]
+
+
 class TestClientTools:
 
 

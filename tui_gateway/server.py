@@ -60,6 +60,106 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.p
 # ── Panic logger: crashes otherwise leave no forensics (stdout is the JSON-RPC pipe, stderr doesn't
 # flush before exit) → append every unhandled exception to the crash log + one-line stderr summary.
 _CRASH_LOG = os.path.join(_hermes_home, "logs", "tui_gateway_crash.log")
+# The crash log is best-effort forensics, not a data file: recurring benign events (restart/SIGHUP
+# cycles land a received+exit pair each time, per-thread panics hit the hooks) appended without
+# bound — 15 MB / 778 records on one host (#136624). Rotating to a single .1 generation before
+# appending bounds the total at 2x the cap. Two edges the first rotation draft missed (#136633
+# review): (1) a stat-then-rename racing between Python threads or the Node parent could move a
+# small fresh log over the retained .1 generation and erase it — rotation runs under an
+# O_CREAT|O_EXCL lock file both writers honor, never waiting (the panic path must stay
+# non-blocking); (2) a single record was still unbounded, so an empty log re-admitted a whole
+# oversized traceback — records are truncated head+tail at the shared append boundary.
+_CRASH_LOG_MAX_BYTES = 5 * 1024 * 1024
+# A rotation lock older than this belongs to a killed writer: break it instead of skipping
+# rotation forever. Generous vs. the milliseconds the rename needs, short vs. any crash cadence.
+_CRASH_ROTATE_LOCK_STALE_S = 15.0
+
+
+def _crash_rotation_lock() -> int | None:
+    """Take the cross-writer rotation lock (Python threads *and* the Node parent), or return
+    ``None`` if another writer holds a fresh one. Best-effort: never waits, and a stale lock is
+    broken so a killed writer cannot wedge rotation permanently."""
+    lock_path = _CRASH_LOG + ".rotate.lock"
+    for _ in range(2):  # one retry after breaking a stale lock; never a wait
+        try:
+            return os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        except OSError:
+            return None  # e.g. read-only directory: append without rotating
+        try:
+            if time.time() - os.path.getmtime(lock_path) <= _CRASH_ROTATE_LOCK_STALE_S:
+                return None  # fresh lock: a concurrent writer owns this rotation
+        except OSError:
+            continue  # vanished between open and stat: retry the exclusive create
+        with contextlib.suppress(OSError):
+            os.unlink(lock_path)  # stale lock: break it and retry
+    return None
+
+
+def _release_crash_rotation_lock(fd: int) -> None:
+    with contextlib.suppress(OSError):
+        os.close(fd)
+    with contextlib.suppress(OSError):
+        os.unlink(_CRASH_LOG + ".rotate.lock")
+
+
+def _rotate_crash_log(incoming: int = 0) -> None:
+    """Best-effort one-generation rename once the crash log is over the cap.
+
+    ``incoming`` is the size of the record about to be appended: the caller asks
+    for a rotation when the active log plus that record would exceed the cap, so
+    the re-check must repeat the same comparison. Runs under the cross-writer
+    lock: renaming on a stale stat could move a small fresh log (another writer
+    had already rotated) over the retained .1 generation and erase it."""
+    try:
+        if os.path.getsize(_CRASH_LOG) + incoming <= _CRASH_LOG_MAX_BYTES:
+            return
+    except OSError:
+        return  # missing log: nothing to rotate
+    fd = _crash_rotation_lock()
+    if fd is None:
+        return  # a concurrent writer owns this rotation; the append proceeds regardless
+    try:
+        try:
+            if os.path.getsize(_CRASH_LOG) + incoming <= _CRASH_LOG_MAX_BYTES:
+                return  # room again: the oversized generation was already rotated away
+        except OSError:
+            return
+        os.replace(_CRASH_LOG, _CRASH_LOG + ".1")
+    finally:
+        _release_crash_rotation_lock(fd)
+
+
+def _bounded_crash_record(text: str) -> bytes:
+    """Encode one crash record under the record budget (the cap): an unbounded traceback
+    re-admitted whole into a fresh generation would defeat the promised storage bound. Keeps
+    head (headers, first frames) and tail (root exception) around an explicit marker, in
+    UTF-8 bytes."""
+    data = text.encode("utf-8", "replace")
+    if len(data) <= _CRASH_LOG_MAX_BYTES:
+        return data
+    marker = f"\n… [truncated {len(data) - _CRASH_LOG_MAX_BYTES} bytes]\n".encode()
+    keep = _CRASH_LOG_MAX_BYTES - len(marker)
+    head = keep // 2
+    return data[:head] + marker + data[len(data) - (keep - head):]
+
+
+def _append_crash_record(record_text: str) -> None:
+    """Shared Python append boundary of the crash log: bound the record, then rotate when the
+    incoming record would push the active log past the cap (a fresh log must not accept a
+    record larger than the budget), so the 2x-cap total actually holds."""
+    record = _bounded_crash_record(record_text)
+    with contextlib.suppress(Exception):
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        try:
+            size = os.path.getsize(_CRASH_LOG)
+        except OSError:
+            size = 0
+        if size + len(record) > _CRASH_LOG_MAX_BYTES:
+            _rotate_crash_log(incoming=len(record))
+        with open(_CRASH_LOG, "ab") as f:
+            f.write(record)
 
 
 def _record_crash(kind: str, exc_type, exc_value, exc_tb, *, thread_name: str | None = None) -> None:
@@ -67,10 +167,8 @@ def _record_crash(kind: str, exc_type, exc_value, exc_tb, *, thread_name: str | 
     trace = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
     suffix = f" · thread={thread_name}" if thread_name is not None else ""
     with contextlib.suppress(Exception):
-        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
-        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
-            f.write(f"\n=== {kind} · {time.strftime('%Y-%m-%d %H:%M:%S')}{suffix} ===\n")
-            f.write(trace)
+        _append_crash_record(
+            f"\n=== {kind} · {time.strftime('%Y-%m-%d %H:%M:%S')}{suffix} ===\n{trace}")
     # The first line is what the user sees (gateway.stderr Activity line); the rest stays in the log.
     first = str(exc_value).strip().splitlines()[0] if str(exc_value).strip() else exc_type.__name__
     who = f"thread {thread_name} raised " if thread_name is not None else ""

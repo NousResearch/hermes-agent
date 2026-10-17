@@ -979,12 +979,12 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
     """Except-path of the turn: crash log, history restore, terminal error frame."""
     import traceback
     with contextlib.suppress(Exception):
-        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
-        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
-            f.write(
-                f"\n=== turn-dispatcher exception · "
-                f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n")
-            f.write(traceback.format_exc())
+        # Rebound onto server globals (bind_module): _append_crash_record applies the shared
+        # record bound and the rotate-then-append ownership of the crash log.
+        _append_crash_record(
+            f"\n=== turn-dispatcher exception · "
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n"
+            + traceback.format_exc())
     print(f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True)
     # A finalizer exception can leave in-memory history at the turn-start snapshot.
     _restore_agent_history_after_turn_error(session, st.agent)

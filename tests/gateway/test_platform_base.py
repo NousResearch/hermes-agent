@@ -1126,6 +1126,30 @@ class TestIsSenderAuthorized:
         adapter._is_sender_authorized("user", "group", "chan")
         assert seen == [("user", "group", "chan")]
 
+    @pytest.mark.parametrize("with_source", [False, True])
+    def test_check_receives_full_source_when_supported(self, with_source):
+        adapter = self._adapter()
+        source = adapter.build_source("room", user_id="user", guild_id="server", thread_id="root")
+        seen = []
+
+        def check(user_id, chat_type, chat_id, *, source=None):
+            seen.append(source)
+            return True
+
+        adapter.set_authorization_check(check)
+        assert adapter._is_sender_authorized("user", "group", "room",
+                                             source=source if with_source else None) is True
+        assert seen == [source if with_source else None]
+
+    def test_full_source_keeps_legacy_callback_compatible(self):
+        adapter = self._adapter()
+        source = adapter.build_source("room", user_id="user", guild_id="server")
+        seen = []
+        adapter.set_authorization_check(
+            lambda user, kind, chat: seen.append((user, kind, chat)) or True)
+        assert adapter._is_sender_authorized("user", "group", "room", source=source) is True
+        assert seen == [("user", "group", "room")]
+
 
 class TestTruncateMessage:
     def _adapter(self):

@@ -321,6 +321,9 @@ _BRIDGE_PASSTHROUGH_ENV = (
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
+# Media kinds that carry a caption and may be sent bare: held for the caption window so the text
+# typed right after merges into one turn (#137832). Voice/audio notes are the payload themselves.
+_CAPTIONABLE_MEDIA_TYPES = {MessageType.PHOTO, MessageType.VIDEO, MessageType.DOCUMENT}
 # Inbound mediaType substring → kind; ptt = WhatsApp voice note, so "ptt" must precede "audio".
 _MEDIA_NEEDLES = (("image", MessageType.PHOTO), ("video", MessageType.VIDEO), ("ptt", MessageType.VOICE), ("audio", MessageType.AUDIO))
 # MessageType → (bridge label, default mime); documents take their mime from SUPPORTED_DOCUMENT_TYPES instead.
@@ -391,6 +394,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
         self._configure_text_batch_delays()
+        # Caption window for bare media (#137832): WhatsApp sends the file first and the instruction
+        # lands seconds later as its own message, which interrupts the turn the file already spawned
+        # (in the wild: the same document printed twice). Longer than the text debounce because a
+        # human types after attaching, not in a burst; ``0`` keeps the old immediate dispatch.
+        self._media_caption_wait_seconds = self._coerce_float_extra(
+            "media_caption_wait_seconds", 8.0, max_value=30.0,
+        )
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -919,7 +929,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
+                                if self._route_batchable_event(event):
                                     self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)
@@ -944,6 +954,28 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, exc)
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
+
+    def _route_batchable_event(self, event: MessageEvent) -> bool:
+        """True when *event* joins the text batch instead of dispatching directly: plain text (the
+        #35301 debounce), or caption-less photo/document/video while the caption window is armed —
+        the instruction typed right after a bare file merges into one agent turn instead of
+        interrupting the turn the file spawned (#137832). Voice/audio notes are the payload
+        themselves and captioned media already carries its instruction, so both dispatch directly."""
+        if event.message_type == MessageType.TEXT:
+            return True
+        return (self._media_caption_wait_seconds > 0
+                and event.message_type in _CAPTIONABLE_MEDIA_TYPES
+                and bool(event.media_urls) and not (event.text or "").strip())
+
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        """A buffered caption-less media event waits the caption window; text landing on it merges
+        (base merge appends text and extends media) and the timer restart then measures the normal
+        quiet period, so the combined event dispatches promptly. Same shape as WeCom's
+        attachment-only hold."""
+        if (pending is not None and pending.message_type in _CAPTIONABLE_MEDIA_TYPES
+                and pending.media_urls and not (pending.text or "").strip()):
+            return self._media_caption_wait_seconds
+        return super()._text_batch_delay_for(pending)
 
     @staticmethod
     def _classify_bridge_message(data: dict[str, Any]) -> MessageType:

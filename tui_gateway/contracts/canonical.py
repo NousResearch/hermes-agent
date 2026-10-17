@@ -15,6 +15,7 @@ from .base import JsonValue, Params, Result
 from .common import McpServerStatus, OpenModel, ProjectRef
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
+from .prompt_voice import ClarifyLockParams, ClarifyLockResult
 from .registry import canonical_method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
@@ -340,6 +341,12 @@ class PromptResponseResult(Result):
 
 canonical_method("clarify.respond", params=ClarifyRespondParams, result=PromptResponseResult,
                  doc="Generation-fenced answer to a pending clarify prompt (empty answer = skipped).")
+
+# The owner serves the sidecar's ``clarify.lock`` wire unchanged (``gateway/session_clarify_lock.py``):
+# declaring it here lets the dispatcher refuse a mistyped or unknown key before the handler runs.
+canonical_method("clarify.lock", params=ClarifyLockParams, result=ClarifyLockResult,
+                 doc="Lock one answer of the owner's batch clarify request (editable until every question is "
+                     "locked); only a viewer attached to that session with session:respond may lock.")
 
 
 # ── cron / kanban / a2a producers ─────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway import local_desktop_ui, local_viewer_events, session_sudo_prompt
+from gateway import local_desktop_ui, local_viewer_events, session_server_requests
 from gateway.session_context import clear_session_vars, set_session_vars
 from tools import desktop_ui
 from tools.process_registry import process_registry
@@ -39,7 +39,7 @@ class _Fanout:
     def write(self, frame, **_kw):
         self.requests.append(frame)
         if frame.get("method") in _ANSWERS and frame["method"] not in self.silent:
-            session_sudo_prompt.resolve({"id": frame["id"], "result": _ANSWERS[frame["method"]]})
+            session_server_requests.resolve({"id": frame["id"], "result": _ANSWERS[frame["method"]]})
         return True
 
 

@@ -12,7 +12,7 @@ import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Iterator, Optional
 
 import hermes_yaml as yaml
 
@@ -489,7 +489,9 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
-def _prompt_env_vars(specs: list[EnvVarSpec], preloaded: Optional[dict[str, str]] = None) -> dict[str, str]:
+def _prompt_env_vars(
+    specs: list[EnvVarSpec], preloaded: Optional[dict[str, str]] = None, *, interactive: bool = True,
+) -> dict[str, str]:
     """Prompt for each env spec.
 
     Secrets persist to ~/.hermes/.env. Non-secrets are only collected and
@@ -508,6 +510,13 @@ def _prompt_env_vars(specs: list[EnvVarSpec], preloaded: Optional[dict[str, str]
         if existing:
             _say(f"  ✓ {spec.name} already set in .env")
             collected[spec.name] = existing
+            continue
+        if not interactive:
+            if spec.default:
+                collected[spec.name] = spec.default
+            elif spec.required:
+                raise CatalogError(f"{spec.name} is required but was not supplied",
+                                   failure_class="missing_credentials")
             continue
         value = _prompt_input(spec.prompt, default=spec.default or None, password=spec.secret)
         if value:
@@ -616,7 +625,9 @@ def _apply_tool_selection(
     entry: CatalogEntry,
     *,
     prior_selection: Optional[list[str]],
-    prior_exclude: Optional[list[str]] = None) -> None:
+    prior_exclude: Optional[list[str]] = None,
+    interactive: bool = True,
+) -> None:
     """Probe the server and let the user pick which tools to enable.
 
     Probe-success: curses checklist; pre-check priority *prior_selection* (reinstall) > manifest
@@ -680,9 +691,10 @@ def _apply_tool_selection(
 
     tool_names = [t[0] for t in probed]
 
-    # Non-TTY: skip the checklist; same priority as the interactive pre-check.
+    # Non-interactive callers (the dashboard's serve worker) and non-TTY
+    # shells skip the checklist; both use the same selection priority.
     import sys as _sys
-    if not _sys.stdin.isatty():
+    if not interactive or not _sys.stdin.isatty():
         preferred = prior_selection if prior_selection is not None else (entry.tools.default_enabled or None)
         _write_tools_filter(
             name, "include", None if preferred is None else [n for n in preferred if n in tool_names]
@@ -769,12 +781,20 @@ def recorded_catalog_install(name: str) -> Iterator[None]:
         record_mcp_install("catalog", name, "success")
 
 
-def install_entry(entry: CatalogEntry, *, enable: bool = True, preloaded_env: Optional[dict[str, str]] = None) -> None:
+def install_entry(
+    entry: CatalogEntry,
+    *,
+    enable: bool = True,
+    preloaded_env: Optional[dict[str, str]] = None,
+    interactive: bool = True,
+) -> None:
     with recorded_catalog_install(entry.name):
-        _install_entry(entry, enable=enable, preloaded_env=preloaded_env)
+        _install_entry(entry, enable=enable, preloaded_env=preloaded_env, interactive=interactive)
 
 
-def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional[dict[str, str]]) -> None:
+def _install_entry(
+    entry: CatalogEntry, *, enable: bool, preloaded_env: Optional[dict[str, str]], interactive: bool,
+) -> None:
     """Install a catalog entry end-to-end.
 
     Order: git clone + bootstrap (if any); credential prompts (``auth.env``) to .env; write
@@ -782,7 +802,8 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
     :func:`_apply_tool_selection`); print post_install notes.
 
     ``preloaded_env`` carries env values already supplied by the caller (e.g.
-    the dashboard form); they skip the interactive prompt.
+    the dashboard form); they skip the interactive prompt. ``interactive`` is
+    false for request handlers, which must never read stdin or open curses.
     """
     print()
     _say(f"  Installing MCP '{entry.name}'", Colors.CYAN + Colors.BOLD)
@@ -798,7 +819,7 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
     if entry.auth.env:
         print()
         _say("  Configure credentials:", Colors.CYAN)
-        env_values = _prompt_env_vars(entry.auth.env, preloaded_env or {})
+        env_values = _prompt_env_vars(entry.auth.env, preloaded_env or {}, interactive=interactive)
     if entry.auth.type == "oauth" and entry.auth.provider:
         # Provider-mediated OAuth relies on the existing `hermes auth <provider>` flow; surface
         # guidance rather than auto-running it to keep install decoupled from provider-auth lifecycle.
@@ -832,7 +853,12 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
         raise CatalogError(f"catalog entry '{entry.name}' rejected: suspicious command/args configuration",
                            failure_class="config_rejected")
 
-    _apply_tool_selection(entry, prior_selection=prior_selection, prior_exclude=prior_exclude)
+    _apply_tool_selection(
+        entry,
+        prior_selection=prior_selection,
+        prior_exclude=prior_exclude,
+        interactive=interactive,
+    )
 
     print()
     _say(

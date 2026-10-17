@@ -118,6 +118,14 @@ class SlashCommandsMixin:
                 set_session_cwd(state.cwd)
             except Exception:
                 logger.debug("Could not pin ACP session cwd for slash command", exc_info=True)
+            # Same pin as the turn body: a symlinked ``<home>/state.db`` resolves elsewhere, so the
+            # db-parent home fallback would rebuild the prompt from the store folder (#133955).
+            try:
+                from hermes_constants import get_hermes_home, set_hermes_home_override
+
+                set_hermes_home_override(str(get_hermes_home()))
+            except Exception:
+                logger.debug("Could not pin ACP session home for slash command", exc_info=True)
             return handler(args, state)
 
         try:

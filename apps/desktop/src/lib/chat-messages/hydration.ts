@@ -286,7 +286,18 @@ function asyncResultBody(content: string): string | undefined {
 
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
-    return 'model changed'
+    // #139125: the gateway stamps the switched-to model/provider on the marker row; keep the
+    // content-free fallback only for rows written by backends that predate the metadata.
+    const metadata = parseDisplayMetadata(message.display_metadata)
+    const model = typeof metadata?.model === 'string' && metadata.model.trim() ? metadata.model.trim() : undefined
+    const provider =
+      typeof metadata?.provider === 'string' && metadata.provider.trim() ? metadata.provider.trim() : undefined
+
+    if (model === undefined) {
+      return 'model changed'
+    }
+
+    return provider === undefined ? `model changed to ${model}` : `model changed to ${model} via ${provider}`
   }
 
   if (message.display_kind === 'auto_continue') {

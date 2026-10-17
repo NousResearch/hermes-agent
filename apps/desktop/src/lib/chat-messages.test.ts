@@ -555,6 +555,47 @@ describe('toChatMessages', () => {
     ])
   })
 
+  it('names the switched-to model from the marker display metadata', () => {
+    // #139125: the gateway stamps {model, provider} on the pivot row; the notice must surface
+    // them (multi-model setups have no other trustworthy record of which runtime took over).
+    const withBoth = toChatMessages([
+      {
+        role: 'user',
+        content: 'opaque model context payload',
+        display_kind: 'model_switch',
+        display_metadata: { model: 'qwen3.8-flash-next-iq3_s', provider: 'strata-250' },
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(withBoth[0])).toBe('model changed to qwen3.8-flash-next-iq3_s via strata-250')
+
+    const withoutProvider = toChatMessages([
+      {
+        role: 'user',
+        content: 'opaque model context payload',
+        display_kind: 'model_switch',
+        display_metadata: { model: 'gpt-4o', provider: '' },
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(withoutProvider[0])).toBe('model changed to gpt-4o')
+
+    // REST transport serializes display_metadata as raw JSON text.
+    const restForm = toChatMessages([
+      {
+        role: 'user',
+        content: 'opaque model context payload',
+        display_kind: 'model_switch',
+        display_metadata: '{"model": "gpt-4o", "provider": "openai"}',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(restForm[0])).toBe('model changed to gpt-4o via openai')
+  })
+
   it('never paints a background-process heartbeat wake as a user bubble', () => {
     // Current backends type the wake `display_kind: 'hidden'`; a row persisted by an older
     // backend arrives untyped and must disappear the same way — the user never wrote it.

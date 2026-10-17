@@ -56,6 +56,22 @@ class TestRecordAuxiliaryUsage:
         assert r["output_tokens"] == 50
         assert r["api_call_count"] == 1
 
+    def test_deleted_session_is_not_recreated_by_late_usage(self, db):
+        db.create_session("s1", source="cli")
+        assert db.delete_session("s1")
+
+        db.record_auxiliary_usage(
+            "s1", "title_generation", model="title-model", input_tokens=10, output_tokens=2,
+        )
+
+        with db._lock:
+            session = db._conn.execute("SELECT 1 FROM sessions WHERE id = 's1'").fetchone()
+            usage = db._conn.execute(
+                "SELECT 1 FROM session_model_usage WHERE session_id = 's1'"
+            ).fetchone()
+        assert session is None
+        assert usage is None
+
     def test_accumulates_same_task_and_model(self, db):
         db.create_session("s1", source="cli")
         for _ in range(3):

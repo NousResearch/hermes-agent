@@ -255,6 +255,28 @@ class GatewayRuntimeAPI:
         self.app, self.runner, self.web_app = app, runner, web_app
 
     async def __call__(self, scope, receive, send):
+        if scope['type'] != 'websocket' or scope.get('path') != '/api/ws':
+            return await self._serve(scope, receive, send)
+        accepted = False
+
+        async def send_watched(message):
+            nonlocal accepted
+            accepted = accepted or message.get('type') == 'websocket.accept'
+            await send(message)
+
+        try:
+            return await self._serve(scope, receive, send_watched)
+        except Exception as exc:
+            # Uvicorn answers an upgrade that raised before accept with HTTP 500 and logs it only to
+            # its own logger, never gateway.log: the dialing cron worker or managed worker sees a bare
+            # InvalidStatus (#139922). Name the cause here; uvicorn still sends the 500.
+            if not accepted:
+                logger.error('Gateway refused a session WebSocket upgrade from %s with HTTP 500: %s: %s',
+                             scope.get('hermes.gateway_socket_peer') or scope.get('client'),
+                             type(exc).__name__, exc, exc_info=True)
+            raise
+
+    async def _serve(self, scope, receive, send):
         descriptor = getattr(self.runner, 'session_runtime_descriptor', None)
         if scope['type'] not in {'http', 'websocket'} or descriptor is None:
             return await self.app(scope, receive, send)

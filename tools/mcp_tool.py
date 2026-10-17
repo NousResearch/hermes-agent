@@ -95,6 +95,9 @@ if not _MCP_AVAILABLE:
 
 ClientSession: Any = None
 _MCP_SDK_IMPORT_ATTEMPTED = False
+# First ImportError from a required SDK bind (environment broken, not an old SDK); warned once
+# with its traceback, and its presence keeps _MCP_SDK_IMPORT_ATTEMPTED False so binds retry.
+_MCP_SDK_IMPORT_ERROR: Optional[ImportError] = None
 _MCP_SDK_IMPORT_LOCK = threading.Lock()
 
 # Optional SDK type families (module, names, debug message when absent), bound in this order to
@@ -124,16 +127,27 @@ def __getattr__(name: str):
             return globals()[name]
         except KeyError:
             pass  # SDK missing or symbol absent on this SDK build
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    err = AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if _MCP_SDK_IMPORT_ERROR is not None:
+        raise err from _MCP_SDK_IMPORT_ERROR
+    raise err
 
 
-def _import_sdk_names(module: str, names: tuple, missing_msg: Optional[str] = None) -> bool:
+def _import_sdk_names(module: str, names: tuple, missing_msg: Optional[str] = None,
+                      on_error: Optional[str] = None) -> bool:
     """Bind ``names`` from SDK ``module`` into this module's globals; False (nothing bound,
-    optional debug line) when this SDK build lacks the module or any of the names."""
+    optional debug line) when this SDK build lacks the module or any of the names. With
+    ``on_error`` an ImportError is an environment problem rather than an old SDK: remember it
+    in ``_MCP_SDK_IMPORT_ERROR`` and warn once with the traceback, so the real cause is not
+    swallowed into a misleading ``AttributeError`` from ``__getattr__``."""
+    global _MCP_SDK_IMPORT_ERROR
     try:
         mod = importlib.import_module(module)
         values = {n: getattr(mod, n) for n in names}
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError) as exc:
+        if on_error and isinstance(exc, ImportError) and _MCP_SDK_IMPORT_ERROR is None:
+            _MCP_SDK_IMPORT_ERROR = exc
+            logger.warning("%s: %s", on_error, exc, exc_info=True)
         if missing_msg:
             logger.debug(missing_msg)
         return False
@@ -148,7 +162,7 @@ def _ensure_mcp_sdk() -> bool:
     global _MCP_SDK_IMPORT_ATTEMPTED, _MCP_AVAILABLE, _MCP_HTTP_AVAILABLE, _MCP_NEW_HTTP, _MCP_LEGACY_HTTP
     global _MCP_SAMPLING_TYPES, _MCP_NOTIFICATION_TYPES, _MCP_ELICITATION_TYPES, sse_client
     global _MCP_MESSAGE_HANDLER_SUPPORTED, _MCP_LOGGING_CALLBACK_SUPPORTED, LATEST_HANDSHAKE_VERSION
-    global _JSONRPC_METHOD_NOT_FOUND
+    global _JSONRPC_METHOD_NOT_FOUND, _MCP_SDK_IMPORT_ERROR
     if not _MCP_AVAILABLE:
         return False
     if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
@@ -156,8 +170,13 @@ def _ensure_mcp_sdk() -> bool:
     with _MCP_SDK_IMPORT_LOCK:
         if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
             return _MCP_AVAILABLE
-        if (_import_sdk_names("mcp", ("ClientSession", "StdioServerParameters"))
-                and _import_sdk_names("mcp.client.stdio", ("stdio_client",))):
+        if (_import_sdk_names("mcp", ("ClientSession", "StdioServerParameters"),
+                              on_error="MCP SDK import failed (installed but broken) -- MCP disabled, "
+                                       "will retry on next use")
+                and _import_sdk_names("mcp.client.stdio", ("stdio_client",),
+                                      on_error="MCP SDK import of mcp.client.stdio failed -- MCP disabled, "
+                                               "will retry on next use")):
+            _MCP_SDK_IMPORT_ERROR = None
             _MCP_AVAILABLE = True
             # mcp >= 1.24 ships streamable_http_client; 2.0 dropped the deprecated
             # streamablehttp_client alias. Either one gives HTTP.
@@ -175,7 +194,14 @@ def _ensure_mcp_sdk() -> bool:
             _MCP_SAMPLING_TYPES, _MCP_ELICITATION_TYPES, _MCP_NOTIFICATION_TYPES = [
                 _import_sdk_names(*family) for family in _OPTIONAL_TYPE_FAMILIES]
         else:
-            logger.debug("mcp package not installed -- MCP tool support disabled")
+            if _MCP_SDK_IMPORT_ERROR is None:
+                logger.debug("mcp package not installed -- MCP tool support disabled")
+            else:
+                # A broken import chain (already warned with its traceback) must not
+                # latch: report unavailable but leave _MCP_SDK_IMPORT_ATTEMPTED False so
+                # the next use retries the bind instead of parking MCP for the process
+                # lifetime. _MCP_AVAILABLE stays as find_spec saw it (retry gate).
+                return False
         if _MCP_AVAILABLE:
             try:
                 _JSONRPC_METHOD_NOT_FOUND = importlib.import_module("mcp.types").METHOD_NOT_FOUND

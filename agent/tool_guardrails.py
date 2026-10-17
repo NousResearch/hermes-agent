@@ -79,6 +79,7 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+_DEFAULT_MAX_TOOL_SEARCHES_PER_TURN = 50
 
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
@@ -99,11 +100,12 @@ def _is_non_interactive_platform(platform: str | None) -> bool:
 
 @dataclass(frozen=True)
 class LoopCapConfig:
-    """Per-turn hard ceilings on web_search calls / subagent spawns; count total calls (not
-    repeats), fire regardless of ``hard_stop_enabled``; ``0`` disables a cap."""
+    """Per-turn hard ceilings on web_search / tool_search calls and subagent spawns; count total
+    calls (not repeats), fire regardless of ``hard_stop_enabled``; ``0`` disables a cap."""
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    max_tool_searches: int = _DEFAULT_MAX_TOOL_SEARCHES_PER_TURN
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> LoopCapConfig:
@@ -281,6 +283,10 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "loop_tool_search_cap": (
+        "Blocked tool_search: this turn has already made {cap} tool searches, the per-turn limit. "
+        "This looks like a runaway discovery loop. Use the tools you already found, or answer the user with what you have."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -301,6 +307,7 @@ _IDENTICAL_CYCLE_NOTICE = (
 _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
     "web_search": ("max_web_searches", "_turn_web_search_count", "loop_web_search_cap"),
     "delegate_task": ("max_subagents", "_turn_subagent_count", "loop_subagent_cap"),
+    "tool_search": ("max_tool_searches", "_turn_tool_search_count", "loop_tool_search_cap"),
 }
 
 
@@ -337,6 +344,7 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._turn_tool_search_count = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -466,7 +474,16 @@ class ToolCallGuardrailController:
             # The no-progress BLOCK in before_call only covers idempotent_tools; this streak
             # is tool-agnostic, so with hard stops on, halt at the same threshold (a model
             # replaying a successful `terminal` call otherwise runs to the budget).
-            if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after and self._halt_decision is None:
+            # tool_search halts even with hard stops off: tool_search is not idempotent-classified,
+            # so the failure-keyed detector never sees its successful repeats, and repeating the
+            # same successful catalog query is never progress. Published evidence (arXiv:2610.06191)
+            # shows models keep querying a useless source until the budget dies unless the harness
+            # itself enforces the stop on the consecutive no-progress streak.
+            if (
+                (self.config.hard_stop_enabled or tool_name == "tool_search")
+                and count >= self.config.no_progress_block_after
+                and self._halt_decision is None
+            ):
                 self._decide("halt", "identical_call_streak_halt", tool_name, count, signature)
 
         # Batch-cycle detection (oh-my-pi#10521): a repeating multi-call cycle resets the
@@ -554,7 +571,7 @@ class ToolCallGuardrailController:
             return None
         cap_field, count_attr, code = spec
         cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
-        increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
+        increment = 1 if tool_name != "delegate_task" else (_subagent_spawn_count(args) if cap else 0)
         if increment and cap and count >= cap:
             return self._decide("block", code, tool_name, count, signature, cap=cap)
         setattr(self, count_attr, count + increment)

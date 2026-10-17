@@ -79,3 +79,49 @@ def test_initial_connect_failure_stays_fatal_for_start(monkeypatch):
     assert isinstance(supervisor._start_error, ConnectionError)
     assert supervisor._ready_event.is_set()
     assert supervisor.snapshot().active is False
+
+
+def test_post_attach_404_stops_immediately_without_warnings(monkeypatch, unregister, caplog):
+    """A closed target answers every dial with HTTP 404; retrying it only floods WARNING lines.
+    The supervisor must stop on the first 404 and leave the registry."""
+    from types import SimpleNamespace
+
+    supervisor = bs.CDPSupervisor(task_id="target-gone", cdp_url="ws://127.0.0.1:9222/devtools/page/X")
+    bs.SUPERVISOR_REGISTRY._by_task[supervisor.task_id] = supervisor
+    unregister.append(supervisor.task_id)
+    dials = 0
+
+    class _Gone(Exception):
+        response = SimpleNamespace(status_code=404)
+
+    async def connect(*_args, **_kwargs):
+        nonlocal dials
+        dials += 1
+        if dials == 1:
+            return _ClosingWebSocket()
+        raise _Gone("server rejected WebSocket connection: HTTP 404")
+
+    async def _noop(*_a, **_k):
+        pass
+
+    monkeypatch.setattr(websockets, "connect", connect)
+    monkeypatch.setattr(supervisor, "_attach_initial_page", _noop)
+    monkeypatch.setattr(supervisor, "_read_loop", _noop)
+
+    with caplog.at_level("INFO", logger="tools.browser_supervisor"):
+        asyncio.run(asyncio.wait_for(supervisor._run(), timeout=2.0))
+
+    assert dials == 2
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("target gone (HTTP 404)" in r.getMessage() for r in caplog.records)
+    assert bs.SUPERVISOR_REGISTRY.get(supervisor.task_id) is None
+
+
+def test_endpoint_gone_detection_covers_both_websockets_shapes():
+    from types import SimpleNamespace
+
+    new_style = type("InvalidStatus", (Exception,), {"response": SimpleNamespace(status_code=404)})()
+    old_style = type("InvalidStatusCode", (Exception,), {"status_code": 404})()
+    other = type("InvalidStatus", (Exception,), {"response": SimpleNamespace(status_code=500)})()
+    assert bs._cdp_endpoint_gone(new_style) and bs._cdp_endpoint_gone(old_style)
+    assert not bs._cdp_endpoint_gone(other) and not bs._cdp_endpoint_gone(ConnectionError("x"))

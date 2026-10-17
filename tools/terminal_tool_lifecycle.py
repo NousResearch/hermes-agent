@@ -116,11 +116,11 @@ def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None
             logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
-def _clear_file_ops_cache(task_id: str) -> None:
+def _clear_file_ops_cache(task_id: str, *, keep_write_baselines: bool = False) -> None:
     """Invalidate the file_ops cache entry so ShellFileOperations can't reference a dead sandbox."""
     try:
         from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
+        clear_file_ops_cache(task_id, keep_write_baselines=keep_write_baselines)
     except ImportError:
         pass
 
@@ -289,7 +289,7 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
+def cleanup_vm(task_id: str, *, force_remove: bool = False, keep_write_baselines: bool = False):
     """Manually clean up a specific environment by task_id.
 
     *force_remove* is forwarded to backends that accept it (currently only
@@ -300,10 +300,11 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     container shared across sessions" contract. Pass ``force_remove=True``
     only for user-initiated teardown. The idle reaper calls ``env.cleanup()``
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
-    reaper at next startup reclaims them.
+    reaper at next startup reclaims them. *keep_write_baselines*: see
+    ``tools.file_tools.clear_file_ops_cache``.
     """
     env = _unregister_env(task_id)
-    _clear_file_ops_cache(task_id)
+    _clear_file_ops_cache(task_id, keep_write_baselines=keep_write_baselines)
     if env is None:
         return
     _teardown_env(

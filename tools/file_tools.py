@@ -375,8 +375,14 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
-def clear_file_ops_cache(task_id: str | None = None):
-    """Clear file-operation state for a finished task, or all tasks."""
+def clear_file_ops_cache(task_id: str | None = None, *, keep_write_baselines: bool = False):
+    """Clear file-operation state for a finished task, or all tasks.
+
+    *keep_write_baselines* carries the task's ``full_write_baselines`` over the clear, for a
+    task id the next turn reuses (the gateway passes ``session_id``). Each baseline is checked
+    against the file's current version on use, so keeping one never permits a stale overwrite;
+    without it, ``write_file`` refuses a file the agent itself wrote in an earlier turn.
+    """
     with _file_ops_lock:
         if task_id:
             _file_ops_cache.pop(task_id, None)
@@ -385,7 +391,9 @@ def clear_file_ops_cache(task_id: str | None = None):
 
     with _read_tracker_lock:
         if task_id:
-            _read_tracker.pop(task_id, None)
+            dropped = _read_tracker.pop(task_id, None) or {}
+            if keep_write_baselines and dropped.get("full_write_baselines"):
+                _read_tracker[task_id] = {"full_write_baselines": dropped["full_write_baselines"]}
         else:
             _read_tracker.clear()
 

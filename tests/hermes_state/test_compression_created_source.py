@@ -48,3 +48,24 @@ def test_desktop_worker_heals_gui_to_desktop(tmp_path, child_created):
         assert _created(db, "parent-" + child) == "desktop"
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("mid_created, expected_root", [("cli", "cli"), ("tui", None)])
+def test_stamp_walks_through_a_same_surface_mid_segment(tmp_path, mid_created, expected_root):
+    """root(NULL) -> mid -> tip(NULL): a usage write on the tip stamps the root through a mid
+    segment already on the tip's surface; a mid on another surface stops the walk."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        mid = _compress(db, None, "mid")
+        db.publish_compression_child(
+            parent_session_id=mid, child_session_id="tip", source="local",
+            messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (mid_created, mid))
+            db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id='tip'")
+            db._conn.commit()
+        db.update_token_counts("tip", input_tokens=1, model="m", api_call_count=1, source="cli")
+        assert [_created(db, sid) for sid in ("parent-mid", mid, "tip")] == [
+            expected_root, mid_created, "cli"]
+    finally:
+        db.close()

@@ -5126,6 +5126,17 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   const activeRuntime: ActiveRuntimeState = activeRuntimeState(activeBackend)
 
   if (activeBackend && !bootstrapRepairRequested) {
+    if (activeBackend.probeTimedOut) {
+      // #79087: the structural checks passed but the `--version` probe timed
+      // out twice; a timeout only proves this machine is slow right now, so
+      // launch the existing runtime instead of routing a healthy install to
+      // first-run onboarding (and its "Install Hermes locally" offer over a
+      // populated home).
+      rememberLog(
+        `[bootstrap] --version probe timed out at ${ACTIVE_HERMES_ROOT}; keeping the existing runtime and launching it anyway`
+      )
+    }
+
     if (!activeRuntime.hasValidMarker) {
       rememberLog(
         `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`

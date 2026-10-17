@@ -39,47 +39,21 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
-def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
+def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
     """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
-    config and launch credential, walking its own fallback chain on an AuthError. Module-level so
-    tests that bind the method onto bare namespaces still reach it."""
+    config and launch credential, walking its own fallback chain on an AuthError unless
+    ``fallback=False`` (a session control asking which route the session itself runs). Module-level
+    so tests that bind the method onto bare namespaces still reach it."""
     from gateway.run import _runtime_agent_kwargs
-    from gateway.session_policy import launch_key
-    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
-    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+    from gateway.session_policy import route_launch_key
+    from gateway.session_worker_construct import route_runtime
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
     # A follow_profile_config session's route is the profile's current one, model and endpoint from one read.
     frozen, model = policy.effective(authority)
     provider = (frozen.get('model') or {}).get('provider')
-    key = launch_key(authority, policy)
-    launch_url = json.loads(policy.request_json).get('base_url')
-    if launch_url:
-        # The creation request is immutable identity, not the current selection: once a canonical
-        # model mutation moved the route off the launch endpoint, the policy's selection wins.
-        from hermes_cli.route_identity import normalize_route_base_url
-        if normalize_route_base_url(launch_url) != normalize_route_base_url((frozen.get('model') or {}).get('base_url')):
-            launch_url = None
-    # Every rung reads the session's FROZEN config, never live config.yaml: a later
-    # ``model.base_url`` edit must not carry this route's frozen credential to the new host
-    # (R2-M2). The auth-store pool is not config, so refresh/rotation still applies.
-    with frozen_runtime_config(frozen):
-        runtime = _resolve_named_custom_runtime(requested_provider=provider,
-            explicit_api_key=key, explicit_base_url=launch_url,
-            target_model=model, config=frozen)
-        if runtime is None:
-            # Only a bound launch key is explicit: the frozen ``model.api_key`` is config, which the
-            # resolver already reads from the frozen scope, so a URL-matched credential pool still
-            # serves (and rotates on) the frozen endpoint.
-            # Same resolution-time walker the in-process one-shot used (#81209): an AuthError
-            # from the frozen primary (expired token, Portal down, exhausted pool) tries the
-            # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
-            # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
-            # the provider chain, which keeps the credential pool an explicit URL would drop.
-            runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=provider,
-                explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
-        else:
-            fallback_entry = None
+    runtime, fallback_entry = route_runtime(policy, frozen, model, route_launch_key(authority, policy, frozen),
+                                            fallback=fallback)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
         runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
@@ -119,12 +93,13 @@ def _recover_or_remember_model(runner, skey, model):
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
-        user_config: Optional[dict] = None,
+        user_config: Optional[dict] = None, fallback: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
-        (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
+        (``_resolve_gateway_model(user_config)`` and default provider resolution). ``fallback=False``
+        keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
@@ -135,7 +110,7 @@ class GatewayTurnPrepareMixin:
         self._pre_agent_fallback_notice = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            return _resolve_policy_agent_runtime(self, policy)
+            return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
         if skey:
@@ -638,7 +613,8 @@ class GatewayTurnPrepareMixin:
         """Everything between session resolution and the agent run: session open, task-local env,
         context prompt, sidecar notes, turn lease, transcript load + hygiene, inbound text. Returns
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
-        running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
+        running (history unreadable, a local turn's refused ``@`` references); ``None`` drops the turn
+        (inbound text rejected)."""
         from gateway.run import _load_gateway_config
         from tools.approval_yolo import restore_gateway_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
@@ -660,10 +636,13 @@ class GatewayTurnPrepareMixin:
         # part of the classic in-process prompt, and the TUI gateway still builds that prompt in-process.
         # Rendering it here would make every surface hop of one durable session a system-prompt
         # (and prompt-cache) break.
-        if source.platform != Platform.LOCAL and event.internal and session_key:
+        # Synthetic goal/heartbeat/resume turns carry no prompt inputs of their own, so they reuse the
+        # pins exactly like internal events do (and still pass authorization, unlike internal ones).
+        _reuse_pins = event.internal or getattr(event, "inherit_channel_pin", False)
+        if source.platform != Platform.LOCAL and _reuse_pins and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = "" if source.platform == Platform.LOCAL else \
-            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=event.internal)
+            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=_reuse_pins)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
@@ -711,7 +690,8 @@ class GatewayTurnPrepareMixin:
             event=event, source=source, history=history, session_key=session_key,
         )
         if message_text is None:
-            return None, _session_env_tokens
+            # A refused local turn answers with its refusal (session_context_refs.turn_references).
+            return getattr(event, "_gateway_turn_refusal", None), _session_env_tokens
 
         message_text, persist_user_message, persist_user_timestamp = (
             self._hmwa_apply_message_timestamp(event, message_text)

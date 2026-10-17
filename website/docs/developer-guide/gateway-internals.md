@@ -148,9 +148,12 @@ message through their normal identified `prompt.submit`; resolution is not an
 admission ACK. The authority's durable FIFO owns retries and execution, and skill
 content remains a user message without changing the cached system prefix.
 
-Other commands return `unsupported_command`: shell quick commands, plugin execution,
-bundles, configuration/runtime changes, lifecycle commands, and approval/secret
-slash shortcuts are not exposed. Existing generation-bound approval and interrupt
+`type: exec` quick commands and plugin slash commands require `session:control` and run
+through the messaging gateway's own quick/plugin dispatch (slash access policy,
+sanitized-env exec with a 30 s cap and redacted output, plugin session env).
+
+Other commands return `unsupported_command`: bundles, configuration/runtime changes,
+lifecycle commands, and approval/secret slash shortcuts are not exposed. Existing generation-bound approval and interrupt
 RPCs remain separate. Catalog discovery is broader than this reviewed execution set.
 
 ## Shared authority busy input and corrections
@@ -542,14 +545,15 @@ Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gat
 
 ## Platform Adapters
 
-Most messaging platforms ship as plugin adapters under `plugins/platforms/<name>/adapter.py`; a few legacy adapters still live directly in `gateway/platforms/`. All extend `BasePlatformAdapter` from `gateway/platforms/base.py`:
+Every messaging platform ships as a plugin adapter under `plugins/platforms/<name>/`; `gateway/platforms/` keeps the base class and the HTTP ingress adapters (`api_server`, `webhook`, `msgraph_webhook`). All extend `BasePlatformAdapter` from `gateway/platforms/base.py`:
 
 ```text
 plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── telegram/adapter.py     # Telegram Bot API (long polling or webhook)
 ├── discord/adapter.py      # Discord bot via discord.py
 ├── slack/adapter.py        # Slack Socket Mode
-├── whatsapp/adapter.py     # WhatsApp Business Cloud API
+├── whatsapp/adapter.py     # WhatsApp via the local Baileys bridge
+├── whatsapp_cloud/adapter.py # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # Email via IMAP/SMTP
@@ -559,16 +563,16 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── wecom/adapter.py        # WeCom (WeChat Work) callback
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
+├── signal/adapter.py       # Signal via signal-cli HTTP daemon (SSE + JSON-RPC)
 ├── irc/adapter.py          # IRC (canonical scoped-lock example)
+├── bluebubbles/adapter.py  # Apple iMessage via BlueBubbles macOS server
+├── weixin/adapter.py       # Weixin (personal WeChat) via iLink Bot API
+├── qqbot/                  # QQ Bot (Tencent QQ) via Official API v2
+├── yuanbao/adapter.py      # Yuanbao (Tencent) DM/group WebSocket
 └── …                       # google_chat, ntfy, photon, raft, simplex, …
 
-gateway/platforms/                  # core base + legacy direct adapters
+gateway/platforms/                  # core base + HTTP ingress adapters
 ├── base.py              # BasePlatformAdapter — shared logic for all platforms
-├── signal.py            # Signal via signal-cli REST API
-├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
-├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
-├── qqbot/               # QQ Bot (Tencent QQ) via Official API v2 (sub-package)
-├── yuanbao.py           # Yuanbao (Tencent) DM/group adapter
 ├── msgraph_webhook.py   # Microsoft Graph change-notification webhook (Teams, Outlook, etc.)
 ├── webhook.py           # Inbound/outbound webhook adapter
 └── api_server.py        # REST API server adapter

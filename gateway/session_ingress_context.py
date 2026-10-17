@@ -24,6 +24,18 @@ def relay_callback(transport, event):
         _relay_callback.reset(token)
 
 
+@contextmanager
+def relay_passthrough_event(transport, forward, event):
+    # A passthrough frame is decoded after the reader bound its proof to the raw forward; move
+    # that proof onto the decoded event. Without the reader's binding nothing is minted.
+    bound = _relay_callback.get()
+    if bound is None or bound[0] is not transport or bound[1] is not forward:
+        yield
+        return
+    with relay_callback(transport, event):
+        yield
+
+
 def _relay_connector(adapter, source):
     from gateway.relay.ws_transport import WebSocketRelayTransport
     transport = getattr(adapter, '_transport', None)
@@ -66,6 +78,16 @@ def native_callback(runner, event, transport_home, profile=None):
         yield
     finally:
         _callback.reset(token)
+
+
+def carry_callback(event, rewritten):
+    """Gateway code that rebuilds a callback's event (a ``pre_gateway_dispatch`` rewrite, the
+    ``/retry`` re-send) keeps the callback's provenance, but only on the source object the callback
+    authenticated: a new event with a swapped source carries nothing (#139045, #139040)."""
+    for bound_var in (_callback, _relay_callback):
+        bound = bound_var.get()
+        if bound is not None and bound[1] is event and rewritten.source is event.source:
+            bound_var.set((bound[0], rewritten, *bound[2:]))
 
 
 def _binding(runner, source, profile):

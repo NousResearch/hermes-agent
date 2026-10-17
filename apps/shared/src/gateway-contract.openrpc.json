@@ -8084,6 +8084,7 @@
       },
       "CanonicalBotDeliverResult": {
         "additionalProperties": false,
+        "description": "A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the\ndelivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed``\nreceipt with no admission that the relay settles as the sender's answer.",
         "properties": {
           "status": {
             "title": "Status",
@@ -8102,8 +8103,29 @@
             "type": "string"
           },
           "admission_id": {
-            "title": "Admission Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Id"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Refused"
           },
           "message": {
             "title": "Message",
@@ -8163,7 +8185,6 @@
           "delivery_id",
           "profile_home",
           "session_id",
-          "admission_id",
           "message"
         ],
         "title": "CanonicalBotDeliverResult",
@@ -8818,6 +8839,21 @@
             "default": false,
             "title": "Verbose",
             "type": "boolean"
+          },
+          "client_env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Env"
           }
         },
         "title": "CanonicalCreateParams",
@@ -9980,6 +10016,21 @@
             "default": null,
             "title": "Browser Backend Notice"
           },
+          "unknown_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unknown Toolsets"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -10168,6 +10219,18 @@
             ],
             "default": null,
             "title": "Credential Hint"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
           }
         },
         "required": [
@@ -10654,6 +10717,21 @@
             "default": null,
             "title": "Browser Backend Notice"
           },
+          "unknown_toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unknown Toolsets"
+          },
           "desktop_protocol": {
             "const": "hermes-gateway-v1",
             "title": "Desktop Protocol",
@@ -10875,6 +10953,18 @@
             ],
             "default": null,
             "title": "Credential Hint"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
           }
         },
         "required": [
@@ -11261,6 +11351,7 @@
       "CatalogTier": {
         "enum": [
           "official",
+          "verified",
           "community"
         ],
         "title": "CatalogTier",
@@ -11859,6 +11950,63 @@
         "title": "CommandDispatchResult",
         "type": "object"
       },
+      "CommandObserveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "arg": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Arg"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "name"
+        ],
+        "title": "CommandObserveParams",
+        "type": "object"
+      },
+      "CommandObserveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "CommandObserveResult",
+        "type": "object"
+      },
       "CommandResolveParams": {
         "additionalProperties": false,
         "properties": {
@@ -12005,6 +12153,18 @@
             "default": "",
             "title": "Warning",
             "type": "string"
+          },
+          "plugin_discovery_error": {
+            "default": "",
+            "title": "Plugin Discovery Error",
+            "type": "string"
+          },
+          "plugin_commands": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Plugin Commands",
+            "type": "object"
           }
         },
         "title": "CommandsCatalogResult",
@@ -21528,6 +21688,66 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Key"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          },
+          "hooks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hooks"
+          },
+          "commands": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Commands"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
           }
         },
         "required": [
@@ -24169,7 +24389,7 @@
       },
       "NotificationShowPayload": {
         "additionalProperties": false,
-        "description": "``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s\nslow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.",
+        "description": "``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s\nslow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.\n``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows\nit in the toast's expandable body, the Ink TUI prints it into the transcript.",
         "properties": {
           "text": {
             "title": "Text",
@@ -24218,6 +24438,18 @@
             ],
             "default": null,
             "title": "Id"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
           }
         },
         "required": [
@@ -26989,6 +27221,30 @@
         "title": "PluginSettingFieldType",
         "type": "string"
       },
+      "PluginToolsetRow": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "description"
+        ],
+        "title": "PluginToolsetRow",
+        "type": "object"
+      },
       "PluginsAction": {
         "enum": [
           "list",
@@ -27018,6 +27274,36 @@
             },
             "title": "Plugins",
             "type": "array"
+          },
+          "toolsets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PluginToolsetRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Toolsets"
+          },
+          "portable_mcp_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Portable Mcp Servers"
           }
         },
         "required": [
@@ -32061,6 +32347,7 @@
       },
       "ReloadMcpResult": {
         "additionalProperties": false,
+        "description": "``session``: what the calling local session's MCP servers did (a new policy generation, nothing to\nchange, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect\nbeside what did apply; ``session_servers``: the MCP servers that session's committed policy runs.",
         "properties": {
           "status": {
             "$ref": "#/components/schemas/ReloadMcpStatus"
@@ -32122,6 +32409,47 @@
             ],
             "default": null,
             "title": "Host Ack"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReloadMcpSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "unavailable": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unavailable"
+          },
+          "session_servers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Servers"
           }
         },
         "required": [
@@ -32129,6 +32457,15 @@
         ],
         "title": "ReloadMcpResult",
         "type": "object"
+      },
+      "ReloadMcpSession": {
+        "enum": [
+          "applied",
+          "unchanged",
+          "busy"
+        ],
+        "title": "ReloadMcpSession",
+        "type": "string"
       },
       "ReloadMcpStatus": {
         "enum": [
@@ -32681,6 +33018,84 @@
           "success"
         ],
         "title": "RollbackRestoreResult",
+        "type": "object"
+      },
+      "RollbackSessionDiffParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "RollbackSessionDiffParams",
+        "type": "object"
+      },
+      "RollbackSessionDiffResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the\nsession's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).\n``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "success": {
+            "default": false,
+            "title": "Success",
+            "type": "boolean"
+          },
+          "stat": {
+            "default": "",
+            "title": "Stat",
+            "type": "string"
+          },
+          "diff": {
+            "default": "",
+            "title": "Diff",
+            "type": "string"
+          },
+          "diff_lines": {
+            "default": 0,
+            "title": "Diff Lines",
+            "type": "integer"
+          },
+          "empty": {
+            "default": false,
+            "title": "Empty",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "RollbackSessionDiffResult",
         "type": "object"
       },
       "Room": {
@@ -46325,6 +46740,24 @@
       }
     },
     {
+      "name": "command.observe",
+      "summary": "Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires `pre_command` for it in the session's profile after replying (`queued` false: not fired).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CommandObserveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CommandObserveResult"
+        }
+      }
+    },
+    {
       "name": "config.get",
       "summary": "",
       "params": [
@@ -46663,6 +47096,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "rollback.session_diff",
+      "summary": "The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RollbackSessionDiffParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RollbackSessionDiffResult"
         }
       }
     },

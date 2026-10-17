@@ -76,6 +76,8 @@ gateway:
     next_turn_only: "    (next turn only — restores after one response)"
     switch_cancelled: "🟡 Model switch cancelled. Current model unchanged ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Text fallback: reply `{prefix}approve` to switch or `{prefix}cancel` to keep the current model._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Active Agents & Tasks**"
     active_agents: "**Active agents:** {count}"

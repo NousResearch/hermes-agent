@@ -2922,8 +2922,8 @@ def _prepare_agent_startup(args) -> None:
         return
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
-    if not _is_tui_chat_launch(args):
-        # The TUI backend does its own discovery; the launcher only spawns Node.
+    if not (_is_tui_chat_launch(args) or _chat_runs_at_gateway(args)):
+        # The TUI backend and the gateway (chat turns, plugin commands, pre_command) discover their own.
         try:
             from hermes_cli.plugins import start_background_plugin_discovery
 
@@ -2947,9 +2947,10 @@ def _prepare_agent_startup(args) -> None:
     except Exception:
         logger.debug("MCP server filter setup failed", exc_info=True)
 
-    # TUI launches hand off to a startup path that backgrounds MCP discovery
-    # with a bounded join; acp/gateway/cron do their own on the runtime path.
+    # TUI launches background MCP discovery with a bounded join; acp/gateway/cron do their own.
     if _chat_runs_at_gateway(args):  # chat turns run in the gateway: it owns MCP, hooks, webhooks
+        if _accept_hooks:  # rides session.create (env_launch_flags) and the classic CLI's consent check
+            os.environ["HERMES_ACCEPT_HOOKS"] = "1"
         return
     _run_inline_mcp_discovery = not (_is_tui_chat_launch(args) or _command_has_dedicated_mcp_startup(args))
     if _run_inline_mcp_discovery and _should_background_mcp_startup(args):
@@ -2984,14 +2985,13 @@ def _prepare_agent_startup(args) -> None:
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
+        from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
 
         _hooks_cfg = load_config()
         register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-
-        from agent.outbound_webhooks import (
-            register_from_config as register_outbound_webhooks,
-        )
-
+        if _accept_hooks and args.command == "gateway":  # every session-open re-sync keeps honouring it
+            from agent.shell_hooks import accept_for_process
+            accept_for_process()
         register_outbound_webhooks(_hooks_cfg)
     except Exception:
         logger.debug(
@@ -3215,8 +3215,7 @@ def _try_termux_fast_cli_launch() -> bool:
     _promote_top_level_resume(args)
     if args.command in {None, "chat"}:
         _set_chat_arg_defaults(args)
-        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
-        if interactive_prompt:
+        if not getattr(args, "query", None) and not getattr(args, "image", None):  # interactive prompt
             # Reach the prompt first; agent-only discovery on the first turn.
             args.compact = True
             os.environ["HERMES_DEFER_AGENT_STARTUP"] = "1"

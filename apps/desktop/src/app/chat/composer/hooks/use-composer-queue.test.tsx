@@ -496,3 +496,41 @@ describe('useComposerQueue park integration', () => {
     expect($notifications.get().some(n => n.message.includes('Re-select the lines'))).toBe(true)
   })
 })
+
+describe('useComposerQueue scope', () => {
+  afterEach(() => {
+    cleanup()
+    window.localStorage.clear()
+    $queuedPromptsBySession.set({})
+  })
+
+  it('leaving a session for a new chat does not move its queue there (#139190)', () => {
+    enqueueQueuedPrompt('session-a', { attachments: [], text: 'for A' })
+
+    type Scope = { activeQueueSessionKey: string; queueSessionKey: null | string; sessionId: null | string }
+
+    const hook = renderHook(
+      (scope: Scope) =>
+        useComposerQueue({
+          ...scope,
+          attachments: [],
+          busy: true,
+          clearDraft: () => undefined,
+          draftRef: { current: '' },
+          focusInput: () => undefined,
+          loadIntoComposer: () => undefined,
+          onCancel: vi.fn(),
+          onSteer: undefined,
+          onSubmit: vi.fn(async () => true),
+          queueEditRef: { current: null }
+        }),
+      { initialProps: { activeQueueSessionKey: 'session-a', queueSessionKey: 'session-a', sessionId: 'session-a' } as Scope }
+    )
+
+    expect(hook.result.current.queuedPrompts.map(entry => entry.text)).toEqual(['for A'])
+    hook.rerender({ activeQueueSessionKey: '__new__:fresh', queueSessionKey: null, sessionId: null })
+
+    expect(hook.result.current.queuedPrompts).toEqual([])
+    expect(getQueuedPrompts('session-a').map(entry => entry.text)).toEqual(['for A'])
+  })
+})

@@ -192,6 +192,11 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     import shutil
     shutil.rmtree(d)
+    # The default scratch root lives outside the board dir, so delete it with
+    # the board. Never ``workspaces_root()``: a pin there names another root.
+    scratch_root = _kb.default_workspaces_root(normed)
+    if scratch_root.is_dir() and not scratch_root.is_symlink():
+        shutil.rmtree(scratch_root)
     return {"slug": normed, "action": "deleted", "new_path": ""}
 
 

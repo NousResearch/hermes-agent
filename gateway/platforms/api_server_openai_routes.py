@@ -829,6 +829,11 @@ class OpenAICompatRoutesMixin:
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return _invalid_request("Missing or invalid 'messages' field")
+        if ("tools" in body or "tool_choice" in body or any(
+                isinstance(msg, dict) and (msg.get("role") == "tool" or "tool_calls" in msg)
+                for msg in messages)):
+            from gateway.platforms.api_server_client_tools import handle_client_tools
+            return await handle_client_tools(self, request, body)
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
         system_prompt, conversation_messages, messages_err = _parse_chat_messages(messages)

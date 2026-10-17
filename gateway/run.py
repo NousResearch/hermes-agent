@@ -4728,7 +4728,8 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
     try:
         from gateway.status import (
             _get_pid_path, _get_process_hermes_home, _get_process_start_time, _pid_from_record,
-            _read_pid_record, _record_looks_like_gateway, _read_process_cmdline, _same_hermes_home)
+            _read_gateway_lock_record, _read_pid_record, _record_looks_like_gateway, _read_process_cmdline,
+            _same_hermes_home)
         our_home = _get_process_hermes_home()
 
         def refuse(msg: str, *args, level=logging.WARNING) -> bool:
@@ -4736,7 +4737,17 @@ def _replace_target_belongs_to_other_profile(existing_pid: int) -> bool:
             return True
 
         # Bound claim: the record must name THIS pid with THIS live start time, else it proves nothing.
-        record = _read_pid_record(_get_pid_path())
+        pid_path = _get_pid_path()
+        record = _read_pid_record(pid_path)
+        if record is None and not pid_path.exists():
+            # An ordinary start holds gateway.lock from before its runner import but writes gateway.pid
+            # only at its PID claim; the lock record carries the same identity fields (#110166). Only a
+            # record the target wrote for its OWN launch home proves it: a multiplexer's member-home
+            # records name this home too, and replacing it from a member stays refused (host_attach).
+            lock_record = _read_gateway_lock_record()
+            launch_home = lock_record.get("launch_home") if isinstance(lock_record, dict) else None
+            if isinstance(launch_home, str) and _same_hermes_home(launch_home, our_home):
+                record = lock_record
         if not isinstance(record, dict) or not _record_looks_like_gateway(record):
             return refuse("no valid gateway pid record to prove ownership of PID %s.", existing_pid)
         record_pid = _pid_from_record(record)

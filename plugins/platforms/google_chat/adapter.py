@@ -329,6 +329,13 @@ class _ThreadCountStore:
         self._save()
         return prev
 
+    def decr(self, chat_id: str, thread_name: str) -> None:
+        """Undo one :meth:`incr` for an inbound that was not admitted; never below zero."""
+        chat_counts = self._counts.get(chat_id, {})
+        if chat_counts.get(thread_name, 0) > 0:
+            chat_counts[thread_name] -= 1
+            self._save()
+
     def _save(self) -> None:
         """Atomic write; failure is non-fatal (in-memory counts stay consistent)."""
         try:
@@ -858,10 +865,27 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 message.ack()
 
     async def dispatch_http_event(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        from gateway.parked_route_refusal import ParkedRouteRefused, retryable_ingress
         prepared = self._prepare_inbound(envelope)
-        if prepared is not None:
+        if prepared is None:
+            return {}
+        # The callback answers after this dispatch, so the delivery is not acknowledged yet: a route
+        # to a parked profile is answered retryably (Google redelivers a non-2xx), not refused in chat.
+        with retryable_ingress() as scope:
             await self._dispatch_message(*prepared)
+        if scope.refused:
+            self._release_unadmitted(*prepared)
+            raise ParkedRouteRefused()
         return {}
+
+    def _release_unadmitted(self, msg: dict[str, Any], envelope: dict[str, Any]) -> None:
+        """Undo what ingress recorded for a delivery that was not admitted (its dedup claim and DM
+        thread count), so the platform's redelivery is admitted and read as the first delivery."""
+        self._dedup.discard(msg.get("name") or "")
+        space_name = (envelope.get("space") or msg.get("space") or {}).get("name") or ""
+        thread_name = (msg.get("thread") or {}).get("name") or ""
+        if space_name and thread_name:
+            self._thread_count_store.decr(space_name, thread_name)
 
     def verify_http_event_request(self, auth_header: str) -> tuple[bool, str]:
         if not self._http_events_audience or not self._http_events_service_account_email:

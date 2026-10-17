@@ -25,7 +25,9 @@ def _checkpoint_rows(result):
 
 def rollback(cli, connection, command):
     from tools.checkpoint_manager import format_checkpoint_list
-    args = [a for a in command.split()[1:] if a.lower() not in ("--all", "--force")]
+    words = command.split()[1:]
+    args = [a for a in words if a.lower() not in ("--all", "--force")]
+    restore_all = len(args) != len(words)
     cwd = os.getenv("TERMINAL_CWD", os.getcwd())
     sid = cli.session_id
     try:
@@ -41,6 +43,8 @@ def rollback(cli, connection, command):
         params = {"session_id": sid, "hash": args[0]}
         if len(args) > 1:
             params["file_path"] = args[1]
+        elif restore_all:
+            params["all"] = True  # main's --all/--force: also revert the user's hand-edits
         _restored(cli, connection, connection.call("rollback.restore", **params), params.get("file_path"))
     except GatewayClientError as exc:
         print(f"  ❌ {exc}")
@@ -67,6 +71,8 @@ def _restored(cli, connection, result, file_path):
     restored = {"hash": result.get("restored_to", ""), "reason": result.get("reason", "")}
     print(f"  {_t('rollback.restored_file', file=file_path, **restored)}" if file_path
           else f"  {_t('rollback.restored_all', **restored)}")
+    from hermes_cli.cli_commands_session_tools import _rollback_kept
+    _rollback_kept(result)  # the in-process CLI's own lines
     print(f"  {_t('rollback.snapshot_saved')}")
     if result.get("history_removed"):
         snapshot = connection.call("session.resume", session_id=cli.session_id)

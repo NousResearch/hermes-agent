@@ -15,7 +15,7 @@ from gateway.session_contract import Principal, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
-from tools.bot_live_delivery import _delivery_id, _read
+from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
     scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
 
@@ -234,22 +234,23 @@ def _bot_chat_creation_id(authority, actor):
     concurrent deliveries (serialized by the titled-create lock) pick the same identity. An
     existing UNtitled session is the same creation interrupted before its title: it is reused."""
     from gateway.session_local_recovery import local_identity
-    from hermes_state_mutation_retirement import retired_session
-    base, generation = 'bot-chat:' + authority.profile_id, 0
-    while True:
-        request_id = base if generation == 0 else f'{base}:{generation}'
-        sid = local_identity(authority.profile_id, actor.subject, request_id)
-        row = authority.db.get_session(sid)
-        if not retired_session(authority.db, sid) and (row is None or not row.get('title')):
-            return request_id
-        generation += 1
+    from hermes_state_mutation_retirement import first_generation
+    base = 'bot-chat:' + authority.profile_id
+    request_id = lambda generation: base if generation == 0 else f'{base}:{generation}'
+
+    def titled(conn, sid):
+        row = conn.execute('SELECT title FROM sessions WHERE id=?', (sid,)).fetchone()
+        return row is not None and bool(row[0])
+    generation, _sid = first_generation(
+        authority.db, lambda n: local_identity(authority.profile_id, actor.subject, request_id(n)), spent=titled)
+    return request_id(generation)
 
 
 def _admission_outcome(authority, admission_id, fallback=None):
     """``(status, reply)`` of one admission, read from its committed result, never transcript recency."""
     row = get_session_admission(authority.db, admission_id=admission_id)
     if row is None:
-        raise RuntimeStoreError('storage_unavailable')
+        return _expired_outcome(authority, fallback)
     # A terminal row without a result blob is still definitive when the outcome says the
     # input never ran (cancelled) or was refused/failed; ambiguous is reserved for the
     # durable unknown state and for missing evidence (completed/interrupted without result).
@@ -270,6 +271,28 @@ def _admission_outcome(authority, admission_id, fallback=None):
     elif fallback is not None and fallback.get('status') in {'settled', 'failed'}:
         status = fallback['status']
     return status, reply
+
+
+def _expired_outcome(authority, record):
+    """A receipt outlives its admission once a deleted target's tombstone passes the retry horizon
+    (``prune_retired_tombstones``). A final receipt keeps the answer it already holds; a pending one
+    whose session was deleted (retired, or its row gone) can never learn its outcome and becomes
+    ``ambiguous``, never resent. A live session missing its admission is still a storage fault."""
+    from hermes_state_mutation_retirement import retired_session
+    record = record or {}
+    if record.get('status') in _TERMINAL:
+        return record['status'], record.get('reply', '')
+    session_id = record.get('session_id')
+    if session_id and retired_session(authority.db, session_id):
+        return 'ambiguous', record.get('reply', '')
+    if session_id and authority.db.get_session(session_id) is None:
+        # Never resent either way, but a row gone without its fence is not a plain delete: store damage,
+        # or a marker an older release reclaimed. Logged once: the receipt is final from here on.
+        logging.getLogger(__name__).warning(
+            'Bot delivery %s: session %s is gone with no deletion marker; settled as ambiguous',
+            record.get('delivery_id'), session_id)
+        return 'ambiguous', record.get('reply', '')
+    raise RuntimeStoreError('storage_unavailable')
 
 
 def _retry_admission(authority, record):
@@ -300,7 +323,14 @@ def _result(authority, record):
         status, reply = _admission_outcome(authority, record['admission_id'], record)
     error = reason = None
     if status == 'failed':
-        error, reason = _failure(authority, current)
+        try:
+            error, reason = _failure(authority, current)
+        except RuntimeStoreError as exc:
+            if exc.reason != 'not_found':
+                raise
+            # Its admission aged out after the chat was deleted: the receipt's own answer stands.
+            from tools.bot_failure_reasons import UNKNOWN
+            error, reason = record.get('error') or 'Bot Chat delivery failed', record.get('reason') or UNKNOWN
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],
         profile_home=record['profile_home'], session_id=record['session_id'],
         admission_id=record['admission_id'], message=record['message'], reply=reply,
@@ -526,12 +556,20 @@ async def recover_bot_deliveries(authority):
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue
-            record.update(_result(authority, record))
-            if record['status'] in {'queued', 'claimed'}:
-                _watch_reply(authority, home, record['delivery_id'],
-                             record.get('retry_admission_id') or record['admission_id'])
-            if record['status'] not in {'queued', 'claimed'}:
-                await _maybe_retry(authority, home, path, record)
+            try:
+                record.update(_result(authority, record))
+                if record['status'] in {'queued', 'claimed'}:
+                    _watch_reply(authority, home, record['delivery_id'],
+                                 record.get('retry_admission_id') or record['admission_id'])
+                if record['status'] not in {'queued', 'claimed'}:
+                    await _maybe_retry(authority, home, path, record)
+            except RuntimeStoreError as exc:
+                # One receipt the store cannot answer must not stop the owner (and, multiplexed, every
+                # profile with it): log it and recover the rest. The next start reads it again (a
+                # retry already pinned on it is then admitted once).
+                logging.getLogger(__name__).error('Bot delivery %s not recovered: %s (%s)',
+                                                  record.get('delivery_id'), exc.reason, path, exc_info=True)
+                continue
             await write_receipt(home, record)
             remember_receipt(authority, home, record)
         row = authority.db.get_session_by_title('Bot Chat')

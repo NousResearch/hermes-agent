@@ -5,6 +5,7 @@ import { es } from './es'
 import { fr } from './fr'
 import { ja } from './ja'
 import { ru } from './ru'
+import { uk } from './uk'
 import type { BundledLocale, Translations } from './types'
 import { zh } from './zh'
 import { zhHant } from './zh-hant'
@@ -21,7 +22,8 @@ export const TRANSLATIONS: Record<BundledLocale, Translations> = {
   ru,
   fr,
   de,
-  es
+  es,
+  uk
 }
 
 export const BUNDLED_LOCALES = Object.keys(TRANSLATIONS) as readonly BundledLocale[]

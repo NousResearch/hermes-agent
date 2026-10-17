@@ -20,6 +20,7 @@
  */
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import * as baileys from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -38,6 +39,7 @@ import {
   buildPollPayload,
   createReconnectScheduler,
   createVersionResolver,
+  fetchWppconnectWaVersion,
   installConsoleStamps,
   buildLocationPayload,
   buildTextSendPayload,
@@ -386,7 +388,21 @@ function emitPairEvent(event) {
 }
 
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
-const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
+// fetchLatestWaWebVersion() reads the build web.whatsapp.com is actually
+// serving, so it stays correct while the version list Baileys ships from
+// GitHub is unreachable or behind. Resolve it off the namespace rather than
+// naming it in the import list: an older Baileys without the export would
+// otherwise fail the whole module at link time instead of degrading to the
+// single-resolver behaviour (#88516).
+const fetchLatestWaWebVersion =
+  baileys.fetchLatestWaWebVersion || baileys.default?.fetchLatestWaWebVersion || null;
+// Pairing against a stale build can only loop on 405 with no QR, so pair-only
+// mode stops with one actionable error instead; a linked bridge keeps the
+// stale build as a last resort and its reconnect loop re-resolves later.
+const getWAVersion = createVersionResolver(fetchLatestBaileysVersion, {
+  fallbackFetchVersionFns: [fetchLatestWaWebVersion, () => fetchWppconnectWaVersion()],
+  requireCurrent: PAIR_ONLY,
+});
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);

@@ -741,15 +741,19 @@ def _maybe_route_managed_model(
     return _provider_result(result, f"{provider.display_name} provider returned a non-dict result")
 
 
-def _confine_source_images(image_url, reference_image_urls, task_id, *, permitted: tuple = ("image",)):
+def _confine_source_images(image_url, reference_image_urls, task_id, *, permitted: tuple = ("image",),
+                           inline_on_local: bool = False):
     """Resolve path-like sources to ``data:`` URLs under a non-local terminal backend.
 
     Routes through ``tools.image_source`` (in-sandbox exec-read, media-cache host reads,
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
-    through; local backend is a no-op. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
+    through. The local backend is a no-op unless ``inline_on_local``: image providers read
+    host paths themselves, but most video backends (FAL, DeepInfra) only fetch URLs, so a raw
+    local path reached them verbatim and failed with ``file_download_error``.
+    Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
     from tools.terminal_scope import terminal_env
-    if (terminal_env("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
+    if not inline_on_local and (terminal_env("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
         return image_url, reference_image_urls, None
     from model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url

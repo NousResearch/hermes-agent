@@ -77,7 +77,8 @@ def _extract_http_status(exc: BaseException) -> Optional[int]:
 
 
 def _managed_fal_billing_error(exc: BaseException, what: str) -> Optional[str]:
-    """Human-readable tail for a Nous managed-gateway ``BILLING_ERROR`` response, else None.
+    """Human-readable tail for a Nous managed-gateway ``BILLING_ERROR`` or ``VALIDATION_ERROR``
+    response, else None (callers then fall back to the generic "may not be enabled" hint).
 
     ``what`` names the rejected thing ("model", "endpoint"); the wording is shared by the image
     and video callers so the two surfaces never drift.
@@ -90,9 +91,15 @@ def _managed_fal_billing_error(exc: BaseException, what: str) -> Optional[str]:
     except Exception:
         return None
     error = payload.get("error") if isinstance(payload, dict) else None
-    if not isinstance(error, dict) or error.get("code") != "BILLING_ERROR":
+    code = error.get("code") if isinstance(error, dict) else None
+    if code not in ("BILLING_ERROR", "VALIDATION_ERROR"):
         return None
     details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    if code == "VALIDATION_ERROR":
+        # The gateway validates params per model (e.g. resolution enums); say which one it refused.
+        field = details.get("field")
+        limits = f" ({field}: expected {details.get('expected')}, received {details.get('received')})" if field else ""
+        return f"{error.get('message') or 'Invalid request'}{limits}. The managed route supports a narrower set for this {what}."
     upstream = details.get("upstreamPayload") if isinstance(details.get("upstreamPayload"), dict) else {}
     code = upstream.get("code") or details.get("chargeIntentErrorCode") or "billing_error"
     detail = upstream.get("error") or "Nous Portal rejected the charge authorization"

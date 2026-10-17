@@ -524,6 +524,7 @@ class CLISessionMixin:
         self.session_id = getattr(self, "_new_session_id", lambda now: new_session_id(now))(self.session_start)
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
+        getattr(self, "_claim_active_session", lambda *a: None)("cli")
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
@@ -951,6 +952,7 @@ class CLISessionMixin:
                     transfer_session_yolo(self.session_id, agent_sid)
                     self.session_id = self.agent.session_id
                     self._write_terminal_breadcrumb()
+                    self._claim_active_session("cli")
                     self._pending_title = None
                     # Persist the new handoff from offset 0 so resume can recover it after exit.
                     self.agent._flush_messages_to_session_db(self.conversation_history, None)
@@ -1074,6 +1076,7 @@ class CLISessionMixin:
             if getattr(agent, "session_id", None):
                 self.session_id = agent.session_id
                 self._write_terminal_breadcrumb()
+                self._claim_active_session("cli")
 
         try:
             # Create the DB session row now that _cached_system_prompt is populated, so the persisted

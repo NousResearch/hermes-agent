@@ -1838,6 +1838,13 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a task-name header and "The agent cannot see this
         # message" footer. False = clean output.
         "wrap_response": True,
+        # Threaded delivery (Slack only today): post a slim summary as the parent
+        # message and the full report in its thread, so a channel timeline shows
+        # one-line briefs that expand on click. Default False = flat single-send.
+        # Per-job `thread: false` opts an individual job back out. Only platforms
+        # in the scheduler's THREADED_DELIVERY_PLATFORMS honour it; others deliver
+        # flat regardless.
+        "threaded_delivery": False,
         "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
             # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
             # otherwise sends with disable_notification=True and briefs look undelivered). False =

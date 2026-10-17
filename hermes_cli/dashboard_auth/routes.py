@@ -26,7 +26,7 @@ from typing import Any, Deque, Dict
 from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -81,6 +81,29 @@ def _redirect_uri(request: Request) -> str:
         return base
     parsed = urlparse(base)
     return urlunparse(parsed._replace(path=f"{prefix}{parsed.path}"))
+
+
+# Query marker on the canonical hop. A reverse proxy that does not forward ``Host`` (the setup
+# ``public_url`` exists for) shows a loopback Host even when the browser is already on the public
+# origin; without the marker that request would bounce back to the same URL forever.
+_CANONICAL_HOP = "canonical"
+_LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _canonical_login_redirect(request: Request, path: str) -> RedirectResponse | None:
+    """Move a loopback browser login onto the ``public_url`` callback origin before any host-only
+    PKCE cookie is set there, so ``/auth/callback`` can read it. At most one hop per entry."""
+    public_url = _prefix_mod.resolve_public_url()
+    if (not public_url or request.url.hostname not in _LOOPBACK_HOSTNAMES
+            or _CANONICAL_HOP in request.query_params):
+        return None
+    public = urlparse(public_url)
+    if (request.url.scheme, request.url.netloc) == (public.scheme, public.netloc):
+        return None
+    query = f"{request.url.query}&" if request.url.query else ""
+    return RedirectResponse(
+        url=f"{public_url.rstrip('/')}{path}?{query}{_CANONICAL_HOP}=1",
+        status_code=302, headers=_NO_STORE)
 
 
 def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
@@ -193,7 +216,10 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 # --- Public: login page + provider list ------------------------------------
 
 @router.get("/login", name="login_page")
-async def login_page(request: Request) -> HTMLResponse:
+async def login_page(request: Request) -> Response:
+    canonical = _canonical_login_redirect(request, "/login")
+    if canonical is not None:
+        return canonical
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
     return HTMLResponse(
@@ -216,6 +242,9 @@ async def api_auth_providers() -> Any:
 
 @router.get("/auth/login", name="auth_login")
 async def auth_login(request: Request, provider: str, next: str = ""):
+    canonical = _canonical_login_redirect(request, "/auth/login")
+    if canonical is not None:
+        return canonical
     p = get_provider(provider)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
@@ -299,6 +328,9 @@ async def auth_native_authorize(
     if not code_challenge:
         raise _http(400, "code_challenge required")
     redirect_uri = _validate_loopback_redirect_uri(redirect_uri)
+    canonical = _canonical_login_redirect(request, "/auth/native/authorize")
+    if canonical is not None:
+        return canonical
     p = _select_native_provider(provider)
     if p is None and not provider:
         candidates = list_session_providers()
@@ -342,6 +374,13 @@ async def auth_callback(
     pkce_raw = read_pkce_cookie(request)
     if not pkce_raw:
         _audit(request, AuditEvent.LOGIN_FAILURE, reason="missing_pkce_cookie")
+        if "text/html" in request.headers.get("accept", ""):
+            # Never redeem a code without its cookie. Restart the browser flow
+            # on the callback origin instead of stranding an expired bookmark.
+            base = _prefix_mod.resolve_public_url() or _prefix(request)
+            return RedirectResponse(
+                url=base.rstrip("/") + "/login",
+                status_code=302, headers=_NO_STORE)
         raise _http(400, "Missing PKCE state cookie")
     # ``next`` and ``broker`` come from the server-set cookie ONLY: the IDP
     # echoes back just code+state, so any such query param is attacker controlled.

@@ -167,7 +167,8 @@ def _real_profile_unsupported_reason(browser) -> Optional[str]:
     from hermes_cli.browser_connect import UNSUPPORTED_CHANNEL
     if browser is None:
         return (_RP + "your default browser is not a supported Chromium browser (Chrome, Edge, Brave, "
-                "Brave Origin, Chromium). Real-profile browsing requires a Chromium default; set one or turn the toggle off.")
+                "Brave Origin, Chromium). Real-profile browsing requires a Chromium default; set one, "
+                "set browser.real_profile_browser (e.g. 'chrome'), or turn the toggle off.")
     if browser == UNSUPPORTED_CHANNEL:
         return (_RP + "your default browser is a pre-release Chromium channel (Beta / Dev / Canary), which "
                 "real-profile browsing does not support. Set your default to a "
@@ -287,8 +288,8 @@ def _real_profile_cdp() -> tuple:
         return None, (_RP + "browser.engine is set to 'lightpanda', which cannot load a real Chromium profile. "
                       "Set browser.engine to 'auto' or 'chrome' to use real-profile browsing, or turn the toggle off.")
 
-    from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
-                                            real_profile_copy_dir, snapshot_real_profile)
+    from hermes_cli.browser_connect import (chromium_executable, real_profile_copy_dir,
+                                            resolve_real_profile_browser, snapshot_real_profile)
 
     if not _bt._real_profile_cdp_lock.acquire(
         timeout=_bt._REAL_PROFILE_CDP_LOCK_TIMEOUT_S
@@ -307,7 +308,9 @@ def _real_profile_cdp() -> tuple:
             return cached, None
         _bt._real_profile_cdp_cache.pop("cdp", None)
 
-        browser = detect_default_chromium()
+        browser, config_err = resolve_real_profile_browser()
+        if config_err:
+            return None, _RP + config_err
         unsupported = _real_profile_unsupported_reason(browser)
         if unsupported:
             return None, unsupported

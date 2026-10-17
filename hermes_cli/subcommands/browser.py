@@ -25,14 +25,19 @@ def build_browser_parser(subparsers) -> None:
 
     def _dispatch_browser(_args):
         from hermes_cli.browser_connect import (
-            UNSUPPORTED_CHANNEL, close_browser_holding_profile, detect_default_chromium,
-            real_profile_data_dir)
+            UNSUPPORTED_CHANNEL, close_browser_holding_profile, real_profile_data_dir,
+            resolve_real_profile_browser)
 
         action = getattr(_args, "browser_action", None)
         if action != "close-profile":
             browser_parser.print_help()
             return 2
-        browser = getattr(_args, "browser", None) or detect_default_chromium()
+        browser = getattr(_args, "browser", None)
+        if not browser:
+            browser, config_err = resolve_real_profile_browser()
+            if config_err:
+                print(f"✗ {config_err}", file=sys.stderr)
+                return 1
         if not browser or browser == UNSUPPORTED_CHANNEL:
             print("✗ No supported Chromium default browser detected.", file=sys.stderr)
             return 1

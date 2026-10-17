@@ -345,6 +345,28 @@ def detect_default_chromium(system: str | None = None) -> str | None:
     return detect.get(system or platform.system(), _detect_default_linux)()
 
 
+def resolve_real_profile_browser(system: str | None = None) -> tuple[str | None, str | None]:
+    """``(browser_key, error)`` for real-profile browsing.
+
+    ``browser.real_profile_browser`` (e.g. ``"chrome"``) picks WHICH Chromium browser Hermes
+    snapshots and launches, so it can differ from the OS default: a user whose daily browser is
+    Brave can point the agent at Chrome and the headless copy never collides with the browser
+    they are using. Unset/empty follows the OS default exactly as before. A value that is not a
+    supported key FAILS CLOSED, never falling back to the default (that would silently drive a
+    different browser's logins).
+    """
+    configured = _browser_setting("real_profile_browser")
+    if configured is None or (isinstance(configured, str) and not configured.strip()):
+        return detect_default_chromium(system), None
+    key = configured.strip().lower() if isinstance(configured, str) else None
+    if key in _BROWSER_BY_KEY:
+        return key, None
+    return None, (
+        f"browser.real_profile_browser is set to {configured!r}, which is not a supported "
+        f"browser. Use one of: {', '.join(sorted(_BROWSER_BY_KEY))}; or remove it to follow "
+        "the system default browser.")
+
+
 # --- Real-profile SNAPSHOT launch -------------------------------------------------------
 # Never drive the live default user-data-dir: Chromium ≥136 (Google builds) refuses remote
 # debugging on it, and the user's running browser holds it (SingletonLock). Instead snapshot

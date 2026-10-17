@@ -457,16 +457,22 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     def _resolve_enabled_toolsets_for_source(
         self, user_config: dict, source: SessionSource, platform_key: str,
     ) -> list:
-        """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
-        validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
-        toolsets dropped, not trusted)."""
+        """Enabled toolsets for an agent run.
+
+        A non-empty adapter override remains highest priority (webhook route behavior). Otherwise a
+        matching top-level ``user_toolsets`` entry replaces ``platform_toolsets`` for any source with
+        a user identifier. Every replacement goes through the same resolver, including global disabled toolsets.
+        """
+        from gateway.user_toolsets import resolve_user_toolsets
         from hermes_cli.tools_config import _get_platform_tools
         try:
             adapter = self._delivery_adapter_for(source)
             override = adapter.toolsets_for_source(source) if adapter is not None else None
         except Exception:
             override = None
-        if override and isinstance(override, list):
+        if not (override and isinstance(override, list)):
+            override = resolve_user_toolsets(user_config, source, platform_key)
+        if isinstance(override, list):
             pts = dict(user_config.get("platform_toolsets") or {})
             pts[platform_key] = [str(x) for x in override]
             user_config = {**user_config, "platform_toolsets": pts}

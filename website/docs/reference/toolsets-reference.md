@@ -18,20 +18,39 @@ Every tool belongs to exactly one toolset. When you enable a toolset, all tools 
 
 ## Configuring Toolsets
 
+### Per-platform and per-user (`config.yaml`)
+
+```yaml
+platform_toolsets:
+  telegram: [web, skills, clarify]
+  whatsapp: [web, skills, clarify]
+
+# Optional sender-specific replacements for gateway platforms.
+user_toolsets:
+  telegram:
+    "123456789": [all]
+  whatsapp:
+    "491701234567": [all]
+```
+
+`user_toolsets` is a top-level section next to `platform_toolsets`. It works for every gateway platform
+whose message source provides a `user_id` or `user_id_alt`; the primary `user_id` takes precedence when
+both match configured entries. A matching user list **replaces** the platform list; the two lists are not
+merged. If no user matches (or the source has neither ID), Hermes uses the platform list. An explicit
+empty list (`[]`) gives that user no tools. `agent.disabled_toolsets` is still applied last and can remove
+tools from both platform and user selections.
+
+Telegram entries match the stable sender ID (quoted keys are recommended, although numeric YAML keys
+also work). For WhatsApp, use the canonical bare phone number as the config key. Hermes expands source
+phone JIDs, device JIDs, and known LIDs to that number before lookup. An unknown LID does not match a
+privileged phone-number entry and therefore falls back to `platform_toolsets.whatsapp`.
+
 ### Per-session (CLI)
 
 ```bash
 hermes chat --toolsets web,file,terminal
 hermes chat --toolsets debugging        # composite — expands to file + terminal + web
 hermes chat --toolsets all              # everything
-```
-
-### Per-platform (config.yaml)
-
-```yaml
-toolsets:
-  - hermes-cli          # default for CLI
-  # - hermes-telegram   # override for Telegram gateway
 ```
 
 ### Interactive management

@@ -46722,6 +46722,24 @@
       }
     },
     {
+      "name": "clarify.lock",
+      "summary": "Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClarifyLockParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClarifyLockResult"
+        }
+      }
+    },
+    {
       "name": "clarify.respond",
       "summary": "Generation-fenced answer to a pending clarify prompt (empty answer = skipped).",
       "params": [
@@ -48413,6 +48431,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SetupReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "skills.changed",
+      "summary": "A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

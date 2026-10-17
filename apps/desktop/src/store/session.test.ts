@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
@@ -18,6 +19,7 @@ vi.mock('@/hermes', () => ({
 import { deferred } from '../test/deferred'
 import { makeSessionInfo } from '../test/session-info'
 
+import { $projectTree } from './project-tree'
 import {
   $activeSessionId,
   $connection,
@@ -51,6 +53,7 @@ import {
   knownSessionProfile,
   lineageAliases,
   mergeSessionPage,
+  ownerLookupSessionRows,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   rotateFreshDraftKey,
@@ -72,6 +75,7 @@ import {
   setSelectedStoredSessionId,
   setSessionOwnerHint,
   setSessions,
+  setUnlistedSessionOwnerRows,
   shouldMigrateComposerScope,
   touchSessionActivity,
   workspaceCwdForNewSession
@@ -1789,5 +1793,93 @@ describe('knownSessionOwner', () => {
     setSessionOwnerHint('hidden-session', owner)
 
     expect(knownSessionOwner([], 'hidden-session')).toEqual(owner)
+  })
+})
+
+describe('ownerLookupSessionRows', () => {
+  afterEach(() => {
+    setSessions([])
+    setCronSessions([])
+    setMessagingSessions([])
+    setUnlistedSessionOwnerRows([])
+    $projectTree.set([])
+  })
+
+  const treeCarrying = (...rows: SessionInfo[]): SidebarProjectTree[] => [
+    {
+      id: 'proj',
+      label: 'Proj',
+      path: null,
+      repos: [
+        {
+          id: 'repo',
+          label: 'repo',
+          path: null,
+          sessionCount: rows.length,
+          groups: rows.map((row, index) => ({
+            id: `lane-${index}`,
+            label: `lane-${index}`,
+            path: null,
+            sessions: [row]
+          }))
+        }
+      ],
+      sessionCount: rows.length
+    }
+  ]
+
+  it('resolves an acp row no slice lists off the project tree (#137048)', () => {
+    // Recents excludes editor-driven rows and the messaging slice drops every
+    // local source, so the sidebar's project-grouped view is the only place
+    // the row is loaded — the workspace tab read "New session" for it.
+    const acpRow = session({ id: 'acp-1', source: 'acp', title: 'Weekly Umami stats report' })
+    $projectTree.set(treeCarrying(acpRow))
+
+    const resolved = ownerLookupSessionRows().find(row => sessionMatchesStoredId(row, 'acp-1'))
+
+    expect(resolved?.title).toBe('Weekly Umami stats report')
+  })
+
+  it('resolves a preview row from the project overview, not just lane sessions', () => {
+    const acpRow = session({ id: 'acp-2', source: 'acp', title: 'Preview-only row' })
+    $projectTree.set([
+      {
+        id: 'proj',
+        label: 'Proj',
+        path: null,
+        repos: [],
+        sessionCount: 1,
+        previewSessions: [acpRow]
+      }
+    ])
+
+    expect(ownerLookupSessionRows().find(row => sessionMatchesStoredId(row, 'acp-2'))?.title).toBe('Preview-only row')
+  })
+
+  it('keeps the recents array identity when every tree row is already listed', () => {
+    // The per-list memo caches (lineageAliases) key on the array reference: a
+    // fully listed tree must not mint a new array on every lookup.
+    const local = session({ id: 'cli-1', source: 'cli', title: 'Local chat' })
+    setSessions([local])
+    $projectTree.set(treeCarrying(local))
+
+    expect(ownerLookupSessionRows()).toBe($sessions.get())
+  })
+
+  it('never lets a tree copy shadow a fetched slice row, and keeps stubs last', () => {
+    const fresh = session({ id: 'cli-1', source: 'cli', title: 'Fresh recents copy' })
+    const staleTreeCopy = session({ id: 'cli-1', source: 'cli', title: 'Stale tree copy' })
+    const acpTreeRow = session({ id: 'acp-1', source: 'acp', title: 'Tree row' })
+    const stub = session({ id: 'acp-1', source: 'acp', title: 'Unlisted stub' })
+    setSessions([fresh])
+    setUnlistedSessionOwnerRows([stub])
+    $projectTree.set(treeCarrying(staleTreeCopy, acpTreeRow))
+
+    const rows = ownerLookupSessionRows()
+
+    expect(rows.find(row => row.id === 'cli-1')?.title).toBe('Fresh recents copy')
+    // A real tree row always shadows its unlisted-draft stub.
+    expect(rows.find(row => row.id === 'acp-1')?.title).toBe('Tree row')
+    expect(rows).toHaveLength(2)
   })
 })

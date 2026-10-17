@@ -16,6 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { $projectTreeSessionRows } from './project-tree'
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
@@ -1087,22 +1088,27 @@ function withUnlistedOwnerStubs(rows: SessionInfo[], stubs: readonly SessionInfo
  * install failed closed with SessionOwnerResolutionError even though the row
  * naming its owner was already in memory, one atom over. Concatenation order
  * mirrors lookup priority: recents first (they can carry fresher optimistic
- * connection tags), then the cron and messaging slices. Unlisted-draft stubs
- * ($unlistedSessionOwnerRows) ride last: a real row for the same id always
- * shadows its stub, so a listed session never resolves off a stale stamp.
+ * connection tags), then the cron and messaging slices. Sources no slice lists
+ * (ACP: recents excludes editor-driven rows and the messaging slice drops
+ * every local source) resolve off the project tree's rows — the sidebar's
+ * project-grouped view already shows them, so its rows are loaded (#137048).
+ * Unlisted-draft stubs ($unlistedSessionOwnerRows) ride last: a real row for
+ * the same id always shadows its stub, so a listed session never resolves off
+ * a stale stamp.
  */
 export function ownerLookupSessionRows(): SessionInfo[] {
   const cron = $cronSessions.get()
   const messaging = $messagingSessions.get()
   const stubs = $unlistedSessionOwnerRows.get()
 
-  // Recents-only stays the common case; keep its array identity (no copy) so
-  // per-list memo caches (lineageAliases) keyed on the reference still hit.
-  if (!cron.length && !messaging.length) {
-    return withUnlistedOwnerStubs($sessions.get(), stubs)
-  }
+  // Tree rows append only ids no fetched slice carries (withUnlistedOwnerStubs
+  // keeps a listed row's fresher optimistic stamps ahead of the tree copy), so
+  // a fully-listed tree returns the same array — recents-only stays the common
+  // case and its identity (no copy) is preserved for per-list memo caches
+  // (lineageAliases) keyed on the reference.
+  const listed = !cron.length && !messaging.length ? $sessions.get() : [...$sessions.get(), ...cron, ...messaging]
 
-  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging], stubs)
+  return withUnlistedOwnerStubs(withUnlistedOwnerStubs(listed, $projectTreeSessionRows.get()), stubs)
 }
 
 // Whether a profile's last session page was CAPPED by the request limit, keyed

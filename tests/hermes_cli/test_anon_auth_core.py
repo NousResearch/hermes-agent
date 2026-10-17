@@ -298,7 +298,8 @@ class TestRotationNeverRewritesTheConversationModel:
                                api_key="k", model=model, _client_kwargs={}, _credential_pool_entry_id="p",
                                _reapply_route_client_config=lambda **kw: None, _replace_primary_openai_client=lambda **kw: None,
                                _anthropic_client=SimpleNamespace(close=lambda: None),
-                               _build_direct_anthropic_client=lambda key, url: object(), _anthropic_oauth_flag=lambda key: False)
+                               _build_direct_anthropic_client=lambda key, url, **kw: object(),
+                               _anthropic_oauth_flag=lambda key, **kw: False)
 
     def test_paid_conversation_refuses_a_welcome_route_on_every_wire_mode(self, portal):
         from types import SimpleNamespace

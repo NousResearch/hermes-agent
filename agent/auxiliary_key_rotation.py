@@ -21,3 +21,4 @@ def rotate_runtime_main_api_key(old: Any, new: Any) -> None:
     runtime = _RUNTIME_MAIN_CONTEXT.get()
     if isinstance(runtime, dict) and runtime.get("api_key") == old:
         runtime["api_key"] = _normalize_api_key(new)
+        runtime.pop("anthropic_api_key_declared", None)

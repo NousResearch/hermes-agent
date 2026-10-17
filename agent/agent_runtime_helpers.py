@@ -1150,19 +1150,6 @@ def _apply_primary_runtime_fields(agent, rt: dict[str, Any]) -> None:
     agent._client_kwargs = dict(rt["client_kwargs"])
 
 
-def _build_anthropic_client_from_runtime(agent, rt: dict[str, Any]) -> None:
-    """Rebuild the native Anthropic client from a ``_primary_runtime`` snapshot."""
-    from agent.anthropic_adapter import build_anthropic_client
-    agent._anthropic_api_key = rt["anthropic_api_key"]
-    agent._anthropic_base_url = rt["anthropic_base_url"]
-    agent._anthropic_client = build_anthropic_client(
-        rt["anthropic_api_key"], rt["anthropic_base_url"],
-        timeout=get_provider_request_timeout(agent.provider, agent.model),
-    )
-    agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
-    agent.client = None
-
-
 def _rebuild_primary_client(agent, rt: dict[str, Any], *, reason: str) -> None:
     """Rebuild the primary client from a ``_primary_runtime`` snapshot (MoA facade / native Anthropic / OpenAI wire)."""
     if (agent.provider or "").strip().lower() == "moa":
@@ -1179,6 +1166,7 @@ def _rebuild_primary_client(agent, rt: dict[str, Any], *, reason: str) -> None:
         from agent.bedrock_adapter import bind_bedrock_runtime
         bind_bedrock_runtime(agent, agent.base_url, agent.api_mode)
     elif agent.api_mode == "anthropic_messages":
+        from agent.anthropic_provenance import _build_anthropic_client_from_runtime
         _build_anthropic_client_from_runtime(agent, rt)
     else:
         agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason=reason, shared=True)
@@ -2125,6 +2113,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
+    "_anthropic_api_key_declared",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
@@ -2209,11 +2198,9 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
-        # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
-        # must never receive Anthropic credentials.
-        is_native_anthropic = new_provider == "anthropic"
+        # Foreign providers must never receive the native token fallback.
         effective_key = api_key or agent.api_key or (
-            resolve_anthropic_token(model=getattr(agent, "model", None)) if is_native_anthropic else ""
+            resolve_anthropic_token(model=getattr(agent, "model", None)) if new_provider == "anthropic" else ""
         ) or ""
         # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
         # agent_init.py).
@@ -2226,15 +2213,16 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
                     "MiniMax OAuth: failed to install per-request token provider "
                     "on switch (%s); using static bearer.", _mm_exc,
                 )
+        from agent.anthropic_provenance import pool_api_key_declaration
+        agent._anthropic_api_key_declared = declared = pool_api_key_declaration(getattr(agent, "_credential_pool", None), effective_key)
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
-            timeout=get_provider_request_timeout(agent.provider, agent.model),
+            timeout=get_provider_request_timeout(agent.provider, agent.model), declared_api_key=declared,
         )
-        agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider)
-        agent.client = None
-        agent._client_kwargs = {}
+        agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider, declared_api_key=declared)
+        agent.client, agent._client_kwargs = None, {}
         return
     effective_base = base_url or agent.base_url
     agent._client_kwargs = {"api_key": api_key or agent.api_key, "base_url": effective_base}
@@ -2417,6 +2405,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
             "anthropic_api_key": agent._anthropic_api_key,
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
+            "anthropic_api_key_declared": getattr(agent, "_anthropic_api_key_declared", None),
         })
     return rt
 

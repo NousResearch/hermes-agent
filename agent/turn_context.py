@@ -544,7 +544,7 @@ def _publish_runtime_main(agent: Any) -> None:
             **{k: _str_attr(agent, k) for k in (
                 "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id"
             )},
-            cache_scope=_cache_scope,
+            cache_scope=_cache_scope, anthropic_api_key_declared=getattr(agent, "_anthropic_api_key_declared", None),
         )
 
 

@@ -59,14 +59,46 @@ def _first_env(*names: str) -> str:
     return next((v for v in (_getenv(n).strip() for n in names) if v), "")
 
 
-def _is_oauth_token(key: str) -> bool:
-    """True for Anthropic OAuth/setup tokens (sk-ant-oat*, eyJ JWTs, cc-); False for the Console
-    API-key families sk-ant-api*, sk-ant-usr*, sk-ant-svc* and sk-ant-admin* (#133856) — they pay
-    per token and authenticate as x-api-key, so the Claude Code identity must not ride along.
-    Unknown sk-ant-* prefixes still classify as OAuth so OAuth prefixes Anthropic ships later keep working."""
-    if not key or key.startswith(("sk-ant-api", "sk-ant-usr", "sk-ant-svc", "sk-ant-admin")):
+# Console/API-key families (pay per token, x-api-key) and positively OAuth token shapes (Claude Code
+# subscription). A ``sk-ant-*`` family in neither list is ambiguous: see ``_is_oauth_token``.
+_API_KEY_FAMILIES = ("sk-ant-api", "sk-ant-usr", "sk-ant-svc", "sk-ant-admin")
+_OAUTH_TOKEN_SHAPES = ("sk-ant-oat", "eyJ", "cc-")
+
+
+def _declared_env_api_key() -> str:
+    """The credential the operator explicitly configured as an API key (``ANTHROPIC_API_KEY``).
+
+    Use the resolver's profile-scoped accessor and propagate scope refusal: classification
+    must not turn an unbound secret read into a request using a guessed identity.
+    """
+    return _first_env("ANTHROPIC_API_KEY")
+
+
+def _is_oauth_token(key: str, *, declared_api_key: Optional[bool] = None) -> bool:
+    """True for Anthropic OAuth/setup tokens; False for API keys.
+
+    Shape is authoritative where it is unambiguous: the Console API-key families ``sk-ant-api*``,
+    ``sk-ant-usr*``, ``sk-ant-svc*`` and ``sk-ant-admin*`` (#133856) pay per token, and the OAuth
+    shapes ``sk-ant-oat*`` / ``eyJ*`` JWTs / ``cc-*`` carry a Claude Code subscription — none of them
+    change meaning with where they are stored. Any other ``sk-ant-*`` family is ambiguous, because a
+    prefix list cannot keep up with Anthropic's key families (#137334): every new Console family
+    would ride the Claude Code identity and be billed against the subscription bucket (HTTP 400
+    "Your credit balance is too low"). There the source's declaration wins — the value configured in
+    ``ANTHROPIC_API_KEY`` is an API key regardless of prefix, and a caller holding the credential's
+    own kind (a ``credential_pool`` entry's ``auth_type``, a static config key) passes it as
+    ``declared_api_key``. OAuth env sources retain their kind through the pool; otherwise undeclared
+    sources (borrowed logins, ``key_cmd`` output) keep the historical OAuth default so OAuth prefixes Anthropic
+    ships later keep working."""
+    if not key or key.startswith(_API_KEY_FAMILIES):
         return False
-    return key.startswith(("sk-ant-", "eyJ", "cc-"))
+    if key.startswith(_OAUTH_TOKEN_SHAPES):
+        return True
+    if key.startswith("sk-ant-"):
+        if declared_api_key is not None:
+            return not declared_api_key
+        declared = _declared_env_api_key()
+        return not (declared and key.strip() == declared.strip())
+    return False
 
 
 def is_native_anthropic_host(base_url: Any) -> bool:
@@ -75,7 +107,9 @@ def is_native_anthropic_host(base_url: Any) -> bool:
     return not text or base_url_hostname(text) == "api.anthropic.com"
 
 
-def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Optional[str] = None) -> bool:
+def anthropic_route_is_oauth(
+    base_url: Any, credential: Any, *, provider: Optional[str] = None, declared_api_key: Optional[bool] = None
+) -> bool:
     """Claude Code OAuth identity for one Anthropic Messages route (#114967).
 
     The route qualifies when it is the ``anthropic`` provider itself or its host is exactly
@@ -85,6 +119,9 @@ def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Option
     is a static string or a ``key_cmd``/per-request callable token source; a callable is
     materialized once for the shape test (``CommandTokenSource`` caches, so this never double-mints)
     and a mint failure classifies as non-OAuth — the wire client surfaces the real error.
+    ``declared_api_key`` is the credential source's own kind when the caller holds it (see
+    ``_is_oauth_token``): without it, an ambiguous ``sk-ant-*`` family falls back to the env
+    declaration and the historical default.
     """
     if not (is_native_anthropic_host(base_url) or (provider or "").strip().lower() == "anthropic"):
         return False
@@ -93,7 +130,7 @@ def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Option
             credential = credential()
         except Exception:
             return False
-    return isinstance(credential, str) and _is_oauth_token(credential)
+    return isinstance(credential, str) and _is_oauth_token(credential, declared_api_key=declared_api_key)
 
 
 class CredentialPersistError(RuntimeError):

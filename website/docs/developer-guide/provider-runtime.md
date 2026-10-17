@@ -153,6 +153,25 @@ Credential resolution for native Anthropic now prefers refreshable Claude Code c
 - Hermes preflights Anthropic credential refresh before native Messages API calls
 - Hermes still retries once on a 401 after rebuilding the Anthropic client, as a fallback path
 
+For ambiguous `sk-ant-*` families, the credential's source determines API-key or OAuth
+authentication. The selected pool row's kind follows its exact key through initialization,
+model switches, fallback installation/restoration and auxiliary `auto` routing, without
+selecting another pool row. Static configuration keys declare API-key authentication;
+`ANTHROPIC_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` declare OAuth, including numbered rotation
+slots and persisted env rows. Known API-key and OAuth shapes retain their existing meaning.
+Refreshing a key invalidates its previous declaration in the agent, restore snapshot and
+published auxiliary runtime. A refused profile secret scope propagates as an error.
+`agent/anthropic_provenance.py` owns declaration lookup, auxiliary credential forwarding,
+snapshot reconstruction and propagation of refreshed keys.
+
+The offline SDK regressions in
+`tests/agent/test_anthropic_credential_provenance.py` cover these transitions and inspect
+authentication and Claude Code identity headers. Before the fixes, the canonical runner
+reported 13 failures and 3 passes on PR head `7138829afa`; the expanded 24-case suite passes
+with the fixes, including a temporary merge with current `main`.
+Run them with `scripts/run_tests.sh -j 2 tests/agent/test_anthropic_credential_provenance.py`
+against an isolated temporary `HERMES_HOME`, then run `python scripts/check`.
+
 ## OpenAI Codex path
 
 Codex uses a separate Responses API path:

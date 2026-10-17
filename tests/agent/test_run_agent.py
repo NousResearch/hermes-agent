@@ -5904,7 +5904,7 @@ class TestAnthropicCredentialRefresh:
 
         old_client.close.assert_called_once()
         rebuild.assert_called_once_with(
-            "sk-ant-oat01-fresh-token", "https://api.anthropic.com", timeout=None,
+            "sk-ant-oat01-fresh-token", "https://api.anthropic.com", timeout=None, declared_api_key=None,
         )
         assert agent._anthropic_client is new_client
         assert agent._anthropic_api_key == "sk-ant-oat01-fresh-token"
@@ -6911,7 +6911,7 @@ class TestFallbackSetsOAuthFlag:
         agent._fallback_chain = [agent._fallback_model]
         agent._fallback_index = 0
 
-        mock_client = MagicMock()
+        mock_client = MagicMock(_anthropic_api_key_declared=None)
         mock_client.base_url = "https://api.anthropic.com/v1"
         mock_client.api_key = "sk-ant-setup-oauth-token"
 

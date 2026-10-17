@@ -198,9 +198,10 @@ _CLEAR_STATUS: dict[str, Any] = {
 _MARK_OK: dict[str, Any] = {**_CLEAR_STATUS, "last_status": STATUS_OK}
 
 
-def _normalize_pool_auth_type(provider: str, token: Any, auth_type: Any) -> str:
-    """Infer pool auth metadata for token formats with one unambiguous meaning."""
-    if provider == "anthropic" and isinstance(token, str) and token.startswith("sk-ant-oat"):
+def _normalize_pool_auth_type(provider: str, token: Any, auth_type: Any, source: str = "") -> str:
+    """Heal OAuth source metadata, including rows persisted without their env token."""
+    from agent.anthropic_provenance import is_oauth_env_source
+    if provider == "anthropic" and (is_oauth_env_source(source) or (isinstance(token, str) and token.startswith(("sk-ant-oat", "eyJ", "cc-")))):
         return AUTH_TYPE_OAUTH
     return str(auth_type or AUTH_TYPE_API_KEY)
 
@@ -241,7 +242,7 @@ class PooledCredential:
     def __post_init__(self):
         if self.extra is None:
             self.extra = {}
-        self.auth_type = _normalize_pool_auth_type(self.provider, self.access_token, self.auth_type)
+        self.auth_type = _normalize_pool_auth_type(self.provider, self.access_token, self.auth_type, self.source)
 
     def __getattr__(self, name: str):
         if name in _EXTRA_KEYS:
@@ -2866,7 +2867,7 @@ def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
 
 def _env_payload(*, env_var: str, token: str, base_url: str) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "auth_type": AUTH_TYPE_API_KEY,
+        "auth_type": _normalize_pool_auth_type("anthropic" if env_var.startswith(("ANTHROPIC_", "CLAUDE_CODE_")) else "", token, AUTH_TYPE_API_KEY, f"env:{env_var}"),
         "access_token": token,
         "base_url": base_url,
         "label": env_var,
@@ -2897,10 +2898,7 @@ def _env_key_var_candidates(env_vars: list[str], entries: list[PooledCredential]
     whole rotation pool with no config: setting ``NVIDIA_API_KEY_2`` is the
     whole opt-in (#76593).
 
-    Env-backed rows are written to auth.json without their secret and
-    re-hydrated on every load; a row whose VAR the registry does not
-    declare would otherwise stay empty forever and be silently dropped
-    from rotation by ``_available_entries``.
+    Rehydrate persisted env rows even when their variable is absent from the registry.
     """
     names = list(env_vars)
     for base in env_vars:
@@ -3053,7 +3051,7 @@ def load_pool(provider: str) -> CredentialPool:
     raw_needs_auth_normalization = any(
         isinstance(payload, dict)
         and _normalize_pool_auth_type(
-            provider, payload.get("access_token"), payload.get("auth_type", AUTH_TYPE_API_KEY),
+            provider, payload.get("access_token"), payload.get("auth_type", AUTH_TYPE_API_KEY), payload.get("source", ""),
         ) != payload.get("auth_type", AUTH_TYPE_API_KEY)
         for payload in raw_entries
     )

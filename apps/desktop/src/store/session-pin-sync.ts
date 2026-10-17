@@ -23,7 +23,7 @@
 
 import { atom } from 'nanostores'
 
-import { setSessionPinnedRemote } from '@/hermes'
+import { type ProfileScope, setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -39,6 +39,8 @@ import {
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
+
+import { sessionMutationScopeFromRow } from './session-request-router'
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
@@ -95,8 +97,10 @@ function publishUnconfirmed(): void {
   $unconfirmedPinWrites.set(new Set(unconfirmed.keys()))
 }
 
-function profileFor(pinId: string): null | string | undefined {
-  return loadedRowFor(pinId)?.profile
+function ownerFor(pinId: string): ProfileScope {
+  const row = loadedRowFor(pinId)
+
+  return sessionMutationScopeFromRow(row) ?? row?.profile
 }
 
 function loadedSessionRows(): SessionInfo[] {
@@ -193,11 +197,11 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
 }
 
 /** PATCH the flag, guarding reads against pages that predate the write. */
-function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
+function writePin(id: string, pinned: boolean, owner?: ProfileScope): Promise<void> {
   unconfirmed.set(id, { at: Date.now(), value: pinned })
-  applyRowPinned(id, pinned, profile)
+  applyRowPinned(id, pinned, owner && typeof owner === 'object' ? owner.profile : owner)
 
-  return setSessionPinnedRemote(id, pinned, profile).then(
+  return setSessionPinnedRemote(id, pinned, owner).then(
     () => {
       // Deliberately NOT cleared here: a list request issued before this PATCH
       // can still land after the ack carrying the pre-write value. The guard
@@ -337,7 +341,7 @@ function reconcileInner(): void {
       // Removal owns the durable write; a separate unpin would race its
       // revision snapshot. Archive clears the pin in the same PATCH.
       if (!isSessionRemovalPending(id)) {
-        void writePin(id, false, profileFor(id)).catch(() => {})
+        void writePin(id, false, ownerFor(id)).catch(() => {})
       }
     }
   }
@@ -360,7 +364,7 @@ function reconcileInner(): void {
 
     pending.delete(id)
     mirrored.add(id)
-    void writePin(id, true, row.profile).catch(() => {
+    void writePin(id, true, sessionMutationScopeFromRow(row) ?? row.profile).catch(() => {
       // Let a later reconcile retry the mirror.
       mirrored.delete(id)
       pending.add(id)

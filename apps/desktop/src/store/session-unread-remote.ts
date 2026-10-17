@@ -24,6 +24,7 @@ import { atom } from 'nanostores'
 import { setSessionUnreadRemote } from '@/hermes'
 
 import { $sessions, setSessions } from './session'
+import { sessionMutationScopeFromRow } from './session-request-router'
 
 export const UNREAD_WRITE_GUARD_MS = 10_000
 
@@ -51,7 +52,7 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
   setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread } : r)))
 
   try {
-    await setSessionUnreadRemote(storedId, unread, row.profile)
+    await setSessionUnreadRemote(storedId, unread, sessionMutationScopeFromRow(row) ?? row.profile)
   } catch (err) {
     // Roll back visibly: the backend kept the old value.
     const guard2 = new Map($unreadWriteGuard.get())

@@ -10,7 +10,68 @@ vi.mock('./client', async importOriginal => ({
 import { hermesApi, setApiRequestConnection, setApiRequestProfile } from './client'
 import { deleteSession, renameSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote } from './sessions'
 
+const mutationContract = [
+  { action: 'archive', body: { archived: true }, method: 'PATCH', targetId: 'session-live' },
+  { action: 'unarchive', body: { archived: false }, method: 'PATCH', targetId: 'session-live' },
+  { action: 'delete', body: null, method: 'DELETE', targetId: 'session-live' },
+  { action: 'rename', body: { title: 'Renamed' }, method: 'PATCH', targetId: 'session-live' },
+  { action: 'pin', body: { pinned: true }, method: 'PATCH', targetId: 'session-root' },
+  { action: 'unread', body: { unread: true }, method: 'PATCH', targetId: 'session-live' }
+] as const satisfies readonly {
+  action: string
+  body: null | Readonly<Record<string, boolean | string>>
+  method: 'DELETE' | 'PATCH'
+  targetId: string
+}[]
+
 beforeEach(() => { vi.mocked(hermesApi).mockReset(); setApiRequestConnection('owner'); setApiRequestProfile('work') })
+
+it('all row-derived mutations preserve the listed route binding, including lineage-root pinning', async () => {
+  const owner = {
+    connectionId: 'same-id',
+    profile: 'default',
+    sessionRouteBinding: 'binding-a',
+    sessionRouteId: 'session-live'
+  }
+
+  const calls = [
+    () => setSessionArchived('session-live', true, owner),
+    () => setSessionArchived('session-live', false, owner),
+    () => deleteSession('session-live', owner),
+    () => renameSession('session-live', 'Renamed', owner),
+    () => setSessionPinnedRemote('session-root', true, owner),
+    () => setSessionUnreadRemote('session-live', true, owner)
+  ]
+
+  vi.mocked(hermesApi).mockImplementation(async request => {
+    if (!request.method || request.method === 'GET') {
+      return { exists: true, runtime_generation: 1, runtime_revision: 1 } as never
+    }
+
+    return { ok: true } as never
+  })
+
+  for (const mutate of calls) {
+    await mutate()
+  }
+
+  const writes = vi.mocked(hermesApi).mock.calls.map(([request]) => request).filter(request => request.method)
+
+  expect(writes).toHaveLength(mutationContract.length)
+
+  mutationContract.forEach((mutation, index) => {
+    const request = writes[index]
+
+    expect(request).toMatchObject({ ...owner, method: mutation.method })
+    expect(new URL(request.path, 'http://localhost').pathname).toBe(`/api/sessions/${mutation.targetId}`)
+
+    if (mutation.body) {
+      expect(request.body).toMatchObject({ ...mutation.body, profile: 'default' })
+    } else {
+      expect(request.body).toBeUndefined()
+    }
+  })
+})
 
 it('concurrent equal sidebar edits share the missing-snapshot verdict on older standalone servers', async () => {
   vi.mocked(hermesApi).mockImplementation(async request => {

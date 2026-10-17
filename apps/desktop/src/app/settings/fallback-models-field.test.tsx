@@ -12,7 +12,9 @@ beforeAll(() => {
 const getGlobalModelOptions = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelOptions: () => getGlobalModelOptions()
+  getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
+  profileScopeKey: (scope: { connectionId?: string; profile?: string }) =>
+    `${scope.connectionId ?? ''}::${scope.profile ?? 'default'}`
 }))
 
 // Load once at module scope so no test's 15s budget pays the heavy transform
@@ -34,12 +36,12 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderField(value: unknown, onChange = vi.fn()) {
+function renderField(value: unknown, onChange = vi.fn(), scope?: { connectionId: string; profile: string }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   render(
     <QueryClientProvider client={client}>
-      <FallbackModelsField onChange={onChange} value={value} />
+      <FallbackModelsField onChange={onChange} scope={scope} value={value} />
     </QueryClientProvider>
   )
 
@@ -78,6 +80,14 @@ describe('FallbackModelsField', () => {
     expect(screen.getByText('Add fallback')).toBeTruthy()
     expect(screen.queryByText(/\[object Object\]/)).toBeNull()
     await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
+  })
+
+  it('loads fallback choices from the selected settings owner', async () => {
+    const scope = { connectionId: 'gateway-a', profile: 'research' }
+
+    await renderField([], vi.fn(), scope)
+
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledWith(undefined, scope))
   })
 
   it('removing a row emits the remaining entries with their routing keys intact', async () => {

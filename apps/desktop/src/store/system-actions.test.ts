@@ -1,70 +1,68 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type * as HermesApi from '@/hermes'
-import { registerGatewayReconnect } from '@/store/gateway-reconnect'
-
-// The REST layer is the only seam these flows own; the confirm dialog and
-// notifications stay real. getStatus answers a standalone gateway so
-// confirmSharedGatewayRestart() takes the silent no-dialog path.
-const getActionStatus = vi.fn()
-const restartGateway = vi.fn()
-
-vi.mock('@/hermes', async importOriginal => ({
-  ...(await importOriginal<typeof HermesApi>()),
-  getActionStatus: (name: string, timeout?: number) => getActionStatus(name, timeout),
-  getStatus: async () => ({}),
-  restartGateway: () => restartGateway()
+const { confirm, getActionStatus, getStatus, notify, notifyError, restartGateway } = vi.hoisted(() => ({
+  confirm: vi.fn(),
+  getActionStatus: vi.fn(),
+  getStatus: vi.fn(),
+  notify: vi.fn(),
+  notifyError: vi.fn(),
+  restartGateway: vi.fn()
 }))
 
-import { runGatewayRestart, watchGatewayRestartOutcome } from './system-actions'
+vi.mock('@/hermes', () => ({ getActionStatus, getStatus, restartGateway }))
+vi.mock('@/store/confirm', () => ({ confirm }))
+vi.mock('@/store/notifications', () => ({ notify, notifyError }))
 
-// Mirrors POLL_INTERVAL_MS × POLL_ATTEMPTS in system-actions.ts: the poll
-// window the flows own. Driven as one advance so timers AND promise
-// microtasks interleave the way the real loop runs.
+import { registerGatewayReconnect } from '@/store/gateway-reconnect'
+
+import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from './system-actions'
+
 const POLL_WINDOW_MS = 18 * 1_200
-
 const settlePollWindow = () => vi.advanceTimersByTimeAsync(POLL_WINDOW_MS + 1_000)
 
-beforeEach(() => {
-  vi.useFakeTimers()
-  restartGateway.mockResolvedValue({ ok: true, pid: 4242, name: 'gateway-restart' })
-})
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: Error) => void
 
-afterEach(() => {
-  vi.useRealTimers()
-  vi.clearAllMocks()
-})
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes
+    reject = no
+  })
 
-// A backend that is down for the restart itself: polls refuse until `healthy`
-// attempts in, then answer — the exact window #123111 reports. The status
-// endpoint 404s for an action the (new) registry never saw and errors while
-// the backend is down, so a REFUSAL is "no answer", not a terminal verdict.
+  return { promise, reject, resolve }
+}
+
 const backendDownUntil = (healthyAt: number) => {
   let polls = 0
 
   getActionStatus.mockImplementation(async () => {
     polls += 1
 
-    if (polls < healthyAt) {
-      throw new Error('fetch failed')
-    }
+    if (polls < healthyAt) {throw new Error('fetch failed')}
 
     return { name: 'gateway-restart', running: true, exit_code: null, pid: 4242, lines: [] }
   })
 }
 
-// A permanently dead backend: every poll for the whole window is refused.
 const refusedBackend = () => getActionStatus.mockRejectedValue(new Error('fetch failed'))
 
-// A replacement process whose in-memory action registry never saw this action
-// id (the registry died with the process the restart replaced).
 const freshProcess = () =>
   getActionStatus.mockResolvedValue({ name: 'gateway-restart', running: false, exit_code: null, pid: null, lines: [] })
 
+afterEach(() => {
+  vi.useRealTimers()
+  vi.resetAllMocks()
+})
+
 describe('runGatewayRestart during the restart window (#123111)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    getStatus.mockResolvedValue({})
+    restartGateway.mockResolvedValue({ ok: true, pid: 4242, name: 'gateway-restart' })
+  })
+
   it('resolves success when the status poll is refused mid-window, then answers', async () => {
     backendDownUntil(4)
-
     const outcome = runGatewayRestart()
 
     await settlePollWindow()
@@ -74,28 +72,22 @@ describe('runGatewayRestart during the restart window (#123111)', () => {
 
   it('resolves success when a fresh process reports the action unknown', async () => {
     freshProcess()
-
     const outcome = runGatewayRestart()
 
     await settlePollWindow()
     await expect(outcome).resolves.toBe(true)
   })
 
-  it('fails when the poll window is refused end to end — the restart never confirmed', async () => {
+  it('fails when the poll window is refused end to end', async () => {
     refusedBackend()
-
     const outcome = runGatewayRestart()
 
     await settlePollWindow()
-    // Draining the whole budget with zero answered polls must NOT resolve
-    // success: the callers' failure banners stay up and the user sees the
-    // failure toast instead of a cleared banner over a down gateway.
     await expect(outcome).resolves.toBe(false)
   })
 
-  it('still surfaces a real failure: a recorded non-zero exit', async () => {
+  it('still surfaces a recorded non-zero exit', async () => {
     getActionStatus.mockResolvedValue({ name: 'gateway-restart', running: false, exit_code: 1, pid: null, lines: [] })
-
     const outcome = runGatewayRestart()
 
     await settlePollWindow()
@@ -109,7 +101,6 @@ describe('runGatewayRestart during the restart window (#123111)', () => {
 
     try {
       const outcome = runGatewayRestart()
-
       await settlePollWindow()
       await expect(outcome).resolves.toBe(true)
       expect(handler).toHaveBeenCalledOnce()
@@ -125,7 +116,6 @@ describe('runGatewayRestart during the restart window (#123111)', () => {
 
     try {
       const outcome = runGatewayRestart()
-
       await settlePollWindow()
       await expect(outcome).resolves.toBe(false)
       expect(handler).toHaveBeenCalledOnce()
@@ -135,7 +125,11 @@ describe('runGatewayRestart during the restart window (#123111)', () => {
   })
 })
 
-describe('watchGatewayRestartOutcome (backend-spawned restart)', () => {
+describe('watchGatewayRestartOutcome', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
   it('resolves true across a refused-then-answered poll window and reconnects', async () => {
     backendDownUntil(4)
     const handler = vi.fn()
@@ -143,7 +137,6 @@ describe('watchGatewayRestartOutcome (backend-spawned restart)', () => {
 
     try {
       const outcome = watchGatewayRestartOutcome()
-
       await settlePollWindow()
       await expect(outcome).resolves.toBe(true)
       expect(handler).toHaveBeenCalledOnce()
@@ -154,7 +147,6 @@ describe('watchGatewayRestartOutcome (backend-spawned restart)', () => {
 
   it('resolves false when the poll window is refused end to end', async () => {
     refusedBackend()
-
     const outcome = watchGatewayRestartOutcome()
 
     await settlePollWindow()
@@ -163,10 +155,89 @@ describe('watchGatewayRestartOutcome (backend-spawned restart)', () => {
 
   it('resolves false on a recorded non-zero exit', async () => {
     getActionStatus.mockResolvedValue({ name: 'gateway-restart', running: false, exit_code: 1, pid: null, lines: [] })
-
     const outcome = watchGatewayRestartOutcome()
 
     await settlePollWindow()
     await expect(outcome).resolves.toBe(false)
+  })
+})
+
+describe('runGatewayRestart owner lifetime', () => {
+  beforeEach(() => {
+    getStatus.mockResolvedValue({ gateway_shared_with: ['default', 'research'] })
+    getActionStatus.mockResolvedValue({ running: false, exit_code: 0 })
+    restartGateway.mockResolvedValue({ name: 'gateway-restart' })
+  })
+
+  it('does not restart after its owner changes while confirmation is open', async () => {
+    const approval = deferred<boolean>()
+    let current = true
+    confirm.mockReturnValue(approval.promise)
+
+    const pending = runGatewayRestart({ connectionId: 'owner-a', profile: 'default' }, () => current)
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalled())
+    current = false
+    approval.resolve(true)
+
+    await expect(pending).resolves.toBe(false)
+    expect(restartGateway).not.toHaveBeenCalled()
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('suppresses a restart rejection after its owner changes', async () => {
+    const restart = deferred<never>()
+    let current = true
+    getStatus.mockResolvedValue({ gateway_shared_with: null })
+    restartGateway.mockReturnValue(restart.promise)
+
+    const pending = runGatewayRestart({ connectionId: 'owner-a', profile: 'default' }, () => current)
+    await vi.waitFor(() => expect(restartGateway).toHaveBeenCalled())
+    current = false
+    restart.reject(new Error('owner A stopped'))
+
+    await expect(pending).resolves.toBe(false)
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('keeps restart progress visible while another restart is still pending', async () => {
+    const first = deferred<never>()
+    const second = deferred<never>()
+    getStatus.mockResolvedValue({ gateway_shared_with: null })
+    restartGateway.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    const firstRestart = runGatewayRestart({ connectionId: 'owner-a', profile: 'default' })
+    const secondRestart = runGatewayRestart({ connectionId: 'owner-b', profile: 'default' })
+    await vi.waitFor(() => expect(restartGateway).toHaveBeenCalledTimes(2))
+    expect($gatewayRestarting.get()).toBe(true)
+
+    first.reject(new Error('owner A stopped'))
+    await expect(firstRestart).resolves.toBe(false)
+    expect($gatewayRestarting.get()).toBe(true)
+
+    second.reject(new Error('owner B stopped'))
+    await expect(secondRestart).resolves.toBe(false)
+    expect($gatewayRestarting.get()).toBe(false)
+  })
+
+  it('does not reconnect the active gateway after the restart owner changes', async () => {
+    const restart = deferred<never>()
+    const handler = vi.fn()
+    const off = registerGatewayReconnect(handler)
+    let current = true
+    getStatus.mockResolvedValue({ gateway_shared_with: null })
+    restartGateway.mockReturnValue(restart.promise)
+
+    try {
+      const pending = runGatewayRestart({ connectionId: 'owner-a', profile: 'default' }, () => current)
+      await vi.waitFor(() => expect(restartGateway).toHaveBeenCalled())
+      current = false
+      restart.reject(new Error('owner A stopped'))
+
+      await expect(pending).resolves.toBe(false)
+      expect(handler).not.toHaveBeenCalled()
+    } finally {
+      off()
+    }
   })
 })

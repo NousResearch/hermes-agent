@@ -80,7 +80,9 @@ const {
   SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
-const { requestForSessionProfile, sessionRpcNeedsProfileRoute } = await import('./session-request-router')
+const { requestForSessionProfile, sessionMutationScopeFromRow, sessionOwnerRouteFromRow, sessionRpcNeedsProfileRoute } =
+  await import('./session-request-router')
+
 const { $connectionsRegistry } = await import('./connection-registry-state')
 
 function installDesktop(): void {
@@ -155,6 +157,24 @@ describe('$activeGatewayRoute (registry-owned active profile)', () => {
     pruneSecondaryGateways(new Set())
 
     expect(activeGatewayProfileKey()).toBe('default')
+  })
+})
+
+describe('listed session route bindings', () => {
+  it('pins legacy bindings only for REST mutations', () => {
+    const row = { _desktop_route_binding: 'binding-a', id: 'session-live', profile: 'worker' }
+
+    expect(sessionOwnerRouteFromRow(row)).toBeUndefined()
+    expect(sessionMutationScopeFromRow(row)).toEqual({
+      connectionId: null,
+      profile: 'worker',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'session-live'
+    })
+  })
+
+  it('leaves unbound legacy rows on their existing profile fallback', () => {
+    expect(sessionMutationScopeFromRow({ id: 'session-live', profile: 'worker' })).toBeUndefined()
   })
 })
 

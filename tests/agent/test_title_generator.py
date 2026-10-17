@@ -898,3 +898,44 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestDeriveTitleReadsPastMarkdown:
+    """The instant title names the topic, never the markup around it.
+
+    Fence delimiters (12 production sessions were named ``` / ```json, colliding up to "#10"),
+    images (a session named after an image URL), headings, list and quote markers, links,
+    inline code and emphasis are syntax, not intent. Delimiters that are not markup (``a * b``,
+    ``snake_case``, ``*args``) must come through untouched.
+    """
+
+    @pytest.mark.parametrize("message, expected", [
+        ('```json\n{"a": 1}\n```', '{"a": 1}'),
+        ("~~~python\nprint(1)\n~~~", "print(1)"),
+        ("```\n```\nwhy is this failing?", "why is this failing?"),
+        ("Fix the login button\n```js\ncode\n```", "Fix the login button"),
+        ("```notafence but prose", "```notafence but prose"),  # only a line that is NOTHING but a delimiter is a fence
+        ("```\n```", None),
+        ("![screenshot](https://x.example/a.png)\nwhy does this crash?", "screenshot"),
+        ("![](https://img.example/a.png)", None),  # alt-less image: no topic, not a URL title
+        ("![](https://img.example/a.png)\nwhy does this crash?", "why does this crash?"),
+        ("# Plan for the refactor\nbody", "Plan for the refactor"),
+        ("> quoted thing\nmore", "quoted thing"),
+        ("- [ ] first item\n- second", "first item"),
+        ("1. install deps\n2. run it", "install deps"),
+        ("**urgent**: fix the `build` step in [CI](https://ci.example/run/1) please", "urgent: fix the build step in CI please"),
+        ("***really*** ~~old~~ __init__.py", "really old init.py"),
+    ])
+    def test_markup_is_stripped_from_the_derived_title(self, message, expected):
+        from agent.title_generator import derive_title
+
+        assert derive_title(message) == expected
+
+    @pytest.mark.parametrize("message", [
+        "a * b = c and 2*3", "use *args and **kwargs", "snake_case_name and file_name.py",
+        "x = arr[0] and (y)", "#hashtag not heading", "see https://example.com/foo for details",
+    ])
+    def test_non_markup_delimiters_survive(self, message):
+        from agent.title_generator import derive_title
+
+        assert derive_title(message) == message

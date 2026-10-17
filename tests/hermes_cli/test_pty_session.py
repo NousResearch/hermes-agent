@@ -736,3 +736,55 @@ async def test_reap_keeps_live_attached_session():
     await reg.close_all()
 
 
+@pytest.mark.asyncio
+async def test_live_key_for_token_returns_the_pty_holding_the_resume_target(process_tree):
+    """#136713: a same-tab reattach whose canonical resume advanced along the lineage
+    (the running turn forked a child session) resolves to the PTY the tab already
+    owns — the one whose process tree holds the advanced target's lease."""
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    owned = PtySession("token\0\0session-a", PidBridge([b""], 4242), buffer_cap=1024, read_timeout=0.01)
+    unrelated = PtySession("other-token\0\0session-b", PidBridge([b""], 5151), buffer_cap=1024, read_timeout=0.01)
+    for session in (owned, unrelated):
+        await session.start()
+        session.detach(None)
+        reg._sessions[session.key] = session
+
+    assert reg.live_key_for_token("token", profile="", holder_pid=4243) == "token\0\0session-a"
+    # A target whose lease lives outside this tab's terminal is a different
+    # conversation, and an idle chat holds no lease at all: no live key.
+    assert reg.live_key_for_token("token", profile="", holder_pid=9000) is None
+    assert reg.live_key_for_token("token", profile="", holder_pid=None) is None
+    # Another tab's terminal is never this token's live key.
+    assert reg.live_key_for_token("other-token", profile="", holder_pid=4243) is None
+    # A profile switch keeps the token but changes the key's profile segment.
+    assert reg.live_key_for_token("token", profile="beta", holder_pid=4243) is None
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_lineage_advance_reattach_reuses_the_running_pty(process_tree):
+    """The /api/pty keep-alive sequence with a lineage-advanced reattach: the close
+    paths must not touch the terminal the tab already owns, and the attach must
+    reuse it instead of spawning a fresh TUI that shows the turn as interrupted."""
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    running = PtySession("token\0\0session-a", PidBridge([b""], 4242), buffer_cap=1024, read_timeout=0.01)
+    await running.start()
+    reg._sessions[running.key] = running
+    running.detach(None)  # the tab switched dashboard sections mid-turn
+
+    # The reattach re-resolves the resume target to the newest leaf, session-b,
+    # whose lease holder (4243) lives inside this tab's PTY.
+    key = reg.live_key_for_token("token", profile="", holder_pid=4243) or "token\0\0session-b"
+    await reg.close_other_sessions("token", keep_key=key)
+    await reg.close_orphaned_sessions("session-b", keep_key=key, holder_pid=4243)
+    session, created = await reg.attach_or_spawn(key, spawn=lambda: FakeBridge([b""]))
+
+    assert not created and session is running
+    assert not running.bridge.closed
+    await reg.close_all()
+
+

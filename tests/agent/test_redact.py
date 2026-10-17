@@ -104,6 +104,42 @@ class TestKnownPrefixes:
         ]:
             assert redact_sensitive_text(benign) == benign
 
+    def test_token_after_json_escape_backslash_still_masks(self):
+        """A credential at the start of the next logical line inside an
+        escaped-JSON string value sits right after the two-byte ``\\n`` escape
+        (backslash + alnum ``n``). The leading-boundary guard must not let that
+        alphanumeric byte swallow the mask — JSONL transcripts are exactly this
+        shape (#135822). Every ``\\<letter>`` escape form gets the same relief."""
+        ghp = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        sk = "sk-" + "a1B2c3D4e5F6g7H8i9J0kKlM"
+        for escaped in ('"line1\\n' + ghp + ' tail"', '"line1\\t' + sk + ' tail"'):
+            result = redact_sensitive_text(escaped, force=True)
+            assert ghp not in result and sk not in result, result
+
+    def test_token_after_unicode_and_hex_escapes_still_masks(self):
+        """ensure_ascii JSON bodies store non-ASCII text as ``\\uXXXX`` and
+        control characters as ``\\xHH``; a credential right after such an
+        escape sits behind hex digits, which the plain alnum guard also
+        swallowed (#135822)."""
+        ghp = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        sk = "sk-" + "a1B2c3D4e5F6g7H8i9J0kKlM"
+        for escaped in ('"\\u5bc6\\u94a5' + ghp + '"', '"\\u000a' + ghp + '"',
+                        '"\\x0a' + sk + '"'):
+            result = redact_sensitive_text(escaped, force=True)
+            assert ghp not in result and sk not in result, result
+
+    def test_leading_guard_still_blocks_plain_embedded_prefixes(self):
+        """The escape relief is narrow: a plain alphanumeric predecessor still
+        blocks the match (embedded identifiers, prose keywords) — the guard's
+        original job is unchanged."""
+        for benign in [
+            "myglpat-AbCdEfGhIjKlMnOpQrSt",
+            "tokenizer: cl100k_base",
+            "Secretary: J.Smith",
+            "X" + "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+        ]:
+            assert redact_sensitive_text(benign, force=True) == benign
+
     def test_agentmail_prefix_needs_a_key_shaped_hex_suffix(self):
         """``am_`` is a common identifier prefix; only the documented hex key body is a secret (#10983)."""
         for benign in ["schema.am_example_identifier_123", "path/to/am_monthly_report.sql"]:

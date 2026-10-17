@@ -24,6 +24,29 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 class TestCronCommandLifecycle:
 
+    def test_corrupt_store_reports_a_clean_error(self, tmp_cron_dir, capsys):
+        """A malformed jobs file must remain fail-closed without a traceback (#136723)."""
+        jobs_file = tmp_cron_dir / "cron" / "jobs.json"
+        jobs_file.parent.mkdir()
+        jobs_file.write_text('{"jobs": ', encoding="utf-8")
+
+        rc = cron_command(Namespace(cron_command="list", all=False, json=False))
+
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "Error: Cron database corrupted and unrepairable:" in captured.err
+        assert "Traceback" not in captured.err
+
+    @pytest.mark.parametrize("verb", ["list", "tick", "run"])
+    def test_unrelated_handler_runtime_error_propagates(self, monkeypatch, capsys, verb):
+        def fail(_args):
+            raise RuntimeError("handler bug")
+
+        monkeypatch.setitem(cron_cli._CRON_SUBCOMMANDS, verb, fail)
+        with pytest.raises(RuntimeError, match="handler bug"):
+            cron_command(Namespace(cron_command=verb))
+        assert capsys.readouterr().err == ""
+
     def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Daily report", schedule="every 1h")
         parser = argparse.ArgumentParser(prog="hermes")

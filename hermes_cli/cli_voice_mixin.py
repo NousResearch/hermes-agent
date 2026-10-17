@@ -505,9 +505,7 @@ class CLIVoiceMixin:
 
         with self._voice_lock:
             self._voice_mode = True
-        if _config_section("voice").get("auto_tts", False):
-            with self._voice_lock:
-                self._voice_tts = True
+        self._apply_voice_auto_tts_default()
 
         # The voice-mode instruction is injected as a user message prefix (not a system
         # prompt change) to avoid invalidating the prompt cache — see _voice_message_prefix.
@@ -529,6 +527,21 @@ class CLIVoiceMixin:
             _cprint(f"  {_DIM}{_stop_hint}{_RST}")
         _cprint(f"  {_DIM}{t('cli.voice.tts_toggle_hint')}{_RST}")
         _cprint(f"  {_DIM}{t('cli.voice.disable_hint')}{_RST}")
+
+    def _apply_voice_auto_tts_default(self) -> None:
+        """Enable voice TTS when configured, without overriding explicit state.
+
+        Shared by manual ``/voice`` entry and the wake-word path, so a wake-triggered
+        turn speaks its reply too. ``is_truthy_value`` mirrors ``_voice_beeps_enabled``
+        and reads a quoted YAML ``auto_tts: "false"`` as False, which ``bool()`` would not.
+        """
+        try:
+            from utils import is_truthy_value
+            if is_truthy_value(_config_section("voice").get("auto_tts"), default=False):
+                with self._voice_lock:
+                    self._voice_tts = True
+        except Exception:
+            pass
 
     def _typed_voice_stop(self, user_input) -> bool:
         """Typed bare stop phrase during an active voice chat ends the chat (mirrors the spoken
@@ -711,6 +724,12 @@ class CLIVoiceMixin:
         # Single-utterance capture; VAD auto-stop transcribes and queues for process_loop.
         with self._voice_lock:
             self._voice_mode = True
+        # This path never goes through _enable_voice_mode, so apply the configured
+        # auto-TTS default here as well — otherwise wake turns transcribe but stay silent.
+        self._apply_voice_auto_tts_default()
+        if self._voice_tts:
+            # Warm the engine so the first reply isn't dead air, matching _enable_voice_mode.
+            self._tts_lease_async(True)
         self._voice_continuous = False
         try:
             self._voice_start_recording()

@@ -33,7 +33,9 @@ from hermes_cli.profile_distribution import (
     _stage_source,
     check_hermes_requires,
     describe_distribution,
+    diff_env_requirements,
     install_distribution,
+    load_changelogs,
     plan_install,
     read_manifest,
     update_distribution,
@@ -142,6 +144,117 @@ class TestManifestParsing:
         parsed = read_manifest(tmp_path)
         assert parsed.name == "rt"
         assert parsed.env_requires[0].name == "FOO"
+
+
+# ===========================================================================
+# Update change summary — env_requires diff
+# ===========================================================================
+
+
+class TestEnvRequirementsDiff:
+
+    def test_added_removed_changed(self):
+        old = [
+            EnvRequirement(name="KEEP", description="same"),
+            EnvRequirement(name="DROP", description="going away"),
+            EnvRequirement(name="FLIP", required=True),
+        ]
+        new = [
+            EnvRequirement(name="KEEP", description="same"),
+            EnvRequirement(name="ADD", description="brand new"),
+            EnvRequirement(name="FLIP", required=False, default="x"),
+        ]
+        diff = diff_env_requirements(old, new)
+        assert [e.name for e in diff["added"]] == ["ADD"]
+        assert [e.name for e in diff["removed"]] == ["DROP"]
+        assert [(o.name, n.name) for o, n in diff["changed"]] == [("FLIP", "FLIP")]
+
+    def test_no_changes_is_all_empty(self):
+        env = [EnvRequirement(name="A"), EnvRequirement(name="B")]
+        assert diff_env_requirements(env, list(env)) == {"added": [], "removed": [], "changed": []}
+
+    def test_results_sorted_by_name(self):
+        diff = diff_env_requirements([], [EnvRequirement(name="Z"), EnvRequirement(name="A")])
+        assert [e.name for e in diff["added"]] == ["A", "Z"]
+
+
+# ===========================================================================
+# Update change summary — changelogs (incl. hostile-distribution hardening)
+# ===========================================================================
+
+
+class TestLoadChangelogs:
+
+    @staticmethod
+    def _write(root: Path, name: str, text: str = "notes") -> Path:
+        cl = root / "changelogs"
+        cl.mkdir(exist_ok=True)
+        p = cl / name
+        p.write_text(text)
+        return p
+
+    def test_range_excludes_old_includes_new_sorted(self, tmp_path):
+        # Update 0.4.0 -> 0.5.3: show 0.4.x and everything up to and incl. 0.5.3,
+        # sorted; skip the version you were on (0.4.0) and anything newer (0.6.0).
+        for v in ("0.4.0", "0.4.1", "0.5.0", "0.5.3", "0.6.0"):
+            self._write(tmp_path, f"{v}.md", f"notes {v}")
+        got = load_changelogs(tmp_path, "0.4.0", "0.5.3")
+        assert [v for v, _ in got] == ["0.4.1", "0.5.0", "0.5.3"]
+        assert got[0][1] == "notes 0.4.1"
+
+    def test_accepts_v_prefix_and_txt(self, tmp_path):
+        self._write(tmp_path, "v0.5.1.txt", "one")
+        self._write(tmp_path, "v0.5.2.md", "two")
+        got = load_changelogs(tmp_path, "0.5.0", "0.5.2")
+        assert [v for v, _ in got] == ["0.5.1", "0.5.2"]
+
+    def test_no_dir_or_no_version_change_is_empty(self, tmp_path):
+        assert load_changelogs(tmp_path, "0.1.0", "0.2.0") == []
+        self._write(tmp_path, "0.5.3.md")
+        assert load_changelogs(tmp_path, "0.5.3", "0.5.3") == []   # no bump → nothing
+
+    def test_unparseable_filenames_ignored(self, tmp_path):
+        self._write(tmp_path, "0.5.1.md", "ok")
+        self._write(tmp_path, "notes.md", "ignore")
+        self._write(tmp_path, "README.md", "ignore")
+        assert [v for v, _ in load_changelogs(tmp_path, "0.5.0", "0.6.0")] == ["0.5.1"]
+
+    def test_symlink_entry_is_not_followed(self, tmp_path):
+        # A symlinked changelog must not let a hostile distribution read an
+        # arbitrary file off the host.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        cl = tmp_path / "changelogs"
+        cl.mkdir()
+        try:
+            (cl / "0.5.1.md").symlink_to(secret)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        assert load_changelogs(tmp_path, "0.5.0", "0.6.0") == []
+
+    def test_symlinked_changelogs_dir_is_ignored(self, tmp_path):
+        real = tmp_path / "elsewhere"
+        real.mkdir()
+        (real / "0.5.1.md").write_text("notes")
+        try:
+            (tmp_path / "changelogs").symlink_to(real, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        assert load_changelogs(tmp_path, "0.5.0", "0.6.0") == []
+
+    def test_oversized_file_is_capped(self, tmp_path):
+        from hermes_cli.profile_distribution import _CHANGELOG_MAX_BYTES
+        self._write(tmp_path, "0.5.1.md", "A" * (_CHANGELOG_MAX_BYTES + 5000))
+        (_v, text), = load_changelogs(tmp_path, "0.5.0", "0.6.0")
+        assert len(text) == _CHANGELOG_MAX_BYTES
+
+    def test_contents_are_sanitized_for_terminal(self):
+        # Contents are never executed; and the printer must defang escape
+        # sequences so a changelog can't drive the terminal.
+        from hermes_cli.profile_cmd import _printable
+        cleaned = _printable("line\x1b[2Jone\x07\x00two")
+        assert "\x1b" not in cleaned and "\x07" not in cleaned and "\x00" not in cleaned
+        assert "one" in cleaned and "two" in cleaned
 
 
 # ===========================================================================

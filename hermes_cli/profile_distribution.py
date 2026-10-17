@@ -177,6 +177,84 @@ def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
     return mf_path
 
 
+def diff_env_requirements(
+    old: list[EnvRequirement], new: list[EnvRequirement]
+) -> dict[str, list]:
+    """Compare two ``env_requires`` lists by variable name.
+
+    Returns ``{"added": [...], "removed": [...], "changed": [(old, new), ...]}``,
+    sorted by name. ``changed`` holds pairs whose ``required``, ``default``, or
+    ``description`` differ. Used on ``profile update`` to tell the user which
+    environment variables to add, remove, or review in their ``.env``.
+    """
+    old_by = {e.name: e for e in old}
+    new_by = {e.name: e for e in new}
+    added = sorted((new_by[n] for n in new_by.keys() - old_by.keys()), key=lambda e: e.name)
+    removed = sorted((old_by[n] for n in old_by.keys() - new_by.keys()), key=lambda e: e.name)
+    changed = []
+    for name in sorted(old_by.keys() & new_by.keys()):
+        o, n = old_by[name], new_by[name]
+        if (o.required, o.default, o.description) != (n.required, n.default, n.description):
+            changed.append((o, n))
+    return {"added": added, "removed": removed, "changed": changed}
+
+
+CHANGELOG_DIRNAME = "changelogs"
+_CHANGELOG_EXTS = (".md", ".txt")
+_CHANGELOG_MAX_BYTES = 64 * 1024     # per file: release notes, not a payload
+_CHANGELOG_MAX_FILES = 50            # bound output even if the dir is flooded
+
+
+def load_changelogs(profile_dir: Path, old_version: str, new_version: str) -> list[tuple[str, str]]:
+    """Return ``(version, text)`` for the changelog files that apply to an update.
+
+    A distribution may ship per-version release notes as
+    ``changelogs/<version>.md`` (or ``.txt``; a leading ``v`` is accepted, e.g.
+    ``changelogs/v1.2.0.md``). On update we show every file whose version is newer
+    than the installed one and no newer than the one just installed — so a user
+    who skipped releases still sees each release's notes, oldest first.
+
+    The ``changelogs/`` directory ships inside the distribution and so is
+    untrusted. This reader never executes its contents (it only returns text to
+    be printed) and is hardened against a hostile distribution: symlinks are not
+    followed (no arbitrary-file read outside the profile), each file is read up to
+    a byte cap and the file count is bounded (no terminal/memory flood), and
+    undecodable bytes are replaced. The returned text is still untrusted — the
+    caller must strip control/escape characters before writing it to a terminal.
+    """
+    changelog_dir = Path(profile_dir) / CHANGELOG_DIRNAME
+    # Don't follow a symlinked changelogs/ (it could point anywhere).
+    if changelog_dir.is_symlink() or not changelog_dir.is_dir():
+        return []
+    try:
+        lo, hi = _parse_semver(old_version), _parse_semver(new_version)
+    except DistributionError:
+        return []
+    found: list[tuple[tuple[int, int, int], Path]] = []
+    for path in changelog_dir.iterdir():
+        # Regular files only: a symlink entry could resolve to an arbitrary file.
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.suffix.lower() not in _CHANGELOG_EXTS:
+            continue
+        try:
+            ver = _parse_semver(path.stem)
+        except DistributionError:
+            continue
+        if lo < ver <= hi:
+            found.append((ver, path))
+    found.sort(key=lambda t: t[0])
+    out: list[tuple[str, str]] = []
+    for _ver, path in found[:_CHANGELOG_MAX_FILES]:
+        try:
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as fh:
+                text = fh.read(_CHANGELOG_MAX_BYTES)
+        except OSError:
+            continue
+        out.append((path.stem.lstrip("v"), text))
+    return out
+
+
 # Version check
 
 _VERSION_OP_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")

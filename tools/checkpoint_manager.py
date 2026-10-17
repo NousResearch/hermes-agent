@@ -145,6 +145,16 @@ DEFAULT_EXCLUDES = [
     "*.7z",
     "*.rar",
     "*.iso",
+    # Virtual disk images — the largest class of accidentally-checkpointed
+    # data on homelab boxes (WSL/Docker/Hyper-V VHDX et al.).  Raw ``*.img``
+    # is deliberately absent: it also matches firmware images and small test
+    # fixtures, so it stays a per-workdir decision for the size gate.
+    "*.vhdx",
+    "*.vhd",
+    "*.qcow2",
+    "*.qcow",
+    "*.vmdk",
+    "*.evm",
     # Secrets
     ".env",
     ".env.*",
@@ -162,6 +172,13 @@ _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
+
+# Ceiling on the bytes one checkpoint may stage into the shared store's object
+# DB.  ``git add -A`` hashes first and ``max_file_size_mb`` only drops the
+# path from the index afterwards, so without this gate a workdir holding a
+# multi-TB disk image gets hashed into the store (and can fill the disk it
+# lives on) before any per-file cap runs.  0 disables the gate.
+_MAX_STAGE_BYTES: int = max(0, env_int("HERMES_CHECKPOINT_MAX_STAGE_BYTES", 10 * 1024**3))
 
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
@@ -447,6 +464,34 @@ def _list_project_refs(store: Path, working_dir: str) -> list[str]:
     return [r for r in out.splitlines() if r.strip()]
 
 
+def _untracked_bytes(store: Path, working_dir: str) -> Optional[int]:
+    """Total size of the files ``git add -A`` would newly hash, or None.
+
+    ``ls-files -o --exclude-standard`` honours the store's ``info/exclude``
+    and per-workdir ignore files, so already-ignored big data does not count
+    against the stage cap.  The listing never touches the object DB — it
+    costs milliseconds where the ``add`` it precedes could cost hours.
+    Returns None when the listing itself fails, leaving the caller's
+    behaviour unchanged.
+    """
+    ok, out, _ = _run_git(
+        ["ls-files", "-o", "--exclude-standard", "-z"],
+        store, working_dir,
+    )
+    if not ok:
+        return None
+    normalized = _normalize_path(working_dir)
+    total = 0
+    for raw in out.split("\0"):
+        if not raw:
+            continue
+        try:
+            total += (normalized / raw).stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def _unlink_quiet(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -506,6 +551,32 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     return legacy_root
 
 
+def _ensure_store_excludes(store: Path) -> None:
+    """Append any ``DEFAULT_EXCLUDES`` patterns an existing store is missing.
+
+    ``_init_store`` writes the exclude file only when it creates the store, so
+    patterns added later (e.g. the virtual-disk-image patterns) never reach
+    stores initialised before them.  This keeps them in sync idempotently;
+    lines a user appended by hand are preserved verbatim.
+    """
+    exclude = store / "info" / "exclude"
+    try:
+        current = exclude.read_text(encoding="utf-8-sig") if exclude.exists() else ""
+    except OSError:
+        return
+    present = {line.strip() for line in current.splitlines()}
+    missing = [pattern for pattern in DEFAULT_EXCLUDES if pattern not in present]
+    if not missing:
+        return
+    try:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with exclude.open("a", encoding="utf-8") as fh:
+            fh.write("".join(pattern + "\n" for pattern in missing))
+        logger.debug("Checkpoint store excludes gained: %s", ", ".join(missing))
+    except OSError:
+        logger.debug("Could not update checkpoint store excludes", exc_info=True)
+
+
 def _init_store(store: Path, working_dir: str) -> Optional[str]:
     """Initialise the shared shadow store if needed.  Returns error or None.
 
@@ -524,6 +595,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        _ensure_store_excludes(store)
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -1430,6 +1502,21 @@ class CheckpointManager:
         if _dir_file_count(working_dir) > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
+
+        # Pre-stage byte gate.  ``git add -A`` hashes the whole workdir into
+        # the store's object DB and ``max_file_size_mb`` only drops oversize
+        # paths from the index afterwards, so a workdir holding a huge disk
+        # image must be refused before the add starts (#137220).
+        if _MAX_STAGE_BYTES > 0:
+            staged_bytes = _untracked_bytes(store, working_dir)
+            if staged_bytes is not None and staged_bytes > _MAX_STAGE_BYTES:
+                logger.debug(
+                    "Checkpoint skipped: %s would stage %.1f GiB into the store (> %.0f GiB cap)",
+                    working_dir,
+                    staged_bytes / 1024**3,
+                    _MAX_STAGE_BYTES / 1024**3,
+                )
+                return False
 
         dir_hash = _project_hash(working_dir)
         index_file = _index_path(store, dir_hash)

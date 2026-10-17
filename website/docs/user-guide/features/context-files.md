@@ -67,6 +67,13 @@ This approach has two advantages over loading everything at startup:
 
 Each subdirectory is checked at most once per session. The discovery also walks up parent directories, so reading `backend/src/main.py` will discover `backend/AGENTS.md` even if `backend/src/` has no context file of its own.
 
+To turn progressive discovery off while keeping the startup context files, `SOUL.md` and memory, set `agent.subdirectory_hints` to `false` (default `true`). This suits restricted workers that need their role but must never receive instruction files from paths they reach. Unlike `--ignore-rules` (`skip_context_files`), it does not drop anything loaded at startup.
+
+```yaml
+agent:
+  subdirectory_hints: false   # boolean; only YAML false disables discovery
+```
+
 :::info
 Subdirectory context files go through the same [security scan](#security-prompt-injection-protection) as startup context files. Malicious files are blocked.
 :::

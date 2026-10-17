@@ -2238,14 +2238,14 @@ def _snapshot_primary_runtime(agent):
         })
 
 
-def _init_usage_state(agent):
+def _init_usage_state(agent, cfg):
     from agent.runtime_cwd import scope_terminal_cwd
     # Prefer the session's explicitly adopted workspace (a Desktop session created under the
     # spawn-time home pin records none; a picked/adopted one does — agent.session_cwd is set
     # at build time and on every workspace move). TERMINAL_CWD is the launch fallback.
     working_dir = getattr(agent, "session_cwd", None) or scope_terminal_cwd() or None
-    agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=working_dir, enabled=not agent.skip_context_files)
+    hints = not agent.skip_context_files and cfg_get(cfg, "agent", "subdirectory_hints") is not False
+    agent._subdirectory_hints = SubdirectoryHintTracker(working_dir=working_dir, enabled=hints)
     _set_defaults(agent, _USAGE_STATE)
 
 
@@ -2415,7 +2415,7 @@ def init_agent(
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
-    _init_usage_state(agent)
+    _init_usage_state(agent, _agent_cfg)
     _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)
     _snapshot_primary_runtime(agent)

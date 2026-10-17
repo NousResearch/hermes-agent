@@ -192,6 +192,9 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _existing_pp:
         _pp_parts.append(_existing_pp)
     child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
+    if _runtime_path is not None:
+        # PYTHONPATH skips .pth files, so the kernel activates editable packages itself.
+        child_env["HERMES_KERNEL_RUNTIME_SITE"] = _runtime_path
     return child_env
 
 

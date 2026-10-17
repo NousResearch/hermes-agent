@@ -1910,6 +1910,7 @@ export interface PingResult {
 }
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
+  allow_session_takeover?: boolean
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean

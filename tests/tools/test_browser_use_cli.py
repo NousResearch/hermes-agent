@@ -279,6 +279,108 @@ cat "$latch"
         assert drive() == drive(session="research") == "http://127.0.0.1:9401"
 
 
+class TestHarnessDaemonOwnership:
+    class _IPC:
+        IS_WINDOWS = False
+
+        def __init__(self, runtime):
+            self.runtime = runtime
+            self.live = set()
+
+        def pid_path(self, name):
+            return self.runtime / f"bu-{name}.pid"
+
+        def _sock_path(self, name):
+            return self.runtime / f"bu-{name}.sock"
+
+        def port_path(self, name):
+            return self.runtime / f"bu-{name}.port"
+
+        def identify(self, name, timeout=1.0):
+            return 4242 if name in self.live else None
+
+    def test_emergency_exit_stops_driven_daemon_with_no_active_sessions(self, monkeypatch):
+        """The atexit path must not gate Browser Use teardown on legacy sessions."""
+        from tools import browser_tool, browser_tool_lifecycle
+
+        monkeypatch.setattr(browser_tool, "_cleanup_done", False)
+        monkeypatch.setattr(browser_tool, "_active_sessions", {})
+        stopped = []
+        monkeypatch.setattr(bu_cli, "stop_harness_daemons", lambda: stopped.append(True))
+        monkeypatch.setattr(browser_tool_lifecycle, "_reap_orphaned_browser_sessions", lambda: None)
+        monkeypatch.setattr(browser_tool_lifecycle, "_stop_all_lightpanda", lambda: None)
+        monkeypatch.setattr(browser_tool_lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
+
+        browser_tool_lifecycle._emergency_cleanup_all_sessions()
+
+        assert stopped == [True]
+
+    def test_clean_exit_leaves_daemon_owned_by_other_live_process(self, tmp_path, monkeypatch):
+        ipc = self._IPC(tmp_path)
+        monkeypatch.setattr(bu_cli, "_harness_ipc", lambda: ipc)
+        owner_dir = bu_cli._harness_owner_dir(ipc, "shared")
+        owner_dir.mkdir(parents=True)
+        bu_cli._harness_owner_record(ipc, "shared").write_text("{}", encoding="utf-8")
+        # A distinct lease file can name the current (therefore provably live)
+        # process; liveness depends on the record, not the filename.
+        (owner_dir / "other.json").write_text(json.dumps({
+            "pid": os.getpid(), "started": bu_cli._process_generation(os.getpid()),
+        }), encoding="utf-8")
+        reloads = []
+        monkeypatch.setattr(bu_cli, "_run_harness_reload", reloads.append)
+        monkeypatch.setattr(bu_cli, "_driven_daemons", {"shared"})
+
+        bu_cli.stop_harness_daemons()
+
+        assert reloads == []
+        assert (owner_dir / "other.json").exists()
+
+    def test_dead_owner_is_reaped_on_next_startup_via_reload(self, tmp_path, monkeypatch):
+        """SIGKILL leaves a lease; the next Hermes process uses strict harness shutdown."""
+        ipc = self._IPC(tmp_path)
+        ipc.live.add("crashed")
+        monkeypatch.setattr(bu_cli, "_harness_ipc", lambda: ipc)
+        monkeypatch.setattr(bu_cli, "_owner_record_is_live", lambda _path: False)
+        owner_dir = bu_cli._harness_owner_dir(ipc, "crashed")
+        owner_dir.mkdir(parents=True)
+        (owner_dir / "999999.json").write_text('{"pid":999999,"started":1}', encoding="utf-8")
+        ipc.pid_path("crashed").write_text("4242", encoding="utf-8")
+        reloads = []
+        monkeypatch.setattr(bu_cli, "_run_harness_reload", reloads.append)
+
+        bu_cli.reap_orphaned_harness_daemons()
+
+        assert reloads == ["crashed"]
+        assert not (owner_dir / "999999.json").exists()
+
+    def test_dead_legacy_pid_and_socket_files_are_removed(self, tmp_path, monkeypatch):
+        ipc = self._IPC(tmp_path)
+        monkeypatch.setattr(bu_cli, "_harness_ipc", lambda: ipc)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
+        ipc.pid_path("stale").write_text("999999", encoding="utf-8")
+        ipc._sock_path("stale").write_text("stale", encoding="utf-8")
+
+        bu_cli.reap_orphaned_harness_daemons()
+
+        assert not ipc.pid_path("stale").exists()
+        assert not ipc._sock_path("stale").exists()
+
+    def test_last_owner_stop_preserves_cloud_shutdown_contract(self, tmp_path, monkeypatch):
+        """Last-owner teardown still invokes --reload, whose daemon performs strict cloud stop."""
+        ipc = self._IPC(tmp_path)
+        monkeypatch.setattr(bu_cli, "_harness_ipc", lambda: ipc)
+        monkeypatch.setattr(bu_cli, "_process_generation", lambda _pid: "generation")
+        monkeypatch.setattr(bu_cli, "_owner_record_is_live", lambda _path: True)
+        calls = []
+        monkeypatch.setattr(bu_cli, "_run_harness_reload", calls.append)
+        bu_cli._register_harness_owner("cloud")
+        monkeypatch.setattr(bu_cli, "_driven_daemons", {"cloud"})
+
+        bu_cli.stop_harness_daemons()
+
+        assert calls == ["cloud"]
+
+
 class TestVaultEgressRedaction:
     def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
         """A browser_exec page read must not return a vault-filled value to model history."""

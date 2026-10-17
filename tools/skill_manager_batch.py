@@ -151,7 +151,7 @@ def _snapshot_skills(names, snap_root, find_skill, create_targets):
             except Exception as exc:
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
         target = create_targets.get(nm) if pre is None else None
-        snapshots[nm] = (pre_dir, snap, target is not None and target.is_dir())
+        snapshots[nm] = (pre_dir or target, snap, target is not None and target.is_dir())
     return snapshots, None
 
 
@@ -205,7 +205,9 @@ def _rollback(snapshots, find_skill, results):
                    if r["name"] == nm and r["action"] == "write_file" and r["file_path"]]
         try:
             post = find_skill(nm)
-            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None,
+            # SKILL.md may have been removed, making the candidate undiscoverable while
+            # its directory still needs restoration (or cleanup for a failed create).
+            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else pre_dir,
                               dir_pre_existed, written)
         except Exception as exc:
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
@@ -265,6 +267,9 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
         results = []
         rollback_failed = False
         token = _smt._skill_gate_bypass.set(True)
+        scan_token = _smt._defer_security_scan.set(True)
+        pending = {"successes": [], "writes": []}
+        success_token = _smt._pending_skill_batch.set(pending)
         try:
             for i, op in enumerate(operations):
                 raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
@@ -274,7 +279,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                 except Exception:
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
-                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
+                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results + pending["writes"])
                     fail = {  # key order is wire-visible
                         "success": False,
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
@@ -292,13 +297,42 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                 # compact success row otherwise hides them and the model never sees a finding.
                 entry.update({k: parsed[k] for k in _ADVISORY_KEYS if parsed.get(k) is not None})
                 results.append(entry)
+            # A package-level scan during each edit rejects a safe remediation while later
+            # operations still hold the content being removed. The outer locks protect this
+            # final candidate through validation and rollback.
+            for nm in dict.fromkeys(names):
+                skill = _smt._find_skill(nm)
+                scan_error = (_smt._security_scan_skill(Path(skill["path"])) if skill else
+                              "Final batch candidate is missing.")
+                if scan_error:
+                    note, rollback_failed = _rollback(snapshots, _smt._find_skill, results + pending["writes"])
+                    return json.dumps({
+                        "success": False,
+                        "error": (f"Security scan blocked final batch candidate for '{nm}': "
+                                  f"{scan_error} — batch aborted, {note}."),
+                        "failed_index": len(operations),
+                        "completed_before_failure": len(results),
+                    }, ensure_ascii=False)
+        except BaseException:
+            # Handler/scan exceptions (including cancellation) must not strand provisional
+            # files or discard recovery snapshots before rollback has been attempted.
+            note, rollback_failed = _rollback(snapshots, _smt._find_skill, results + pending["writes"])
+            logger.error("skill_manage batch aborted: %s", note, exc_info=True)
+            raise
         finally:
+            _smt._pending_skill_batch.reset(success_token)
+            _smt._defer_security_scan.reset(scan_token)
             _smt._skill_gate_bypass.reset(token)
             if rollback_failed:
                 # Keep the snapshots so the operator can still recover by hand.
                 logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
             else:
                 shutil.rmtree(snap_root, ignore_errors=True)
+        # The transaction is committed once all final candidates pass; consumer callbacks
+        # cannot be rolled back. Preserve operation-level audit and lifecycle order,
+        # with the mutation locks still held and the provisional context already restored.
+        for success in pending["successes"]:
+            _smt._record_success(**success)
     # utf-8-sig + errors="replace": SKILL.md files are user-authored and sometimes carry a Notepad BOM or
     # stray non-UTF-8 bytes. Pinning UTF-8 with replacement keeps skill_view deterministic across platforms
     # — falling back to the machine locale (cp1252/GBK) would make the same skill render differently per

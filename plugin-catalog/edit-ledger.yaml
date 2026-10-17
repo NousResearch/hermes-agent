@@ -1,6 +1,6 @@
 name: edit-ledger
 repo: https://github.com/olric3015/hermes-plugins
-sha: 2e0bcf8c93a9a5609715fa6606bc09400349180c
+sha: c0a93cb23627ac1856cb29db163e2cbfff77251d
 subdir: edit-ledger
 description: "Local ledger of the turns in which the agent changed files with write_file or patch: /edit-log shows how many turns changed files, how many files in all, the median per turn, the most changed file type and how long ago the last one was, per model, platform or day, a table of file types (extensions), or the newest turns, for the last 24 hours, any number of hours or days, the latest session or everything recorded; /edit-log recent lists the newest turns (ten, or up to 100 with /edit-log recent 50). A turn another plugin keeps going is counted once. Disclosure — subscribes to pre_verify as an observer only: always returns nothing, so it never keeps the agent going or changes a turn; writes turn metadata (model, platform, file count, files per extension, a 12-digit hash of the session id; never a path, file name or answer text) to plugin-data/edit-ledger/edits.jsonl, trimmed to 5,000 rows past 2 MB; never opens the changed files; no network"
 maintainer: olric3015
@@ -9,6 +9,7 @@ category: tools
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/olric3015/hermes-plugins/tree/main/edit-ledger
 version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/c0a93cb23627ac1856cb29db163e2cbfff77251d/docs/edit-ledger-card.png
 platforms: []
 capabilities:
   provides_tools: []

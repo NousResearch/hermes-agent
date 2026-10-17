@@ -395,3 +395,77 @@ class TestStandaloneSendIsBounded:
 
         assert error is None
         assert f"delivered to telegram:{CHAT_ID}" in caplog.text
+
+
+class TestLostCronDeliveryIsLedgered:
+    """Both lanes failed: the payload lands in the delivery ledger as a failed obligation so the
+    reconnect / boot sweeps can redeliver it (I-011 local patch, PENDING #38).
+
+    Cron sends bypass ``send_final_ledgered``, so before this a ``send_path_degraded`` failure
+    left ``sweep_failed_for_runtime`` with no row to claim — the reconnect redelivery spun empty
+    and the message was lost (two confirmed losses: 09-24 watchdog alert, 09-27 inspection cron).
+    """
+
+    def test_both_lanes_failed_records_a_failed_reconnect_only_obligation(self):
+        from gateway import delivery_ledger
+
+        send_result = _SendResult(success=False, error="send_path_degraded")
+
+        with patch("cron.scheduler_delivery._standalone_send",
+                   return_value=({"success": False, "error": "WeCom send failed: send_path_degraded"}, None)):
+            error, _, standalone_calls = _run(_job(), "inspection report", send_result)
+        assert error is not None and "send_path_degraded" in error
+
+        import sqlite3
+        from gateway.delivery_ledger import _db_path
+        conn = sqlite3.connect(_db_path())
+        try:
+            rows = conn.execute(
+                "SELECT obligation_id, platform, chat_id, content, state, last_error "
+                "FROM delivery_obligations").fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        oid, platform, chat_id, content, state, last_error = rows[0]
+        assert platform == "telegram" and chat_id == CHAT_ID
+        assert content == "inspection report"
+        assert state == "failed"
+        assert last_error == "send_path_degraded"
+        # The exact string retry_not_before classifies as reconnect-only: due at once after reconnect.
+        assert delivery_ledger.is_reconnect_only(last_error)
+        assert delivery_ledger.retry_not_before(0.0, last_error, 0) == 0.0
+
+    def test_successful_delivery_records_nothing(self):
+        import sqlite3
+        from gateway.delivery_ledger import _db_path
+
+        error, _, _ = _run(_job(), "all good", _SendResult(success=True, message_id=9))
+        assert error is None
+        conn = sqlite3.connect(_db_path())
+        try:
+            # The table only exists once something was ledgered; absent == nothing recorded.
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            count = (conn.execute("SELECT COUNT(*) FROM delivery_obligations").fetchone()[0]
+                     if "delivery_obligations" in tables else 0)
+        finally:
+            conn.close()
+        assert count == 0
+
+    def test_generic_error_is_ledgered_with_its_own_text(self):
+        import sqlite3
+        from gateway.delivery_ledger import _db_path
+
+        with patch("cron.scheduler_delivery._standalone_send",
+                   return_value=(None, "delivery to telegram:-1001234567890 failed: boom")):
+            error, _, _ = _run(_job(), "payload", _SendResult(success=False, error="adapter down"))
+        assert error is not None
+        conn = sqlite3.connect(_db_path())
+        try:
+            rows = conn.execute(
+                "SELECT state, last_error FROM delivery_obligations").fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        assert rows[0][0] == "failed"
+        assert "boom" in rows[0][1] and rows[0][1] != "send_path_degraded"

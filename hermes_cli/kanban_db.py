@@ -717,6 +717,8 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    completion_source: Optional[str]
+    completion_actor: Optional[str]
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Run:
@@ -727,6 +729,8 @@ class Run:
                     "worker_pid", "max_runtime_seconds", "outcome", "summary", "error",
                 )
             },
+            completion_source=_lossy_text(_row_get(row, "completion_source")),
+            completion_actor=_lossy_text(_row_get(row, "completion_actor")),
             **{col: _to_epoch(row[col]) for col in ("claim_expires", "last_heartbeat_at", "ended_at")},
             id=int(row["id"]), started_at=_to_epoch(row["started_at"]) or 0,
             metadata=_json_or(_lossy_text(row["metadata"])),
@@ -949,7 +953,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- Authority that closed a completed run: worker | operator | external.
+    completion_source   TEXT,
+    completion_actor    TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -1876,6 +1883,7 @@ def _append_event(
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
+    completion_source: Optional[str] = None, completion_actor: Optional[str] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
     ``current_run_id``; None when no run was active (never-claimed task).
@@ -1896,12 +1904,19 @@ def _end_run(
                summary       = ?,
                error         = ?,
                metadata      = ?,
+               completion_source = ?,
+               completion_actor = CASE WHEN ? IS NULL THEN completion_actor
+                                       WHEN ? IS NOT NULL THEN ?
+                                       WHEN ? = 'worker' THEN profile
+                                       ELSE ? END,
                ended_at      = ?,
                claim_expires = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (status or outcome, outcome, summary, error, _json_or_null(metadata), completion_source,
+         completion_source, completion_actor, completion_actor, completion_source, completion_source,
+         now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
@@ -1958,7 +1973,8 @@ def _end_or_synthesize_run(
 def _synthesize_ended_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None,
-    profile: Any = _UNSET,
+    profile: Any = _UNSET, completion_source: Optional[str] = None,
+    completion_actor: Optional[str] = None,
 ) -> int:
     """Zero-duration closed run for a terminal transition on a never-claimed
     task, so the handoff fields aren't silently dropped (``_end_run`` is a
@@ -1981,11 +1997,13 @@ def _synthesize_ended_run(
             task_id, profile, step_key,
             status, outcome,
             summary, error, metadata,
+            completion_source, completion_actor,
             started_at, ended_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id, profile, step_key, outcome, outcome, summary, error, _json_or_null(metadata),
+            completion_source, completion_actor or (profile if completion_source == "worker" else completion_source),
             now, now,
         ),
     )
@@ -2652,11 +2670,38 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+_COMPLETION_SOURCES = frozenset(("worker", "operator", "external"))
+
+
+def _completion_provenance(
+    expected_run_id: Optional[int], force: bool, source: Optional[str], actor: Optional[str],
+) -> tuple[str, Optional[str]]:
+    """Normalize the authority that is allowed to close a completed run.
+
+    A worker-owned completion identifies the run's assigned profile when an
+    explicit actor was not supplied. Manual and forced CLI/API completions are
+    operator actions. External integrations must name their actor rather than
+    borrowing the task assignee as authorship.
+    """
+    source = source or ("worker" if expected_run_id is not None and not force else "operator")
+    if source not in _COMPLETION_SOURCES:
+        raise ValueError(f"unknown completion source: {source!r}")
+    if source == "worker" and expected_run_id is None:
+        raise ValueError("worker completion requires expected_run_id")
+    actor = actor.strip() if isinstance(actor, str) else actor
+    if actor == "":
+        raise ValueError("completion actor must not be blank")
+    if source == "external" and actor is None:
+        raise ValueError("external completion requires completion_actor")
+    return source, actor
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    completion_source: Optional[str] = None, completion_actor: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2684,6 +2729,9 @@ def complete_task(
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
+    )
+    completion_source, completion_actor = _completion_provenance(
+        expected_run_id, force, completion_source, completion_actor,
     )
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
@@ -2729,7 +2777,8 @@ def complete_task(
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(
             conn, task_id, outcome="completed", status="done", summary=handoff_summary,
-            metadata=metadata,
+            metadata=metadata, completion_source=completion_source,
+            completion_actor=completion_actor,
         )
         # Never-claimed task: synthesize a run so the handoff fields survive.
         if run_id is None and (summary or metadata or result or prior_status == "review"):
@@ -2739,6 +2788,7 @@ def complete_task(
                 synth_metadata = {"source_status": "review", "approval": "manual"}
             run_id = _synthesize_ended_run(
                 conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+                completion_source=completion_source, completion_actor=completion_actor,
             )
         event_summary = handoff_summary
         if prior_status == "review" and not event_summary:

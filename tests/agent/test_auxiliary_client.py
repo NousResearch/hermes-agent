@@ -5667,3 +5667,40 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
             )
 
         assert resolved_provider == "xai-oauth"
+
+
+class TestReasoningConfigOnDeclaredMessagesWire:
+    """A custom provider configured with ``api_mode: anthropic_messages`` rides the Messages
+    wire — the resolver wraps the client on that declaration — but ``_build_call_kwargs``
+    could not see it: named custom providers share the generic OpenAI wire policy, so neither
+    ``projection.messages_wire`` nor the URL checks fired and the reasoning effort was silently
+    dropped from every auxiliary call (#136653). The resolved api_mode is the same declaration
+    that picked the wrapper, so it gates ``_reasoning_config`` too."""
+
+    def test_declared_api_mode_sets_reasoning_config(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="my-proxy",
+            model="some-reasoning-model",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            base_url="http://127.0.0.1:8317",
+            api_mode="anthropic_messages",
+        )
+        assert kwargs["_reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    def test_undeclared_custom_endpoint_stays_off_the_reasoning_config(self):
+        """No declaration, no URL match, no profile → the generic OpenAI wire keeps its
+        ``extra_body.reasoning`` fallback; the private kwarg must not appear."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="my-proxy",
+            model="some-model",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="http://127.0.0.1:8317",
+        )
+        assert "_reasoning_config" not in kwargs
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "high"}

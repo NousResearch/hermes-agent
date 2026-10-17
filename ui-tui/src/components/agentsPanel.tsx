@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 
 import { $agentDockCollapsed, useAgentRoster } from '../app/agentRoster.js'
 import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
-import { $uiState } from '../app/uiStore.js'
+import { $uiTheme } from '../app/uiStore.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
 import { type AgentRows, buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
@@ -145,7 +145,7 @@ export function AgentsPanelView({
 }
 
 export function LiveAgentsPanel({ cols }: { cols: number }) {
-  const { theme } = useStore($uiState)
+  const theme = useStore($uiTheme)
   const collapsed = useStore($agentDockCollapsed)
   const { stdout } = useStdout()
   const subagents = useAgentRoster()

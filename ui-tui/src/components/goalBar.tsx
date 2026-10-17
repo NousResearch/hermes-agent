@@ -2,7 +2,7 @@ import { stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 
 import { type GoalLine, useGoalLine } from '../app/goalStatus.js'
-import { $uiState } from '../app/uiStore.js'
+import { $uiTheme } from '../app/uiStore.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
@@ -24,7 +24,7 @@ export function GoalBarView({ cols, line, t }: { cols: number; line: GoalLine | 
 }
 
 export function GoalBar({ cols }: { cols: number }) {
-  const { theme } = useStore($uiState)
+  const theme = useStore($uiTheme)
 
   return <GoalBarView cols={cols} line={useGoalLine()} t={theme} />
 }

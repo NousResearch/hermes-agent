@@ -13,19 +13,21 @@ import {
   resolveRenamePath,
   REVIEW_FILE_CAP,
   reviewCreatePr,
+  reviewDiff,
   reviewList,
+  reviewRevert,
+  reviewStage,
+  reviewUnstage,
   SIMPLE_GIT_UNSAFE_BINARY_WARN
 } from './git-review-ops'
 import type * as NoConsoleGit from './no-console-git'
 
-// `runGh` shells to the `gh` CLI via execFile. Mock it so reviewCreatePr's gh
-// invocation is controllable (real `gh` may be absent or slow in CI) while the
-// repo setup below still uses the real execFileSync.
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<{ execFile: unknown; execFileSync: unknown }>()
 
   return { ...actual, execFile: vi.fn() }
 })
+
 
 const tempDirs: string[] = []
 
@@ -190,6 +192,66 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   assert.equal(result.files.length, REVIEW_FILE_CAP)
 })
 
+function makeNestedRepo() {
+  const dir = makeRepo()
+  const sub = path.join(dir, 'sub')
+
+  fs.mkdirSync(sub)
+  fs.writeFileSync(path.join(sub, 'nested.txt'), 'nested\n')
+  execFileSync('git', ['add', 'sub/nested.txt'], { cwd: dir })
+  execFileSync('git', ['commit', '-qm', 'nested'], { cwd: dir })
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'tracked changed\n')
+  fs.writeFileSync(path.join(sub, 'nested.txt'), 'nested changed\n')
+
+  return { dir, sub }
+}
+
+test('Review list and diff use repo-root-relative paths from a nested cwd', async () => {
+  const { sub } = makeNestedRepo()
+  const listed = await reviewList(sub, 'uncommitted', null, 'git')
+
+  assert.deepEqual(
+    listed.files.map(file => file.path),
+    ['sub/nested.txt', 'tracked.txt']
+  )
+  assert.match(String(await reviewDiff(sub, 'tracked.txt', 'uncommitted', null, false, 'git')), /tracked changed/)
+})
+
+test('Review stage and unstage target repo-root-relative paths from a nested cwd', async () => {
+  const { dir, sub } = makeNestedRepo()
+
+  await reviewStage(sub, 'tracked.txt', 'git')
+  assert.ok((await gitFor(dir, 'git').status()).staged.includes('tracked.txt'))
+
+  await reviewUnstage(sub, 'tracked.txt', 'git')
+  assert.ok(!(await gitFor(dir, 'git').status()).staged.includes('tracked.txt'))
+})
+
+test('Review revert targets a repo-root-relative path from a nested cwd', async () => {
+  const { dir, sub } = makeNestedRepo()
+
+  await reviewRevert(sub, 'tracked.txt', 'git')
+
+  assert.equal(fs.readFileSync(path.join(dir, 'tracked.txt'), 'utf8'), 'tracked\n')
+  assert.equal(fs.readFileSync(path.join(sub, 'nested.txt'), 'utf8'), 'nested changed\n')
+})
+
+test('Review revert-all is repo-wide from a nested cwd', async () => {
+  const { dir, sub } = makeNestedRepo()
+
+  await reviewRevert(sub, null, 'git')
+
+  assert.equal(fs.readFileSync(path.join(dir, 'tracked.txt'), 'utf8'), 'tracked\n')
+  assert.equal(fs.readFileSync(path.join(sub, 'nested.txt'), 'utf8'), 'nested\n')
+})
+
+test('Review revert rejects outside a repository', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-non-repo-'))
+
+  tempDirs.push(dir)
+  await assert.rejects(() => reviewRevert(dir, 'missing.txt', 'git'))
+})
+
 const mockExecFile = vi.mocked(await import('node:child_process')).execFile
 
 type ExecFileCallback = (error: Error | null, stdout?: string, stderr?: string) => void
@@ -229,4 +291,64 @@ test('reviewCreatePr falls back to the generic message when gh reports no stderr
   failGh('')
 
   await assert.rejects(reviewCreatePr(dir, 'git', 'gh'), /is gh installed and authenticated\?/)
+})
+
+function makeNestedRepo() {
+  const dir = makeRepo()
+  const sub = path.join(dir, 'sub')
+
+  fs.mkdirSync(sub)
+  fs.writeFileSync(path.join(sub, 'nested.txt'), 'nested\n')
+  execFileSync('git', ['add', 'sub/nested.txt'], { cwd: dir })
+  execFileSync('git', ['commit', '-qm', 'nested'], { cwd: dir })
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'tracked changed\n')
+  fs.writeFileSync(path.join(sub, 'nested.txt'), 'nested changed\n')
+
+  return { dir, sub }
+}
+
+test('Review list and diff use repo-root-relative paths from a nested cwd', async () => {
+  const { sub } = makeNestedRepo()
+  const listed = await reviewList(sub, 'uncommitted', null, 'git')
+
+  assert.deepEqual(
+    listed.files.map(file => file.path),
+    ['sub/nested.txt', 'tracked.txt']
+  )
+  assert.match(String(await reviewDiff(sub, 'tracked.txt', 'uncommitted', null, false, 'git')), /tracked changed/)
+})
+
+test('Review stage and unstage target repo-root-relative paths from a nested cwd', async () => {
+  const { dir, sub } = makeNestedRepo()
+
+  await reviewStage(sub, 'tracked.txt', 'git')
+  assert.ok((await gitFor(dir, 'git').status()).staged.includes('tracked.txt'))
+
+  await reviewUnstage(sub, 'tracked.txt', 'git')
+  assert.ok(!(await gitFor(dir, 'git').status()).staged.includes('tracked.txt'))
+})
+
+test('Review revert targets a repo-root-relative path from a nested cwd', async () => {
+  const { dir, sub } = makeNestedRepo()
+
+  await reviewRevert(sub, 'tracked.txt', 'git')
+
+  assert.equal(fs.readFileSync(path.join(dir, 'tracked.txt'), 'utf8'), 'tracked\n')
+  assert.equal(fs.readFileSync(path.join(sub, 'nested.txt'), 'utf8'), 'nested changed\n')
+})
+
+test('Review revert-all is repo-wide from a nested cwd', async () => {
+  const { dir, sub } = makeNestedRepo()
+
+  await reviewRevert(sub, null, 'git')
+
+  assert.equal(fs.readFileSync(path.join(dir, 'tracked.txt'), 'utf8'), 'tracked\n')
+  assert.equal(fs.readFileSync(path.join(sub, 'nested.txt'), 'utf8'), 'nested\n')
+})
+
+test('Review revert rejects outside a repository', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-non-repo-'))
+
+  tempDirs.push(dir)
+  await assert.rejects(() => reviewRevert(dir, 'missing.txt', 'git'))
 })

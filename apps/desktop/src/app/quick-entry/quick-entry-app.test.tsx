@@ -1,9 +1,13 @@
 /** Regression coverage for #77429: native picker options must paint a readable surface. */
 
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { QuickEntryStatePush } from '@/store/quick-entry'
+import {
+  QUICK_ENTRY_TARGET_STORAGE_KEY,
+  QUICK_TARGET_NEW,
+  type QuickEntryStatePush
+} from '@/store/quick-entry'
 
 import { QuickEntryApp } from './quick-entry-app'
 
@@ -13,6 +17,7 @@ describe('QuickEntryApp', () => {
   let pushState: ((payload: QuickEntryStatePush) => void) | undefined
 
   beforeEach(() => {
+    window.localStorage?.removeItem(QUICK_ENTRY_TARGET_STORAGE_KEY)
     pushState = undefined
     window.hermesDesktop = {
       quickEntry: {
@@ -31,6 +36,7 @@ describe('QuickEntryApp', () => {
 
   afterEach(() => {
     cleanup()
+    window.localStorage?.removeItem(QUICK_ENTRY_TARGET_STORAGE_KEY)
     window.hermesDesktop = initialHermesDesktop
     vi.restoreAllMocks()
   })
@@ -52,5 +58,21 @@ describe('QuickEntryApp', () => {
       expect(option.style.color).toBe('var(--ui-text-primary, var(--foreground))')
       expect(option.style.backgroundColor).toBe('var(--ui-bg-elevated, var(--background))')
     }
+  })
+
+  it('persists the target choice to localStorage when the select changes', () => {
+    render(<QuickEntryApp />)
+
+    act(() => {
+      pushState?.({
+        connected: true,
+        sessions: [{ id: 'session-1', title: 'A recent session' }]
+      })
+    })
+
+    const select = screen.getByLabelText('Target session')
+    fireEvent.change(select, { target: { value: QUICK_TARGET_NEW } })
+
+    expect(window.localStorage.getItem(QUICK_ENTRY_TARGET_STORAGE_KEY)).toBe(QUICK_TARGET_NEW)
   })
 })

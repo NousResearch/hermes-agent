@@ -1464,7 +1464,9 @@ def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
-def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
+def _compression_threshold(
+    agent, cfg: dict[str, Any], *, allow_model_override: bool = True,
+) -> tuple[float, bool]:
     """Global threshold merged with the per-model override; stashes the autoraise notice.
     Codex gpt-5.4/5.5 raise to 85% (272K cap → 50% would compact at ~136K); the opt-out flag
     restores the global value, and the notice has its own display gate."""
@@ -1472,26 +1474,27 @@ def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
     autoraise = _cfg_flag(cfg, "codex_gpt55_autoraise", True)
     notice_enabled = _cfg_flag(cfg, "codex_gpt55_autoraise_notice", True)
     agent._compression_threshold_autoraised = None
-    with suppress(Exception):
-        from agent.auxiliary_client import (
-            _compression_threshold_for_model as _cthresh_fn,
-            _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
-            _is_codex_spark as _is_codex_spark_fn,
-        )
-        _model_cthresh = _cthresh_fn(
-            agent.model, agent.provider, allow_codex_gpt55_autoraise=autoraise,
-        )
-        # Codex autoraises apply only when they RAISE; Arcee Trinity keeps its
-        # unconditional override.
-        threshold, agent._compression_threshold_autoraised = _resolve_compression_threshold(
-            threshold,
-            _model_cthresh,
-            model=agent.model,
-            is_codex_autoraise=(
-                _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
-                or _is_codex_spark_fn(agent.model, agent.provider)
-            ),
-        )
+    if allow_model_override:
+        with suppress(Exception):
+            from agent.auxiliary_client import (
+                _compression_threshold_for_model as _cthresh_fn,
+                _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
+                _is_codex_spark as _is_codex_spark_fn,
+            )
+            _model_cthresh = _cthresh_fn(
+                agent.model, agent.provider, allow_codex_gpt55_autoraise=autoraise,
+            )
+            # Codex autoraises apply only when they RAISE; Arcee Trinity keeps its
+            # unconditional override.
+            threshold, agent._compression_threshold_autoraised = _resolve_compression_threshold(
+                threshold,
+                _model_cthresh,
+                model=agent.model,
+                is_codex_autoraise=(
+                    _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
+                    or _is_codex_spark_fn(agent.model, agent.provider)
+                ),
+            )
     return threshold, notice_enabled
 
 
@@ -1521,10 +1524,19 @@ def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optiona
     return app_server_auto, responses_native, compact_threshold
 
 
-def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
+def _parse_compression_config(agent, _agent_cfg, platform: Optional[str] = None) -> CompressionSettings:
     """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG."""
     cfg = _cfg_dict(_agent_cfg, "compression")
-    threshold, autoraise_notice_enabled = _compression_threshold(agent, cfg)
+    override = _cfg_dict(cfg, "platform_overrides").get(platform)
+    has_platform_threshold = isinstance(override, dict) and "threshold" in override
+    if isinstance(override, dict):
+        cfg = {
+            **cfg,
+            **{key: override[key] for key in ("threshold", "threshold_tokens") if key in override},
+        }
+    threshold, autoraise_notice_enabled = _compression_threshold(
+        agent, cfg, allow_model_override=not has_platform_threshold,
+    )
     # Plain int()/float() coercions raise on garbage; evaluated up front, in config order.
     target_ratio = float(cfg.get("target_ratio", 0.20))
     protect_last = int(cfg.get("protect_last_n", 20))
@@ -1573,7 +1585,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         abort_on_summary_failure=_cfg_flag(cfg, "abort_on_summary_failure", False),
         # Per-model threshold overrides: keys substring-matched against the model name
         # (longest match wins); {} = global threshold for all models.
-        model_thresholds={
+        model_thresholds={} if has_platform_threshold else {
             str(k): float(v) for k, v in _cfg_dict(cfg, "model_thresholds").items()
             if isinstance(v, (int, float)) and not isinstance(v, bool)
         },
@@ -2375,7 +2387,7 @@ def init_agent(
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)
-    cs = _parse_compression_config(agent, _agent_cfg)
+    cs = _parse_compression_config(agent, _agent_cfg, platform)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )

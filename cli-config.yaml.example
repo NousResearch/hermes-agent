@@ -717,6 +717,16 @@ compression:
   # cap above the window is a no-op. Survives model switches and fallback activations.
   # threshold_tokens: 200000
 
+  # Per-platform trigger overrides. Each platform inherits any omitted key
+  # from the global settings above; a platform threshold also takes precedence
+  # over model_thresholds for that platform.
+  # platform_overrides:
+  #   telegram:
+  #     threshold: 0.35
+  #     threshold_tokens: 60000
+  #   slack:
+  #     threshold_tokens: 200000
+
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
   codex_gpt55_autoraise: true

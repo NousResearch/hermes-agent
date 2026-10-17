@@ -1,0 +1,26 @@
+name: return-line
+repo: https://github.com/ousiaresearch/return-line
+subdir: return-line
+sha: d00968861389bb2d8cee511ceac9a86263e8be28
+description: Carry the agent's own state and dated excerpts of its own record into every live turn —
+  appended to the message being answered at API time, never the system prompt, so per-conversation
+  prompt caching is untouched. One raw ledger line per turn goes the other way. Works stand-alone;
+  pairs with the biomimetic-brain mind kit, which produces the state file it reads. Disclosure —
+  reads and writes files under the agent directory you configure (a state file, a record directory,
+  a turn ledger), builds a local SQLite index of that record when the record is searchable, and
+  registers the /state and /record slash commands; no network calls, no credentials, no dependencies
+  beyond the host interpreter (numpy and scikit-learn are optional and it falls back to keyword
+  search without them).
+maintainer: ousiaresearch
+tier: community
+category: memory
+version: "1.1.0"
+docs_url: https://github.com/ousiaresearch/return-line
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

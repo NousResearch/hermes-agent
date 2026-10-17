@@ -973,7 +973,7 @@ export const deOverrides = {
       completionSoundTitle: 'Abschluss-Sound',
       completionSoundDesc:
         'Wird abgespielt, wenn ein Agent-Turn endet. Wählen Sie eine Vorlage aus und hören Sie sie hier an.',
-      completionSoundPreview: 'Vorschau'
+      completionSoundPreview: 'Vorschau', completionSoundVolume: 'Lautstärke'
     },
     sections: {
       model: 'Modell',

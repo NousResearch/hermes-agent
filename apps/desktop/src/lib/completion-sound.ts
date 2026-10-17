@@ -3,7 +3,12 @@
 
 import { getAudioContext } from '@/lib/audio-context'
 import { ownsAmbientCue } from '@/store/ambient'
-import { $completionSoundVariantId, resolveCompletionSoundVariantId } from '@/store/completion-sound'
+import {
+  $completionSoundVariantId,
+  $completionSoundVolume,
+  COMPLETION_SOUND_VOLUME_MAX,
+  resolveCompletionSoundVariantId
+} from '@/store/completion-sound'
 import { $hapticsMuted } from '@/store/haptics'
 
 type OscType = OscillatorType
@@ -380,6 +385,24 @@ export const COMPLETION_SOUND_VARIANTS: readonly CompletionSoundVariant[] = [
   }
 ] as const
 
+// Master gain at the top slider position, which is also the default. Measured by
+// rendering every preset offline: the original 0.48 left them between -30 and -42
+// dBFS peak (#102013). The chimes are short decaying sines whose peak sits ~20 dB
+// above their average level, so the peak runs out first. With the limiter below,
+// 14 keeps the loudest preset at about -0.3 dBFS; 16 and up clip.
+const COMPLETION_BASE_GAIN = 14
+// Gain change per slider step, in dB.
+const COMPLETION_DB_PER_STEP = 0.3
+
+// dB-linear so equal slider steps sound like equal loudness steps; 0 is silent.
+export function completionMasterGain(volume: number): number {
+  if (volume <= 0) {
+    return 0
+  }
+
+  return COMPLETION_BASE_GAIN * 10 ** (((volume - COMPLETION_SOUND_VOLUME_MAX) * COMPLETION_DB_PER_STEP) / 20)
+}
+
 function playVariant(variantId: number) {
   const variant = COMPLETION_SOUND_VARIANTS.find(v => v.id === variantId)
 
@@ -393,26 +416,34 @@ function playVariant(variantId: number) {
     return
   }
 
-  // Signal path: voices → master → low-pass → (dry + reverb send) → out.
+  // Signal path: voices → master → low-pass → (dry + reverb send) → limiter → out.
   const master = ac.createGain()
   const tone = ac.createBiquadFilter()
   tone.type = 'lowpass'
   tone.frequency.setValueAtTime(3800, ac.currentTime)
   tone.Q.setValueAtTime(0.32, ac.currentTime)
-  master.gain.setValueAtTime(0.48, ac.currentTime)
+  master.gain.setValueAtTime(completionMasterGain($completionSoundVolume.get()), ac.currentTime)
   master.connect(tone)
 
   const dry = ac.createGain()
   dry.gain.setValueAtTime(0.88, ac.currentTime)
   tone.connect(dry)
-  dry.connect(ac.destination)
 
   const reverb = makeReverb(ac)
   const wet = ac.createGain()
   wet.gain.setValueAtTime(0.34, ac.currentTime)
   tone.connect(reverb)
   reverb.connect(wet)
-  wet.connect(ac.destination)
+
+  const limiter = ac.createDynamicsCompressor()
+  limiter.threshold.setValueAtTime(-1, ac.currentTime)
+  limiter.knee.setValueAtTime(0, ac.currentTime)
+  limiter.ratio.setValueAtTime(20, ac.currentTime)
+  limiter.attack.setValueAtTime(0.001, ac.currentTime)
+  limiter.release.setValueAtTime(0.05, ac.currentTime)
+  dry.connect(limiter)
+  wet.connect(limiter)
+  limiter.connect(ac.destination)
 
   variant.play(ac, master, ac.currentTime + 0.01)
 }

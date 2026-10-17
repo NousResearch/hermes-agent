@@ -473,7 +473,7 @@ export const ruOverrides = {
       testUnsupported: 'Эта система не поддерживает системные уведомления.',
       completionSoundTitle: 'Звук завершения',
       completionSoundDesc: 'Воспроизводится, когда ход агента завершён. Выберите пресет и прослушайте здесь.',
-      completionSoundPreview: 'Прослушать'
+      completionSoundPreview: 'Прослушать', completionSoundVolume: 'Громкость'
     },
     sections: {
       model: 'Модель',

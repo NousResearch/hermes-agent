@@ -3,12 +3,20 @@ import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Slider } from '@/components/ui/slider'
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
 import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
+import {
+  $completionSoundVariantId,
+  $completionSoundVolume,
+  COMPLETION_SOUND_VOLUME_MAX,
+  COMPLETION_SOUND_VOLUME_MIN,
+  setCompletionSoundVariantId,
+  setCompletionSoundVolume
+} from '@/store/completion-sound'
 import {
   $nativeNotifyPrefs,
   NATIVE_NOTIFICATION_KINDS,
@@ -37,6 +45,7 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
   const completionSoundVariantId = useStore($completionSoundVariantId)
+  const completionSoundVolume = useStore($completionSoundVolume)
   const copy = t.settings.notifications
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
@@ -119,6 +128,23 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
                 {copy.completionSoundPreview}
               </Button>
             </>
+          }
+          below={
+            <div className="flex items-center gap-3 pb-1">
+              <span className={cn(CAPTION, 'w-14 shrink-0')}>{copy.completionSoundVolume}</span>
+              <Slider
+                aria-label={copy.completionSoundVolume}
+                max={COMPLETION_SOUND_VOLUME_MAX}
+                min={COMPLETION_SOUND_VOLUME_MIN}
+                onChange={event => setCompletionSoundVolume(Number(event.target.value))}
+                // Audition on release, not per drag tick: a chime per tick is noise.
+                onKeyUp={() => previewCompletionSound()}
+                onPointerUp={() => previewCompletionSound()}
+                step={1}
+                value={completionSoundVolume}
+              />
+              <span className={cn(CAPTION, 'w-9 text-right tabular-nums')}>{completionSoundVolume}%</span>
+            </div>
           }
           description={copy.completionSoundDesc}
           id={settingElementId(SETTING_IDS.notifications.completionSound)}

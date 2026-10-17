@@ -974,7 +974,7 @@ export const frOverrides = {
       testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
       completionSoundTitle: 'Son de fin',
       completionSoundDesc: "Se joue à la fin d'un tour d'agent. Choisissez un préréglage et prévisualisez-le ici.",
-      completionSoundPreview: 'Aperçu'
+      completionSoundPreview: 'Aperçu', completionSoundVolume: 'Volume'
     },
     sections: {
       model: 'Modèle',

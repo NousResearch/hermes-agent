@@ -951,7 +951,7 @@ export const en: Translations = {
       testUnsupported: 'This system does not support native notifications.',
       completionSoundTitle: 'Completion Sound',
       completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview'
+      completionSoundPreview: 'Preview', completionSoundVolume: 'Volume'
     },
     sections: {
       model: 'Model',

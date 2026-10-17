@@ -775,7 +775,7 @@ export interface Translations extends NoticeTranslations {
       testUnsupported: string
       completionSoundTitle: string
       completionSoundDesc: string
-      completionSoundPreview: string
+      completionSoundPreview: string; completionSoundVolume: string
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>

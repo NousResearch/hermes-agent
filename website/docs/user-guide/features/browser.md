@@ -81,6 +81,8 @@ The mode is a **driver** that composes with your configured browser backend: it 
 
 **Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state) and its own browser (a separate packaged Chromium locally, a separate cloud browser on cloud backends) — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
 
+On a single shared headed Chrome (a `browser.cdp_url` or `/browser connect` endpoint), named sessions get separate tabs but not separate windows, and Chrome throttles, freezes, and (with Memory Saver on) discards tabs that aren't the selected one, so parallel sessions stall or lose their page. Chrome that Hermes launches for you already passes `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`; if you start Chrome yourself, add those flags and turn Memory Saver off (Settings → Performance) before running parallel named sessions against it.
+
 To opt out and force the built-in browser tools, use `/browser use off`, or:
 
 ```yaml

@@ -94,11 +94,13 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
   // Own this sandbox's gateway directly. Service discovery is outside this reload test and can see
   // the runner account's installed launchd service even with HOME redirected on macOS.
   const env = coreAppEnv(sandbox)
+
   const backend = spawn(python!, ['-m', 'hermes_cli.main', 'gateway', 'run', '--quiet'], {
     cwd: REPO_ROOT,
     env,
     stdio: ['ignore', 'pipe', 'pipe']
   })
+
   const backendLog: string[] = []
   backend.stdout.on('data', chunk => backendLog.push(chunk.toString()))
   backend.stderr.on('data', chunk => backendLog.push(chunk.toString()))
@@ -200,6 +202,7 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
       .toEqual(['afterbutton'])
   } finally {
     await app?.close()
+
     if (backend.exitCode === null && backend.signalCode === null) {
       const exited = new Promise<void>(resolve => backend.once('exit', () => resolve()))
       const deadline = setTimeout(() => backend.kill('SIGKILL'), 15_000)
@@ -207,6 +210,7 @@ test('reloads the profile MCP servers from the composer and from Connectors', as
       await exited
       clearTimeout(deadline)
     }
+
     await provider.close()
     sandbox.cleanup()
   }

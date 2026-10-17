@@ -428,6 +428,13 @@ import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { registerPreparedSubmissions } from './prepared-submissions'
 import { capturePreviewContents } from './preview-capture'
+import {
+  looksBinary,
+  previewFileMetadata,
+  previewFileStat,
+  previewTargetNeedsBase,
+  withPreviewFileDeadline
+} from './preview-file-metadata'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
@@ -1751,57 +1758,6 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.yaml': 'yaml',
   '.yml': 'yaml',
   '.zsh': 'shell'
-}
-
-function looksBinary(buffer) {
-  if (!buffer.length) {
-    return false
-  }
-
-  let suspicious = 0
-
-  for (const byte of buffer) {
-    if (byte === 0) {
-      return true
-    }
-
-    // Allow common whitespace controls: tab, LF, CR.
-    if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-      suspicious += 1
-    }
-  }
-
-  return suspicious / buffer.length > 0.12
-}
-
-function previewFileMetadata(filePath, mimeType) {
-  let byteSize = 0
-  let binary = false
-
-  try {
-    const stat = fs.statSync(filePath)
-    byteSize = stat.size
-
-    if (!mimeType.startsWith('image/')) {
-      const fd = fs.openSync(filePath, 'r')
-
-      try {
-        const sample = Buffer.alloc(Math.min(byteSize, 4096))
-        const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0)
-        binary = looksBinary(sample.subarray(0, bytesRead))
-      } finally {
-        fs.closeSync(fd)
-      }
-    }
-  } catch {
-    // Metadata is best-effort; the read handlers surface hard errors later.
-  }
-
-  return {
-    binary,
-    byteSize,
-    large: byteSize > TEXT_PREVIEW_MAX_BYTES
-  }
 }
 
 app.setName(APP_NAME)
@@ -5790,17 +5746,14 @@ function decodedPathIfMissing(resolvedPath) {
   return decoded !== resolvedPath ? decoded : null
 }
 
-async function previewFileTarget(rawTarget, baseDir) {
-  const raw = String(rawTarget || '').trim()
-  const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
+async function resolvePreviewFileCandidate(raw, resolved) {
+  const initialStat = await previewFileStat(resolved)
 
-  // A plain backend target is a WSL/POSIX path; bridge it to a Windows-
-  // accessible form before resolving so the existence checks below (and the
-  // final read) hit the real file rather than a drive-relative C:\home\... miss.
-  let resolved = resolveRequestedPathForIpc(resolvePreviewTargetPath(raw, expandUserPath), {
-    baseDir: base,
-    purpose: 'Preview target'
-  })
+  if (initialStat.kind === 'found' && (initialStat.stat.isFile() || initialStat.stat.isDirectory())) {
+    return { resolved, stat: initialStat.stat, allMissing: false }
+  }
+
+  let allMissing = initialStat.kind === 'missing'
 
   // Attachment references stored in chat history are frequently HOME-relative
   // (e.g. "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
@@ -5808,13 +5761,12 @@ async function previewFileTarget(rawTarget, baseDir) {
   // agent's working directory. The primary resolution above only tries
   // `base` (the working dir), so such a ref never exists there and the
   // preview/download 404s even though the file is present on disk (#115609).
-  if (!fileExists(resolved) && !directoryExists(resolved)) {
-    for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
-      if (fileExists(candidate)) {
-        resolved = candidate
+  for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
+    const candidateStat = await previewFileStat(candidate)
+    allMissing = allMissing && candidateStat.kind === 'missing'
 
-        break
-      }
+    if (candidateStat.kind === 'found' && candidateStat.stat.isFile()) {
+      return { resolved: candidate, stat: candidateStat.stat, allMissing: false }
     }
   }
 
@@ -5823,13 +5775,42 @@ async function previewFileTarget(rawTarget, baseDir) {
   // decoded form so chat links to paths with spaces still open in the preview
   // rail (#102782) — before the directory/missing classification below, so a
   // decoded target is typed by what it actually is.
-  if (!fileExists(resolved) && !directoryExists(resolved)) {
-    const decoded = decodedPathIfMissing(resolved)
+  const decoded = decodedPathIfMissing(resolved)
 
-    if (decoded && (fileExists(decoded) || directoryExists(decoded))) {
-      resolved = decoded
+  if (decoded) {
+    const decodedStat = await previewFileStat(decoded)
+    allMissing = allMissing && decodedStat.kind === 'missing'
+
+    if (decodedStat.kind === 'found' && (decodedStat.stat.isFile() || decodedStat.stat.isDirectory())) {
+      return { resolved: decoded, stat: decodedStat.stat, allMissing: false }
     }
   }
+
+  return { resolved, stat: null, allMissing }
+}
+
+async function previewFileTarget(rawTarget, baseDir) {
+  const raw = String(rawTarget || '').trim()
+  const requested = resolvePreviewTargetPath(raw, expandUserPath)
+
+  // An absolute attachment needs no default-project config or directory probes.
+  const base = baseDir
+    ? path.resolve(expandUserPath(baseDir))
+    : previewTargetNeedsBase(requested)
+      ? resolveHermesCwd()
+      : app.getPath('home')
+
+  // A plain backend target is a WSL/POSIX path; bridge it to a Windows-
+  // accessible form before resolving so the existence checks below (and the
+  // final read) hit the real file rather than a drive-relative C:\home\... miss.
+  let resolved = resolveRequestedPathForIpc(requested, {
+    baseDir: base,
+    purpose: 'Preview target'
+  })
+
+  const candidate = await resolvePreviewFileCandidate(raw, resolved)
+  const { stat, allMissing } = candidate
+  resolved = candidate.resolved
 
   // A directory is not a preview (#101683). Overloading it as
   // `<dir>/index.html` made a directory without one classify as missing, and
@@ -5837,7 +5818,7 @@ async function previewFileTarget(rawTarget, baseDir) {
   // Answer with a typed non-previewable result so the card can offer the
   // native folder action, and a typed `missing` result so a dead link reports
   // instead of previewing.
-  if (directoryExists(resolved)) {
+  if (stat?.isDirectory()) {
     return {
       kind: 'file',
       label: path.basename(resolved) || resolved,
@@ -5848,7 +5829,12 @@ async function previewFileTarget(rawTarget, baseDir) {
     }
   }
 
-  if (!fileExists(resolved)) {
+  if (!stat?.isFile()) {
+    // A timeout or denied candidate is not proof that the attachment is gone.
+    if (!allMissing) {
+      return null
+    }
+
     return {
       kind: 'file',
       label: path.basename(resolved) || raw,
@@ -5861,10 +5847,16 @@ async function previewFileTarget(rawTarget, baseDir) {
 
   const ext = path.extname(resolved).toLowerCase()
 
-  ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))
+  const readable = await withPreviewFileDeadline(resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))
+
+  if (!readable) {
+    return null
+  }
+
+  resolved = readable.resolvedPath
 
   const mimeType = mimeTypeForPath(resolved)
-  const metadata = previewFileMetadata(resolved, mimeType)
+  const metadata = await previewFileMetadata(resolved, mimeType, { maxTextBytes: TEXT_PREVIEW_MAX_BYTES, stat: readable.stat })
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
   const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
@@ -5897,7 +5889,7 @@ async function normalizePreviewTarget(rawTarget, baseDir) {
       return previewHttpUrlTarget(raw)
     }
 
-    return await previewFileTarget(raw, baseDir)
+    return await withPreviewFileDeadline(previewFileTarget(raw, baseDir), 5000)
   } catch {
     return null
   }

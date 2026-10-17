@@ -323,12 +323,11 @@ export async function normalizeOrLocalPreviewTarget(
       return enrichPreviewTarget(normalized)
     }
 
-    // The main process resolved the target against the real filesystem and
-    // found nothing openable (`null`); an absent bridge yields `undefined` from
-    // the optional call above instead. In local mode the main process's answer
-    // is authoritative — the fallback below can only fabricate a broken
-    // preview tab (#101683). Remote-backend paths, and a dev server without
-    // the bridge, keep it.
+    // The main process could not establish an openable target this attempt
+    // (`null`), which may be temporary. An absent bridge yields `undefined`.
+    // Keep the host's decision instead of guessing a local preview tab
+    // (#101683); a later user attempt can retry normalization. Remote-backend
+    // paths and a dev server without the bridge keep the fallback below.
     if (!isDesktopFsRemoteMode() && normalized === null) {
       return null
     }

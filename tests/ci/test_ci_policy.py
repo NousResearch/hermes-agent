@@ -106,7 +106,7 @@ def test_catalog_lane_uses_shared_selection(repository, event, release, catalog)
     assert _mod.image_selected_jobs(selected).get("catalog-tests") is catalog
     import yaml
 
-    jobs = yaml.safe_load((_PATH.parents[2] / ".github/workflows/ci.yaml").read_text())["jobs"]
+    jobs = yaml.safe_load((_PATH.parents[2] / ".github/workflows/ci.yaml").read_text(encoding="utf-8-sig"))["jobs"]
     assert jobs["catalog-tests"]["if"] == "${{ fromJSON(needs.detect.outputs.selected_jobs)['catalog-tests'] }}"
 
 

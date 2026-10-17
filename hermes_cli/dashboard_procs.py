@@ -559,7 +559,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
     def _send(pid: int, sig) -> None:
         try:
             os.kill(pid, sig)
-            if sig == _signal.SIGKILL:
+            if sig == _signal.SIGKILL:  # windows-footgun: ok — POSIX arm; the win32 dispatch at the end of this module routes win32 to _kill_pids_windows
                 killed.append(pid)
         except ProcessLookupError:
             killed.append(pid)  # already gone — count as killed
@@ -572,12 +572,12 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
     alive = _wait_gone(pending, _POSIX_TERM_GRACE_SECONDS)
     killed.extend(p for p in pending if p not in alive)
     for pid in alive:
-        _send(pid, _signal.SIGKILL)
+        _send(pid, _signal.SIGKILL)  # windows-footgun: ok — POSIX arm; the win32 dispatch at the end of this module routes win32 to _kill_pids_windows
 
     # Snapshot identity must still match: a PID recycled during the grace is not ours to signal.
     survivors = [p for p, (_root, start) in descendants.items()
                  if start is not None and get_process_start_time(p) == start]
-    for sig in (_signal.SIGTERM, _signal.SIGKILL):
+    for sig in (_signal.SIGTERM, _signal.SIGKILL):  # windows-footgun: ok — POSIX arm; the win32 dispatch at the end of this module routes win32 to _kill_pids_windows
         for pid in survivors:
             with contextlib.suppress(OSError):
                 os.kill(pid, sig)

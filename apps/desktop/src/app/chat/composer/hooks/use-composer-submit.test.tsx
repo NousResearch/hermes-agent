@@ -741,6 +741,38 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect(hasOpenServerRequest('req-pair')).toBe(true)
   })
 
+  it('does not send a queued answer after the request expired', async () => {
+    let expireFirst: (reply: { status: string }) => void = () => {}
+
+    const request = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise(resolve => (expireFirst = resolve)))
+      .mockResolvedValue({ status: 'expired' })
+
+    setGateway(request)
+    rememberServerRequest({ fail: vi.fn(), id: 'req-expired', method: 'clarify', params: {}, respond })
+    $clarifyRequests.set({
+      'runtime-session': {
+        requestId: 'req-expired',
+        questions: ['q0', 'q1'].map(qid => ({ choices: null, multiSelect: false, qid, question: `${qid}?` })),
+        sessionId: 'runtime-session'
+      }
+    })
+
+    for (const text of ['first', 'second']) {
+      const { hook } = renderSubmitHook({ busy: true, text })
+      act(() => hook.result.current.submitDraft())
+    }
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      expireFirst({ status: 'expired' })
+      await Promise.resolve()
+    })
+
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {
     parkClarify('runtime-session')
     const { hook, onCancel } = renderSubmitHook({ busy: true })

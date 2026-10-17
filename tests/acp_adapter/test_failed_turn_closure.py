@@ -294,3 +294,24 @@ def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, mon
     stored = db.get_messages(sid)[-1]["display_metadata"]
     assert (stored if isinstance(stored, dict) else json.loads(stored))["error_surface"]["code"] == "timeout"
     db.close()
+
+
+def test_output_cap_exhaustion_reports_max_tokens_through_the_real_turn_loop(acp):
+    """ACP clients render the end of a prompt from ``stopReason`` alone, so a reply cut at the
+    output cap (every continuation attempt exhausted) must not read as a finished answer.
+
+    Provider answers ``finish_reason=length`` on the first call and on all four continuation
+    nudges; the turn loop keeps the stitched partial and stamps ``failure_reason=truncated``,
+    which the ACP response must surface as ``max_tokens``. A normal ``stop`` is ``end_turn``."""
+    provider, prompt, conversation_rows, _db, _sid, _conn, _server = acp
+
+    provider.script = [{"finish_reason": "length", "content": f"part {i} "} for i in range(8)]
+    response = prompt("Write the full migration guide")
+    assert response.stop_reason == "max_tokens"
+    assert len(provider.requests) >= 2, "the loop asked for a continuation before giving up"
+    provider.requests.clear()
+    # The partial text is kept as the turn's answer, with a Hermes notice rather than a bare cut.
+    assert conversation_rows()[-1][0] == "assistant"
+
+    provider.script = [{"finish_reason": "stop", "content": "Paris."}]
+    assert prompt("What is the capital of France?").stop_reason == "end_turn"

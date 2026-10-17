@@ -81,3 +81,9 @@ jobs:
       # nothing.
       - name: Run all workspace checks
         run: node .github/scripts/run-workspace-checks.mjs
+
+      - name: Install the locked Photon SDK without lifecycle scripts
+        working-directory: plugins/platforms/photon/sidecar
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test Photon polls against the installed Spectrum SDK
+        run: node --test tests/plugins/platforms/photon/spectrum-poll.test.mjs

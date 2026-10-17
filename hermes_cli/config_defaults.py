@@ -2101,6 +2101,11 @@ DEFAULT_CONFIG = {
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
         "signal_interrupt_grace_timeout": 1,
         "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.
+        # macOS LaunchAgent job-root identity: null/anything = osascript (Local Network platform
+        # exemption, #71206); "bundle" roots the job in a generated HermesGateway.app with a stable
+        # CFBundleIdentifier so TCC grants (Full Disk Access, removable volumes, Calendar) can
+        # target the gateway by name and survive interpreter re-rolls (#123118). Opt-in per host.
+        "launchd_network_identity": None,
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;

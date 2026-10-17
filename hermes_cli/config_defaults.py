@@ -1880,9 +1880,8 @@ DEFAULT_CONFIG = {
         # cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
         "failure_repeat_alert_hours": 6,
     },
-    # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
-    # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
-    # claimable task. Run ONE dispatcher per profile; two on the same kanban.db race for claims.
+    # Kanban coordination: one dispatcher per profile reclaims stale claims and promotes ready
+    # tasks; kanban_worker_client submits each exact claim to the assignee's execution owner.
     "kanban": {
         # Auto-subscribe the originating gateway/TUI session to completion + block events when
         # kanban_create is called from a session with a persistent delivery channel. Disable for
@@ -1894,9 +1893,10 @@ DEFAULT_CONFIG = {
         # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
         # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,
-        # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
-        # sdlc-review skill. Disable where every review is done manually from the dashboard.
+        # Auto-claim reviews; per-assignee defaults preserve legacy worker capabilities.
         "review_dispatch": True,
+        "worker_policy": {"task_skills": "all", "review_skill": "sdlc-review", "lifecycle_toolset": "kanban",
+                          "task_model_override": "allow", "task_reasoning_override": "allow"},
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,

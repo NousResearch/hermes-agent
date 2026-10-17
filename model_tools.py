@@ -275,7 +275,7 @@ def _tool_defs_cache_key(
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
-        bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
+        bool(os.environ.get("HERMES_KANBAN_TASK")), os.environ.get("HERMES_KANBAN_LIFECYCLE_TOOLSET"), bool(skip_tool_search_assembly),  # health: allow HX002 -- internal frozen owner policy mirror, not user configuration
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
     )
 
@@ -318,11 +318,14 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
     tools: set = set()
     if enabled_toolsets is not None:
         enabled = list(enabled_toolsets)
-        # Dispatcher-spawned kanban workers always get the lifecycle handoff
-        # tools, even when the assignee profile restricts its chat toolsets.
-        if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
-                and _is_dispatcher_owned_worker() and "kanban" not in enabled):
-            enabled.append("kanban")
+        # Dispatcher-spawned workers receive the assignee profile's selected
+        # lifecycle toolset. Older worker environments omit the variable and
+        # retain the historical ``kanban`` grant.
+        lifecycle_toolset = os.environ.get("HERMES_KANBAN_LIFECYCLE_TOOLSET", "kanban")  # health: allow HX002 -- internal frozen owner policy mirror
+        if (lifecycle_toolset != "none" and os.environ.get("HERMES_KANBAN_TASK")
+                and not _is_delegated_child_context() and _is_dispatcher_owned_worker()
+                and lifecycle_toolset not in enabled):
+            enabled.append(lifecycle_toolset)
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
         from toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
@@ -335,6 +338,9 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+    # Denial must follow expansion: platform bundles also contain lifecycle tools.
+    if os.environ.get("HERMES_KANBAN_TASK") and os.environ.get("HERMES_KANBAN_LIFECYCLE_TOOLSET") == "none":  # health: allow HX002 -- internal frozen owner policy mirror
+        tools.difference_update(resolve_toolset("kanban"))
     return tools
 
 

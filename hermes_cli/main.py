@@ -2882,10 +2882,17 @@ def _agent_subcommand_selected(args) -> bool:
 
 
 def _command_has_dedicated_mcp_startup(args) -> bool:
-    """acp / gateway run / cron run|tick own their MCP startup on the runtime path."""
-    return args.command == "acp" or (
-        args.command != "mcp" and _agent_subcommand_selected(args)
-    )
+    """acp / gateway run / cron run|tick / mcp serve own their MCP startup on the runtime path.
+
+    ``mcp serve`` belongs in this set because it is a SERVER: it exposes its own tools over
+    stdio and never needs the launcher's client-side discovery. Running that discovery inside
+    it spawns every configured MCP server, and when a server is configured as
+    ``hermes mcp serve`` (which is how ``hermes-messaging`` is wired up) the process spawns a
+    copy of ITSELF. The parent then blocks on its child's MCP handshake, which blocks on its
+    own child's: a self-recursion that never answers the first MCP message, so the client's
+    discovery times out and every gateway start pays the full budget once per profile home.
+    """
+    return args.command == "acp" or _agent_subcommand_selected(args)
 
 
 def _should_background_mcp_startup(args) -> bool:

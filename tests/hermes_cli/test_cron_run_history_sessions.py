@@ -15,9 +15,11 @@ import pytest
 import hermes_cli.web_routers.cron as cron_routes
 import hermes_cli.web_routers.sessions as session_routes
 import hermes_time
-from cron import executions, jobs
+from cron import executions, jobs, scheduler
+from hermes_state import SessionDB
 from hermes_state_runtime import claim_session_input, settle_session_input
 from tests.fakes.cron_owner import admit_fire, cron_owner
+from tests.hermes_state.test_cron_run_sessions import compress
 
 
 @pytest.fixture()
@@ -60,13 +62,14 @@ async def _start_fire(authority, job_id):
     return session_id, execution_id, claim
 
 
-def _close_run(authority, session_id, claim):
-    """The owner's run finishes: the answer is written, the admission settled, the session ended."""
-    authority.db.append_message(session_id, role='assistant', content='report done')
+def _close_run(authority, job_id, session_id, claim):
+    """The owner's run finishes: the answer is written where the run now is, the admission settled,
+    and the scheduler's own finalizer (its store handle) titles and ends the run's last segment."""
+    authority.db.append_message(authority.db.get_compression_tip(session_id), role='assistant', content='report done')
     settle_session_input(authority.db, epoch=authority.epoch, admission_id=claim['admission_id'],
                          generation=claim['generation'], outcome='completed',
                          result={'result': {'cron_result': [True, 'doc', 'report done', None]}, 'usage': {}})
-    authority.db.end_session(session_id, 'cron_complete')
+    scheduler._finalize_cron_session(SessionDB(authority.db.db_path), None, job_id, 'report', session_id)
 
 
 def _runs(job_id):
@@ -93,7 +96,7 @@ async def test_unified_run_is_one_owned_session_row_and_detail_agrees(owner, clo
     assert (detail.get('cron_job_id'), detail.get('cron_execution_id')) == (job, execution_id)
 
     # Done: the agent fire's output doc is the same execution as its session, not a second row.
-    _close_run(owner, session_id, claim)
+    _close_run(owner, job, session_id, claim)
     clock['seconds'] = 5
     jobs.save_job_output(job, '# Cron Job: report\n\nreport done')
     executions.finish_execution(execution_id, success=True)
@@ -124,7 +127,7 @@ async def test_a_fire_that_failed_beside_a_unified_run_keeps_its_own_row(owner, 
     it created a session, is its own run, not swallowed by its neighbour's time window."""
     job = jobs.create_job(prompt='report', schedule='every 1m', deliver='local')['id']
     session_id, first, claim = await _start_fire(owner, job)
-    _close_run(owner, session_id, claim)
+    _close_run(owner, job, session_id, claim)
     clock['seconds'] = 20
     jobs.save_job_output(job, '# Cron Job: report\n\nreport done')
     executions.finish_execution(first, success=True)
@@ -176,7 +179,7 @@ async def test_a_same_second_output_doc_is_not_pinned_on_the_earlier_execution(
 
     at(60.5)  # the job switched to agent mode; its next fire is claimed mid-second
     session_id, fire, claim = await _start_fire(owner, job)
-    _close_run(owner, session_id, claim)
+    _close_run(owner, job, session_id, claim)
     at(60.75)
     jobs.save_job_output(job, '# Cron Job: report\n\nreport done')  # filed as second 60
     executions.finish_execution(fire, success=True)
@@ -207,7 +210,7 @@ async def test_an_overlapping_attempt_claimed_before_a_runs_doc_keeps_its_own_ro
     if not overlap_finishes_after_doc:
         clock['seconds'] = 12
         executions.finish_execution(overlap, success=False, error='owner_unavailable')
-    _close_run(owner, session_id, claim)
+    _close_run(owner, job, session_id, claim)
     clock['seconds'] = 20
     jobs.save_job_output(job, '# Cron Job: report\n\nreport done')
     executions.finish_execution(fire, success=True)
@@ -220,3 +223,38 @@ async def test_an_overlapping_attempt_claimed_before_a_runs_doc_keeps_its_own_ro
     assert [r['source'] for r in runs] == ['cron_output', 'cron'], runs
     assert runs[0]['title'].startswith('FAILED') and runs[0]['preview'] == 'owner_unavailable', runs
     assert (runs[1]['id'], runs[1]['cron_execution_id']) == (session_id, fire)
+
+
+@pytest.mark.asyncio
+async def test_a_compressed_run_is_served_at_its_tip_whether_live_closed_or_lost(owner, clock):
+    """Compression stamps ``ended_at`` on a run's first segment while the run goes on in its
+    continuation. Read as the run's own, that stamp made a live run look closed (so writable) and a
+    run the scheduler lost look closed rather than a zombie, and detail of the continuation could
+    not name its run at all."""
+    job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')['id']
+    lost_job = jobs.create_job(prompt='lost report', schedule='every 1h', deliver='local')['id']
+    session_id, execution_id, claim = await _start_fire(owner, job)
+    lost_id, lost_execution, _ = await _start_fire(owner, lost_job)
+    tip, lost_tip = compress(owner.db, session_id), compress(owner.db, lost_id)
+
+    [running] = _runs(job)
+    assert (running['id'], running['ended_at'], running['scheduler_owned']) == (tip, None, True)
+    detail = await _detail(tip)
+    assert (detail.get('cron_job_id'), detail.get('cron_execution_id')) == (job, execution_id)
+    assert detail.get('scheduler_owned') is True
+
+    # The scheduler loses one run after compression (its attempt fails, the run is never closed).
+    executions.finish_execution(lost_execution, success=False, error='watchdog: inactivity timeout')
+    [zombie] = _runs(lost_job)
+    assert (zombie['id'], zombie['ended_at'], zombie['scheduler_owned']) == (lost_tip, None, False)
+    assert (await _detail(lost_tip)).get('scheduler_owned') is False
+
+    _close_run(owner, job, session_id, claim)
+    clock['seconds'] = 5
+    jobs.save_job_output(job, '# Cron Job: report\n\nreport done')
+    executions.finish_execution(execution_id, success=True)
+
+    [finished] = _runs(job)
+    assert (finished['id'], finished['end_reason'], finished['scheduler_owned']) == (tip, 'cron_complete', False)
+    assert finished['title'] and finished['title'] == owner.db.get_session(tip)['title']
+    assert (await _detail(tip))['scheduler_owned'] is False

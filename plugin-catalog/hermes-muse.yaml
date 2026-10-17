@@ -1,12 +1,13 @@
 name: hermes-muse
 repo: https://github.com/xiaohei-info/hermes-muse
-sha: e3ae9291dd13801f00e1560bd922c1c51b20bdf3
-version: "0.2.3"
+sha: 0dade28130b6901dfa2dd81a067856441948d33c
+version: "0.3.1"
 description: >-
-  A proactive companion for Hermes: follows accepted goals, recovers unregistered
-  commitments for semantic review, prepares sourced research and Feed articles,
+  A proactive companion for Hermes: follows accepted goals (active/done/cancelled),
+  prepares sourced research and Feed articles,
   maintains memory, and assembles rolling 30-day or natural-month calendar views.
-  Read-only local Dashboard/Desktop pages show Feed, Ideas and Goals.
+  Read-only local Dashboard/Desktop pages show Feed, Ideas and Goals; profile
+  selection cannot install, enable or disable Muse in any profile.
   One Skill, one state tool and six fixed recurring jobs; selected notices and
   weekly/monthly reports go to the active profile's Bot Chat and run an assistant
   turn there. Sources, authorization, quiet hours and actual result/delivery
@@ -35,10 +36,10 @@ maintainer: xiaohei-info
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/xiaohei-info/hermes-muse/blob/e3ae9291dd13801f00e1560bd922c1c51b20bdf3/README.md
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/0dade28130b6901dfa2dd81a067856441948d33c/README.md
 platforms: [linux, macos]
 capabilities:
   provides_tools: [muse_manage]
-  provides_hooks: [pre_llm_call, post_llm_call, transform_llm_output, on_session_end, pre_tool_call, post_tool_call, on_skill_lifecycle]
+  provides_hooks: [pre_llm_call, post_llm_call, transform_llm_output, on_session_end, post_tool_call, on_skill_lifecycle]
   provides_middleware: []
   requires_env: []

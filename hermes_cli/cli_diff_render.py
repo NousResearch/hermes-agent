@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from agent.i18n import t
 from hermes_cli.cli_tool_render import DIM, RST, clean_text, clip, error_color, ok_color
@@ -17,6 +18,9 @@ from hermes_cli.cli_tool_render import DIM, RST, clean_text, clip, error_color, 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _FILE_RE = re.compile(r"^(?P<a>\S.*?) → (?P<b>\S.*)$")
 _INDENT = "    "
+_TOKEN_RE = re.compile(r"\w+|\s+|[^\w\s]")
+# Paired lines this different are a rewrite, not an edit: highlighting most of the row says nothing.
+_MIN_PAIR_SIMILARITY = 0.4
 
 
 @dataclass
@@ -103,13 +107,83 @@ def _pad(text: str, width: int) -> str:
     return text + " " * max(0, width - get_cwidth(text))
 
 
-def _render_row(kind: str, number: int | None, body: str, digits: int, width: int, colors: dict) -> str:
+def changed_spans(old: str, new: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]] | None:
+    """Character spans that differ between a removed line and the added line paired with it,
+    compared token by token (words, runs of spaces, punctuation). ``None`` when the lines share
+    too little for a word-level highlight to help."""
+    a, b = _TOKEN_RE.findall(old), _TOKEN_RE.findall(new)
+    matcher = SequenceMatcher(None, a, b, autojunk=False)
+    if matcher.ratio() < _MIN_PAIR_SIMILARITY:
+        return None
+    offsets_a, offsets_b = [0], [0]
+    for token in a:
+        offsets_a.append(offsets_a[-1] + len(token))
+    for token in b:
+        offsets_b.append(offsets_b[-1] + len(token))
+    spans_a, spans_b = [], []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if i2 > i1:
+            spans_a.append((offsets_a[i1], offsets_a[i2]))
+        if j2 > j1:
+            spans_b.append((offsets_b[j1], offsets_b[j2]))
+    return spans_a, spans_b
+
+
+def _pair_rows(rows: list[tuple[str, int | None, str]]) -> dict[int, list[tuple[int, int]]]:
+    """Row index -> changed spans, for each ``-`` run followed by a ``+`` run (paired in order)."""
+    spans: dict[int, list[tuple[int, int]]] = {}
+    index = 0
+    while index < len(rows):
+        if rows[index][0] != "-":
+            index += 1
+            continue
+        minus_start = index
+        while index < len(rows) and rows[index][0] == "-":
+            index += 1
+        plus_start = index
+        while index < len(rows) and rows[index][0] == "+":
+            index += 1
+        for m, p in zip(range(minus_start, plus_start), range(plus_start, index)):
+            found = changed_spans(rows[m][2], rows[p][2])
+            if found is not None:
+                spans[m], spans[p] = found
+    return spans
+
+
+def _highlight(body: str, spans: list[tuple[int, int]], row: str, emphasis: str) -> str:
+    """``body`` with each span on the brighter ``emphasis`` background, returning to ``row``."""
+    out, pos = [], 0
+    for start, end in spans:
+        out.append(body[pos:start])
+        out.append(f"{emphasis}{body[start:end]}{row}")
+        pos = end
+    out.append(body[pos:])
+    return "".join(out)
+
+
+def _render_row(kind: str, number: int | None, body: str, digits: int, width: int, colors: dict,
+                spans: list[tuple[int, int]] | None = None) -> str:
     if kind == "gap":
         return f"{DIM}{_INDENT}{' ' * digits} ⋮{RST}"
     text = f"{_INDENT}{str(number).rjust(digits)} {kind} {body}"
     if kind == " ":
         return f"{colors['dim']}{clip(text, width)}{RST}"
-    return f"{colors['plus' if kind == '+' else 'minus']}{_pad(text, width)}{RST}"
+    key = "plus" if kind == "+" else "minus"
+    row = colors[key]
+    padded = _pad(text, width)
+    emphasis = colors.get(f"{key}_em")
+    if not spans or not emphasis:
+        return f"{row}{padded}{RST}"
+    from prompt_toolkit.utils import get_cwidth
+    prefix = f"{_INDENT}{str(number).rjust(digits)} {kind} "
+    shown = padded[len(prefix):]
+    visible = shown.rstrip(" ")
+    if visible.endswith("…") and get_cwidth(text) > width:  # clipped: never highlight past the cut
+        visible = visible[:-1]
+    clipped = [(start, min(end, len(visible))) for start, end in spans if start < len(visible)]
+    return f"{row}{prefix}{_highlight(shown, clipped, row, emphasis)}{RST}"
 
 
 def _header(diff: DiffFile) -> str:
@@ -132,7 +206,9 @@ def render_inline_diff(text: str, width: int) -> list[str]:
         out.append(_header(diff))
         numbers = [n for _, n, _ in diff.rows if n is not None]
         digits = len(str(max(numbers))) if numbers else 1
-        out.extend(_render_row(kind, number, body, digits, width, colors) for kind, number, body in diff.rows)
+        spans = _pair_rows(diff.rows)
+        out.extend(_render_row(kind, number, body, digits, width, colors, spans.get(index))
+                   for index, (kind, number, body) in enumerate(diff.rows))
     out.extend(f"{DIM}{_INDENT}{line}{RST}" for line in trailer)
     return out
 

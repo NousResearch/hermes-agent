@@ -136,3 +136,78 @@ def test_diff_render_has_header_counts_gutter_and_full_width_change_rows():
 
 def test_diff_render_passes_unparseable_text_through():
     assert render_inline_diff("just a note", 80) == ["just a note"]
+
+
+def test_tool_rows_show_the_tool_emoji_and_honour_skin_overrides(monkeypatch):
+    from agent import display
+    rows, _ = render.render_tool_row("terminal", {"command": "ls"}, 0.1, terminal_result("x"))
+    labelled, _, _ = display.cute_tool_rows("terminal", {"command": "ls"})
+    bare, _, _ = display.cute_tool_rows("terminal", {"command": "ls"}, emoji=False)
+    emoji = labelled[0].removeprefix("┊ ").split(" ", 1)[0]
+    assert emoji not in bare[0]  # the token really is the emoji slot
+    assert emoji in plain(rows)[0] and "ls" in plain(rows)[0]
+
+    class Skin:
+        tool_emojis = {"terminal": "⚔"}
+        tool_prefix = "┊"
+
+        def get_color(self, key, fallback=""):
+            return fallback
+    monkeypatch.setattr(display, "_get_skin", lambda: Skin())
+    skinned, _ = render.render_tool_row("terminal", {"command": "ls"}, 0.1, terminal_result("x"))
+    assert "⚔" in plain(skinned)[0]
+
+
+def test_running_tool_label_is_the_completion_rows_verb_and_detail():
+    label = render.running_tool_label("terminal", {"command": "ls -la /etc"})
+    assert "ls -la /etc" in label and "  " not in label.strip()
+    assert render.running_tool_label("terminal", {"command": "x" * 500}, width=30).endswith("…")
+
+
+def test_todo_checklist_marks_each_status_and_folds_long_lists():
+    items = [{"id": str(i), "content": f"task {i}", "status": "completed" if i < 2 else
+              "in_progress" if i == 2 else "pending"} for i in range(12)]
+    result = json.dumps({"todos": items, "summary": {"total": 12}})
+    lines = render.render_todo_checklist(render.todo_items({}, result), 80)
+    text = plain(lines)
+    assert "☒ task 0" in text[0] and "◼ task 2" in "".join(text) and "☐ task 3" in "".join(text)
+    assert len(lines) == render.TODO_MAX_ITEMS + 1
+    assert t("cli.tool_render.more_items", count=12 - render.TODO_MAX_ITEMS) in text[-1]
+    in_progress = next(line for line in lines if "task 2" in line)
+    done = next(line for line in lines if "task 0" in line)
+    assert render.DIM in done and render.DIM not in in_progress
+
+
+def test_todo_checklist_window_keeps_the_active_item_visible():
+    items = [{"id": str(i), "content": f"task {i}", "status": "completed"} for i in range(10)]
+    items += [{"id": "10", "content": "now", "status": "in_progress"}]
+    assert any("◼ now" in line for line in plain(render.render_todo_checklist(items, 80, limit=4)))
+
+
+def _row_with(lines, marker):
+    return next(line for line in lines if re.search(rf"\d+ {re.escape(marker)} ", _ANSI.sub("", line)))
+
+
+def test_paired_diff_lines_highlight_only_the_changed_words():
+    from agent.display import _diff_ansi
+    colors = _diff_ansi()
+    def emphasised(line, key):  # each run between the brighter background and the row colour
+        return re.findall(re.escape(colors[f"{key}_em"]) + r"(.*?)" + re.escape(colors[key]), line)
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,1 @@\n-    total = price * qty\n+    total = price * quantity\n"
+    lines = render_inline_diff(_rendered_gateway_diff(diff), 80)
+    minus, plus = _row_with(lines, "-"), _row_with(lines, "+")
+    assert emphasised(minus, "minus") == ["qty"] and emphasised(plus, "plus") == ["quantity"]
+    # A pure insertion highlights only the inserted tokens on the added line.
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,1 @@\n-    return a + b\n+    return int(a) + int(b)\n"
+    lines = render_inline_diff(_rendered_gateway_diff(diff), 80)
+    assert emphasised(_row_with(lines, "+"), "plus") == ["int(", ")", "int(", ")"]
+    assert emphasised(_row_with(lines, "-"), "minus") == []
+
+
+def test_unpaired_or_rewritten_diff_lines_get_no_word_highlight():
+    from agent.display import _diff_ansi
+    colors = _diff_ansi()
+    added_only = render_inline_diff(_rendered_gateway_diff("--- a/x\n+++ b/x\n@@ -1,0 +1,1 @@\n+brand new\n"), 80)
+    rewritten = render_inline_diff(_rendered_gateway_diff(
+        "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-alpha beta gamma\n+completely other words here\n"), 80)
+    assert not any(colors["plus_em"] in line or colors["minus_em"] in line for line in added_only + rewritten)

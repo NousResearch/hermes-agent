@@ -8,6 +8,7 @@ imported LAZILY inside each method — the mixin never imports ``cli`` at module
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import sys
 import threading
@@ -1005,6 +1006,7 @@ class CLIModalMixin:
         all questions, one active, and blocks until the key bindings lock every answer. Returns
         ``{"answers": {qid: raw | None}, "outcome"}`` (None = skipped): ``submitted`` when every
         question is locked, ``timed_out`` when the deadline expires, ``cancelled`` on an interrupt."""
+        self._close_reply_frame_before_prompt()
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
         from tools.clarify_gateway import resolve_clarify_timeout
 
@@ -1055,6 +1057,7 @@ class CLIModalMixin:
     def _sudo_password_callback(self) -> str:
         """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style
         state + queue answered by the Enter binding."""
+        self._close_reply_frame_before_prompt()
         from cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
@@ -1088,6 +1091,7 @@ class CLIModalMixin:
         commands. ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks)
         so the shared ``_approval_state`` / ``_approval_deadline`` aren't clobbered.
         """
+        self._close_reply_frame_before_prompt()
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
 
         with self._approval_lock:
@@ -1161,6 +1165,7 @@ class CLIModalMixin:
     def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
         """Masked master-password prompt for an external password manager (agent thread).
         Reuses the sudo panel state so rendering, Enter/ESC handling and interrupt cleanup are shared."""
+        self._close_reply_frame_before_prompt()
         from cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
@@ -1184,6 +1189,7 @@ class CLIModalMixin:
     def _vault_save_login_callback(self, origin: str, site: str):
         """Two-step "save this login" prompt (identifier shown, password masked) on the sudo panel; the
         answer goes to the vault store, never to the model. None = declined."""
+        self._close_reply_frame_before_prompt()
         from cli import _DIM, _RST, _cprint
 
         answer: dict = {}
@@ -1211,6 +1217,7 @@ class CLIModalMixin:
     def _vault_code_callback(self, site: str, hint: str) -> str:
         """One-time-code prompt (shown as typed; a 6-digit code is not a secret worth masking and users
         need to see typos) on the sudo panel. "" = declined/timed out."""
+        self._close_reply_frame_before_prompt()
         from cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
@@ -1231,12 +1238,23 @@ class CLIModalMixin:
         return result
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
+        self._close_reply_frame_before_prompt()
         self._capture_modal_input_snapshot()
         try:
             return prompt_for_secret(self, var_name, prompt, metadata)
         finally:
             self._restore_modal_input_snapshot()
             self._paint_now()
+
+    def _close_reply_frame_before_prompt(self) -> None:
+        """A prompt is about to take over the bottom area: close the streamed reply frame first so
+        its bottom rule never ends up after (or missing around) the prompt's scrollback lines."""
+        close = getattr(self, "_close_reply_frame", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:  # cosmetic: the prompt must still open
+                logging.getLogger(__name__).debug("reply frame close before prompt failed", exc_info=True)
 
     def _capture_modal_input_snapshot(self) -> None:
         """Temporarily clear the input buffer and save the user's in-progress draft."""

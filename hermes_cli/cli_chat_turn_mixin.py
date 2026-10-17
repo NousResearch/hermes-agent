@@ -106,9 +106,12 @@ class CLIChatTurnMixin:
             try:
                 self._reset_stream_state()
                 # Not part of _reset_stream_state: must persist across intermediate turn
-                # boundaries (tool-calling loops), reset once per user turn.
+                # boundaries (tool-calling loops), reset once per user turn. One reply frame
+                # (top rule at the first text, bottom rule at turn end) spans the whole turn.
                 self._reasoning_shown_this_turn = False
                 self._streamed_text_this_turn = ""
+                self._reply_frame_open = False
+                self._running_tools = []
                 self._chat_setup_turn_audio(turn, message, voice_input)
                 # Per-prompt elapsed timer — frozen when the agent thread finishes.
                 self._prompt_start_time = time.time()
@@ -120,6 +123,10 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
+                try:
+                    self._close_reply_frame()
+                except Exception:  # cosmetic; the error line below matters more
+                    logging.getLogger(__name__).debug("reply frame close failed", exc_info=True)
                 _cprint(t("gateway.model.error_prefix", error=e))
                 return None
             finally:

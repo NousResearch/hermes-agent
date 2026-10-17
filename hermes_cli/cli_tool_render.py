@@ -7,11 +7,14 @@ when they are printed. Nothing here changes what the model sees.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from agent.i18n import t
+
+logger = logging.getLogger(__name__)
 
 RST = "\033[0m"
 DIM = "\033[2m"
@@ -210,7 +213,8 @@ def render_preview(name: str, result: Any, *, failed: bool, max_lines: int, widt
 
 def render_tool_row(name: str, args: dict, duration: float, result: Any, *, is_error: bool = False) -> tuple[list[str], bool]:
     """``  ┊ ✓ 💻 $         ls -la  0.4s`` (green ✓ / red ✗ + red failure suffix); one row per
-    bridge sub-call. Returns ``(rows, failed)``."""
+    bridge sub-call, with the tool's emoji (a skin's ``tool_emojis`` entry wins). Returns
+    ``(rows, failed)``."""
     from agent.display import cute_tool_rows, get_skin_tool_prefix
     rows, suffixes, failed = cute_tool_rows(name, args or {}, result)
     failed = failed or bool(is_error)
@@ -224,6 +228,79 @@ def render_tool_row(name: str, args: dict, duration: float, result: Any, *, is_e
         tail = f"  {DIM}{format_duration(duration)}{RST}" if index == len(rows) - 1 else ""
         out.append(f"  {prefix} {glyph} {body}{f'{bad}{suffix}{RST}' if suffix else ''}{tail}")
     return out, failed
+
+
+# ── running tool (live spinner line) ──────────────────────────────────────────────────────────
+
+_VERB_GAP_RE = re.compile(r"^(\S+) {2,}")
+
+
+def running_tool_label(name: str, args: dict | None, width: int = 60) -> str:
+    """``$ ls -la /etc`` / ``read notes.md``: the completion row's verb + detail on one line, no
+    emoji or verb padding, for the live spinner while the call runs."""
+    from agent.display import cute_tool_rows
+    try:
+        rows, _, _ = cute_tool_rows(name, args or {}, None, emoji=False)
+        label = rows[0].removeprefix("┊ ").strip() if rows else name
+    except Exception:  # cosmetic only: never let a label break the spinner
+        logger.debug("running tool label failed for %s", name, exc_info=True)
+        label = name
+    label = _VERB_GAP_RE.sub(r"\1 ", clean_text(label).replace("\n", " "))
+    return clip(label, max(10, width))
+
+
+# ── todo checklist ──────────────────────────────────────────────────────────────────────────
+
+TODO_TOOLS = frozenset({"todo", "todo_list"})
+TODO_MAX_ITEMS = 8
+_STRIKE = "\033[9m"
+_TODO_GLYPHS = {"completed": "☒", "in_progress": "◼", "cancelled": "☒"}
+
+
+def todo_items(args: dict | None, result: Any) -> list[dict]:
+    """The full list after the call: the result's ``todos`` (the store's state), else the args'."""
+    data = result_data(result)
+    items = data.get("todos") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        items = (args or {}).get("todos")
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _todo_window(items: list[dict], limit: int) -> list[dict]:
+    """At most ``limit`` items from the top, slid forward only as far as needed to keep the
+    first unfinished item visible (with one finished item above it for context)."""
+    if len(items) <= limit:
+        return items
+    first_open = next((i for i, item in enumerate(items) if item.get("status") not in ("completed", "cancelled")), 0)
+    start = 0 if first_open < limit else min(first_open - 1, len(items) - limit)
+    return items[start:start + limit]
+
+
+def render_todo_checklist(items: list[dict], width: int, limit: int = TODO_MAX_ITEMS) -> list[str]:
+    """``⎿ ☐ pending`` / ``◼ in progress`` (accent) / ``☒ done`` (dim, struck through), then
+    ``… +N more`` when the list is longer than ``limit``."""
+    if not items:
+        return []
+    accent = _hex_fg("ui_accent", "#FFBF00")
+    shown = _todo_window(items, limit)
+    body = max(10, width - len(GUTTER_FIRST))
+    out = []
+    for index, item in enumerate(shown):
+        status = str(item.get("status") or "pending")
+        indent = "  " if item.get("parent") else ""
+        text = clip(clean_text(str(item.get("content") or "")).replace("\n", " "), body - 2 - len(indent))
+        gutter = GUTTER_FIRST if index == 0 else GUTTER_REST
+        glyph = _TODO_GLYPHS.get(status, "☐")
+        if status == "in_progress":
+            line = f"{gutter}{indent}{accent}{glyph} {text}{RST}"
+        elif status in ("completed", "cancelled"):
+            line = f"{DIM}{gutter}{indent}{glyph} {_STRIKE}{text}{RST}"
+        else:
+            line = f"{gutter}{indent}{glyph} {text}"
+        out.append(line)
+    if len(items) > len(shown):
+        out.append(f"{DIM}{GUTTER_REST}{t('cli.tool_render.more_items', count=len(items) - len(shown))}{RST}")
+    return out
 
 
 # ── explored group ──────────────────────────────────────────────────────────────────────────

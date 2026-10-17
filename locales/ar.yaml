@@ -2583,6 +2583,8 @@ cli:
     edited: "عُدّل {path}"
     thought: "فكّر"
     thought_for: "فكّر لمدة {duration}"
+    more_items: "… +{count} أخرى"
+    tools_running: "{count} أدوات قيد التشغيل"
   transcript:
     title: "السجل"
     scope_last: "الدور الأخير"
@@ -3891,6 +3893,8 @@ tips:
   t375: "API_SERVER_MODEL_NAME يخصص اسم النموذج في /v1/models — ضروري لإعدادات Open WebUI متعددة الملفات التعريفية."
   t376: "تُقدَّم إضافات لوحة التحكم من /dashboard-plugins/<name>/ — ضع الملفات في ~/.hermes/dashboard-plugins/."
   t377: "المحادثات ذات --source tool مستثناة من hermes sessions list افتراضيًا — حدد --source صراحةً لعرضها."
+  t378: "اضغط Ctrl+O في CLI لفتح النص الكامل للدور الأخير: مخرجات الأدوات كاملة ورموز الخروج والفروقات والاستدلال."
+  t379: "اضبط display.tool_output_preview: 0 لإخفاء معاينة النتيجة الباهتة أسفل كل صف أداة في CLI."
   placeholder:
     p01: "اسأل أي شيء، أو اكتب / للأوامر…"
     p02: "لخّص محتوى هذا المجلد"

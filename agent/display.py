@@ -82,12 +82,19 @@ def _tinted_bg(rgb: tuple[int, int, int], dominant: int) -> str:
     return f"\033[38;2;255;255;255;48;2;{r};{g};{b}m"
 
 
+def _emphasis_bg(rgb: tuple[int, int, int], dominant: int) -> str:
+    """A brighter tint of the same skin colour: the changed words inside a paired diff row."""
+    r, g, b = (max(v * 4 // 5, 60) if i == dominant else max(v // 2, 20) for i, v in enumerate(rgb))
+    return f"\033[38;2;255;255;255;48;2;{r};{g};{b}m"
+
+
 def _diff_ansi() -> dict[str, str]:
     """Return ANSI escapes for diff display, resolved from the active skin."""
     global _diff_colors_cached
     if _diff_colors_cached is not None:
         return _diff_colors_cached
-    colors = {k: _fg(*rgb) for k, (_, rgb) in _DIFF_FG.items()} | {k: v[3] for k, v in _DIFF_BG.items()}
+    colors = ({k: _fg(*rgb) for k, (_, rgb) in _DIFF_FG.items()} | {k: v[3] for k, v in _DIFF_BG.items()}
+              | {f"{k}_em": _emphasis_bg(_hex_rgb(v[1]), v[2]) for k, v in _DIFF_BG.items()})
     try:
         skin = _get_skin()
         for key, (skin_key, fallback) in _DIFF_FG.items():
@@ -98,6 +105,7 @@ def _diff_ansi() -> dict[str, str]:
             h = bg_hex[key]
             if h and len(h) == 7:
                 colors[key] = _tinted_bg(_hex_rgb(h), dominant)
+                colors[f"{key}_em"] = _emphasis_bg(_hex_rgb(h), dominant)
     except Exception:
         pass
     _diff_colors_cached = colors
@@ -1206,11 +1214,25 @@ _CUTE_LINES = {
 }
 
 
-def _cute_bridge_rows(tool_name: str, args: dict) -> list[str] | None:
+def _skin_emoji_override(name: str) -> bool:
+    """Whether the active skin explicitly sets ``tool_emojis[name]``."""
+    skin = _get_skin()
+    return bool(skin and skin.tool_emojis and skin.tool_emojis.get(name))
+
+
+def _replace_row_emoji(row: str, emoji: str = "") -> str:
+    """``┊ {emoji} {rest}`` -> ``┊ {new emoji} {rest}``, or ``┊ {rest}`` when ``emoji`` is empty."""
+    _, sep, rest = row.removeprefix("┊ ").partition(" ")
+    if not sep:
+        return row
+    return f"┊ {f'{emoji} ' if emoji else ''}{rest.lstrip(' ')}"
+
+
+def _cute_bridge_rows(tool_name: str, args: dict, *, emoji: bool = True) -> list[str] | None:
     labels = bridge_tool_labels(tool_name, args)
     if not labels:
         return None
-    return [f"┊ {label.emoji} {_cute_trunc(label.text)}"
+    return [f"┊ {f'{label.emoji} ' if emoji or _skin_emoji_override(label.name) else ''}{_cute_trunc(label.text)}"
             f"{f'  {_cute_trunc(label.preview)}' if label.preview else ''}" for label in labels]
 
 
@@ -1246,15 +1268,22 @@ def _bridge_row_suffixes(rows: int, result: Any, call_suffix: str) -> list[str]:
     return suffixes
 
 
-def cute_tool_rows(tool_name: str, args: dict, result: str | None = None) -> tuple[list[str], list[str], bool]:
+def cute_tool_rows(tool_name: str, args: dict, result: str | None = None, *,
+                   emoji: bool = True) -> tuple[list[str], list[str], bool]:
     """``(rows, failure_suffixes, is_failure)`` behind a completion label: each row is
-    ``┊ {emoji} {verb:9} {detail}`` (one per bridge sub-call), without duration or skin prefix."""
+    ``┊ {emoji} {verb:9} {detail}`` (one per bridge sub-call), without duration or skin prefix.
+    A skin's ``tool_emojis`` entry replaces the built-in emoji; ``emoji=False`` drops the
+    emoji unless the skin sets one for that tool."""
     args = redact_tool_args_for_display(tool_name, args) or args
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     render = _CUTE_LINES.get(tool_name)
-    rows = _cute_bridge_rows(tool_name, args)
+    rows = _cute_bridge_rows(tool_name, args, emoji=emoji)
     if rows is None:
         body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
+        skin = _get_skin()
+        override = skin.tool_emojis.get(tool_name) if skin and skin.tool_emojis else None
+        if override or not emoji:
+            body = _replace_row_emoji(body, override or "")
         return [body], [failure_suffix if is_failure else ""], is_failure
     return rows, _bridge_row_suffixes(len(rows), result, failure_suffix if is_failure else ""), is_failure
 

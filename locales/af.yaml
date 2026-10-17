@@ -2583,6 +2583,8 @@ cli:
     edited: "{path} gewysig"
     thought: "Gedink"
     thought_for: "Gedink vir {duration}"
+    more_items: "… +{count} meer"
+    tools_running: "{count} gereedskap loop"
   transcript:
     title: "Transkripsie"
     scope_last: "laaste beurt"
@@ -3891,6 +3893,8 @@ tips:
   t375: "API_SERVER_MODEL_NAME pas die modelnaam op /v1/models aan — noodsaaklik vir Open WebUI-opstellings met verskeie profiele."
   t376: "Dashboard-plugins word vanaf /dashboard-plugins/<name>/ bedien — plaas lêers in ~/.hermes/dashboard-plugins/."
   t377: "--source tool-kletse word by verstek uit hermes sessions list uitgesluit — stel --source eksplisiet om hulle te sien."
+  t378: "Druk Ctrl+O in die CLI om die volledige transkripsie van die laaste beurt oop te maak: volledige gereedskapuitvoer, uittreekodes, verskille en redenering."
+  t379: "Stel display.tool_output_preview: 0 om die dowwe resultaatvoorskou onder elke gereedskapry in die CLI te versteek."
   placeholder:
     p01: "Vra enigiets, of tik / vir opdragte…"
     p02: "Som op wat in hierdie vouer is"

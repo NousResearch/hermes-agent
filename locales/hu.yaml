@@ -2600,6 +2600,8 @@ cli:
     edited: "szerkesztve: {path}"
     thought: "Gondolkodott"
     thought_for: "Gondolkodott {duration}"
+    more_items: "… +{count} további"
+    tools_running: "{count} eszköz fut"
   transcript:
     title: "Átirat"
     scope_last: "utolsó kör"
@@ -3908,6 +3910,8 @@ tips:
   t375: "Az API_SERVER_MODEL_NAME testreszabja a modellnevet a /v1/models végponton — többprofilos Open WebUI felállásoknál elengedhetetlen."
   t376: "A dashboard-pluginok a /dashboard-plugins/<name>/ útvonalról szolgálódnak ki — másold a fájlokat a ~/.hermes/dashboard-plugins/ mappába."
   t377: "A --source tool chatek alapból nem szerepelnek a hermes sessions list kimenetében — add meg a --source kapcsolót kifejezetten, hogy lásd őket."
+  t378: "Nyomd meg a Ctrl+O-t a CLI-ben az utolsó kör teljes átiratának megnyitásához: teljes eszközkimenet, kilépési kódok, diffek és érvelés."
+  t379: "Állítsd be a display.tool_output_preview: 0 értéket, hogy elrejtsd a halvány eredmény-előnézetet minden eszközsor alatt a CLI-ben."
   placeholder:
     p01: "Kérdezz bármit, vagy írj / jelet a parancsokhoz…"
     p02: "Foglald össze, mi van ebben a mappában"

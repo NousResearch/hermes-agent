@@ -2583,6 +2583,8 @@ cli:
     edited: "düzenlendi {path}"
     thought: "Düşündü"
     thought_for: "{duration} düşündü"
+    more_items: "… +{count} tane daha"
+    tools_running: "{count} araç çalışıyor"
   transcript:
     title: "Döküm"
     scope_last: "son tur"
@@ -3891,6 +3893,8 @@ tips:
   t375: "API_SERVER_MODEL_NAME, /v1/models üzerindeki model adını özelleştirir — çok profilli Open WebUI kurulumları için şarttır."
   t376: "Panel eklentileri /dashboard-plugins/<name>/ yolundan sunulur — dosyaları ~/.hermes/dashboard-plugins/ içine koyun."
   t377: "--source tool sohbetleri varsayılan olarak hermes sessions list çıktısında yer almaz — görmek için --source değerini açıkça belirtin."
+  t378: "Son turun tam dökümünü açmak için CLI'da Ctrl+O'ya basın: tam araç çıktısı, çıkış kodları, diff'ler ve akıl yürütme."
+  t379: "CLI'da her araç satırının altındaki soluk sonuç önizlemesini gizlemek için display.tool_output_preview: 0 ayarlayın."
   placeholder:
     p01: "Bir şey sorun veya komutlar için / yazın…"
     p02: "Bu klasördekileri özetle"

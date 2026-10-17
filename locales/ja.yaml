@@ -2583,6 +2583,8 @@ cli:
     edited: "{path} を編集"
     thought: "思考"
     thought_for: "{duration} 思考"
+    more_items: "… 他 {count} 件"
+    tools_running: "{count} 個のツールを実行中"
   transcript:
     title: "トランスクリプト"
     scope_last: "直近のターン"
@@ -3891,6 +3893,8 @@ tips:
   t375: "API_SERVER_MODEL_NAME は /v1/models に表示されるモデル名をカスタマイズします。複数プロファイルの Open WebUI 構成では必須です。"
   t376: "ダッシュボードプラグインは /dashboard-plugins/<name>/ から配信されます。ファイルを ~/.hermes/dashboard-plugins/ に置いてください。"
   t377: "--source tool のチャットはデフォルトで hermes sessions list から除外されます。表示するには --source を明示的に指定してください。"
+  t378: "CLI で Ctrl+O を押すと、直前のターンの完全なトランスクリプト(ツール出力全体、終了コード、差分、推論)を開けます。"
+  t379: "display.tool_output_preview: 0 を設定すると、CLI の各ツール行の下に表示される薄い結果プレビューを非表示にできます。"
   placeholder:
     p01: "何でも質問するか、/ を入力してコマンドを表示…"
     p02: "このフォルダーの内容を要約して"

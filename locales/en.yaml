@@ -2683,6 +2683,8 @@ cli:
     edited: "edited {path}"
     thought: "Thought"
     thought_for: "Thought for {duration}"
+    more_items: "… +{count} more"
+    tools_running: "{count} tools running"
   transcript:
     title: "Transcript"
     scope_last: "last turn"
@@ -4005,6 +4007,8 @@ tips:
   t375: "API_SERVER_MODEL_NAME customizes the model name on /v1/models — essential for multi-profile Open WebUI setups."
   t376: "Dashboard plugins are served from /dashboard-plugins/<name>/ — drop files into ~/.hermes/dashboard-plugins/."
   t377: "--source tool chats are excluded from hermes sessions list by default — set --source explicitly to see them."
+  t378: "Press Ctrl+O in the CLI to open the full transcript of the last turn: complete tool output, exit codes, diffs and reasoning."
+  t379: "Set display.tool_output_preview: 0 to hide the dim result preview under each tool row in the CLI."
   # Empty-composer example prompts (TUI). Generic on purpose: Hermes is not coding-only.
   placeholder:
     p01: "Ask anything, or type / for commands…"

@@ -67,15 +67,21 @@ class CLIToolActivityMixin:
             self._explore_pending = pending
             return
         self._flush_explore_group()
-        if mode == "new" and name == getattr(self, "_last_scrollback_tool", None):
+        # "new" collapses repeats of one tool, but each todo update is a new plan state.
+        if mode == "new" and name == getattr(self, "_last_scrollback_tool", None) and name not in render.TODO_TOOLS:
             return
         self._last_scrollback_tool = name
-        self._print_tool_block(rows, name, result, failed)
+        self._print_tool_block(rows, name, result, failed, args)
 
-    def _print_tool_block(self, rows: list[str], name: str, result, failed: bool) -> None:
+    def _print_tool_block(self, rows: list[str], name: str, result, failed: bool, args: dict | None = None) -> None:
         from cli import _cprint
         for row in rows:
             _cprint(row)
+        if name in render.TODO_TOOLS and not failed:
+            # The plan itself is the result: a checklist, independent of the preview budget.
+            for line in render.render_todo_checklist(render.todo_items(args, result), _columns()):
+                _cprint(line)
+            return
         budget = self._tool_preview_line_budget()
         if budget <= 0:
             return
@@ -95,7 +101,7 @@ class CLIToolActivityMixin:
             name, args, duration, result = group.calls[0]
             rows, failed = render.render_tool_row(name, args, duration, result)
             self._last_scrollback_tool = name
-            self._print_tool_block(rows, name, result, failed)
+            self._print_tool_block(rows, name, result, failed, args)
             return
         self._last_scrollback_tool = _EXPLORED_SENTINEL
         _cprint(render.render_explore_row(group, _columns()))

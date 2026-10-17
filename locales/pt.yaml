@@ -2583,6 +2583,8 @@ cli:
     edited: "editado {path}"
     thought: "Pensou"
     thought_for: "Pensou por {duration}"
+    more_items: "… +{count} mais"
+    tools_running: "{count} ferramentas em execução"
   transcript:
     title: "Transcrição"
     scope_last: "último turno"
@@ -3891,6 +3893,8 @@ tips:
   t375: "API_SERVER_MODEL_NAME personaliza o nome do modelo em /v1/models — essencial para configurações do Open WebUI com vários perfis."
   t376: "Os plugins do painel são servidos em /dashboard-plugins/<name>/ — coloque os arquivos em ~/.hermes/dashboard-plugins/."
   t377: "Chats com --source tool ficam fora de hermes sessions list por padrão — defina --source explicitamente para vê-los."
+  t378: "Pressione Ctrl+O na CLI para abrir a transcrição completa do último turno: saída completa das ferramentas, códigos de saída, diffs e raciocínio."
+  t379: "Defina display.tool_output_preview: 0 para ocultar a prévia esmaecida do resultado sob cada linha de ferramenta na CLI."
   placeholder:
     p01: "Pergunte qualquer coisa ou digite / para ver comandos…"
     p02: "Resuma o que há nesta pasta"

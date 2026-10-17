@@ -557,11 +557,17 @@ class CLIStatusBarMixin:
         """The live spinner/status text exactly as rendered in the TUI."""
         from hermes_cli.cli_transcript import SPINNER_HINT_AFTER_S, spinner_suffix
         txt = getattr(self, "_spinner_text", "")
+        t0 = getattr(self, "_tool_start_time", 0) or 0
+        running = self._running_tool_status() if hasattr(self, "_running_tool_status") else None
+        if running:  # name the executing tool(s); the ✓/✗ row lands in scrollback on completion
+            from cli import _COMMAND_SPINNER_FRAMES
+            label, t0 = running
+            frame = _COMMAND_SPINNER_FRAMES[int(time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)]
+            txt = f"{frame} {label}"
         if not txt:
             return ""
         flow = self._spinner_token_flow()
         # A running tool shows its own timer; between tools the whole turn's elapsed time.
-        t0 = getattr(self, "_tool_start_time", 0) or 0
         turn_t0 = getattr(self, "_prompt_start_time", None) if getattr(self, "_agent_running", False) else None
         turn_elapsed = max(0.0, time.time() - turn_t0) if turn_t0 else None
         elapsed = time.monotonic() - t0 if t0 > 0 else turn_elapsed

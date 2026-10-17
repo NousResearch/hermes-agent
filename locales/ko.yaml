@@ -2583,6 +2583,8 @@ cli:
     edited: "{path} 편집"
     thought: "생각함"
     thought_for: "{duration} 동안 생각함"
+    more_items: "… +{count}개 더"
+    tools_running: "{count}개 도구 실행 중"
   transcript:
     title: "대화 기록"
     scope_last: "마지막 턴"
@@ -3891,6 +3893,8 @@ tips:
   t375: "API_SERVER_MODEL_NAME은 /v1/models에 표시되는 모델 이름을 바꿔요 — 다중 프로필 Open WebUI 구성에 꼭 필요해요."
   t376: "대시보드 플러그인은 /dashboard-plugins/<name>/에서 제공돼요 — 파일을 ~/.hermes/dashboard-plugins/에 넣으세요."
   t377: "--source tool 채팅은 기본적으로 hermes sessions list에서 제외돼요 — 보려면 --source를 명시적으로 지정하세요."
+  t378: "CLI에서 Ctrl+O를 누르면 마지막 턴의 전체 기록(전체 도구 출력, 종료 코드, diff, 추론)을 열 수 있습니다."
+  t379: "display.tool_output_preview: 0 으로 설정하면 CLI의 각 도구 행 아래에 표시되는 흐린 결과 미리보기를 숨깁니다."
   placeholder:
     p01: "무엇이든 물어보세요. 명령은 / 를 입력하세요…"
     p02: "이 폴더에 무엇이 있는지 요약해 줘"

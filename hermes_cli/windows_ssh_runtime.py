@@ -123,12 +123,36 @@ def _verify_security(handle) -> None:
             raise OSError("Windows SSH runtime object has a permissive DACL")
 
 
+def _expected_final_path(w, path: Path) -> str:
+    """Where ``path`` must open. The Hermes root may be a junction to another drive (see
+    ``gateway_windows._preserve_hermes_home_path``), so it is resolved; every component below it
+    is Hermes-created and must match as spelled, so a junction swapped in there is rejected.
+    Ancestors of a missing root, created by ``_ensure_directory``, are compared as spelled."""
+    anchor = get_default_hermes_root()
+    try:
+        parts = path.relative_to(anchor).parts
+    except ValueError:
+        return os.path.abspath(str(path))
+    win32con, win32file = w.win32con, w.win32file
+    try:
+        handle = win32file.CreateFile(
+            str(anchor), 0, win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+            None, win32con.OPEN_EXISTING, win32con.FILE_FLAG_BACKUP_SEMANTICS, None)
+    except w.pywintypes.error as exc:
+        raise OSError("Windows SSH runtime root is not accessible") from exc
+    try:
+        return os.path.join(win32file.GetFinalPathNameByHandle(handle, 0).removeprefix("\\\\?\\"), *parts)
+    finally:
+        win32file.CloseHandle(handle)
+
+
 def _open(path: Path, access: int, creation: int, flags: int, share: int = 0):
-    win32file = _win32().win32file
+    w = _win32()
+    win32file = w.win32file
     handle = win32file.CreateFile(str(path), access, share, _security_attributes(), creation, flags, None)
     try:
         actual = win32file.GetFinalPathNameByHandle(handle, 0).removeprefix("\\\\?\\")
-        if os.path.normcase(actual) != os.path.normcase(os.path.abspath(str(path))):
+        if os.path.normcase(actual) != os.path.normcase(_expected_final_path(w, path)):
             raise OSError("Windows SSH runtime handle escaped its expected path")
         if win32file.GetFileInformationByHandle(handle)[0] & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
             raise OSError("Windows SSH runtime path contains a reparse point")

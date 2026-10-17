@@ -57,6 +57,7 @@ from hermes_cli.plugins_dispatch import (
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
+from hermes_cli.plugins_cli_registration import register_cli_command as _register_cli_command
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
@@ -631,15 +632,11 @@ class PluginContext:
     def register_cli_command(
         self, name: str, help: str, setup_fn: Callable, handler_fn: Callable | None = None,
         description: str = "",
-    ) -> PluginRegistration:
-        """Register a CLI subcommand (``hermes <name> ...``). *setup_fn* receives the argparse
-        subparser; *handler_fn* becomes ``set_defaults(func=...)``."""
-        entry = {
-            "name": name, "help": help, "description": description, "setup_fn": setup_fn,
-            "handler_fn": handler_fn, "plugin": self.manifest.name, "plugin_key": self.plugin_id,
-        }
-        return self._register_entry("cli_command", name, self._manager._cli_commands, entry,
-                                    "Plugin %s registered CLI command: %s", name)
+    ) -> Optional[PluginRegistration]:
+        """Register a native CLI subcommand; return ``None`` on a foreign-owner collision.
+        Same-owner replacement and registration-handle cleanup remain supported."""
+        return _register_cli_command(self, name, help, setup_fn, handler_fn, description,
+                                     logger=logger)
 
     @_serialized_replacement
     def register_command(

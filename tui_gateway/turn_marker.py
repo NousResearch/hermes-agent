@@ -40,6 +40,8 @@ _MAX_PROMPT_CHARS = 64_000
 _PROGRESS_MIN_INTERVAL_SECS = 15.0
 
 _lock = threading.Lock()
+_last_touch_lock = threading.Lock()
+_last_touch: dict[tuple[str, str], float] = {}
 _file_lock_holder = threading.local()
 
 
@@ -203,15 +205,20 @@ def touch_turn_marker(home: Path | str, session_key: str, *, now: float | None =
 
     Called from the turn's own progress events (tool steps, streamed deltas), never from a timer:
     a timer keeps touching a turn that is wedged inside one call, which is exactly the case this
-    signal has to detect. Throttled because a busy turn produces many events and every touch is a
-    locked read-modify-write of a file shared by sibling backends.
+    signal has to detect.
 
-    Only an EXISTING marker for this chat is refreshed — a touch never creates one, so it cannot
-    resurrect a turn that already concluded. Best effort: every failure answers False.
+    Throttled in process BEFORE any file access: a chatty turn emits dozens of events per second and
+    every real touch needs the cross-process file lock, so only a genuinely due touch pays for it.
+    Only an EXISTING marker for this chat is refreshed — a touch never creates or revives one.
+    Best effort: every failure answers False.
     """
     if not session_key:
         return False
     stamp = time.time() if now is None else float(now)
+    slot = (str(home), session_key)
+    with _last_touch_lock:
+        if stamp - _last_touch.get(slot, 0.0) < min_interval:
+            return False
     wrote = False
 
     def mutate(entries: dict[str, dict]) -> dict[str, dict] | None:
@@ -226,8 +233,10 @@ def touch_turn_marker(home: Path | str, session_key: str, *, now: float | None =
         return entries
 
     _update(home, session_key, mutate, "touch")
+    if wrote:
+        with _last_touch_lock:
+            _last_touch[slot] = stamp
     return wrote
-
 
 def turn_marker_stale(entry: dict[str, Any] | None, *, stale_after: float,
                       now: float | None = None) -> bool:

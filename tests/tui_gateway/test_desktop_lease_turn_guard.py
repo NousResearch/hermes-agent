@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import sys
 import threading
 from pathlib import Path
@@ -86,12 +87,14 @@ def _marker_path(home: Path) -> Path:
     return home / "desktop" / "interrupted_turns.json"
 
 
-def _write_marker(home: Path, key: str, *, writer_pid: int, prompt: str) -> Path:
+def _write_marker(home: Path, key: str, *, writer_pid: int, prompt: str, age: float = 0.0) -> Path:
+    """A recorded turn that emitted progress ``age`` seconds ago (0 = right now, i.e. RUNNING)."""
+    stamp = time.time() - age
     """Exactly the entry ``record_turn_start`` leaves, for a marker written by a chosen pid."""
     path = _marker_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({key: {
-        "attempts": 0, "prompt": prompt, "started_at": 1_000.0, "auto_continue": False,
+        "attempts": 0, "prompt": prompt, "started_at": stamp, "progress_at": stamp, "auto_continue": False,
         "writer_pid": writer_pid,
     }}), encoding="utf-8")
     return path
@@ -144,7 +147,7 @@ def test_a_running_blank_text_turn_keeps_the_holder_fenced(
     _isolate(monkeypatch, False)
     session = _desktop_session(home, "chat-guard-2")
 
-    assert server._same_desktop_holder_may_be_superseded(holder, home=home) is False
+    assert server._holder_may_be_superseded(holder, home=home) is False
     refusal = server._ensure_active_session_slot("sid-guard", session)
     assert refusal is not None and refusal.reason == SESSION_NOT_OWNED
     assert [entry["pid"] for entry in json.loads(_state_path(home).read_text())["entries"]] == [foreign_pid]
@@ -172,7 +175,7 @@ def test_an_unreadable_marker_file_fails_closed(
         # ...while the best-effort auto-continue reader stays best-effort.
         assert read_turn_marker(home, "chat-guard-3") is None
 
-        assert server._same_desktop_holder_may_be_superseded(holder, home=home) is False
+        assert server._holder_may_be_superseded(holder, home=home) is False
         refusal = server._ensure_active_session_slot("sid-guard", _desktop_session(home, "chat-guard-3"))
         assert refusal is not None and refusal.reason == SESSION_NOT_OWNED
         assert [e["pid"] for e in json.loads(_state_path(home).read_text())["entries"]] == [foreign_pid]
@@ -196,7 +199,7 @@ def test_an_isolated_turn_of_the_holder_refuses_the_handoff(
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     try:
         _write_marker(home, "chat-guard-4", writer_pid=child.pid, prompt="isolated turn")
-        assert server._same_desktop_holder_may_be_superseded(holder, home=home) is False
+        assert server._holder_may_be_superseded(holder, home=home) is False
         refusal = server._ensure_active_session_slot("sid-guard", session)
         assert refusal is not None and refusal.reason == SESSION_NOT_OWNED
     finally:
@@ -215,11 +218,11 @@ def test_an_isolated_profile_refuses_when_no_marker_is_readable(
     _write_entries(_state_path(home), [holder])
 
     _isolate(monkeypatch, True)
-    assert server._same_desktop_holder_may_be_superseded(holder, home=home) is False
+    assert server._holder_may_be_superseded(holder, home=home) is False
 
     # Isolation off (the default, and this machine): the same holder with no marker hands over.
     _isolate(monkeypatch, False)
-    assert server._same_desktop_holder_may_be_superseded(holder, home=home) is True
+    assert server._holder_may_be_superseded(holder, home=home) is True
 
 
 def test_a_holder_dead_writer_still_hands_the_chat_over(
@@ -233,28 +236,39 @@ def test_a_holder_dead_writer_still_hands_the_chat_over(
     _write_entries(_state_path(home), [holder])
     _isolate(monkeypatch, False)
 
-    assert server._same_desktop_holder_may_be_superseded(holder, home=home) is True
+    assert server._holder_may_be_superseded(holder, home=home) is True
     assert server._ensure_active_session_slot("sid-guard", _desktop_session(home, "chat-guard-6")) is None
 
     # A marker naming the holder whose writer is provably gone is not a turn in flight.
     _write_marker(home, "chat-guard-6", writer_pid=8_000_000_000, prompt="crashed turn")
-    assert server._same_desktop_holder_may_be_superseded(holder, home=home) is True
+    assert server._holder_may_be_superseded(holder, home=home) is True
 
 
-def test_a_marker_written_by_somebody_else_does_not_block_without_isolation(
+def test_a_fresh_marker_from_anybody_blocks_even_without_isolation(
     tmp_path: Path, foreign_pid: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verified behaviour kept: an unattributable marker is not proof of THE HOLDER's turn."""
+    """Fresh progress on the chat means somebody is working in it, whoever the writer is.
+
+    Only a turn can hold a lease, so a marker that does not name the holder is anomalous; the old
+    rule ignored it unless turn isolation was on, and refusing is the fail-closed reading.
+    """
     home = tmp_path / "home"
     home.mkdir(parents=True)
     monkeypatch.setattr(active_sessions, "_DESKTOP_INSTANCE_ID", INSTANCE_A)
-    holder = _holder_entry("chat-guard-7", foreign_pid, attached=False)
+    holder = _holder_entry("chat-guard-9", foreign_pid, attached=False)
     _write_entries(_state_path(home), [holder])
     _isolate(monkeypatch, False)
-    _write_marker(home, "chat-guard-7", writer_pid=os.getpid(), prompt="this process's own marker")
 
-    assert server._same_desktop_holder_may_be_superseded(holder, home=home) is True
-
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        _write_marker(home, "chat-guard-9", writer_pid=child.pid, prompt="somebody's turn")
+        assert server._holder_may_be_superseded(holder, home=home) is False
+        # ... a marker that stopped progressing is the hung case: the chat may be taken over.
+        _write_marker(home, "chat-guard-9", writer_pid=child.pid, prompt="dead turn", age=4 * 3600)
+        assert server._holder_may_be_superseded(holder, home=home) is True
+    finally:
+        child.kill()
+        child.wait(timeout=30)
 
 def test_a_reattached_client_wins_over_the_stale_detach_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

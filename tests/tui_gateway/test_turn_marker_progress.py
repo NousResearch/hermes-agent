@@ -6,6 +6,7 @@ a turn that stops producing them goes stale, and a touch can never invent or res
 """
 
 import json
+import threading
 
 from tui_gateway import turn_marker as tm
 
@@ -69,3 +70,34 @@ def test_a_marker_without_the_field_falls_back_to_started_at():
     assert tm.turn_marker_stale(entry, stale_after=100, now=1_050) is False
     assert tm.turn_marker_stale(entry, stale_after=100, now=1_101) is True
     assert tm.turn_marker_stale(None, stale_after=100, now=1_101) is False
+
+
+def test_a_real_progress_event_refreshes_the_marker(tmp_path, monkeypatch):
+    """The wiring contract: a turn that emits a tool step proves it is alive.
+
+    Without this the marker stays at its start stamp, a long turn looks hung, and the handoff would
+    steal a chat from a working turn.
+    """
+    from tui_gateway import server
+
+    home = tmp_path / "home"
+    tm.record_turn_start(home, "chat-hb", "work")
+    path = home / "desktop" / "interrupted_turns.json"
+
+    # Age the stamp past the throttle so a touch is due, exactly like a turn running for a while.
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["chat-hb"]["progress_at"] -= 30
+    path.write_text(json.dumps(data), encoding="utf-8")
+    before = json.loads(path.read_text(encoding="utf-8"))["chat-hb"]["progress_at"]
+
+    session = {
+        "session_key": "chat-hb", "source": "desktop", "profile_home": str(home),
+        "history_lock": threading.Lock(), "running": True,
+        "_active_turn_marker_key": "chat-hb",
+    }
+    monkeypatch.setitem(server._sessions, "sid-hb", session)
+
+    server._agent_cbs("sid-hb")["tool_start_callback"]("tc-1", "terminal", {})
+
+    after = json.loads(path.read_text(encoding="utf-8"))["chat-hb"]["progress_at"]
+    assert after > before + 25, "a tool step must refresh the progress stamp"

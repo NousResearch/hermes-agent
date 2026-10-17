@@ -546,3 +546,72 @@ def test_stopping_round_trip_through_real_result_files(sandbox):
     assert payload is not None
     assert payload["outcome"] == dr.OUTCOME_REJECTED_STOPPING
     assert payload["generation"] == FAKE_GENERATION
+
+
+# --- review gate 1 round 3: result-record validity + integer overflow ----------
+
+
+@pytest.mark.parametrize("bad_content", [
+    "not json at all",
+    '{"request_id": "someone-else", "outcome": "accepted"}',
+    '{"request_id": "req-1", "outcome": "not-a-real-outcome"}',
+    '[]',
+])
+def test_corrupt_result_file_fails_closed_without_scheduling(sandbox, bad_content):
+    """A result file that EXISTS but is not a valid terminal record must never
+    be treated as 'no decision' — fail-closed, zero schedules (R1)."""
+    (sandbox / "result-req-1.json").write_text(bad_content)
+    _write_pending(sandbox)
+    s = Sched()
+    dr.process_sigusr1_request(s.schedule, cancel_restart=s.cancel)
+    assert s.calls == []
+    # Evidence preserved: nothing valid was produced over the corrupt file.
+    assert dr.read_result("req-1") is None
+    assert (sandbox / "result-req-1.json").read_text() == bad_content
+    assert not (sandbox / "pending-req-1.json").exists()
+
+
+def test_retry_recovery_trusts_content_not_path_existence(sandbox, monkeypatch):
+    """R1: write_result_with_retry must not treat 'path exists' as persisted."""
+    monkeypatch.setattr(dr, "write_result", lambda *a, **k: False)  # all writes fail
+
+    # Corrupt file at the path: NOT success — the caller must cancel (I1).
+    (sandbox / "result-req-1.json").write_text("garbage")
+    assert dr.write_result_with_retry("req-1", dr.OUTCOME_ACCEPTED) is False
+
+    # A valid record with a DIFFERENT outcome: not proof of THIS acceptance.
+    path = sandbox / "result-req-1.json"
+    path.write_text(json.dumps({
+        "schema_version": dr.PROTOCOL_SCHEMA_VERSION,
+        "request_id": "req-1",
+        "outcome": dr.OUTCOME_REJECTED_INVALID,
+        "generation": FAKE_GENERATION,
+        "decided_at": time.time(),
+    }))
+    path.chmod(0o600)  # valid permissions: proves the CONTENT check, not the perms
+    assert dr.write_result_with_retry("req-1", dr.OUTCOME_ACCEPTED) is False
+
+    # A valid record matching the attempted decision IS the persistence proof.
+    path.write_text(json.dumps({
+        "schema_version": dr.PROTOCOL_SCHEMA_VERSION,
+        "request_id": "req-1",
+        "outcome": dr.OUTCOME_ACCEPTED,
+        "generation": FAKE_GENERATION,
+        "decided_at": time.time(),
+    }))
+    path.chmod(0o600)
+    assert dr.write_result_with_retry("req-1", dr.OUTCOME_ACCEPTED) is True
+
+
+def test_huge_integer_fingerprint_is_rejected_without_crashing_the_batch(sandbox):
+    """math.isfinite() overflows on huge JSON ints (R2) — refused as an illegal
+    number, and the rest of the batch still gets decided."""
+    _write_pending(sandbox, request_id="req-huge",
+                   target_generation={"pid": 4242, "start_time": 10 ** 400})
+    _write_pending(sandbox, request_id="req-good")
+    s = Sched("scheduled")
+    dr.process_sigusr1_request(s.schedule, cancel_restart=s.cancel)
+
+    assert _read_result(sandbox, "req-huge")["outcome"] == dr.OUTCOME_REJECTED_INVALID
+    assert _read_result(sandbox, "req-good")["outcome"] == dr.OUTCOME_ACCEPTED
+    assert len(s.calls) == 1

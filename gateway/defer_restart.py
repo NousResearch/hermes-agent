@@ -407,12 +407,21 @@ def write_result(
 
 
 def write_result_with_retry(request_id: str, outcome: str, **kwargs: Any) -> bool:
-    """``write_result`` with brief retries; returns True only once persisted (I1)."""
+    """``write_result`` with brief retries; returns True only once persisted (I1).
+
+    The recovery branch trusts CONTENT, not path existence (review gate 1
+    round 3, R1): only a readable, valid terminal record whose outcome matches
+    the decision being written proves "this acceptance is persisted". A corrupt,
+    unreadable or differently-decided file is NOT success — the caller cancels
+    the scheduled restart (no exit without a verifiable decision).
+    """
     for attempt in range(RESULT_WRITE_ATTEMPTS):
         if write_result(request_id, outcome, **kwargs):
             return True
-        if _result_path(request_id).exists():
-            # Someone's final decision already landed — also acceptable (I1).
+        prior = read_result(request_id)
+        if prior is not None and prior.get("outcome") == outcome:
+            # A valid record matching the attempted decision already landed
+            # (e.g. the write succeeded but dir-fsync reported failure).
             return True
         if attempt + 1 < RESULT_WRITE_ATTEMPTS:
             time.sleep(RESULT_WRITE_BACKOFF_S)
@@ -445,7 +454,13 @@ def _is_number(value: Any) -> bool:
     to inf — all refused at the schema layer, review gate 1 round 2)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    return math.isfinite(value)
+    try:
+        return math.isfinite(value)
+    except (OverflowError, ValueError):
+        # Huge JSON ints (e.g. "1" + "0"*400) overflow the float conversion
+        # instead of returning False — refuse them like any illegal number
+        # (review gate 1 round 3, R2).
+        return False
 
 
 def _validate_payload_shape(payload: Any) -> tuple[bool, str]:
@@ -582,6 +597,16 @@ def consume_pending_request(
         if prior == OUTCOME_ACCEPTED:
             return payload, OUTCOME_DUPLICATE, "replay of decided request"
         return payload, prior, "replay of decided request"
+
+    # A result file that exists but is NOT a valid terminal record (corrupt,
+    # unreadable, wrong attribution or illegal outcome) must never be treated as
+    # "no decision" — fail-closed before scheduling (review gate 1 round 3, R1).
+    # The corrupt file is left in place as evidence; the CLI of this id gets no
+    # acceptance and times out conservatively.
+    if _result_path(request_id).exists():
+        with _best_effort():
+            _unlink_exclusive(newest)
+        return None, OUTCOME_REJECTED_INVALID, "corrupt result record (fail-closed)"
 
     # A claim without a result means a previous claimer never committed its
     # decision (failed acceptance write / crash). Never schedule twice for one

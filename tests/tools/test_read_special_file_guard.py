@@ -52,14 +52,12 @@ class TestSpecialFileKind:
 
     @pytest.mark.platforms("posix")
     def test_char_device(self):
-        if not os.path.exists("/dev/null"):
-            pytest.skip("no /dev/null")
         assert "character device" in (_special_file_kind("/dev/null") or "")
 
 
 class TestReadFileToolFifoGuard:
     @pytest.mark.platforms("linux")
-    def test_fifo_read_returns_note_instantly(self, tmp_path, monkeypatch):
+    def test_fifo_read_returns_error_without_opening(self, tmp_path, monkeypatch):
         import time
 
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
@@ -69,7 +67,9 @@ class TestReadFileToolFifoGuard:
         result = json.loads(read_file_tool(str(fifo)))
         assert time.monotonic() - t0 < 5, "guard must not block on the FIFO"
         assert result["success"] is False
+        assert result["error"] == result["note"]
         assert "FIFO" in result["note"]
+        assert "no read was attempted" in result["note"]
 
     def test_regular_file_unaffected(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
@@ -78,3 +78,16 @@ class TestReadFileToolFifoGuard:
         result = json.loads(read_file_tool(str(f)))
         assert result.get("success", True) is not False
         assert "alpha" in result.get("content", "")
+
+
+def test_special_file_refusal_has_error_key(tmp_path, monkeypatch):
+    from tools import file_tools
+
+    path = tmp_path / "special"
+    path.write_text("unused")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setattr(file_tools, "_special_file_kind", lambda path: "a FIFO")
+    result = json.loads(read_file_tool(str(path)))
+    assert result["success"] is False
+    assert result["error"] == result["note"]
+    assert "no read was attempted" in result["error"]

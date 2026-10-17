@@ -158,9 +158,11 @@ def test_every_cli_promise_that_pre_opt_in_data_stays_local_names_the_install_no
     counted after it, so each CLI surface stating the pre-opt-in promise names that exception, and
     the explainer still fits an 80-column terminal (print_info indents by two)."""
     from hermes_cli.observability.shared_metrics_consent import _OFFER_DESCRIPTION
-    from hermes_cli.setup import _SEND_CONSENT_EXPLAINER
+    from agent.i18n import SUPPORTED_LANGUAGES
+    from hermes_cli.setup import _send_consent_explainer
 
-    explainer = " ".join(_SEND_CONSENT_EXPLAINER)
+    explainer = " ".join(_send_consent_explainer(lang="en"))
     for text in (explainer, " ".join(_OFFER_DESCRIPTION.split())):
         assert "before you opt in" in text and "install note" in text.split("before you opt in")[0], text
-    assert max(len(line) for line in _SEND_CONSENT_EXPLAINER) + 2 <= 80
+    for lang in SUPPORTED_LANGUAGES:
+        assert max(len(line) for line in _send_consent_explainer(lang=lang)) + 2 <= 80, lang

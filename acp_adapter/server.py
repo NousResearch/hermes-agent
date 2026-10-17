@@ -259,6 +259,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     # How often a long autonomous turn re-extends its durable delivery claim.
     _BACKGROUND_CLAIM_RENEW_INTERVAL_SECONDS = 60.0
 
+    def __new__(cls, session_manager=None):
+        if session_manager is None:
+            from acp_adapter.gateway_server import GatewayACPAgent
+            return GatewayACPAgent()
+        return super().__new__(cls)
+
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
         self.session_manager = session_manager or SessionManager()

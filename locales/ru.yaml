@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (только на следующий ход — вернётся после одного ответа)"
     switch_cancelled: "🟡 Смена модели отменена. Текущая модель не изменилась ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Текстовый вариант: ответьте `{prefix}approve`, чтобы переключиться, или `{prefix}cancel`, чтобы оставить текущую модель._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Активные агенты и задачи**"
     active_agents: "**Активные агенты:** {count}"
@@ -435,7 +437,6 @@ gateway:
     last_activity: "**Последняя активность:** {timestamp}"
     model: "**Модель:** `{model}`"
     model_provider: "**Модель:** `{model}` ({provider})"
-    free_tier: "Nous · бесплатный тариф · nous/welcome · /login для входа"
     context: "**Контекст:** {used} / {total} ({pct}%)"
     context_used: "**Контекст:** ~{used} токенов"
     tokens: "**Всего токенов списано за всё время:** {tokens} _(это не размер текущего контекста; используйте `/context`)_"
@@ -779,8 +780,6 @@ gateway:
   plan:
     ack_task: "Планирую: {task}"
     ack_conversation: "Планирую на основе контекста этого разговора…"
-  initiate_setup:
-    ack: "Запуск настройки…"
   init:
     start_failed: "Не удалось запустить /init — попробуйте ещё раз."
     ack_update: "Обновляю AGENTS.md по результатам сканирования проекта…"
@@ -843,7 +842,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Шлюз успешно перезапущен. Ваш сеанс продолжается."
-    free_tier_line: "Инференс: бесплатный уровень Nous (nous/welcome). Войдите, чтобы получить больше: /login"
     online: "♻️ Шлюз в сети — Hermes снова готов к работе."
     db_corrupt: "⚠️ Обнаружено повреждение базы данных сеансов. Сообщения могут не сохраняться. Варианты восстановления:\n1. Выполните `hermes {profile_arg}doctor --fix`\n2. Остановите шлюз, затем восстановите:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (если сообщает, что восстановление возможно) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — восстановление сначала делает снимок повреждённого файла; НЕ запускайте `sqlite3 ... \".recover\"` на рабочем state.db — уязвимый CLI sqlite3 может повредить его ещё сильнее\n3. Восстановите из резервной копии в {backups_dir}/\nВыполните `hermes {profile_arg}doctor` для очищенной диагностики."
     db_fts_corrupt: "⚠️ База данных сеансов сообщила об ошибке повреждения, ограниченной поисковым индексом (FTS5); таблицы сообщений не повреждены. Сообщения могут не сохраняться до починки: выполните `hermes {profile_arg}doctor --fix`, затем перезапустите шлюз. Не запускайте инструменты восстановления и не восстанавливайте резервную копию, пока `hermes {profile_arg}doctor` не подтвердит повреждение."
@@ -1558,8 +1556,6 @@ slash:
     description: "Повторять промпт с заданным интервалом в этом сеансе"
   plan:
     description: "Написать план реализации в markdown в .hermes/plans/, ничего не выполняя"
-  initiate-setup:
-    description: "Запустить первичную настройку: узнать о вас и настроить Hermes под вас"
   moa:
     description: "Прогнать один промпт через пресет Mixture of Agents по умолчанию, затем вернуть вашу модель"
   subgoal:
@@ -1972,6 +1968,7 @@ cli:
     desc_switch_anyway: "Использовать эту модель в текущем сеансе Hermes."
     choice_cancel: "Отмена"
     desc_keep_current_model: "Оставить текущую модель."
+    confirm_choice_prompt: "Выбор [1/2]: "
     switch_cancelled: "Переключение модели отменено."
     selection_failed: "✗ Не удалось выбрать модель: {error}"
     switch_failed: "⚠ Не удалось переключиться на {model} ({error}); остаёмся на {old_model}."
@@ -2919,8 +2916,6 @@ cli:
     plan:
       planning: "📋 Планирование: {task}"
       from_conversation: "📋 Планирую на основе контекста этого разговора..."
-    initiate_setup:
-      starting: "🧭 Запуск настройки..."
     init:
       updating: "⚡ Обновляю AGENTS.md по результатам сканирования проекта..."
       generating: "⚡ Генерирую AGENTS.md по результатам сканирования проекта..."
@@ -3117,6 +3112,10 @@ cli:
     loaded: "(загружено)"
     not_found: "(не найдено)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Не задан!"
     value_not_set: "не задано"
     section_model: "Модель"

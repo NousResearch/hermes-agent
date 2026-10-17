@@ -32,6 +32,13 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_dropped_toolcall_nudge",
 )
 
+# Appended to the visible reply when a plan tail ends the turn because the consecutive stall
+# budget is exhausted — never end silently: tell the user how to resume the task.
+_STALL_EXHAUSTED_HINT = (
+    "(Note: automatic continuation reached its limit — this task may be unfinished. "
+    "Reply \"continue\" to resume it.)"
+)
+
 
 @dataclass
 class FinalResponseVerdict:
@@ -166,30 +173,36 @@ def finish_text_response(
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
         intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
+        refreshed_stall_budget, tool_results_this_turn, trailing_continue_intent,
     )
 
     _ack_mode = intent_ack_continuation_mode(agent)
     # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an
-    # announced next action. Reuses the SAME bounded continuation counter (max 2 per turn).
+    # announced next action. Reuses the SAME bounded continuation counter.
     # Promoted reasoning gets the broader first-person-plan tail detector: with tools offered
     # and zero tool calls, chain-of-thought ending on "Let me batch the terminal calls..." is a
     # stalled model, and returning it as the answer aborts the tool loop while reporting
-    # "complete" (#111761). Same cap, so a model that never acts still ends after 2 nudges.
+    # "complete" (#111761).
     _stall_text = agent._strip_think_blocks(final_response or "")
-    _stall_continue_intent = (
+    # v4: the counter is CONSECUTIVE, not per-turn. The re-prompt row is itself a user row, so
+    # ``tool_results_this_turn`` counts exactly what the model did since the last nudge: any
+    # tool call there is real progress and refreshes the budget. A model that keeps stalling
+    # WITHOUT acting still ends after 2 nudges; a long multi-step task whose every stop
+    # follows real tool work (download S1 -> plan S2 -> ...) is never abandoned mid-way.
+    _tool_rows = tool_results_this_turn(messages)
+    codex_ack_continuations = refreshed_stall_budget(codex_ack_continuations, _tool_rows)
+    _stall_shape = (
         bool(getattr(agent, "_stall_guards", True))
         and agent.valid_tool_names
-        and codex_ack_continuations < 2
         and (
             trailing_continue_intent(_stall_text)
             or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
         )
     )
+    _stall_continue_intent = _stall_shape and codex_ack_continuations < 2
     # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a
     # fragment. Same scope knob and the SAME bounded counter as the ack continuation; the nudge
     # row itself closes the tool-work window, so a second fragment ends the turn as the answer.
-    _tool_rows = tool_results_this_turn(messages)
     _degenerate_final = (
         bool(getattr(agent, "_stall_guards", True))
         and _ack_mode != "off"
@@ -248,6 +261,10 @@ def finish_text_response(
         final_response = None
         return _verdict("continue")
 
+    # v4 backstop: a plan tail blocked only by the spent budget must not end the turn silently —
+    # flag it before the counter is cleared and append the resume hint below.
+    _stall_budget_exhausted = _stall_shape and codex_ack_continuations >= 2
+
     codex_ack_continuations = 0
 
     if truncated_response_parts:
@@ -285,6 +302,14 @@ def finish_text_response(
         # Replay sidecar only: ``content`` stays empty so the row is never mistaken for a
         # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
         final_msg["api_content"] = final_response
+    if _stall_budget_exhausted and final_response:
+        # v4: the model announced a next action and never took it, and the consecutive budget is
+        # spent — make the stall visible instead of ending on a dangling "…and downloading:".
+        final_response = final_response.rstrip() + "\n\n" + _STALL_EXHAUSTED_HINT
+        if _promoted:
+            final_msg["api_content"] = final_response
+        else:
+            final_msg["content"] = final_response
 
     # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).

@@ -3416,12 +3416,45 @@ def tool_results_this_turn(messages: list[dict[str, Any]]) -> int:
     return count
 
 
+def refreshed_stall_budget(codex_ack_continuations: int, tool_rows_since_last_nudge: int) -> int:
+    """The shared continuation budget is CONSECUTIVE, not per-turn (agent.stall_guards).
+
+    ``tool_results_this_turn`` counts tool rows after the most recent user row — and every
+    re-prompt row is itself a user row — so a positive count means the model DID act since the
+    last nudge: real progress, and the budget refreshes. A model that keeps stalling WITHOUT
+    acting keeps its count and still ends after the 2-nudge cap; a long multi-step task whose
+    every stop follows real tool work (download S1 -> plan S2 -> ...) is never abandoned
+    mid-way with its plan tail ("...and downloading:") left hanging.
+    """
+    if tool_rows_since_last_nudge > 0:
+        return 0
+    return codex_ack_continuations
+
+
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# CJK branch (zh/ja/ko are unsegmented, so there is no \b after the trigger): a tail sentence
+# ending on an announced-but-not-taken action — 「先…（再/然后/接着/随后/之后）…」「让我先/来/去…」
+# 「我先…」「我这就/马上/立刻…」「接下来…」「下一步…」, plus the action-announcement shapes a local
+# model emits before stalling: 「(现在/马上/立刻/立即/这就|同时|一起|并行|一块)…(推进|开始|执行|
+# 继续|处理|运行|启动|检查|部署|构建|进行|操作|跑|查|做)…」「(继续|接着)…动词…」 ("现在同时推进三件事：").
+# Trigger glosses mirror the English group;
+# the whole branch stays tail-anchored so a plan mentioned mid-reply ("让我先看下。答案是 42。")
+# still reads as an answer.
+# Bare-colon tail: a CJK reply ENDING on ：/: announced a list or action and then stopped
+# ("…开始下载：" / "以下是要点：") — nothing after the colon means nothing was delivered.
+# No English branch; a colon can be legitimate formatting in English prose.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
     r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
-    r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
+    r"[^.!?\n]{0,100}[.:\u2026]?\s*$"
+    r"|(?:让我(?:先|来|去)?|我先|我这就|我马上|我立刻|接下来|下一步"
+    r"|先[^。！？\n]{0,50}(?:再|然后|接着|随后|之后)"
+    r"|(?:现在|马上|立刻|立即|这就)[^。！？\n]{0,40}(?:推进|开始|执行|继续|处理|运行|启动|检查|部署|构建|进行|操作|来做|搞定|重试|跑|查|做)"
+    r"|(?:同时|一起|并行|一块)[^。！？\n]{0,40}(?:推进|开始|执行|继续|处理|运行|启动|检查|部署|构建|进行|操作|来做|搞定|重试|跑|查|做)"
+    r"|(?:继续|接着)[^。！？\n]{0,30}(?:推进|执行|处理|进行|操作|开始|跑|查|做))"
+    r"[^。！？\n]{0,60}[。！？]?\s*$"
+    r"|[^\x00-\x7F][^\n]{0,155}[：:]\s*$", re.IGNORECASE,
 )
 
 # Content longer than this is a substantive reply, not a dangling ack.
@@ -3448,16 +3481,25 @@ def trailing_continue_intent(text: str) -> bool:
 # preceded by an em/en dash rather than sentence punctuation (#116495). Trigger glosses, in
 # pattern order: "I will give you" / "I will", "next I('ll)" + one of {start,try,check,fix,send,
 # do,look}, "please let me" + one of {start,try,check,fix,send,do,look}, "I('ll)" + one of
-# {start,try,check,fix,send,do,look,run,fire}.
+# {start,try,check,fix,send,do,look,run,fire}. The CJK groups mirror
+# _TRAILING_CONTINUE_INTENT_RE: self-plans plus now/together/keep-going action announcements.
+# Bare-colon tail mirrors the visible detector: a CJK reasoning tail ENDING on ：/: is an
+# announced-but-unfinished action, not an answer.
 _PROMOTED_REASONING_PLAN_TAIL_RE = re.compile(
-    r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n]\s*|\u2026\s*)"
+    r"(?:^|[.!?:\u3002\uff01\uff1f\u2014\u2013\n\uff0c,\uff1b;]\s*|\u2026\s*)"
     r"(?:let(?:['\u2019]s| me)\b|i(?:['\u2019]ll| will| need to| should| am going to|['\u2019]m going to)\b"
     r"|next[,:]? i\b|now i(?:['\u2019]ll| will| need to)\b|first[,:]? i(?:['\u2019]ll| will| need to)\b"
     r"|\u0e08\u0e30\u0e43\u0e2b\u0e49\u0e1c\u0e21|\u0e1c\u0e21\u0e08\u0e30"
     r"|\u0e15\u0e48\u0e2d\u0e44\u0e1b(?:\u0e08\u0e30|\u0e1c\u0e21\u0e08\u0e30)"
     r"|\u0e02\u0e2d(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39)"
-    r"|\u0e08\u0e30(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39|\u0e23\u0e31\u0e19|\u0e22\u0e34\u0e07))"
-    r"[^.!?\n\u3002\uff01\uff1f]{0,160}(?:[.:\u2026]+)?\s*$",
+    r"|\u0e08\u0e30(?:\u0e40\u0e23\u0e34\u0e48\u0e21|\u0e25\u0e2d\u0e07|\u0e15\u0e23\u0e27\u0e08|\u0e41\u0e01\u0e49|\u0e2a\u0e48\u0e07|\u0e17\u0e33|\u0e14\u0e39|\u0e23\u0e31\u0e19|\u0e22\u0e34\u0e07)"
+    r"|\u8ba9\u6211(?:\u5148|\u6765|\u53bb)?|\u6211\u5148|\u6211\u8fd9\u5c31|\u6211\u9a6c\u4e0a|\u6211\u7acb\u523b|\u63a5\u4e0b\u6765|\u4e0b\u4e00\u6b65"
+    r"|\u5148[^\u3002\uff01\uff1f\n]{0,50}(?:\u518d|\u7136\u540e|\u63a5\u7740|\u968f\u540e|\u4e4b\u540e)"
+    r"|(?:\u73b0\u5728|\u9a6c\u4e0a|\u7acb\u523b|\u7acb\u5373|\u8fd9\u5c31)[^\u3002\uff01\uff1f\n]{0,40}(?:\u63a8\u8fdb|\u5f00\u59cb|\u6267\u884c|\u7ee7\u7eed|\u5904\u7406|\u8fd0\u884c|\u542f\u52a8|\u68c0\u67e5|\u90e8\u7f72|\u6784\u5efa|\u8fdb\u884c|\u64cd\u4f5c|\u6765\u505a|\u641e\u5b9a|\u91cd\u8bd5|\u8dd1|\u67e5|\u505a)"
+    r"|(?:\u540c\u65f6|\u4e00\u8d77|\u5e76\u884c|\u4e00\u5757)[^\u3002\uff01\uff1f\n]{0,40}(?:\u63a8\u8fdb|\u5f00\u59cb|\u6267\u884c|\u7ee7\u7eed|\u5904\u7406|\u8fd0\u884c|\u542f\u52a8|\u68c0\u67e5|\u90e8\u7f72|\u6784\u5efa|\u8fdb\u884c|\u64cd\u4f5c|\u6765\u505a|\u641e\u5b9a|\u91cd\u8bd5|\u8dd1|\u67e5|\u505a)"
+    r"|(?:\u7ee7\u7eed|\u63a5\u7740)[^\u3002\uff01\uff1f\n]{0,30}(?:\u63a8\u8fdb|\u6267\u884c|\u5904\u7406|\u8fdb\u884c|\u64cd\u4f5c|\u5f00\u59cb|\u8dd1|\u67e5|\u505a))"
+    r"[^.!?\n\u3002\uff01\uff1f]{0,160}(?:[.:\u2026\u3002\uff01\uff1f]+)?\s*$"
+    r"|[^\x00-\x7F][^\n]{0,200}[\uff1a:]\s*$",
     re.IGNORECASE,
 )
 

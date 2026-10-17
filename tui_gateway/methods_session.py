@@ -143,10 +143,27 @@ def _auto_resume_denied_source(row: dict) -> bool:
     return source in _LISTING_DENY_SOURCES or source == "unknown"
 
 
+# ``cron`` scheduled/watchdog runs are also noise in a resume picker or auto-resume; keep them out
+# of the human-facing listing while leaving ``_denied_source`` (used by exact-title lookup) alone.
+_LISTING_HIDDEN_SOURCES = _LISTING_DENY_SOURCES | {"cron"}
+
+
 def _listing_rows(db, limit: int, **kwargs) -> list:
-    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied."""
+    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied.
+
+    Also drops ``cron`` scheduled runs and one-shot probe debris (``ping``/greeting/tool-inventory
+    prompts) so a resume picker shows real conversations only. Callers over-fetch, since these
+    filters run after the query.
+    """
+    from hermes_cli.session_listing import is_ping_probe_session
+
     rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True, compact_rows=True, **kwargs)
-    return [row for row in rows if not _denied_source(row)]
+    return [
+        row for row in rows
+        if not _denied_source(row)
+        and (row.get("source") or "").strip().lower() not in _LISTING_HIDDEN_SOURCES
+        and not is_ping_probe_session(row)
+    ]
 
 
 def _snapshot_sessions(rid):
@@ -578,6 +595,7 @@ def _(rid, params: dict) -> dict:
             for row in rows[:1]:
                 return _ok(rid, {"session_id": row.get("id"), "title": row.get("title") or "",
                                  "started_at": row.get("started_at") or 0, "source": row.get("source") or ""})
+            return _ok(rid, {"session_id": None})
         except Exception:
             logger.exception("session.most_recent failed")
         return _ok(rid, {"session_id": None})

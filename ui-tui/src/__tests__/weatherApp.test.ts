@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { weatherApp, type WeatherState } from '../sdk/apps/index.js'
-import { launchWidget } from '../sdk/host.js'
+import { launchWidget, updateWidget } from '../sdk/host.js'
 import type { WidgetInput } from '../sdk/types.js'
 
 const key = (overrides: Partial<WidgetInput['key']> = {}, ch = ''): WidgetInput =>
@@ -140,6 +140,15 @@ describe('weather reference app (async contract)', () => {
     launchWidget('weather', 'nowhere')
     await vi.waitFor(() => expect(activeState()?.phase.kind).toBe('error'))
     expect(activeState()?.phase).toMatchObject({ message: expect.stringContaining('location not found') })
+  })
+
+  it('does not publish an ambient update when the state is unchanged', () => {
+    launchWidget('weather', 'x')
+    const before = getOverlayState()
+    const active = before.ambient.find(a => a.appId === 'weather')
+    expect(active).toBeDefined()
+    updateWidget(weatherApp, state => state)
+    expect(getOverlayState().ambient[0]).toBe(active)
   })
 
   it('r refreshes; Esc/q/Enter close', () => {

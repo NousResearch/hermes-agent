@@ -75,6 +75,62 @@ class TestDirectAliases:
         assert aliases["mymodel"].provider == "custom"
         assert aliases["mymodel"].base_url == "https://example.com/v1"
 
+    def test_builtin_short_model_aliases_are_exact(self, monkeypatch):
+        """High-traffic /model shortcuts should map to pinned provider/model pairs."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {},
+        )
+
+        import hermes_cli.model_switch as ms
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+
+        assert ms.resolve_alias("deepseek", "zai") == (
+            "deepseek", "deepseek-flash", "deepseek"
+        )
+        assert ms.resolve_alias("glm", "deepseek") == (
+            "zai", "glm-5.2", "glm"
+        )
+
+    def test_switch_model_trusts_direct_alias_not_listed_by_provider(self, monkeypatch):
+        """Direct aliases may point to hidden/gated model IDs omitted from /models."""
+        import hermes_cli.model_switch as ms
+        import hermes_cli.models_validate as models_validate
+        import hermes_cli.runtime_provider as runtime_provider
+
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            lambda requested=None, target_model=None, **kwargs: {
+                "api_key": "test-key",
+                "base_url": "https://example.invalid/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr(
+            models_validate,
+            "validate_requested_model",
+            lambda *args, **kwargs: {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": "not listed",
+            },
+        )
+
+        result = ms.switch_model(
+            raw_input="glm",
+            current_provider="deepseek",
+            current_model="deepseek-flash",
+        )
+
+        assert result.success is True
+        assert result.new_model == "glm-5.2"
+        assert result.target_provider == "zai"
+        assert result.resolved_via_alias == "glm"
+        assert "not listed" in result.warning_message
+
     def test_direct_alias_resolved_before_catalog(self, monkeypatch):
         """Direct aliases take priority over models.dev catalog lookup."""
         from hermes_cli.model_switch import DirectAlias, resolve_alias

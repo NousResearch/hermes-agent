@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
 
 
 # ---------------------------------------------------------------------------
@@ -1253,3 +1254,129 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+
+# ---------------------------------------------------------------------------
+# Stale reply anchor (#43467 / #99144): a rejected msg_id must not eat the reply
+# ---------------------------------------------------------------------------
+
+class TestStaleReplyAnchorFallback:
+    """QQ rejects a reply anchor it no longer accepts — C2C ``40034024 请求参数msg_id无效或越权``, group
+    ``304046 回复消息msg_id已过期``. Retrying that anchor can never succeed, so the payload goes out
+    once as a standalone message and the failure is reported as non-retryable."""
+
+    def _make_adapter(self, **extra):
+        from plugins.platforms.qqbot.adapter import QQAdapter
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        return adapter
+
+    @staticmethod
+    def _anchor_rejecter(calls, *, msg):
+        async def _send(chat_id, content, reply_to=None, keyboard=None):
+            calls.append(reply_to)
+            if reply_to:
+                raise RuntimeError(f"QQ Bot API error [400] /v2/users/openid/messages: {msg}")
+            return SendResult(success=True, message_id="ok-1")
+        return _send
+
+    @pytest.mark.asyncio
+    async def test_c2c_invalid_anchor_resends_standalone(self, monkeypatch):
+        import plugins.platforms.qqbot.adapter as qq_mod
+        monkeypatch.setattr(qq_mod.asyncio, "sleep", mock.AsyncMock())
+        adapter = self._make_adapter()
+        calls = []
+        adapter._send_c2c_text = self._anchor_rejecter(calls, msg="请求参数msg_id无效或越权")
+
+        result = await adapter._send_chunk("openid-1", "hello", reply_to="ROBOT1.0_stale")
+
+        assert result.success and result.message_id == "ok-1"
+        assert calls == ["ROBOT1.0_stale", None], "one standalone fallback, not the 3x anchor ladder"
+
+    @pytest.mark.asyncio
+    async def test_group_expired_anchor_resends_standalone(self, monkeypatch):
+        import plugins.platforms.qqbot.adapter as qq_mod
+        monkeypatch.setattr(qq_mod.asyncio, "sleep", mock.AsyncMock())
+        adapter = self._make_adapter()
+        adapter._chat_type_map["group-1"] = "group"
+        calls = []
+        adapter._send_group_text = self._anchor_rejecter(calls, msg="回复消息msg_id已过期")
+
+        result = await adapter._send_chunk("group-1", "hello", reply_to="stale-group-anchor")
+
+        assert result.success
+        assert calls == ["stale-group-anchor", None]
+
+    @pytest.mark.asyncio
+    async def test_failed_standalone_retry_is_not_retryable(self, monkeypatch):
+        import plugins.platforms.qqbot.adapter as qq_mod
+        monkeypatch.setattr(qq_mod.asyncio, "sleep", mock.AsyncMock())
+        adapter = self._make_adapter()
+        calls = []
+
+        async def _send(chat_id, content, reply_to=None, keyboard=None):
+            calls.append(reply_to)
+            raise RuntimeError(
+                "QQ Bot API error [400] /v2/users/openid/messages: 请求参数msg_id无效或越权")
+
+        adapter._send_c2c_text = _send
+        result = await adapter._send_chunk("openid-1", "hello", reply_to="ROBOT1.0_stale")
+
+        assert not result.success and result.retryable is False
+        assert calls == ["ROBOT1.0_stale", None], "the dead anchor is tried once, never three times"
+
+    @pytest.mark.asyncio
+    async def test_unrelated_error_keeps_the_retry_ladder(self, monkeypatch):
+        import plugins.platforms.qqbot.adapter as qq_mod
+        monkeypatch.setattr(qq_mod.asyncio, "sleep", mock.AsyncMock())
+        adapter = self._make_adapter()
+        calls = []
+
+        async def _send(chat_id, content, reply_to=None, keyboard=None):
+            calls.append(reply_to)
+            raise RuntimeError("QQ Bot API error [500] /v2/users/openid/messages: internal error")
+
+        adapter._send_c2c_text = _send
+        result = await adapter._send_chunk("openid-1", "hello", reply_to="ROBOT1.0_fresh")
+
+        assert not result.success and result.retryable is True
+        assert calls == ["ROBOT1.0_fresh"] * 3, "a transient rejection is still retried"
+
+    @pytest.mark.asyncio
+    async def test_keyboard_stale_anchor_resends_standalone(self):
+        adapter = self._make_adapter()
+        calls = []
+        adapter._send_c2c_text = self._anchor_rejecter(calls, msg="请求参数msg_id无效或越权")
+
+        result = await adapter.send_with_keyboard(
+            "openid-1", "pick one", mock.MagicMock(), reply_to="ROBOT1.0_stale")
+
+        assert result.success
+        assert calls == ["ROBOT1.0_stale", None]
+
+    @pytest.mark.asyncio
+    async def test_media_stale_anchor_resends_standalone(self, tmp_path):
+        adapter = self._make_adapter()
+        posts = []
+
+        async def _upload(chat_type, chat_id, media_source, file_type, file_name):
+            return {"file_info": "fi-1"}
+
+        async def _post(path, body):
+            posts.append(dict(body))
+            if body.get("msg_id"):
+                raise RuntimeError(
+                    "QQ Bot API error [400] /v2/users/openid/files: 请求参数msg_id无效或越权")
+            return SendResult(success=True, message_id="ok-3")
+
+        adapter._upload_local_file = _upload
+        adapter._post_message = _post
+        media = tmp_path / "x.png"
+        media.write_bytes(b"\x89PNG")
+
+        result = await adapter._send_media("openid-1", str(media), 1, "image", reply_to="ROBOT1.0_stale")
+
+        assert result.success
+        assert len(posts) == 2
+        assert posts[0].get("msg_id") == "ROBOT1.0_stale" and "msg_id" not in posts[1]

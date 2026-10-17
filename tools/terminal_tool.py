@@ -591,7 +591,18 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
     back to the sanitized config cwd. The Windows bind, including when
     ``/workspace`` is already claimed, is the volume mount, not this override.
     """
-    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
+    if config.get("env_type") != "docker":
+        return None
+    # A dispatcher-created Kanban worker receives its resolved workspace as a
+    # task grant.  Unlike TERMINAL_CWD, this is not profile policy: it must
+    # survive a profile that deliberately disables the generic cwd mount.
+    # Keep the grant narrow by accepting only an existing absolute directory.
+    from agent.delegation_context import owned_kanban_task
+
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "")
+    if owned_kanban_task() and workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
+        return os.path.abspath(os.path.expanduser(workspace))
+    if not config.get("docker_mount_cwd_to_workspace"):
         return None
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":

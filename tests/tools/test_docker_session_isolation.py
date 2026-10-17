@@ -251,6 +251,38 @@ class TestSessionScopedMountResolution:
         cfg = self._config(mount=False)
         assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") is None
 
+    def test_dispatcher_worker_mounts_its_workspace_when_profile_mount_is_off(self, monkeypatch, tmp_path):
+        """A dispatcher-owned task mount wins over the shared profile default."""
+        _enable_isolation(monkeypatch)
+        workspace = tmp_path / "task-workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-42")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        cfg = self._config(mount=False)
+
+        assert terminal_tool._resolve_task_host_cwd(cfg, "worker-session") == str(workspace)
+
+    def test_dispatcher_workspace_enables_the_docker_bind(self, monkeypatch, tmp_path):
+        """The resolved worker workspace reaches Docker as an explicit bind request."""
+        from tools import terminal_tool_backends
+
+        captured = {}
+
+        class FakeDockerEnvironment:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(terminal_tool_backends, "_DockerEnvironment", FakeDockerEnvironment)
+        monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda _cc: None)
+
+        terminal_tool_backends._build_docker_env(
+            image="test-image", cwd="/workspace", timeout=30, task_id="worker-session",
+            host_cwd=str(tmp_path), cc={"docker_mount_cwd_to_workspace": False},
+        )
+
+        assert captured["host_cwd"] == str(tmp_path)
+        assert captured["auto_mount_cwd"] is True
+
     def test_default_task_keeps_legacy_behavior_under_isolation(self, monkeypatch):
         """The single-session CLI parent ("default") keeps the legacy mount."""
         _enable_isolation(monkeypatch)

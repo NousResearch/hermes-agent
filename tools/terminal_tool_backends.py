@@ -150,6 +150,11 @@ def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
     kwargs = {out: cc.get(key, default) for out, key, default in _DOCKER_KWARGS}
     if session_scoped:
         kwargs["persist_across_processes"] = False
+    # A host cwd can only be resolved while the profile's generic mount is
+    # disabled for a dispatcher-granted Kanban workspace.  It is still a
+    # precise task mount, so it must enable Docker's cwd bind explicitly.
+    if host_cwd:
+        kwargs["auto_mount_cwd"] = True
     docker_env_obj = _DockerEnvironment(image=image, cwd=cwd, timeout=timeout, task_id=task_id, host_cwd=host_cwd,
                                         **_resources(cc), **kwargs)
     # Marker read by is_persistent_env(): a session-scoped container survives BETWEEN turns (skip

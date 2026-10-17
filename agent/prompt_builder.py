@@ -924,7 +924,7 @@ def _local_hermes_binary_path() -> Optional[str]:
     try:
         from tools.environments.local import _resolve_hermes_bin_dir
         bin_dir = _resolve_hermes_bin_dir()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- prompt-build boundary: any resolution failure degrades to no hint, never breaks the prompt
         return None
     if not bin_dir:
         return None

@@ -101,6 +101,8 @@ def caller_scope(bound: Optional[dict[str, Any]], label: str) -> Optional[dict[s
 
 
 def _forget(pid: int, ref: weakref.ref) -> None:
+    # Only this dead instance's own entry: once it is collected its id() can be reused by a new
+    # provider whose claim already replaced the entry, and that claim must survive.
     with _claims_lock:
         if _claims.get(pid, (None,))[0] is ref:
             del _claims[pid]

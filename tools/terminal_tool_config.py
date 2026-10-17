@@ -14,6 +14,8 @@ import re
 from contextlib import contextmanager
 from typing import Any, overload
 
+from utils import is_truthy_value
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
 
@@ -227,5 +229,8 @@ def _tenv(name: str, default: str = "") -> str:
 
 
 def _tenv_bool(name: str, default: str) -> bool:
-    """Scope-aware boolean ``TERMINAL_*`` read: true/1/yes (case-insensitive)."""
-    return _tenv(name, default).lower() in {"true", "1", "yes"}
+    """Scope-aware boolean ``TERMINAL_*`` read over the shared truthy set (``1/true/yes/on``).
+
+    A blank value (``TERMINAL_CONTAINER_PERSISTENT=`` in a .env or compose file) means "unset"
+    and yields *default*; reading it as false would silently flip default-on settings off."""
+    return is_truthy_value(_tenv(name, default).strip() or default)

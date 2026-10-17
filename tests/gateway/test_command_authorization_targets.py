@@ -24,6 +24,7 @@ def _rewrite(runner, tmp_path, target):
     runner.hooks.discover_and_load()
 
 
+@pytest.mark.platforms('posix')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('listed,denied', [
     ('safe_cmd', 'safe-cmd'), ('safe-cmd', 'safe_cmd'), ('quit', 'exit'), ('exit', 'quit'),
@@ -118,6 +119,7 @@ async def test_plugin_alias_uses_registered_policy_and_hook(tmp_path, monkeypatc
         assert calls == ['payload']
 
 
+@pytest.mark.platforms('posix')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('quick_name,plugin_spelling', [('my_cmd', 'my-cmd'), ('my-cmd', 'my_cmd')])
 async def test_exec_quick_key_takes_precedence_over_plugin_alias(

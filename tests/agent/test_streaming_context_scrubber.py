@@ -6,7 +6,7 @@ regex can't survive chunk boundaries, so _fire_stream_delta routes deltas
 through a stateful scrubber.
 """
 
-from agent.memory_manager import StreamingContextScrubber, sanitize_context
+from agent.memory_context import StreamingContextScrubber, sanitize_context
 
 
 class TestStreamingContextScrubberBasics:
@@ -158,7 +158,7 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
     def test_provider_emitting_wrapper_warns(self, caplog):
         import logging
-        from agent.memory_manager import build_memory_context_block
+        from agent.memory_context import build_memory_context_block
 
         prewrapped = (
             "<memory-context>\n"
@@ -166,7 +166,7 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
             "real fact\n"
             "</memory-context>"
         )
-        with caplog.at_level(logging.WARNING, logger="agent.memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="agent.memory_context"):
             out = build_memory_context_block(prewrapped)
 
         assert any("pre-wrapped" in rec.message for rec in caplog.records)
@@ -175,9 +175,9 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
     def test_clean_provider_output_does_not_warn(self, caplog):
         import logging
-        from agent.memory_manager import build_memory_context_block
+        from agent.memory_context import build_memory_context_block
 
-        with caplog.at_level(logging.WARNING, logger="agent.memory_manager"):
+        with caplog.at_level(logging.WARNING, logger="agent.memory_context"):
             out = build_memory_context_block("plain fact about user")
 
         assert not any("pre-wrapped" in rec.message for rec in caplog.records)

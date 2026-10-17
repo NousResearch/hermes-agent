@@ -27,7 +27,7 @@ from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, r
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
-from agent.memory_manager import StreamingContextScrubber
+from agent.memory_context import StreamingContextScrubber
 from agent.memory_provider import is_core_memory_provider
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
+import { setAttendedInterval } from "@/lib/attended-interval";
 
 const POLL_MS = 10_000;
 
@@ -19,8 +20,7 @@ export function useSidebarStatus() {
         .catch(() => {});
     };
     load();
-    const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
+    return setAttendedInterval(load, POLL_MS);
   }, []);
 
   return status;

@@ -23,6 +23,7 @@ import { PluginSlot } from "@/plugins";
 // text like "parse_errors=0" can't render an INFO line red.
 import { classifyLine } from "@/lib/log-classify";
 import { errorMessage } from "@/lib/api-error";
+import { setAttendedInterval } from "@/lib/attended-interval";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
@@ -153,8 +154,7 @@ export default function LogsPage() {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
+    return setAttendedInterval(fetchLogs, 5000);
   }, [autoRefresh, fetchLogs]);
 
   return (

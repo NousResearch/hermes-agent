@@ -193,10 +193,13 @@ class GatewayChatView:
         text = payload.get("text") or payload.get("delta") or payload.get("content") or ""
         if not isinstance(text, str):
             return
+        # A local runtime can settle a streamed reply without repeating its text in
+        # ``message.complete``. Keep the final segment even for quiet one-shot mode,
+        # where it is printed only after the terminal receipt arrives.
+        self.streams[admission] = self.streams.get(admission, "") + text
         if self.emitter is not None:
             self.emitter.on_text_delta(text)
         elif not self.quiet:
-            self.streams[admission] = self.streams.get(admission, "") + text
             # No flush: under the live composer, patch_stdout line-buffers this so a redraw
             # (a resize mid-stream) never interleaves with a half-written line. Complete lines
             # still appear as they stream; the last one lands with `_complete`.
@@ -205,6 +208,8 @@ class GatewayChatView:
     def _complete(self, admission, payload):
         text = payload.get("text") or payload.get("content") or ""
         streamed = self.streams.pop(admission, "")
+        if not text:
+            text = streamed
         if not self.quiet:
             # The final's deltas carry the agent's segment break (leading blank lines after a
             # tool call) that the settled text has trimmed; a match modulo that edge whitespace
@@ -217,7 +222,7 @@ class GatewayChatView:
                 print(flush=True)
             else:
                 print("\n" + text, flush=True)
-        self.completions[admission] = payload
+        self.completions[admission] = {**payload, "text": text}
 
     def _request(self, admission, payload):
         self.prompts[payload["prompt_id"]] = payload

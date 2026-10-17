@@ -63,6 +63,32 @@ async def test_oneshot_matches_own_terminal_receipt_not_neighbor(capsys):
 
 
 @pytest.mark.asyncio
+async def test_unattended_oneshot_uses_final_delta_when_completion_has_no_text(capsys):
+    """Regression for #139828: local gateway completions may carry only streamed final text."""
+    from hermes_cli.gateway_chat_view import GatewayChatView
+
+    class Peer:
+        events = asyncio.Queue()
+
+        async def rpc(self, method, **params):
+            if method == "prompt.receipt":
+                return {"status": "terminal", "result": {"completed": True}}
+            assert method == "prompt.submit"
+            self.events.put_nowait({"method": "event", "params": {
+                "type": "message.delta", "session_id": "stored", "admission_id": "mine",
+                "payload": {"text": "hello"}}})
+            self.events.put_nowait({"method": "event", "params": {
+                "type": "message.complete", "session_id": "stored", "admission_id": "mine",
+                "payload": {"outcome": "completed"}}})
+            return {"admission_id": "mine"}
+
+    view = GatewayChatView(Peer(), {"stored_session_id": "stored"}, quiet=True)
+    view.unattended = True
+    assert await asyncio.wait_for(view.run("query", oneshot=True), 2) == 0
+    assert capsys.readouterr().out == "hello\n"
+
+
+@pytest.mark.asyncio
 async def test_stream_json_oneshot_filters_neighbor_events_that_arrive_before_submit_receipt(capsys):
     """Same-session work from another admission must not contaminate this invocation's JSONL."""
     import json

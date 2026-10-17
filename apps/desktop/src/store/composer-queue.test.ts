@@ -286,7 +286,11 @@ describe('parked queue sessions', () => {
     parkQueuedPrompts(SESSION_KEY)
     const revision = getQueueParkRevision(SESSION_KEY)
 
-    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'hidden note', displayKind: 'hidden' }, { resumeQueue: false })
+    enqueueQueuedPrompt(
+      SESSION_KEY,
+      { attachments: [], text: 'hidden note', displayKind: 'hidden' },
+      { resumeQueue: false }
+    )
 
     expect(isQueueParked(SESSION_KEY)).toBe(true)
     expect(getQueueParkRevision(SESSION_KEY)).toBe(revision)

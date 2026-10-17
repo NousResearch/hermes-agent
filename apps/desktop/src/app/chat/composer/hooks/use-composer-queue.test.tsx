@@ -338,7 +338,11 @@ describe('useComposerQueue park integration', () => {
 
     act(() => {
       void hook.result.current.sendQueuedNow(selected.id)
-      enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'setup note', displayKind: 'hidden' }, { resumeQueue: false })
+      enqueueQueuedPrompt(
+        SESSION_KEY,
+        { attachments: [], text: 'setup note', displayKind: 'hidden' },
+        { resumeQueue: false }
+      )
     })
 
     hook.rerender({ busy: false })

@@ -5576,7 +5576,9 @@ describe('usePromptActions cancelRun', () => {
       return {} as never
     })
     let handle: HarnessHandle | null = null
-    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
     await waitFor(() => expect(handle).not.toBeNull())
 
     await expect(handle!.cancelRun({ throwOnFailure: true })).rejects.toThrow('interrupt transport failed')

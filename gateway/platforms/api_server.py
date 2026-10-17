@@ -297,10 +297,10 @@ def _clean_request_string(value: Any) -> Optional[str]:
     return (value.strip() or None) if isinstance(value, str) else None
 
 
-# model_options decoding lives in the topical sibling (line-cap offset);
-# re-exported here so importers are unaffected.
+# model_options / relay-metadata request decoding lives in the topical sibling
+# (line-cap offset); re-exported here so importers are unaffected.
 from gateway.platforms.api_server_request_options import (
-    _request_reasoning_config, _request_service_tier)
+    _request_reasoning_config, _request_relay_metadata, _request_service_tier)
 
 
 def _apply_runtime_agent_overrides(
@@ -353,17 +353,14 @@ def _request_agent_overrides(
     model_options = body.get("model_options")
     if isinstance(model_options, dict):
         overrides["model_options"] = dict(model_options)
+    # OpenAI-standard top-level spelling (#138299): fold it in as the weakest source —
+    # an explicit model_options spelling or structured ``reasoning`` block still wins.
+    top_effort = body.get("reasoning_effort")
+    if isinstance(top_effort, str) and top_effort.strip():
+        opts = overrides.setdefault("model_options", {})
+        if "reasoning_effort" not in opts and not isinstance(opts.get("reasoning"), dict):
+            opts["reasoning_effort"] = top_effort.strip().lower()
     return overrides
-
-
-def _request_relay_metadata(body: Any) -> dict[str, Any]:
-    """Extract Relay metadata from an OpenAI request body."""
-    if not isinstance(body, dict):
-        return {}
-    metadata = body.get("metadata")
-    if not isinstance(metadata, dict):
-        return {}
-    return dict(metadata)
 
 
 def _is_compressed_summary_message(message: Any) -> bool:

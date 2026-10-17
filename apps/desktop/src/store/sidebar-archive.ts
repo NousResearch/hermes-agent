@@ -22,32 +22,46 @@ const ARCHIVED_FETCH_PAGE_SIZE = 200
  * cursor the server's pagination contract guarantees.
  *
  * Back-filled pins can repeat across pages (a pinned row past the window is
- * re-appended by every page whose window covers it), so rows dedupe by id on
- * the way in. Termination: `page.total` counts only archived rows (the pin
- * back-fill can't inflate it), so once the cursor has consumed `total`
- * positions every archived row has been requested. An empty page also stops
- * the loop — the server returns one only past the end (or when profiles
- * changed under us mid-pagination), never mid-list.
+ * re-appended by every page whose window covers it), so rows dedupe by owner
+ * and id on the way in. Termination: `page.total` counts only archived rows, so stop
+ * after that many distinct archived rows have arrived. Older backends can
+ * let a live pin displace an archived row from a page; cursor >= total would
+ * leave that final row unread. An empty page also stops the loop. Live pins
+ * can ride along even past the end, so once the cursor has covered `total`,
+ * a page with no new archived row stops it too: a row archived or reordered
+ * mid-load can leave the distinct count short for good.
  */
 export async function listEveryArchivedSession(): Promise<SessionInfo[]> {
   const sessions: SessionInfo[] = []
   const seen = new Set<string>()
+  let archivedCount = 0
 
   let offset = 0
 
   while (true) {
     const page = await listAllProfileSessions(ARCHIVED_FETCH_PAGE_SIZE, 0, 'only', 'recent', 'all', {}, offset)
+    const archivedBefore = archivedCount
 
     for (const session of page.sessions) {
-      if (!seen.has(session.id)) {
-        seen.add(session.id)
+      const identity = `${session.connection_id || ''}\0${session.profile || 'default'}\0${session.id}`
+
+      if (!seen.has(identity)) {
+        seen.add(identity)
         sessions.push(session)
+
+        if (session.archived) {
+          archivedCount += 1
+        }
       }
     }
 
     offset += ARCHIVED_FETCH_PAGE_SIZE
 
-    if (page.sessions.length === 0 || offset >= page.total) {
+    if (
+      page.sessions.length === 0 ||
+      archivedCount >= page.total ||
+      (offset >= page.total && archivedCount === archivedBefore)
+    ) {
       return sessions
     }
   }

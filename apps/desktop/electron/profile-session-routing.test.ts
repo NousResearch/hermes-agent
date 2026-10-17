@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  applyRegistrySessionTotals,
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
+  composeUnifiedSessionResponse,
   fetchAllProfilesAggregatePerProfile,
   fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
@@ -188,6 +190,56 @@ test('a failed unified primary read names the whole aggregate', async () => {
   assert.deepEqual(result.errors, [{ profile: 'all', error: 'timed out' }])
 })
 
+test('a primary aggregate supplies the full prefix before Desktop applies a later merged window', async () => {
+  const calls: string[] = []
+
+  const rows = Array.from({ length: 650 }, (_, index) => ({
+    id: `s${index}`,
+    profile: 'default',
+    last_active: 1000 - index
+  }))
+
+  const params = new URLSearchParams({ profile: 'all', limit: '200', offset: '400', archived: 'only' })
+
+  const base = await fetchPrimaryProfileSessions(
+    params,
+    async (_profile, path) => {
+      calls.push(path)
+      const page = new URL(path, 'http://x').searchParams
+      const offset = Number(page.get('offset'))
+      const limit = Number(page.get('limit'))
+
+      return {
+        sessions: rows.slice(offset, offset + limit),
+        total: rows.length,
+        profile_totals: { default: rows.length },
+        limit,
+        offset
+      }
+    },
+    { prefixForMerge: true }
+  )
+
+  const merged = composeUnifiedSessionResponse(base, base.sessions, 400, 200, base.total, base.profile_totals, [])
+
+  assert.deepEqual(
+    merged.sessions.map((row: any) => row.id),
+    rows.slice(400, 600).map(row => row.id)
+  )
+  assert.equal(merged.limit, 200)
+  assert.equal(merged.offset, 400)
+  assert.deepEqual(
+    calls.map(path => [
+      Number(new URL(path, 'http://x').searchParams.get('limit')),
+      Number(new URL(path, 'http://x').searchParams.get('offset'))
+    ]),
+    [
+      [500, 0],
+      [100, 500]
+    ]
+  )
+})
+
 test('reassembled sidebar slices keep each slice errors', () => {
   const failed = [{ profile: 'default', error: 'timed out' }]
 
@@ -366,6 +418,132 @@ test('merged profile windows retain pinned rows outside the recency window', () 
   assert.deepEqual(mergeProfileSessionWindow(rows, 0, 3), [rows[0], rows[1], rows[2], rows[3], rows[4]])
 })
 
+test('registry paging uses the backend total instead of its fetched prefix or pinned backfill', async () => {
+  const rows = Array.from({ length: 650 }, (_, index) => ({
+    id: `s${index}`,
+    profile: 'work',
+    started_at: 650 - index,
+    pinned: index === 550 || index === 625
+  }))
+
+  const reported = new Map<string, number>()
+
+  const fetched = await fetchRegistrySessionRows(
+    [{ connectionId: 'gw', kind: 'remote', backends: [{ descriptor: 'remote', profileLabel: null }] }],
+    new URLSearchParams({ limit: '600', offset: '0', archived: 'exclude' }),
+    async (_descriptor, path) => {
+      const params = new URL(path, 'http://x').searchParams
+      const start = Number(params.get('offset'))
+      const limit = Number(params.get('limit'))
+      const window = rows.slice(start, start + limit)
+      const ids = new Set(window.map(row => row.id))
+
+      return {
+        sessions: [...window, ...rows.filter(row => row.pinned && !ids.has(row.id))],
+        total: 650,
+        profile_totals: { work: 650 }
+      }
+    },
+    reported
+  )
+
+  const merged: unknown[] = []
+  const profileTotals: Record<string, number> = {}
+  const { added } = spliceRegistrySessionRows(merged, fetched, profileTotals)
+
+  assert.equal(fetched.length, 601)
+  assert.equal(added, 601)
+  assert.equal(applyRegistrySessionTotals(fetched, merged, reported, profileTotals), 650)
+  assert.equal(profileTotals.work, 650)
+})
+
+test('a failed later registry page does not contribute a stale first-page total', async () => {
+  const reported = new Map<string, number>()
+
+  const rows = await fetchRegistrySessionRows(
+    [{ connectionId: 'gw', kind: 'remote', backends: [{ descriptor: 'remote', profileLabel: null }] }],
+    new URLSearchParams({ limit: '150', offset: '0' }),
+    async (_descriptor, path) => {
+      if (path.startsWith('/api/profiles/sessions') && path.includes('offset=0')) {
+        return {
+          sessions: Array.from({ length: 100 }, (_, i) => ({ id: `s${i}`, profile: 'work' })),
+          total: 150,
+          profile_totals: { work: 150 }
+        }
+      }
+
+      throw new Error('remote page unavailable')
+    },
+    reported
+  )
+
+  assert.deepEqual(rows, [])
+  assert.equal(reported.size, 0)
+})
+
+test('archived merged pages reach every archived row from older and current backends', async () => {
+  const archived = Array.from({ length: 400 }, (_, index) => ({
+    id: `a${index}`,
+    profile: 'default',
+    archived: true,
+    pinned: false,
+    last_active: 1000 - index
+  }))
+
+  const pins = ['p0', 'p1'].map((id, index) => ({
+    id,
+    profile: 'default',
+    archived: false,
+    pinned: true,
+    last_active: 2000 - index
+  }))
+
+  // An older backend windows archived rows and live pins together; the current
+  // one windows archived rows only and appends the pins.
+  const backends = {
+    older: (offset: number, limit: number) => {
+      const rows = [...pins, ...archived]
+      const window = rows.slice(offset, offset + limit)
+
+      return [...window, ...rows.slice(offset + limit).filter(row => row.pinned)]
+    },
+    current: (offset: number, limit: number) => [...archived.slice(offset, offset + limit), ...pins]
+  }
+
+  for (const [name, page] of Object.entries(backends)) {
+    const seen = new Set<string>()
+
+    for (const offset of [0, 200, 400]) {
+      const params = new URLSearchParams({ profile: 'all', limit: '200', offset: String(offset), archived: 'only' })
+
+      const base = await fetchPrimaryProfileSessions(
+        params,
+        async (_profile, path) => {
+          const query = new URL(path, 'http://x').searchParams
+
+          return {
+            sessions: page(Number(query.get('offset')), Number(query.get('limit'))),
+            total: archived.length,
+            profile_totals: { default: archived.length }
+          }
+        },
+        { prefixForMerge: true }
+      )
+
+      const merged = [...base.sessions].sort((a: any, b: any) => b.last_active - a.last_active)
+      const response = composeUnifiedSessionResponse(base, merged, offset, 200, base.total, base.profile_totals, [])
+
+      for (const row of response.sessions as typeof archived) {
+        if (row.archived) {
+          seen.add(row.id)
+        }
+      }
+    }
+
+    assert.equal(seen.size, archived.length, name)
+  }
+})
+
 test('remote session reads keep small requests on one call', async () => {
   const calls: Array<{ profile: string | null; path: string }> = []
   const expected = { sessions: [{ id: 'session-1' }], total: 1, limit: 20, offset: 0 }
@@ -525,6 +703,34 @@ test('registry sources: large aggregate reads stay within the backend page cap',
     ]
   )
   assert.equal(result.length, rows.length)
+})
+
+test('registry paging and splicing keep same-id sessions from different profiles', async () => {
+  const rows = Array.from({ length: 249 }, (_, index) => ({ id: `r-${index}`, profile: 'default' }))
+  rows.push({ id: 'shared', profile: 'default' }, { id: 'shared', profile: 'work' })
+
+  const fetched = await fetchRegistrySessionRows(
+    [{ connectionId: 'gw-cloud', kind: 'remote', backends: [{ descriptor: 'cloud-desc', profileLabel: null }] }],
+    new URLSearchParams({ limit: String(rows.length), offset: '0' }),
+    async (_descriptor, path) => {
+      const params = new URL(path, 'http://x').searchParams
+      const offset = Number(params.get('offset'))
+      const limit = Number(params.get('limit'))
+
+      return { sessions: rows.slice(offset, offset + limit), total: rows.length }
+    }
+  )
+
+  assert.equal(fetched.filter((row: any) => row.id === 'shared').length, 2)
+
+  const merged: unknown[] = [{ id: 'shared', profile: 'default', connection_id: 'gw-cloud' }]
+  const totals = { default: 1, work: 0 }
+  const { added } = spliceRegistrySessionRows(merged, fetched, totals)
+  assert.equal(added, rows.length - 1)
+  assert.deepEqual(
+    merged.filter((row: any) => row.id === 'shared').map((row: any) => row.profile),
+    ['default', 'work']
+  )
 })
 
 test('registry-pinned session responses retain their owning connection', () => {
@@ -1044,6 +1250,38 @@ test('all-profiles session list pages a deep per-profile read under the backend 
   assert.equal(result.sessions.length, 200)
   assert.equal(result.sessions[0].id, 's400')
   assert.equal(result.total, 650)
+})
+
+test('all-profiles paging keeps every row once when pinned rows backfill across pages', async () => {
+  const rows = Array.from({ length: 650 }, (_, index) => ({
+    id: `s${index}`,
+    profile: 'default',
+    last_active: 1000 - index,
+    pinned: index === 550 || index === 625
+  }))
+
+  const result = (await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions?limit=200&offset=400',
+    ['default'],
+    async (_p, path) => {
+      const params = new URL(path, 'http://x').searchParams
+      const offset = Number(params.get('offset'))
+      const limit = Number(params.get('limit'))
+      const window = rows.slice(offset, offset + limit)
+      const windowIds = new Set(window.map(row => row.id))
+
+      return {
+        sessions: [...window, ...rows.filter(row => row.pinned && !windowIds.has(row.id))],
+        total: rows.length,
+        profile_totals: { default: rows.length }
+      }
+    }
+  )) as any
+
+  assert.deepEqual(
+    result.sessions.map((row: { id: string }) => row.id),
+    [...rows.slice(400, 600).map(row => row.id), 's625']
+  )
 })
 
 test('the project tree and PR scan are all-profiles reads whatever route scope they carry', () => {

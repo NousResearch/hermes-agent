@@ -49,6 +49,22 @@ beforeEach(() => {
 })
 
 describe('loadArchivedSessions', () => {
+  it('keeps same-id archived sessions from different profiles across pages', async () => {
+    listAllProfileSessions
+      .mockResolvedValueOnce({
+        sessions: [row('same', { profile: 'default' }), ...page(1, PAGE_SIZE - 1)],
+        total: PAGE_SIZE + 1
+      })
+      .mockResolvedValueOnce({ sessions: [row('same', { profile: 'work' })], total: PAGE_SIZE + 1 })
+
+    const sessions = await listEveryArchivedSession()
+
+    expect(sessions.filter(session => session.id === 'same').map(session => session.profile)).toEqual([
+      'default',
+      'work'
+    ])
+  })
+
   it('keeps the last successful result when a refresh fails', async () => {
     const existing = { id: 'archived-1', title: 'Keep me' } as SessionInfo
     $archivedSessions.set([existing])
@@ -155,6 +171,37 @@ describe('loadArchivedSessions', () => {
 })
 
 describe('listEveryArchivedSession', () => {
+  it('keeps paging when a live pin displaced the last archived row', async () => {
+    listAllProfileSessions
+      .mockResolvedValueOnce({ sessions: [pinnedRow('pin-x'), ...page(0, PAGE_SIZE - 1)], total: PAGE_SIZE })
+      .mockResolvedValueOnce({ sessions: [row(`a-${PAGE_SIZE - 1}`), pinnedRow('pin-x')], total: PAGE_SIZE })
+
+    const sessions = await listEveryArchivedSession()
+
+    expect(sessions.filter(session => session.archived)).toHaveLength(PAGE_SIZE)
+    expect(sessions.filter(session => session.id === 'pin-x')).toHaveLength(1)
+    expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops past the total when only live pins arrive', async () => {
+    // A row archived mid-load behind the cursor leaves the count one short,
+    // and the backend still back-fills the live pin past the end.
+    listAllProfileSessions.mockImplementation(async (...args: unknown[]) => {
+      const offset = args[6] as number
+
+      if (offset > 4 * PAGE_SIZE) {
+        throw new Error('archived paging did not stop')
+      }
+
+      return { sessions: [...page(offset, Math.max(0, PAGE_SIZE - offset)), pinnedRow('pin-x')], total: PAGE_SIZE + 1 }
+    })
+
+    const sessions = await listEveryArchivedSession()
+
+    expect(sessions.filter(session => session.archived)).toHaveLength(PAGE_SIZE)
+    expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
+  })
+
   it('paginates until the backend total is loaded', async () => {
     const firstPage = Array.from({ length: 200 }, (_, i) => row(`a${i}`))
 

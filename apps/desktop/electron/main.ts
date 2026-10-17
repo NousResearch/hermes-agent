@@ -461,19 +461,18 @@ import {
   fetchAllProfilesAggregatePerProfile,
   fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
-  fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
   isRemoteSessionRequestPath,
+  mergeRegistrySessionRows,
   type RegistrySessionSource,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
-  spliceRegistrySessionRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -16214,7 +16213,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
-  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)) as any
+  const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -16256,12 +16255,13 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const registrySources = registrySourcesOverride || (await pooledRegistrySessionSources())
 
   if (registrySources.length) {
-    const registryRows = await fetchRegistrySessionRows(registrySources, remoteParams, (descriptor, path) =>
-      getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
+    total += await mergeRegistrySessionRows(
+      registrySources,
+      remoteParams,
+      (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 }),
+      merged,
+      profileTotals
     )
-
-    const { added } = spliceRegistrySessionRows(merged, registryRows, profileTotals)
-    total += added
   }
 
   const recency = s => s?.[order] ?? s?.started_at ?? 0

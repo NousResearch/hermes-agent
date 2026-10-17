@@ -579,6 +579,18 @@ return {"action": "modify", "args": {"new_string": "fixed content"}}
 
 The returned `args` dictionary is shallow-merged over the original tool arguments before the tool executes. Multiple `modify` hooks accumulate — each hook's keys are merged into one accumulated dict built from the original args, so hook A changing `path` and hook B changing `content` both survive. If two hooks modify the same key, the later hook wins.
 
+An `approve` directive can also include `args` to update the tool input and request approval in one callback:
+
+```python
+return {
+    "action": "approve",
+    "message": "Review the write to reviewed.txt",
+    "args": {"path": "reviewed.txt"},
+}
+```
+
+Hermes merges these updates with other argument updates in callback order. Any valid `block` still takes precedence over approval.
+
 Shell hooks also accept the Claude Code-compatible format:
 
 ```json

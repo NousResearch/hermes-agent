@@ -604,7 +604,7 @@ export const zhHantSettings = {
         personality: '新工作階段的預設助手風格。',
         showReasoning: '後端提供推理內容時顯示該區塊。',
         busyInputMode:
-          '控制代理仍在執行時按 Enter 的行為。中斷（interrupt）會以輸入文字重新導向並重啟目前回合，引導（steer）會將其追加至下一個工具結果且不中斷執行，排隊（queue）則在目前回合結束後執行。'
+          '控制代理仍在執行時按 Enter 的行為。中斷（interrupt）會以輸入文字重新導向並重啟目前回合，引導（steer）會將其追加至下一個工具結果且不中斷執行，排隊（queue）則在目前回合結束後執行。 按 Cmd/Ctrl+Enter 可只針對這則訊息使用替代動作：queue 與 steer 互換，interrupt 則改為 queue。'
       },
       desktop: {
         repoScanEnabled: '掃描本機資料夾，並在「專案」中顯示 Git 程式碼儲存庫。',

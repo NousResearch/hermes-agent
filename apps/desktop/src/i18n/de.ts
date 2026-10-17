@@ -1361,7 +1361,7 @@ export const deOverrides = {
         personality: 'Standard-Assistentenstil für neue Sessions.',
         showReasoning: 'Denkabschnitte anzeigen, wenn das Backend sie liefert.',
         busyInputMode:
-          'Bestimmt das Verhalten beim Drücken der Eingabetaste (Enter), während der Agent noch läuft. Interrupt leitet den aktuellen Turn mit Ihrem Text um, steer fügt ihn ohne Abbruch an das nächste Tool-Ergebnis an und queue führt ihn nach Beendigung des Turns aus.'
+          'Bestimmt das Verhalten beim Drücken der Eingabetaste (Enter), während der Agent noch läuft. Interrupt leitet den aktuellen Turn mit Ihrem Text um, steer fügt ihn ohne Abbruch an das nächste Tool-Ergebnis an und queue führt ihn nach Beendigung des Turns aus. Mit Cmd/Strg+Enter wird nur für diese Nachricht die alternative Aktion verwendet: queue ↔ steer, interrupt → queue.'
       },
       desktop: {
         repoScanEnabled: 'Lokale Ordner nach Git-Repositories durchsuchen, die in Projekten angezeigt werden.',

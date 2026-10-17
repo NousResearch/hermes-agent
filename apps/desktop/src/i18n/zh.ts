@@ -1081,7 +1081,7 @@ export const zhOverrides = {
         personality: '新会话的默认助手风格。',
         showReasoning: '当后端提供推理内容时予以显示。',
         busyInputMode:
-          '控制智能体运行期间按 Enter 的行为。中断（interrupt）会使用输入文本重定向并重启当前回合，引导（steer）会将其追加到下一个工具结果且不中断运行，排队（queue）则在当前回合结束后执行。'
+          '控制智能体运行期间按 Enter 的行为。中断（interrupt）会使用输入文本重定向并重启当前回合，引导（steer）会将其追加到下一个工具结果且不中断运行，排队（queue）则在当前回合结束后执行。 按 Cmd/Ctrl+Enter 可仅对当前消息使用另一种操作：queue 与 steer 互换，interrupt 则改为 queue。'
       },
       desktop: {
         repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',

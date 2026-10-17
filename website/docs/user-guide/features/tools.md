@@ -77,13 +77,14 @@ The terminal tool can execute commands in different environments:
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
 | `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
+| `qemu_vm` | Local QEMU/KVM virtual machine (bundled plugin) | Kernel-level isolation on your own hardware, no cloud account |
 
 ### Configuration
 
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
+  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox, qemu_vm
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
@@ -187,6 +188,53 @@ With `container_persistent: true`, Hermes uses Vercel snapshots to preserve file
 Background terminal commands use Hermes' generic non-local process flow: spawn, poll, wait, log, and kill work through the normal process tool while the sandbox is alive, but Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
 
 Leave `container_disk` unset or at the shared default `51200`; custom disk sizing is unsupported for Vercel Sandbox and will fail diagnostics/backend creation.
+
+### QEMU VM (plugin)
+
+A persistent, per-profile **Debian virtual machine on local QEMU/KVM**, shipped as the bundled
+`terminal_env/qemu_vm` plugin. Commands, file tools and `execute_code` run inside the guest; the
+host filesystem is unreachable. Compared with Docker this is kernel-level isolation, and unlike
+Modal/Daytona/Vercel it needs no cloud account.
+
+```bash
+hermes vm create                            # downloads the pinned Debian image once, provisions, boots (~2-5 min)
+hermes config set terminal.backend qemu_vm
+```
+
+`hermes setup terminal` → *QEMU VM* does the same interactively. Requirements: Linux x86_64 with
+`/dev/kvm` writable by your user, `qemu-system-x86`, `qemu-utils`, `genisoimage` (or `xorriso` /
+`cloud-image-utils`) and `openssh-client`. Software emulation (TCG) is refused: too slow to be a
+usable backend.
+
+How it works:
+
+- Image: Debian 13 `genericcloud` qcow2, URL **and SHA512 pinned in code** — no config value can
+  redirect the download. One shared cache for all profiles; each profile gets a full disk copy.
+- First boot: cloud-init creates the guest user with a dedicated ed25519 key, disables password
+  login and installs `git`, `curl`, `python3`.
+- Access: SSH forwarded on `127.0.0.1:<random port>` only, with a per-VM `known_hosts` (your
+  `~/.ssh` is never touched). The environment is the built-in SSH backend, so file sync, the
+  persistent shell and `terminal.env_passthrough` work unchanged.
+- State: `<HERMES_HOME>/sandboxes/qemu_vm/` (profile-aware). A stopped VM boots automatically on
+  the first terminal command.
+
+Settings live under `plugins.entries.terminal_env/qemu_vm.settings`:
+
+| Key | Default | Applied |
+|---|---|---|
+| `cpus` / `memory_mb` | `2` / `2048` | every start |
+| `network` | `egress` | every start — `egress`: NAT out, no inbound; `none`: no outbound at all |
+| `disk_gb` / `user` / `passwordless_sudo` | `20` / `hermes` / `true` | at `hermes vm create` |
+| `autostart` / `boot_timeout` | `true` / `180` | on first command |
+
+CLI: `hermes vm create [--disk GB] [--cpus N] [--memory MB] [--network egress|none] [--force]`,
+`start`, `stop`, `status [--json]`, `destroy [--yes]`, `ssh [--print]`. The agent has no tool for
+these verbs — only you manage the VM.
+
+Security notes: with `network: egress` the guest uses QEMU user-mode networking and can reach
+whatever the host can (LAN included); use `none` for an air-gapped sandbox. Dangerous-command
+approval prompts are skipped inside the VM, like in Docker: the host cannot be damaged, only the VM
+disk, which `hermes vm create --force` rebuilds.
 
 ### Container Resources
 

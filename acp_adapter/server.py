@@ -39,6 +39,7 @@ from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
 from agent.interrupt_compat import request_hard_interrupt
 from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
+from tools.todo_tool import is_todo_tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,9 @@ def _history_replay_updates(history: list[dict[str, Any]]):
             result = message.get("content")
             result_text = result if isinstance(result, str) else None
             yield build_tool_complete(tool_call_id, tool_name, result=result_text, function_args=function_args)
-            if tool_name == "todo":
+            # The stored ``tool_name`` is the unwrapped one; the assistant's tool_calls carry the
+            # wire name, which is ``tool_call`` when the todo tool was reached through tool_search.
+            if is_todo_tool_name(tool_name) or is_todo_tool_name(message.get("tool_name")):
                 plan_update = _build_plan_update_from_todo_result(result_text)
                 if plan_update is not None:
                     yield plan_update

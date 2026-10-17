@@ -90,6 +90,10 @@ def _follow_job(lm, job_id: str) -> str:
         print(f"  ✗ {view.get('error') or 'Setup failed'}")
     elif view["status"] == "done":
         print(f"  ✓ {view.get('detail')}")
+    elif view["status"] == "paused":
+        if view.get("error"):
+            print(f"  ✗ {view['error']}")
+        print("  Paused. Run `hermes model` → Local models again to resume; finished bytes are kept.")
     return view["status"]
 
 

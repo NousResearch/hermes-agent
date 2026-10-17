@@ -46,7 +46,7 @@ save_env_value = late("save_env_value", "hermes_cli.config")
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 # Simple rate limiter for the reveal endpoint
-_reveal_timestamps: List[float] = []
+_reveal_timestamps: list[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
@@ -368,7 +368,7 @@ def _custom_endpoint_id(raw: str, fallback: str = "custom") -> str:
     return slug or fallback
 
 
-def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[Any, Optional[Dict[str, Any]]]:
+def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> tuple[Any, Optional[dict[str, Any]]]:
     """Resolve a custom endpoint id using the stored key first, then its legacy slug.
 
     The list route hands Desktop the literal ``providers.<key>`` (a v11→v12
@@ -386,8 +386,8 @@ def _resolve_custom_endpoint_entry(providers: Any, endpoint_id: str) -> Tuple[An
     return find_provider_entry(providers, normalized_key)
 
 
-def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
-    models: List[str] = []
+def _models_from_custom_endpoint_entry(entry: dict[str, Any]) -> list[str]:
+    models: list[str] = []
     raw_models = entry.get("models")
     if isinstance(raw_models, (dict, list)):
         models.extend(str(model).strip() for model in raw_models)
@@ -400,7 +400,7 @@ def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     return [model for model in models if model and not (model in seen or seen.add(model))]
 
 
-def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+def _api_key_display(entry: dict[str, Any]) -> tuple[bool, Optional[str]]:
     """Return ``(has_api_key, preview)`` for a provider or model config block.
 
     Keys live in ``.env`` behind ``key_env``; only older entries still carry a
@@ -438,7 +438,7 @@ def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
 _DESKTOP_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
 
 
-def _endpoint_api_mode(entry: Dict[str, Any]) -> str:
+def _endpoint_api_mode(entry: dict[str, Any]) -> str:
     """The transport a providers entry pins (``api_mode``, or the v12 migration's ``transport``
     spelling), canonicalized; ``""`` = runtime auto-detect. Mirrors the read order of
     ``runtime_provider_custom._get_named_custom_provider``."""
@@ -448,9 +448,9 @@ def _endpoint_api_mode(entry: Dict[str, Any]) -> str:
 
 
 def _endpoint_row(
-    endpoint_id: str, name: str, base_url: str, model: str, models: List[str], context_length,
-    discover_models: bool, key_entry: Dict[str, Any], is_current: bool, source: str,
-) -> Dict[str, Any]:
+    endpoint_id: str, name: str, base_url: str, model: str, models: list[str], context_length,
+    discover_models: bool, key_entry: dict[str, Any], is_current: bool, source: str,
+) -> dict[str, Any]:
     has_api_key, api_key_preview = _api_key_display(key_entry)
     return {
         "id": endpoint_id, "name": name, "base_url": base_url, "model": model, "models": models,
@@ -461,7 +461,7 @@ def _endpoint_row(
     }
 
 
-def _model_names_provider(model_cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]]) -> bool:
+def _model_names_provider(model_cfg: dict[str, Any], provider_key: str, entry: Optional[dict[str, Any]]) -> bool:
     """True when ``model.provider`` points at this ``providers`` entry.
 
     ``switch_model`` spells the active provider either as the stored key or as
@@ -476,13 +476,13 @@ def _model_names_provider(model_cfg: Dict[str, Any], provider_key: str, entry: O
     return current.removeprefix("custom:") in names
 
 
-def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _custom_endpoint_response(cfg: dict[str, Any]) -> dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
     current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
     current_base_url = str(model_cfg.get("base_url", "") or "")
 
-    endpoints: List[Dict[str, Any]] = []
+    endpoints: list[dict[str, Any]] = []
     providers = cfg.get("providers")
     if isinstance(providers, dict):
         for provider_id, raw_entry in providers.items():
@@ -538,7 +538,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _pop_legacy_custom_provider(cfg: Dict[str, Any], provider_key: str) -> Optional[Dict[str, Any]]:
+def _pop_legacy_custom_provider(cfg: dict[str, Any], provider_key: str) -> Optional[dict[str, Any]]:
     """Remove and return the legacy ``custom_providers:`` list entry whose name slugs to *provider_key*."""
     legacy = cfg.get("custom_providers")
     if not isinstance(legacy, list):
@@ -549,7 +549,7 @@ def _pop_legacy_custom_provider(cfg: Dict[str, Any], provider_key: str) -> Optio
     return None
 
 
-def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, entry: Optional[Dict[str, Any]] = None) -> None:
+def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, entry: Optional[dict[str, Any]] = None) -> None:
     """Drop the main-slot mirror of a provider that no longer exists.
 
     ``activate_custom_endpoint`` copies the endpoint's ``base_url`` and
@@ -570,7 +570,7 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
-def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> Tuple[str, Dict[str, Any]]:
+def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> tuple[str, dict[str, Any]]:
     name = (body.name or "").strip()
     base_url = (body.base_url or "").strip().rstrip("/")
     model = (body.model or "").strip()
@@ -624,7 +624,7 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     # (``key_env``/``api_key_env``, ``extra_headers`` — possibly with
     # credentials — ``request_overrides``); rebuilding from scratch silently
     # dropped them on an unrelated edit.
-    entry: Dict[str, Any] = dict(existing)
+    entry: dict[str, Any] = dict(existing)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
@@ -647,7 +647,7 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     # See #69988.
     details = {d.id.strip(): d for d in (body.model_details or ()) if d.id.strip()}
     existing_models = entry.get("models")
-    models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
+    models_map: dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
     for candidate in (*(body.models or ()), *details, model):
         model_id = str(candidate).strip()
         if not model_id:
@@ -871,6 +871,14 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
     entries = _parse_model_entries(resp)
     ids = [e["id"] for e in entries]
+    if not ids:
+        # A 200 that parses to zero models is the SPA-catch-all signature (#83128): a real
+        # OpenAI-compatible /models answers JSON with a usable list. ``_parse_model_entries``
+        # is lenient by design, so classify the empty result here instead of reporting
+        # success. ok:false + reachable:true is a warning in the UI — Save stays possible
+        # for endpoints that legitimately expose no model list.
+        return {"ok": False, "reachable": True, "message": _no_models_probe_message(resp, resolved),
+                "models": [], "model_details": [], "resolved_base_url": resolved}
     # /models answering proves nothing about the transport the runtime will POST to:
     # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
     # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses, on the
@@ -889,7 +897,31 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         result.update(ok=False, message=missing)
     return result
 
-async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> Tuple[str, Any]:
+def _no_models_probe_message(resp: Any, base_url: str) -> str:
+    """Why a 200 ``/models`` probe yielded no usable models (#83128).
+
+    Distinguishes the three ways that happens — a non-JSON body (an SPA catch-all serves
+    HTML for every route, so 200 proves nothing), a JSON body without a model list, and a
+    genuinely empty list — mirroring the onboarding store's wording for the last case.
+    """
+    url = base_url + "/models"
+    content_type = (resp.headers.get("content-type") or "").split(";")[0].strip()
+    try:
+        payload = resp.json()
+    except ValueError:  # json.JSONDecodeError — a non-JSON body (HTML, plain text) is the case being named
+        payload = None
+    if not isinstance(payload, (dict, list)):
+        kind = content_type or "a non-JSON body"
+        return (f"Connected to {url}, but it returned {kind} instead of a JSON model list — "
+                "the URL may be an SPA catch-all or a wrong base URL, not an OpenAI-compatible API.")
+    data = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(data, list):
+        return f"Connected to {url}, but its response is not an OpenAI-compatible model list."
+    return (f"Connected to {url}, but it advertised no models. "
+            "Start a model on that endpoint and try again.")
+
+
+async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> tuple[str, Any]:
     """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
     first answers a non-success. Returns ``(resolved_base_url, response)`` — the base that served the
     model list is what the caller must PERSIST: the runtime appends ``/chat/completions`` to the saved
@@ -926,7 +958,7 @@ def _auto_api_mode(base_url: str) -> str:
     return _detect_api_mode_for_url(base_url) or "chat_completions"
 
 
-async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: Dict[str, str]) -> str:
+async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: dict[str, str]) -> str:
     """POST a 1-token request to ``mode``'s route; return a failure message when the host does
     not serve it (404/405/501), ``""`` otherwise. Any other status — 200, 400 (bad body), 401,
     422, 429 — means the route exists, which is all the check needs to know; a network error or

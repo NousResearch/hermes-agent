@@ -249,7 +249,7 @@ def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
         return text
     try:
         from agent.skill_commands import build_skill_invocation_message, resolve_skill_command_key
-        cmd_key = resolve_skill_command_key(head.lstrip("/"))
+        cmd_key = resolve_skill_command_key(head.lstrip("/"), interactive=True)
         return text if cmd_key is None else (build_skill_invocation_message(cmd_key, arg.strip(), task_id=task_id) or text)
     except Exception:  # a skill that no longer resolves must not break the rewind
         logger.debug("skill re-expansion failed for replay", exc_info=True)
@@ -526,8 +526,8 @@ def _turn_failure_detail(error: Any, reason: Any = None, prompt: Any = None) -> 
     message = _strip_prompt_echo(message, prompt)
     if len(message) > _TURN_FAILURE_DETAIL_LIMIT:
         message = message[:_TURN_FAILURE_DETAIL_LIMIT] + "\u2026"
-    out = " failure_reason=%s" % " ".join(reason_text.split()) if reason_text else ""
-    return out + (" cause=%r" % message if message else "")
+    out = " failure_reason={}".format(" ".join(reason_text.split())) if reason_text else ""
+    return out + (f" cause={message!r}" if message else "")
 
 
 def register(server) -> None:

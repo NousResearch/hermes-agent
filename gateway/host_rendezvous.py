@@ -41,7 +41,7 @@ import os
 import stat
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -102,7 +102,13 @@ class HostRecord:
     #: Stable process-start fingerprint. On Linux/WSL this is boot-relative /proc start ticks,
     #: so a wall-clock resync cannot make a live owner look like a recycled PID. Optional for
     #: records written by older Hermes versions, which still fall back to create_time.
+    #: NOT unique across reboots — pair it with ``boot_epoch``.
     start_time: Optional[int] = None
+    #: Instantiation epoch (boot id + PID 1 start). Distinguishes a pre-reboot owner from an
+    #: early-boot process that reused its PID and landed inside the start-tick drift tolerance.
+    #: Absent on older records; added WITHOUT a protocol bump, because a bump would make every
+    #: live owner's record read as stale and a second gateway would start.
+    boot_epoch: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -111,6 +117,7 @@ class HostRecord:
             "pid": self.pid,
             "createTime": self.create_time,
             "startTime": self.start_time,
+            "bootEpoch": self.boot_epoch,
             "host": self.host,
             "port": self.port,
             "protocolVersion": self.protocol_version,
@@ -120,7 +127,7 @@ class HostRecord:
         }
 
     @classmethod
-    def from_json(cls, payload: Any) -> Optional["HostRecord"]:
+    def from_json(cls, payload: Any) -> Optional[HostRecord]:
         if not isinstance(payload, dict):
             return None
         pid = payload.get("pid")
@@ -141,6 +148,7 @@ class HostRecord:
                 if isinstance(start, int) and not isinstance(start, bool) and start > 0
                 else None
             ),
+            boot_epoch=str(payload.get("bootEpoch") or ""),
             host=str(payload.get("host") or ""),
             port=int(port) if isinstance(port, int) and 0 < port <= 65535 else None,
             protocol_version=version if isinstance(version, int) else 0,
@@ -236,22 +244,101 @@ def _pid_incarnation_matches(pid: int, create_time: Optional[float]) -> Optional
     return _pid_alive_matches(pid, create_time)
 
 
+# A record published before ``bootEpoch`` existed cannot name its boot. Its ``createTime`` older
+# than this boot's start (``psutil.boot_time()``, minus this slack) means EITHER a reboot (the
+# owner is gone and its PID was recycled) OR a wall-clock step since the owner started (boot time
+# is wall clock minus uptime, so a forward step moves it past a running owner's saved start;
+# #117505). Clocks cannot tell those apart, so the host lock decides: a live gateway holds it.
+_LEGACY_BOOT_SLACK_S = 120.0
+
+
+def _boot_time() -> Optional[float]:
+    try:
+        import psutil
+
+        return float(psutil.boot_time())
+    except Exception:
+        logger.debug("boot time unreadable; legacy record age check skipped", exc_info=True)
+        return None
+
+
+def _host_lock_is_free(role: str) -> Optional[bool]:
+    """True when no process holds the host lock for ``role``; ``None`` when it cannot be probed.
+
+    Read-only callers (status, dashboard) reach this, so it never creates the lock dir or file: a
+    missing lock file means nobody holds the lock. The probe takes the lock for an instant, so a
+    gateway claiming it in that instant gets HELD_BY_OTHER and its supervisor retries.
+    """
+    if owns_host_lock(role):
+        return False
+    from gateway.status import _probe_lock_file
+
+    try:
+        fd = os.open(str(lock_path(role)), os.O_RDWR)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        logger.debug("host %s lock could not be probed", role, exc_info=True)
+        return None
+    return not _probe_lock_file(os.fdopen(fd, "r+", encoding="utf-8"))
+
+
+def _current_boot_epoch() -> str:
+    """Identity of this boot. Empty when /proc is unreadable — a recorded epoch is then unprovable."""
+    try:
+        from gateway.drain_control import current_instantiation_epoch
+
+        return current_instantiation_epoch() or ""
+    except Exception:
+        logger.debug("boot epoch unreadable; host liveness will not use it", exc_info=True)
+        return ""
+
+
 def _record_incarnation_matches(record: HostRecord) -> Optional[bool]:
     """Whether the record still names the same live process incarnation.
 
     New records prefer the canonical start fingerprint: on Linux/WSL it comes from /proc start
-    ticks and is immune to wall-clock shifts that move psutil.create_time(). Legacy records keep
-    the create-time check until their owner republishes them.
-    """
-    if record.start_time is None:
-        return _pid_incarnation_matches(record.pid, record.create_time)
-    alive = _pid_incarnation_matches(record.pid, None)
-    if alive is not True:
-        return alive
-    from gateway.status import get_process_start_time, start_time_fingerprints_match
+    ticks and is immune to wall-clock shifts that move psutil.create_time(). Those ticks are
+    NOT unique across reboots — they reset, and an early-boot PID reused within the drift
+    tolerance looks like the dead owner. A published boot epoch that differs from this boot's is a
+    mismatch; one that cannot be compared (this boot's epoch is unreadable) is unprovable, ``None``.
 
-    current = get_process_start_time(record.pid)
-    return None if current is None else start_time_fingerprints_match(record.start_time, current)
+    A gateway record with no epoch (published before ``bootEpoch`` existed, or on any platform
+    without /proc, where the epoch is always empty) whose create_time predates this boot is a
+    mismatch only while nobody holds the host lock. A record with neither create_time nor
+    start_time proves nothing about its pid, so it never vouches for one. Legacy records without
+    a start fingerprint keep the create-time check. Do not infer identity from argv.
+    """
+    recorded_epoch = record.boot_epoch
+    epoch = _current_boot_epoch()
+    if recorded_epoch:
+        if not epoch:
+            return None  # boots can't be compared; matching ticks alone prove nothing
+        if recorded_epoch != epoch:
+            return False
+    if record.start_time is None and record.create_time is None:
+        return False
+    if record.start_time is None:
+        matched = _pid_incarnation_matches(record.pid, record.create_time)
+    else:
+        alive = _pid_incarnation_matches(record.pid, None)
+        if alive is not True:
+            return alive
+        from gateway.status import get_process_start_time, start_time_fingerprints_match
+
+        current = get_process_start_time(record.pid)
+        matched = None if current is None else start_time_fingerprints_match(record.start_time, current)
+    if matched is not True:
+        return matched
+    if record.role == ROLE_GATEWAY and not recorded_epoch and record.create_time is not None:
+        boot = _boot_time()
+        if boot is not None and record.create_time < boot - _LEGACY_BOOT_SLACK_S:
+            lock_free = _host_lock_is_free(record.role)
+            if lock_free is None:
+                return None
+            if lock_free:
+                return False
+    return True
 
 
 def record_is_stale(record: Optional[HostRecord]) -> bool:
@@ -272,7 +359,14 @@ def record_is_stale(record: Optional[HostRecord]) -> bool:
 
 
 def liveness_is_proven(record: HostRecord) -> bool:
-    """True only when the record's process-incarnation probe positively matched (never on ``None``)."""
+    """True only when the record's process-incarnation probe positively matched (never on ``None``).
+
+    A record with neither ``createTime`` nor ``startTime`` cannot prove incarnation:
+    ``_same_incarnation`` treats a missing create_time as a match, so a recycled pid would
+    otherwise look alive forever. Topology already refused that shape; attach did not.
+    """
+    if record.create_time is None and record.start_time is None:
+        return False
     return _record_incarnation_matches(record) is True
 
 
@@ -311,7 +405,7 @@ def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Opti
     request = urllib.request.Request(
         f"http://{host}:{record.port}{HOST_IDENTITY_PATH}", headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 — fixed http scheme
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:
                 return None
             payload = json.loads(response.read(65536).decode("utf-8", "replace"))
@@ -462,6 +556,43 @@ def owns_host_lock(role: str) -> bool:
     return _lock_handles.get(_lock_key(_validated_role(role))) is not None
 
 
+def host_lock_is_held(role: str) -> Optional[bool]:
+    """Whether any process currently holds the host lock for ``role``.
+
+    ``True`` / ``False`` when the flock can be observed; ``None`` when the lock file cannot
+    be opened. Never retains a lock. This process's handle is authoritative: re-probing our
+    own flock succeeds on POSIX, so a second open would lie.
+    """
+    role = _validated_role(role)
+    if owns_host_lock(role):
+        return True
+    path = lock_path(role)
+    if not path.exists():
+        return False
+    try:
+        handle = open(path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    from gateway.status import _probe_lock_file
+
+    return _probe_lock_file(handle)
+
+
+def record_names_live_owner(record: HostRecord) -> bool:
+    """True when ``record``'s incarnation is proven AND its host lock is not observed free.
+
+    The publisher holds the host lock for its whole life and the OS drops it on death, so a free
+    flock falsifies a record whose pid merely looks alive (recycle, start-tick collision after a
+    reboot — #138343, #133744). Every reader that trusts a record as a running owner uses this.
+    """
+    if not liveness_is_proven(record):
+        return False
+    if host_lock_is_held(record.role) is False:
+        logger.debug("host %s record names pid %s but the host lock is free", record.role, record.pid)
+        return False
+    return True
+
+
 def publish_record(
     role: str,
     *,
@@ -485,12 +616,13 @@ def publish_record(
         pid=os.getpid(),
         create_time=process_create_time(),
         start_time=get_process_start_time(os.getpid()),
+        boot_epoch=_current_boot_epoch(),
         host=str(host or ""),
         port=int(port) if isinstance(port, int) and port > 0 else None,
         protocol_version=HOST_PROTOCOL_VERSION,
         token_fingerprint=token_fingerprint(token or ""),
         profiles=tuple(str(p) for p in profiles),
-        updated_at=datetime.now(timezone.utc).isoformat(),
+        updated_at=datetime.now(UTC).isoformat(),
         home=str(home or ""),
     )
     try:
@@ -526,13 +658,46 @@ def discard_dead_record(role: str) -> bool:
     record = read_record(role, include_stale=True)
     if record is None:
         return False
+    guard = None
     if record.pid != os.getpid() and _record_incarnation_matches(record) is not False:
-        return False
-    for path in (record_path(role), token_path(role)):
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
+        # A recycled pid can still look like the same incarnation. The publisher holds the
+        # host lock for its life, so winning it proves the recorded owner is gone. Hold it
+        # across the re-read and unlink: a free-lock probe released first let a new gateway
+        # claim and publish in the gap, and we deleted ITS record and token. A private handle,
+        # not claim_host_lock: cleanup must not enter this process's own claim/release ledger.
+        if owns_host_lock(role) or (guard := _hold_lock_briefly(role)) is None:
+            return False
+    try:
+        if guard is not None and read_record(role, include_stale=True) is None:
+            return False
+        for path in (record_path(role), token_path(role)):
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+    finally:
+        if guard is not None:
+            from gateway.status import _release_file_lock
+
+            _release_file_lock(guard)
+            with contextlib.suppress(OSError):
+                guard.close()
     _invalidate_attach_cache()
     return True
+
+
+def _hold_lock_briefly(role: str):
+    """Open and flock ``role``'s host lock without registering it; ``None`` when not won."""
+    from gateway.status import _try_acquire_file_lock
+
+    path = lock_path(role)
+    try:
+        handle = open(path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    if _try_acquire_file_lock(handle):
+        return handle
+    with contextlib.suppress(OSError):
+        handle.close()
+    return None
 
 
 def clear_record(role: str) -> None:

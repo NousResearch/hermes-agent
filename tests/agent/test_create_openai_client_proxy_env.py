@@ -85,7 +85,7 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
     http_client = _extract_http_client(forwarded)
     assert isinstance(http_client, httpx.Client), (
         "Expected _create_openai_client to inject a keepalive-enabled "
-        "httpx.Client; got %r" % (http_client,)
+        f"httpx.Client; got {http_client!r}"
     )
     # Verify a proxy mount exists. httpx Client(proxy=...) rewrites _mounts so
     # the proxied pool (HTTPProxy) sits alongside the base transport.
@@ -96,7 +96,7 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
     ]
     assert "HTTPProxy" in proxied_pools, (
         "Expected httpx.Client to route through HTTPProxy when HTTPS_PROXY is "
-        "set; found pools: %r" % (proxied_pools,)
+        f"set; found pools: {proxied_pools!r}"
     )
     http_client.close()
 
@@ -126,7 +126,7 @@ def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
     ]
     assert "HTTPProxy" not in pool_types, (
         "No proxy env set but httpx.Client still mounted HTTPProxy; "
-        "pools were %r" % (pool_types,)
+        f"pools were {pool_types!r}"
     )
     http_client.close()
 

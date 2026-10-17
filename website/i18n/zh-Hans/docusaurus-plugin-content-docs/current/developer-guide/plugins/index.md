@@ -67,6 +67,13 @@ provides_hooks:
 
 这告诉 Hermes："我是一个名为 calculator 的插件，我提供工具和钩子。" `provides_tools` 和 `provides_hooks` 字段是插件注册内容的列表。
 
+请在 `provides_tools` 中列出 `register()` 注册的每一个工具。该字段**不**决定用户安装的插件的工具是否加载：插件启用后，`register()` 注册的所有工具都可用，无论是否声明。它实际影响的是：
+
+- **`hermes plugins validate`**：注册的工具与列表不一致时，“declared tools”检查失败，插件无法进入目录（catalog）。
+- **目录展示**：目录及仪表盘/桌面端插件页中的“N 个工具”标签和按工具名搜索。
+- **仪表盘认证提示**：只有已声明工具的可用性检查会用于显示“需要认证”及 `hermes auth <name>` 命令。
+- **仅限内置的 `kind: platform` 插件**：该字段决定是否在 CLI/TUI 会话中加载 `tools.py`（适配器本身仍延迟加载）。参见 [添加平台适配器](../adding-platform-adapters.md)。
+
 可选字段示例：
 ```yaml
 author: Your Name

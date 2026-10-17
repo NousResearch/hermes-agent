@@ -124,7 +124,9 @@ async function main() {
       'chat-out': { type: 'string' },
       'mock-url': { type: 'string' },
       'no-update': { type: 'boolean', default: false },
-      'timeout-ms': { type: 'string', default: '600000' },
+      // A full app-driven update (git pull, dependency sync, npm ci, TUI/web/desktop builds)
+      // takes ~7.5 min on a normal macOS runner and ~10.5 min on a slow one.
+      'timeout-ms': { type: 'string', default: '900000' },
     },
   });
   // After the update wait (--timeout-ms), not inside it: launch, OLD chat and

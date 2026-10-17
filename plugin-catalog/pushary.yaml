@@ -1,0 +1,29 @@
+name: pushary
+repo: https://github.com/Pushary/hermes-plugin-pushary
+sha: cd3a9a4d78a9ef8a1c279d27100cb1e462273362
+subdir: pushary_plugin
+description: "Phone notifications, questions and approvals through Pushary's native Hermes approval transport, with optional per-tool gates. Disclosure — approval transport and per-tool gates hand dangerous-command approvals to whoever holds the devices or Slack channel paired to your Pushary account (fails closed); messages queued in the Pushary app or Mac notch are injected into the next turn as operator instructions; sends session events with a hashed hostname on every turn, redacted tool-error text (max 3 per session) and redacted gated-tool arguments to pushary.com."
+maintainer: Pushary
+tier: community
+category: automation
+docs_url: https://github.com/Pushary/hermes-plugin-pushary#readme
+version: "0.5.9"
+readme: false
+capabilities:
+  provides_tools:
+    - pushary_notify
+    - pushary_ask
+    - pushary_wait
+    - pushary_cancel
+    - pushary_propose_scope
+    - pushary_enroll
+    - pushary_ask_end_user
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+    - on_session_end
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

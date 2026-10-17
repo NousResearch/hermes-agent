@@ -359,15 +359,18 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
         AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
-    with _session_profile_runtime_scope(session):
+    request = parse_compress_args(arg)
+    if request.aggressive:
+        return AGGRESSIVE_UNSUPPORTED
+    if request.preview:  # report only — history, agent and session key untouched, so no busy claim
+        with session["history_lock"]:
+            preview_messages = list(session.get("history", []))
+        with _session_profile_runtime_scope(session):
+            return "\n".join(render_compress_result(compress_now(agent, preview_messages, request)))
+    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
         with session["history_lock"]:
             before_messages = list(session.get("history", []))
             history_version = int(session.get("history_version", 0))
-        request = parse_compress_args(arg)
-        if request.aggressive:
-            return AGGRESSIVE_UNSUPPORTED
-        if request.preview:  # report only — history, agent and session key untouched
-            return "\n".join(render_compress_result(compress_now(agent, before_messages, request)))
         sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
         tools = getattr(agent, "tools", None) or None
 
@@ -412,7 +415,7 @@ def _mirror_personality(sid, session, agent, arg) -> None:
 
 
 _FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold",
-               "ultrafast": "ultrafast"}
+               "ultrafast": "ultrafast", "ultra": "ultrafast"}
 
 
 def _mirror_fast(sid, session, agent, arg) -> None:
@@ -435,6 +438,17 @@ def _mirror_stop(sid, session, agent, arg) -> None:
 
 
 # name → mirror(sid, session, agent, arg); a falsy return means "no warning".
+def _mirror_autoprune(sid, session, agent, arg) -> str:
+    """An answered low-disk question drops its sticky notice (``later`` too: it re-arms in a week);
+    ``status``, a typo or a failed save leave it up."""
+    from pathlib import Path
+    from hermes_cli.prune_advisor import answered
+    home = session.get("profile_home")
+    if arg and answered(Path(home) if home else None):
+        _emit("notification.clear", sid, {"key": "sessions.auto_prune"})
+    return ""
+
+
 _SLASH_MIRRORS = {
     "model": lambda sid, session, agent, arg: (
         _apply_model_switch(sid, session, arg).get("warning", "") if arg and agent else ""),
@@ -442,7 +456,8 @@ _SLASH_MIRRORS = {
     "compress": lambda sid, session, agent, arg: (
         _compress_live_with_feedback(sid, session, agent, arg, snapshot_kwargs=False) if agent else ""),
     "fast": _mirror_fast,
-    "reload-mcp": _mirror_reload_mcp, "stop": _mirror_stop}
+    "reload-mcp": _mirror_reload_mcp, "stop": _mirror_stop,
+    "autoprune": _mirror_autoprune}
 
 
 def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tuple[str, str]:
@@ -483,7 +498,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if _session_uses_compute_host(session):
             return _compute_host_slash(sid, session, name, command)[1]
         if session.get("running"):
-            return busy_message(name)
+            return busy_message(name, bool(session.get("_manual_compress_active")))
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:
@@ -491,6 +506,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         # profile scope or /model's credential read raises UnscopedSecretError under multiplex (#122655).
         with _session_profile_runtime_scope(session):
             return mirror(sid, session, agent, arg) or ""
+    except CompressionBusy as e:  # a turn won the race after the unlocked running check above
+        return str(e)
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

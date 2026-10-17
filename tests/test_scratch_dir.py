@@ -1,10 +1,12 @@
 """Scratch dir contract: TMPDIR/TMP/TEMP follow HERMES_HOME/cache/scratch unless the user set them."""
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -254,6 +256,107 @@ def test_prune_reaps_process_living_in_idle_entry_and_spares_live_tree(tmp_path)
                 proc.wait(timeout=10)
 
 
+def test_prune_records_removals_and_kills_in_scratch_prune_log(tmp_path: Path) -> None:
+    """Every removed entry and every signalled process leaves a line in
+    ``<home>/logs/scratch-prune.log``: the prune's own handler writes it, so the boot-time
+    prune (before ``setup_logging()``) is not silent. An entry rmtree could not delete is
+    neither counted nor recorded as removed (#132401)."""
+    import subprocess
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    gone, stuck = scratch / "idle-lane", scratch / "stuck-lane"
+    ancient = time.time() - 30 * 3600
+    for entry in (gone, stuck):
+        entry.mkdir()
+        (entry / "out.md").write_text("deliverable", encoding="utf-8")
+        for path in (entry / "out.md", entry):
+            os.utime(path, (ancient, ancient))
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=str(gone),
+                              stdin=subprocess.DEVNULL)
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path: str | os.PathLike[str], *args: object, **kwargs: object) -> None:
+        if os.path.realpath(path) != os.path.realpath(stuck):
+            real_rmtree(path, *args, **kwargs)
+
+    try:
+        with patch("hermes_constants_scratch.shutil.rmtree", rmtree):
+            assert prune_scratch_dir(scratch) == 1
+        assert worker.wait(timeout=10) is not None
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=10)
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"removed {str(gone)!r} (" in log
+    assert f"sent TERM pid={worker.pid} " in log
+    assert f"could not fully remove {str(stuck)!r}" in log and f"removed {str(stuck)!r}" not in log
+
+
+@pytest.mark.platforms("linux")  # macOS and Windows filesystems reject non-UTF-8 names
+def test_prune_log_keeps_record_of_non_utf8_name(tmp_path: Path) -> None:
+    """A legal POSIX name that is not UTF-8 is written escaped, not dropped with its record."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    raw = os.fsencode(scratch) + b"/old-\xff"
+    with open(raw, "wb") as out:
+        out.write(b"x")
+    ancient = time.time() - 30 * 3600
+    os.utime(raw, (ancient, ancient))
+    assert prune_scratch_dir(scratch) == 1
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert "removed " in log and "old-\\udcff" in log
+
+
+@pytest.mark.platforms("linux")  # Windows rejects newlines in names
+def test_prune_log_escapes_newline_in_name(tmp_path: Path) -> None:
+    """A newline in a legal POSIX name is written escaped, so the record stays one line and
+    the rest of the name cannot pass for a record of its own."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "old\nscratch prune: removed fake-entry"
+    entry.write_text("x", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    os.utime(entry, (ancient, ancient))
+    assert prune_scratch_dir(scratch) == 1
+    lines = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig").splitlines()
+    assert len(lines) == 1
+    assert "old\\nscratch prune: removed fake-entry" in lines[0]
+
+
+@pytest.mark.platforms("posix")  # POSIX rename semantics
+def test_prune_log_keeps_record_when_another_prune_rotated_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two prunes of one home can both reach rollover: the other one renames
+    ``scratch-prune.log`` between this one's existence check and its rename. The rotation is
+    already done, so the record goes to the new file instead of being dropped."""
+    import hermes_constants_scratch
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "idle-lane"
+    entry.write_text("x", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    os.utime(entry, (ancient, ancient))
+    log = tmp_path / "logs" / "scratch-prune.log"
+    log.parent.mkdir()
+    log.write_bytes(b"x" * 200)
+    monkeypatch.setattr(hermes_constants_scratch, "_PRUNE_LOG_MAX_BYTES", 100)
+    real_rename = os.rename
+    raced: list[str] = []
+
+    def rename(src: str, dst: str, *args: object, **kwargs: object) -> None:
+        if os.fspath(src) == str(log) and not raced:
+            raced.append(dst)
+            real_rename(src, dst)  # the other prune's rename lands first
+        real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename)
+    assert prune_scratch_dir(scratch) == 1
+    assert raced
+    records = "".join(p.read_text(encoding="utf-8-sig", errors="replace")
+                      for p in log.parent.glob("scratch-prune.log*"))
+    assert f"removed {str(entry)!r} (" in records
+
+
 def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     """Deleting a scratch entry that held a linked worktree leaves the repo with no
     dangling registration (10 sat in one repo's ``git worktree list`` after cleanup)."""
@@ -278,9 +381,178 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     ancient = time.time() - 30 * 3600
     for dirpath, dirnames, filenames in os.walk(tree.parent):
         for name in dirnames + filenames:
-            os.utime(os.path.join(dirpath, name), (ancient, ancient), follow_symlinks=False)
+            try:
+                os.utime(os.path.join(dirpath, name), (ancient, ancient), follow_symlinks=False)
+            except NotImplementedError:
+                # Windows: os.utime has no follow_symlinks parameter.
+                os.utime(os.path.join(dirpath, name), (ancient, ancient))
     os.utime(tree.parent, (ancient, ancient))
     assert prune_scratch_dir(scratch) == 1
     listing = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True,
                              text=True, stdin=subprocess.DEVNULL, check=True).stdout
     assert str(tree) not in listing and not tree.exists()
+
+
+
+def test_write_during_size_walk_is_rescued(tmp_path: Path) -> None:
+    """F6 on #139850: no full-tree walk may sit between the final re-check and rmtree.
+    A writer overwrites an old file while the prune is sizing the doomed entry; the
+    re-check must still see it. Red when the size walk runs after the re-check: the
+    entry is destroyed with the fresh write inside."""
+    import hermes_constants_scratch as scratch_mod
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "sized-lane"
+    entry.mkdir()
+    payload = entry / "payload"
+    payload.write_text("OLD", encoding="utf-8")
+    ancient = time.time() - 48 * 3600
+    for path in (payload, entry):
+        os.utime(path, (ancient, ancient))
+    real_tree_bytes = scratch_mod._tree_bytes
+
+    def write_during_size_walk(path):
+        payload.write_text("FRESH", encoding="utf-8")
+        return real_tree_bytes(path)
+
+    with patch("hermes_constants_scratch._tree_bytes", write_during_size_walk):
+        assert prune_scratch_dir(scratch) == 0
+    assert payload.read_text(encoding="utf-8") == "FRESH", "write during size walk was destroyed"
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"rescued {str(entry)!r} " in log, log
+
+def test_midprune_resumed_write_is_rescued(tmp_path: Path) -> None:
+    """F1 on #132401, ported from 3f72fd9c8e (#132455): a writer whose cwd is outside
+    scratch — invisible to the reap — resumes during the prune's own reap window and
+    lands a fresh file in a doomed entry. The doomed list is a candidate list, never a
+    verdict: the entry is re-validated with the same idleness walk immediately before
+    deletion, rescued, recorded in ``scratch-prune.log``, and never counted as removed.
+    Red on pre-fix code: the entry is destroyed with the fresh write inside."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "resumed-lane"
+    entry.mkdir()
+    (entry / "old-output.md").write_text("stale content\n", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (entry / "old-output.md", entry):
+        os.utime(path, (ancient, ancient))
+    fresh = entry / "resumed-work.md"
+
+    def write_during_reap(root, doomed, *args, **kwargs):
+        # The resumed writer lands its fresh write mid-prune: selection is done,
+        # the deletion loop has not started. This is the F1 window.
+        fresh.write_text("FRESH RESUMED WORK\n", encoding="utf-8")
+        return 0
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", write_during_reap):
+        assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
+    assert fresh.exists(), "fresh mid-prune write was destroyed"
+    assert entry.exists()
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"rescued {str(entry)!r} " in log, log
+    assert f"removed {str(entry)!r} (" not in log, log
+
+
+def test_midprune_nested_overwrite_is_rescued_by_descending_recheck(tmp_path: Path) -> None:
+    """Greptile P2 on #134173: the mid-prune re-validation must descend the whole
+    subtree, and the original rescue test could not pin that — a fresh file created
+    directly in ``entry`` also bumps the entry directory's own mtime, so a shallow
+    re-check that never looked below the top level would rescue it too. This case
+    holds every directory mtime ancient and touches only an existing file deep in
+    an old nested tree (an overwrite bumps the file's mtime alone), so a top-level
+    re-check sees idle and deletes real work while the descending walk rescues it.
+    Red against a shallow (lstat-only) re-validation; green against the subtree walk."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "nested-resume-lane"
+    deep = entry / "lane" / "wt"  # three levels, every directory aged below
+    deep.mkdir(parents=True)
+    payload = deep / "old-output.md"
+    payload.write_text("stale content\n", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (payload, deep, deep.parent, entry):
+        os.utime(path, (ancient, ancient))
+
+    def overwrite_during_reap(root, doomed, *args, **kwargs):
+        # The resumed writer overwrites an existing file inside the old nested
+        # tree: no directory mtime changes — only the file's own timestamp moves.
+        payload.write_text("FRESH OVERWRITE, DEEP\n", encoding="utf-8")
+        return 0
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", overwrite_during_reap):
+        assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
+    assert payload.read_text(encoding="utf-8") == "FRESH OVERWRITE, DEEP\n", (
+        "deep mid-prune overwrite was destroyed"
+    )
+    assert entry.exists()
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"rescued {str(entry)!r} " in log, log
+    assert f"removed {str(entry)!r} (" not in log, log
+
+
+def test_midprune_vanished_entry_is_recorded_not_counted(tmp_path: Path) -> None:
+    """The third state beside rescued and kept: an entry deleted by an outside actor
+    during the reap window is recorded as vanished — not a rescue (no touch happened),
+    not a scan failure (nothing is unreadable), and never counted as removed (we did
+    not remove it). Pins the tri-state audit born in the P3 review of #134173."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "doomed-lane"
+    entry.mkdir()
+    (entry / "old-output.md").write_text("stale content\n", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (entry / "old-output.md", entry):
+        os.utime(path, (ancient, ancient))
+
+    def remove_during_reap(root, doomed, *args, **kwargs):
+        # An outside actor (a lane's own cleanup) deletes the entry mid-prune.
+        shutil.rmtree(entry)
+        return 0
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", remove_during_reap):
+        assert prune_scratch_dir(scratch) == 0  # gone, but not by our hand
+    assert not entry.exists()
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"entry {str(entry)!r} vanished" in log, log
+    assert f"rescued {str(entry)!r} " not in log, log
+    assert "re-scan failed" not in log, log
+
+
+def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) -> None:
+    """R2/P2 on #134173: after rmtree, the removal-confirmation gate uses
+    os.path.lexists(), which swallows OSError from lstat and returns False — so an
+    entry that stayed (rmtree left residue) but became unreadable is counted and
+    recorded as removed. Only an explicit lstat proves absence: FileNotFoundError
+    confirms gone, a successful stat is residue, any other OSError means the
+    removal state is unknown, so the entry is neither counted nor recorded removed.
+    Red on the previous head: removed == 1 and a false 'removed' record."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "residue-lane"
+    entry.mkdir()
+    payload = entry / "result.txt"
+    payload.write_text("still here", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (payload, entry):
+        os.utime(path, (ancient, ancient))
+    log_file = tmp_path / "logs" / "scratch-prune.log"
+
+    deny = {"lstat": False}
+
+    def rmtree_leaves_residue(path, *args, **kwargs):
+        # rmtree(ignore_errors=True) is allowed to leave the directory in place.
+        deny["lstat"] = True
+
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        # Only the post-removal visibility check fails; everything else stat()s.
+        if deny["lstat"] and os.path.abspath(os.fspath(path)) == os.path.abspath(entry):
+            raise PermissionError("post-rmtree visibility denied")
+        return real_lstat(path, *args, **kwargs)
+
+    with patch("hermes_constants_scratch.reap_processes_rooted_in", lambda *a, **k: 0), \
+         patch("hermes_constants_scratch.shutil.rmtree", rmtree_leaves_residue), \
+         patch("hermes_constants_scratch.os.lstat", lstat):
+        assert prune_scratch_dir(scratch) == 0  # unknown, not removed
+    assert entry.exists() and payload.read_text(encoding="utf-8") == "still here"
+    log = log_file.read_text(encoding="utf-8-sig")
+    assert f"removed {str(entry)!r} (" not in log, log
+    assert "could not confirm removal" in log, log
+    assert "could not fully remove" not in log, log

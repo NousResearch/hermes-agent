@@ -17,6 +17,8 @@ import urllib.request
 
 import pytest
 
+from hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
+
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
@@ -365,6 +367,110 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     ))
     assert [e["id"] for e in fleet["rows"](kid)] == ["own001"], "borrowed root row was copied into the profile"
     assert [e["id"] for e in fleet["rows"](fleet["root"])] == ["abc123"]
+
+
+@pytest.mark.parametrize("provider", sorted(SINGLE_USE_REFRESH_POOL_PROVIDERS))
+def test_profile_fresh_add_with_no_login_anywhere_lands_in_the_profile(fleet, provider):
+    """#103694: with no rows in root or the profile, a login made inside the
+    profile is the profile's own credential. It must be readable afterwards,
+    and root must be left exactly as it was."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root_file = fleet["root"] / "auth.json"
+    store = json.loads(root_file.read_text())
+    store["credential_pool"].pop(provider, None)
+    root_file.write_text(json.dumps(store))
+    kid = _profile(fleet, "kid")
+    root_before = root_file.read_bytes()
+
+    fleet["use"](kid)
+    load_pool(provider).add_entry(PooledCredential(
+        provider=provider, id="fresh1", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:device_code", access_token="at-fresh", refresh_token="rt-fresh",
+    ))
+
+    assert "fresh1" in [e.id for e in load_pool(provider).entries()]
+    assert "fresh1" in [r["id"] for r in json.loads((kid / "auth.json").read_text())["credential_pool"][provider]]
+    assert root_file.read_bytes() == root_before
+
+
+@pytest.mark.parametrize("root_rows", [[], [{
+    "id": "rootkey", "label": "root-key", "auth_type": "api_key", "priority": 0,
+    "source": "manual", "access_token": "root-api-key"}]], ids=["root_pool_empty", "root_api_key_row"])
+def test_anthropic_auth_add_survives_the_next_load_beside_a_root_singleton(fleet: dict, root_rows: list) -> None:
+    """``auth add anthropic`` saves a ``manual:hermes_pkce`` row, which the pool owns. When root's
+    login lives only in its ``.anthropic_oauth.json``, the next load must not take that row for a
+    copy of root's file: it stays in the profile, and root's file is left as it was."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root = fleet["root"]
+    store = json.loads((root / "auth.json").read_text(encoding="utf-8"))
+    store["credential_pool"]["anthropic"] = root_rows
+    (root / "auth.json").write_text(json.dumps(store), encoding="utf-8")
+    singleton = root / ".anthropic_oauth.json"
+    singleton.write_text(json.dumps({
+        "accessToken": "at-root", "refreshToken": "rt-root", "expiresAt": int((time.time() - 3600) * 1000),
+    }), encoding="utf-8")
+    singleton_before = singleton.read_bytes()
+    kid = _profile(fleet, "kid")
+
+    fleet["use"](kid)
+    load_pool("anthropic").add_entry(PooledCredential(
+        provider="anthropic", id="kid001", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:hermes_pkce", access_token="at-kid", refresh_token="rt-kid",
+        expires_at_ms=int((time.time() + 8 * 3600) * 1000),
+    ))
+    assert [r["id"] for r in fleet["rows"](kid)] == ["kid001"]
+
+    fleet["use"](kid)  # a later process
+    assert "kid001" in [e.id for e in load_pool("anthropic").entries()]
+    assert [r["id"] for r in fleet["rows"](kid)] == ["kid001"]
+    assert singleton.read_bytes() == singleton_before
+
+
+@pytest.mark.parametrize("provider,root_login", [
+    ("nous", {"access_token": "at-root", "refresh_token": "rt-root", "agent_key": "ak-root"}),
+    ("openai-codex", {"tokens": {"access_token": "at-root", "refresh_token": "rt-root"}}),
+    ("xai-oauth", {"tokens": {"access_token": "at-root", "refresh_token": "rt-root"}}),
+], ids=["nous", "openai-codex", "xai-oauth"])
+def test_profile_auth_add_never_copies_roots_provider_login(fleet: dict, provider: str, root_login: dict) -> None:
+    """Root's login may live only in ``providers.<id>``, with no pool rows yet. A profile sees it
+    through the root fallback; neither the profile's first ``auth add`` nor a later load may write
+    that single-use refresh token into the profile's store."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root_file = fleet["root"] / "auth.json"
+    store = json.loads(root_file.read_text(encoding="utf-8"))
+    store["credential_pool"].pop(provider, None)
+    store["providers"][provider] = root_login
+    root_file.write_text(json.dumps(store), encoding="utf-8")
+    kid = _profile(fleet, "kid")
+
+    fleet["use"](kid)
+    load_pool(provider).add_entry(PooledCredential(
+        provider=provider, id="mine01", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:device_code", access_token="at-mine", refresh_token="rt-mine",
+    ))
+    assert "rt-root" not in (kid / "auth.json").read_text(encoding="utf-8")
+
+    fleet["use"](kid)  # a later process
+    assert "mine01" in [e.id for e in load_pool(provider).entries()]
+    assert "rt-root" not in (kid / "auth.json").read_text(encoding="utf-8")
+
+
+def test_auth_add_never_reports_added_for_a_row_the_store_did_not_keep(fleet, monkeypatch, capsys):
+    """"Added" is printed only for a credential the store holds afterwards."""
+    from argparse import Namespace
+
+    from agent import credential_pool
+    from hermes_cli.auth_commands import auth_add_command
+
+    monkeypatch.setattr(credential_pool, "write_credential_pool", lambda *a, **kw: [])
+    with pytest.raises(SystemExit, match="not saved"):
+        auth_add_command(Namespace(
+            provider="openrouter", auth_type="api-key", api_key="sk-or-v1-new", label="new", priority=None,
+        ))
+    assert "Added" not in capsys.readouterr().out
 
 
 def test_classic_mode_persist_is_unchanged(fleet):

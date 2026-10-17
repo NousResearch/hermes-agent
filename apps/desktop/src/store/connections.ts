@@ -23,8 +23,10 @@ import {
   $activeGatewayProfile,
   $freshSessionRequest,
   $newChatProfile,
+  $newChatRoute,
   $showAllProfiles,
   captureNewChatSource,
+  currentNewChatIntent,
   ensureGatewayAgent,
   normalizeProfileKey,
   openGatewayAgent,
@@ -129,6 +131,22 @@ export function _resetConnectionsForTests(): void {
   restoreAttempted = false
   switchRevision = 0
   $pendingConnectionId.set(null)
+}
+
+// A connection switch is a new-chat intent on THAT source: keep the registry
+// identity with the profile so the next create names local::x / <source>::x
+// exactly, never a bare profile string. An older explicit agent route must not
+// override the selected source. The silent boot restore is not a user choice,
+// so it keeps a route the user pinned (gateway-group +) while it was in flight.
+function rehomeNewChatDraft(profile: string, keepExplicitRoute = false): void {
+  $newChatProfile.set(profile)
+
+  if (!keepExplicitRoute) {
+    $newChatRoute.set(null)
+  }
+
+  captureNewChatSource()
+  requestFreshSession()
 }
 
 export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): void {
@@ -401,18 +419,17 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   if (pendingTarget === null && currentConnectionId === connectionId && currentProfile === targetProfile) {
     $showAllProfiles.set(false)
-    $newChatProfile.set(targetProfile)
-    // A connection switch is a new-chat intent on THAT source: keep the
-    // registry identity with the profile so the next create names local::x /
-    // <source>::x exactly, never a bare profile string.
-    captureNewChatSource()
-    requestFreshSession()
+    rehomeNewChatDraft(targetProfile)
     await rememberConnection(connectionId)
 
     return
   }
 
   const revision = ++switchRevision
+  // A draft the user starts while this switch is in flight (a gateway group's
+  // "+", a profile pick) is newer than the switch; the late re-home must not
+  // take it over. switchRevision only sees other switches.
+  const draftIntent = currentNewChatIntent()
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
   // Set by the commit hook once THIS switch has wiped — i.e. it owns the
@@ -533,13 +550,19 @@ export async function selectConnection(connectionId: string, options: SelectConn
     if (revision === switchRevision) {
       await rememberConnection(connectionId)
 
+      // Remembering crosses IPC too; a newer click may now own the draft.
+      if (revision !== switchRevision) {
+        return
+      }
+
       if (!restoreOnBoot) {
         $showAllProfiles.set(false)
       }
 
-      $newChatProfile.set(targetProfile)
-      captureNewChatSource()
-      requestFreshSession()
+      if (currentNewChatIntent() === draftIntent) {
+        rehomeNewChatDraft(targetProfile, restoreOnBoot)
+      }
+
       await refreshActiveProfile()
     }
   } catch (error) {

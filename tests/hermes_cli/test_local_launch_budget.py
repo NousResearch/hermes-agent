@@ -65,7 +65,7 @@ def test_launch_budget_subtracts_other_programs_plus_headroom(monkeypatch):
 def test_launch_budget_reads_free_memory_on_a_vulkan_card(monkeypatch, tmp_path):
     """Behind Vulkan/HIP (no nvidia-smi) the engine's own device probe reports free memory, and each
     launch asks again: the cached capacity probe predates programs that started since."""
-    import hermes_cli.local_runtime.devices as devices
+    from hermes_cli.local_runtime import devices
 
     held_gib = [0.0]
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
@@ -99,6 +99,7 @@ def test_launch_budget_counts_own_server_as_free(monkeypatch):
 def test_launch_budget_skips_unified_memory_and_failed_probes(monkeypatch):
     uma = replace(CARD_CAPACITY, uma=True)
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: pytest.fail("UMA must not probe"))
+    monkeypatch.setattr(hardware, "_windows_memory_status", lambda: None)  # Windows narrows by commit
     assert hardware.launch_budget(uma) is None
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
     assert hardware.launch_budget(CARD_CAPACITY) is None
@@ -224,6 +225,7 @@ class _Router:
         self.preset_path = preset_path
         self.statuses = statuses
         self.reloads = 0
+        self.models_max = 1
         self.proc = SimpleNamespace(poll=lambda: None)
         self._refit_usable = None
         import threading

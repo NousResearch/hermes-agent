@@ -121,9 +121,10 @@ def test_active_session_capacity_refusal_defers_without_counting_failure(kanban_
         assert run["outcome"] == "capacity_deferred"
         assert metadata.get("refusal_reason") == MAX_CONCURRENT_SESSIONS
         assert metadata.get("exit_code") == 1
+        assert metadata.get("worker_output") is None
         assert task.status == "ready"
         assert task.consecutive_failures == 0
-        assert getattr(kbd.detect_crashed_workers, "_last_capacity_deferred") == [tid]
+        assert kbd.detect_crashed_workers._last_capacity_deferred == [tid]  # type: ignore[attr-defined]
         assert kbd.check_respawn_guard(conn, tid) == "session_capacity_cooldown"
 
 

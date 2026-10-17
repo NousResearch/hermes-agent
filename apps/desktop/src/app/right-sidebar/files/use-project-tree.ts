@@ -535,6 +535,16 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     }
   }, [connectionKey, cwd, workspaceTick])
 
+  // The atom is module state, but this effect's deps (connectionKey, cwd) are
+  // pane props — a module-level resetProjectTreeState() (session/connection
+  // switch in the wiring) can clear it out from under a mounted pane without
+  // changing either, so the initial load never re-ran: the derived loading
+  // stayed true, the refresh button stayed disabled and no self-heal path arms
+  // on a clean atom. An atom holding neither content nor an in-flight load is
+  // stale (the same end state a dropped root read leaves, #90229), so let that
+  // re-run the initial load.
+  const treeStale = state.cwd !== cwd || (!state.loaded && !state.rootLoading)
+
   useEffect(() => {
     const connectionChanged = lastConnectionKey !== '' && lastConnectionKey !== connectionKey
     lastConnectionKey = connectionKey
@@ -549,7 +559,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     }
 
     void loadRoot(cwd, { connectionKey })
-  }, [connectionKey, cwd])
+  }, [connectionKey, cwd, treeStale])
 
   // Self-heal: an errored root re-probes every few seconds while the tree is
   // mounted. Each attempt bumps requestId, so a persistent error re-arms the

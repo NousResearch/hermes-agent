@@ -262,11 +262,16 @@ def _apply_actions_evidence(receipt, repo, sha, number, branch, required, profil
     workflow_dispatch or other untrusted event is not evidence and cannot
     override that run. Within the selected run, every same-named job must pass.
     """
-    foreign = [context for context, app_id in sorted(required, key=str) if app_id != _ACTIONS_APP_ID]
+    foreign = [context if app_id in (None, -1) else f"{context} (app {app_id})"
+               for context, app_id in sorted(required, key=str) if app_id != _ACTIONS_APP_ID]
     if foreign:
+        # A repository-rule mismatch, not a transient failure: retrying cannot change it.
         receipt.update(classification="infra", evidence_source="actions", ok=False,
-                       detail=("Actions-only acceptance cannot prove mixed or unpinned required "
-                               f"checks: {', '.join(foreign)}."))
+                       recovery="Change the base branch's required checks, then complete again; do not rerun CI for this.",
+                       detail=(f"Actions-only acceptance cannot prove mixed or unpinned required checks. Pin each "
+                               f"to GitHub Actions (app {_ACTIONS_APP_ID}) in the base branch ruleset or protection, "
+                               "or use a local-only contract if another app must gate merges. Checks: "
+                               + ", ".join(foreign[:3]) + (f" and {len(foreign) - 3} more." if len(foreign) > 3 else ".")))
         return receipt
     try:
         runs = _slurp_rows(_api(

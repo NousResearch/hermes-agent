@@ -5,14 +5,23 @@ Mirrors the ``transform_terminal_output`` hook tests from Phase 1 but
 targets the generic tool-result seam that runs for every tool dispatch.
 """
 
+import asyncio
 import os
 from pathlib import Path
 
 import hermes_cli.plugins as plugins_mod
 import model_tools
+import pytest
+from hermes_cli.plugins import PluginManager
 
 
 _UNSET = object()
+
+
+@pytest.fixture()
+def manager(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+    return PluginManager()
 
 
 def _run_handle_function_call(
@@ -63,6 +72,59 @@ def test_first_valid_string_return_replaces_result(monkeypatch):
         invoke_hook=lambda hook_name, **kw: [None, {"x": 1}, "first", "second"],
     )
     assert out == "first"
+
+
+def test_transform_tool_result_passes_each_string_to_the_next_callback(manager):
+    seen = []
+
+    def append_note(**kwargs):
+        seen.append(kwargs["result"])
+        return kwargs["result"] + " [note]"
+
+    def redact(**kwargs):
+        seen.append(kwargs["result"])
+        return kwargs["result"].replace("tok-123-SECRET", "[REDACTED]")
+
+    manager._hooks["transform_tool_result"] = [append_note, redact]
+
+    assert manager.invoke_hook("transform_tool_result", result="tok-123-SECRET") == ["[REDACTED] [note]"]
+    assert seen == ["tok-123-SECRET", "tok-123-SECRET [note]"]
+
+
+def test_transform_tool_result_non_string_return_keeps_the_current_value(manager):
+    seen = []
+
+    def observer(**kwargs):
+        seen.append(kwargs["result"])
+        return {"ignored": True}
+
+    def append_note(**kwargs):
+        seen.append(kwargs["result"])
+        return kwargs["result"] + " [note]"
+
+    manager._hooks["transform_tool_result"] = [observer, append_note]
+
+    assert manager.invoke_hook("transform_tool_result", result="raw") == [{"ignored": True}, "raw [note]"]
+    assert seen == ["raw", "raw"]
+
+
+def test_async_transform_tool_result_passes_each_string_to_the_next_callback(manager):
+    seen = []
+
+    async def append_note(**kwargs):
+        seen.append(kwargs["result"])
+        return kwargs["result"] + " [note]"
+
+    async def redact(**kwargs):
+        seen.append(kwargs["result"])
+        return kwargs["result"].replace("tok-123-SECRET", "[REDACTED]")
+
+    manager._hooks["transform_tool_result"] = [append_note, redact]
+
+    assert asyncio.run(manager.ainvoke_hook("transform_tool_result", result="tok-123-SECRET")) == [
+        "[REDACTED] [note]"
+    ]
+    assert seen == ["tok-123-SECRET", "tok-123-SECRET [note]"]
 
 
 def test_hook_receives_expected_kwargs(monkeypatch):

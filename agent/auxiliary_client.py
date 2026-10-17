@@ -4018,20 +4018,66 @@ def _replan_synchronous_cache_sections(
     )
 
 
+def _same_aux_fallback_endpoint(
+    provider: str, base_url: str, other_provider: str, other_base_url: str,
+) -> bool:
+    """True when two aux routes resolve to the same endpoint (provider + base URL)."""
+    if (provider or "").strip() != (other_provider or "").strip():
+        return False
+    return (base_url or "").strip().rstrip("/") == (other_base_url or "").strip().rstrip("/")
+
+
+def _strip_foreign_task_extra_body(
+    effective_extra_body: dict, task_extra_body: dict, *, destination: _FallbackDestination,
+    primary_provider: str, primary_base_url: str, fallback_entry: dict,
+) -> dict:
+    """Drop ``auxiliary.<task>.extra_body`` keys when the candidate resolves to a different
+    endpoint than the one that config was written for.
+
+    Task-level ``extra_body`` describes the primary endpoint's wire dialect (e.g.
+    ``chat_template_kwargs`` for a local vLLM/llama.cpp server); forwarded unchanged it 400s the
+    very fallback that exists to cover the primary being down (#138392). Caller-passed keys (and
+    caller overrides of a task-level key) still travel; a fallback entry may re-declare its own
+    ``extra_body``, which wins. ``reasoning`` folded from ``reasoning_effort`` is not part of the
+    explicit task-level body and is never dropped here."""
+    if not task_extra_body or _same_aux_fallback_endpoint(
+            destination.provider, destination.base_url, primary_provider, primary_base_url):
+        return effective_extra_body
+    routed = {
+        key: value for key, value in effective_extra_body.items()
+        if key not in task_extra_body or value != task_extra_body[key]
+    }
+    entry_extra_body = fallback_entry.get("extra_body") if isinstance(fallback_entry, dict) else None
+    if isinstance(entry_extra_body, dict):
+        routed.update(entry_extra_body)
+    dropped = sorted(key for key in task_extra_body if key not in routed)
+    if dropped:
+        logger.info(
+            "Auxiliary: fallback %s is a different endpoint than %s; dropped task-level "
+            "extra_body keys not meant for it: %s",
+            destination.provider, primary_provider, dropped)
+    return routed
+
+
 def _fallback_request_kwargs(
     destination: _FallbackDestination, *, task: Optional[str], messages: list,
     tools: Optional[list], temperature: Optional[float], max_tokens: Optional[int],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
     fallback_entry: dict, task_config: dict, apply_fast_lane: bool,
+    task_extra_body: Optional[dict] = None, primary_provider: str = "", primary_base_url: str = "",
 ) -> dict[str, Any]:
     """Build request kwargs for one fallback destination (cache-section replan + fast-lane cap)."""
-    fallback_max_tokens, fallback_extra_body = max_tokens, effective_extra_body
+    routed_extra_body = _strip_foreign_task_extra_body(
+        effective_extra_body, task_extra_body or {}, destination=destination,
+        primary_provider=primary_provider, primary_base_url=primary_base_url,
+        fallback_entry=fallback_entry)
+    fallback_max_tokens, fallback_extra_body = max_tokens, routed_extra_body
     if apply_fast_lane:
         fallback_max_tokens, fallback_extra_body = _compression_fast_lane_controls(
             task, actual_provider=destination.provider, actual_model=destination.model,
             requested_provider=fallback_entry.get("provider"),
             requested_model=fallback_entry.get("model"), route_config=fallback_entry,
-            leak_guard_config=task_config, max_tokens=max_tokens, extra_body=effective_extra_body,
+            leak_guard_config=task_config, max_tokens=max_tokens, extra_body=routed_extra_body,
         )
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(messages, tools, destination=destination)
     fb_kwargs = _build_call_kwargs(
@@ -4117,6 +4163,7 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    task_extra_body: Optional[dict] = None, primary_provider: str = "", primary_base_url: str = "",
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
@@ -4132,7 +4179,8 @@ def _call_fallback_candidate_sync(
         fb_client, fb_model, fb_label, task=task, effective_timeout=effective_timeout,
         apply_fast_lane=True, messages=messages, tools=tools, temperature=temperature,
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
-        reasoning_config=reasoning_config,
+        reasoning_config=reasoning_config, task_extra_body=task_extra_body,
+        primary_provider=primary_provider, primary_base_url=primary_base_url,
     )
 
     def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
@@ -4182,13 +4230,15 @@ async def _call_fallback_candidate_async(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    task_extra_body: Optional[dict] = None, primary_provider: str = "", primary_base_url: str = "",
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync` (no fast-lane cap on this wire)."""
     destination, fb_kwargs, rebuild = _plan_fallback_candidate(
         fb_client, fb_model, fb_label, task=task, effective_timeout=effective_timeout,
         apply_fast_lane=False, messages=messages, tools=tools, temperature=temperature,
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
-        reasoning_config=reasoning_config,
+        reasoning_config=reasoning_config, task_extra_body=task_extra_body,
+        primary_provider=primary_provider, primary_base_url=primary_base_url,
     )
 
     async def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
@@ -7457,6 +7507,7 @@ class _PreparedAuxRequest(NamedTuple):
     resolved_api_mode: Optional[str]
     effective_timeout: float
     effective_extra_body: dict[str, Any]
+    task_extra_body: dict[str, Any]
     base_info: str
 
 
@@ -7476,6 +7527,10 @@ def _prepare_aux_request(
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
+    # Raw explicit task-level body (no reasoning_effort fold): the keys that belong to the
+    # primary endpoint's wire dialect and must not ride along onto a foreign fallback (#138392).
+    raw_task_extra_body = _get_auxiliary_task_config(task).get("extra_body")
+    task_extra_body = dict(raw_task_extra_body) if isinstance(raw_task_extra_body, dict) else {}
     effective_extra_body.update(extra_body or {})
     client, final_model, resolved_provider, effective_provider = _resolve_call_client(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
@@ -7525,7 +7580,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, task_extra_body, base_info)
 
 
 class _LadderStep(NamedTuple):
@@ -8076,6 +8131,9 @@ def _release_sync_semaphore_after_stream(stream: Any, semaphore: threading.Bound
             semaphore.release()
 
 
+_FALLBACK_SCOPE_KEYS = frozenset({"task_extra_body", "primary_provider", "primary_base_url"})
+
+
 def _plan_aux_call(
     task: Optional[str], *, async_mode: bool, provider: Optional[str], model: Optional[str],
     base_url: Optional[str], api_key: Optional[str], main_runtime: Optional[dict[str, Any]],
@@ -8100,9 +8158,15 @@ def _plan_aux_call(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, effective_timeout=req.effective_timeout,
         effective_extra_body=req.effective_extra_body, reasoning_config=reasoning_config,
+        task_extra_body=req.task_extra_body, primary_provider=req.request_provider,
+        primary_base_url=req.base_info,
     )
+    # Same-provider retries target the primary endpoint by definition; the fallback-only
+    # endpoint-scoping inputs must not reach _prepare_same_provider_retry's signature.
     retry_kwargs = dict(
-        candidate_kwargs, resolved_base_url=req.resolved_base_url,
+        {key: value for key, value in candidate_kwargs.items()
+         if key not in _FALLBACK_SCOPE_KEYS},
+        resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         main_runtime=main_runtime, final_model=req.final_model, extra_headers=extra_headers,
     )

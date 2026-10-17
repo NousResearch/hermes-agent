@@ -1,7 +1,7 @@
 name: hermes-fleet-connector
 title: Hermes Fleet Connector
 repo: https://github.com/tony-simons-aiowa/hermes-fleet-connector
-sha: "e55e62ea183aa2f7731f419fc031dee107237b1b"
+sha: "9a4b6f76c4c880d5cade1a0f43b5749112cb7be9"
 description: "Owner-approved universal phone pairing and bundled read-only Live Operations reporting for selected Hermes profiles. Disclosure — paired phones retain broad fleet:operator access, including cron jobs (unattended runs), Kanban task dispatch and media reads. Runs an explicitly activated background connector/reverse proxy and may launch a local Hermes backend; legacy QR flow opens a private local browser. Keeps an owner-only local control socket, pairing state and shared local snapshots; reads selected profiles' session registries through private read-only imports. Local idle/retirement maintenance is explicit and not exposed to phones. Reporting adds no control power."
 maintainer: tony-simons-aiowa
 tier: community

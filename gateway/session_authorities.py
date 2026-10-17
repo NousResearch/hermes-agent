@@ -193,9 +193,14 @@ def all_authorities(runner):
 
 
 def serving_authorities(runner):
-    """``all_authorities`` minus retiring ones: what startup recovery and service creation cover.
-    Shutdown keeps ``all_authorities``, so a retained authority's live writer is still settled."""
-    return [a for a in all_authorities(runner) if not getattr(a, 'retiring', False)]
+    """The authorities that accept work (``SessionAuthorities.serving``: no reserved-but-unbuilt slot,
+    none retiring): what startup recovery, service creation and cross-ledger reads cover. Shutdown
+    keeps ``all_authorities``, so a retained authority's live writer is still settled."""
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is not None:
+        return registry.serving()
+    authority = getattr(runner, 'session_authority', None)
+    return [authority] if authority is not None and not getattr(authority, 'retiring', False) else []
 
 
 def require_serving(authority):

@@ -53,7 +53,7 @@ def register_plugin_provider(pp: Any) -> None:
     if pp.name in _REGISTRY_PLUGIN_SKIP:
         return
     if pp.auth_type == "api_key":
-        if not pp.env_vars:
+        if not pp.env_vars and getattr(pp, "requires_api_key", True):
             return
         pconfig = _api_key_provider(pp.name, pp.display_name or pp.name, pp.base_url, *_api_key_env_fields(pp))
     else:

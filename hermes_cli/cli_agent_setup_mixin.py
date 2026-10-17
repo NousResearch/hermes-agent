@@ -103,6 +103,16 @@ def _keyless_custom_base(base_url) -> bool:
         and not base_url_host_matches(base_url, "openrouter.ai"))
 
 
+def _provider_manages_its_own_client(provider: str) -> bool:
+    """Whether a provider profile explicitly owns its credentials and endpoint."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return False
+    return profile is not None and not getattr(profile, "requires_api_key", True)
+
+
 def _compression_descendant(session_db, session_id):
     """If ``session_id`` is the (empty) head of a compression chain, return the
     descendant that actually holds the messages; else None. Fails open on DB errors."""
@@ -275,9 +285,10 @@ class CLIAgentSetupMixin:
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
+        provider_managed_client = _provider_manages_its_own_client(resolved_provider)
         # A callable api_key is a bearer-token provider (Azure Entra ID): the OpenAI SDK
         # invokes it per request, so skip string validation / placeholder substitution.
-        if not callable(api_key) and not (isinstance(api_key, str) and api_key):
+        if not provider_managed_client and not callable(api_key) and not (isinstance(api_key, str) and api_key):
             if _keyless_custom_base(base_url):
                 # Placeholder key so the SDK doesn't reject the keyless local endpoint.
                 api_key = "no-key-required"
@@ -293,7 +304,7 @@ class CLIAgentSetupMixin:
                     print(f"\n{t('cli.startup.no_provider_configured')}")
                 print(f"   {t('cli.startup.run_model_or_setup')}")
                 return False
-        if not isinstance(base_url, str) or not base_url:
+        if not provider_managed_client and (not isinstance(base_url, str) or not base_url):
             print(f"\n{t('cli.startup.empty_base_url')}")
             return False
         credentials_changed = api_key != self.api_key or base_url != self.base_url

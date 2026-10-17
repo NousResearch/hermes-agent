@@ -1922,6 +1922,16 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
         return None
 
 
+def _provider_manages_its_own_client(agent) -> bool:
+    """Whether *agent* selected a profile that owns credential and endpoint resolution."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(getattr(agent, "provider", ""))
+    except Exception:
+        return False
+    return profile is not None and not getattr(profile, "requires_api_key", True)
+
+
 def _profile_for_base_url(base_url: str) -> Any | None:
     """Registered profile whose own base_url is a prefix of ``base_url`` (provider name did not
     resolve). Prefix, not equality: the replaced copilot-acp branch keyed on
@@ -2016,6 +2026,16 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
         from agent.moa_loop import build_moa_facade
         return build_moa_facade(agent, getattr(agent, "model", None) or "default")
+    # A provider that explicitly owns client construction may also own auth and endpoint
+    # resolution, so it must run before HTTP URL validation rejects its empty placeholders.
+    if _provider_manages_its_own_client(agent):
+        provider_client = _provider_supplied_client(agent, client_kwargs)
+        if provider_client is not None:
+            _ra().logger.info(
+                "%s client created from provider profile (%s, shared=%s) %s",
+                agent.provider, reason, shared, agent._client_log_context(),
+            )
+            return provider_client
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
     httpx_verify = resolve_httpx_verify(
@@ -2024,11 +2044,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     )
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
-    # Provider-supplied client (registration seam): a provider whose wire protocol is not
-    # OpenAI-over-HTTP supplies its own client from ProviderProfile.create_client(). Consulted
-    # before the built-in ladder so a profile registered from ~/.hermes/plugins/ or a pip entry
-    # point can ship a transport without editing this function (what makes an out-of-tree ACP
-    # provider possible). None (the default) falls through, so existing providers are unaffected.
+    # Other profile-supplied clients retain the normal HTTP URL and proxy validation before
+    # taking over construction.
     provider_client = _provider_supplied_client(agent, client_kwargs)
     if provider_client is not None:
         _ra().logger.info(

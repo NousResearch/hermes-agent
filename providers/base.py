@@ -63,6 +63,9 @@ class ProviderProfile:
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    # False when ``create_client()`` owns both authentication and endpoint selection.  This is
+    # deliberately opt-in: ordinary OpenAI-compatible profiles still require a key and URL.
+    requires_api_key: bool = True
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True

@@ -899,7 +899,7 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
             creds = {**creds, "api_key": ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, "source": creds.get("source") or "local-offline"}
     # An explicitly selected API-key provider is authoritative: an empty key would defer failure
     # to the first request and make a later fallback look like a silent provider switch.
-    if not has_usable_secret(creds.get("api_key")):
+    if not has_usable_secret(creds.get("api_key")) and not _provider_manages_its_own_client(provider):
         hint = f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else ""
         raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
     # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
@@ -909,6 +909,16 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
     base_url = _finalize_base_url(provider, api_mode, base_url)
     api_key = _actual_local_key(provider, creds.get("api_key", ""), base_url)
     return _runtime(provider, api_mode, base_url, api_key, source=creds.get("source", "env"), requested_provider=requested_provider)
+
+
+def _provider_manages_its_own_client(provider: str) -> bool:
+    """Whether a provider explicitly delegates credentials and endpoint selection to its client."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return False
+    return profile is not None and not getattr(profile, "requires_api_key", True)
 
 
 # ── the resolution ladder ──────────────────────────────────────────────────────────────────

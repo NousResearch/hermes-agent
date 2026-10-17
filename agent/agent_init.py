@@ -989,7 +989,7 @@ def _apply_openai_header_policy(agent, client_kwargs: dict[str, Any]) -> None:
 
 def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_timeout):
     """OpenAI-wire client: resolve kwargs, apply header/TLS policy, construct."""
-    if api_key and base_url:
+    if (api_key and base_url) or _provider_manages_its_own_client(agent.provider):
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
@@ -1024,6 +1024,16 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
                               warn_missing=warning_notifications_enabled(agent.platform))
     except Exception as e:
         raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+
+
+def _provider_manages_its_own_client(provider: str) -> bool:
+    """Whether the profile's client selects credentials and endpoint itself."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return False
+    return profile is not None and not getattr(profile, "requires_api_key", True)
 
 
 def _build_client(agent, api_key, base_url, fallback_model):

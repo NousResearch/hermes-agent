@@ -123,3 +123,39 @@ def test_named_identity_reaches_agent_and_vision_tool_native_gates():
         assert _should_use_native_vision_fast_path() is True
     finally:
         reset_runtime_main(token)
+
+
+def test_profile_managed_client_needs_no_api_key_or_base_url(monkeypatch):
+    """Regression for #138802: a native plugin owns its session and endpoint."""
+    import pytest
+    import providers
+    from hermes_cli import auth, runtime_provider
+    from hermes_cli.auth_plugin_providers import register_plugin_provider
+    from providers.base import ProviderProfile
+
+    class _SessionProfile(ProviderProfile):
+        def create_client(self, **kwargs):
+            return object()
+
+    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
+    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    monkeypatch.setattr(auth, "PROVIDER_REGISTRY", dict(auth.PROVIDER_REGISTRY))
+    monkeypatch.setattr(runtime_provider, "PROVIDER_REGISTRY", auth.PROVIDER_REGISTRY)
+    profile = _SessionProfile(name="native-session", auth_type="api_key", requires_api_key=False)
+    providers.register_provider(profile)
+    register_plugin_provider(profile)
+    monkeypatch.setattr(runtime_provider, "load_config", lambda: {"model": {"provider": "native-session"}})
+
+    runtime = runtime_provider.resolve_runtime_provider(requested="native-session", target_model="native-model")
+    assert (runtime["provider"], runtime["api_key"], runtime["base_url"]) == ("native-session", "", "")
+
+    cli = _RuntimeCLI(model="native-model", provider="native-session")
+    assert cli._ensure_runtime_credentials() is True
+    assert (cli.api_key, cli.base_url) == ("", "")
+
+    ordinary = ProviderProfile(name="ordinary-session", env_vars=("ORDINARY_SESSION_API_KEY",))
+    providers.register_provider(ordinary)
+    register_plugin_provider(ordinary)
+    with pytest.raises(auth.AuthError, match="No usable credentials"):
+        runtime_provider.resolve_runtime_provider(requested="ordinary-session", target_model="ordinary-model")

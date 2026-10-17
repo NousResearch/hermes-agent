@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
 from hermes_constants import openrouter_variant_base
+from hermes_cli.model_search import model_alias_canonical
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -54,6 +55,15 @@ class _Match:
         return _accept() if self.exact else None
 
 
+def _alias_pair(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` are two spellings Hermes already knows are one model (a bare
+    wire id and its public slug: ``k3`` / ``kimi-k3``). The ``canonical != lower`` guard keeps
+    the fold from also erasing case-only differences — case sensitivity stays each branch's
+    own decision."""
+    ca, cb = model_alias_canonical(a), model_alias_canonical(b)
+    return ca == cb and (ca != a.lower() or cb != b.lower())
+
+
 def _match_in_catalog(
     query: str,
     candidates,
@@ -83,7 +93,7 @@ def _match_in_catalog(
     def _show(cid: str) -> str:
         return display[cid] if display is not None else cid
 
-    if query in set(pool):
+    if query in set(pool) or any(_alias_pair(query, c) for c in pool):
         return _Match(exact=True)
     suggestions = get_close_matches(suggest_query, pool, n=3, cutoff=suggest_cutoff)
     if not suggestions:

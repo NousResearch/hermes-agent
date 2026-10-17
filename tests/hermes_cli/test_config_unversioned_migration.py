@@ -80,3 +80,27 @@ def test_config_seeded_from_the_template_reads_as_current(hermes_home):
 
     current, latest = check_config_version(raise_on_parse_error=True)
     assert current == latest
+
+
+def test_unversioned_failed_legacy_step_stays_retryable(hermes_home, monkeypatch):
+    """A failed eligible legacy step must not stamp an unversioned config as current."""
+    from hermes_cli.config import DEFAULT_CONFIG, migrate_config
+    import hermes_cli.config_migrations as migrations
+
+    target = min(migrations.LEGACY_KEY_STEPS)
+    (hermes_home / "config.yaml").write_text("model:\n  provider: test\n", encoding="utf-8")
+
+    def fail(_results, _quiet):
+        raise RuntimeError("retry me")
+
+    monkeypatch.setattr(migrations, "MIGRATIONS", ((target, fail),))
+    first = migrate_config(interactive=False, quiet=True)
+
+    assert first["migration_failed"] is True
+    assert first["pending_migrations"] == [target]
+    assert "_config_version" not in _raw(hermes_home)
+
+    monkeypatch.setattr(migrations, "MIGRATIONS", ((target, lambda _results, _quiet: None),))
+    migrate_config(interactive=False, quiet=True)
+
+    assert _raw(hermes_home)["_config_version"] == DEFAULT_CONFIG["_config_version"]

@@ -87,10 +87,14 @@ def step_migrate_config() -> dict:
 
     backups = _backup_existing((get_config_path(), get_env_path()))
     try:
-        migrate_config(interactive=False, quiet=True)
+        migration = migrate_config(interactive=False, quiet=True)
     except Exception:
         _restore_backups(backups)
         raise
+    pending = migration.get("pending_migrations") if isinstance(migration, dict) else None
+    if pending:
+        logger.warning("config migration remains retryable at version %s; pending steps: %s", current_ver, pending)
+        return {"ok": True, "pending_migrations": pending}
     post_ver, _ = check_config_version()
     if post_ver < latest_ver:
         restored = _restore_backups(backups)

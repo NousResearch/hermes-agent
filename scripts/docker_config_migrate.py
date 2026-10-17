@@ -80,7 +80,7 @@ def main() -> int:
         f"backups: {backup_text}"
     )
     try:
-        migrate_config(interactive=False, quiet=False)
+        migration = migrate_config(interactive=False, quiet=False)
     except Exception:
         restored = _restore_backups(backups)
         if restored:
@@ -89,6 +89,15 @@ def main() -> int:
                 + ", ".join(str(path) for path in restored)
             )
         raise
+
+    pending = migration.get("pending_migrations") if isinstance(migration, dict) else None
+    if pending:
+        print(
+            f"[config-migrate] Migration remains retryable at version {current_ver}; "
+            f"pending steps: {', '.join(map(str, pending))}",
+            file=sys.stderr,
+        )
+        return 0
 
     post_ver, _ = check_config_version()
     if post_ver < latest_ver:

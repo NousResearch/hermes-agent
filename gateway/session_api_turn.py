@@ -18,6 +18,7 @@ _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 # Request-owned sinks an API observer may register for its admission's execution.
 _OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
                   'reasoning_callback', 'status_callback', 'interim_assistant_callback')
+_TOOL_SINKS = {'tool_start_callback', 'tool_complete_callback'}
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
@@ -381,6 +382,10 @@ async def observe_api_turn(admitted, **kwargs):
     if observers is None:
         observers = authority.api_observers = {}
     observer = {key: kwargs[key] for key in _OBSERVER_KEYS if kwargs.get(key) is not None}
+    if kwargs.get('tool_progress_callback') is not None and not observer.keys() & _TOOL_SINKS:
+        # Progress-only (the session chat stream): the producer's own tool.started / tool.completed
+        # events with its preview and failure verdict. Structured observers keep only theirs.
+        observer['tool_progress_callback'] = kwargs['tool_progress_callback']
     registered = observers.setdefault(row['admission_id'], [])
     registered.append(observer)
     try:
@@ -493,8 +498,8 @@ def _notify_observers(authority, session_id, key, *args, **kwargs):
 
 def wire_api_observers(agent, owner, want_interim):
     """Hand this admission's API observers (Chat/Responses SSE, runs) the agent's reasoning,
-    status and commentary callbacks, the ones the direct API path gave the agent itself. Each
-    event is fenced to the exact running claim, so a settled worker's late callback is inert;
+    status, commentary and tool progress callbacks, the ones the direct API path gave the agent
+    itself. Each event is fenced to the exact running claim, so a settled worker's late callback is inert;
     the turn's own status/commentary sinks keep running after the observers."""
     authority, session_id, generation = owner
 
@@ -517,8 +522,16 @@ def wire_api_observers(agent, owner, want_interim):
         publish('interim_assistant_callback', text, already_streamed=already_streamed)
         if interim is not None:
             interim(text, already_streamed=already_streamed)
+    progress = agent.tool_progress_callback
+
+    def tool_progress_callback(event_type, *args, **kwargs):
+        if event_type in ('tool.started', 'tool.completed'):
+            publish_api_tool_progress(authority, session_id, generation, event_type, *args, **kwargs)
+        if progress is not None:
+            return progress(event_type, *args, **kwargs)
     agent.reasoning_callback = lambda text: publish('reasoning_callback', text)
     agent.status_callback = status_callback
+    agent.tool_progress_callback = tool_progress_callback
     if want_interim:
         agent.interim_assistant_callback = interim_assistant_callback
 
@@ -527,6 +540,17 @@ def publish_api_event(authority, session_id, event_type, payload):
     if event_type == 'message.delta' and payload['text'] is not None:  # a None segment boundary is viewer-only
         return _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
     return False
+
+
+def publish_api_tool_progress(authority, session_id, generation, *args, **kwargs):
+    """A ``tool_progress_callback`` tool event as its producer emitted it, for the admission's
+    progress-only observers; never inferred again from formatted or bounded result text."""
+    with authority.sessions[session_id].event_stream.lock:
+        try:
+            authority.check_approval_generation(session_id, generation)
+        except RuntimeStoreError:
+            return
+        _notify_observers(authority, session_id, 'tool_progress_callback', *args, **kwargs)
 
 
 def publish_api_tool_event(authority, session_id, generation, event_type, call_id, tool_name, args, result=None):

@@ -9,6 +9,7 @@ import type { CSSProperties } from 'react'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { triggerHaptic } from '@/lib/haptics'
 import { isComposerChord } from '@/lib/keybinds/chords'
+import { isWindowsPlatform } from '@/lib/platform'
 import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
@@ -885,7 +886,8 @@ export function useTerminalSession({
     term.attachCustomKeyEventHandler(event => {
       const intent = terminalClipboardIntent(event, {
         hasSelection: Boolean(term.getSelection()),
-        isMac: isMacPlatform()
+        isMac: isMacPlatform(),
+        isWindows: isWindowsPlatform()
       })
 
       if (!intent) {

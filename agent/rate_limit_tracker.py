@@ -109,8 +109,11 @@ def parse_rate_limit_headers(headers: Mapping[str, str], provider: str = "") -> 
 
 
 def _fmt_count(n: int) -> str:
-    """Human-friendly number: 7999856 -> '8.0M', 33599 -> '33.6K', 799 -> '799'."""
-    if n >= 1_000_000:
+    """Human-friendly number: 7999856 -> '8.0M', 33599 -> '33.6K', 799 -> '799'.
+
+    The unit is chosen after rounding: 999_960 rounds to 1000.0 thousands, which must read
+    as '1.0M', never the four-digit '1000.0K'."""
+    if n >= 1_000_000 or (n >= 1_000 and round(n / 1_000, 1) >= 1_000):
         return f"{n / 1_000_000:.1f}M"
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"

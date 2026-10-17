@@ -28,7 +28,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tools.environments.kubernetes import (
     DEFAULT_KUBERNETES_CONFIG,
@@ -1662,7 +1662,7 @@ def test_yaml_boolean_off_disables_owner_references():
     """The Kubernetes docs page tells operators to write `owner_reference: off`, and YAML
     1.1 parses an unquoted `off` as the boolean False. Comparing only against
     the string made the documented syntax a silent no-op."""
-    import yaml
+    import hermes_yaml as yaml
 
     from tools.environments.kubernetes import owner_reference_disabled
 

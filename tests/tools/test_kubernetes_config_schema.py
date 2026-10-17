@@ -261,7 +261,7 @@ def test_cli_config_example_documents_the_yaml_block():
                  # The config key IS the PodSpec; a doubled path sends a kata
                  # operator to a nested `spec:` the API server rejects.
                  "spec.spec"):
-        stale = re.search(rf"^#\s+{dead}:", text, re.M)
+        stale = re.search(rf"^#\s+{dead}:", text, re.MULTILINE)
         assert not stale, f"cli-config.yaml.example still documents {dead}:"
 
 
@@ -269,7 +269,7 @@ def test_the_config_example_parses_and_matches_the_schema():
     """The annotated block is the thing operators copy. A YAML slip there, or
     a key the backend no longer accepts, is a broken starting point that no
     other test would catch — the example is comments, so nothing loads it."""
-    import yaml
+    import hermes_yaml as yaml
 
     from tools.environments.kubernetes import (
         DEFAULT_KUBERNETES_CONFIG, resolve_provisioner_kind, session_cwd,
@@ -355,14 +355,14 @@ def test_the_documented_starter_object_is_the_shipped_one():
     This is the test that replaces the old shipped-YAML drift check."""
     import re
 
-    import yaml
+    import hermes_yaml as yaml
 
     from tools.environments.kubernetes import STARTER_SESSION_OBJECT
 
     doc = (REPO_ROOT / "website" / "docs" / "user-guide"
            / "kubernetes.md").read_text(encoding="utf-8")
     block = re.search(
-        r"```yaml\nterminal:\n  backend: kubernetes\n(.*?)```", doc, re.S)
+        r"```yaml\nterminal:\n  backend: kubernetes\n(.*?)```", doc, re.DOTALL)
     assert block, "the quick-start config block is missing from kubernetes.md"
     parsed = yaml.safe_load(block.group(0).strip("`").replace("yaml\n", "", 1))
     kube = parsed["terminal"]["kubernetes"]

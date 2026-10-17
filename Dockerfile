@@ -367,6 +367,17 @@ COPY --link --chmod=a+rX,go-w . .
 # The shared assembler binds the prepared environment and frontend products.
 RUN /opt/hermes/.venv/bin/python -m docker.build_agent
 
+# Bake the source tree's bytecode now, at build time. PYTHONDONTWRITEBYTECODE=1
+# plus the read-only install tree (go-w above) mean that without .pyc files in
+# the image every process start recompiles each module it imports, and every
+# conversation entry spawns a fresh process — on a slow (bind-mounted)
+# filesystem that compile tax lands on each conversation (#136383: `import
+# run_agent` alone took 7.8s there vs ~0.9s with bytecode available). uv's
+# --compile-bytecode (pm/environment.py) already covers the venv's third-party
+# packages; this closes the gap for the repo's own source tree. The image
+# never updates itself in place, so baked .pyc never go stale.
+RUN /opt/hermes/.venv/bin/python -m compileall -q -j 0 /opt/hermes
+
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, dep assembly, npm install all run as root) and
 # read-only for the hermes user (go-w from the --chmod above).

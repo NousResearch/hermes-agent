@@ -104,3 +104,8 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+    # Slack-native thinking card (opt-in beside native_task_cards): narration between tool
+    # calls flows into one per-turn card (gateway/run_turn_runner_thinking.py) instead of the
+    # per-segment interim-commentary replies.
+    _native_slack_thinking_cards: bool = False
+    thinking_queue: Any = None

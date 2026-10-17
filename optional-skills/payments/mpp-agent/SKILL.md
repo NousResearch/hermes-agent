@@ -77,24 +77,26 @@ www-authenticate: tempo amount=0.1 currency=...
 ### 3. Pay the request
 
 ```
-mppx <url>
+mppx <url> -v
 ```
+
+`-v` is verbose output for that same invocation, so the merchant's response
+headers — the receipt among them — are printed without a second request. Keep
+that output; it is the receipt of record for the next step.
 
 For non-GET methods or request bodies:
 
 ```
-mppx <url> --method POST --data '<json>'
+mppx <url> --method POST --data '<json>' -v
 ```
 
 `mppx` handles the 402 challenge/credential dance automatically and prints the merchant's actual response on success.
 
 ### 4. Verify the receipt
 
-`mppx` attaches the receipt header automatically. To inspect:
+`mppx` attaches the receipt header to the response of the request it just paid. Read it from the output you kept in step 3.
 
-```
-mppx <url> -v
-```
+Do **not** re-run the request to confirm that it succeeded. A second `mppx <url>` is a new paid request, not a receipt lookup: against a per-request charge endpoint it can charge twice, and for the POST/body form it would not even carry the same method or body. If the receipt header was not captured, and it has to be checked later, use a read-only receipt or transaction lookup tied to the original request where the merchant documents one — and say so plainly when there is no way to recover the receipt from the original response.
 
 ## Procedure (Tempo Wallet)
 

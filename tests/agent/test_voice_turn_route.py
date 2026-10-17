@@ -11,7 +11,15 @@ from pathlib import Path
 import pytest
 
 from run_agent import AIAgent
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, write_hermes_home
+
+
+# The 400 body from the reported refusal — the provider's verbatim relay of an input guardrail.
+DEEPINFRA_CONTENT_FILTER = (
+    '{"error":{"message":"<400> InternalError.Algo.DataInspectionFailed: Input text data may contain '
+    'inappropriate content.","type":"data_inspection_failed","param":null,'
+    '"code":"data_inspection_failed"}}'
+)
 
 
 def _agent(home: Path, main_url: str):
@@ -116,3 +124,30 @@ def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, se
         finally:
             end_voice_turn_route(agent)
         assert _session_info(agent, {})["reasoning_effort"] == "low"
+
+
+def test_voice_turn_falls_back_through_the_routes_own_chain(tmp_path, monkeypatch):
+    """A voice turn walks ``auxiliary.voice_chat.fallback_chain`` when the voice model refuses the
+    turn, then hands the session back to its own (empty) chain and its main model."""
+    with FakeLLMServer([Error(400, DEEPINFRA_CONTENT_FILTER)]) as voice, \
+            FakeLLMServer(default_text="answered by the route's fallback") as fallback:
+        home = write_hermes_home(tmp_path / ".hermes", voice.base_url, extra_config=(
+            "auxiliary:\n  voice_chat:\n    provider: custom\n"
+            f"    base_url: {voice.base_url}\n    model: voice-model\n"
+            "    fallback_chain:\n      - provider: custom\n"
+            f"        base_url: {fallback.base_url}\n        model: voice-fallback-model\n"
+            "custom_providers:\n  - name: voice\n"
+            f"    base_url: {voice.base_url}\n    models:\n      voice-model:\n        context_length: 128000\n"
+        ))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        agent = _agent(home, voice.base_url)
+
+        agent._voice_turn_pending = True
+        spoken = agent.run_conversation("spoken question")
+
+        assert spoken.get("completed"), spoken
+        assert spoken.get("final_response") == "answered by the route's fallback", spoken
+        assert [r["model"] for r in fallback.main_requests()] == ["voice-fallback-model"]
+        # The route swap is undone: the session keeps its own chain and main model.
+        assert agent._fallback_chain == []
+        assert agent.model == "fake-model"

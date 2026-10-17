@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.redact import redact_for_egress
 
+from agent.memory_caller_scope import caller_scope, claim_instance, in_owner_home, refused_tool_message
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
@@ -245,6 +246,8 @@ class MemoryManager:
         self._shutdown_drain_state: dict[str, Any] = {
             "status": "not_started", "abandoned_writes": 0, "abandoned_prefetches": 0, "active_tasks": 0,
         }
+        # The profile ``initialize_all`` bound the providers to; tool calls must come from it (#140058).
+        self._bound_scope: Optional[dict[str, Any]] = None
 
     def _each_provider(self, label: str, call: Callable[[MemoryProvider], Any], *, level: int = logging.DEBUG,
                        providers: Optional[list[MemoryProvider]] = None, exc_info: bool = False) -> list[Any]:
@@ -257,6 +260,16 @@ class MemoryManager:
             except Exception as e:
                 logger.log(level, "Memory provider '%s' %s: %s", provider.name, label, e, exc_info=exc_info)
         return results
+
+    def _owner_allows(self, hook: str) -> bool:
+        """Whether a lifecycle hook may reach the providers: only from the profile they were initialized
+        for (#140058; see ``agent/memory_caller_scope.py``). Nothing to reach, nothing to refuse."""
+        return not self._providers or caller_scope(self._bound_scope, f"hook {hook}") is not None
+
+    def _drop_provider(self, provider: MemoryProvider) -> None:
+        self._providers = [p for p in self._providers if p is not provider]
+        self._tool_to_provider = {t: p for t, p in self._tool_to_provider.items() if p is not provider}
+        self._has_external = any(p.name != "builtin" for p in self._providers)
 
     def add_provider(self, provider: MemoryProvider) -> None:
         """Register a provider; builtin always accepted, only ONE external allowed."""
@@ -338,7 +351,7 @@ class MemoryManager:
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
         clean_query = self._strip_skill_scaffolding(query)
-        if not clean_query:
+        if not clean_query or not self._owner_allows("prefetch"):
             return ""
         clean_query = _redact_for_provider(clean_query)
         parts = self._each_provider(
@@ -409,7 +422,7 @@ class MemoryManager:
         """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""
         providers = list(self._providers)
         clean_query = self._strip_skill_scaffolding(query) if providers else None
-        if not clean_query:
+        if not clean_query or not self._owner_allows("queue_prefetch"):
             return
         clean_query = _redact_for_provider(clean_query)
         self._submit_background(lambda: self._each_provider(
@@ -438,7 +451,7 @@ class MemoryManager:
         """
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
-        if not clean_user_content:
+        if not clean_user_content or not self._owner_allows("sync_turn"):
             return
         clean_user_content, assistant_content, redacted_messages = _redact_for_provider(
             clean_user_content, assistant_content, messages)
@@ -459,7 +472,7 @@ class MemoryManager:
         """Queue ``fn`` on the serialized worker (created lazily; None once shutting down) and track its
         durability class. Runs under the caller's contextvars (``ctx_bound``). If the executor is
         unavailable outside shutdown, run inline — the historical fail-safe."""
-        fn = ctx_bound(fn)
+        fn = ctx_bound(in_owner_home(self._bound_scope, fn))
         executor = None if self._shutting_down else self._sync_executor
         if executor is None and not self._shutting_down:
             with self._sync_executor_lock:
@@ -544,6 +557,14 @@ class MemoryManager:
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
+        scope = caller_scope(self._bound_scope, f"tool {tool_name}")
+        if scope is None:
+            return tool_error(refused_tool_message(tool_name))
+        kwargs = {**kwargs, **scope}
+        # A provider written against ``handle_tool_call(tool_name, args)`` gets only what it declares.
+        params = _signature_params(provider.handle_tool_call)
+        if params is not None and not _has_var_kwargs(params):
+            kwargs = {k: v for k, v in kwargs.items() if k in params}
         args = _redact_for_provider(args)
         from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
@@ -556,6 +577,8 @@ class MemoryManager:
         return result
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        if not self._owner_allows("on_turn_start"):
+            return
         message = _redact_for_provider(message)
 
         def _tick(p: MemoryProvider) -> None:
@@ -567,6 +590,8 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+        if not self._owner_allows("on_session_end"):
+            return
         messages = _redact_messages_for_egress(messages or [])
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
@@ -588,7 +613,7 @@ class MemoryManager:
         share the same worker. If the executor is unavailable, ``_submit_background`` degrades to inline
         execution — the pre-#16454 synchronous behavior, slow but correct.
         """
-        if not self._providers:
+        if not self._providers or not self._owner_allows("session_boundary"):
             return
         snapshot = list(messages or [])
 
@@ -609,7 +634,7 @@ class MemoryManager:
         """Notify providers that ``AIAgent.session_id`` rotated without teardown
         (``/resume``, ``/branch``, ``/reset``, ``/new``, compression). ``rewound=True``
         (``/undo``): same id, truncated transcript."""
-        if not new_session_id:
+        if not new_session_id or not self._owner_allows("on_session_switch"):
             return
         if rewound:  # forward only when set so it never pollutes providers' **kwargs
             kwargs["rewound"] = True
@@ -640,6 +665,10 @@ class MemoryManager:
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
         must succeed — its exception propagates so the caller keeps the uncompressed transcript.
         """
+        if not self._owner_allows("on_pre_compress"):
+            if require_checkpoint:  # the caller keeps the uncompressed transcript
+                raise RuntimeError("Memory pre-compress checkpoint refused; see gateway.log")
+            return ""
         parts = []
         checkpoint_succeeded = False
         messages, evidence_messages = _redact_for_provider(messages or [], evidence_messages)
@@ -681,6 +710,8 @@ class MemoryManager:
     def on_memory_write(self, action: str, target: str, content: str,
                         metadata: Optional[dict[str, Any]] = None) -> None:
         """Notify external providers when the built-in memory tool writes (skips builtin, the source)."""
+        if not self._owner_allows("on_memory_write"):
+            return
         content, metadata = _redact_for_provider(content, dict(metadata or {}))
 
         def _notify(provider: MemoryProvider) -> None:
@@ -762,6 +793,8 @@ class MemoryManager:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        if not self._owner_allows("on_delegation"):
+            return
         task, result = _redact_for_provider(task, result)
         self._each_provider(
             "on_delegation failed",
@@ -821,5 +854,10 @@ class MemoryManager:
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
+        self._bound_scope = {key: kwargs.get(key) for key in ("hermes_home", "agent_identity")}
+        # One instance, one profile: never rebind an instance another profile's manager bound (#140058).
+        for provider in [p for p in self._providers if p.name != "builtin"]:
+            if not claim_instance(provider, kwargs["hermes_home"]):
+                self._drop_provider(provider)
         self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
                             level=logging.WARNING)

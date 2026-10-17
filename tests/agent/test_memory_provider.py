@@ -304,6 +304,7 @@ class TestMemoryManager:
                         provider._prefetch_result = text
                         mgr = MemoryManager()
                         mgr.add_provider(provider)
+                        mgr.initialize_all(session_id="s")  # bound to this scope's profile, as agents are
                         managers[home] = mgr
                     mgr = managers[home]
                     if home == b:
@@ -329,6 +330,7 @@ class TestMemoryManager:
             try:
                 fresh = MemoryManager()
                 fresh.add_provider(provider := FakeMemoryProvider("external"))
+                fresh.initialize_all(session_id="fresh")
                 provider._prefetch_result = text
                 assert fresh.prefetch_all("recall", session_id="fresh") == text
                 assert not (a / "recall" / "fresh").exists()

@@ -1070,6 +1070,48 @@ class TestOptionalSkillSourceMetadata:
         assert [meta.name for meta in src._scan_all()] == ["real-skill"]
         assert src._find_skill_dir("archived-skill") is None
 
+
+class TestOptionalSkillSourceQualifiedIdentifierGate:
+    """A fully-qualified identifier meant for another registry must not resolve to a
+    same-named optional skill: this source runs first in the router, so the bare-name
+    fallback silently substituted the official skill for the one the user asked for."""
+
+    def _source_with_same_named_skill(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "software-development" / "subagent-driven-development"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: subagent-driven-development\ndescription: official variant\n---\nBody\n",
+            encoding="utf-8",
+        )
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+        return src
+
+    @pytest.mark.parametrize("identifier", [
+        "skills-sh/obra/superpowers/subagent-driven-development",
+        "obra/superpowers/skills/subagent-driven-development",  # GitHub repo-root form
+        "github/obra/superpowers/subagent-driven-development",
+    ])
+    def test_fetch_ignores_identifiers_addressed_to_other_registries(self, tmp_path, identifier):
+        src = self._source_with_same_named_skill(tmp_path)
+
+        assert src.fetch(identifier) is None
+
+    def test_inspect_ignores_identifiers_addressed_to_other_registries(self, tmp_path):
+        src = self._source_with_same_named_skill(tmp_path)
+
+        assert src.inspect("skills-sh/obra/superpowers/subagent-driven-development") is None
+
+    def test_official_identifier_still_fetches_same_named_skill(self, tmp_path):
+        src = self._source_with_same_named_skill(tmp_path)
+
+        bundle = src.fetch("official/software-development/subagent-driven-development")
+
+        assert bundle is not None
+        assert bundle.identifier == "official/software-development/subagent-driven-development"
+        assert src.inspect("official/software-development/subagent-driven-development") is not None
+
 class TestOptionalSkillSourceBinaryAssets:
     def test_fetch_preserves_binary_assets(self, tmp_path):
         optional_root = tmp_path / "optional-skills"

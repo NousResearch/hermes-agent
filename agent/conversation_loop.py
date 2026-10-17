@@ -1534,6 +1534,29 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     return None
 
 
+def _finalize_early_api_failure(agent, state: _LoopState, early_result: dict[str, Any]) -> dict[str, Any]:
+    """Run shared turn cleanup for a terminal API failure while preserving its error details."""
+    if early_result.get("failed") is not True or early_result.get("interrupted"):
+        return early_result
+
+    state.final_response = early_result.get("final_response")
+    state.messages = early_result.get("messages", state.messages)
+    state.api_call_count = early_result.get("api_calls", state.api_call_count)
+    state.failed = True
+    state.interrupted = False
+    state._turn_exit_reason = early_result.get("turn_exit_reason") or "api_error"
+    result = finalize_turn(agent, **{
+        name: getattr(state, name)
+        for name in inspect.signature(finalize_turn).parameters if name != "agent"
+    })
+    # Retry helpers own provider-specific metadata (classification, billing, reset hints,
+    # partial delivery); the common finalizer owns lifecycle and turn cleanup.
+    result.update({key: value for key, value in early_result.items() if key not in result})
+    if early_result.get("partial"):
+        result["partial"] = True
+    return result
+
+
 def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     """The codex app-server's result for this turn, or None when its failure activated a fallback and the
     generic loop retries the same user turn."""
@@ -1675,7 +1698,7 @@ def _run_conversation_turn(
 
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
-            return early_result
+            return _finalize_early_api_failure(agent, s, early_result)
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":

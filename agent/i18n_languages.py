@@ -22,6 +22,7 @@ class LanguageOption(TypedDict):
 BUNDLED_LANGUAGE_INFO: dict[str, tuple[str, bool]] = {
     "af": ("Afrikaans", False),
     "ar": ("العربية", True),
+    "cs": ("Čeština", False),
     "de": ("Deutsch", False),
     "en": ("English", False),
     "es": ("Español", False),

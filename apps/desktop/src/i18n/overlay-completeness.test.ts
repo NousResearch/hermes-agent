@@ -5,6 +5,7 @@ import { flattenMessageKeys } from '@hermes/shared/i18n'
 import { expect, it } from 'vitest'
 
 import { arOverrides } from './ar'
+import { csOverrides } from './cs'
 import { deOverrides } from './de'
 import type { TranslationOverrides } from './define-locale'
 import { en } from './en'
@@ -25,6 +26,7 @@ import { zhHantOverrides } from './zh-hant'
 // `OVERLAY_GAPS_UPDATE=1 npx vitest run src/i18n/overlay-completeness.test.ts`.
 const OVERLAYS = {
   ar: arOverrides,
+  cs: csOverrides,
   de: deOverrides,
   es: esOverrides,
   fr: frOverrides,

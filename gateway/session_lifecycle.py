@@ -161,6 +161,22 @@ class SessionLifecycleMixin:
             self._set_turn_marker_locked(session_key, entry, None, None)
         return True
 
+    def complete_session_bootstrap(self, session_key: str, session_id: str) -> bool:
+        """Commit bootstrap for the completed conversation, never a concurrent reset's successor.
+
+        The caller must first verify successful client execution and durable input ownership.
+        As with active-turn markers, persist the candidate before changing live state.
+        """
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or entry.session_id != session_id or not entry.is_fresh_reset:
+                return False
+            candidate = entry.to_dict()
+            candidate["is_fresh_reset"] = False
+            self._save_entry(session_key, entry_data=candidate, lock_held=True)
+            entry.is_fresh_reset = False
+        return True
+
     def recover_interrupted_turns(self, max_age_seconds: int = 60 * 60) -> int:
         """Promote crash-left turn markers into ``resume_pending`` (unclean startup only).
         Old/invalid markers are cleared without resuming; suspended sessions are never re-armed.

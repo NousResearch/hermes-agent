@@ -95,7 +95,7 @@ behavior on the next access.
 | `was_auto_reset` | `bool` | `False` | Set when explicit suspension causes a replacement session. Also retained for historical records. |
 | `auto_reset_reason` | `Optional[str]` | `None` | `"suspended"` for explicit suspension; older rows may retain historical reset reasons. |
 | `reset_had_activity` | `bool` | `False` | Whether the replaced session had prior activity. |
-| `is_fresh_reset` | `bool` | `False` | Set by explicit `/new` or `/reset`. Triggers topic/channel skill re-injection on first message. Distinguished from `was_auto_reset` to avoid misleading "session expired" notices. |
+| `is_fresh_reset` | `bool` | `False` | Pending bootstrap for newly created and reset sessions. Retained through rejected preparation, failed execution and failed persistence; cleared after a successful client turn has a durable input row. Self-injected and inherited-pin synthetic turns preserve it; canonical API requests retain client semantics through their private execution binding. Distinguished from `was_auto_reset`, whose one-shot cleanup must not repeat on retries. |
 | `expiry_finalized` | `bool` | `False` | Historical finalization fence retained for recovery; no timer writes it. |
 | `suspended` | `bool` | `False` | Hard force-wipe signal. Set by `/stop` or stuck-loop escalation (3+ consecutive restart failures). On next `get_or_create_session()`, forces a new `session_id` regardless of `resume_pending`. |
 | `resume_pending` | `bool` | `False` | Soft recovery marker. Set by `recover_interrupted_turns()` (crash recovery of a marked, unreplied turn) or drain timeout. On next access, preserves the existing `session_id` — the user continues on the same transcript. Cleared after the next successful turn completes. |

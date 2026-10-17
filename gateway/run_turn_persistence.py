@@ -391,6 +391,7 @@ class GatewayTurnPersistenceMixin:
         failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
         cached agent's message count."""
         from gateway.run import _resolve_gateway_model
+        from gateway.run_turn_prepare import is_session_bootstrap_input
         ts = time.time()  # Unix epoch float — consistent with DB storage
         store = self.async_session_store
         sid = session_entry.session_id
@@ -472,6 +473,13 @@ class GatewayTurnPersistenceMixin:
             session_entry.session_key, last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             touch_activity=not bool(getattr(event, "internal", False)),
         )
+
+        # append_to_transcript can buffer failed writes without raising. Only a durable row owned
+        # by THIS successful client input may consume bootstrap; an old run cannot clear a /new.
+        if (session_entry.is_fresh_reset and is_session_bootstrap_input(event)
+                and not (agent_failed_early or hidden_reasoning_incomplete or is_context_overflow_failure)
+                and prepared.persistence_owner and await store.has_input_owner(sid, prepared.persistence_owner)):
+            await store.complete_session_bootstrap(session_entry.session_key, sid)
 
         # Re-baseline the cached agent's message_count now that ALL of this turn's writes are done:
         # the coherence guard snapshots at agent-BUILD time, so our own writes would otherwise

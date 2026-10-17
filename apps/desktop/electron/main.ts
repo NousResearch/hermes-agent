@@ -330,6 +330,7 @@ import { createKeepAwakeController } from './keep-awake-controller'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
+import { applyLinuxDevShmFallback, probeDevShmUsable } from './linux-dev-shm'
 import {
   decideLinuxGpuLaunch,
   disableGpuSwitchNeededForReason,
@@ -1391,6 +1392,17 @@ enableLinuxCrashDiagnostics(CRASH_DIAGNOSTICS, CRASH_DIAGNOSTICS_LOGS_DIR, {
   reclaimChromiumLog: file => rotateLogIfNeededSync(file),
   appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
   startCrashReporter: options => crashReporter.start(options)
+})
+
+// #138277: a /dev/shm mount that refuses creates (missing, size-0 tmpfs, or
+// policy-denied despite healthy-looking permissions) kills every renderer
+// pre-main, so probe it with a real create before `app` is ready — the switch
+// must reach child processes — and fall back to temp-file-backed shared
+// memory. Healthy Linux hosts keep POSIX shm; other platforms never probe.
+applyLinuxDevShmFallback(process.platform, {
+  probe: () => probeDevShmUsable(),
+  appendSwitch: name => app.commandLine.appendSwitch(name),
+  log: message => console.log(message)
 })
 
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'

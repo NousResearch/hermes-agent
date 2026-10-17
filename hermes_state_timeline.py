@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from agent.compaction_display import project_compaction_message_for_display
 from agent.context_compressor import user_originated_turn_view
 from hermes_state_messages import DISPLAY_VISIBLE_SQL
+from hermes_state_identity import authored_user_occurrence, user_display_index_current
 
 
 _SYNTHETIC_PROMPT = re.compile(
@@ -63,7 +64,7 @@ def _display_rows_sql(conn, session_id, *, users_only=False):
         f"{filters} AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1",
         (session_id,),
     ).fetchone() is None
-    if indexed:
+    if indexed and user_display_index_current(conn):
         return f"""WITH display_rows AS (
             SELECT (SELECT candidate.id FROM messages candidate
                     WHERE candidate.session_id = :sid
@@ -74,13 +75,36 @@ def _display_rows_sql(conn, session_id, *, users_only=False):
             FROM messages m WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
             GROUP BY m.display_order
         )"""
-    return f"""WITH ranked AS (
+    uid = "message_uid" if any(r[1] == "message_uid" for r in conn.execute("PRAGMA table_info(messages)")) else "NULL"
+    # Preserve the old populated index's non-user history while correcting users.
+    if indexed:
+        return f"""WITH keyed AS (
+            SELECT *, timeline_user_occurrence(role, content, {uid}, display_kind,
+                       display_metadata, _compressed_summary) AS user_occurrence
+            FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
+        ), ranked AS (
+            SELECT id, MIN(CASE WHEN user_occurrence IS NULL THEN display_order ELSE id END)
+                           OVER identity AS sort_id,
+                   ROW_NUMBER() OVER (identity ORDER BY active DESC, id DESC) AS preference
+            FROM keyed WINDOW identity AS (PARTITION BY user_occurrence,
+                CASE WHEN user_occurrence IS NULL THEN display_order END)
+        ), display_rows AS (SELECT id AS row_id, sort_id FROM ranked WHERE preference = 1)"""
+    return f"""WITH keyed AS (
+        SELECT *, timeline_user_occurrence(role, content, {uid}, display_kind,
+                   display_metadata, _compressed_summary) AS user_occurrence
+        FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
+    ), ranked AS (
         SELECT id, MIN(id) OVER identity AS sort_id,
                ROW_NUMBER() OVER (identity ORDER BY active DESC, id DESC) AS preference
-        FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
+        FROM keyed
         WINDOW identity AS (PARTITION BY role,
-            CASE WHEN role = 'user' THEN timeline_identity_content(content, display_kind) ELSE content END,
-            timestamp, tool_call_id, tool_calls, tool_name)
+            user_occurrence,
+            CASE WHEN user_occurrence IS NOT NULL THEN NULL
+                 WHEN role = 'user' THEN timeline_identity_content(content, display_kind) ELSE content END,
+            CASE WHEN user_occurrence IS NULL THEN timestamp END,
+            CASE WHEN user_occurrence IS NULL THEN tool_call_id END,
+            CASE WHEN user_occurrence IS NULL THEN tool_calls END,
+            CASE WHEN user_occurrence IS NULL THEN tool_name END)
     ), display_rows AS (SELECT id AS row_id, sort_id FROM ranked WHERE preference = 1)"""
 
 
@@ -93,6 +117,11 @@ def _register_functions(db, conn):
         return db._encode_content(live.get("content")) if handoff is not None and live is not None else content
 
     conn.create_function("timeline_identity_content", 2, identity_content, deterministic=True)
+    def occurrence(role, content, uid, kind, meta, summary):
+        key = authored_user_occurrence(db, {"role": role, "content": content, "message_uid": uid,
+            "display_kind": kind, "display_metadata": meta, "_compressed_summary": summary})
+        return repr(key) if key is not None else None
+    conn.create_function("timeline_user_occurrence", 6, occurrence, deterministic=True)
     conn.create_function("timeline_preview", 3,
                          lambda content, kind, summary: _prompt_preview(db, content, kind, summary),
                          deterministic=True)

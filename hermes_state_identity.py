@@ -5,11 +5,77 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
 
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
 from agent.message_sanitization import coalesce_tool_call_id
 from hermes_state_common import _json_or
+
+
+USER_DISPLAY_VERSION_KEY = "display_user_occurrence_version"
+USER_DISPLAY_VERSION = "1"
+
+
+def authored_user_occurrence(db, row):
+    """UID identity only for visible authored users, using the canonical carrier classifier."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY, user_originated_turn_view
+
+    if row["role"] != "user" or "message_uid" not in row.keys() or not row["message_uid"]:
+        return None
+    meta = db._decode_display_metadata(row["display_metadata"]) or {}
+    if meta.get(MODEL_ONLY_DISPLAY_METADATA_KEY):
+        return None
+    message = {"role": "user", "content": db._decode_content(row["content"]),
+               "display_kind": row["display_kind"], "display_metadata": meta,
+               "_compressed_summary": bool(row["_compressed_summary"]) if "_compressed_summary" in row.keys() else False}
+    if user_originated_turn_view(message) is None:
+        return None
+    return ("user-occurrence-v1", row["message_uid"],
+            "steer" if row["display_kind"] == "steer" else "user")
+
+
+def user_display_index_current(conn):
+    try:
+        return conn.execute("SELECT 1 FROM state_meta WHERE key = ? AND value = ?",
+                            (USER_DISPLAY_VERSION_KEY, USER_DISPLAY_VERSION)).fetchone() is not None
+    except sqlite3.OperationalError as exc:
+        if "no such table: state_meta" not in str(exc):
+            raise
+        return False
+
+
+def repair_user_display_slice(db, conn, lower, upper):
+    """Repair derived USER index columns only; seek first compatible peer by the UID index."""
+    fields = ("id, role, content, message_uid, display_kind, display_metadata, "
+              "_compressed_summary, display_order, display_identity")
+    rows = conn.execute(f"SELECT {fields} FROM messages WHERE id > ? AND id <= ? "
+                        "AND role = 'user' AND message_uid IS NOT NULL "
+                        "AND (active = 1 OR compacted = 1) ORDER BY id", (lower, upper)).fetchall()
+    for row in rows:
+        key = authored_user_occurrence(db, row)
+        if key is None:
+            continue
+        first = conn.execute(f"SELECT {fields} FROM messages INDEXED BY idx_messages_display_uid "
+                             "WHERE session_id = (SELECT session_id FROM messages WHERE id = ?) "
+                             "AND message_uid = ? AND role = 'user' "
+                             "AND (active = 1 OR compacted = 1) ORDER BY id",
+                             (row["id"], row["message_uid"]))
+        try:
+            order = next(peer["id"] for peer in first if authored_user_occurrence(db, peer) == key)
+        finally:
+            first.close()
+        identity = db._display_identity(key)
+        if (row["display_order"], row["display_identity"]) != (order, identity):
+            conn.execute("UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?",
+                         (order, identity, row["id"]))
+
+
+def legacy_user_display_group(db, row, indexed):
+    """Correct authored users only; populated legacy non-user slots are authoritative."""
+    if indexed and authored_user_occurrence(db, row) is None:
+        return ("display-slot", row["display_order"]), row["display_order"]
+    return db._display_identity(db._display_dedupe_key(row)), row["id"]
 
 
 def _live_or_column(msg: Mapping[str, Any], live_key: str, column: str) -> Any:

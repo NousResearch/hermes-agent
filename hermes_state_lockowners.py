@@ -78,6 +78,72 @@ def parse_proc_locks(text: str, inodes: dict[tuple[int, int], str]) -> list[tupl
     return found
 
 
+
+def _translated_device_write_locks(
+    text: str, inodes: dict[tuple[int, int], str],
+) -> list[tuple[int, str, str]]:
+    """Attribute kernel write locks across container device-number translation.
+
+    Linux can expose different MAJ:MIN values for the same mounted SQLite file
+    in stat() and /proc/locks. A shared inode number and an open target FD do
+    NOT prove the lock belongs to the target: two filesystems can reuse inodes,
+    and a process can have both files open.
+
+    Require both (a) the owning PID's FD resolves to the target's exact
+    (st_dev, st_ino) and (b) that *same FD's* /proc/PID/fdinfo lists the exact
+    kernel lock (owner, device, inode, byte range). If /proc is inaccessible,
+    remain inconclusive rather than guessing.
+    """
+    by_inode: dict[int, list[tuple[int, str]]] = {}
+    for (dev, ino), sidecar in inodes.items():
+        by_inode.setdefault(ino, []).append((dev, sidecar))
+
+    found: list[tuple[int, str, str]] = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 8 or fields[1] == "->" or fields[3] != "WRITE":
+            continue
+        try:
+            major_s, minor_s, ino_s = fields[5].split(":")
+            dev = os.makedev(int(major_s, 16), int(minor_s, 16))
+            ino = int(ino_s)
+            pid = int(fields[4])
+            start = int(fields[6])
+            end = start if fields[7] == "EOF" else int(fields[7])
+        except ValueError:
+            continue
+        if pid <= 0 or (dev, ino) in inodes or ino not in by_inode:
+            continue
+
+        try:
+            with os.scandir(f"/proc/{pid}/fd") as fds:
+                for fd in fds:
+                    try:
+                        st = fd.stat()
+                        if (st.st_dev, st.st_ino) not in inodes:
+                            continue
+                        if st.st_ino != ino:
+                            continue
+                        with open(f"/proc/{pid}/fdinfo/{fd.name}", encoding="ascii", errors="replace") as info:
+                            # The fdinfo prefix is "lock:", followed by the same
+                            # /proc/locks record. Ignore its per-snapshot sequence number.
+                            matching_lock = any(
+                                row.startswith("lock:") and row.split()[4:9] == fields[3:8]
+                                for row in info
+                            )
+                        if not matching_lock:
+                            continue
+                    except OSError:
+                        continue  # FD closed or proc access restricted during observation
+                    sidecar = inodes[(st.st_dev, st.st_ino)]
+                    entry = (pid, _describe_range(sidecar, start, end), sidecar)
+                    if entry not in found:
+                        found.append(entry)
+        except OSError:
+            continue
+    return found
+
+
 def state_db_write_lock_holders(db_path) -> list[str]:
     """Operator-facing lines naming the processes that hold a write-class lock on ``db_path``.
 
@@ -102,7 +168,9 @@ def state_db_write_lock_holders(db_path) -> list[str]:
                 text = handle.read()
         except OSError:
             return []
-        held.extend(entry for entry in parse_proc_locks(text, inodes) if entry not in held)
+        entries = parse_proc_locks(text, inodes)
+        entries.extend(_translated_device_write_locks(text, inodes))
+        held.extend(entry for entry in entries if entry not in held)
     from hermes_state_holders import describe_holder_pid
 
     lines = []
@@ -118,7 +186,7 @@ def log_write_lock_holders(db_path, patience_s: float) -> None:
     if holders:
         detail = " | ".join(holders)
     else:
-        detail = "no write-class lock held at the deadline (the holder released just before it)"
+        detail = "no identifiable write-class lock at the deadline (holder may have released or be unobservable)"
     logger.warning(
         "state.db write lock unavailable for %.0fs (%s): %s", patience_s, Path(db_path).name, detail
     )

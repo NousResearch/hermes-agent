@@ -6,6 +6,9 @@ transports. FakeTransport records requests and replays queued responses.
 """
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlsplit
 from dataclasses import replace as dataclass_replace
 
 import pytest
@@ -87,6 +90,60 @@ def planned(calls=PLAN_CALLS):
 # ---------------------------------------------------------------------------
 # execute: request shape + idempotency
 # ---------------------------------------------------------------------------
+
+
+def test_list_connectors_percent_encodes_the_opaque_cursor():
+    transport = FakeTransport(
+        FakeResponse(200, {"items": [{"connector": "gmail"}], "nextCursor": "page+2/&="}),
+        FakeResponse(200, {"items": [{"connector": "notion"}]}),
+    )
+
+    items = make_client(transport).list_connectors(timeout=2.0)
+
+    assert [item["connector"] for item in items] == ["gmail", "notion"]
+    assert transport.requests[1]["url"].endswith(
+        "/v1/connectors?limit=50&cursor=page%2B2%2F%26%3D"
+    )
+    assert all(request["timeout"] == 2.0 for request in transport.requests)
+
+
+def test_list_connectors_preserves_cursor_over_http():
+    cursor = "page+2/&= 空"
+    queries = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            query = parse_qs(urlsplit(self.path).query)
+            queries.append(query)
+            connector = "notion" if "cursor" in query else "gmail"
+            body = {"items": [{"connector": connector}]}
+            if "cursor" not in query:
+                body["nextCursor"] = cursor
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        client = ConnectorClient(
+            endpoint_resolver=lambda: f"http://127.0.0.1:{server.server_port}",
+            header_provider=lambda url: {"Authorization": "Bearer test-token"},
+        )
+        try:
+            items = client.list_connectors(timeout=2.0)
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
+    assert [item["connector"] for item in items] == ["gmail", "notion"]
+    assert queries == [{"limit": ["50"]}, {"limit": ["50"], "cursor": [cursor]}]
+    assert not worker.is_alive()
 
 
 def single_result(connector, tool, data):

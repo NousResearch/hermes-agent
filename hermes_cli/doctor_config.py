@@ -312,8 +312,16 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from utils import base_url_hostname
     aux = read_user_config_raw(config_path).get("auxiliary")
+    # `auto` and `main` are directives, not wire providers, so resolving them here can only produce
+    # a false finding. `main` is a documented auxiliary provider (configuration.md "Available
+    # providers for auxiliary tasks: `auto`, `main`, …") that agent.auxiliary_client.
+    # _normalize_aux_provider maps to the configured `model.provider` — a name the main-agent
+    # resolver has no arm for, so the check could never pass and its advice ("Fix the provider
+    # name/credentials in auxiliary.<task>") could not be carried out. The provider *and* its
+    # credentials are already validated by the model.provider check above, which reports the real
+    # key to fix (#132536).
     routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
-              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
+              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto", "main")}
     ok = []
     for task, block in sorted(routed.items()):
         provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))

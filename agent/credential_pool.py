@@ -423,6 +423,8 @@ def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[st
         value = error_context.get(key)
         if isinstance(value, str) and value.strip():
             normalized[key] = value.strip()
+    if error_context.get("account_window_open"):
+        normalized["account_window_open"] = True
     reset_at = (
         error_context.get("reset_at")
         or error_context.get("resets_at")
@@ -1210,6 +1212,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # fails immediately until the user removes it (#32849); a row whose
         # refresh grant just went DEAD stays DEAD on the 401 that follows.
         terminal = entry.last_status == STATUS_DEAD or self._is_terminal_auth_failure(status_code, normalized_error)
+        # A window the provider says is open is not a bench: the account-level 429 fired on
+        # one request's size while the account keeps serving others (#131360), so the bench
+        # is the brief transient cooldown even when some other header named a longer window.
+        reset_at = normalized_error.get("reset_at")
+        if normalized_error.get("account_window_open"):
+            brief = time.time() + EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+            reset_at = brief if reset_at is None else min(reset_at, brief)
         # Carry the classifier's verdict so the cooldown is sized by what
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.
@@ -1226,7 +1235,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
-            last_error_reset_at=normalized_error.get("reset_at"),
+            last_error_reset_at=reset_at,
             extra=updated_extra,
         )
 
